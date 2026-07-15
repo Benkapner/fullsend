@@ -139,6 +139,12 @@ repo baseline and overrides)
   privilege levels. A `default` key covers unspecified run-stages. When omitted,
   the harness defaults to `write` for all run-stages, preserving backward
   compatibility ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
+- Pre-script skip-flag convention: when a pre-script must run both inline
+  (to gate expensive workflow setup on a fast check) and as the harness
+  `pre_script`, the redundant invocation skips its expensive/side-effecting
+  logic via an `{AGENT}_SKIP_{THING}` env var rather than the inline call
+  being deleted outright
+  ([ADR 0072](ADRs/0072-pre-script-skip-flag-convention.md)).
 
 **Open questions:**
 
