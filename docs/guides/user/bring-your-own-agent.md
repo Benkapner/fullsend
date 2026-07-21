@@ -42,7 +42,7 @@ You do not need to write a GitHub Actions workflow file for each custom agent. T
 
 For local development and debugging, you can also run an agent directly with `fullsend run my-agent` — see [Testing locally](#testing-locally).
 
-**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the scaffold's shared `policies/base.yaml` contains no network rules, since built-in agents use providers ([ADR 0065](../../ADRs/0065-provider-backed-policy-composition.md)). Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
+**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the scaffold's shared `policies/base.yaml` contains no network rules, since built-in agents use providers. Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
 
 ## Minimum viable agent
 
@@ -126,7 +126,7 @@ Do NOT push code, create issues, or modify anything directly.
 Your only output is the JSON result file.
 ````
 
-Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`). To define a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote Providers and Profiles](customizing-agents.md#remote-providers-and-profiles) and [ADR 0070](../../ADRs/0070-portable-provider-profile-resolution.md)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents ([ADR 0065](../../ADRs/0065-provider-backed-policy-composition.md)), but custom agents can use whichever approach fits.
+Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`). To define a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote Providers and Profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 
 **Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).
 
@@ -212,7 +212,7 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/base.yaml          # Sandbox policy (filesystem, landlock, process)
 model: opus                         # LLM model override
 readonly_repo: false                # Mount repo as read-only in sandbox
-providers:                           # Network access via provider profiles (ADR 0065)
+providers:                           # Network access via provider profiles
   - vertex-ai                       # References providers/vertex-ai.yaml
   - github                          # References providers/github.yaml
 
@@ -535,7 +535,7 @@ repos:
 
 ## Migrating from `customized/`
 
-The `customized/` directory overlay ([ADR 0035](../../ADRs/0035-layered-content-resolution.md)) is deprecated in favor of the `base:` composition and config-driven registration described in this guide ([ADR 0064](../../ADRs/0064-deprecate-customized-directory-overlay.md)).
+The `customized/` directory overlay is deprecated in favor of the `base:` composition and config-driven registration described in this guide.
 
 If you have existing files in `customized/`, the `fullsend agent migrate-customizations` command automates the conversion to config-driven agents.
 
