@@ -103,7 +103,9 @@ def make_pr(**overrides):
         "linked_prs": [],
         "is_draft": False,
         "review_decision": None,
+        "mergeable": "MERGEABLE",
         "merge_state_status": "CLEAN",
+        "unresolved_review_threads": 0,
         "checks_state": "SUCCESS",
         "in_merge_queue": False,
     }
@@ -296,7 +298,9 @@ class TestNormalizeItem(unittest.TestCase):
         item = normalize_item("acme/widget", node)
         self.assertEqual(item["kind"], "pull")
         self.assertEqual(item["review_decision"], "REVIEW_REQUIRED")
+        self.assertEqual(item["mergeable"], "MERGEABLE")
         self.assertEqual(item["merge_state_status"], "CLEAN")
+        self.assertEqual(item["unresolved_review_threads"], 1)
         self.assertEqual(item["checks_state"], "SUCCESS")
         self.assertFalse(item["is_draft"])
         self.assertFalse(item["in_merge_queue"])
@@ -426,6 +430,12 @@ class TestClassifyPr(unittest.TestCase):
         self.assertEqual(result.status, "fix_conflicts")
         self.assertFalse(result.eliminated)
 
+    def test_fix_conflicts_via_mergeable_conflicting(self):
+        # GraphQL sometimes returns UNKNOWN mergeStateStatus until mergeable is computed.
+        item = make_pr(merge_state_status="UNKNOWN", mergeable="CONFLICTING")
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "fix_conflicts")
+
     def test_needs_review_decision_manual_review(self):
         item = make_pr(labels=["requires-manual-review"])
         result = classify_pr(item, "alice", 6, NOW)
@@ -437,10 +447,52 @@ class TestClassifyPr(unittest.TestCase):
         self.assertEqual(result.status, "needs_review_decision")
 
     def test_ready_to_merge(self):
-        item = make_pr(labels=["ready-for-merge"], in_merge_queue=False)
+        item = make_pr(
+            labels=["ready-for-merge"],
+            in_merge_queue=False,
+            merge_state_status="CLEAN",
+            mergeable="MERGEABLE",
+            unresolved_review_threads=0,
+        )
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "ready_to_merge")
         self.assertFalse(result.eliminated)
+
+    def test_ready_for_merge_with_unresolved_threads(self):
+        # Mirrors #5328: ready-for-merge label but open review conversations.
+        item = make_pr(
+            labels=["ready-for-merge"],
+            review_decision=None,
+            merge_state_status="BLOCKED",
+            mergeable="MERGEABLE",
+            unresolved_review_threads=2,
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_review_decision")
+        self.assertIn("unresolved", result.reason)
+
+    def test_ready_for_merge_blocked_without_threads(self):
+        item = make_pr(
+            labels=["ready-for-merge"],
+            review_decision=None,
+            merge_state_status="BLOCKED",
+            mergeable="MERGEABLE",
+            unresolved_review_threads=0,
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_review_decision")
+        self.assertIn("branch protection", result.reason)
+
+    def test_ready_for_merge_unknown_merge_state_not_ready(self):
+        item = make_pr(
+            labels=["ready-for-merge"],
+            merge_state_status="UNKNOWN",
+            mergeable="MERGEABLE",
+            unresolved_review_threads=0,
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertNotEqual(result.status, "ready_to_merge")
+        self.assertEqual(result.status, "needs_review_decision")
 
     def test_ready_for_merge_with_pending_checks_is_waiting_ci(self):
         item = make_pr(

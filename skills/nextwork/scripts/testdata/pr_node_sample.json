@@ -13,7 +13,9 @@
   "body": "Some PR body text.",
   "comments": { "nodes": [] },
   "reviewDecision": "REVIEW_REQUIRED",
+  "mergeable": "MERGEABLE",
   "mergeStateStatus": "CLEAN",
+  "reviewThreads": { "nodes": [{ "isResolved": true }, { "isResolved": false }] },
   "commits": {
     "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }]
   }

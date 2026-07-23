@@ -348,7 +348,7 @@ def classify_pr(
     if inflight:
         return classification_for_inflight(inflight)
 
-    if item.get("merge_state_status") == "DIRTY":
+    if item.get("merge_state_status") == "DIRTY" or item.get("mergeable") == "CONFLICTING":
         return Classification(
             status="fix_conflicts",
             reason="Merge conflicts must be resolved",
@@ -371,6 +371,9 @@ def classify_pr(
         "IN_PROGRESS",
         "QUEUED",
     )
+    unresolved = int(item.get("unresolved_review_threads") or 0)
+    merge_state = item.get("merge_state_status")
+    merge_ready_states = {"CLEAN", "UNSTABLE"}
 
     if "ready-for-merge" in labels:
         if item.get("in_merge_queue"):
@@ -386,15 +389,40 @@ def classify_pr(
                 reason="ready-for-merge label present but required checks are still running",
                 eliminated=True,
             )
+        if unresolved > 0:
+            return Classification(
+                status="needs_review_decision",
+                reason=f"{unresolved} unresolved review conversation(s)",
+                eliminated=False,
+                suggested_actions=["Resolve or reply to open review threads"],
+            )
         if review_decision in ("REVIEW_REQUIRED", "CHANGES_REQUESTED"):
             # Fall through to CHANGES_REQUESTED / waiting_review handling below.
             pass
-        else:
+        elif merge_state == "BLOCKED":
+            return Classification(
+                status="needs_review_decision",
+                reason="Merge blocked by branch protection",
+                eliminated=False,
+                suggested_actions=["Satisfy branch protection (reviews, conversations, checks)"],
+            )
+        elif (
+            merge_state in merge_ready_states
+            and item.get("mergeable") != "CONFLICTING"
+        ):
             return Classification(
                 status="ready_to_merge",
                 reason="Approved and ready to merge",
                 eliminated=False,
                 suggested_actions=["Merge, or enqueue in the merge queue"],
+            )
+        else:
+            # UNKNOWN / DRAFT / BEHIND / missing state — never claim ready_to_merge.
+            return Classification(
+                status="needs_review_decision",
+                reason=f"ready-for-merge label present but merge state is {merge_state or 'unknown'}",
+                eliminated=False,
+                suggested_actions=["Inspect PR merge readiness on GitHub"],
             )
 
     if review_decision == "CHANGES_REQUESTED":
@@ -615,7 +643,11 @@ query($owner: String!, $name: String!, $number: Int!) {
         body
         comments(last: 10) { nodes { author { login } body createdAt } }
         reviewDecision
+        mergeable
         mergeStateStatus
+        reviewThreads(first: 50) {
+          nodes { isResolved }
+        }
         commits(last: 1) {
           nodes { commit { statusCheckRollup { state } } }
         }
@@ -747,7 +779,12 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
     else:
         item["is_draft"] = node.get("isDraft", False)
         item["review_decision"] = node.get("reviewDecision")
+        item["mergeable"] = node.get("mergeable")
         item["merge_state_status"] = node.get("mergeStateStatus")
+        threads = (node.get("reviewThreads") or {}).get("nodes") or []
+        item["unresolved_review_threads"] = sum(
+            1 for t in threads if t.get("isResolved") is False
+        )
         checks_state = None
         commit_nodes = node.get("commits", {}).get("nodes", [])
         if commit_nodes:

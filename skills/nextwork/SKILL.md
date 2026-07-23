@@ -92,9 +92,9 @@ merge queue):
 | `trigger_review` | Stale review wait → `/fs-review` | Yes |
 | `trigger_fix` | Stale fix wait → `/fs-fix` | Yes |
 | `needs_info_self` | `needs-info` and you're the author → provide info | Decision |
-| `needs_review_decision` | `requires-manual-review` or `needs-human` | Decision |
-| `ready_to_merge` | `ready-for-merge`, checks settled, review not still required, not yet enqueued → merge or enqueue | Decision (never auto-merged) |
-| `fix_conflicts` | `mergeStateStatus` is `DIRTY` | Decision |
+| `needs_review_decision` | `requires-manual-review`, `needs-human`, unresolved review conversations, or `mergeStateStatus=BLOCKED` under a stale `ready-for-merge` | Decision |
+| `ready_to_merge` | `ready-for-merge` **and** `mergeStateStatus` is `CLEAN`/`UNSTABLE`, no unresolved threads, checks settled, review not still required, not yet enqueued | Decision (never auto-merged) |
+| `fix_conflicts` | `mergeStateStatus` is `DIRTY` **or** `mergeable` is `CONFLICTING` | Decision |
 | `human_work` | Assigned/authored, no clear automation signal — implement, un-draft, or investigate | Decision |
 
 `--apply` only performs the "Yes" (trivial) rows. `--decisions-only` shows
@@ -149,6 +149,12 @@ only the "Decision" rows.
   chronologically latest agent-status comment wins. This is checked **before**
   trusting `ready-for-merge`, so a stale merge label during a re-review does
   not surface as `ready_to_merge`.
+- Merge readiness does **not** trust the `ready-for-merge` label alone. The
+  script also requires `mergeable` / `mergeStateStatus` (requesting `mergeable`
+  so GitHub computes conflict state) and zero unresolved `reviewThreads`.
+  Conflicts (`DIRTY` / `CONFLICTING`) win over review triggers; unresolved
+  conversations or `BLOCKED` yield `needs_review_decision` instead of
+  `ready_to_merge`.
 - GitHub's `blockedBy` dependency feature is **issue-only**. A PR can carry
   the `blocked` label (surfaced as `blocked_by` with an empty `blockers[]`),
   but `--link-blocker` cannot make a PR the dependent side of a structured
