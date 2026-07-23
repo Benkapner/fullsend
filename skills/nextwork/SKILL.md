@@ -11,8 +11,9 @@ allowed-tools: Bash(python3 skills/nextwork/scripts/nextwork.py:*)
 # Next Work
 
 Deterministically build a queue of **open** issues/PRs (assigned to you, or
-explicit refs), follow **open** GitHub `blockedBy` links breadth-first
-(cross-repo), classify every item into a status catalog, and recommend the
+explicit refs), follow **open** GitHub `blockedBy` links and **open**
+sub-issues breadth-first (`blockedBy` may be cross-repo; sub-issues are
+same-repo), classify every item into a status catalog, and recommend the
 next action. Unlike [`/topissues`](../topissues/SKILL.md), this has no
 RICE/project dependency — it is readiness-oriented, not priority-scored.
 
@@ -76,6 +77,7 @@ merge queue):
 | Status | Meaning |
 |--------|---------|
 | `blocked_by` | Open GitHub `blockedBy` link(s), or the `blocked` label. `blockers[]` lists open refs when known from structured data (issues only — GitHub has no PR-side `blockedBy`). |
+| `waiting_sub_issues` | Issue has one or more open GitHub sub-issues. `open_sub_issues[]` lists them; BFS enqueues each open child (same repo) for classification. Prefer this over promoting an epic while children are unfinished. |
 | `waiting_linked_pr` | Issue has an open linked PR (native closing keywords + `partial-fix #N`) — go look at that PR instead |
 | `waiting_info_other` | `needs-info` label and you're not the author (waiting on the reporter) |
 | `assigned_elsewhere` | Assignees present and you're not among them. `assignees[]` is included so the skill can offer take-over. Never suggested as something to self-assign — that's `--take-over` only. |
@@ -88,6 +90,7 @@ merge queue):
 | `needs_assign` | Unassigned → assign yourself | Yes |
 | `needs_triage` | Stale triage wait → `/fs-triage` | Yes |
 | `promote_code` | `triaged` (feature work) → decide whether to promote | Decision |
+| `close_or_plan` | Has sub-issues and all are closed → close the parent, or plan further work / open new sub-issues | Decision |
 | `trigger_code` | Stale `ready-to-code` wait → `/fs-code` | Yes |
 | `trigger_review` | Stale review wait → `/fs-review` | Yes |
 | `trigger_fix` | Stale fix wait → `/fs-fix` | Yes |

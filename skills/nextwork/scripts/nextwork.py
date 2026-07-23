@@ -200,6 +200,7 @@ class Classification:
     eliminated: bool
     blockers: list[dict[str, Any]] = field(default_factory=list)
     linked_prs: list[int] = field(default_factory=list)
+    open_sub_issues: list[dict[str, Any]] = field(default_factory=list)
     suggested_actions: list[str] = field(default_factory=list)
 
 
@@ -239,6 +240,26 @@ def classify_issue(
     inflight = parse_inflight_agent(item.get("comments") or [])
     if inflight:
         return classification_for_inflight(inflight)
+
+    open_subs = item.get("open_sub_issues") or []
+    if open_subs:
+        refs = ", ".join(f"#{s['number']}" for s in open_subs)
+        return Classification(
+            status="waiting_sub_issues",
+            reason=f"Open sub-issue(s): {refs}",
+            eliminated=True,
+            open_sub_issues=open_subs,
+        )
+
+    if (item.get("sub_issues_total") or 0) > 0:
+        return Classification(
+            status="close_or_plan",
+            reason="All sub-issues are closed; close this issue or plan further work",
+            eliminated=False,
+            suggested_actions=[
+                "decision: close this issue, or plan further work / open new sub-issues"
+            ],
+        )
 
     if item["linked_prs"]:
         refs = ", ".join(f"#{n}" for n in item["linked_prs"])
@@ -628,6 +649,10 @@ query($owner: String!, $name: String!, $number: Int!) {
         blockedBy(first: 20) {
           nodes { number state repository { nameWithOwner } }
         }
+        subIssuesSummary { total completed }
+        subIssues(first: 50) {
+          nodes { number state title }
+        }
       }
       ... on PullRequest {
         number
@@ -776,6 +801,21 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
     }
     if kind == "issue":
         item["blockers"] = parse_open_blockers(node.get("blockedBy"))
+        summary = node.get("subIssuesSummary") or {}
+        item["sub_issues_total"] = int(summary.get("total") or 0)
+        item["sub_issues_completed"] = int(summary.get("completed") or 0)
+        open_subs: list[dict[str, Any]] = []
+        for child in (node.get("subIssues") or {}).get("nodes") or []:
+            if child.get("state") != "OPEN":
+                continue
+            open_subs.append(
+                {
+                    "repo": repo,
+                    "number": child["number"],
+                    "title": child.get("title") or "",
+                }
+            )
+        item["open_sub_issues"] = open_subs
     else:
         item["is_draft"] = node.get("isDraft", False)
         item["review_decision"] = node.get("reviewDecision")
@@ -975,6 +1015,8 @@ def build_queue(
             result["blockers"] = classification.blockers
         if classification.linked_prs:
             result["linked_prs"] = classification.linked_prs
+        if classification.open_sub_issues:
+            result["open_sub_issues"] = classification.open_sub_issues
         results.append(result)
 
         if classification.status == "blocked_by":
@@ -982,6 +1024,11 @@ def build_queue(
                 bref = (blocker["repo"], blocker["number"])
                 if bref not in visited:
                     to_visit.append(bref)
+        elif classification.status == "waiting_sub_issues":
+            for child in classification.open_sub_issues:
+                cref = (child["repo"], child["number"])
+                if cref not in visited:
+                    to_visit.append(cref)
 
     return results
 
@@ -1142,6 +1189,7 @@ DECISION_STATUSES = {
     "ready_to_merge",
     "fix_conflicts",
     "human_work",
+    "close_or_plan",
 }
 
 WAITING_PREFIX = "waiting_"
@@ -1163,6 +1211,11 @@ def item_output_dict(item: dict[str, Any], *, include_text: bool) -> dict[str, A
     }
     if item.get("linked_prs"):
         out["linked_prs"] = item["linked_prs"]
+    if item.get("open_sub_issues"):
+        out["open_sub_issues"] = item["open_sub_issues"]
+    if item.get("sub_issues_total"):
+        out["sub_issues_total"] = item["sub_issues_total"]
+        out["sub_issues_completed"] = item.get("sub_issues_completed", 0)
     if include_text:
         out["body"] = item.get("body", "")[:BODY_TRUNCATE_CHARS]
         out["comments"] = item.get("comments", [])[-INCLUDE_TEXT_COMMENT_COUNT:]

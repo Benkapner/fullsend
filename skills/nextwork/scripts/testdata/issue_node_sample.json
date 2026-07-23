@@ -18,5 +18,13 @@
       { "number": 7, "state": "OPEN", "repository": { "nameWithOwner": "acme/widget" } },
       { "number": 8, "state": "CLOSED", "repository": { "nameWithOwner": "acme/widget" } }
     ]
+  },
+  "subIssuesSummary": { "total": 2, "completed": 1 },
+  "subIssues": {
+    "nodes": [
+      { "number": 50, "state": "OPEN", "title": "Child open" },
+      { "number": 51, "state": "CLOSED", "title": "Child closed" }
+    ]
   }
 }
+

@@ -79,6 +79,9 @@ def make_issue(**overrides):
         "comments": [],
         "blockers": [],
         "linked_prs": [],
+        "sub_issues_total": 0,
+        "sub_issues_completed": 0,
+        "open_sub_issues": [],
     }
     item.update(overrides)
     return item
@@ -292,6 +295,21 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertEqual(item["labels"], ["ready-to-code"])
         self.assertEqual(item["blockers"], [{"repo": "acme/widget", "number": 7}])
         self.assertEqual(len(item["comments"]), 1)
+        self.assertEqual(item["sub_issues_total"], 2)
+        self.assertEqual(item["sub_issues_completed"], 1)
+        self.assertEqual(
+            item["open_sub_issues"],
+            [{"repo": "acme/widget", "number": 50, "title": "Child open"}],
+        )
+
+    def test_issue_node_without_sub_issues_fields(self):
+        node = load_fixture("issue_node_sample.json")
+        del node["subIssuesSummary"]
+        del node["subIssues"]
+        item = normalize_item("acme/widget", node)
+        self.assertEqual(item["sub_issues_total"], 0)
+        self.assertEqual(item["sub_issues_completed"], 0)
+        self.assertEqual(item["open_sub_issues"], [])
 
     def test_pull_node(self):
         node = load_fixture("pr_node_sample.json")
@@ -336,6 +354,52 @@ class TestClassifyIssue(unittest.TestCase):
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "waiting_linked_pr")
         self.assertEqual(result.linked_prs, [10, 11])
+
+    def test_waiting_sub_issues(self):
+        open_subs = [
+            {"repo": "acme/widget", "number": 2, "title": "Child A"},
+            {"repo": "acme/widget", "number": 3, "title": "Child B"},
+        ]
+        item = make_issue(
+            labels=["triaged"],
+            open_sub_issues=open_subs,
+            sub_issues_total=3,
+            sub_issues_completed=1,
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_sub_issues")
+        self.assertTrue(result.eliminated)
+        self.assertEqual(result.open_sub_issues, open_subs)
+        self.assertIn("#2", result.reason)
+        self.assertIn("#3", result.reason)
+
+    def test_waiting_sub_issues_before_linked_pr(self):
+        item = make_issue(
+            linked_prs=[99],
+            open_sub_issues=[{"repo": "acme/widget", "number": 2, "title": "Child"}],
+            sub_issues_total=1,
+            sub_issues_completed=0,
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_sub_issues")
+
+    def test_close_or_plan_when_all_sub_issues_closed(self):
+        item = make_issue(
+            labels=["triaged"],
+            open_sub_issues=[],
+            sub_issues_total=2,
+            sub_issues_completed=2,
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "close_or_plan")
+        self.assertFalse(result.eliminated)
+        self.assertTrue(any("close this issue" in a for a in result.suggested_actions))
+        self.assertIn("close_or_plan", DECISION_STATUSES)
+
+    def test_no_sub_issues_keeps_promote_code(self):
+        item = make_issue(labels=["triaged"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
 
     def test_needs_info_self(self):
         item = make_issue(author="alice", labels=["needs-info"])
@@ -672,6 +736,35 @@ class TestBuildQueue(unittest.TestCase):
         fetcher = FakeFetcher(items)
         results = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW, max_visits=3)
         self.assertEqual(len(results), 3)
+
+    def test_bfs_enqueues_open_sub_issues(self):
+        items = {
+            ("acme/widget", 1): make_issue(
+                repo="acme/widget",
+                number=1,
+                labels=["triaged"],
+                sub_issues_total=2,
+                sub_issues_completed=0,
+                open_sub_issues=[
+                    {"repo": "acme/widget", "number": 2, "title": "Child A"},
+                    {"repo": "acme/widget", "number": 3, "title": "Child B"},
+                ],
+            ),
+            ("acme/widget", 2): make_issue(
+                repo="acme/widget", number=2, labels=["question"], assignees=["alice"]
+            ),
+            ("acme/widget", 3): make_issue(
+                repo="acme/widget", number=3, labels=["question"], assignees=["alice"]
+            ),
+        }
+        fetcher = FakeFetcher(items)
+        results = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        numbers = {r["number"] for r in results}
+        self.assertEqual(numbers, {1, 2, 3})
+        parent = next(r for r in results if r["number"] == 1)
+        self.assertEqual(parent["status"], "waiting_sub_issues")
+        self.assertTrue(parent["eliminated"])
+        self.assertEqual(len(parent["open_sub_issues"]), 2)
 
 
 class TestApplyTrivialActions(unittest.TestCase):
