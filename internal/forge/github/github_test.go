@@ -488,6 +488,26 @@ func TestGetRef_NotFound(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err))
 }
 
+func TestGetRef_UnauthenticatedClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		// Unauthenticated client must not send an Authorization header.
+		assert.Empty(t, r.Header.Get("Authorization"), "unauthenticated client should not send Authorization header")
+		json.NewEncoder(w).Encode(map[string]any{
+			"object": map[string]any{
+				"sha":  "abc123def456",
+				"type": "commit",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := New("").WithBaseURL(srv.URL)
+	sha, err := client.GetRef(context.Background(), "owner", "repo", "tags/v0")
+	require.NoError(t, err)
+	assert.Equal(t, "abc123def456", sha)
+}
+
 func TestGetBranchRef_DelegatesToGetRef(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
