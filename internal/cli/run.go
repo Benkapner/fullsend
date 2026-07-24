@@ -340,11 +340,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
-	// fallback.
-	var fallbackForgeClient forge.Client
-	if composeGitToken != "" {
-		fallbackForgeClient = gh.New(composeGitToken)
-	}
+	// fallback. Always create a GitHub client for the agents-repo fallback —
+	// fullsend-ai/agents is public, so unauthenticated requests work when no
+	// GitHub token is available (e.g., on GitLab pipelines).
+	fallbackForgeClient := gh.New(composeGitToken)
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
