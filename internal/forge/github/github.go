@@ -1744,6 +1744,15 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
+			Head    struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+			Base struct {
+				Ref string `json:"ref"`
+			} `json:"base"`
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
 		}
 		if err := decodeJSON(resp, &prs); err != nil {
 			return nil, fmt.Errorf("decode pull requests page %d: %w", page, err)
@@ -1754,6 +1763,9 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				URL:    pr.HTMLURL,
 				Title:  pr.Title,
 				Number: pr.Number,
+				Head:   pr.Head.Ref,
+				Base:   pr.Base.Ref,
+				Author: pr.User.Login,
 			})
 		}
 
@@ -1763,6 +1775,17 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 	}
 
 	return result, nil
+}
+
+// CloseChangeProposal closes an open pull request without merging it.
+func (c *LiveClient) CloseChangeProposal(ctx context.Context, owner, repo string, number int) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
+	resp, err := c.patch(ctx, path, map[string]string{"state": "closed"})
+	if err != nil {
+		return fmt.Errorf("close pull request #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // GetOrgPlan returns the billing plan name for the org (e.g. "free", "team", "enterprise").
