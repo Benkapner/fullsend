@@ -166,7 +166,7 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 
 	if isFloatingRef(targetRef) {
 		result.Skipped = true
-		result.SkipReason = "floating tag, skipped"
+		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", targetRef)
 		return result
 	}
 
@@ -188,14 +188,14 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 
 	if isFloatingRef(currentRef) {
 		result.Skipped = true
-		result.SkipReason = "floating tag, skipped"
+		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", currentRef)
 		return result
 	}
 
 	if !cfg.Force && isSemver(currentRef) && isSemver(targetRef) {
 		if compareSemver(currentRef, targetRef) > 0 {
 			result.Skipped = true
-			result.SkipReason = fmt.Sprintf("current %s is newer than target %s (use --force to override)", currentRef, targetRef)
+			result.SkipReason = fmt.Sprintf("%s → %s is a downgrade (use --force to allow)", currentRef, targetRef)
 			return result
 		}
 	}
@@ -206,7 +206,7 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 		_, changed := replaceShimRef(content, targetRef, "")
 		if !changed {
 			result.Skipped = true
-			result.SkipReason = "no uses: lines matched for replacement"
+			result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
 			return result
 		}
 		result.Upgraded = true
@@ -235,7 +235,7 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 	}
 	if !changed {
 		result.Skipped = true
-		result.SkipReason = "no uses: lines matched for replacement"
+		result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
 		return result
 	}
 
@@ -271,6 +271,13 @@ func readWorkflowContent(ctx context.Context, client forge.Client, owner, repo s
 		return content, path, nil
 	}
 	return nil, "", nil
+}
+
+func skipReasonForNoChange(currentRef, targetRef string) string {
+	if currentRef == targetRef || isSHARef(currentRef) {
+		return fmt.Sprintf("already at %s", targetRef)
+	}
+	return "no uses: lines matched for replacement"
 }
 
 // isFloatingRef returns true for refs that are not pinned versions —
