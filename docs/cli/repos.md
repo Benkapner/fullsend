@@ -18,7 +18,7 @@ Manage per-repo installations across multiple orgs via a declarative `repos.yaml
 | `fullsend repos status` | Compare manifest against actual repo state |
 | `fullsend repos diff` | Show configuration drift between manifest and actual state |
 | `fullsend repos sync` | Reconcile configuration drift for installed repos |
-| `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across repos |
+| `fullsend repos upgrade [repos...]` | Verify mint deployment then upgrade scaffold shim ref across repos |
 | `fullsend repos upgrade-mint` | Verify the token mint deployment matches the manifest |
 
 ## `repos init`
@@ -321,7 +321,7 @@ fullsend repos uninstall acme/old-api --dry-run
 
 ## `repos upgrade`
 
-Upgrades the fullsend scaffold workflow ref for repos defined in a `repos.yaml` manifest. Reads each repo's current workflow file, compares against the manifest's `fullsend_ref` (or `--ref` override), and commits the updated workflow.
+Upgrades the fullsend scaffold workflow ref for repos defined in a `repos.yaml` manifest. Before upgrading, verifies the mint deployment matches the manifest configuration (unless `--skip-mint-check` is set). Reads each repo's current workflow file, compares against the manifest's `fullsend_ref` (or `--ref` override), and commits the updated workflow.
 
 Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are blocked unless `--force` is set.
 
@@ -341,6 +341,7 @@ fullsend repos upgrade --ref v2.4.0
 | `--dry-run` | | `false` | Preview what would be upgraded without making changes |
 | `--force` | | `false` | Upgrade even if current ref is newer than target |
 | `--concurrency` | | `4` | Max parallel operations (1-32) |
+| `--skip-mint-check` | | `false` | Skip mint URL verification before upgrading repos |
 | `--direct` | | `false` | Push scaffold directly to default branch (skip PR) |
 
 ### Positional arguments
@@ -357,7 +358,7 @@ If tag-to-SHA resolution fails (e.g. the tag does not exist or the API is unreac
 
 Verifies the token mint Cloud Function matches the manifest configuration. Discovers the current mint deployment and checks that its URL matches the manifest's `mint.url`.
 
-Run this before `repos upgrade` to ensure mint compatibility.
+`repos upgrade` now runs mint verification automatically as a pre-flight check. This command remains available for standalone verification without triggering an upgrade.
 
 ```bash
 fullsend repos upgrade-mint -f repos.yaml

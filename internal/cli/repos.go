@@ -946,6 +946,19 @@ func confirmBulkAction(printer *ui.Printer, action string, patterns []string, ma
 	return nil
 }
 
+func resolveMintProvisioner(testProv repos.WIFProvisioner, m *repos.Manifest) repos.WIFProvisioner {
+	if testProv != nil {
+		return testProv
+	}
+	return &gcfProvisionerAdapter{
+		provisioner: gcf.NewProvisioner(gcf.Config{
+			ProjectID: m.Mint.Project,
+			Region:    m.Mint.Region,
+			MintURL:   m.Mint.URL,
+		}, gcf.NewLiveGCFClient(m.Mint.Project)),
+	}
+}
+
 // buildProvisionerFactory creates a ProvisionerFactory for uninstall operations.
 // When skipWIF is true or testProv is non-nil, shortcuts are used.
 func buildProvisionerFactory(testProv repos.WIFProvisioner, skipWIF bool) repos.ProvisionerFactory {
@@ -1223,16 +1236,18 @@ func runReposSync(ctx context.Context, opts *reposSyncConfig) error {
 
 // reposUpgradeConfig holds flag values and testing overrides for repos upgrade.
 type reposUpgradeConfig struct {
-	manifest    string
-	refOverride string
-	dryRun      bool
-	force       bool
-	concurrency int
-	direct      bool
+	manifest      string
+	refOverride   string
+	dryRun        bool
+	force         bool
+	skipMintCheck bool
+	concurrency   int
+	direct        bool
 
 	// Testing overrides — when non-nil, used instead of resolving from
 	// the environment. Not set by CLI flag parsing.
-	testClient forge.Client
+	testClient      forge.Client
+	testProvisioner repos.WIFProvisioner
 }
 
 func newReposUpgradeCmd() *cobra.Command {
@@ -1261,6 +1276,7 @@ unless --force is set.`,
 	cmd.Flags().StringVar(&opts.refOverride, "ref", "", "override manifest fullsend_ref for all repos")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be upgraded without making changes")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "upgrade even if current ref is newer than target")
+	cmd.Flags().BoolVar(&opts.skipMintCheck, "skip-mint-check", false, "skip mint URL verification before upgrading repos")
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations")
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 
@@ -1301,6 +1317,22 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 
 	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
 		return err
+	}
+
+	if !opts.skipMintCheck {
+		printer.StepStart("Verifying mint deployment")
+
+		provisioner := resolveMintProvisioner(opts.testProvisioner, m)
+
+		mintProgressFn := func(repo, phase, msg string) {
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+
+		if err := repos.UpgradeMint(ctx, m, provisioner, mintProgressFn); err != nil {
+			return fmt.Errorf("mint verification failed: %w", err)
+		}
+
+		printer.StepDone("Mint verified successfully")
 	}
 
 	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, isDirect bool) error {
@@ -1389,8 +1421,9 @@ func newReposUpgradeMintCmd() *cobra.Command {
 		Long: `Verifies the token mint Cloud Function matches the manifest configuration.
 
 Discovers the current mint deployment and checks that its URL matches
-the manifest's mint.url. Run this before 'repos upgrade' to ensure
-mint compatibility.`,
+the manifest's mint.url. This check runs automatically as a pre-flight
+step in 'repos upgrade'; this command is available for standalone
+verification without triggering an upgrade.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReposUpgradeMint(cmd.Context(), opts)
 		},
@@ -1414,18 +1447,7 @@ func runReposUpgradeMint(ctx context.Context, opts *reposUpgradeMintConfig) erro
 	}
 	printer.StepDone("Loaded manifest")
 
-	var provisioner repos.WIFProvisioner
-	if opts.testProvisioner != nil {
-		provisioner = opts.testProvisioner
-	} else {
-		provisioner = &gcfProvisionerAdapter{
-			provisioner: gcf.NewProvisioner(gcf.Config{
-				ProjectID: m.Mint.Project,
-				Region:    m.Mint.Region,
-				MintURL:   m.Mint.URL,
-			}, gcf.NewLiveGCFClient(m.Mint.Project)),
-		}
-	}
+	provisioner := resolveMintProvisioner(opts.testProvisioner, m)
 
 	progressFn := func(repo, phase, msg string) {
 		printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))

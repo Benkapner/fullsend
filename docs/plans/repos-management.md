@@ -244,8 +244,9 @@ rather than falling back to tag-only format.
 
 Verifies the token mint deployment matches the manifest configuration.
 Discovers the current mint via `DiscoverMint` and checks that its URL
-matches `mint.url`. Run before `repos upgrade` to confirm the mint
-is reachable and correctly configured.
+matches `mint.url`. `repos upgrade` now runs this check automatically
+as a pre-flight step (unless `--skip-mint-check` is set); this command
+remains available for standalone verification.
 
 #### `fullsend repos add`
 
