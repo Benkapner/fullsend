@@ -1263,6 +1263,10 @@ func TestReposUpgradeCmd_Flags(t *testing.T) {
 	require.NotNil(t, forceFlag, "expected --force flag")
 	assert.Equal(t, "false", forceFlag.DefValue)
 
+	skipMintFlag := cmd.Flags().Lookup("skip-mint-check")
+	require.NotNil(t, skipMintFlag, "expected --skip-mint-check flag")
+	assert.Equal(t, "false", skipMintFlag.DefValue)
+
 	concurrencyFlag := cmd.Flags().Lookup("concurrency")
 	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
 	assert.Equal(t, "4", concurrencyFlag.DefValue)
@@ -1301,10 +1305,11 @@ repos:
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		dryRun:      true,
-		concurrency: 4,
-		testClient:  fc,
+		manifest:      manifestPath,
+		dryRun:        true,
+		skipMintCheck: true,
+		concurrency:   4,
+		testClient:    fc,
 	}, nil)
 	require.NoError(t, err)
 }
@@ -1357,10 +1362,11 @@ repos:
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		dryRun:      true,
-		concurrency: 4,
-		testClient:  fc,
+		manifest:      manifestPath,
+		dryRun:        true,
+		skipMintCheck: true,
+		concurrency:   4,
+		testClient:    fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
 }
@@ -1410,10 +1416,11 @@ repos:
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		direct:      true,
-		testClient:  fc,
+		manifest:      manifestPath,
+		skipMintCheck: true,
+		concurrency:   4,
+		direct:        true,
+		testClient:    fc,
 	}, nil)
 	require.NoError(t, err)
 }
@@ -1426,11 +1433,12 @@ func TestRunReposUpgrade_WithRefOverride(t *testing.T) {
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		refOverride: "v2.0.0",
-		dryRun:      true,
-		concurrency: 4,
-		testClient:  fc,
+		manifest:      manifestPath,
+		refOverride:   "v2.0.0",
+		dryRun:        true,
+		skipMintCheck: true,
+		concurrency:   4,
+		testClient:    fc,
 	}, nil)
 	require.NoError(t, err)
 }
@@ -1507,6 +1515,156 @@ func TestRunReposUpgradeMint_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, prov.calls, "DiscoverMint")
+}
+
+func TestResolveMintProvisioner_WithTestProv(t *testing.T) {
+	prov := &trackingProvisioner{label: "test"}
+	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
+	got := resolveMintProvisioner(prov, m)
+	assert.Equal(t, prov, got)
+}
+
+func TestResolveMintProvisioner_NilFallsBackToLive(t *testing.T) {
+	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
+	got := resolveMintProvisioner(nil, m)
+	require.NotNil(t, got)
+}
+
+// --- repos upgrade mint pre-flight ---
+
+func TestRunReposUpgrade_MintCheckBlocksOnMismatch(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Provisioner returns a different URL than the manifest — mint mismatch.
+	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint verification failed")
+	assert.Contains(t, prov.calls, "DiscoverMint")
+}
+
+func TestRunReposUpgrade_SkipMintCheckBypasses(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Provisioner would fail if called — but --skip-mint-check bypasses it.
+	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		skipMintCheck:   true,
+		concurrency:     4,
+		direct:          true,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, prov.calls, "DiscoverMint",
+		"--skip-mint-check should bypass mint verification")
+}
+
+func TestRunReposUpgrade_MintCheckPassesThenUpgrades(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Provisioner returns matching URL — mint check passes.
+	prov := &trackingProvisioner{label: "https://mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		direct:          true,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, prov.calls, "DiscoverMint",
+		"mint verification should run by default")
+}
+
+func TestRunReposUpgrade_MintCheckWithDryRun(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Mint mismatch should still block even during dry-run.
+	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		dryRun:          true,
+		concurrency:     4,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint verification failed")
 }
 
 const diffSyncManifestYAML = `version: 1

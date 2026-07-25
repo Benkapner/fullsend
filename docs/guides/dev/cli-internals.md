@@ -93,6 +93,7 @@ fullsend
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --force                          #   Upgrade even if current ref is newer
 │   │   ├── --direct                         #   Push directly to default branch (skip PR)
+│   │   ├── --skip-mint-check                #   Skip mint URL verification before upgrading
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   └── upgrade-mint                         # Verify token mint deployment matches manifest
 │       └── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
