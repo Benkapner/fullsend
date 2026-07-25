@@ -126,10 +126,19 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: guardErr}
 				return
 			}
+			installed := false
+			if guardExists && guardVal == "true" {
+				fullyInstalled, checkErr := checkInstallComponents(ctx, client, rr.Owner, rr.Repo)
+				if checkErr != nil {
+					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
+					return
+				}
+				installed = fullyInstalled
+			}
 			discoveries[idx] = discoveryResult{
 				repo:      rr,
 				resolved:  resolved,
-				installed: guardExists && guardVal == "true",
+				installed: installed,
 			}
 		}(i, r)
 	}
@@ -277,14 +286,26 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			continue
 		}
 		if guardExists && guardVal == "true" {
-			result.Skipped = append(result.Skipped, InstallResult{
-				Owner:            d.repo.Owner,
-				Repo:             d.repo.Repo,
-				Success:          true,
-				AlreadyInstalled: true,
-			})
-			progress(fullName, "wif", "Installed between Phase 1 and Phase 2")
-			continue
+			fullyInstalled, checkErr := checkInstallComponents(ctx, client, d.repo.Owner, d.repo.Repo)
+			if checkErr != nil {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("re-checking installation components: %w", checkErr),
+				})
+				progress(fullName, "wif", fmt.Sprintf("Component re-check failed: %v", checkErr))
+				continue
+			}
+			if fullyInstalled {
+				result.Skipped = append(result.Skipped, InstallResult{
+					Owner:            d.repo.Owner,
+					Repo:             d.repo.Repo,
+					Success:          true,
+					AlreadyInstalled: true,
+				})
+				progress(fullName, "wif", "Installed between Phase 1 and Phase 2")
+				continue
+			}
 		}
 
 		prov := provisionerFactory(d.resolved)

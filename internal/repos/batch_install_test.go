@@ -221,8 +221,8 @@ func TestBatchInstall_AllFresh(t *testing.T) {
 func TestBatchInstall_SomeAlreadyInstalled(t *testing.T) {
 	repos := []string{"acme/api", "acme/web", "acme/mobile"}
 	fc := newFakeClientForBatch(repos...)
-	// Mark acme/web as already installed.
-	fc.VariableValues["acme/web/"+forge.PerRepoGuardVar] = "true"
+	// Mark acme/web as fully installed.
+	markFullyInstalled(fc, "acme", "web")
 
 	manifest := newBatchManifest(repos...)
 	prov := &batchFakeProvisioner{}
@@ -329,7 +329,7 @@ func TestBatchInstall_DryRun(t *testing.T) {
 func TestBatchInstall_DryRunSkipsInstalled(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
-	fc.VariableValues["acme/web/"+forge.PerRepoGuardVar] = "true"
+	markFullyInstalled(fc, "acme", "web")
 	manifest := newBatchManifest(repos...)
 
 	prov := &batchFakeProvisioner{}
@@ -810,14 +810,13 @@ func TestBatchInstall_TOCTOUReCheck(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	// Guard is not set during Phase 1, but gets set between Phase 1 and Phase 2.
-	origGetVar := fc.VariableValues
-
+	// Guard is not set during Phase 1, but gets set between Phase 1 and
+	// Phase 2 along with all other installation components.
 	prov := &batchFakeProvisioner{}
 	factory := func(_ ResolvedConfig) WIFProvisioner {
-		// Simulate another process installing between Phase 1 and Phase 2
-		// by setting the guard variable after the factory is first called.
-		origGetVar["acme/api/"+forge.PerRepoGuardVar] = "true"
+		// Simulate another process fully installing between Phase 1 and
+		// Phase 2 by setting all installation components.
+		markFullyInstalled(fc, "acme", "api")
 		return prov
 	}
 	sc := &fakeScaffoldCommit{}
@@ -840,6 +839,76 @@ func TestBatchInstall_TOCTOUReCheck(t *testing.T) {
 	}
 	if len(result.Installed) != 0 {
 		t.Errorf("expected 0 installed, got %d", len(result.Installed))
+	}
+}
+
+func TestBatchInstall_PartialInstall_RepairsWhenComponentsMissing(t *testing.T) {
+	repos := []string{"acme/api", "acme/web"}
+	fc := newFakeClientForBatch(repos...)
+	// acme/api: guard variable set but no workflow file → partial install.
+	fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+	// acme/web: fresh install (no guard).
+
+	manifest := newBatchManifest(repos...)
+	prov := &batchFakeProvisioner{}
+	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+
+	// Both repos should be installed (one fresh, one repaired).
+	if len(result.Installed) != 2 {
+		t.Errorf("expected 2 installed, got %d", len(result.Installed))
+	}
+	if len(result.Skipped) != 0 {
+		t.Errorf("expected 0 skipped (partial install should be repaired), got %d", len(result.Skipped))
+	}
+}
+
+func TestBatchInstall_TOCTOUReCheck_PartialInstallProceeds(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newBatchManifest(repos...)
+
+	// Guard is not set during Phase 1, but gets set between Phase 1 and
+	// Phase 2 — however only the guard (no other components). The TOCTOU
+	// re-check should detect the partial install and proceed.
+	prov := &batchFakeProvisioner{}
+	factory := func(_ ResolvedConfig) WIFProvisioner {
+		// Simulate a partial install between phases: only guard variable.
+		fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+		return prov
+	}
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+
+	// Repo should NOT be skipped — partial install is repaired.
+	if len(result.Skipped) != 0 {
+		t.Errorf("expected 0 skipped (partial install should be repaired), got %d", len(result.Skipped))
+	}
+	if len(result.Installed) != 1 {
+		t.Errorf("expected 1 installed, got %d", len(result.Installed))
 	}
 }
 
@@ -1332,4 +1401,72 @@ func (t *trackingOrgProvisioner) DeletePerRepoWIF(ctx context.Context, repo stri
 
 func (t *trackingOrgProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
 	return nil
+}
+
+func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+	fc.Errors["GetFileContent"] = fmt.Errorf("API error during component check")
+
+	manifest := newBatchManifest(repos...)
+	prov := &batchFakeProvisioner{}
+	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed, got %d", len(result.Failed))
+	}
+	if len(result.Installed) != 0 {
+		t.Errorf("expected 0 installed, got %d", len(result.Installed))
+	}
+}
+
+func TestBatchInstall_TOCTOUReCheck_ComponentCheckError(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newBatchManifest(repos...)
+
+	prov := &batchFakeProvisioner{}
+	var factoryCalls int32
+	factory := func(_ ResolvedConfig) WIFProvisioner {
+		n := atomic.AddInt32(&factoryCalls, 1)
+		if n >= 1 {
+			fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+			fc.Errors["GetFileContent"] = fmt.Errorf("API error during TOCTOU")
+		}
+		return prov
+	}
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed (TOCTOU component check error), got %d", len(result.Failed))
+	}
+	if len(result.Failed) > 0 && !strings.Contains(result.Failed[0].Error.Error(), "re-checking installation components") {
+		t.Errorf("expected re-checking error, got: %v", result.Failed[0].Error)
+	}
 }
