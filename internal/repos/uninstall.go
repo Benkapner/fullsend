@@ -4,22 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-var uninstallVariables = []string{
-	forge.PerRepoGuardVar,
-	"FULLSEND_MINT_URL",
-	"FULLSEND_GCP_REGION",
-}
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables)
 
-var uninstallSecrets = []string{
-	"FULLSEND_GCP_PROJECT_ID",
-	"FULLSEND_GCP_WIF_PROVIDER",
-}
+var uninstallSecrets = requiredSecrets
 
 // UninstallConfig holds all inputs for a multi-repo uninstall operation.
 type UninstallConfig struct {

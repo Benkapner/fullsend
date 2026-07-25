@@ -73,7 +73,7 @@ Install fullsend on repos defined in a manifest that are not yet installed.
 
 Runs in three phases:
 
-1. **Parallel discovery** — check which repos are already installed via guard variables
+1. **Parallel discovery** — check which repos are already installed by verifying the guard variable and all installation components (workflow file, variables, and secrets)
 2. **Sequential WIF** — provision WIF infrastructure per repo (not concurrent-safe)
 3. **Parallel scaffold** — commit scaffold files and write variables/secrets
 

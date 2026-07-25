@@ -169,11 +169,14 @@ match; 1 if drift or missing repos.
 Installs fullsend on repos not yet installed. Three-phase execution:
 
 1. **Phase 1 (parallel):** Discover current state, check guard
-   variables, partition into `toInstall` and `alreadyInstalled`.
+   variable and all installation components via
+   `checkInstallComponents`, partition into `toInstall` and
+   `alreadyInstalled`.
 2. **Phase 2 (sequential):** `EnsureOrgInMint` once per unique org,
    then `RegisterPerRepoWIF` per repo. Re-checks the guard variable
-   before provisioning to narrow the TOCTOU window. Both operations
-   are not concurrent-safe (read-modify-write on Cloud Run env vars).
+   and all installation components before provisioning to narrow the
+   TOCTOU window. Both operations are not concurrent-safe
+   (read-modify-write on Cloud Run env vars).
 3. **Phase 3 (parallel):** Scaffold commits, variable/secret writes.
 
 Concurrent `repos install` and `fullsend github setup` targeting the
@@ -453,8 +456,11 @@ wrapping the progress callback for spinner output.
 Test `Install()` with a fake forge client and fake WIF provisioner:
 
 - Fresh install: verify scaffold committed, variables set, secrets set.
-- Already installed (guard variable present): returns
+- Already installed (all installation components present — guard
+  variable, workflow file, variables, and secrets): returns
   `AlreadyInstalled: true`, no writes.
+- Partial install (guard variable present but other components
+  missing): proceeds with repair.
 - Skip app setup: verify `appsetup.Run()` not called.
 - Skip mint check: verify `DiscoverMint()` not called.
 - WIF provisioning failure: returns error, no scaffold committed.
@@ -902,9 +908,13 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 Three-phase execution:
 
-**Phase 1 (parallel):** For each repo (or filtered subset), call
-`ListRepoVariables` to check guard variable. Partition into
-`toInstall` and `alreadyInstalled`.
+**Phase 1 (parallel):** For each repo (or filtered subset), check the
+guard variable. When the guard is set, verify all installation
+components (workflow file, variables, and secrets) via
+`checkInstallComponents`. A repo is only classified as
+`alreadyInstalled` when every component is present; partial installs
+proceed to Phase 2 for repair. Repos without the guard go to
+`toInstall`.
 
 **Phase 2 (sequential):**
 
@@ -919,10 +929,12 @@ the error and excluded from per-repo WIF provisioning and Phase 3.
 
 Then, for each remaining repo in `toInstall`:
 
-- Re-check `FULLSEND_PER_REPO_INSTALL` guard variable. If it is now
-  `"true"` (another process installed between Phase 1 and Phase 2),
-  move the repo to `alreadyInstalled` and skip provisioning. This
-  narrows the TOCTOU window documented in the ADR.
+- Re-check the guard variable and all installation components via
+  `checkInstallComponents`. If the guard is now `"true"` and all
+  components are present (another process fully installed between
+  Phase 1 and Phase 2), move the repo to `alreadyInstalled` and skip
+  provisioning. If the guard is set but components are missing, proceed
+  with repair. This narrows the TOCTOU window documented in the ADR.
 - Call `ProvisionWIF(ctx)` — creates WIF provider for this repo.
   Store the returned provider name in a `map[string]string` keyed by
   `owner/repo` (e.g., `wifProviders["acme-corp/api"] = providerName`).

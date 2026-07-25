@@ -352,7 +352,7 @@ Install:      process 1→7 (forward)
 Uninstall:    process 7→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (guard check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
 
 ### Binary acquisition (`internal/binary`)
 
