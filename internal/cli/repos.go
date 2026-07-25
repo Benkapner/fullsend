@@ -1390,6 +1390,7 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 			upgraded++
 		case r.Skipped:
 			skipped++
+			printer.StepInfo(fmt.Sprintf("[%s/%s] Skipped: %s", r.Owner, r.Repo, r.SkipReason))
 		}
 	}
 

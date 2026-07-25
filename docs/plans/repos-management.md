@@ -223,7 +223,7 @@ Upgrading repos:
   acme-corp/api-server       v2.1.0 → v2.3.0  ✓
   acme-corp/web-frontend     v2.1.0 → v2.3.0  ✓
   acme-corp/legacy-service   v2.1.0            (pinned, already current)
-  acme-corp/bleeding-edge    latest            (floating tag, skipped)
+  acme-corp/bleeding-edge    latest            floating ref "latest" (not eligible for upgrade)
 
 2 upgraded, 1 current, 1 skipped
 ```
