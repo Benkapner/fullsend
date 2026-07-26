@@ -150,7 +150,7 @@ The `Given a fork` step remaps the logical name as above and is idempotent for t
 
 When modifying behaviour test repo provisioning, fork handling, or workflow dispatch, be aware of these constraints. They are not enforced by the compiler or linter — violations surface as cryptic API errors or silently dropped events in CI.
 
-### 1. `auto_init` creates an initial commit
+### `auto_init` creates an initial commit
 
 The forge's `CreateRepo` uses `auto_init`, which creates an initial commit containing a README. Do **not** call `CreateFile("README.md")` (or any file that `auto_init` already provides) on a newly created repo — the GitHub API returns a 422 because the file already exists in the initial commit.
 
@@ -158,7 +158,7 @@ If a scenario needs to seed additional files, use a filename that does not colli
 
 Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go) — see the `auto_init` comment and `CreateRepo` call.
 
-### 2. Fork name derivation depends on `World.RepoName`
+### Fork name derivation depends on `World.RepoName`
 
 The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `test-repo-07` resolves to `test-repo-07-fork`.
 
@@ -166,7 +166,7 @@ When modifying repo naming, leasing, or provisioning logic, verify that fork ste
 
 Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — maps logical fork names to actual repo names based on the leased base.
 
-### 3. Actions workflow readiness after repo creation
+### Actions workflow readiness after repo creation
 
 After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
 
@@ -174,7 +174,7 @@ The `RepoEnsurer` handles this by polling `GetWorkflow` until the workflow file 
 
 Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is visible to the API.
 
-### 4. CI timeout budgeting for lazy provisioning
+### CI timeout budgeting for lazy provisioning
 
 Each lazily provisioned repo adds approximately 3–5 minutes of overhead (create + inference provision + `github setup` + Actions settle). The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leased repos in the suite.
 

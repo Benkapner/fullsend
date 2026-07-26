@@ -18,7 +18,7 @@ Fullsend is a platform for fully autonomous agentic development for Git-hosted o
 
 ## Topic-specific guidance
 
-Detailed guidance lives in `docs/contributing/`. Read only the file relevant to your current task — do not read all of them.
+Detailed guidance lives in `docs/contributing/` and topic-specific guides under `docs/guides/`. Read only the file relevant to your current task — do not read all of them.
 
 | File | When to read |
 |------|-------------|
