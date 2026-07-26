@@ -170,9 +170,9 @@ Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — map
 
 After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
 
-The `RepoEnsurer` handles this by polling `GetWorkflow` until the workflow file is visible and in `"active"` state (up to 30 attempts with 5-second intervals). When writing new provisioning code or modifying the install flow, always poll for workflow readiness before dispatching events that depend on the workflow.
+The `RepoEnsurer` handles this by polling `GetWorkflow` until the workflow file is visible (up to 30 attempts with 5-second intervals). The function returns success as soon as the API returns a non-nil workflow object — it logs the workflow state but does not gate on it. When writing new provisioning code or modifying the install flow, always poll for workflow readiness before dispatching events that depend on the workflow.
 
-Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` with backoff until the workflow is indexed.
+Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is visible to the API.
 
 ### 4. CI timeout budgeting for lazy provisioning
 
