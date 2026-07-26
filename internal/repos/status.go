@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -93,8 +94,9 @@ type StatusSummary struct {
 
 // StatusResult holds the full output of a status check.
 type StatusResult struct {
-	Repos   []RepoStatus  `json:"repos"`
-	Summary StatusSummary `json:"summary"`
+	Repos    []RepoStatus  `json:"repos"`
+	Summary  StatusSummary `json:"summary"`
+	Warnings []string      `json:"warnings,omitempty"`
 }
 
 // Status compares the manifest's desired state against the actual forge
@@ -106,11 +108,16 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
 
+	var warnings []string
 	if len(repoFilter) > 0 {
+		var unmatched []string
 		var filterErr error
-		resolved, filterErr = filterRepos(resolved, repoFilter)
+		resolved, unmatched, filterErr = filterRepos(resolved, repoFilter)
 		if filterErr != nil {
 			return nil, filterErr
+		}
+		for _, p := range unmatched {
+			warnings = append(warnings, fmt.Sprintf("--repo filter %q matched no manifest entries", p))
 		}
 	}
 
@@ -156,7 +163,7 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 		}
 	}
 
-	return &StatusResult{Repos: results, Summary: summary}, nil
+	return &StatusResult{Repos: results, Summary: summary, Warnings: warnings}, nil
 }
 
 func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig) RepoStatus {
@@ -235,20 +242,41 @@ func extractWorkflowRef(content []byte) string {
 	return string(m[1])
 }
 
-func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, error) {
+// filterRepos returns the subset of repos matching at least one filter
+// pattern, plus any patterns that matched nothing. When every pattern
+// is unmatched (the result is empty), an error is returned so callers
+// can surface a non-zero exit code.
+func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []string, error) {
+	matched := make(map[string]bool)
 	var result []ResolvedRepo
 	for _, rr := range repos {
 		fullName := rr.Owner + "/" + rr.Repo
 		for _, pattern := range filter {
 			ok, err := matchesPattern(pattern, fullName)
 			if err != nil {
-				return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+				return nil, nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
 			}
 			if ok {
+				matched[pattern] = true
 				result = append(result, rr)
 				break
 			}
 		}
 	}
-	return result, nil
+
+	var unmatched []string
+	for _, pattern := range filter {
+		if !matched[pattern] {
+			unmatched = append(unmatched, pattern)
+		}
+	}
+
+	if len(result) == 0 && len(unmatched) > 0 {
+		return nil, unmatched, fmt.Errorf(
+			"--repo filter matched no manifest entries: %s",
+			strings.Join(unmatched, ", "),
+		)
+	}
+
+	return result, unmatched, nil
 }

@@ -78,10 +78,14 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	}
 
 	if len(cfg.RepoFilter) > 0 {
+		var unmatched []string
 		var filterErr error
-		repos, filterErr = filterRepos(repos, cfg.RepoFilter)
+		repos, unmatched, filterErr = filterRepos(repos, cfg.RepoFilter)
 		if filterErr != nil {
 			return nil, filterErr
+		}
+		for _, p := range unmatched {
+			progress("", "filter", fmt.Sprintf("--repo filter %q matched no manifest entries", p))
 		}
 	}
 	if len(repos) == 0 {

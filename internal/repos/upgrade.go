@@ -103,9 +103,13 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 	}
 
 	if len(cfg.RepoFilter) > 0 {
-		resolved, err = filterRepos(resolved, cfg.RepoFilter)
+		var unmatched []string
+		resolved, unmatched, err = filterRepos(resolved, cfg.RepoFilter)
 		if err != nil {
 			return nil, err
+		}
+		for _, p := range unmatched {
+			progress("", "filter", fmt.Sprintf("--repo filter %q matched no manifest entries", p))
 		}
 	}
 
