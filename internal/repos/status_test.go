@@ -682,7 +682,7 @@ func TestFilterRepos(t *testing.T) {
 	}
 
 	t.Run("single filter", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"acme-corp/api-server"})
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/api-server"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -692,30 +692,39 @@ func TestFilterRepos(t *testing.T) {
 		if result[0].Repo != "api-server" {
 			t.Errorf("repo = %q, want api-server", result[0].Repo)
 		}
+		if len(unmatched) != 0 {
+			t.Errorf("unmatched = %v, want empty", unmatched)
+		}
 	})
 
 	t.Run("multiple filters", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"acme-corp/api-server", "other-org/tool"})
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/api-server", "other-org/tool"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(result) != 2 {
 			t.Fatalf("got %d results, want 2", len(result))
 		}
+		if len(unmatched) != 0 {
+			t.Errorf("unmatched = %v, want empty", unmatched)
+		}
 	})
 
-	t.Run("no match", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"nonexistent/repo"})
-		if err != nil {
-			t.Fatal(err)
+	t.Run("all unmatched returns error", func(t *testing.T) {
+		result, unmatched, err := filterRepos(repos, []string{"nonexistent/repo"})
+		if err == nil {
+			t.Fatal("expected error when all filters are unmatched")
 		}
-		if len(result) != 0 {
-			t.Fatalf("got %d results, want 0", len(result))
+		if result != nil {
+			t.Errorf("got %d results, want nil", len(result))
+		}
+		if len(unmatched) != 1 || unmatched[0] != "nonexistent/repo" {
+			t.Errorf("unmatched = %v, want [nonexistent/repo]", unmatched)
 		}
 	})
 
 	t.Run("case insensitive", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"ACME-CORP/API-SERVER"})
+		result, _, err := filterRepos(repos, []string{"ACME-CORP/API-SERVER"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -725,7 +734,7 @@ func TestFilterRepos(t *testing.T) {
 	})
 
 	t.Run("glob wildcard", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"acme-corp/*"})
+		result, _, err := filterRepos(repos, []string{"acme-corp/*"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -735,7 +744,7 @@ func TestFilterRepos(t *testing.T) {
 	})
 
 	t.Run("glob question mark", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"other-org/too?"})
+		result, _, err := filterRepos(repos, []string{"other-org/too?"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -747,18 +756,18 @@ func TestFilterRepos(t *testing.T) {
 		}
 	})
 
-	t.Run("glob no match", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"missing-org/*"})
-		if err != nil {
-			t.Fatal(err)
+	t.Run("all unmatched glob returns error", func(t *testing.T) {
+		_, unmatched, err := filterRepos(repos, []string{"missing-org/*"})
+		if err == nil {
+			t.Fatal("expected error when all filters are unmatched")
 		}
-		if len(result) != 0 {
-			t.Fatalf("got %d results, want 0", len(result))
+		if len(unmatched) != 1 || unmatched[0] != "missing-org/*" {
+			t.Errorf("unmatched = %v, want [missing-org/*]", unmatched)
 		}
 	})
 
 	t.Run("glob case insensitive", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"ACME-CORP/*"})
+		result, _, err := filterRepos(repos, []string{"ACME-CORP/*"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -768,9 +777,48 @@ func TestFilterRepos(t *testing.T) {
 	})
 
 	t.Run("bad pattern", func(t *testing.T) {
-		_, err := filterRepos(repos, []string{"acme-corp/[invalid"})
+		_, _, err := filterRepos(repos, []string{"acme-corp/[invalid"})
 		if err == nil {
 			t.Error("expected error for malformed glob pattern")
+		}
+	})
+
+	t.Run("mixed matched and unmatched", func(t *testing.T) {
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/api-server", "org/nonexistent"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 1 {
+			t.Fatalf("got %d results, want 1", len(result))
+		}
+		if result[0].Repo != "api-server" {
+			t.Errorf("repo = %q, want api-server", result[0].Repo)
+		}
+		if len(unmatched) != 1 || unmatched[0] != "org/nonexistent" {
+			t.Errorf("unmatched = %v, want [org/nonexistent]", unmatched)
+		}
+	})
+
+	t.Run("overlapping filters no spurious unmatched", func(t *testing.T) {
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/*", "acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+		if len(unmatched) != 0 {
+			t.Errorf("unmatched = %v, want empty (glob should cover exact match)", unmatched)
+		}
+	})
+
+	t.Run("multiple unmatched returns error", func(t *testing.T) {
+		_, unmatched, err := filterRepos(repos, []string{"bad/one", "bad/two"})
+		if err == nil {
+			t.Fatal("expected error when all filters are unmatched")
+		}
+		if len(unmatched) != 2 {
+			t.Errorf("unmatched count = %d, want 2", len(unmatched))
 		}
 	})
 }
@@ -939,5 +987,41 @@ func TestStatus_Concurrency(t *testing.T) {
 	}
 	if result.Summary.Installed != 20 {
 		t.Errorf("installed = %d, want 20", result.Summary.Installed)
+	}
+}
+
+func TestStatus_RepoFilterAllUnmatched(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	_, err := Status(context.Background(), m, fc, 4, []string{"org/nonexistent"})
+	if err == nil {
+		t.Fatal("expected error when --repo filter matches nothing")
+	}
+}
+
+func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, fc, 4,
+		[]string{"acme-corp/api-server", "org/nonexistent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Summary.Total != 1 {
+		t.Errorf("total = %d, want 1", result.Summary.Total)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("warnings count = %d, want 1", len(result.Warnings))
+	}
+	if result.Warnings[0] != `--repo filter "org/nonexistent" matched no manifest entries` {
+		t.Errorf("warning = %q, want match message", result.Warnings[0])
 	}
 }

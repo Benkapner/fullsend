@@ -80,10 +80,15 @@ func Diff(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
 
+	var filterWarnings []string
 	if len(repoFilter) > 0 {
-		resolved, err = filterRepos(resolved, repoFilter)
+		var unmatched []string
+		resolved, unmatched, err = filterRepos(resolved, repoFilter)
 		if err != nil {
 			return nil, err
+		}
+		for _, p := range unmatched {
+			filterWarnings = append(filterWarnings, fmt.Sprintf("--repo filter %q matched no manifest entries", p))
 		}
 	}
 
@@ -116,7 +121,7 @@ func Diff(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 	wg.Wait()
 
 	allChanges := make([]Change, 0)
-	allWarnings := make([]string, 0)
+	allWarnings := append([]string{}, filterWarnings...)
 	for _, r := range results {
 		allChanges = append(allChanges, r.changes...)
 		allWarnings = append(allWarnings, r.warnings...)
@@ -216,10 +221,15 @@ func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
 
+	var syncFilterWarnings []string
 	if len(repoFilter) > 0 {
-		resolved, err = filterRepos(resolved, repoFilter)
+		var unmatched []string
+		resolved, unmatched, err = filterRepos(resolved, repoFilter)
 		if err != nil {
 			return nil, err
+		}
+		for _, p := range unmatched {
+			syncFilterWarnings = append(syncFilterWarnings, fmt.Sprintf("--repo filter %q matched no manifest entries", p))
 		}
 	}
 
@@ -284,7 +294,7 @@ func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 	wg.Wait()
 
 	allApplied := make([]Change, 0)
-	syncWarnings := make([]string, 0)
+	syncWarnings := append([]string{}, syncFilterWarnings...)
 	failedCount := 0
 	for _, r := range results {
 		allApplied = append(allApplied, r.applied...)

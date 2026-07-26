@@ -306,6 +306,10 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		fmt.Fprintf(out, ", %d errored", result.Summary.Errored)
 	}
 	fmt.Fprintln(out)
+
+	for _, w := range result.Warnings {
+		fmt.Fprintf(out, "WARNING: %s\n", w)
+	}
 }
 
 // reposInstallConfig holds flag values and testing overrides for repos install.
