@@ -43,7 +43,7 @@ fullsend repos init <owner/repo> --mint-project <GCP_PROJECT>
 Instead of `--all`, specify a subset of repos with `--repos`:
 
 ```bash
-fullsend repos init <org> --repos owner/api,owner/web \
+fullsend repos init acme --repos acme/api,acme/web \
   --mint-project <GCP_PROJECT>
 ```
 
@@ -177,8 +177,10 @@ fullsend repos diff -f repos.yaml
 
 The `diff` command checks **variables and managed secrets only** — it
 compares `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` variables against
-the manifest, and writes `FULLSEND_GCP_PROJECT_ID` (the only managed
-secret) for convergence. The WIF provider secret is write-once at install
+the manifest and checks that `FULLSEND_GCP_PROJECT_ID` (the only managed
+secret) exists. Because GitHub secrets are not readable, diff can only
+detect missing secrets — it cannot detect value mismatches. The WIF
+provider secret (`FULLSEND_GCP_WIF_PROVIDER`) is write-once at install
 time and is not managed by diff/sync. Diff does not check the scaffold
 workflow ref (`@ref`). To detect ref drift, use `repos status` (which
 includes the ref in its output) or run `repos upgrade --dry-run` to
