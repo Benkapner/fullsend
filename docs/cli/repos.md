@@ -73,9 +73,11 @@ Install fullsend on repos defined in a manifest that are not yet installed.
 
 Runs in three phases:
 
-1. **Parallel discovery** — check which repos are already installed by verifying the guard variable and all installation components (workflow file, variables, and secrets)
-2. **Sequential WIF** — provision WIF infrastructure per repo (not concurrent-safe)
+1. **Parallel discovery** — check which repos are already installed by verifying the guard variable and all installation components (workflow file, variables, and secrets). Repos with a guard variable set but other components missing are flagged for partial-installation repair.
+2. **Sequential WIF** — register each unique org in the token mint (`EnsureOrgInMint`), then provision per-repo WIF infrastructure. These operations modify shared GCP state and are not concurrent-safe.
 3. **Parallel scaffold** — commit scaffold files and write variables/secrets
+
+If a previous install was interrupted (guard variable set but other components missing), the command detects the partial state and repairs it automatically.
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -259,7 +261,7 @@ fullsend repos add acme/new-api --dry-run
 | `--install` | `false` | Also install fullsend on the added repos |
 | `--concurrency` | `4` | Max parallel operations (1-32, used with `--install`) |
 | `--direct` | `false` | Push scaffold directly to default branch (used with `--install`) |
-| `--roles` | default roles | Agent roles to install (used with `--install`) |
+| `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install (used with `--install`) |
 
 Duplicate entries are silently skipped. Glob patterns (e.g. `acme/*`) are allowed as manifest entries.
 
@@ -313,7 +315,7 @@ fullsend repos uninstall acme/old-api --dry-run
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml manifest |
+| `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
 | `--dry-run` | `false` | Preview what would be uninstalled without making changes |
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
 | `--skip-wif-cleanup` | `false` | Skip GCP WIF provider deletion |

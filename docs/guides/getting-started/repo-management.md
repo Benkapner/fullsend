@@ -40,6 +40,21 @@ For a single repo:
 fullsend repos init <owner/repo> --mint-project <GCP_PROJECT>
 ```
 
+Instead of `--all`, specify a subset of repos with `--repos`:
+
+```bash
+fullsend repos init acme --repos acme/api,acme/web \
+  --mint-project <GCP_PROJECT>
+```
+
+`--repos` and `--all` are mutually exclusive.
+
+If a `repos.yaml` file already exists, pass `--force` to overwrite it:
+
+```bash
+fullsend repos init <org> --all --force --mint-project <GCP_PROJECT>
+```
+
 The command discovers per-repo and per-org installations, extracts
 current configuration (WIF provider, workflow ref, mint URL), and writes
 a manifest. Default values for `fullsend_ref` and `inference_region` are
@@ -47,6 +62,24 @@ computed using the mode (most common value) across discovered repos.
 
 See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
 for all flags.
+
+### Manifest paths and URLs
+
+The `-f`/`--manifest` flag accepts either a local file path or an HTTPS
+URL. Remote manifests are fetched with a 30-second timeout and a 1 MB
+size limit. Most `repos` subcommands support this — see the
+[CLI reference](../../cli/repos.md) for details.
+
+```bash
+fullsend repos status -f https://example.com/manifests/repos.yaml
+```
+
+### Concurrency
+
+Most `repos` subcommands accept a `--concurrency` flag to control the
+number of parallel API calls or operations. Defaults vary by command
+(typically 4 for write operations, 8 for read-only operations). See the
+[CLI reference](../../cli/repos.md) for per-command defaults and limits.
 
 ### Installing repos
 
@@ -61,11 +94,21 @@ Install runs in three phases:
 
 1. **Parallel discovery** — check which repos are already installed by
    verifying the guard variable and all installation components
-   (workflow file, variables, and secrets)
-2. **Sequential WIF** — provision WIF infrastructure per repo (not
-   concurrent-safe due to read-modify-write on Cloud Run env vars)
+   (workflow file, variables, and secrets). Repos with a guard
+   variable set but other components missing are flagged for
+   partial-installation repair (see below).
+2. **Sequential WIF** — register each unique org in the token mint
+   (`EnsureOrgInMint`), then provision per-repo WIF infrastructure
+   (`ProvisionWIF` + `RegisterPerRepoWIF`). These operations modify
+   shared GCP state and are not concurrent-safe.
 3. **Parallel scaffold** — commit scaffold files and write
    variables/secrets
+
+> **Partial installation repair:** If a previous install was interrupted
+> (guard variable set but workflow, variables, or secrets missing),
+> `repos install` detects the incomplete state and repairs it
+> automatically. No manual cleanup is needed — re-running install
+> resumes where the previous run left off.
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
@@ -90,6 +133,13 @@ Glob patterns are supported:
 fullsend repos install "acme/*" --direct --concurrency 8
 ```
 
+Install a subset of agent roles (defaults to
+`triage,coder,review,fix,retro,prioritize`):
+
+```bash
+fullsend repos install -f repos.yaml --roles triage,coder,review
+```
+
 ## Day-2 operations
 
 ### Checking installation status
@@ -110,6 +160,12 @@ The command reports per-repo status (installed, not installed, error) and
 any configuration drift. Returns a non-zero exit code when drift or
 errors exist, making it suitable for CI checks.
 
+Use `--json` for machine-readable output:
+
+```bash
+fullsend repos status -f repos.yaml --json
+```
+
 ### Detecting configuration drift
 
 Show configuration differences between the manifest and actual forge
@@ -119,10 +175,16 @@ state:
 fullsend repos diff -f repos.yaml
 ```
 
-The `diff` command checks **variables and secrets only** — it does not
-check the scaffold workflow ref (`@ref`). To detect ref drift, use
-`repos status` (which includes the ref in its output) or run
-`repos upgrade --dry-run` to preview which repos would be upgraded.
+The `diff` command checks **variables and managed secrets only** — it
+compares `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` variables against
+the manifest and checks that `FULLSEND_GCP_PROJECT_ID` (the only managed
+secret) exists. Because GitHub secrets are not readable, diff can only
+detect missing secrets — it cannot detect value mismatches. The WIF
+provider secret (`FULLSEND_GCP_WIF_PROVIDER`) is write-once at install
+time and is not managed by diff/sync. Diff does not check the scaffold
+workflow ref (`@ref`). To detect ref drift, use `repos status` (which
+includes the ref in its output) or run `repos upgrade --dry-run` to
+preview which repos would be upgraded.
 
 Use `--json` for machine-readable output:
 
@@ -146,6 +208,12 @@ Preview changes first:
 fullsend repos sync --dry-run
 ```
 
+Use `--json` for machine-readable output:
+
+```bash
+fullsend repos sync -f repos.yaml --json
+```
+
 Sync reconciles variables and secrets. It does **not** touch the scaffold
 shim version (`@ref`) — use `repos upgrade` for that.
 
@@ -156,6 +224,19 @@ Add repos to the manifest and optionally install them:
 ```bash
 fullsend repos add acme/new-api acme/new-web
 fullsend repos add acme/new-api --install --direct
+```
+
+Preview what would be added:
+
+```bash
+fullsend repos add acme/new-api --dry-run
+```
+
+Specify which agent roles to install (defaults to
+`triage,coder,review,fix,retro,prioritize`):
+
+```bash
+fullsend repos add acme/new-api --install --roles triage,coder,review
 ```
 
 ### Removing repos
@@ -226,6 +307,12 @@ Upgrade specific repos:
 
 ```bash
 fullsend repos upgrade acme/api acme/web
+```
+
+Push the upgrade directly to the default branch instead of creating a PR:
+
+```bash
+fullsend repos upgrade -f repos.yaml --direct
 ```
 
 Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
