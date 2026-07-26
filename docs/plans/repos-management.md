@@ -36,6 +36,7 @@ mint:
 
 # Default configuration applied to all repos unless overridden.
 defaults:
+  forge: github
   inference_project: acme-inference-prod
   inference_region: us-central1
   fullsend_ref: v2.3.0
@@ -498,6 +499,7 @@ type MintConfig struct {
 }
 
 type DefaultsConfig struct {
+    Forge                  string   `yaml:"forge"`
     InferenceProject       string   `yaml:"inference_project"`
     InferenceRegion        string   `yaml:"inference_region"`
     FullsendRef            string   `yaml:"fullsend_ref"`
@@ -507,6 +509,7 @@ type DefaultsConfig struct {
 
 type RepoEntry struct {
     Repo             string         `yaml:"repo"`
+    Forge            NullableString `yaml:"forge,omitempty"`
     InferenceProject NullableString `yaml:"inference_project,omitempty"`
     InferenceRegion  NullableString `yaml:"inference_region,omitempty"`
     FullsendRef      NullableString `yaml:"fullsend_ref,omitempty"`
@@ -823,19 +826,20 @@ Per-repo discovery (parallelizable, read-only):
 
 1. Call `ListRepoVariables(ctx, owner, repo)` to read guard variable,
    mint URL, region.
-2. Call `GetFileContent(ctx, owner, repo, ".github/workflows/fullsend.yml")`
-   (fall back to `.yaml`) to extract the current `@ref`.
+2. Call `GetFileContent` for each path in `ForgeConfig.WorkflowPaths`
+   (forge-specific; GitHub uses `.github/workflows/fullsend.yml`/`.yaml`,
+   GitLab uses `.gitlab/workflows/fullsend-dispatch.yml`) to extract the
+   current ref.
 3. Compare against manifest-resolved config.
 4. Build `RepoStatus` with drift entries.
 
 Ref extraction from workflow file:
 
 ```go
-var workflowRefPattern = regexp.MustCompile(
-    `uses:\s+fullsend-ai/fullsend/.*@(\S+)`,
-)
+// Patterns and extraction are now forge-specific via ForgeConfig.
+// See internal/repos/forge_config.go for the per-forge definitions.
 
-func extractWorkflowRef(content []byte) string
+func extractWorkflowRef(content []byte, fc ForgeConfig) string
 ```
 
 Exit code: 0 if all repos match; 1 if any drift or missing.
@@ -1149,7 +1153,7 @@ Upgrade logic per repo:
 Ref replacement in scaffold:
 
 ```go
-func replaceShimRef(content []byte, newRef, newTag string) ([]byte, bool)
+func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig) ([]byte, bool)
 ```
 
 Replaces all `@<oldRef>` occurrences (and optional trailing `# tag`
@@ -1272,8 +1276,8 @@ structure:
 
 For each repo:
 
-1. Delete workflow file (`.github/workflows/fullsend.yml`, fall back
-   to `.yaml`). Try `DeleteFile` first. A 404 means the file is
+1. Delete workflow file (forge-specific paths from
+   `ForgeConfig.WorkflowPaths`). Try `DeleteFile` first. A 404 means the file is
    already absent — treat as success (`WorkflowDeleted = true`).
    If it returns HTTP 403 or 422 (branch protection), fall back to
    `CommitFilesToBranch` + PR creation (same pattern as `repos

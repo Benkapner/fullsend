@@ -18,6 +18,7 @@ type InitConfig struct {
 	Target           string
 	Repos            []string
 	All              bool
+	Forge            string
 	MintProject      string
 	MintRegion       string
 	InferenceProject string
@@ -129,7 +130,7 @@ func initSingleRepo(ctx context.Context, cfg InitConfig, client forge.Client,
 		return nil, fmt.Errorf("fetching org config for %s: %w", owner, err)
 	}
 
-	discovered, err := discoverRepo(ctx, client, owner, repo, orgCfg, progress)
+	discovered, err := discoverRepo(ctx, client, owner, repo, orgCfg, cfg.Forge, progress)
 	if err != nil {
 		return nil, fmt.Errorf("discovering %s/%s: %w", owner, repo, err)
 	}
@@ -175,7 +176,7 @@ func initOrg(ctx context.Context, cfg InitConfig, client forge.Client,
 	}
 
 	// Discover repos in parallel.
-	discovery := discoverReposParallel(ctx, client, org, orgRepos, orgCfg, cfg.MaxConcurrency, progress)
+	discovery := discoverReposParallel(ctx, client, org, orgRepos, orgCfg, cfg.Forge, cfg.MaxConcurrency, progress)
 
 	// Build candidates for selection.
 	candidates := make([]RepoCandidate, 0, len(discovery.repos))
@@ -263,7 +264,7 @@ type discoveryResult struct {
 
 func discoverReposParallel(ctx context.Context, client forge.Client,
 	org string, repos []forge.Repository, orgCfg config.OrgConfigReader,
-	maxConcurrency int, progress ProgressFunc) discoveryResult {
+	forgeName string, maxConcurrency int, progress ProgressFunc) discoveryResult {
 
 	type indexedRepo struct {
 		idx  int
@@ -290,7 +291,7 @@ func discoverReposParallel(ctx context.Context, client forge.Client,
 			}
 			defer func() { <-sem }()
 
-			d, err := discoverRepo(ctx, client, org, repo.Name, orgCfg, progress)
+			d, err := discoverRepo(ctx, client, org, repo.Name, orgCfg, forgeName, progress)
 			if err != nil {
 				progress(org+"/"+repo.Name, "discover", fmt.Sprintf("error: %v", err))
 				mu.Lock()
@@ -320,12 +321,13 @@ func discoverReposParallel(ctx context.Context, client forge.Client,
 
 // discoverRepo checks the installation status of a single repository.
 func discoverRepo(ctx context.Context, client forge.Client,
-	owner, repo string, orgCfg config.OrgConfigReader, progress ProgressFunc) (DiscoveredRepo, error) {
+	owner, repo string, orgCfg config.OrgConfigReader, forgeName string, progress ProgressFunc) (DiscoveredRepo, error) {
 
 	fullName := owner + "/" + repo
 	progress(fullName, "discover", "reading variables")
 
-	state, err := ProbeRepoState(ctx, client, owner, repo)
+	fc := ForgeConfigFor(forgeName)
+	state, err := ProbeRepoState(ctx, client, owner, repo, fc)
 	if err != nil && !state.Installed {
 		return DiscoveredRepo{}, err
 	}
@@ -352,7 +354,7 @@ func discoverRepo(ctx context.Context, client forge.Client,
 	if orgCfg != nil {
 		if repoConfig, exists := orgCfg.RepoMap()[repo]; exists && repoConfig.Enabled {
 			progress(fullName, "discover", "per-org enrollment detected")
-			ref, err := readWorkflowRef(ctx, client, owner, repo)
+			ref, err := readWorkflowRef(ctx, client, owner, repo, fc)
 			if err != nil {
 				return DiscoveredRepo{}, err
 			}
@@ -438,6 +440,11 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 		todos = append(todos, "defaults.inference_project: provide via --inference-project flag")
 	}
 
+	forgeName := cfg.Forge
+	if forgeName == "" {
+		forgeName = ForgeGitHub
+	}
+
 	manifest := &Manifest{
 		Version: 1,
 		Mint: MintConfig{
@@ -446,6 +453,7 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 			Region:  mintRegion,
 		},
 		Defaults: DefaultsConfig{
+			Forge:            forgeName,
 			InferenceProject: inferenceProject,
 			InferenceRegion:  defaultRegion,
 			FullsendRef:      defaultRef,

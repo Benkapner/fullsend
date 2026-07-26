@@ -6,6 +6,14 @@ sidebar_label: fullsend repos
 
 Manage per-repo installations across multiple orgs via a declarative `repos.yaml` manifest. Compare the manifest's desired state against actual forge state and report installation status and configuration drift.
 
+## Global flags
+
+These flags are inherited by all `repos` subcommands:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--gitlab-token` | | GitLab personal or project access token (overrides `GITLAB_TOKEN` env var) |
+
 ## Commands
 
 | Command | Description |
@@ -46,6 +54,7 @@ fullsend repos init <owner/repo> --mint-project <PROJECT>
 | `--mint-region` | `us-central1` | GCP region for the mint |
 | `--inference-project` | | Default GCP project for inference |
 | `--concurrency` | `8` | Max parallel API calls (capped at 64) |
+| `--forge` | `github` | Forge type for discovered repos (`github` or `gitlab`) |
 | `--force` | `false` | Overwrite output file if it already exists |
 
 ### Discovery
@@ -161,7 +170,7 @@ The command returns a non-zero exit code when any repo has drift, is not install
 
 ### Authentication
 
-Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
+Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group.
 
 ## `repos diff`
 

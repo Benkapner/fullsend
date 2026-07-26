@@ -60,6 +60,38 @@ current configuration (WIF provider, workflow ref, mint URL), and writes
 a manifest. Default values for `fullsend_ref` and `inference_region` are
 computed using the mode (most common value) across discovered repos.
 
+### Multi-forge manifests
+
+Every repo entry in the manifest must declare its forge (`github` or
+`gitlab`). Set `defaults.forge` to avoid repeating the forge on every
+entry. Per-repo overrides are supported for mixed-forge manifests:
+
+```yaml
+version: 1
+mint:
+  url: https://mint.example.com
+  project: my-project
+  region: us-central1
+defaults:
+  forge: github
+  fullsend_ref: v2.5.0
+repos:
+  - acme/api-server            # inherits forge: github from defaults
+  - acme/web-frontend
+  - repo: gitlab-group/project # per-entry override
+    forge: gitlab
+```
+
+For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
+`--gitlab-token` to `fullsend repos` subcommands. For self-hosted GitLab
+instances, set `GITLAB_API_URL` to the API base URL (e.g.
+`https://gitlab.example.com/api/v4`).
+
+> **Note:** Mixed-forge manifests currently require that all repos share the
+> same forge as `defaults.forge`. Per-entry client switching (connecting to
+> both GitHub and GitLab APIs in a single run) is planned but not yet
+> implemented.
+
 See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
 for all flags.
 

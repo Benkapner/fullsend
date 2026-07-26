@@ -22,6 +22,7 @@ func newUpgradeManifest(defaultRef string) *Manifest {
 			InferenceProject: "example-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      defaultRef,
+			Forge:            "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
@@ -724,7 +725,7 @@ func TestReplaceShimRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag)
+			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag, GitHubForgeConfig())
 			if changed != tt.wantDiff {
 				t.Errorf("changed = %v, want %v", changed, tt.wantDiff)
 			}
@@ -952,7 +953,7 @@ func TestUpgrade_PartialVersionTag(t *testing.T) {
 
 func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0", GitHubForgeConfig())
 	if !changed {
 		t.Error("expected change")
 	}
@@ -964,7 +965,7 @@ func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 
 func TestReplaceShimRef_EmptyTag(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Error("expected change")
 	}
@@ -976,7 +977,7 @@ func TestReplaceShimRef_EmptyTag(t *testing.T) {
 
 func TestReplaceShimRef_MultiWordComment(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0 # version 2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1302,7 +1303,7 @@ func TestReplaceShimRef_StandaloneCommentPreserved(t *testing.T) {
     # This is a standalone comment on the next line
     with:
 `
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1733,7 +1734,7 @@ func TestSkipReasonForNoChange(t *testing.T) {
 
 func TestReplaceShimRef_DollarSignInRef(t *testing.T) {
 	content := []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n")
-	result, changed := replaceShimRef(content, "v2.0.0$test", "")
+	result, changed := replaceShimRef(content, "v2.0.0$test", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}

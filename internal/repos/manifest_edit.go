@@ -69,7 +69,9 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 			if len(parts) != 2 {
 				continue
 			}
-			state, err := ProbeRepoState(ctx, client, parts[0], parts[1])
+			entryForge := resolveField(entries[i].Forge, cfg.Manifest.Defaults.Forge, ForgeGitHub)
+			fc := ForgeConfigFor(entryForge)
+			state, err := ProbeRepoState(ctx, client, parts[0], parts[1], fc)
 			if err != nil && !state.Installed {
 				progress(entries[i].Repo, "discover", fmt.Sprintf("probe failed: %v", err))
 				continue

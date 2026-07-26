@@ -1,0 +1,123 @@
+package cli
+
+import (
+	"testing"
+
+	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestResolveGitLabToken_FromEnv(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	token, err := resolveGitLabToken()
+	require.NoError(t, err)
+	assert.Equal(t, "glpat-test-token", token)
+}
+
+func TestResolveGitLabToken_Missing(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	_, err := resolveGitLabToken()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestNewForgeClient_GitLab_WithToken(t *testing.T) {
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-direct-token")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestNewForgeClient_GitLab_FromEnv(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-env-token")
+	client, err := newForgeClient(repos.ForgeGitLab, "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestNewForgeClient_GitLab_NoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	_, err := newForgeClient(repos.ForgeGitLab, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestNewForgeClient_GitLab_WithBaseURL(t *testing.T) {
+	t.Setenv("GITLAB_API_URL", "https://gitlab.example.com/api/v4")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestNewForgeClient_GitHub(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	client, err := newForgeClient(repos.ForgeGitHub, "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestNewForgeClient_EmptyDefaultsToGitHub(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	client, err := newForgeClient("", "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestNewForgeClient_Unsupported(t *testing.T) {
+	_, err := newForgeClient("bitbucket", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported forge")
+}
+
+func TestForgeClientFromManifest_GitHub(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	m := &repos.Manifest{
+		Defaults: repos.DefaultsConfig{Forge: repos.ForgeGitHub},
+	}
+	client, err := forgeClientFromManifest(m, "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestForgeClientFromManifest_EmptyForgeDefaultsToGitHub(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	m := &repos.Manifest{
+		Defaults: repos.DefaultsConfig{Forge: ""},
+	}
+	client, err := forgeClientFromManifest(m, "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestForgeClientFromManifest_GitLab(t *testing.T) {
+	m := &repos.Manifest{
+		Defaults: repos.DefaultsConfig{Forge: repos.ForgeGitLab},
+	}
+	client, err := forgeClientFromManifest(m, "glpat-direct")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestGetGitLabToken_FromFlag(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("gitlab-token", "", "")
+	require.NoError(t, cmd.Flags().Set("gitlab-token", "glpat-from-flag"))
+	assert.Equal(t, "glpat-from-flag", getGitLabToken(cmd))
+}
+
+func TestGetGitLabToken_FromParentFlag(t *testing.T) {
+	parent := &cobra.Command{}
+	parent.PersistentFlags().String("gitlab-token", "", "")
+	require.NoError(t, parent.PersistentFlags().Set("gitlab-token", "glpat-inherited"))
+
+	child := &cobra.Command{}
+	parent.AddCommand(child)
+
+	assert.Equal(t, "glpat-inherited", getGitLabToken(child))
+}
+
+func TestGetGitLabToken_Empty(t *testing.T) {
+	cmd := &cobra.Command{}
+	assert.Equal(t, "", getGitLabToken(cmd))
+}

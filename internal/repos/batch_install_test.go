@@ -163,6 +163,7 @@ func newBatchManifest(repos ...string) *Manifest {
 			InferenceProject: "test-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v1.0.0",
+			Forge:            "github",
 		},
 		Repos: entries,
 	}

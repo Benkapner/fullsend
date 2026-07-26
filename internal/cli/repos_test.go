@@ -84,6 +84,81 @@ func TestReposInitCmd_Flags(t *testing.T) {
 	assert.Equal(t, "false", forceFlag.DefValue)
 }
 
+func TestReposInitCmd_ForgeFlag(t *testing.T) {
+	cmd := newReposInitCmd()
+	forgeFlag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, forgeFlag, "expected --forge flag")
+	assert.Equal(t, repos.ForgeGitHub, forgeFlag.DefValue)
+}
+
+func TestReposCmd_GitLabTokenFlag(t *testing.T) {
+	cmd := newReposCmd()
+	tokenFlag := cmd.PersistentFlags().Lookup("gitlab-token")
+	require.NotNil(t, tokenFlag, "expected --gitlab-token persistent flag")
+	assert.Equal(t, "", tokenFlag.DefValue)
+}
+
+func TestRunReposStatus_EmptyManifest(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	manifestYAML := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+	manifestPath := writeTestManifest(t, manifestYAML)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath, "--json"})
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}
+
+func TestRunReposStatus_GitLabRequiresToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	manifestYAML := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+	manifestPath := writeTestManifest(t, manifestYAML)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestRunReposStatus_GitLabWithToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	manifestYAML := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+	manifestPath := writeTestManifest(t, manifestYAML)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath, "--json"})
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}
+
 func TestReposInitCmd_OutputShorthand(t *testing.T) {
 	cmd := newReposInitCmd()
 	outputFlag := cmd.Flags().ShorthandLookup("o")
@@ -572,6 +647,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -655,6 +731,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: ""
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -793,6 +870,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -830,6 +908,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -1010,6 +1089,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -1042,6 +1122,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -1076,6 +1157,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -1311,6 +1393,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1364,6 +1447,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1422,6 +1506,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1558,6 +1643,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1591,6 +1677,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1626,6 +1713,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1660,6 +1748,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1692,6 +1781,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -1707,6 +1797,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_region: us-central1
   fullsend_ref: v1.0.0
 repos:
@@ -1850,4 +1941,106 @@ func TestRunReposSync_DryRun_JSON(t *testing.T) {
 	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
 	assert.Contains(t, output, `"changes"`)
 	assert.NotContains(t, output, "Checking token permissions")
+}
+
+// --- forge-aware CLI integration tests ---
+// These tests exercise the RunE closures and forgeClientFromManifest paths
+// that are only reachable through the Cobra command chain.
+
+var emptyReposManifestYAML = `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+
+func TestReposDiffCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "diff", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestReposSyncCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "sync", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestReposUpgradeCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "upgrade", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	m := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos:
+  - acme/repo
+`
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "uninstall", "--yes", "--manifest", manifestPath, "acme/repo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestReposAddCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "add", "--manifest", manifestPath, "acme/repo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestReposInitCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "--forge", "gitlab", "test-org"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
 }

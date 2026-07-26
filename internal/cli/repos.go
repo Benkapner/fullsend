@@ -13,7 +13,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -30,6 +29,7 @@ func newReposCmd() *cobra.Command {
 The repos subcommand group provides bulk operations for platform administrators
 managing fullsend across many repositories and organizations.`,
 	}
+	cmd.PersistentFlags().String("gitlab-token", "", "GitLab personal or project access token (overrides GITLAB_TOKEN env var)")
 	cmd.AddCommand(newReposInitCmd())
 	cmd.AddCommand(newReposAddCmd())
 	cmd.AddCommand(newReposRemoveCmd())
@@ -52,6 +52,8 @@ type reposInitConfig struct {
 	inferenceProject string
 	concurrency      int
 	force            bool
+	forge            string
+	gitlabToken      string
 }
 
 func newReposInitCmd() *cobra.Command {
@@ -70,12 +72,12 @@ that reflects current reality.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
+			cfg.gitlabToken = getGitLabToken(cmd)
 
-			token, err := resolveToken()
+			client, err := newForgeClient(cfg.forge, cfg.gitlabToken)
 			if err != nil {
 				return err
 			}
-			client := gh.New(token)
 			printerOut := os.Stdout
 			if cfg.output == "-" {
 				printerOut = os.Stderr
@@ -88,13 +90,16 @@ that reflects current reality.`,
 			if idx := strings.IndexByte(target, '/'); idx >= 0 {
 				owner = target[:idx]
 			}
-			if err := validateOrgName(owner); err != nil {
-				return err
+			if cfg.forge != repos.ForgeGitLab {
+				if err := validateOrgName(owner); err != nil {
+					return err
+				}
 			}
 
 			initCfg := repos.InitConfig{
 				Target:           target,
 				All:              cfg.all,
+				Forge:            cfg.forge,
 				MintProject:      cfg.mintProject,
 				MintRegion:       cfg.mintRegion,
 				InferenceProject: cfg.inferenceProject,
@@ -172,6 +177,7 @@ that reflects current reality.`,
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "default GCP project for inference")
 	cmd.Flags().IntVar(&cfg.concurrency, "concurrency", 8, "max parallel API calls (capped at 64)")
 	cmd.Flags().BoolVar(&cfg.force, "force", false, "overwrite output file if it already exists")
+	cmd.Flags().StringVar(&cfg.forge, "forge", repos.ForgeGitHub, "forge type for discovered repos (github or gitlab)")
 	cmd.MarkFlagsMutuallyExclusive("repos", "all")
 
 	return cmd
@@ -205,18 +211,17 @@ func newReposStatusCmd() *cobra.Command {
 func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, repoFilter []string, concurrency int) error {
 	ctx := cmd.Context()
 
-	token, err := resolveToken()
-	if err != nil {
-		return err
-	}
-	client := newGitHubLiveClient(token)
-
 	m, err := repos.LoadManifest(ctx, manifestPath)
 	if err != nil {
 		return err
 	}
 	if err := m.Validate(); err != nil {
 		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+
+	client, err := forgeClientFromManifest(m, getGitLabToken(cmd))
+	if err != nil {
+		return err
 	}
 
 	result, err := repos.Status(ctx, m, client, concurrency, repoFilter)
@@ -321,6 +326,7 @@ type reposInstallConfig struct {
 	concurrency   int
 	roles         []string
 	direct        bool
+	gitlabToken   string
 
 	// Testing overrides — when non-nil, used instead of resolving from
 	// the environment. Not set by CLI flag parsing.
@@ -347,6 +353,7 @@ Runs in three phases:
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
+			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposInstall(cmd.Context(), opts)
 		},
 	}
@@ -379,11 +386,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if opts.testClient != nil {
 		client = opts.testClient
 	} else {
-		token, tokenErr := resolveToken()
-		if tokenErr != nil {
-			return tokenErr
+		var clientErr error
+		client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
+		if clientErr != nil {
+			return clientErr
 		}
-		client = newGitHubLiveClient(token)
 	}
 
 	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
@@ -488,6 +495,7 @@ type reposAddConfig struct {
 	concurrency int
 	direct      bool
 	roles       []string
+	gitlabToken string
 
 	testClient      forge.Client
 	testProvisioner repos.WIFProvisioner
@@ -506,6 +514,7 @@ Use --install to also install fullsend on the added repos after updating
 the manifest.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposAdd(cmd.Context(), opts, args)
 		},
 	}
@@ -541,11 +550,11 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 	if opts.testClient != nil {
 		client = opts.testClient
 	} else {
-		token, tokenErr := resolveToken()
-		if tokenErr != nil {
-			return tokenErr
+		var clientErr error
+		client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
+		if clientErr != nil {
+			return clientErr
 		}
-		client = newGitHubLiveClient(token)
 	}
 
 	entries := make([]repos.RepoEntry, len(repoArgs))
@@ -583,6 +592,7 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 			concurrency:     opts.concurrency,
 			direct:          opts.direct,
 			roles:           opts.roles,
+			gitlabToken:     opts.gitlabToken,
 			testClient:      opts.testClient,
 			testProvisioner: opts.testProvisioner,
 		}
@@ -602,6 +612,7 @@ type reposRemoveConfig struct {
 	yes            bool
 	skipWIFCleanup bool
 	concurrency    int
+	gitlabToken    string
 
 	testClient      forge.Client
 	testProvisioner repos.WIFProvisioner
@@ -623,6 +634,7 @@ Use --uninstall to tear down fullsend from the repos before removing them
 from the manifest (deletes workflow, variables, secrets, and WIF).`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposRemove(cmd.Context(), opts, args)
 		},
 	}
@@ -690,11 +702,11 @@ func runReposRemove(ctx context.Context, opts *reposRemoveConfig, repoArgs []str
 			if opts.testClient != nil {
 				client = opts.testClient
 			} else if !opts.dryRun {
-				token, tokenErr := resolveToken()
-				if tokenErr != nil {
-					return tokenErr
+				var clientErr error
+				client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
+				if clientErr != nil {
+					return clientErr
 				}
-				client = newGitHubLiveClient(token)
 			}
 
 			uninstallCfg := repos.UninstallConfig{
@@ -770,6 +782,7 @@ type reposUninstallConfig struct {
 	yes            bool
 	skipWIFCleanup bool
 	concurrency    int
+	gitlabToken    string
 
 	testClient      forge.Client
 	testProvisioner repos.WIFProvisioner
@@ -790,6 +803,7 @@ Glob patterns (e.g. "acme/*") are matched against manifest entries and
 prompt for confirmation unless --yes is set.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposUninstall(cmd.Context(), opts, args)
 		},
 	}
@@ -852,11 +866,11 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if opts.testClient != nil {
 		client = opts.testClient
 	} else {
-		token, tokenErr := resolveToken()
-		if tokenErr != nil {
-			return tokenErr
+		var clientErr error
+		client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
+		if clientErr != nil {
+			return clientErr
 		}
-		client = newGitHubLiveClient(token)
 	}
 
 	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
@@ -1039,6 +1053,7 @@ type reposDiffConfig struct {
 	repoFilter  []string
 	jsonOutput  bool
 	concurrency int
+	gitlabToken string
 
 	testClient forge.Client
 	out        io.Writer
@@ -1052,6 +1067,7 @@ func newReposDiffCmd() *cobra.Command {
 		Short: "Show configuration drift between manifest and actual state",
 		Long:  "Compare the repos.yaml manifest against actual forge state and display the changes needed to reconcile. Exit code 1 signals drift exists.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposDiff(cmd.Context(), opts)
 		},
 	}
@@ -1075,27 +1091,27 @@ func runReposDiff(ctx context.Context, opts *reposDiffConfig) error {
 	}
 	printer := ui.New(printerOut)
 
-	var client forge.Client
-	if opts.testClient != nil {
-		client = opts.testClient
-	} else {
-		token, err := resolveToken()
-		if err != nil {
-			return err
-		}
-		client = newGitHubLiveClient(token)
-	}
-
-	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
-		return err
-	}
-
 	m, err := repos.LoadManifest(ctx, opts.manifest)
 	if err != nil {
 		return err
 	}
 	if err := m.Validate(); err != nil {
 		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		var clientErr error
+		client, clientErr = forgeClientFromManifest(m, opts.gitlabToken)
+		if clientErr != nil {
+			return clientErr
+		}
+	}
+
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
 	}
 
 	result, err := repos.Diff(ctx, m, client, opts.concurrency, opts.repoFilter)
@@ -1125,6 +1141,7 @@ type reposSyncConfig struct {
 	dryRun      bool
 	jsonOutput  bool
 	concurrency int
+	gitlabToken string
 
 	testClient forge.Client
 	out        io.Writer
@@ -1138,6 +1155,7 @@ func newReposSyncCmd() *cobra.Command {
 		Short: "Reconcile configuration drift for installed repos",
 		Long:  "Apply variable and secret changes to reconcile installed repos with the manifest. Use --dry-run to preview changes without applying them.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposSync(cmd.Context(), opts)
 		},
 	}
@@ -1162,27 +1180,27 @@ func runReposSync(ctx context.Context, opts *reposSyncConfig) error {
 	}
 	printer := ui.New(printerOut)
 
-	var client forge.Client
-	if opts.testClient != nil {
-		client = opts.testClient
-	} else {
-		token, err := resolveToken()
-		if err != nil {
-			return err
-		}
-		client = newGitHubLiveClient(token)
-	}
-
-	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
-		return err
-	}
-
 	m, err := repos.LoadManifest(ctx, opts.manifest)
 	if err != nil {
 		return err
 	}
 	if err := m.Validate(); err != nil {
 		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		var clientErr error
+		client, clientErr = forgeClientFromManifest(m, opts.gitlabToken)
+		if clientErr != nil {
+			return clientErr
+		}
+	}
+
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
 	}
 
 	if opts.dryRun {
@@ -1247,6 +1265,7 @@ type reposUpgradeConfig struct {
 	skipMintCheck bool
 	concurrency   int
 	direct        bool
+	gitlabToken   string
 
 	// Testing overrides — when non-nil, used instead of resolving from
 	// the environment. Not set by CLI flag parsing.
@@ -1272,6 +1291,7 @@ Floating refs (latest, main, v0) are skipped. Downgrades are blocked
 unless --force is set.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposUpgrade(cmd.Context(), opts, args)
 		},
 	}
@@ -1312,11 +1332,11 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 	if opts.testClient != nil {
 		client = opts.testClient
 	} else {
-		token, tokenErr := resolveToken()
-		if tokenErr != nil {
-			return tokenErr
+		var clientErr error
+		client, clientErr = forgeClientFromManifest(m, opts.gitlabToken)
+		if clientErr != nil {
+			return clientErr
 		}
-		client = newGitHubLiveClient(token)
 	}
 
 	if err := checkPerRepoScopes(ctx, client, printer); err != nil {

@@ -23,6 +23,18 @@ import (
 
 const maxManifestBytes = 1 << 20 // 1 MB
 
+// Forge type constants used in the manifest's forge field.
+const (
+	ForgeGitHub = "github"
+	ForgeGitLab = "gitlab"
+)
+
+// validForges is the set of accepted forge values.
+var validForges = map[string]bool{
+	ForgeGitHub: true,
+	ForgeGitLab: true,
+}
+
 // Manifest is the top-level structure of a repos.yaml file.
 type Manifest struct {
 	Version  int            `yaml:"version"`
@@ -41,6 +53,7 @@ type MintConfig struct {
 // DefaultsConfig holds default field values applied to every repo
 // unless overridden at the per-repo level.
 type DefaultsConfig struct {
+	Forge                  string   `yaml:"forge"`
 	InferenceProject       string   `yaml:"inference_project"`
 	InferenceRegion        string   `yaml:"inference_region"`
 	FullsendRef            string   `yaml:"fullsend_ref"`
@@ -53,6 +66,7 @@ type DefaultsConfig struct {
 // object with optional per-repo overrides.
 type RepoEntry struct {
 	Repo             string         `yaml:"repo"`
+	Forge            NullableString `yaml:"forge,omitempty"`
 	InferenceProject NullableString `yaml:"inference_project,omitempty"`
 	InferenceRegion  NullableString `yaml:"inference_region,omitempty"`
 	FullsendRef      NullableString `yaml:"fullsend_ref,omitempty"`
@@ -78,6 +92,10 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 		switch key.Value {
 		case "repo":
 			r.Repo = val.Value
+		case "forge":
+			if err := decodeNullable(val, &r.Forge); err != nil {
+				return fmt.Errorf("decoding forge: %w", err)
+			}
 		case "inference_project":
 			if err := decodeNullable(val, &r.InferenceProject); err != nil {
 				return fmt.Errorf("decoding inference_project: %w", err)
@@ -180,6 +198,7 @@ type ResolvedRepo struct {
 type ResolvedConfig struct {
 	Owner                  string
 	Repo                   string
+	Forge                  string
 	MintURL                string
 	MintProject            string
 	MintRegion             string
@@ -350,6 +369,10 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("mint.region is required")
 	}
 
+	if m.Defaults.Forge != "" && !validForges[m.Defaults.Forge] {
+		return fmt.Errorf("defaults.forge %q is not a supported forge; use %q or %q", m.Defaults.Forge, ForgeGitHub, ForgeGitLab)
+	}
+
 	if m.Defaults.FullsendRef != "" && !IsValidRef(m.Defaults.FullsendRef) {
 		return fmt.Errorf("defaults.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Defaults.FullsendRef)
 	}
@@ -359,6 +382,17 @@ func (m *Manifest) Validate() error {
 	for i, entry := range m.Repos {
 		if entry.Repo == "" {
 			return fmt.Errorf("repos[%d]: repo field is required", i)
+		}
+
+		// Resolve and validate forge for this entry. No builtin default —
+		// forge is required from day one. This is not a breaking change (no
+		// `!` suffix needed) because no repos.yaml consumers exist yet (#5616).
+		entryForge := resolveField(entry.Forge, m.Defaults.Forge, "")
+		if entryForge == "" {
+			return fmt.Errorf("repos[%d]: forge is required (set per-entry or in defaults.forge)", i)
+		}
+		if !validForges[entryForge] {
+			return fmt.Errorf("repos[%d]: forge %q is not supported; use %q or %q", i, entryForge, ForgeGitHub, ForgeGitLab)
 		}
 
 		parts := strings.SplitN(entry.Repo, "/", 2)
@@ -533,6 +567,7 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 	return ResolvedConfig{
 		Owner:                  owner,
 		Repo:                   repo,
+		Forge:                  resolveField(entry.Forge, m.Defaults.Forge, ""),
 		MintURL:                m.Mint.URL,
 		MintProject:            m.Mint.Project,
 		MintRegion:             m.Mint.Region,

@@ -875,7 +875,7 @@ func TestDiscoverReposParallel_ErrorsExcluded(t *testing.T) {
 		{Name: "web", FullName: "acme/web"},
 	}
 
-	dr := discoverReposParallel(context.Background(), fc, "acme", repos, nil, 4, nopProgress)
+	dr := discoverReposParallel(context.Background(), fc, "acme", repos, nil, "", 4, nopProgress)
 
 	assert.Empty(t, dr.repos)
 	assert.Len(t, dr.errors, 2)
@@ -966,7 +966,7 @@ func TestDiscoverRepo_PerRepo(t *testing.T) {
 	setWorkflowFile(fc, "acme", "api",
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0")
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "per-repo", d.Source)
 	assert.Equal(t, "https://mint.example.com", d.MintURL)
@@ -991,7 +991,7 @@ repos:
 `))
 	require.NoError(t, parseErr)
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "per-org", d.Source)
 	assert.Equal(t, "https://mint-org.example.com", d.MintURL)
@@ -1012,7 +1012,7 @@ repos:
 `))
 	require.NoError(t, parseErr)
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "new", d.Source)
 }
@@ -1020,7 +1020,7 @@ repos:
 func TestDiscoverRepo_New(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "new", d.Source)
 	assert.Empty(t, d.MintURL)
@@ -1054,7 +1054,7 @@ repos:
 		"acme/FULLSEND_MINT_URL": "https://mint.example.com",
 	}
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "per-org", d.Source)
 	assert.Equal(t, "https://mint.example.com", d.MintURL)
@@ -1086,7 +1086,7 @@ repos:
 		"acme/FULLSEND_MINT_URL": "https://var-mint.example.com",
 	}
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "per-org", d.Source)
 	assert.Equal(t, "https://config-mint.example.com", d.MintURL)
@@ -1115,7 +1115,7 @@ repos:
 		warnings = append(warnings, msg)
 	}
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, progress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", progress)
 	require.NoError(t, err)
 	assert.Equal(t, "per-org", d.Source)
 	assert.Empty(t, d.MintURL)
@@ -1132,6 +1132,66 @@ repos:
 	assert.True(t, hasWarning, "expected a warning about GetOrgVariable failure")
 }
 
+// --- discoverRepo: forge-aware tests ---
+
+func TestDiscoverRepo_GitLabForge_UsesGitLabPaths(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setRepoVars(fc, "acme", "api", map[string]string{
+		forge.PerRepoGuardVar: "true",
+		"FULLSEND_MINT_URL":   "https://mint.example.com",
+	})
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"  ref: v2.5.0\n")
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, ForgeGitLab, nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-repo", d.Source)
+	assert.Equal(t, "v2.5.0", d.FullsendRef)
+}
+
+func TestDiscoverRepo_GitLabForge_PerOrg_UsesGitLabPaths(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"  ref: v2.4.0\n")
+
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+  mint_url: https://mint-org.example.com
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, ForgeGitLab, nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Equal(t, "v2.4.0", d.FullsendRef)
+}
+
+func TestInit_SingleRepo_GitLabForge(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setRepoVars(fc, "acme", "api", map[string]string{
+		forge.PerRepoGuardVar: "true",
+		"FULLSEND_MINT_URL":   "https://mint.example.com",
+	})
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"  ref: v2.5.0\n")
+
+	result, err := Init(context.Background(), InitConfig{
+		Target:      "acme/api",
+		Forge:       ForgeGitLab,
+		MintProject: "proj",
+		MintRegion:  "us-central1",
+	}, fc, nil, nopProgress)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.PerRepoCount)
+	assert.Equal(t, "v2.5.0", result.Manifest.Defaults.FullsendRef)
+	assert.Equal(t, ForgeGitLab, result.Manifest.Defaults.Forge)
+}
+
 // --- readWorkflowRef tests ---
 
 func TestReadWorkflowRef_YmlExtension(t *testing.T) {
@@ -1139,7 +1199,7 @@ func TestReadWorkflowRef_YmlExtension(t *testing.T) {
 	setWorkflowFile(fc, "acme", "api",
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0")
 
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	require.NoError(t, err)
 	assert.Equal(t, "v2.3.0", ref)
 }
@@ -1149,14 +1209,14 @@ func TestReadWorkflowRef_YamlExtension(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte(
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0")
 
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	require.NoError(t, err)
 	assert.Equal(t, "v1.0.0", ref)
 }
 
 func TestReadWorkflowRef_NoWorkflowFile(t *testing.T) {
 	fc := forge.NewFakeClient()
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	require.NoError(t, err)
 	assert.Empty(t, ref)
 }
@@ -1165,7 +1225,7 @@ func TestReadWorkflowRef_NonNotFoundError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["GetFileContent"] = fmt.Errorf("network timeout")
 
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "network timeout")
 	assert.Empty(t, ref)
