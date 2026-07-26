@@ -467,6 +467,25 @@ func TestPrintStatusTable_ColumnAlignment(t *testing.T) {
 	assert.Greater(t, headerRefIdx, 0, "REF header should be present")
 }
 
+func TestPrintStatusTable_WithWarnings(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "acme-corp", Repo: "api-server", Installed: true, CurrentRef: "v2.3.0"},
+		},
+		Summary:  repos.StatusSummary{Total: 1, Installed: 1},
+		Warnings: []string{`--repo filter "org/nonexistent" matched no manifest entries`},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "WARNING:")
+	assert.Contains(t, output, "org/nonexistent")
+}
+
 type trackingProvisioner struct {
 	label string
 	calls []string

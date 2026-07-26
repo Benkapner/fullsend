@@ -799,6 +799,19 @@ func TestFilterRepos(t *testing.T) {
 		}
 	})
 
+	t.Run("overlapping filters no spurious unmatched", func(t *testing.T) {
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/*", "acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+		if len(unmatched) != 0 {
+			t.Errorf("unmatched = %v, want empty (glob should cover exact match)", unmatched)
+		}
+	})
+
 	t.Run("multiple unmatched returns error", func(t *testing.T) {
 		_, unmatched, err := filterRepos(repos, []string{"bad/one", "bad/two"})
 		if err == nil {

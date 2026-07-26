@@ -246,11 +246,17 @@ func extractWorkflowRef(content []byte) string {
 // pattern, plus any patterns that matched nothing. When every pattern
 // is unmatched (the result is empty), an error is returned so callers
 // can surface a non-zero exit code.
+//
+// Callers surface unmatched-pattern warnings through two mechanisms:
+// Status, Diff, and Sync collect them into a result struct field;
+// BatchInstall and Upgrade emit them via progress callbacks. This
+// dual-surface design reflects each caller's existing output architecture.
 func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []string, error) {
 	matched := make(map[string]bool)
 	var result []ResolvedRepo
 	for _, rr := range repos {
 		fullName := rr.Owner + "/" + rr.Repo
+		added := false
 		for _, pattern := range filter {
 			ok, err := matchesPattern(pattern, fullName)
 			if err != nil {
@@ -258,8 +264,10 @@ func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []strin
 			}
 			if ok {
 				matched[pattern] = true
-				result = append(result, rr)
-				break
+				if !added {
+					result = append(result, rr)
+					added = true
+				}
 			}
 		}
 	}
