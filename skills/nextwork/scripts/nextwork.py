@@ -36,18 +36,22 @@ REF_REPO_HASH_RE = re.compile(r"^([^/#\s]+/[^/#\s]+)#(\d+)$")
 REF_BARE_RE = re.compile(r"^#?(\d+)$")
 
 # Control labels that indicate an issue is already on a known automation path.
+# Note: "blocked" is intentionally omitted — the label alone does not change
+# readiness; only open structured blockedBy links yield blocked_by.
 ISSUE_CONTROL_LABELS = {
     "needs-info",
     "ready-to-code",
     "triaged",
     "duplicate",
-    "blocked",
     "ready-for-triage",
     "question",
 }
 
 # Statuses whose next action is a single trivial gh mutation (assign or slash comment).
 TRIVIAL_STATUSES = {"needs_assign", "needs_triage", "trigger_code", "trigger_review", "trigger_fix"}
+
+# Trivial side-action: remove an orphaned blocked label (no open structured blockers).
+REMOVE_BLOCKED_LABEL = "remove-label:blocked"
 
 SLASH_COMMAND_BY_STATUS = {
     "needs_triage": "/fs-triage",
@@ -471,10 +475,10 @@ def classify_issue(
     if "duplicate" in labels:
         return None
 
-    if item["blockers"] or "blocked" in labels:
+    if item["blockers"]:
         return Classification(
             status="blocked_by",
-            reason="Blocked by open issue(s)/PR(s)" if item["blockers"] else "Labeled blocked",
+            reason="Blocked by open issue(s)/PR(s)",
             eliminated=True,
             blockers=item["blockers"],
         )
@@ -635,14 +639,6 @@ def classify_pr(
     assignees = item["assignees"]
     comments = item.get("comments") or []
 
-    if "blocked" in labels:
-        return Classification(
-            status="blocked_by",
-            reason="Labeled blocked",
-            eliminated=True,
-            blockers=item.get("blockers", []),
-        )
-
     if assignees and user not in assignees:
         return Classification(
             status="assigned_elsewhere",
@@ -796,12 +792,30 @@ def classify_pr(
     )
 
 
+def annotate_orphaned_blocked_label(
+    classification: Classification, item: dict[str, Any]
+) -> Classification:
+    """If labeled blocked but no open structured blockers, suggest removing the label."""
+    labels = item.get("labels") or []
+    blockers = item.get("blockers") or []
+    if "blocked" in labels and not blockers and REMOVE_BLOCKED_LABEL not in classification.suggested_actions:
+        classification.suggested_actions = [
+            *classification.suggested_actions,
+            REMOVE_BLOCKED_LABEL,
+        ]
+    return classification
+
+
 def classify_item(
     item: dict[str, Any], user: str, stale_hours: float, now: datetime
 ) -> Classification | None:
     if item["kind"] == "issue":
-        return classify_issue(item, user, stale_hours, now)
-    return classify_pr(item, user, stale_hours, now)
+        classification = classify_issue(item, user, stale_hours, now)
+    else:
+        classification = classify_pr(item, user, stale_hours, now)
+    if classification is None:
+        return None
+    return annotate_orphaned_blocked_label(classification, item)
 
 
 # ------------------------------- gh CLI plumbing -------------------------------
@@ -1361,39 +1375,62 @@ def apply_trivial_actions(
 ) -> list[dict[str, Any]]:
     applied: list[dict[str, Any]] = []
     for item in items:
-        if item.get("eliminated") or item.get("status") not in TRIVIAL_STATUSES:
-            continue
         sub = "issue" if item["kind"] == "issue" else "pr"
-        if item["status"] == "needs_assign":
+        if not item.get("eliminated") and item.get("status") in TRIVIAL_STATUSES:
+            if item["status"] == "needs_assign":
+                run_gh(
+                    [
+                        "issue",
+                        "edit",
+                        str(item["number"]),
+                        "--repo",
+                        item["repo"],
+                        "--add-assignee",
+                        user,
+                    ],
+                    quiet=quiet,
+                )
+                action = "assign:self"
+            else:
+                command = SLASH_COMMAND_BY_STATUS[item["status"]]
+                run_gh(
+                    [sub, "comment", str(item["number"]), "--repo", item["repo"], "--body", command],
+                    quiet=quiet,
+                )
+                action = f"comment:{command}"
+            applied.append(
+                {
+                    "kind": item["kind"],
+                    "repo": item["repo"],
+                    "number": item["number"],
+                    "status": item["status"],
+                    "action": action,
+                }
+            )
+
+        # Orphaned blocked label — trivial side-action for any primary status.
+        if REMOVE_BLOCKED_LABEL in (item.get("suggested_actions") or []):
             run_gh(
                 [
-                    "issue",
+                    sub,
                     "edit",
                     str(item["number"]),
                     "--repo",
                     item["repo"],
-                    "--add-assignee",
-                    user,
+                    "--remove-label",
+                    "blocked",
                 ],
                 quiet=quiet,
             )
-            action = "assign:self"
-        else:
-            command = SLASH_COMMAND_BY_STATUS[item["status"]]
-            run_gh(
-                [sub, "comment", str(item["number"]), "--repo", item["repo"], "--body", command],
-                quiet=quiet,
+            applied.append(
+                {
+                    "kind": item["kind"],
+                    "repo": item["repo"],
+                    "number": item["number"],
+                    "status": item["status"],
+                    "action": REMOVE_BLOCKED_LABEL,
+                }
             )
-            action = f"comment:{command}"
-        applied.append(
-            {
-                "kind": item["kind"],
-                "repo": item["repo"],
-                "number": item["number"],
-                "status": item["status"],
-                "action": action,
-            }
-        )
     return applied
 
 
@@ -1648,7 +1685,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Perform trivial actions: assign unassigned items to self; post /fs-* comments",
+        help="Perform trivial actions: assign self, post /fs-* comments, remove orphaned blocked labels",
     )
     parser.add_argument(
         "--take-over",
@@ -1733,7 +1770,7 @@ def main(argv: list[str] | None = None) -> None:
     # Merge-queue membership can change ready_to_merge -> waiting_merge_queue; reclassify.
     for item in items:
         if item["kind"] == "pull" and "ready-for-merge" in item.get("labels", []):
-            classification = classify_pr(item, user, args.stale_hours, now)
+            classification = classify_item(item, user, args.stale_hours, now)
             if classification is not None:
                 item["status"] = classification.status
                 item["reason"] = classification.reason

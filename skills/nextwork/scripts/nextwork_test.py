@@ -14,11 +14,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from nextwork import (  # noqa: E402
     DECISION_STATUSES,
+    REMOVE_BLOCKED_LABEL,
     RefError,
     apply_trivial_actions,
     build_pr_links_by_issue,
     build_queue,
     classify_issue,
+    classify_item,
     classify_pr,
     comment_command,
     format_json_output,
@@ -363,16 +365,26 @@ class TestClassifyIssue(unittest.TestCase):
 
     def test_blocked_by_structured_blocker(self):
         item = make_issue(blockers=[{"repo": "acme/widget", "number": 7}])
-        result = classify_issue(item, "alice", 6, NOW)
+        result = classify_item(item, "alice", 6, NOW)
         self.assertEqual(result.status, "blocked_by")
         self.assertTrue(result.eliminated)
         self.assertEqual(result.blockers, [{"repo": "acme/widget", "number": 7}])
+        self.assertNotIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
 
-    def test_blocked_by_label_only(self):
+    def test_blocked_label_only_is_ignored(self):
+        # Orphaned blocked label must not eliminate; no control labels → waiting_triage.
         item = make_issue(labels=["blocked"])
-        result = classify_issue(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "blocked_by")
-        self.assertEqual(result.blockers, [])
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_triage")
+        self.assertTrue(result.eliminated)
+        self.assertIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
+
+    def test_blocked_label_with_triaged_suggests_remove(self):
+        item = make_issue(labels=["blocked", "triaged"], assignees=["alice"])
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+        self.assertFalse(result.eliminated)
+        self.assertIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
 
     def test_assigned_elsewhere(self):
         item = make_issue(assignees=["bob"])
@@ -594,10 +606,11 @@ class TestClassifyIssue(unittest.TestCase):
 
 
 class TestClassifyPr(unittest.TestCase):
-    def test_blocked_by_label(self):
+    def test_blocked_label_only_is_ignored(self):
         item = make_pr(labels=["blocked"])
-        result = classify_pr(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "blocked_by")
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertNotEqual(result.status, "blocked_by")
+        self.assertIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
 
     def test_assigned_elsewhere(self):
         item = make_pr(assignees=["bob"])
@@ -991,6 +1004,51 @@ class TestApplyTrivialActions(unittest.TestCase):
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual(applied, [])
         mock_run_gh.assert_not_called()
+
+    @patch("nextwork.run_gh")
+    def test_removes_orphaned_blocked_label(self, mock_run_gh):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 5,
+                "status": "waiting_code",
+                "eliminated": True,
+                "suggested_actions": [REMOVE_BLOCKED_LABEL],
+            }
+        ]
+        applied = apply_trivial_actions(items, "alice")
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(applied[0]["action"], REMOVE_BLOCKED_LABEL)
+        mock_run_gh.assert_called_once_with(
+            ["issue", "edit", "5", "--repo", "acme/widget", "--remove-label", "blocked"],
+            quiet=False,
+        )
+
+    @patch("nextwork.run_gh")
+    def test_apply_both_primary_and_remove_blocked(self, mock_run_gh):
+        items = [
+            {
+                "kind": "pull",
+                "repo": "acme/widget",
+                "number": 99,
+                "status": "needs_assign",
+                "eliminated": False,
+                "suggested_actions": ["assign:self", REMOVE_BLOCKED_LABEL],
+            }
+        ]
+        applied = apply_trivial_actions(items, "alice")
+        actions = [a["action"] for a in applied]
+        self.assertEqual(actions, ["assign:self", REMOVE_BLOCKED_LABEL])
+        self.assertEqual(mock_run_gh.call_count, 2)
+        mock_run_gh.assert_any_call(
+            ["issue", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
+            quiet=False,
+        )
+        mock_run_gh.assert_any_call(
+            ["pr", "edit", "99", "--repo", "acme/widget", "--remove-label", "blocked"],
+            quiet=False,
+        )
 
 
 class TestTakeOver(unittest.TestCase):

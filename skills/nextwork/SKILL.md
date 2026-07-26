@@ -40,7 +40,7 @@ python3 skills/nextwork/scripts/nextwork.py [ITEMS...] [OPTIONS]
 | `--user LOGIN` | GitHub login (default: authenticated user) |
 | `--format markdown\|json` | Output format (default: markdown) |
 | `--show-blocked` | Include Waiting/Blocked/Assigned-elsewhere sections in markdown output (JSON always includes every item) |
-| `--apply` | Perform trivial actions: assign unassigned items to self; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments. Never steals assignment from others and never auto-merges. |
+| `--apply` | Perform trivial actions: assign unassigned items to self; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments; remove orphaned `blocked` labels (`remove-label:blocked`). Never steals assignment from others and never auto-merges. |
 | `--take-over REFS` | Assign the listed refs (comma-separated or repeatable) to `--user`, even if already assigned elsewhere, then classify them as owned by the user. Skill-mediated — ask the user before using this. |
 | `--link-blocker DEPENDENT=BLOCKER` | Repeatable. Persist a real GitHub `blockedBy` dependency (DEPENDENT is blocked by BLOCKER, both as `owner/repo#N`). Idempotent if the link already exists. **The dependent must be an open Issue** — GitHub's blocked-by relationship is issue-only, so a PR cannot be the dependent side. |
 | `--decisions-only` | Filter output to non-trivial decisions only (statuses in the "Decision?" = No/Decision column below) |
@@ -77,7 +77,7 @@ like production dispatch: first whitespace token of the first comment line.
 
 | Status | Meaning |
 |--------|---------|
-| `blocked_by` | Open GitHub `blockedBy` link(s), or the `blocked` label. `blockers[]` lists open refs when known from structured data (issues only — GitHub has no PR-side `blockedBy`). |
+| `blocked_by` | Open GitHub `blockedBy` link(s) only. `blockers[]` lists those open refs (issues only — GitHub has no PR-side `blockedBy`). The `blocked` label alone does **not** yield this status. |
 | `waiting_sub_issues` | Issue has one or more open GitHub sub-issues. `open_sub_issues[]` lists them; BFS enqueues each open child (same repo) for classification. Prefer this over promoting an epic while children are unfinished. |
 | `waiting_linked_pr` | Issue has an open linked PR (native closing keywords + `partial-fix #N`) — go look at that PR instead |
 | `waiting_info_other` | `needs-info` label and you're not the author (waiting on the reporter) |
@@ -101,15 +101,20 @@ like production dispatch: first whitespace token of the first comment line.
 | `fix_conflicts` | `mergeStateStatus` is `DIRTY` **or** `mergeable` is `CONFLICTING` | Decision |
 | `human_work` | Assigned/authored, no clear automation signal — implement, un-draft, or investigate | Decision |
 
-`--apply` only performs the "Yes" (trivial) rows. `--decisions-only` shows
-only the "Decision" rows.
+**Side-action (orthogonal to primary status):**
+
+| Suggestion | When | Trivial? |
+|------------|------|----------|
+| `remove-label:blocked` | Item has the `blocked` label but no open structured blockers | Yes (`--apply` removes it) |
+
+`--apply` performs the "Yes" (trivial) status rows **and** any `remove-label:blocked` suggestions (including on eliminated / decision items). `--decisions-only` shows only the "Decision" status rows.
 
 ## Skill loop
 
 1. Run `python3 skills/nextwork/scripts/nextwork.py --format json --include-text $ARGUMENTS`.
 2. Read `body`/`comments` for prose-only dependencies the script missed —
-   especially `blocked_by` items with an empty `blockers[]`, or any item
-   whose text clearly depends on another open issue/PR.
+   especially items whose text clearly depends on another open issue/PR
+   (including those still carrying an orphaned `blocked` label).
 3. **Persist confident prose blockers as real data** so future runs don't
    need the LLM: for each `item A blocked by item B` you're confident about,
    run
@@ -117,7 +122,9 @@ only the "Decision" rows.
    If uncertain, ask the user first. `--link-blocker` requires the dependent
    to be an open Issue; if it's a PR, tell the user GitHub doesn't support
    that relationship and suggest linking the underlying issue instead. Cap
-   this persist-and-reclassify loop at ~3 iterations.
+   this persist-and-reclassify loop at ~3 iterations. Do this **before**
+   `--apply` so a prose-only blocker is linked instead of stripping the
+   orphaned `blocked` label first.
 4. For any `assigned_elsewhere` item that matters to the user's goal (a
    blocker on their work, or something they explicitly referenced), **offer
    take-over**. On explicit confirmation, run
@@ -127,9 +134,12 @@ only the "Decision" rows.
 5. Present the result:
    - Default: actionable items. Add blocked/waiting/assigned-elsewhere detail
      only if the user asked, or pass `--show-blocked`.
+   - Remaining `remove-label:blocked` suggestions (after step 3) are
+     clearly-misplaced orphaned labels — include them when offering apply.
    - "Decisions only": re-run with `--apply --decisions-only` — trivial
-     actions get applied and only decision items remain to show. Still ask
-     before `--take-over`; still persist confident prose blockers first.
+     actions (including orphaned `blocked` label removal) get applied and
+     only decision items remain to show. Still ask before `--take-over`;
+     still persist confident prose blockers first.
 6. Offer to apply remaining trivial actions (re-run with `--apply`) unless
    already applied in step 5.
 7. Don't invent statuses the script didn't emit. The skill's job is finding
@@ -160,9 +170,10 @@ only the "Decision" rows.
   Conflicts (`DIRTY` / `CONFLICTING`) win over review triggers; failed CI
   (`FAILURE`/`ERROR`), human unresolved conversations, or `BLOCKED` yield
   `needs_review_decision` instead of `ready_to_merge`.
-- GitHub's `blockedBy` dependency feature is **issue-only**. A PR can carry
-  the `blocked` label (surfaced as `blocked_by` with an empty `blockers[]`),
-  but `--link-blocker` cannot make a PR the dependent side of a structured
+- GitHub's `blockedBy` dependency feature is **issue-only**. The `blocked`
+  label alone does not classify as `blocked_by`; when present without open
+  structured blockers it yields `remove-label:blocked` (trivial / `--apply`).
+  `--link-blocker` cannot make a PR the dependent side of a structured
   link — only an issue.
 - `waiting_ci` and `waiting_merge_queue` are not flipped by `--stale-hours`.
 - Merge-queue membership is only checked for PRs labeled `ready-for-merge`
