@@ -39,10 +39,12 @@ fullsend
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── repos                                    # Manage per-repo installations via manifest
+│   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
 │   ├── init         <org|owner/repo>        # Generate repos.yaml from discovered installs
 │   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
 │   │   ├── --repos <list>                   #   Comma-separated repos to include
 │   │   ├── --all                            #   Include all eligible repos
+│   │   ├── --forge <type>                   #   Forge type: github or gitlab (default: github)
 │   │   ├── --mint-project <id>              #   GCP project for the mint
 │   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
 │   │   ├── --inference-project <id>         #   Default GCP project for inference

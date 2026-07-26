@@ -1035,6 +1035,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	installCfg := repos.InstallConfig{
 		Owner:                 owner,
 		Repo:                  repo,
+		Forge:                 repos.ForgeGitHub,
 		Roles:                 roles,
 		MintURL:               mintURL,
 		InferenceProject:      inferenceProject,

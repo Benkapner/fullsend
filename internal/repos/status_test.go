@@ -20,6 +20,7 @@ func newTestManifest() *Manifest {
 			InferenceProject: "example-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v2.3.0",
+			Forge:            "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
@@ -55,7 +56,7 @@ func TestProbeRepoState_Installed(t *testing.T) {
 	fc := forge.NewFakeClient()
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	if err != nil {
 		t.Fatalf("ProbeRepoState() error = %v", err)
 	}
@@ -76,7 +77,7 @@ func TestProbeRepoState_Installed(t *testing.T) {
 func TestProbeRepoState_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	if err != nil {
 		t.Fatalf("ProbeRepoState() error = %v", err)
 	}
@@ -91,7 +92,7 @@ func TestProbeRepoState_WorkflowError(t *testing.T) {
 	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "us-east1"
 	fc.Errors["GetFileContent"] = fmt.Errorf("server error")
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	if err == nil {
 		t.Fatal("expected error for workflow read failure")
 	}
@@ -666,7 +667,7 @@ func TestExtractWorkflowRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractWorkflowRef([]byte(tt.content))
+			got := extractWorkflowRef([]byte(tt.content), defaultForgeConfig)
 			if got != tt.want {
 				t.Errorf("extractWorkflowRef() = %q, want %q", got, tt.want)
 			}

@@ -30,6 +30,7 @@ var WIFProviderPattern = regexp.MustCompile(
 type InstallConfig struct {
 	Owner string
 	Repo  string
+	Forge string
 
 	// Roles is the list of agent roles to install (e.g., "triage", "code").
 	Roles []string
@@ -167,6 +168,10 @@ func Install(ctx context.Context, cfg InstallConfig,
 		progress = func(_, _, _ string) {}
 	}
 
+	if cfg.Forge == ForgeGitLab {
+		return nil, fmt.Errorf("GitLab scaffold generation is not yet implemented; install is only supported for GitHub repos")
+	}
+
 	repoFullName := cfg.Owner + "/" + cfg.Repo
 	result := &InstallResult{
 		Owner: cfg.Owner,
@@ -191,7 +196,7 @@ func Install(ctx context.Context, cfg InstallConfig,
 			return result, fmt.Errorf("checking guard variable: %w", guardErr)
 		}
 		if guardExists && guardVal == "true" {
-			fullyInstalled, checkErr := checkInstallComponents(ctx, client, cfg.Owner, cfg.Repo)
+			fullyInstalled, checkErr := checkInstallComponents(ctx, client, cfg.Owner, cfg.Repo, ForgeConfigFor(cfg.Forge))
 			if checkErr != nil {
 				return result, fmt.Errorf("checking installation components: %w", checkErr)
 			}
@@ -352,10 +357,10 @@ var requiredSecrets = []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROV
 // components beyond the guard variable are present: workflow file,
 // variables, and secrets. The caller has already confirmed the guard
 // variable is set. Returns true only when every component exists.
-func checkInstallComponents(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
-	// Workflow file (try both .yml and .yaml extensions).
+func checkInstallComponents(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (bool, error) {
+	// Workflow file (try forge-appropriate extensions).
 	workflowFound := false
-	for _, path := range workflowPaths {
+	for _, path := range fc.WorkflowPaths {
 		_, err := client.GetFileContent(ctx, owner, repo, path)
 		if err != nil {
 			if forge.IsNotFound(err) {

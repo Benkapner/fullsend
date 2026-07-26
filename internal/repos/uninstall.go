@@ -105,7 +105,14 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 			}
 			defer func() { <-sem }()
 
-			results[idx] = uninstallRepoResources(ctx, owner, repo, client, progress)
+			forgeName := ""
+			if cfg.Manifest != nil {
+				if rc, ok := resolveConfigWithGlobs(cfg.Manifest, owner, repo); ok {
+					forgeName = rc.Forge
+				}
+			}
+			fc := ForgeConfigFor(forgeName)
+			results[idx] = uninstallRepoResources(ctx, owner, repo, client, fc, progress)
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
@@ -158,14 +165,14 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 }
 
 func uninstallRepoResources(ctx context.Context, owner, repo string,
-	client forge.Client, progress ProgressFunc) UninstallResult {
+	client forge.Client, fc ForgeConfig, progress ProgressFunc) UninstallResult {
 
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
 	progress(fullName, "workflow", "Deleting workflow file")
 	_, err := client.DeleteFiles(ctx, owner, repo,
-		"chore: remove fullsend workflow", workflowPaths)
+		"chore: remove fullsend workflow", fc.WorkflowPaths)
 	if err != nil {
 		result.Error = fmt.Errorf("deleting workflow: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))

@@ -3,25 +3,14 @@ package repos
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-var workflowRefPattern = regexp.MustCompile(
-	`uses:\s+fullsend-ai/fullsend/\.github/workflows/[^@]+@(\S+)`,
-)
-
-// workflowPaths lists the shim workflow file paths to try, in order.
-var workflowPaths = []string{
-	".github/workflows/fullsend.yml",
-	".github/workflows/fullsend.yaml",
-}
-
 // RepoState holds the installation state of a single repo as read
-// from GitHub variables and workflow files.
+// from forge variables and workflow files.
 type RepoState struct {
 	Installed       bool
 	MintURL         string
@@ -30,8 +19,8 @@ type RepoState struct {
 }
 
 // ProbeRepoState reads a repo's current per-repo installation state
-// from GitHub variables and workflow files.
-func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string) (RepoState, error) {
+// from forge variables and workflow files.
+func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (RepoState, error) {
 	vars, err := client.ListRepoVariables(ctx, owner, repo)
 	if err != nil {
 		return RepoState{}, fmt.Errorf("listing variables for %s/%s: %w", owner, repo, err)
@@ -47,7 +36,7 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string
 		InferenceRegion: vars["FULLSEND_GCP_REGION"],
 	}
 
-	ref, err := readWorkflowRef(ctx, client, owner, repo)
+	ref, err := readWorkflowRef(ctx, client, owner, repo, fc)
 	if err != nil {
 		return state, fmt.Errorf("reading workflow for %s/%s: %w", owner, repo, err)
 	}
@@ -142,7 +131,8 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
-			status := checkRepoStatus(ctx, client, rr.Owner, rr.Repo, cfg)
+			fc := ForgeConfigFor(cfg.Forge)
+			status := checkRepoStatus(ctx, client, rr.Owner, rr.Repo, cfg, fc)
 			results[idx] = status
 		}(i, rr)
 	}
@@ -166,7 +156,7 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 	return &StatusResult{Repos: results, Summary: summary, Warnings: warnings}, nil
 }
 
-func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig) RepoStatus {
+func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig, fc ForgeConfig) RepoStatus {
 	status := RepoStatus{
 		Owner:           owner,
 		Repo:            repo,
@@ -175,7 +165,7 @@ func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo strin
 		ExpectedRegion:  cfg.InferenceRegion,
 	}
 
-	state, err := ProbeRepoState(ctx, client, owner, repo)
+	state, err := ProbeRepoState(ctx, client, owner, repo, fc)
 	if err != nil {
 		status.Error = err.Error()
 	}
@@ -219,8 +209,8 @@ func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo strin
 	return status
 }
 
-func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string) (string, error) {
-	for _, path := range workflowPaths {
+func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
+	for _, path := range fc.WorkflowPaths {
 		content, err := client.GetFileContent(ctx, owner, repo, path)
 		if err != nil {
 			if forge.IsNotFound(err) {
@@ -228,14 +218,15 @@ func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo strin
 			}
 			return "", err
 		}
-		return extractWorkflowRef(content), nil
+		return extractWorkflowRef(content, fc), nil
 	}
 	return "", nil
 }
 
-// extractWorkflowRef extracts the @ref from a fullsend workflow file.
-func extractWorkflowRef(content []byte) string {
-	m := workflowRefPattern.FindSubmatch(content)
+// extractWorkflowRef extracts the @ref from a fullsend workflow file
+// using the forge-specific ref pattern.
+func extractWorkflowRef(content []byte, fc ForgeConfig) string {
+	m := fc.WorkflowRefPattern.FindSubmatch(content)
 	if m == nil {
 		return ""
 	}

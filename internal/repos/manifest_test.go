@@ -25,6 +25,7 @@ mint:
   project: my-project
   region: us-central1
 defaults:
+  forge: github
   inference_project: default-inference
   inference_region: us-east1
   fullsend_ref: main
@@ -386,6 +387,8 @@ mint:
   url: https://mint.example.com
   project: p
   region: r
+defaults:
+  forge: github
 repos:
   - ` + tt.entry + `
 `
@@ -405,7 +408,8 @@ func TestValidate_EmptyRepoField(t *testing.T) {
 			Project: "p",
 			Region:  "r",
 		},
-		Repos: []RepoEntry{{Repo: ""}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: ""}},
 	}
 	err := m.Validate()
 	assert.ErrorContains(t, err, "repo field is required")
@@ -418,6 +422,8 @@ mint:
   url: https://mint.example.com
   project: p
   region: r
+defaults:
+  forge: github
 repos:
   - acme/repo
   - acme/repo
@@ -435,6 +441,8 @@ mint:
   url: https://mint.example.com
   project: p
   region: r
+defaults:
+  forge: github
 repos:
   - acme/[invalid
 `
@@ -451,6 +459,8 @@ mint:
   url: https://mint.example.com
   project: p
   region: r
+defaults:
+  forge: github
 repos:
   - acme/service-*
   - acme/lib-[abc]
@@ -464,7 +474,7 @@ func TestValidate_InvalidDefaultFullsendRef(t *testing.T) {
 	m := Manifest{
 		Version:  1,
 		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{FullsendRef: "v1.0.0; rm -rf /"},
+		Defaults: DefaultsConfig{FullsendRef: "v1.0.0; rm -rf /", Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
 	err := m.Validate()
@@ -474,8 +484,9 @@ func TestValidate_InvalidDefaultFullsendRef(t *testing.T) {
 
 func TestValidate_InvalidPerRepoFullsendRef(t *testing.T) {
 	m := Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Version:  1,
+		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{Forge: "github"},
 		Repos: []RepoEntry{{
 			Repo:        "acme/repo",
 			FullsendRef: NullableString{Value: "v1.0.0$(evil)", Set: true},
@@ -504,12 +515,114 @@ func TestValidate_OwnerWildcard(t *testing.T) {
 					Project: "p",
 					Region:  "r",
 				},
-				Repos: []RepoEntry{{Repo: tt.repo}},
+				Defaults: DefaultsConfig{Forge: "github"},
+				Repos:    []RepoEntry{{Repo: tt.repo}},
 			}
 			err := m.Validate()
 			assert.ErrorContains(t, err, "glob characters are not allowed in owner segment")
 		})
 	}
+}
+
+func TestValidate_ForgeRequired(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Mint: MintConfig{
+			URL:     "https://mint.example.com",
+			Project: "p",
+			Region:  "r",
+		},
+		Repos: []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "forge is required")
+}
+
+func TestValidate_InvalidDefaultForge(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Mint: MintConfig{
+			URL:     "https://mint.example.com",
+			Project: "p",
+			Region:  "r",
+		},
+		Defaults: DefaultsConfig{Forge: "bitbucket"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "not a supported forge")
+}
+
+func TestValidate_InvalidPerRepoForge(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Mint: MintConfig{
+			URL:     "https://mint.example.com",
+			Project: "p",
+			Region:  "r",
+		},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos: []RepoEntry{{
+			Repo:  "acme/repo",
+			Forge: NullableString{Set: true, Value: "svn"},
+		}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "not supported")
+}
+
+func TestValidate_GitLabForge(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Mint: MintConfig{
+			URL:     "https://mint.example.com",
+			Project: "p",
+			Region:  "r",
+		},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	assert.NoError(t, m.Validate())
+}
+
+func TestValidate_PerRepoForgeOverride(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Mint: MintConfig{
+			URL:     "https://mint.example.com",
+			Project: "p",
+			Region:  "r",
+		},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos: []RepoEntry{{
+			Repo:  "acme/repo",
+			Forge: NullableString{Set: true, Value: "gitlab"},
+		}},
+	}
+	assert.NoError(t, m.Validate())
+}
+
+func TestRepoEntryUnmarshalYAML_ForgeField(t *testing.T) {
+	input := `
+repo: acme/my-repo
+forge: gitlab
+`
+	var entry RepoEntry
+	err := yaml.Unmarshal([]byte(input), &entry)
+	require.NoError(t, err)
+	assert.Equal(t, "acme/my-repo", entry.Repo)
+	assert.True(t, entry.Forge.Set)
+	assert.Equal(t, "gitlab", entry.Forge.Value)
+}
+
+func TestResolveConfig_IncludesForge(t *testing.T) {
+	var m Manifest
+	err := yaml.Unmarshal([]byte(validManifest), &m)
+	require.NoError(t, err)
+
+	cfg, ok := m.ResolveConfig("acme", "repo-one")
+	require.True(t, ok)
+	assert.Equal(t, "github", cfg.Forge)
 }
 
 func TestExpandGlobs(t *testing.T) {

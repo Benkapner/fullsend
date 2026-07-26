@@ -132,7 +132,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 			installed := false
 			if guardExists && guardVal == "true" {
-				fullyInstalled, checkErr := checkInstallComponents(ctx, client, rr.Owner, rr.Repo)
+				fc := ForgeConfigFor(resolved.Forge)
+				fullyInstalled, checkErr := checkInstallComponents(ctx, client, rr.Owner, rr.Repo, fc)
 				if checkErr != nil {
 					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
 					return
@@ -290,7 +291,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			continue
 		}
 		if guardExists && guardVal == "true" {
-			fullyInstalled, checkErr := checkInstallComponents(ctx, client, d.repo.Owner, d.repo.Repo)
+			fc := ForgeConfigFor(d.resolved.Forge)
+			fullyInstalled, checkErr := checkInstallComponents(ctx, client, d.repo.Owner, d.repo.Repo, fc)
 			if checkErr != nil {
 				result.Failed = append(result.Failed, InstallResult{
 					Owner: d.repo.Owner,
@@ -390,6 +392,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			installCfg := InstallConfig{
 				Owner:            dr.repo.Owner,
 				Repo:             dr.repo.Repo,
+				Forge:            dr.resolved.Forge,
 				Roles:            roles,
 				MintURL:          dr.resolved.MintURL,
 				InferenceProject: dr.resolved.InferenceProject,
