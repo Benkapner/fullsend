@@ -44,7 +44,7 @@ python3 skills/nextwork/scripts/nextwork.py [ITEMS...] [OPTIONS]
 | `--take-over REFS` | Assign the listed refs (comma-separated or repeatable) to `--user`, even if already assigned elsewhere, then classify them as owned by the user. Skill-mediated — ask the user before using this. |
 | `--link-blocker DEPENDENT=BLOCKER` | Repeatable. Persist a real GitHub `blockedBy` dependency (DEPENDENT is blocked by BLOCKER, both as `owner/repo#N`). Idempotent if the link already exists. **The dependent must be an open Issue** — GitHub's blocked-by relationship is issue-only, so a PR cannot be the dependent side. |
 | `--decisions-only` | Filter output to non-trivial decisions only (statuses in the "Decision?" = No/Decision column below) |
-| `--stale-hours N` | Default 6. Past this, a waiting-on-automation item flips to actionable with a re-trigger action |
+| `--stale-hours N` | Default 6. Hours after which a **stuck in-flight** agent-status start, or a **never-started** launch label/`/fs-*` command, becomes an actionable re-trigger |
 | `--quiet` | Suppress stderr on API failures |
 | `--include-text` | Include truncated body + last comments in JSON output, for the skill's prose-dependency mining pass |
 
@@ -58,18 +58,19 @@ Every item gets exactly one `status`. Eliminated statuses (`eliminated: true`)
 are not shown in the default markdown output (add `--show-blocked` to see
 them); actionable statuses always appear under "Do now".
 
-**Eliminated — waiting on automation** (flips to actionable if the wait is
-older than `--stale-hours`, **except** in-flight agent-status waits, CI, and
-merge queue):
+**Eliminated — waiting on automation** (launch label or `/fs-*`, or non-terminal
+agent-status start). `--stale-hours` flips these to the Stale → column when the
+**start comment** or **launch signal** is that old. Slash commands are parsed
+like production dispatch: first whitespace token of the first comment line.
 
 | Status | Meaning | Stale → |
 |--------|---------|---------|
-| `waiting_triage` | `ready-for-triage` label, or no control labels yet (issue is new); **or** non-terminal triage agent-status comment | `needs_triage` (`/fs-triage`) — not when driven by an in-flight status comment |
-| `waiting_code` | `ready-to-code`, no open linked PR; **or** non-terminal code agent-status comment | `trigger_code` (`/fs-code`) — not when driven by an in-flight status comment |
-| `waiting_review` | Open non-draft PR, no outcome label yet; **or** non-terminal review agent-status comment | `trigger_review` (`/fs-review`) — not when driven by an in-flight status comment |
-| `waiting_fix` | PR has `CHANGES_REQUESTED` and is fix-eligible; **or** non-terminal fix agent-status comment | `trigger_fix` (`/fs-fix`) — not when driven by an in-flight status comment |
+| `waiting_triage` | `ready-for-triage` / `/fs-triage`; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone) | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
+| `waiting_code` | `ready-to-code` / `/fs-code`; **or** non-terminal code agent-status | `trigger_code` (`/fs-code`) |
+| `waiting_review` | `ready-for-review` / `/fs-review` / review-required path; **or** non-terminal review agent-status | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
+| `waiting_fix` | Unresolved review threads all from `fullsend-ai-review[bot]`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
 | `waiting_agent` | Non-terminal agent-status comment whose role could not be mapped | _(no re-trigger)_ |
-| `waiting_ci` | Required checks still running (also wins over a stale `ready-for-merge` label) | _(no re-trigger; not stale-overridden)_ |
+| `waiting_ci` | Required checks still running | _(no re-trigger)_ |
 | `waiting_merge_queue` | PR is already enqueued in the merge queue | _(no re-trigger)_ |
 
 **Eliminated — blocked / deferred / owned elsewhere:**
@@ -88,14 +89,14 @@ merge queue):
 | Status | Next action | Trivial? |
 |--------|-------------|----------|
 | `needs_assign` | Unassigned → assign yourself | Yes |
-| `needs_triage` | Stale triage wait → `/fs-triage` | Yes |
+| `needs_triage` | Stale triage launch/start, **or** completed triage older than 3 days / followed by non-exempt comments (does **not** override a non-stale `waiting_code`) → `/fs-triage` | Yes |
 | `promote_code` | `triaged` (feature work) → decide whether to promote | Decision |
 | `close_or_plan` | Has sub-issues and all are closed → close the parent, or plan further work / open new sub-issues | Decision |
-| `trigger_code` | Stale `ready-to-code` wait → `/fs-code` | Yes |
-| `trigger_review` | Stale review wait → `/fs-review` | Yes |
-| `trigger_fix` | Stale fix wait → `/fs-fix` | Yes |
+| `trigger_code` | Stale `ready-to-code` / `/fs-code` / stuck Code start → `/fs-code` | Yes |
+| `trigger_review` | Stale review launch/start, or newer commits since last Review → `/fs-review` | Yes |
+| `trigger_fix` | Unresolved threads all from the review bot and launch/start is stale (or ready to run) → `/fs-fix` | Yes |
 | `needs_info_self` | `needs-info` and you're the author → provide info | Decision |
-| `needs_review_decision` | `requires-manual-review`, `needs-human`, unresolved review conversations, or `mergeStateStatus=BLOCKED` under a stale `ready-for-merge` | Decision |
+| `needs_review_decision` | Manual-review labels, human unresolved threads, failed CI (`FAILURE`/`ERROR`), or `mergeStateStatus=BLOCKED` under `ready-for-merge` | Decision |
 | `ready_to_merge` | `ready-for-merge` **and** `mergeStateStatus` is `CLEAN`/`UNSTABLE`, no unresolved threads, checks settled, review not still required, not yet enqueued | Decision (never auto-merged) |
 | `fix_conflicts` | `mergeStateStatus` is `DIRTY` **or** `mergeable` is `CONFLICTING` | Decision |
 | `human_work` | Assigned/authored, no clear automation signal — implement, un-draft, or investigate | Decision |
@@ -149,24 +150,21 @@ only the "Decision" rows.
 - In-flight agent detection uses HTML markers from status comments
   (`<!-- fullsend:agent-status:<runID> -->` without
   `<!-- fullsend:status:terminal -->`), not `gh run list` / GHA polling. The
-  chronologically latest agent-status comment wins. This is checked **before**
-  trusting `ready-for-merge`, so a stale merge label during a re-review does
-  not surface as `ready_to_merge`.
+  chronologically latest agent-status comment wins. A non-terminal start
+  younger than `--stale-hours` stays `waiting_*` (no `/fs-*` suggestion); once
+  that start is older than `--stale-hours`, nextwork suggests the matching
+  re-trigger. This is checked **before** trusting `ready-for-merge`.
 - Merge readiness does **not** trust the `ready-for-merge` label alone. The
   script also requires `mergeable` / `mergeStateStatus` (requesting `mergeable`
   so GitHub computes conflict state) and zero unresolved `reviewThreads`.
-  Conflicts (`DIRTY` / `CONFLICTING`) win over review triggers; unresolved
-  conversations or `BLOCKED` yield `needs_review_decision` instead of
-  `ready_to_merge`.
+  Conflicts (`DIRTY` / `CONFLICTING`) win over review triggers; failed CI
+  (`FAILURE`/`ERROR`), human unresolved conversations, or `BLOCKED` yield
+  `needs_review_decision` instead of `ready_to_merge`.
 - GitHub's `blockedBy` dependency feature is **issue-only**. A PR can carry
   the `blocked` label (surfaced as `blocked_by` with an empty `blockers[]`),
   but `--link-blocker` cannot make a PR the dependent side of a structured
   link — only an issue.
-- `waiting_ci`, `waiting_merge_queue`, and in-flight agent-status waits are
-  not flipped to actionable by `--stale-hours`; there's no `/fs-*` command
-  that sensibly resolves a stuck CI run, merge-queue entry, or live agent
-  run, so those stay eliminated until they resolve on their own or a human
-  intervenes.
+- `waiting_ci` and `waiting_merge_queue` are not flipped by `--stale-hours`.
 - Merge-queue membership is only checked for PRs labeled `ready-for-merge`
   (to avoid an extra API call per PR); other PRs never report
   `in_merge_queue`.

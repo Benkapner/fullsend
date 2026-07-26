@@ -15,8 +15,30 @@
   "reviewDecision": "REVIEW_REQUIRED",
   "mergeable": "MERGEABLE",
   "mergeStateStatus": "CLEAN",
-  "reviewThreads": { "nodes": [{ "isResolved": true }, { "isResolved": false }] },
+  "reviewThreads": {
+    "nodes": [
+      { "isResolved": true, "comments": { "nodes": [] } },
+      {
+        "isResolved": false,
+        "comments": {
+          "nodes": [
+            {
+              "author": { "login": "fullsend-ai-review[bot]" },
+              "createdAt": "2024-01-02T01:00:00Z"
+            }
+          ]
+        }
+      }
+    ]
+  },
   "commits": {
-    "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }]
+    "nodes": [
+      {
+        "commit": {
+          "committedDate": "2024-01-02T00:30:00Z",
+          "statusCheckRollup": { "state": "SUCCESS" }
+        }
+      }
+    ]
   }
 }

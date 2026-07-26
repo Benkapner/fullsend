@@ -162,32 +162,288 @@ _INFLIGHT_REASON = {
     "waiting_agent": "Agent run in progress (non-terminal status comment)",
 }
 
+# waiting_* → (actionable status, slash action, stale reason)
+_WAITING_TO_TRIGGER: dict[str, tuple[str, str, str]] = {
+    "waiting_triage": (
+        "needs_triage",
+        "comment:/fs-triage",
+        "Stale triage agent start; re-trigger",
+    ),
+    "waiting_code": (
+        "trigger_code",
+        "comment:/fs-code",
+        "Stale code agent start; re-trigger",
+    ),
+    "waiting_review": (
+        "trigger_review",
+        "comment:/fs-review",
+        "Stale review agent start; re-trigger",
+    ),
+    "waiting_fix": (
+        "trigger_fix",
+        "comment:/fs-fix",
+        "Stale fix agent start; re-trigger",
+    ),
+}
+
+# Launch label / slash → waiting / re-trigger (mirrors reusable-dispatch stages).
+_LAUNCH_SPEC: dict[str, dict[str, str]] = {
+    "triage": {
+        "label": "ready-for-triage",
+        "command": "/fs-triage",
+        "waiting": "waiting_triage",
+        "trigger": "needs_triage",
+        "waiting_reason": "Waiting for triage automation",
+        "stale_reason": "Stale triage launch wait; re-trigger",
+    },
+    "code": {
+        "label": "ready-to-code",
+        "command": "/fs-code",
+        "waiting": "waiting_code",
+        "trigger": "trigger_code",
+        "waiting_reason": "Waiting for the code agent",
+        "stale_reason": "Stale ready-to-code / /fs-code wait; re-trigger",
+    },
+    "review": {
+        "label": "ready-for-review",
+        "command": "/fs-review",
+        "waiting": "waiting_review",
+        "trigger": "trigger_review",
+        "waiting_reason": "Waiting for review",
+        "stale_reason": "Stale review launch wait; re-trigger",
+    },
+    "fix": {
+        "label": "",
+        "command": "/fs-fix",
+        "waiting": "waiting_fix",
+        "trigger": "trigger_fix",
+        "waiting_reason": "Waiting for the fix agent",
+        "stale_reason": "Stale fix launch wait; re-trigger",
+    },
+}
+
+REVIEW_BOT_LOGIN = "fullsend-ai-review[bot]"
+TRIAGE_STALE_HOURS = 3 * 24
+CHECKS_PENDING = frozenset({"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED"})
+CHECKS_FAILED = frozenset({"FAILURE", "ERROR"})
+
+
+def comment_command(body: str | None) -> str:
+    """First whitespace token of the first line — mirrors extractCommentCommand / dispatch.yml."""
+    if not body:
+        return ""
+    first_line = body.split("\n", 1)[0].replace("\r", "").strip()
+    if not first_line:
+        return ""
+    return first_line.split(None, 1)[0]
+
 
 def parse_inflight_agent(comments: list[dict[str, Any]]) -> str | None:
     """Return a waiting_* status if the latest agent-status comment is non-terminal.
 
-    Convention (internal/statuscomment): in-flight comments contain
-    ``fullsend:agent-status:<runID>`` without ``fullsend:status:terminal``.
-    The chronologically latest agent-status comment wins — a Finished update
-    on the same run replaces the Started body and adds the terminal tag.
+    Prefer classify_inflight_agent when stale-hours re-invoke is needed.
     """
+    latest = latest_agent_status(comments)
+    if latest is None or latest["terminal"]:
+        return None
+    return latest["waiting_status"]
+
+
+def _role_waiting_status(body: str) -> str:
+    for pattern, status in _INFLIGHT_ROLE_PATTERNS:
+        if pattern.search(body):
+            return status
+    return "waiting_agent"
+
+
+def latest_agent_status(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Chronologically latest agent-status comment, with waiting_status + terminal flag."""
     agent_comments = [
         c for c in comments if AGENT_STATUS_MARKER in (c.get("body") or "")
     ]
     if not agent_comments:
         return None
-
-    def sort_key(c: dict[str, Any]) -> str:
-        return c.get("created_at") or ""
-
-    latest = max(agent_comments, key=sort_key)
+    latest = max(agent_comments, key=lambda c: c.get("created_at") or "")
     body = latest.get("body") or ""
-    if AGENT_TERMINAL_MARKER in body:
+    return {
+        "created_at": latest.get("created_at") or "",
+        "body": body,
+        "terminal": AGENT_TERMINAL_MARKER in body,
+        "waiting_status": _role_waiting_status(body),
+    }
+
+
+def latest_terminal_agent(
+    comments: list[dict[str, Any]], waiting_status: str
+) -> dict[str, Any] | None:
+    """Latest terminal agent-status comment whose role maps to waiting_status."""
+    matches = []
+    for c in comments:
+        body = c.get("body") or ""
+        if AGENT_STATUS_MARKER not in body or AGENT_TERMINAL_MARKER not in body:
+            continue
+        if _role_waiting_status(body) == waiting_status:
+            matches.append(c)
+    if not matches:
         return None
-    for pattern, status in _INFLIGHT_ROLE_PATTERNS:
-        if pattern.search(body):
-            return status
-    return "waiting_agent"
+    latest = max(matches, key=lambda c: c.get("created_at") or "")
+    return {
+        "created_at": latest.get("created_at") or "",
+        "body": latest.get("body") or "",
+        "terminal": True,
+        "waiting_status": waiting_status,
+    }
+
+
+def latest_fs_command_at(comments: list[dict[str, Any]], command: str) -> str | None:
+    """created_at of the latest comment whose first-line command equals command."""
+    matches = [
+        c for c in comments if comment_command(c.get("body") or "") == command
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda c: c.get("created_at") or "").get("created_at")
+
+
+def launch_signal_at(
+    item: dict[str, Any],
+    role: str,
+    comments: list[dict[str, Any]],
+    *,
+    extra_label: bool = False,
+) -> str | None:
+    """ISO timestamp when the agent was asked to run, or None if there is no launch signal."""
+    spec = _LAUNCH_SPEC[role]
+    cmd_at = latest_fs_command_at(comments, spec["command"])
+    if cmd_at:
+        return cmd_at
+    label = spec["label"]
+    if label and label in item.get("labels", []):
+        return item.get("updated_at")
+    if extra_label:
+        return item.get("updated_at")
+    return None
+
+
+def classify_inflight_agent(
+    comments: list[dict[str, Any]], stale_hours: float, now: datetime
+) -> Classification | None:
+    """Non-terminal agent-status → waiting_* unless the start comment is past stale_hours."""
+    latest = latest_agent_status(comments)
+    if latest is None or latest["terminal"]:
+        return None
+    waiting = latest["waiting_status"]
+    if is_stale(latest["created_at"], stale_hours, now):
+        mapped = _WAITING_TO_TRIGGER.get(waiting)
+        if mapped:
+            status, action, reason = mapped
+            return Classification(
+                status=status,
+                reason=reason,
+                eliminated=False,
+                suggested_actions=[action],
+            )
+        return Classification(
+            status=waiting,
+            reason=_INFLIGHT_REASON.get(waiting, _INFLIGHT_REASON["waiting_agent"]),
+            eliminated=True,
+        )
+    return Classification(
+        status=waiting,
+        reason=_INFLIGHT_REASON.get(waiting, _INFLIGHT_REASON["waiting_agent"]),
+        eliminated=True,
+    )
+
+
+def classify_launch_wait(
+    item: dict[str, Any],
+    role: str,
+    comments: list[dict[str, Any]],
+    stale_hours: float,
+    now: datetime,
+    *,
+    signal_at: str | None = None,
+) -> Classification | None:
+    """Label and/or /fs-* asked for an agent that has not started yet."""
+    spec = _LAUNCH_SPEC[role]
+    at = signal_at if signal_at is not None else launch_signal_at(item, role, comments)
+    if not at:
+        return None
+    # A matching non-terminal start is handled by classify_inflight_agent.
+    latest = latest_agent_status(comments)
+    if (
+        latest
+        and not latest["terminal"]
+        and latest["waiting_status"] == spec["waiting"]
+    ):
+        return None
+    if is_stale(at, stale_hours, now):
+        return Classification(
+            status=spec["trigger"],
+            reason=spec["stale_reason"],
+            eliminated=False,
+            suggested_actions=[f"comment:{spec['command']}"],
+        )
+    return Classification(
+        status=spec["waiting"],
+        reason=spec["waiting_reason"],
+        eliminated=True,
+    )
+
+
+def is_completed_triage_stale(comments: list[dict[str, Any]], now: datetime) -> bool:
+    """Terminal Triage older than 3 days, or non-exempt comments after it."""
+    terminal = latest_terminal_agent(comments, "waiting_triage")
+    if terminal is None or not terminal["created_at"]:
+        return False
+    if hours_since(terminal["created_at"], now) >= TRIAGE_STALE_HOURS:
+        return True
+    triage_at = terminal["created_at"]
+    for c in comments:
+        created = c.get("created_at") or ""
+        if created <= triage_at:
+            continue
+        body = c.get("body") or ""
+        if AGENT_STATUS_MARKER in body:
+            continue
+        if comment_command(body) == "/fs-code":
+            continue
+        return True
+    return False
+
+
+def is_non_stale_code_wait(
+    item: dict[str, Any],
+    comments: list[dict[str, Any]],
+    stale_hours: float,
+    now: datetime,
+) -> bool:
+    """True when we are waiting on code and that wait is not yet stale."""
+    latest = latest_agent_status(comments)
+    if (
+        latest
+        and not latest["terminal"]
+        and latest["waiting_status"] == "waiting_code"
+        and latest["created_at"]
+        and not is_stale(latest["created_at"], stale_hours, now)
+    ):
+        return True
+    sig = launch_signal_at(item, "code", comments)
+    if not sig:
+        return False
+    if latest and not latest["terminal"] and latest["waiting_status"] == "waiting_code":
+        return False  # stale in-flight handled elsewhere
+    return not is_stale(sig, stale_hours, now)
+
+
+def has_newer_code_than_review(item: dict[str, Any], comments: list[dict[str, Any]]) -> bool:
+    head_at = item.get("head_committed_at")
+    if not head_at:
+        return False
+    review = latest_terminal_agent(comments, "waiting_review")
+    if review is None or not review["created_at"]:
+        return False
+    return parse_iso(head_at) > parse_iso(review["created_at"])
 
 
 # ------------------------------- Classification -------------------------------
@@ -204,20 +460,13 @@ class Classification:
     suggested_actions: list[str] = field(default_factory=list)
 
 
-def classification_for_inflight(status: str) -> Classification:
-    return Classification(
-        status=status,
-        reason=_INFLIGHT_REASON.get(status, _INFLIGHT_REASON["waiting_agent"]),
-        eliminated=True,
-    )
-
-
 def classify_issue(
     item: dict[str, Any], user: str, stale_hours: float, now: datetime
 ) -> Classification | None:
     """Classify a normalized open issue. Returns None if it should be dropped entirely."""
     labels = set(item["labels"])
     assignees = item["assignees"]
+    comments = item.get("comments") or []
 
     if "duplicate" in labels:
         return None
@@ -237,9 +486,9 @@ def classify_issue(
             eliminated=True,
         )
 
-    inflight = parse_inflight_agent(item.get("comments") or [])
+    inflight = classify_inflight_agent(comments, stale_hours, now)
     if inflight:
-        return classification_for_inflight(inflight)
+        return inflight
 
     open_subs = item.get("open_sub_issues") or []
     if open_subs:
@@ -284,34 +533,41 @@ def classify_issue(
             eliminated=True,
         )
 
+    # Non-stale code wait wins over stale completed triage.
+    if is_non_stale_code_wait(item, comments, stale_hours, now):
+        return Classification(
+            status="waiting_code",
+            reason="Waiting for the code agent",
+            eliminated=True,
+        )
+
+    if is_completed_triage_stale(comments, now):
+        return Classification(
+            status="needs_triage",
+            reason="Stale completed triage; re-trigger",
+            eliminated=False,
+            suggested_actions=["comment:/fs-triage"],
+        )
+
     has_control_label = bool(labels & ISSUE_CONTROL_LABELS)
-    if "ready-for-triage" in labels or not has_control_label:
-        if is_stale(item["created_at"], stale_hours, now):
-            return Classification(
-                status="needs_triage",
-                reason="Stale triage wait; re-trigger",
-                eliminated=False,
-                suggested_actions=["comment:/fs-triage"],
-            )
+    triage_launch = launch_signal_at(item, "triage", comments)
+    if triage_launch:
+        launch = classify_launch_wait(
+            item, "triage", comments, stale_hours, now, signal_at=triage_launch
+        )
+        if launch:
+            return launch
+    elif not has_control_label:
+        # No launch signal yet — wait forever (do not flip from created_at alone).
         return Classification(
             status="waiting_triage",
             reason="Waiting for triage automation",
             eliminated=True,
         )
 
-    if "ready-to-code" in labels:
-        if is_stale(item["updated_at"], stale_hours, now):
-            return Classification(
-                status="trigger_code",
-                reason="Stale ready-to-code wait; re-trigger",
-                eliminated=False,
-                suggested_actions=["comment:/fs-code"],
-            )
-        return Classification(
-            status="waiting_code",
-            reason="Waiting for the code agent",
-            eliminated=True,
-        )
+    code_launch = classify_launch_wait(item, "code", comments, stale_hours, now)
+    if code_launch:
+        return code_launch
 
     if "triaged" in labels:
         return Classification(
@@ -339,8 +595,36 @@ def classify_issue(
     )
 
 
-def _is_bot_author(login: str | None) -> bool:
-    return bool(login) and login.endswith("[bot]")
+def _classify_fix_from_threads(
+    item: dict[str, Any],
+    comments: list[dict[str, Any]],
+    unresolved: list[dict[str, Any]],
+    stale_hours: float,
+    now: datetime,
+) -> Classification:
+    """All unresolved threads are from the review bot → fix launch wait / trigger."""
+    if "fullsend-no-fix" in item.get("labels", []):
+        return Classification(
+            status="needs_review_decision",
+            reason="Unresolved review-bot threads but fullsend-no-fix is set",
+            eliminated=False,
+            suggested_actions=["Resolve threads or remove fullsend-no-fix to allow /fs-fix"],
+        )
+    cmd_at = latest_fs_command_at(comments, "/fs-fix")
+    thread_times = [t.get("created_at") for t in unresolved if t.get("created_at")]
+    thread_at = max(thread_times) if thread_times else None
+    signal_at = cmd_at or thread_at or item.get("updated_at")
+    launch = classify_launch_wait(
+        item, "fix", comments, stale_hours, now, signal_at=signal_at
+    )
+    if launch:
+        return launch
+    return Classification(
+        status="trigger_fix",
+        reason="Unresolved review-bot threads; run fix",
+        eliminated=False,
+        suggested_actions=["comment:/fs-fix"],
+    )
 
 
 def classify_pr(
@@ -349,6 +633,7 @@ def classify_pr(
     """Classify a normalized open pull request. Returns None if it should be dropped."""
     labels = set(item["labels"])
     assignees = item["assignees"]
+    comments = item.get("comments") or []
 
     if "blocked" in labels:
         return Classification(
@@ -365,9 +650,9 @@ def classify_pr(
             eliminated=True,
         )
 
-    inflight = parse_inflight_agent(item.get("comments") or [])
+    inflight = classify_inflight_agent(comments, stale_hours, now)
     if inflight:
-        return classification_for_inflight(inflight)
+        return inflight
 
     if item.get("merge_state_status") == "DIRTY" or item.get("mergeable") == "CONFLICTING":
         return Classification(
@@ -385,16 +670,36 @@ def classify_pr(
             suggested_actions=["Review and decide the next step"],
         )
 
+    checks_state = item.get("checks_state")
+    checks_pending = checks_state in CHECKS_PENDING
+    if checks_state in CHECKS_FAILED:
+        return Classification(
+            status="needs_review_decision",
+            reason=f"Required checks failed ({checks_state})",
+            eliminated=False,
+            suggested_actions=["Inspect failed CI and decide the next step"],
+        )
+
     review_decision = item.get("review_decision")
-    checks_pending = item.get("checks_state") in (
-        "PENDING",
-        "EXPECTED",
-        "IN_PROGRESS",
-        "QUEUED",
-    )
-    unresolved = int(item.get("unresolved_review_threads") or 0)
+    unresolved = item.get("unresolved_threads") or []
+    unresolved_count = len(unresolved)
     merge_state = item.get("merge_state_status")
     merge_ready_states = {"CLEAN", "UNSTABLE"}
+
+    if unresolved_count > 0:
+        authors = [t.get("author") for t in unresolved]
+        if authors and all(a == REVIEW_BOT_LOGIN for a in authors):
+            return _classify_fix_from_threads(
+                item, comments, unresolved, stale_hours, now
+            )
+        return Classification(
+            status="needs_review_decision",
+            reason=f"{unresolved_count} unresolved review conversation(s) need a human decision",
+            eliminated=False,
+            suggested_actions=[
+                "Resolve threads, or paste human review feedback into a /fs-fix instruction"
+            ],
+        )
 
     if "ready-for-merge" in labels:
         if item.get("in_merge_queue"):
@@ -403,23 +708,14 @@ def classify_pr(
                 reason="Already enqueued in the merge queue",
                 eliminated=True,
             )
-        # Stale ready-for-merge must not win over pending checks or incomplete review.
         if checks_pending:
             return Classification(
                 status="waiting_ci",
                 reason="ready-for-merge label present but required checks are still running",
                 eliminated=True,
             )
-        if unresolved > 0:
-            return Classification(
-                status="needs_review_decision",
-                reason=f"{unresolved} unresolved review conversation(s)",
-                eliminated=False,
-                suggested_actions=["Resolve or reply to open review threads"],
-            )
         if review_decision in ("REVIEW_REQUIRED", "CHANGES_REQUESTED"):
-            # Fall through to CHANGES_REQUESTED / waiting_review handling below.
-            pass
+            pass  # fall through to review launch wait
         elif merge_state == "BLOCKED":
             return Classification(
                 status="needs_review_decision",
@@ -438,37 +734,12 @@ def classify_pr(
                 suggested_actions=["Merge, or enqueue in the merge queue"],
             )
         else:
-            # UNKNOWN / DRAFT / BEHIND / missing state — never claim ready_to_merge.
             return Classification(
                 status="needs_review_decision",
                 reason=f"ready-for-merge label present but merge state is {merge_state or 'unknown'}",
                 eliminated=False,
                 suggested_actions=["Inspect PR merge readiness on GitHub"],
             )
-
-    if review_decision == "CHANGES_REQUESTED":
-        fix_eligible = "fullsend-no-fix" not in labels and (
-            _is_bot_author(item.get("author")) or "fullsend-fix" in labels
-        )
-        if fix_eligible:
-            if is_stale(item["updated_at"], stale_hours, now):
-                return Classification(
-                    status="trigger_fix",
-                    reason="Stale changes-requested wait; re-trigger fix",
-                    eliminated=False,
-                    suggested_actions=["comment:/fs-fix"],
-                )
-            return Classification(
-                status="waiting_fix",
-                reason="Waiting for the fix agent",
-                eliminated=True,
-            )
-        return Classification(
-            status="human_work",
-            reason="Changes requested; not fix-eligible (missing fullsend-fix label)",
-            eliminated=False,
-            suggested_actions=["Address review feedback directly, or add the fullsend-fix label"],
-        )
 
     if checks_pending:
         return Classification(
@@ -485,14 +756,32 @@ def classify_pr(
             suggested_actions=["Mark ready for review when complete"],
         )
 
-    if "ready-for-review" in labels or review_decision in (None, "REVIEW_REQUIRED"):
-        if is_stale(item["updated_at"], stale_hours, now):
-            return Classification(
-                status="trigger_review",
-                reason="Stale review wait; re-trigger",
-                eliminated=False,
-                suggested_actions=["comment:/fs-review"],
-            )
+    if has_newer_code_than_review(item, comments):
+        return Classification(
+            status="trigger_review",
+            reason="Newer commits since last review; re-trigger",
+            eliminated=False,
+            suggested_actions=["comment:/fs-review"],
+        )
+
+    review_signal = launch_signal_at(item, "review", comments)
+    if not review_signal and review_decision in (None, "REVIEW_REQUIRED"):
+        # Treat review-required path as a launch signal via updated_at.
+        review_signal = item.get("updated_at")
+    if review_signal or "ready-for-review" in labels or review_decision in (
+        None,
+        "REVIEW_REQUIRED",
+    ):
+        launch = classify_launch_wait(
+            item,
+            "review",
+            comments,
+            stale_hours,
+            now,
+            signal_at=review_signal or item.get("updated_at"),
+        )
+        if launch:
+            return launch
         return Classification(
             status="waiting_review",
             reason="Waiting for review",
@@ -645,7 +934,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         createdAt
         updatedAt
         body
-        comments(last: 10) { nodes { author { login } body createdAt } }
+        comments(last: 50) { nodes { author { login } body createdAt } }
         blockedBy(first: 20) {
           nodes { number state repository { nameWithOwner } }
         }
@@ -666,15 +955,25 @@ query($owner: String!, $name: String!, $number: Int!) {
         createdAt
         updatedAt
         body
-        comments(last: 10) { nodes { author { login } body createdAt } }
+        comments(last: 50) { nodes { author { login } body createdAt } }
         reviewDecision
         mergeable
         mergeStateStatus
         reviewThreads(first: 50) {
-          nodes { isResolved }
+          nodes {
+            isResolved
+            comments(first: 1) {
+              nodes { author { login } createdAt }
+            }
+          }
         }
         commits(last: 1) {
-          nodes { commit { statusCheckRollup { state } } }
+          nodes {
+            commit {
+              committedDate
+              statusCheckRollup { state }
+            }
+          }
         }
       }
     }
@@ -822,16 +1121,30 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
         item["mergeable"] = node.get("mergeable")
         item["merge_state_status"] = node.get("mergeStateStatus")
         threads = (node.get("reviewThreads") or {}).get("nodes") or []
-        item["unresolved_review_threads"] = sum(
-            1 for t in threads if t.get("isResolved") is False
-        )
+        unresolved_threads: list[dict[str, Any]] = []
+        for t in threads:
+            if t.get("isResolved") is not False:
+                continue
+            first_comments = (t.get("comments") or {}).get("nodes") or []
+            author = None
+            created_at = None
+            if first_comments:
+                author = (first_comments[0].get("author") or {}).get("login")
+                created_at = first_comments[0].get("createdAt")
+            unresolved_threads.append({"author": author, "created_at": created_at})
+        item["unresolved_threads"] = unresolved_threads
+        item["unresolved_review_threads"] = len(unresolved_threads)
         checks_state = None
+        head_committed_at = None
         commit_nodes = node.get("commits", {}).get("nodes", [])
         if commit_nodes:
-            rollup = commit_nodes[-1].get("commit", {}).get("statusCheckRollup")
+            commit = commit_nodes[-1].get("commit") or {}
+            head_committed_at = commit.get("committedDate")
+            rollup = commit.get("statusCheckRollup")
             if rollup:
                 checks_state = rollup.get("state")
         item["checks_state"] = checks_state
+        item["head_committed_at"] = head_committed_at
         item["in_merge_queue"] = False
     return item
 
@@ -1361,7 +1674,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=6,
         metavar="N",
-        help="Hours after which a waiting-on-automation item becomes actionable (default: 6)",
+        help=(
+            "Hours after which a stuck in-flight agent start or never-started "
+            "launch label/command becomes actionable (default: 6)"
+        ),
     )
     parser.add_argument("--quiet", action="store_true", help="Suppress stderr on API failures")
     parser.add_argument(

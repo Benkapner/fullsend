@@ -20,6 +20,7 @@ from nextwork import (  # noqa: E402
     build_queue,
     classify_issue,
     classify_pr,
+    comment_command,
     format_json_output,
     format_markdown_output,
     graphql_var_flags,
@@ -54,6 +55,15 @@ class TestGraphqlVarFlags(unittest.TestCase):
 
     def test_skips_none(self):
         self.assertEqual(graphql_var_flags({"cursor": None, "owner": "acme"}), ["-f", "owner=acme"])
+
+
+class TestCommentCommand(unittest.TestCase):
+    def test_first_token_of_first_line(self):
+        self.assertEqual(comment_command("/fs-code please"), "/fs-code")
+        self.assertEqual(comment_command("  /fs-triage\r\nmore"), "/fs-triage")
+        self.assertEqual(comment_command("not a command"), "not")
+        self.assertEqual(comment_command(""), "")
+        self.assertEqual(comment_command("line1\n/fs-code"), "line1")
 
 
 def load_fixture(name: str):
@@ -108,11 +118,26 @@ def make_pr(**overrides):
         "review_decision": None,
         "mergeable": "MERGEABLE",
         "merge_state_status": "CLEAN",
+        "unresolved_threads": [],
         "unresolved_review_threads": 0,
         "checks_state": "SUCCESS",
+        "head_committed_at": None,
         "in_merge_queue": False,
     }
     item.update(overrides)
+    if "unresolved_threads" in overrides and "unresolved_review_threads" not in overrides:
+        item["unresolved_review_threads"] = len(item["unresolved_threads"])
+    elif (
+        "unresolved_review_threads" in overrides
+        and "unresolved_threads" not in overrides
+        and item["unresolved_review_threads"]
+        and not item["unresolved_threads"]
+    ):
+        # Legacy count-only tests: invent human-authored threads so they stay decisions.
+        n = int(item["unresolved_review_threads"])
+        item["unresolved_threads"] = [
+            {"author": "alice", "created_at": item["updated_at"]} for _ in range(n)
+        ]
     return item
 
 
@@ -197,10 +222,11 @@ class TestParseInflightAgent(unittest.TestCase):
         item = make_issue(
             labels=["ready-to-code"],
             assignees=["alice"],
+            updated_at="2024-01-09T23:00:00Z",
             comments=[
                 {
                     "body": "<!-- fullsend:agent-status:r1 -->\n🤖 Code · Started 1:00 PM UTC",
-                    "created_at": "2024-01-09T13:00:00Z",
+                    "created_at": "2024-01-09T23:00:00Z",
                 }
             ],
         )
@@ -319,7 +345,12 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertEqual(item["mergeable"], "MERGEABLE")
         self.assertEqual(item["merge_state_status"], "CLEAN")
         self.assertEqual(item["unresolved_review_threads"], 1)
+        self.assertEqual(
+            item["unresolved_threads"],
+            [{"author": "fullsend-ai-review[bot]", "created_at": "2024-01-02T01:00:00Z"}],
+        )
         self.assertEqual(item["checks_state"], "SUCCESS")
+        self.assertEqual(item["head_committed_at"], "2024-01-02T00:30:00Z")
         self.assertFalse(item["is_draft"])
         self.assertFalse(item["in_merge_queue"])
         self.assertEqual(item["blockers"], [])
@@ -419,22 +450,30 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertEqual(result.status, "waiting_triage")
         self.assertTrue(result.eliminated)
 
-    def test_needs_triage_no_labels_stale(self):
-        item = make_issue(created_at="2024-01-01T00:00:00Z")  # long before NOW
+    def test_waiting_triage_no_labels_never_flips_from_age(self):
+        # No launch signal → stay waiting_triage forever (not needs_triage from created_at).
+        item = make_issue(created_at="2024-01-01T00:00:00Z")
         result = classify_issue(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "needs_triage")
-        self.assertFalse(result.eliminated)
-        self.assertIn("comment:/fs-triage", result.suggested_actions)
+        self.assertEqual(result.status, "waiting_triage")
+        self.assertTrue(result.eliminated)
 
     def test_waiting_triage_label_takes_priority_over_other_control_labels(self):
         # ready-for-triage forces the triage-wait branch even alongside another control label,
-        # as long as the wait itself isn't stale.
-        item = make_issue(labels=["ready-for-triage", "triaged"], created_at="2024-01-09T23:00:00Z")
+        # as long as the launch wait itself isn't stale (clock from updated_at).
+        item = make_issue(
+            labels=["ready-for-triage", "triaged"],
+            created_at="2024-01-09T23:00:00Z",
+            updated_at="2024-01-09T23:00:00Z",
+        )
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "waiting_triage")
 
     def test_needs_triage_label_stale(self):
-        item = make_issue(labels=["ready-for-triage"], created_at="2024-01-01T00:00:00Z")
+        item = make_issue(
+            labels=["ready-for-triage"],
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+        )
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_triage")
         self.assertFalse(result.eliminated)
@@ -475,6 +514,83 @@ class TestClassifyIssue(unittest.TestCase):
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "human_work")
         self.assertFalse(result.eliminated)
+
+    def test_stale_completed_triage_overrides_promote_code(self):
+        item = make_issue(
+            labels=["triaged"],
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:agent-status:t1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "created_at": "2024-01-01T00:00:00Z",
+                },
+                {
+                    "body": "Please reconsider scope",
+                    "created_at": "2024-01-05T00:00:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_triage")
+
+    def test_stale_triage_does_not_override_non_stale_waiting_code(self):
+        item = make_issue(
+            labels=["ready-to-code"],
+            updated_at="2024-01-09T23:00:00Z",
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:agent-status:t1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "created_at": "2023-12-01T00:00:00Z",
+                },
+                {
+                    "body": "<!-- fullsend:agent-status:c1 -->\n🤖 Code · Started",
+                    "created_at": "2024-01-09T23:30:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_code")
+
+    def test_fs_code_comment_does_not_stale_completed_triage(self):
+        item = make_issue(
+            labels=["triaged"],
+            updated_at="2024-01-09T23:00:00Z",
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:agent-status:t1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "created_at": "2024-01-09T12:00:00Z",
+                },
+                {"body": "/fs-code please ship it", "created_at": "2024-01-09T23:00:00Z"},
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertNotEqual(result.status, "needs_triage")
+        self.assertEqual(result.status, "waiting_code")
+
+    def test_stale_inflight_triage_retriggers(self):
+        item = make_issue(
+            labels=["ready-for-triage"],
+            comments=[
+                {
+                    "body": "<!-- fullsend:agent-status:t1 -->\n🤖 Triage · Started",
+                    "created_at": "2024-01-01T00:00:00Z",
+                }
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_triage")
+        self.assertIn("comment:/fs-triage", result.suggested_actions)
 
 
 class TestClassifyPr(unittest.TestCase):
@@ -610,6 +726,9 @@ class TestClassifyPr(unittest.TestCase):
             author="fullsend-ai-coder[bot]",
             review_decision="CHANGES_REQUESTED",
             updated_at="2024-01-09T23:00:00Z",
+            unresolved_threads=[
+                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-09T23:00:00Z"}
+            ],
         )
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "waiting_fix")
@@ -620,41 +739,87 @@ class TestClassifyPr(unittest.TestCase):
             author="fullsend-ai-coder[bot]",
             review_decision="CHANGES_REQUESTED",
             updated_at="2024-01-01T00:00:00Z",
+            unresolved_threads=[
+                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-01T00:00:00Z"}
+            ],
         )
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "trigger_fix")
         self.assertFalse(result.eliminated)
 
     def test_waiting_fix_human_with_fullsend_fix_label(self):
+        # Human threads are decisions even with fullsend-fix; only review-bot threads are trivial.
         item = make_pr(
             author="carol",
             labels=["fullsend-fix"],
             review_decision="CHANGES_REQUESTED",
             updated_at="2024-01-09T23:00:00Z",
+            unresolved_threads=[
+                {"author": "carol", "created_at": "2024-01-09T23:00:00Z"}
+            ],
         )
         result = classify_pr(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "waiting_fix")
+        self.assertEqual(result.status, "needs_review_decision")
 
-    def test_human_work_changes_requested_not_fix_eligible(self):
+    def test_changes_requested_without_threads_not_fix(self):
         item = make_pr(author="carol", review_decision="CHANGES_REQUESTED")
         result = classify_pr(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "human_work")
-        self.assertFalse(result.eliminated)
+        self.assertNotEqual(result.status, "trigger_fix")
+        self.assertNotEqual(result.status, "waiting_fix")
 
-    def test_fullsend_no_fix_overrides_bot_author(self):
+    def test_fullsend_no_fix_with_review_bot_threads(self):
         item = make_pr(
             author="fullsend-ai-coder[bot]",
             labels=["fullsend-no-fix"],
             review_decision="CHANGES_REQUESTED",
+            unresolved_threads=[
+                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-09T23:00:00Z"}
+            ],
         )
         result = classify_pr(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "human_work")
+        self.assertEqual(result.status, "needs_review_decision")
 
     def test_waiting_ci(self):
         item = make_pr(checks_state="PENDING")
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "waiting_ci")
         self.assertTrue(result.eliminated)
+
+    def test_failed_ci_needs_review_decision(self):
+        item = make_pr(checks_state="FAILURE", review_decision="REVIEW_REQUIRED")
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_review_decision")
+        self.assertIn("failed", result.reason.lower())
+
+    def test_newer_code_after_review_triggers_review(self):
+        item = make_pr(
+            labels=["ready-for-review"],
+            review_decision="REVIEW_REQUIRED",
+            updated_at="2024-01-09T23:00:00Z",
+            head_committed_at="2024-01-09T22:00:00Z",
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:agent-status:r1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Review · ✅ Success"
+                    ),
+                    "created_at": "2024-01-09T12:00:00Z",
+                }
+            ],
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "trigger_review")
+
+    def test_mixed_review_threads_need_decision(self):
+        item = make_pr(
+            unresolved_threads=[
+                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-09T23:00:00Z"},
+                {"author": "carol", "created_at": "2024-01-09T23:30:00Z"},
+            ]
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_review_decision")
 
     def test_draft_pr(self):
         item = make_pr(is_draft=True)
