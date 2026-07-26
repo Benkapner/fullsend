@@ -147,19 +147,13 @@ Write-capable agents that push commits or open PRs **must** guard against fork P
 
 ### Verifying your trigger
 
-Test your trigger expression locally before deploying:
+Before deploying, verify your trigger expression is correct:
 
-```bash
-# Validate CEL syntax (compiles the expression without evaluating)
-fullsend trigger validate --expression 'event.entity.kind == "work_item" && event.transition.kind == "opened"'
+1. **Check field paths** against the [NormalizedEvent fields](#normalizedevent-fields) table and the [NormalizedEvent v1 schema](../../normative/normalized-event/v1/normalized-event.schema.json). Common mistakes include using `event.type` (does not exist) instead of `event.entity.kind`, or referencing `event.transition.label` on a non-`label_changed` transition.
 
-# Evaluate against a NormalizedEvent fixture
-fullsend trigger eval \
-  --expression 'event.entity.kind == "work_item" && event.transition.kind == "opened"' \
-  --input docs/normative/normalized-event/v1/examples/issue-opened.json
-```
+2. **Walk through example events.** The [NormalizedEvent examples](../../normative/normalized-event/v1/examples/) directory contains fixtures for common GitHub events (issue opened, label added, PR opened, slash command, review submitted). Open the fixture that matches your intended trigger and manually evaluate your CEL expression against its fields to confirm the result is `true`.
 
-The [NormalizedEvent examples](../../normative/normalized-event/v1/examples/) directory contains fixtures for common GitHub events (issue opened, label added, PR opened, slash command, review submitted) that you can use for testing.
+3. **Test end-to-end** by applying the triggering action (e.g., adding a label, posting a slash command) in a test repository where your agent is registered. Check the dispatch workflow run in GitHub Actions to confirm your agent was selected.
 
 ## See also
 
