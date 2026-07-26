@@ -38,6 +38,7 @@ Guides for developers working in repositories where fullsend is active.
 - [Customizing with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Customizing with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills with custom skill documents
 - [Bring Your Own Agent](user/bring-your-own-agent.md) — Add a custom agent or configure an existing one, from harness file to CI
+- [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
 - [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 
