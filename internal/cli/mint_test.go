@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -327,6 +328,74 @@ func TestMintDeployCmd_GCPPlatformDryRun(t *testing.T) {
 	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp", "--project=my-project-id", "--dry-run"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+// --- platform flag warning tests ---
+
+func TestMintDeployCmd_WarnsGCPFlagsOnCloudflare(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	// Capture stderr to check warnings.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--project=my-project", "--dry-run"})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--project is a GCP flag")
+	assert.Contains(t, stderr, "--platform=cloudflare")
+}
+
+func TestMintDeployCmd_WarnsCFFlagsOnGCP(t *testing.T) {
+	// Capture stderr to check warnings.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp", "--project=my-project-id", "--worker-name=test", "--dry-run"})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--worker-name is a Cloudflare flag")
+	assert.Contains(t, stderr, "--platform=gcp")
+}
+
+func TestMintDeployCmd_NoWarningForCorrectPlatformFlags(t *testing.T) {
+	// Capture stderr to check no warnings.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp", "--project=my-project-id", "--dry-run"})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.NotContains(t, stderr, "Warning:")
 }
 
 // --- lookupAppID tests ---

@@ -406,6 +406,10 @@ Cloudflare mode (--platform=cloudflare):
   Use --worker-name to target a specific Worker script name.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Warn about flags set for the wrong platform so users
+			// discover misconfigurations immediately.
+			warnIrrelevantFlags(cmd, platform)
+
 			switch platform {
 			case "gcp":
 				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, public)
@@ -434,6 +438,33 @@ Cloudflare mode (--platform=cloudflare):
 	cmd.Flags().BoolVar(&preview, "preview", false, "deploy as ephemeral preview Worker for testing (Cloudflare only)")
 
 	return cmd
+}
+
+// warnIrrelevantFlags prints a warning for each flag that was explicitly
+// set but belongs to a different platform than the one being used. This
+// helps users catch misconfigurations (e.g. --project with --platform=cloudflare)
+// immediately rather than silently ignoring them.
+func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
+	// Map each platform to the flags that are irrelevant for it.
+	irrelevant := map[string][]struct{ flag, owner string }{
+		"gcp": {
+			{"worker-name", "Cloudflare"},
+			{"preview", "Cloudflare"},
+		},
+		"cloudflare": {
+			{"project", "GCP"},
+			{"region", "GCP"},
+			{"skip-deploy", "GCP"},
+			{"pem-dir", "GCP"},
+			{"public", "GCP"},
+		},
+	}
+
+	for _, entry := range irrelevant[platform] {
+		if cmd.Flags().Changed(entry.flag) {
+			fmt.Fprintf(os.Stderr, "Warning: --%s is a %s flag and has no effect with --platform=%s\n", entry.flag, entry.owner, platform)
+		}
+	}
 }
 
 func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir string, public bool) error {

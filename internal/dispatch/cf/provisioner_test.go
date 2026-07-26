@@ -183,8 +183,19 @@ func TestProvisioner_Provision_StampsVersion(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 1)
-	assert.Equal(t, "1.2.3", fake.deployCalls[0].envVars["FULLSEND_VERSION"])
-	assert.Equal(t, "deadbeef", fake.deployCalls[0].envVars["FULLSEND_COMMIT"])
+
+	// Version is stamped into src/version.ts, not env vars.
+	versionTS := filepath.Join(sourceDir, "src", "version.ts")
+	data, err := os.ReadFile(versionTS)
+	require.NoError(t, err, "version.ts should be written to source dir")
+	assert.Contains(t, string(data), `"1.2.3"`)
+	assert.Contains(t, string(data), `"deadbeef"`)
+
+	// Env vars should NOT contain version fields.
+	_, hasVersion := fake.deployCalls[0].envVars["FULLSEND_VERSION"]
+	_, hasCommit := fake.deployCalls[0].envVars["FULLSEND_COMMIT"]
+	assert.False(t, hasVersion, "FULLSEND_VERSION should not be in env vars")
+	assert.False(t, hasCommit, "FULLSEND_COMMIT should not be in env vars")
 }
 
 func TestProvisioner_Provision_OmitsEmptyVersion(t *testing.T) {
@@ -201,6 +212,14 @@ func TestProvisioner_Provision_OmitsEmptyVersion(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 1)
+
+	// version.ts should still be written (with empty values).
+	versionTS := filepath.Join(sourceDir, "src", "version.ts")
+	data, err := os.ReadFile(versionTS)
+	require.NoError(t, err, "version.ts should be written even with empty version")
+	assert.Contains(t, string(data), `""`)
+
+	// Env vars should NOT contain version fields.
 	_, hasVersion := fake.deployCalls[0].envVars["FULLSEND_VERSION"]
 	_, hasCommit := fake.deployCalls[0].envVars["FULLSEND_COMMIT"]
 	assert.False(t, hasVersion, "FULLSEND_VERSION should not be set when empty")
@@ -549,6 +568,46 @@ func TestParseWorkerURL(t *testing.T) {
 			assert.Equal(t, tc.expect, result)
 		})
 	}
+}
+
+// --- writeVersionTS tests ---
+
+func TestWriteVersionTS(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+
+	err := writeVersionTS(dir, "2.0.0", "abc123")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "src", "version.ts"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `export const FULLSEND_VERSION = "2.0.0"`)
+	assert.Contains(t, string(data), `export const FULLSEND_COMMIT = "abc123"`)
+	assert.Contains(t, string(data), "Generated at deploy time")
+}
+
+func TestWriteVersionTS_EmptyValues(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+
+	err := writeVersionTS(dir, "", "")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, "src", "version.ts"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `export const FULLSEND_VERSION = ""`)
+	assert.Contains(t, string(data), `export const FULLSEND_COMMIT = ""`)
+}
+
+func TestWriteVersionTS_CreatesSrcDir(t *testing.T) {
+	dir := t.TempDir()
+	// Don't create src/ — writeVersionTS should create it.
+
+	err := writeVersionTS(dir, "1.0.0", "fff")
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(dir, "src", "version.ts"))
+	require.NoError(t, err)
 }
 
 // --- helpers ---

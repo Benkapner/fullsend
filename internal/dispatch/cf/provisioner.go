@@ -160,15 +160,13 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		defer cleanup()
 	}
 
-	// Stamp version metadata into the Worker's env var bindings so
-	// the WASM module can report them via /health and /status. For GCF
-	// deploys version.go is compiled into the source; for WASM the
-	// binary is precompiled, so version arrives at runtime via config.
-	if p.cfg.Version != "" {
-		p.cfg.EnvVars["FULLSEND_VERSION"] = p.cfg.Version
-	}
-	if p.cfg.Commit != "" {
-		p.cfg.EnvVars["FULLSEND_COMMIT"] = p.cfg.Commit
+	// Stamp version metadata into the Worker source at deploy time so
+	// the WASM module can report them via /health and /status. This
+	// mirrors the GCF approach (writeVersionGoToZip) — version data is
+	// compiled into the deployed bundle and cannot diverge via admin
+	// action on environment variables.
+	if err := writeVersionTS(sourceDir, p.cfg.Version, p.cfg.Commit); err != nil {
+		return nil, fmt.Errorf("writing version.ts: %w", err)
 	}
 
 	preview := p.cfg.DeployMode == DeployPreview
@@ -264,6 +262,24 @@ func extractEmbeddedSource(dir string) error {
 		}
 	}
 	return nil
+}
+
+// writeVersionTS writes a generated version.ts into the Worker source
+// directory with the provided version and commit values. This stamps
+// the version identity directly into the deployed source code —
+// mirroring how writeVersionGoToZip works for GCF deploys — so it
+// cannot drift from the running code via admin changes to env vars.
+func writeVersionTS(dir, version, commit string) error {
+	src := fmt.Sprintf(
+		"// Generated at deploy time by the CF provisioner. Do not edit.\n"+
+			"export const FULLSEND_VERSION = %q;\n"+
+			"export const FULLSEND_COMMIT = %q;\n",
+		version, commit)
+	destPath := filepath.Join(dir, "src", "version.ts")
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return fmt.Errorf("creating directory for version.ts: %w", err)
+	}
+	return os.WriteFile(destPath, []byte(src), 0o644)
 }
 
 // validateSourceDir checks that a source directory contains the
