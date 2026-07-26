@@ -13,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(__file__))
 
 from nextwork import (  # noqa: E402
+    ASSIGN_SELF,
     DECISION_STATUSES,
     REMOVE_BLOCKED_LABEL,
     RefError,
@@ -480,6 +481,77 @@ class TestClassifyIssue(unittest.TestCase):
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "waiting_triage")
 
+    def test_completed_triage_clears_recent_fs_triage_launch(self):
+        # Regression for #5440: a fresh /fs-triage must not stay waiting_triage
+        # after a successful terminal Triage status that follows it.
+        item = make_issue(
+            labels=["triaged", "feature"],
+            assignees=[],
+            comments=[
+                {
+                    "author": "alice",
+                    "body": "/fs-triage",
+                    "created_at": "2024-01-09T22:00:00Z",
+                },
+                {
+                    "author": "fullsend-ai-triage",
+                    "body": (
+                        "<!-- fullsend:agent-status:run-1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "created_at": "2024-01-09T22:05:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+        self.assertFalse(result.eliminated)
+
+    def test_newer_fs_triage_after_terminal_still_waits(self):
+        item = make_issue(
+            labels=["triaged"],
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:agent-status:run-1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "created_at": "2024-01-09T21:00:00Z",
+                },
+                {
+                    "body": "/fs-triage",
+                    "created_at": "2024-01-09T23:00:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_triage")
+        self.assertTrue(result.eliminated)
+
+    def test_completed_code_clears_recent_fs_code_launch(self):
+        item = make_issue(
+            labels=["triaged"],
+            comments=[
+                {
+                    "body": "/fs-code",
+                    "created_at": "2024-01-09T22:00:00Z",
+                },
+                {
+                    "body": (
+                        "<!-- fullsend:agent-status:run-1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Code · ✅ Success"
+                    ),
+                    "created_at": "2024-01-09T22:30:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+        self.assertFalse(result.eliminated)
+
     def test_needs_triage_label_stale(self):
         item = make_issue(
             labels=["ready-for-triage"],
@@ -519,13 +591,56 @@ class TestClassifyIssue(unittest.TestCase):
         item = make_issue(labels=["question"], assignees=[])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_assign")
-        self.assertIn("assign:self", result.suggested_actions)
+        self.assertIn(ASSIGN_SELF, result.suggested_actions)
 
     def test_human_work_assigned_no_signal(self):
         item = make_issue(labels=["question"], assignees=["alice"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "human_work")
         self.assertFalse(result.eliminated)
+
+    def test_classify_item_prepending_assign_on_needs_triage(self):
+        item = make_issue(
+            labels=["ready-for-triage"],
+            assignees=[],
+            updated_at="2024-01-01T00:00:00Z",
+        )
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_triage")
+        self.assertEqual(result.suggested_actions[0], ASSIGN_SELF)
+        self.assertIn("comment:/fs-triage", result.suggested_actions)
+
+    def test_classify_item_prepending_assign_on_trigger_code(self):
+        item = make_issue(labels=["ready-to-code"], assignees=[], updated_at="2024-01-01T00:00:00Z")
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "trigger_code")
+        self.assertEqual(result.suggested_actions[0], ASSIGN_SELF)
+        self.assertIn("comment:/fs-code", result.suggested_actions)
+
+    def test_classify_item_prepending_assign_on_promote_code(self):
+        item = make_issue(labels=["triaged"], assignees=[])
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+        self.assertEqual(result.suggested_actions[0], ASSIGN_SELF)
+
+    def test_classify_item_no_assign_on_waiting_triage(self):
+        item = make_issue(assignees=[])
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_triage")
+        self.assertTrue(result.eliminated)
+        self.assertNotIn(ASSIGN_SELF, result.suggested_actions)
+
+    def test_classify_item_no_assign_on_assigned_elsewhere(self):
+        item = make_issue(assignees=["bob"], labels=["question"])
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "assigned_elsewhere")
+        self.assertNotIn(ASSIGN_SELF, result.suggested_actions)
+
+    def test_classify_item_no_assign_when_already_assigned(self):
+        item = make_issue(labels=["triaged"], assignees=["alice"])
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+        self.assertNotIn(ASSIGN_SELF, result.suggested_actions)
 
     def test_stale_completed_triage_overrides_promote_code(self):
         item = make_issue(
@@ -955,11 +1070,12 @@ class TestApplyTrivialActions(unittest.TestCase):
                 "number": 1,
                 "status": "needs_assign",
                 "eliminated": False,
+                "suggested_actions": [ASSIGN_SELF],
             }
         ]
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual(len(applied), 1)
-        self.assertEqual(applied[0]["action"], "assign:self")
+        self.assertEqual(applied[0]["action"], ASSIGN_SELF)
         mock_run_gh.assert_called_once_with(
             ["issue", "edit", "1", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
@@ -980,6 +1096,49 @@ class TestApplyTrivialActions(unittest.TestCase):
         self.assertEqual(applied[0]["action"], "comment:/fs-review")
         mock_run_gh.assert_called_once_with(
             ["pr", "comment", "99", "--repo", "acme/widget", "--body", "/fs-review"],
+            quiet=False,
+        )
+
+    @patch("nextwork.run_gh")
+    def test_assign_before_slash_comment(self, mock_run_gh):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 7,
+                "status": "trigger_code",
+                "eliminated": False,
+                "suggested_actions": [ASSIGN_SELF, "comment:/fs-code"],
+            }
+        ]
+        applied = apply_trivial_actions(items, "alice")
+        actions = [a["action"] for a in applied]
+        self.assertEqual(actions, [ASSIGN_SELF, "comment:/fs-code"])
+        self.assertEqual(
+            mock_run_gh.call_args_list[0].args[0],
+            ["issue", "edit", "7", "--repo", "acme/widget", "--add-assignee", "alice"],
+        )
+        self.assertEqual(
+            mock_run_gh.call_args_list[1].args[0],
+            ["issue", "comment", "7", "--repo", "acme/widget", "--body", "/fs-code"],
+        )
+
+    @patch("nextwork.run_gh")
+    def test_assign_on_pr_uses_pr_subcommand(self, mock_run_gh):
+        items = [
+            {
+                "kind": "pull",
+                "repo": "acme/widget",
+                "number": 99,
+                "status": "trigger_review",
+                "eliminated": False,
+                "suggested_actions": [ASSIGN_SELF, "comment:/fs-review"],
+            }
+        ]
+        applied = apply_trivial_actions(items, "alice")
+        self.assertEqual(applied[0]["action"], ASSIGN_SELF)
+        mock_run_gh.assert_any_call(
+            ["pr", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
 
@@ -1034,19 +1193,38 @@ class TestApplyTrivialActions(unittest.TestCase):
                 "number": 99,
                 "status": "needs_assign",
                 "eliminated": False,
-                "suggested_actions": ["assign:self", REMOVE_BLOCKED_LABEL],
+                "suggested_actions": [ASSIGN_SELF, REMOVE_BLOCKED_LABEL],
             }
         ]
         applied = apply_trivial_actions(items, "alice")
         actions = [a["action"] for a in applied]
-        self.assertEqual(actions, ["assign:self", REMOVE_BLOCKED_LABEL])
+        self.assertEqual(actions, [ASSIGN_SELF, REMOVE_BLOCKED_LABEL])
         self.assertEqual(mock_run_gh.call_count, 2)
         mock_run_gh.assert_any_call(
-            ["issue", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
+            ["pr", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
         mock_run_gh.assert_any_call(
             ["pr", "edit", "99", "--repo", "acme/widget", "--remove-label", "blocked"],
+            quiet=False,
+        )
+
+    @patch("nextwork.run_gh")
+    def test_apply_assign_on_decision_status(self, mock_run_gh):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 3,
+                "status": "promote_code",
+                "eliminated": False,
+                "suggested_actions": [ASSIGN_SELF, "decision: promote"],
+            }
+        ]
+        applied = apply_trivial_actions(items, "alice")
+        self.assertEqual([a["action"] for a in applied], [ASSIGN_SELF])
+        mock_run_gh.assert_called_once_with(
+            ["issue", "edit", "3", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
 

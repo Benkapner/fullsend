@@ -50,7 +50,9 @@ ISSUE_CONTROL_LABELS = {
 # Statuses whose next action is a single trivial gh mutation (assign or slash comment).
 TRIVIAL_STATUSES = {"needs_assign", "needs_triage", "trigger_code", "trigger_review", "trigger_fix"}
 
-# Trivial side-action: remove an orphaned blocked label (no open structured blockers).
+# Trivial side-actions (orthogonal to primary status).
+ASSIGN_SELF = "assign:self"
+# Remove an orphaned blocked label (no open structured blockers).
 REMOVE_BLOCKED_LABEL = "remove-label:blocked"
 
 SLASH_COMMAND_BY_STATUS = {
@@ -381,6 +383,12 @@ def classify_launch_wait(
         and latest["waiting_status"] == spec["waiting"]
     ):
         return None
+    # Slash/label launch already satisfied by a completed agent for this role.
+    # Without this, a fresh /fs-* comment keeps waiting_* forever (until stale
+    # hours flip it to a re-trigger) even after a successful terminal status.
+    terminal = latest_terminal_agent(comments, spec["waiting"])
+    if terminal and terminal["created_at"] and terminal["created_at"] >= at:
+        return None
     if is_stale(at, stale_hours, now):
         return Classification(
             status=spec["trigger"],
@@ -410,7 +418,10 @@ def is_completed_triage_stale(comments: list[dict[str, Any]], now: datetime) -> 
         body = c.get("body") or ""
         if AGENT_STATUS_MARKER in body:
             continue
-        if comment_command(body) == "/fs-code":
+        # Launch/promote slash commands are handled by classify_launch_wait /
+        # waiting_code — they must not themselves flip completed triage stale.
+        cmd = comment_command(body)
+        if cmd in ("/fs-code", "/fs-triage"):
             continue
         return True
     return False
@@ -437,6 +448,9 @@ def is_non_stale_code_wait(
         return False
     if latest and not latest["terminal"] and latest["waiting_status"] == "waiting_code":
         return False  # stale in-flight handled elsewhere
+    terminal = latest_terminal_agent(comments, "waiting_code")
+    if terminal and terminal["created_at"] and terminal["created_at"] >= sig:
+        return False  # /fs-code or ready-to-code already completed
     return not is_stale(sig, stale_hours, now)
 
 
@@ -588,7 +602,7 @@ def classify_issue(
             status="needs_assign",
             reason="Unassigned; no automation signal",
             eliminated=False,
-            suggested_actions=["assign:self"],
+            suggested_actions=[ASSIGN_SELF],
         )
 
     return Classification(
@@ -792,6 +806,19 @@ def classify_pr(
     )
 
 
+def annotate_unassigned_assign_self(
+    classification: Classification, item: dict[str, Any]
+) -> Classification:
+    """If actionable and unassigned, suggest self-assignment first."""
+    if (
+        not classification.eliminated
+        and not (item.get("assignees") or [])
+        and ASSIGN_SELF not in classification.suggested_actions
+    ):
+        classification.suggested_actions = [ASSIGN_SELF, *classification.suggested_actions]
+    return classification
+
+
 def annotate_orphaned_blocked_label(
     classification: Classification, item: dict[str, Any]
 ) -> Classification:
@@ -815,6 +842,7 @@ def classify_item(
         classification = classify_pr(item, user, stale_hours, now)
     if classification is None:
         return None
+    classification = annotate_unassigned_assign_self(classification, item)
     return annotate_orphaned_blocked_label(classification, item)
 
 
@@ -1376,40 +1404,45 @@ def apply_trivial_actions(
     applied: list[dict[str, Any]] = []
     for item in items:
         sub = "issue" if item["kind"] == "issue" else "pr"
-        if not item.get("eliminated") and item.get("status") in TRIVIAL_STATUSES:
-            if item["status"] == "needs_assign":
-                run_gh(
-                    [
-                        "issue",
-                        "edit",
-                        str(item["number"]),
-                        "--repo",
-                        item["repo"],
-                        "--add-assignee",
-                        user,
-                    ],
-                    quiet=quiet,
-                )
-                action = "assign:self"
-            else:
-                command = SLASH_COMMAND_BY_STATUS[item["status"]]
-                run_gh(
-                    [sub, "comment", str(item["number"]), "--repo", item["repo"], "--body", command],
-                    quiet=quiet,
-                )
-                action = f"comment:{command}"
-            applied.append(
-                {
-                    "kind": item["kind"],
-                    "repo": item["repo"],
-                    "number": item["number"],
-                    "status": item["status"],
-                    "action": action,
-                }
+        suggested = item.get("suggested_actions") or []
+        base = {
+            "kind": item["kind"],
+            "repo": item["repo"],
+            "number": item["number"],
+            "status": item["status"],
+        }
+
+        # Self-assign first (actionable unassigned side-action).
+        if ASSIGN_SELF in suggested:
+            run_gh(
+                [
+                    sub,
+                    "edit",
+                    str(item["number"]),
+                    "--repo",
+                    item["repo"],
+                    "--add-assignee",
+                    user,
+                ],
+                quiet=quiet,
             )
+            applied.append({**base, "action": ASSIGN_SELF})
+
+        # Primary trivial status (slash commands; needs_assign is assign-only).
+        if (
+            not item.get("eliminated")
+            and item.get("status") in TRIVIAL_STATUSES
+            and item["status"] != "needs_assign"
+        ):
+            command = SLASH_COMMAND_BY_STATUS[item["status"]]
+            run_gh(
+                [sub, "comment", str(item["number"]), "--repo", item["repo"], "--body", command],
+                quiet=quiet,
+            )
+            applied.append({**base, "action": f"comment:{command}"})
 
         # Orphaned blocked label — trivial side-action for any primary status.
-        if REMOVE_BLOCKED_LABEL in (item.get("suggested_actions") or []):
+        if REMOVE_BLOCKED_LABEL in suggested:
             run_gh(
                 [
                     sub,
@@ -1422,15 +1455,7 @@ def apply_trivial_actions(
                 ],
                 quiet=quiet,
             )
-            applied.append(
-                {
-                    "kind": item["kind"],
-                    "repo": item["repo"],
-                    "number": item["number"],
-                    "status": item["status"],
-                    "action": REMOVE_BLOCKED_LABEL,
-                }
-            )
+            applied.append({**base, "action": REMOVE_BLOCKED_LABEL})
     return applied
 
 
@@ -1685,7 +1710,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Perform trivial actions: assign self, post /fs-* comments, remove orphaned blocked labels",
+        help="Perform trivial actions: assign:self first when suggested, post /fs-* comments, remove orphaned blocked labels",
     )
     parser.add_argument(
         "--take-over",

@@ -40,7 +40,7 @@ python3 skills/nextwork/scripts/nextwork.py [ITEMS...] [OPTIONS]
 | `--user LOGIN` | GitHub login (default: authenticated user) |
 | `--format markdown\|json` | Output format (default: markdown) |
 | `--show-blocked` | Include Waiting/Blocked/Assigned-elsewhere sections in markdown output (JSON always includes every item) |
-| `--apply` | Perform trivial actions: assign unassigned items to self; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments; remove orphaned `blocked` labels (`remove-label:blocked`). Never steals assignment from others and never auto-merges. |
+| `--apply` | Perform trivial actions: `assign:self` first when suggested on actionable unassigned items; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments; remove orphaned `blocked` labels (`remove-label:blocked`). Never steals assignment from others and never auto-merges. |
 | `--take-over REFS` | Assign the listed refs (comma-separated or repeatable) to `--user`, even if already assigned elsewhere, then classify them as owned by the user. Skill-mediated — ask the user before using this. |
 | `--link-blocker DEPENDENT=BLOCKER` | Repeatable. Persist a real GitHub `blockedBy` dependency (DEPENDENT is blocked by BLOCKER, both as `owner/repo#N`). Idempotent if the link already exists. **The dependent must be an open Issue** — GitHub's blocked-by relationship is issue-only, so a PR cannot be the dependent side. |
 | `--decisions-only` | Filter output to non-trivial decisions only (statuses in the "Decision?" = No/Decision column below) |
@@ -65,7 +65,7 @@ like production dispatch: first whitespace token of the first comment line.
 
 | Status | Meaning | Stale → |
 |--------|---------|---------|
-| `waiting_triage` | `ready-for-triage` / `/fs-triage`; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone) | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
+| `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone). A terminal Triage at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
 | `waiting_code` | `ready-to-code` / `/fs-code`; **or** non-terminal code agent-status | `trigger_code` (`/fs-code`) |
 | `waiting_review` | `ready-for-review` / `/fs-review` / review-required path; **or** non-terminal review agent-status | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
 | `waiting_fix` | Unresolved review threads all from `fullsend-ai-review[bot]`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
@@ -88,7 +88,7 @@ like production dispatch: first whitespace token of the first comment line.
 
 | Status | Next action | Trivial? |
 |--------|-------------|----------|
-| `needs_assign` | Unassigned → assign yourself | Yes |
+| `needs_assign` | Unassigned with no other automation/decision signal → assign yourself | Yes |
 | `needs_triage` | Stale triage launch/start, **or** completed triage older than 3 days / followed by non-exempt comments (does **not** override a non-stale `waiting_code`) → `/fs-triage` | Yes |
 | `promote_code` | `triaged` (feature work) → decide whether to promote | Decision |
 | `close_or_plan` | Has sub-issues and all are closed → close the parent, or plan further work / open new sub-issues | Decision |
@@ -105,9 +105,10 @@ like production dispatch: first whitespace token of the first comment line.
 
 | Suggestion | When | Trivial? |
 |------------|------|----------|
+| `assign:self` | Actionable (`eliminated: false`) and unassigned — prepended ahead of other suggestions | Yes (`--apply` assigns **first**, before `/fs-*` comments or label removal) |
 | `remove-label:blocked` | Item has the `blocked` label but no open structured blockers | Yes (`--apply` removes it) |
 
-`--apply` performs the "Yes" (trivial) status rows **and** any `remove-label:blocked` suggestions (including on eliminated / decision items). `--decisions-only` shows only the "Decision" status rows.
+`--apply` performs the "Yes" (trivial) status rows **and** side-actions: `assign:self` on actionable unassigned items (including decision statuses), then primary `/fs-*` comments, then any `remove-label:blocked` (including on eliminated / decision items). It never steals assignees from others. `--decisions-only` shows only the "Decision" status rows.
 
 ## Skill loop
 
@@ -134,12 +135,12 @@ like production dispatch: first whitespace token of the first comment line.
 5. Present the result:
    - Default: actionable items. Add blocked/waiting/assigned-elsewhere detail
      only if the user asked, or pass `--show-blocked`.
-   - Remaining `remove-label:blocked` suggestions (after step 3) are
-     clearly-misplaced orphaned labels — include them when offering apply.
+   - Remaining `assign:self` and `remove-label:blocked` suggestions (after
+     step 3) are trivial side-actions — include them when offering apply.
    - "Decisions only": re-run with `--apply --decisions-only` — trivial
-     actions (including orphaned `blocked` label removal) get applied and
-     only decision items remain to show. Still ask before `--take-over`;
-     still persist confident prose blockers first.
+     actions (including `assign:self` and orphaned `blocked` label removal)
+     get applied and only decision items remain to show. Still ask before
+     `--take-over`; still persist confident prose blockers first.
 6. Offer to apply remaining trivial actions (re-run with `--apply`) unless
    already applied in step 5.
 7. Don't invent statuses the script didn't emit. The skill's job is finding
