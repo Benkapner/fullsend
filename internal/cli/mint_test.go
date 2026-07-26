@@ -204,6 +204,131 @@ func TestMintDeployCmd_DryRunWithInvalidPEM(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid PEM for role")
 }
 
+// --- deploy command: platform flag tests ---
+
+func TestMintDeployCmd_PlatformFlag(t *testing.T) {
+	cmd := newMintDeployCmd()
+	platformFlag := cmd.Flags().Lookup("platform")
+	require.NotNil(t, platformFlag, "expected --platform flag")
+	assert.Equal(t, "gcp", platformFlag.DefValue)
+}
+
+func TestMintDeployCmd_CloudflareFlags(t *testing.T) {
+	cmd := newMintDeployCmd()
+
+	workerNameFlag := cmd.Flags().Lookup("worker-name")
+	require.NotNil(t, workerNameFlag, "expected --worker-name flag")
+
+	previewFlag := cmd.Flags().Lookup("preview")
+	require.NotNil(t, previewFlag, "expected --preview flag")
+	assert.Equal(t, "false", previewFlag.DefValue)
+}
+
+func TestMintDeployCmd_InvalidPlatform(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=azure"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported platform")
+}
+
+func TestMintDeployCmd_CloudflareMissingEnv(t *testing.T) {
+	// Save and restore env vars.
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Unsetenv("CLOUDFLARE_ACCOUNT_ID")
+	os.Unsetenv("CLOUDFLARE_API_TOKEN")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLOUDFLARE_ACCOUNT_ID")
+	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN")
+}
+
+func TestMintDeployCmd_CloudflareInvalidWorkerName(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--worker-name=INVALID_NAME"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --worker-name")
+}
+
+func TestMintDeployCmd_CloudflareDryRun(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareDryRunPreview(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run", "--preview"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_GCPDefaultPlatform(t *testing.T) {
+	// Default platform is GCP, so omitting --platform should require --project.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintDeployCmd_GCPExplicitPlatform(t *testing.T) {
+	// Explicitly setting --platform=gcp should still require --project.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintDeployCmd_GCPPlatformDryRun(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
 // --- lookupAppID tests ---
 
 func TestLookupAppID_Success(t *testing.T) {
