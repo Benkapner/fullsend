@@ -182,4 +182,6 @@ suiteRunner := godog.TestSuite{
 
 **`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
 
+**`scm.Driver.DeleteRepo` addition:** The `scm.Driver` interface now includes a `DeleteRepo(ctx context.Context, owner, repo string) error` method. `CleanupScenario` calls it to delete ephemeral fork repos after each scenario. External `scm.Driver` implementations must add this method — return `forge.ErrNotFound` when the repository does not exist.
+
 Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.

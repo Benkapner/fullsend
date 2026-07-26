@@ -39,7 +39,7 @@ func CleanupScenario(w *world.World) {
 			}
 		}
 	}
-	if w.ForkOwner != "" && w.ForkRepo != "" {
+	if w.ForkOwner != "" && w.ForkRepo != "" && w.ForkRepo != w.RepoName {
 		if err := w.SCM.DeleteRepo(ctx, w.ForkOwner, w.ForkRepo); err != nil {
 			if !forge.IsNotFound(err) {
 				worldLogf(w, "behaviour cleanup: delete fork repo %s/%s: %v", w.ForkOwner, w.ForkRepo, err)

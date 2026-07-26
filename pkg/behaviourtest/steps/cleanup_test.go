@@ -204,6 +204,22 @@ func TestCleanupScenario_DeleteForkRepoError_Logged(t *testing.T) {
 	assert.Contains(t, logged[0], "server error")
 }
 
+func TestCleanupScenario_SkipsForkRepoDelete_WhenForkRepoEqualsRepoName(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo", // same as RepoName — must not be deleted
+		SCM:       scmDriver,
+	}
+	CleanupScenario(w)
+
+	assert.Empty(t, scmDriver.deletedRepos, "repo deletion should be skipped when ForkRepo == RepoName")
+}
+
 func TestCleanupScenario_SkipsForkRepoDelete_WhenFieldsMissing(t *testing.T) {
 	t.Parallel()
 
