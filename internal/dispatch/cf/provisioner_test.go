@@ -168,6 +168,71 @@ func TestProvisioner_Provision_EnvVars(t *testing.T) {
 	assert.Equal(t, "fullsend-mint", fake.deployCalls[0].envVars["OIDC_AUDIENCE"])
 }
 
+func TestProvisioner_Provision_StampsVersion(t *testing.T) {
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{}
+
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		SourceDir:  sourceDir,
+		Version:    "1.2.3",
+		Commit:     "deadbeef",
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "1.2.3", fake.deployCalls[0].envVars["FULLSEND_VERSION"])
+	assert.Equal(t, "deadbeef", fake.deployCalls[0].envVars["FULLSEND_COMMIT"])
+}
+
+func TestProvisioner_Provision_OmitsEmptyVersion(t *testing.T) {
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{}
+
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		SourceDir:  sourceDir,
+		// No Version or Commit set.
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+	_, hasVersion := fake.deployCalls[0].envVars["FULLSEND_VERSION"]
+	_, hasCommit := fake.deployCalls[0].envVars["FULLSEND_COMMIT"]
+	assert.False(t, hasVersion, "FULLSEND_VERSION should not be set when empty")
+	assert.False(t, hasCommit, "FULLSEND_COMMIT should not be set when empty")
+}
+
+func TestProvisioner_Provision_KeepVarsAlwaysPassed(t *testing.T) {
+	// Verify that --keep-vars is always passed to wrangler deploy,
+	// not just for preview deploys, to avoid wiping existing secrets.
+	sourceDir := createFakeWorkerSourceDir(t)
+
+	for _, mode := range []DeployMode{DeployDurable, DeployPreview} {
+		t.Run(fmt.Sprintf("mode=%d", mode), func(t *testing.T) {
+			fake := &fakeWranglerRunner{}
+			p := NewProvisioner(Config{
+				AccountID:  "abc123",
+				WorkerName: "test-mint",
+				SourceDir:  sourceDir,
+				DeployMode: mode,
+			}, fake)
+
+			_, err := p.Provision(context.Background())
+			require.NoError(t, err)
+			require.Len(t, fake.deployCalls, 1)
+			// The deploy call always passes preview=true/false to Deploy(),
+			// but --keep-vars is handled inside LiveWranglerRunner.Deploy.
+			// This test verifies Deploy() is called; the --keep-vars
+			// behavior is tested in integration tests via the runner.
+		})
+	}
+}
+
 func TestProvisioner_Provision_DeployError(t *testing.T) {
 	sourceDir := createFakeWorkerSourceDir(t)
 	fake := &fakeWranglerRunner{

@@ -57,6 +57,10 @@ export interface Env {
   PER_REPO_WIF_REPOS?: string;
   /** JSON-encoded map of custom role permissions. */
   CUSTOM_ROLE_PERMISSIONS?: string;
+  /** Fullsend semver stamped at deploy time by the CF provisioner. */
+  FULLSEND_VERSION?: string;
+  /** Git commit SHA stamped at deploy time by the CF provisioner. */
+  FULLSEND_COMMIT?: string;
 
   /**
    * Dynamic secret access: Worker secrets are accessed by name.
@@ -158,6 +162,8 @@ function buildWasmConfig(env: Env): string {
     AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "",
     PerRepoWIFRepos: env.PER_REPO_WIF_REPOS ?? "",
     CustomRolePermissions: env.CUSTOM_ROLE_PERMISSIONS ?? "",
+    Version: env.FULLSEND_VERSION ?? "",
+    Commit: env.FULLSEND_COMMIT ?? "",
   });
 }
 

@@ -4,13 +4,13 @@ sidebar_label: fullsend mint
 
 # fullsend mint
 
-Deploy and manage the OIDC token mint service. The mint is a GCP Cloud Function that exchanges GitHub Actions OIDC tokens for short-lived GitHub App installation tokens, enabling agents to authenticate without long-lived credentials.
+Deploy and manage the OIDC token mint service. The mint exchanges GitHub Actions OIDC tokens for short-lived GitHub App installation tokens, enabling agents to authenticate without long-lived credentials. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker).
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `fullsend mint deploy` | Deploy or update the mint Cloud Function |
+| `fullsend mint deploy` | Deploy or update the token mint (GCP or Cloudflare) |
 | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | `fullsend mint remove-role <role>` | Remove a role from the mint |
 | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint |
@@ -20,7 +20,11 @@ Deploy and manage the OIDC token mint service. The mint is a GCP Cloud Function 
 
 ## `mint deploy`
 
-Deploys or updates the token mint Cloud Function, creating the service account, WIF pool, and Secret Manager secrets as needed.
+Deploys or updates the token mint. Use `--platform` to select the target platform (default: `gcp`).
+
+### GCP mode (`--platform=gcp`)
+
+Deploys the mint as a GCP Cloud Function, creating the service account, WIF pool, and Secret Manager secrets as needed.
 
 ```bash
 fullsend mint deploy \
@@ -43,16 +47,36 @@ fullsend mint deploy \
   --public
 ```
 
+### Cloudflare mode (`--platform=cloudflare`)
+
+Deploys the mint as a Cloudflare Worker running the mintcore WASM module with a thin TypeScript adapter.
+
+```bash
+fullsend mint deploy \
+  --platform cloudflare
+```
+
+Use `--preview` for ephemeral test deploys (supports teardown). Use `--worker-name` to target a specific Worker script name.
+
+Required environment variables:
+- `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account identifier
+- `CLOUDFLARE_API_TOKEN` — API token with Workers write permission
+
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project` | | GCP project ID |
-| `--region` | `us-central1` | Cloud region for the function |
-| `--pem-dir` | | Directory containing role PEM files (first-time bootstrap) |
-| `--public` | `false` | Deploy public mint (`ALLOWED_ORGS=*`, permissive WIF) |
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (GCP only) |
+| `--region` | `us-central1` | Cloud region for the function (GCP only) |
+| `--pem-dir` | | Directory containing role PEM files (GCP only, first-time bootstrap) |
+| `--public` | `false` | Deploy public mint (GCP only) |
+| `--source-dir` | | Path to local mint source (default: embedded) |
+| `--dry-run` | `false` | Preview changes without making them |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
+| `--preview` | `false` | Deploy as ephemeral preview Worker (Cloudflare only) |
 
-### Required IAM roles
+### Required IAM roles (GCP)
 
 | Role | Description |
 |------|-------------|

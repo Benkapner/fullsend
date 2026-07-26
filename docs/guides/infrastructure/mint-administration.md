@@ -1,10 +1,10 @@
 # Mint service administration
 
-This guide covers deploying and managing the fullsend token mint Cloud Function. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories.
+This guide covers deploying and managing the fullsend token mint. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker).
 
 | Command | Description |
 |---------|-------------|
-| `mint deploy` | Deploy or update the mint Cloud Function and GCP infrastructure |
+| `mint deploy` | Deploy or update the token mint (GCP Cloud Function or Cloudflare Worker) |
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
@@ -12,7 +12,7 @@ This guide covers deploying and managing the fullsend token mint Cloud Function.
 | `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
-> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
+> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
 
 ## Hosted mint
 

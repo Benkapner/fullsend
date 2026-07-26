@@ -2,11 +2,11 @@
 
 This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Getting Started guides](../getting-started/).
 
-## Token Mint (OIDC) — GCF Cloud Function
+## Token Mint (OIDC)
 
 > Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint token`
 
-The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped GitHub App installation tokens. This eliminates long-lived PATs from the system.
+The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens. This eliminates long-lived PATs from the system. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker) — see `fullsend mint deploy --platform`.
 
 ### Mint Architecture
 

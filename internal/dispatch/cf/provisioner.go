@@ -37,7 +37,7 @@ const (
 )
 
 // workerNamePattern validates Cloudflare Worker names.
-// Workers names must be lowercase alphanumeric with hyphens, 1-63 chars.
+// Worker names must be lowercase alphanumeric with hyphens, 2-63 chars.
 var workerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
 
 // Compile-time check that Provisioner implements dispatch.Dispatcher.
@@ -158,6 +158,17 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	}
 	if cleanup != nil {
 		defer cleanup()
+	}
+
+	// Stamp version metadata into the Worker's env var bindings so
+	// the WASM module can report them via /health and /status. For GCF
+	// deploys version.go is compiled into the source; for WASM the
+	// binary is precompiled, so version arrives at runtime via config.
+	if p.cfg.Version != "" {
+		p.cfg.EnvVars["FULLSEND_VERSION"] = p.cfg.Version
+	}
+	if p.cfg.Commit != "" {
+		p.cfg.EnvVars["FULLSEND_COMMIT"] = p.cfg.Commit
 	}
 
 	preview := p.cfg.DeployMode == DeployPreview
@@ -331,10 +342,10 @@ func NewLiveWranglerRunner(accountID string) *LiveWranglerRunner {
 // Deploy deploys a Worker from sourceDir using wrangler deploy.
 func (r *LiveWranglerRunner) Deploy(ctx context.Context, sourceDir, workerName string, preview bool, envVars map[string]string) (string, error) {
 	args := []string{"wrangler", "deploy", "--name", workerName}
-	if preview {
-		// Use --keep-vars to preserve existing secrets.
-		args = append(args, "--keep-vars")
-	}
+	// Always pass --keep-vars to preserve existing Worker secrets
+	// (e.g. PEM keys stored via StoreAgentPEM). Without this flag,
+	// wrangler overwrites all bindings on each deploy, wiping secrets.
+	args = append(args, "--keep-vars")
 
 	// Pass env vars to wrangler via --var flags.
 	for k, v := range envVars {
