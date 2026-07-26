@@ -40,6 +40,7 @@ func (p *panickingSCM) CommitFile(context.Context, string, string, string, strin
 }
 func (p *panickingSCM) CreateBranch(context.Context, string, string, string) error { return nil }
 func (p *panickingSCM) DeleteBranch(context.Context, string, string, string) error { return nil }
+func (p *panickingSCM) DeleteRepo(context.Context, string, string) error           { return nil }
 func (p *panickingSCM) CommitFileToBranch(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }

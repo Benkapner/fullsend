@@ -54,6 +54,9 @@ func TestConcurrentAccess(t *testing.T) {
 
 			// AddComment
 			_, _ = d.AddComment(ctx, "org", "repo", 1, "comment")
+
+			// DeleteRepo
+			_ = d.DeleteRepo(ctx, "org", "repo")
 		}()
 	}
 	wg.Wait()

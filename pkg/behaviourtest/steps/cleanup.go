@@ -26,14 +26,23 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
-	// --- Fork branch cleanup ---
+	// --- Fork repo cleanup ---
+	// Fork repos are ephemeral: created per-scenario and deleted here.
+	// Branch and PR cleanup above already ran against the base repo;
+	// deleting the fork repo removes the branch implicitly, but we
+	// still attempt branch deletion first so partial failures leave
+	// less debris.
 	if w.ForkPRBranch != "" && w.ForkOwner != "" && w.ForkRepo != "" {
-		// Delete the test branch on the fork repo. The fork repo itself is
-		// long-lived and must not be deleted per-scenario; only per-scenario
-		// branches are removed.
 		if err := w.SCM.DeleteBranch(ctx, w.ForkOwner, w.ForkRepo, w.ForkPRBranch); err != nil {
 			if !forge.IsNotFound(err) {
 				worldLogf(w, "behaviour cleanup: delete fork branch %s: %v", w.ForkPRBranch, err)
+			}
+		}
+	}
+	if w.ForkOwner != "" && w.ForkRepo != "" {
+		if err := w.SCM.DeleteRepo(ctx, w.ForkOwner, w.ForkRepo); err != nil {
+			if !forge.IsNotFound(err) {
+				worldLogf(w, "behaviour cleanup: delete fork repo %s/%s: %v", w.ForkOwner, w.ForkRepo, err)
 			}
 		}
 	}

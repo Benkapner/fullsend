@@ -115,7 +115,7 @@ Fork dispatch scenarios test `pull_request_target` harness triggering from cross
 
 ### Logical fork name → leased base
 
-Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased a numbered base (for example leased `test-repo-07` → actual fork repo `test-repo-07-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code `test-repo-NN-fork` in Gherkin. Full ephemeral fork deletion remains tracked in #5440.
+Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased a numbered base (for example leased `test-repo-07` → actual fork repo `test-repo-07-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code `test-repo-NN-fork` in Gherkin.
 
 ### Pool-org prerequisites
 
@@ -128,11 +128,11 @@ Fork scenarios require the pool org to have:
 
 | Resource | Lifecycle | Cleanup |
 |----------|-----------|---------|
-| Fork repo | Per leased base (`{RepoName}-fork`); created on demand | Not deleted yet (#5440) |
-| Fork branches | Per-scenario | Deleted by `CleanupScenario` |
+| Fork repo | Per-scenario (`{RepoName}-fork`); created on demand | Deleted by `CleanupScenario` |
+| Fork branches | Per-scenario | Deleted by `CleanupScenario` (before repo deletion) |
 | Fork PRs | Per-scenario | Closed by `CleanupScenario` |
 
-Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo and deletes the head branch on the fork repo.
+Fork repos are **ephemeral**: created when the `Given a fork` step runs and deleted by `CleanupScenario` after the scenario completes. Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo, deletes the head branch on the fork repo, and then deletes the fork repo itself. Do **not** mint-enroll fork names — forks are PR sources only; mint stays on the enrolled base.
 
 ### Background step usage
 
