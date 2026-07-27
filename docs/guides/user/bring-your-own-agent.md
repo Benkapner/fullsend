@@ -21,7 +21,7 @@ GitHub event (issue opened, label added, PR comment, ...)
         ▼
 ┌── fullsend dispatch ──────────────────┐
 │  1. Normalize event → NormalizedEvent │
-│  2. Authorize (ADR 0054)              │
+│  2. Authorize                         │
 │  3. Enumerate registered harnesses    │
 │  4. Evaluate CEL triggers             │
 │  5. Launch matching agents            │

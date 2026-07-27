@@ -364,9 +364,8 @@ command is primarily useful for one-off checks.
 
 ## Migrating from per-org mode to manifest management
 
-Organizations migrating from per-org mode
-([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)) to
-per-repo manifest management can use the following workflow.
+Organizations migrating from per-org mode to per-repo manifest management
+can use the following workflow.
 
 ### Step 1: Generate a manifest from existing installations
 
@@ -466,4 +465,3 @@ commands.
 - [Per-Org Mode](org-mode.md) — Organization-mode installation (planned deprecation)
 - [CLI Reference: fullsend repos](../../cli/repos.md) — Full flag and subcommand reference
 - [Mint administration](../infrastructure/mint-administration.md) — Token mint deployment and management
-- [ADR 0057](../../ADRs/0057-repos-management.md) — Design decision for repos management
