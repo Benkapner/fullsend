@@ -251,7 +251,7 @@ env:
     MY_VAR: "${MY_VAR}"
   sandbox:                           # Available inside sandbox
     MY_SETTING: "value"
-runner_env:                          # Legacy (same as env.runner)
+runner_env:                          # ⚠ Deprecated: use env.runner instead
   MY_VAR: "${MY_VAR}"
 
 # ── Timeouts ──────────────────────────────────────────────────
@@ -289,6 +289,13 @@ security:
   fail_mode: closed                  # "closed" (default) or "open"
 ```
 
+### Deprecated fields
+
+> **Deprecated:** `runner_env` is deprecated. Use `env.runner`
+> instead. The `runner_env` field still works but emits a deprecation warning
+> at runtime. Migration: move `runner_env:` entries under `env: runner:` and
+> delete the `runner_env:` block.
+
 ### Field merge rules (for `base` and `forge`)
 
 | Field type | Behavior |
@@ -297,7 +304,7 @@ security:
 | `skills` | Merged with deduplication by basename (child overrides base) |
 | `plugins`, `providers`, `api_servers`, `openshell.profiles` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |
-| `env`, `runner_env` | Merged; child keys win |
+| `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `validation_loop`, `security` | Child replaces entirely |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own) |
 
