@@ -79,6 +79,30 @@ Use tags only for **exceptions** when a backend cannot run a scenario yet: `@ski
 make behaviour-test
 ```
 
+### Parallel execution
+
+The suite runs scenarios in parallel by default (`GODOG_CONCURRENCY=12`,
+matching the repo pool size). Each scenario gets its own `World` clone and
+leases a unique `test-repo-NN` from the pool, so no cross-scenario state
+is shared. The `behaviour-test` Make target includes `-race` to catch
+data races under concurrent execution.
+
+To adjust concurrency:
+
+```bash
+# Run at default concurrency (12)
+make behaviour-test
+
+# Run with explicit concurrency
+GODOG_CONCURRENCY=4 make behaviour-test
+
+# Serial mode for debugging
+GODOG_CONCURRENCY=1 make behaviour-test
+```
+
+Serial mode (`GODOG_CONCURRENCY=1`) is useful when debugging a single
+scenario or when `-v` output from multiple scenarios would interleave.
+
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 ### Lazy create+install (`RepoEnsurer`)
