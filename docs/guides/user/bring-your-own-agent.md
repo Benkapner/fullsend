@@ -2,7 +2,7 @@
 
 Add a custom agent to fullsend — or change the configuration of an existing one — from harness file to CI.
 
-This guide covers the end-to-end workflow for building and registering agents. For details on harness YAML structure and layered resolution, see [Customizing agents](customizing-agents.md).
+This guide covers the end-to-end workflow for building, registering, and dispatching custom agents on GitHub. For details on harness YAML structure and layered resolution, see [Customizing agents](customizing-agents.md).
 
 This guide uses the [fullsend-ai/agents](https://github.com/fullsend-ai/agents) triage agent as a running example.
 
@@ -13,20 +13,34 @@ A fullsend agent has two parts:
 1. **Harness file** (YAML) — _how_ the agent runs: sandbox image, policy, scripts, skills, credentials, timeouts.
 2. **Agent definition** (Markdown) — _what_ the agent does: prompt, tools, model, skills.
 
-The harness is the entry point. `fullsend run triage` reads the harness, provisions a sandbox, and launches the agent inside it.
+Once registered, your agent runs automatically when a matching GitHub event arrives — an issue is opened, a label is applied, a comment is posted, or a PR is submitted. The harness `trigger` field contains a [CEL expression](cel-triggers-reference.md) that fullsend evaluates against incoming events to decide whether your agent should run:
 
 ```
-fullsend run triage
+GitHub event (issue opened, label added, PR comment, ...)
         │
         ▼
-┌── harness/triage.yaml ─────────┐
-│  agent: agents/triage.md        │  ◄── prompt & tools
-│  policy: policies/base.yaml     │  ◄── sandbox rules
-│  skills: [issue-labels]         │  ◄── domain knowledge
-│  pre_script: scripts/pre-...    │  ◄── fetch data (before sandbox)
-│  post_script: scripts/post-...  │  ◄── act on output (after sandbox)
-└─────────────────────────────────┘
+┌── fullsend dispatch ──────────────────┐
+│  1. Normalize event → NormalizedEvent │
+│  2. Authorize (ADR 0054)              │
+│  3. Enumerate registered harnesses    │
+│  4. Evaluate CEL triggers             │
+│  5. Launch matching agents            │
+└───────────────────────────────────────┘
+        │
+        ▼
+┌── harness/my-agent.yaml ────────────┐
+│  agent: agents/my-agent.md          │  ◄── prompt & tools
+│  trigger: "event.entity.kind == …"  │  ◄── when to run
+│  policy: policies/base.yaml         │  ◄── sandbox rules
+│  skills: [my-skill]                 │  ◄── domain knowledge
+│  pre_script: scripts/pre-...        │  ◄── fetch data (before sandbox)
+│  post_script: scripts/post-...      │  ◄── act on output (after sandbox)
+└─────────────────────────────────────┘
 ```
+
+You do not need to write a GitHub Actions workflow file for each custom agent. The dispatch workflow that `fullsend github setup` installs handles discovery and routing for all registered agents.
+
+For local development and debugging, you can also run an agent directly with `fullsend run my-agent` — see [Testing locally](#testing-locally).
 
 **Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the scaffold's shared `policies/base.yaml` contains no network rules, since built-in agents use providers ([ADR 0065](../../ADRs/0065-provider-backed-policy-composition.md)). Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
 
@@ -52,6 +66,11 @@ providers:
   - vertex-ai
 role: my-agent
 slug: my-org-my-agent               # GitHub App identity; convention: <org>-<role> (see Advanced: custom identity)
+trigger: |
+  event.entity.kind == "work_item"
+    && event.transition.kind == "label_changed"
+    && event.transition.label.name == "ready-for-my-agent"
+    && event.transition.label.action == "added"
 timeout_minutes: 15
 ```
 
@@ -109,7 +128,7 @@ Your only output is the JSON result file.
 
 Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`). To define a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote Providers and Profiles](customizing-agents.md#remote-providers-and-profiles) and [ADR 0070](../../ADRs/0070-portable-provider-profile-resolution.md)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents ([ADR 0065](../../ADRs/0065-provider-backed-policy-composition.md)), but custom agents can use whichever approach fits.
 
-**Next step:** to get your agent running immediately, skip ahead to [Testing locally](#testing-locally) → [Registering your agent](#registering-your-agent). The sections below provide deeper reference material.
+**Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).
 
 ## Real-world example: the triage agent
 
@@ -183,7 +202,7 @@ role: my-agent                      # Role name (lowercase letter first, then a-
 slug: my-org-my-role                # GitHub App identity (convention: <org>-<role>)
 description: One-line summary       # Human-readable description
 doc: docs/agents/my-agent.md        # Source-repo-only; not resolved at runtime
-trigger: "event.type == 'issue'"    # Optional CEL expression over normevent (ADR 0061)
+trigger: "event.entity.kind == 'work_item'"  # Optional CEL expression over NormalizedEvent (see CEL Triggers Reference)
 
 # ── Composition ───────────────────────────────────────────────
 base: harness/common-base.yaml      # Inherit from another harness (local or URL)
@@ -427,7 +446,7 @@ Any harness field can be overridden. The [field merge rules](#field-merge-rules-
 
 ## Testing locally
 
-Before registering, verify your agent works locally. Most agents need additional flags for credentials and target repo — see [Running agents locally](running-agents-locally.md) for the full list:
+Before registering, verify your agent works locally. Use `fullsend run` as a development and debugging tool — it runs your agent directly without going through dispatch:
 
 ```bash
 fullsend run my-agent \
@@ -438,9 +457,11 @@ fullsend run my-agent \
 
 The `--env-file` supplies variables your harness references (e.g. `GH_TOKEN`, `ANTHROPIC_VERTEX_PROJECT_ID`). See [Running agents locally](running-agents-locally.md) for prerequisites (GCP credentials, sandbox image) and troubleshooting.
 
+Most agents need additional flags for credentials and target repo — see [Running agents locally](running-agents-locally.md) for the full list.
+
 ## Registering your agent
 
-Register agents in `config.yaml` so fullsend discovers them. Both per-repo (`.fullsend/config.yaml`) and per-org configs support the `agents:` list.
+Register agents in `config.yaml` so fullsend discovers them. Both per-repo (`.fullsend/config.yaml`) and per-org configs support the `agents:` list. Registration is what makes your agent visible to dispatch — without it, the agent can only be invoked via `fullsend run`.
 
 Authentication for CLI commands uses the `gh` CLI or `GH_TOKEN` environment variable. For URL agents, the CLI resolves GitHub blob URLs to `raw.githubusercontent.com` URLs automatically.
 
@@ -557,6 +578,7 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 | Provider blocks requests | Check that the required provider profile is listed in `providers:` and exists in the `providers/` directory |
 | Schema validation fails | Compare the sandbox output (`$FULLSEND_OUTPUT_DIR/<result>.json`) against the schema referenced in `validation_loop` / `FULLSEND_OUTPUT_SCHEMA`; re-run with `--keep-sandbox` to inspect |
 | Agent not found | Verify registration: `fullsend agent list` |
+| Agent not triggered by events | Verify your `trigger` expression — see [Verifying your trigger](cel-triggers-reference.md#verifying-your-trigger) |
 | `allowed_remote_resources` error | URL agents require a matching prefix in `allowed_remote_resources` — `fullsend agent add` sets this automatically |
 | `fullsend run` fails locally | Missing GCP credentials or sandbox image — see [Running agents locally](running-agents-locally.md) |
 | Integrity hash mismatch | Remote content changed — run `fullsend agent update <name>` to re-pin |
@@ -564,6 +586,7 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 ## See also
 
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
+- [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Customizing Agents with Skills](customizing-with-skills.md) — creating and managing skills
 - [Customizing Agents with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Customizing agents](customizing-agents.md) — harness configurations and layered content resolution
