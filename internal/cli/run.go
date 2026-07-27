@@ -504,6 +504,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		result.Profiles = append(prev.Profiles, result.Profiles...)
 		result.Providers = append(prev.Providers, result.Providers...)
 		result.Warnings = append(prev.Warnings, result.Warnings...)
+
+		// Strip path entries from h.Providers now that they've been resolved
+		// into ResolvedProviders. Only bare names should remain for
+		// sandboxProviderNames downstream.
+		bare := h.Providers[:0]
+		for _, p := range h.Providers {
+			if !harness.IsURL(p) && !harness.IsProviderPath(p) {
+				bare = append(bare, p)
+			}
+		}
+		h.Providers = bare
 	}
 	for _, w := range result.Warnings {
 		printer.StepWarn(w)

@@ -196,9 +196,9 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	// ResolveRelativeTo, missing companion files (sub-agents/,
 	// meta-prompt.md) that only exist at the source URL. See #5305.
 	//
-	// All three resolve functions skip absolute paths and URLs, so they
-	// are safe to call on the merged harness where base-inherited fields
-	// are already resolved to cache paths.
+	// All resolve functions skip cache paths and URLs, so they are safe
+	// to call on the merged harness where base-inherited fields are
+	// already resolved to cache paths.
 	if opts.SourceURL != "" {
 		scriptDeps, err := resolveBaseScripts(ctx, child, opts.SourceURL, allowlist, opts)
 		if err != nil {
@@ -217,6 +217,18 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced host_files after base composition: %w", err)
 		}
 		deps = append(deps, hostFileDeps...)
+
+		profileDeps, err := resolveBaseProfiles(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced profiles after base composition: %w", err)
+		}
+		deps = append(deps, profileDeps...)
+
+		providerDeps, err := resolveBaseProviders(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced providers after base composition: %w", err)
+		}
+		deps = append(deps, providerDeps...)
 	}
 
 	// ResolveForge once on the merged result
@@ -939,10 +951,9 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 
 // resolveBaseProfiles fetches profile files with relative paths from a
 // URL-referenced base harness. For each openshell.profiles entry that is a
-// non-empty relative path (not a URL or absolute path), the file is fetched
-// from the base URL's directory, cached content-addressed, and the entry is
-// rewritten to the local cache path. This matches the resolution behavior
-// for agent, policy, skills, scripts, and host_files in base composition.
+// non-empty relative path (not a URL or already-cached path), the file is
+// fetched from the base URL's directory, cached content-addressed, and the
+// entry is rewritten to the local cache path.
 func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	if base.OpenShell == nil || len(base.OpenShell.Profiles) == 0 {
 		return nil, nil
@@ -956,7 +967,7 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 	var deps []Dependency
 
 	for i, p := range base.OpenShell.Profiles {
-		if p == "" || IsURL(p) || filepath.IsAbs(p) {
+		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
 			continue
 		}
 		fieldName := fmt.Sprintf("openshell.profiles[%d]", i)
@@ -976,9 +987,9 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 
 // resolveBaseProviders fetches provider files with relative paths from a
 // URL-referenced base harness. For each providers entry that is a non-empty
-// relative path (not a URL, absolute path, or bare provider name), the file
-// is fetched from the base URL's directory, cached content-addressed, and
-// the entry is rewritten to the local cache path.
+// relative path (not a URL, already-cached path, or bare provider name),
+// the file is fetched from the base URL's directory, cached
+// content-addressed, and the entry is rewritten to the local cache path.
 func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	if len(base.Providers) == 0 {
 		return nil, nil
@@ -992,7 +1003,7 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 	var deps []Dependency
 
 	for i, p := range base.Providers {
-		if p == "" || IsURL(p) || filepath.IsAbs(p) {
+		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
 			continue
 		}
 		if !IsProviderPath(p) {

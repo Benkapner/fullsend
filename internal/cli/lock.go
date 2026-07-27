@@ -1023,25 +1023,22 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 
-	// Strip URL and absolute-path entries from providers — URL-resolved
-	// providers are in the ResolvedProvider list, and absolute-path entries
-	// (from base composition cache) will be resolved by the local-only
-	// ResolveHarness pass. Keep only bare provider names.
+	// Strip URL entries from providers and profiles — URL-resolved entries
+	// are in the ResolvedProvider/ResolvedProfile lists from lock deps.
+	// Keep path entries (both absolute from base composition and local from
+	// ResolveRelativeTo) so the second ResolveHarness pass can process them;
+	// duplicates from lock deps are handled by dedup in run.go.
 	remainingProviders := h.Providers[:0]
 	for _, p := range h.Providers {
-		if !harness.IsURL(p) && !harness.IsProviderPath(p) {
+		if !harness.IsURL(p) {
 			remainingProviders = append(remainingProviders, p)
 		}
 	}
 	h.Providers = remainingProviders
-	// Strip URL and absolute-path profiles — URL-resolved profiles are in
-	// the ResolvedProfile list from lock deps, and absolute-path entries
-	// (from base composition cache) are reconstructed from lock deps too.
-	// Keep only relative-path profiles for the local-only ResolveHarness pass.
 	if h.OpenShell != nil {
 		remaining := h.OpenShell.Profiles[:0]
 		for _, p := range h.OpenShell.Profiles {
-			if !harness.IsURL(p) && !filepath.IsAbs(p) {
+			if !harness.IsURL(p) {
 				remaining = append(remaining, p)
 			}
 		}

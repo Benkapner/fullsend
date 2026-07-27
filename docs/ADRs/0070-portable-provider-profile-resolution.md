@@ -21,6 +21,14 @@ Date: 2026-07-03
 
 Accepted
 
+Amended (2026-07-27, [#5461](https://github.com/fullsend-ai/fullsend/pull/5461)):
+extended Decision to allow local file paths for `openshell.profiles` and
+`providers`, matching existing local-path resolution for other harness
+resources (agent, policy, skills, scripts, host_files). The original
+Decision restricted profiles to URL-only; this amendment lifts that
+restriction so profiles and providers participate in `base:` composition
+and `ResolveRelativeTo` like every other resource field.
+
 ## Context
 
 [ADR 0038](0038-universal-harness-access.md) introduced URL-based resource resolution
@@ -180,8 +188,9 @@ Result after merge and resolution:
 
 ### Schema validation (`ValidateResourceTypes`)
 
-- `openshell.profiles[]`: every entry must pass `IsURL()` and have a valid `#sha256=...`
-  integrity hash. Profiles are always remote.
+- `openshell.profiles[]`: if `IsURL()`, require a valid `#sha256=...` integrity hash.
+  Otherwise, accept as a local file path (resolved relative to the harness directory
+  or inherited as an absolute cache path from `base:` composition).
 - `providers[]`: if `IsURL()`, require `#sha256=...` integrity hash. If not URL,
   accept as local provider name (no change).
 
