@@ -3,6 +3,7 @@ package cf
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -608,6 +609,87 @@ func TestWriteVersionTS_CreatesSrcDir(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(dir, "src", "version.ts"))
 	require.NoError(t, err)
+}
+
+// --- DefaultWorkerSourceDir tests ---
+
+func TestDefaultWorkerSourceDir(t *testing.T) {
+	dir := DefaultWorkerSourceDir()
+	assert.Equal(t, filepath.Join("internal", "dispatch", "cf", "workersrc"), dir)
+}
+
+// --- EmbeddedWorkerSource tests ---
+
+func TestEmbeddedWorkerSource_ReturnsFS(t *testing.T) {
+	fsys := EmbeddedWorkerSource()
+	require.NotNil(t, fsys)
+	// Verify we can read a known file through the returned FS.
+	data, err := fs.ReadFile(fsys, "workersrc/src/index.ts")
+	require.NoError(t, err)
+	assert.NotEmpty(t, data)
+}
+
+// --- NewLiveWranglerRunner tests ---
+
+func TestNewLiveWranglerRunner(t *testing.T) {
+	runner := NewLiveWranglerRunner("test-account-id")
+	require.NotNil(t, runner)
+	assert.Equal(t, "test-account-id", runner.AccountID)
+}
+
+// --- validateSourceDir not-a-directory ---
+
+func TestValidateSourceDir_NotADirectory(t *testing.T) {
+	// Create a file (not a directory) and pass it as source dir.
+	f := filepath.Join(t.TempDir(), "notadir")
+	require.NoError(t, os.WriteFile(f, []byte("content"), 0o644))
+
+	err := validateSourceDir(f)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a directory")
+}
+
+// --- LiveWranglerRunner error path tests ---
+//
+// These tests exercise the command-construction and error-handling
+// code paths in the LiveWranglerRunner methods. They use an already-
+// cancelled context so the exec call fails immediately without
+// hitting the network.
+
+func TestLiveWranglerRunner_Deploy_CommandError(t *testing.T) {
+	dir := t.TempDir()
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+
+	// Cancel context immediately so exec fails without running wrangler.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	envVars := map[string]string{"KEY": "value"}
+	_, err := runner.Deploy(ctx, dir, "test-worker", false, envVars)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler deploy failed")
+}
+
+func TestLiveWranglerRunner_PutSecret_CommandError(t *testing.T) {
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runner.PutSecret(ctx, "test-worker", "MY_SECRET", []byte("secret-value"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler secret put failed")
+}
+
+func TestLiveWranglerRunner_Delete_CommandError(t *testing.T) {
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runner.Delete(ctx, "test-worker")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler delete failed")
 }
 
 // --- helpers ---
