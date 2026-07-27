@@ -916,6 +916,7 @@ func TestCommitScaffoldViaPR_SkipsStaleCleanupInForkPath(t *testing.T) {
 	client.ExistingForks = map[string]string{
 		"acme/widget": "contributor",
 	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	client.PullRequests = map[string][]forge.ChangeProposal{
 		"acme/widget": {
 			{Number: 99, Title: "chore: connect to fullsend", Head: "fullsend/onboard", Base: "main", Author: "acme"},
