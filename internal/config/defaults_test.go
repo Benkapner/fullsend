@@ -488,6 +488,51 @@ func TestPerRepoConfig_MarshalExplicitFalseKillSwitch(t *testing.T) {
 	assert.Contains(t, string(data), "kill_switch: false")
 }
 
+func TestPerRepoConfig_MarshalDenyAll(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version:                "1",
+		AllowedRemoteResources: []string{}, // deny-all
+		parent:                 &perRepoDefaults{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	// Deny-all (empty slice) must appear in output so it survives
+	// a roundtrip. Without MarshalYAML the omitempty tag would drop it.
+	assert.Contains(t, string(data), "allowed_remote_resources: []")
+}
+
+// --- Deny-all YAML roundtrip ---
+
+func TestPerRepoConfig_DenyAll_YAMLRoundTrip(t *testing.T) {
+	// A config with deny-all allowed_remote_resources must preserve
+	// the deny-all semantics through marshal -> parse -> getter.
+	cfg := &perRepoConfig{
+		Version:                "1",
+		Roles:                  []string{"triage"},
+		AllowedRemoteResources: []string{}, // deny-all
+		parent:                 &perRepoDefaults{},
+	}
+
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	// The marshaled output must include the empty list.
+	assert.Contains(t, string(data), "allowed_remote_resources: []")
+
+	// Strip the header so ParsePerRepoConfig can parse the YAML body.
+	headerEnd := strings.Index(string(data), "version:")
+	require.True(t, headerEnd >= 0, "marshaled output should contain version:")
+
+	parsed, err := ParsePerRepoConfig(data[headerEnd:])
+	require.NoError(t, err)
+
+	// After roundtrip, AllowedResources must return deny-all (empty,
+	// non-nil) — NOT fall through to parent defaults.
+	result := parsed.AllowedResources()
+	assert.NotNil(t, result, "deny-all must not become nil after roundtrip")
+	assert.Empty(t, result, "deny-all must remain empty after roundtrip")
+}
+
 // --- Validate with fallback ---
 
 func TestPerRepoConfig_ValidateEmptyVersion_FallsThrough(t *testing.T) {

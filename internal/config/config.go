@@ -507,10 +507,10 @@ type perRepoConfig struct {
 	Runtime    string       `yaml:"runtime,omitempty"`
 	Roles      []string     `yaml:"roles,omitempty"`
 	Agents     []AgentEntry `yaml:"agents,omitempty"`
-	// NOTE: omitempty means an empty slice (deny-all) is not marshaled.
-	// After a YAML roundtrip, deny-all becomes nil and AllowedResources()
-	// falls through to parent defaults. This is a pre-existing
-	// limitation of the yaml.v3 omitempty behavior.
+	// AllowedRemoteResources holds the locally-set allowed remote
+	// resource prefixes. MarshalYAML preserves the nil-vs-empty
+	// distinction: nil (unset) is omitted, empty (deny-all) is
+	// marshaled as `allowed_remote_resources: []`.
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 
@@ -579,6 +579,41 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 		return nil, fmt.Errorf("marshaling per-repo config: %w", err)
 	}
 	return []byte(perRepoConfigHeader + string(body)), nil
+}
+
+// perRepoConfigMarshal is a shadow struct used by MarshalYAML to
+// preserve the nil-vs-empty distinction for AllowedRemoteResources.
+// With the plain []string + omitempty tag, yaml.v3 omits both nil
+// and empty slices. Using *[]string here means a nil pointer (unset)
+// is omitted while a non-nil pointer to an empty slice (deny-all)
+// is marshaled as `allowed_remote_resources: []`.
+type perRepoConfigMarshal struct {
+	Version                string              `yaml:"version,omitempty"`
+	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
+	Runtime                string              `yaml:"runtime,omitempty"`
+	Roles                  []string            `yaml:"roles,omitempty"`
+	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
+	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+}
+
+// MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
+// distinction for AllowedRemoteResources through YAML roundtrips.
+// nil (unset) is omitted; an explicit empty slice (deny-all) is
+// marshaled as `allowed_remote_resources: []`.
+func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
+	h := perRepoConfigMarshal{
+		Version:      c.Version,
+		KillSwitch:   c.KillSwitch,
+		Runtime:      c.Runtime,
+		Roles:        c.Roles,
+		Agents:       c.Agents,
+		CreateIssues: c.CreateIssues,
+	}
+	if c.AllowedRemoteResources != nil {
+		h.AllowedRemoteResources = &c.AllowedRemoteResources
+	}
+	return &h, nil
 }
 
 // Validate checks the PerRepoConfig for structural correctness.
