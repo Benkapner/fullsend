@@ -153,6 +153,8 @@ AGENT_STATUS_MARKER = "fullsend:agent-status:"
 AGENT_TERMINAL_MARKER = "fullsend:status:terminal"
 # Sticky result posts (post-triage / post-review / prioritize), not human discussion.
 AGENT_RESULT_MARKER_RE = re.compile(r"fullsend:[a-z0-9-]+-agent\b")
+# Sticky triage summary (older runs may lack a terminal agent-status comment).
+TRIAGE_RESULT_MARKER = "fullsend:triage-agent"
 
 # Role word in the status body (e.g. "🤖 Review · Started …") → waiting status.
 _INFLIGHT_ROLE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -303,6 +305,30 @@ def latest_terminal_agent(
     }
 
 
+def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """When triage finished: prefer terminal agent-status, else sticky triage result.
+
+    Sticky ``<!-- fullsend:triage-agent -->`` posts are a completion signal for
+    older runs that never left a terminal agent-status comment. They are not
+    used for in-flight detection.
+    """
+    terminal = latest_terminal_agent(comments, "waiting_triage")
+    if terminal is not None and terminal.get("created_at"):
+        return terminal
+    matches = [
+        c for c in comments if TRIAGE_RESULT_MARKER in (c.get("body") or "")
+    ]
+    if not matches:
+        return None
+    latest = max(matches, key=lambda c: c.get("created_at") or "")
+    return {
+        "created_at": latest.get("created_at") or "",
+        "body": latest.get("body") or "",
+        "terminal": True,
+        "waiting_status": "waiting_triage",
+    }
+
+
 def latest_fs_command_at(comments: list[dict[str, Any]], command: str) -> str | None:
     """created_at of the latest comment whose first-line command equals command."""
     matches = [
@@ -388,8 +414,12 @@ def classify_launch_wait(
     # Slash/label launch already satisfied by a completed agent for this role.
     # Without this, a fresh /fs-* comment keeps waiting_* forever (until stale
     # hours flip it to a re-trigger) even after a successful terminal status.
-    terminal = latest_terminal_agent(comments, spec["waiting"])
-    if terminal and terminal["created_at"] and terminal["created_at"] >= at:
+    # Triage also accepts sticky <!-- fullsend:triage-agent --> when status is absent.
+    if role == "triage":
+        completed = latest_completed_triage(comments)
+    else:
+        completed = latest_terminal_agent(comments, spec["waiting"])
+    if completed and completed["created_at"] and completed["created_at"] >= at:
         return None
     if is_stale(at, stale_hours, now):
         return Classification(
@@ -406,13 +436,17 @@ def classify_launch_wait(
 
 
 def is_completed_triage_stale(comments: list[dict[str, Any]], now: datetime) -> bool:
-    """Terminal Triage older than 3 days, or non-exempt comments after it."""
-    terminal = latest_terminal_agent(comments, "waiting_triage")
-    if terminal is None or not terminal["created_at"]:
+    """Completed Triage older than 3 days, or non-exempt comments after it.
+
+    Completion is a terminal Triage agent-status, or a sticky
+    ``<!-- fullsend:triage-agent -->`` result when status is missing.
+    """
+    completed = latest_completed_triage(comments)
+    if completed is None or not completed["created_at"]:
         return False
-    if hours_since(terminal["created_at"], now) >= TRIAGE_STALE_HOURS:
+    if hours_since(completed["created_at"], now) >= TRIAGE_STALE_HOURS:
         return True
-    triage_at = terminal["created_at"]
+    triage_at = completed["created_at"]
     for c in comments:
         created = c.get("created_at") or ""
         if created <= triage_at:

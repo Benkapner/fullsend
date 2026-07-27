@@ -731,6 +731,67 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertNotEqual(result.status, "needs_triage")
         self.assertEqual(result.status, "promote_code")
 
+    def test_sticky_only_old_triage_needs_triage_over_ready_to_code(self):
+        # #1160 shape: sticky triage result, no agent-status, stale ready-to-code.
+        item = make_issue(
+            labels=["ready-to-code"],
+            updated_at="2024-01-01T00:00:00Z",
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:triage-agent -->\n"
+                        "## Triage Summary\n\nReady to implement."
+                    ),
+                    "created_at": "2024-01-01T00:00:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_triage")
+        self.assertIn("comment:/fs-triage", result.suggested_actions)
+
+    def test_sticky_only_fresh_triage_does_not_stale(self):
+        item = make_issue(
+            labels=["triaged"],
+            updated_at="2024-01-09T12:00:00Z",
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:triage-agent -->\n"
+                        "## Triage Summary\n\nLooks good."
+                    ),
+                    "created_at": "2024-01-09T12:00:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertNotEqual(result.status, "needs_triage")
+        self.assertEqual(result.status, "promote_code")
+
+    def test_sticky_only_clears_recent_fs_triage_launch(self):
+        item = make_issue(
+            labels=["triaged", "feature"],
+            assignees=[],
+            comments=[
+                {
+                    "author": "alice",
+                    "body": "/fs-triage",
+                    "created_at": "2024-01-09T22:00:00Z",
+                },
+                {
+                    "author": "fullsend-ai-triage",
+                    "body": (
+                        "<!-- fullsend:triage-agent -->\n"
+                        "## Triage Summary\n\nDone."
+                    ),
+                    "created_at": "2024-01-09T22:05:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+        self.assertFalse(result.eliminated)
+
     def test_stale_inflight_triage_retriggers(self):
         item = make_issue(
             labels=["ready-for-triage"],

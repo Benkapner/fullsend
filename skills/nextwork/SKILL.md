@@ -65,7 +65,7 @@ like production dispatch: first whitespace token of the first comment line.
 
 | Status | Meaning | Stale → |
 |--------|---------|---------|
-| `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone). A terminal Triage at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
+| `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone). A terminal Triage **or** sticky `<!-- fullsend:triage-agent -->` (when status is absent) at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
 | `waiting_code` | `ready-to-code` / `/fs-code`; **or** non-terminal code agent-status | `trigger_code` (`/fs-code`) |
 | `waiting_review` | `ready-for-review` / `/fs-review` / review-required path; **or** non-terminal review agent-status | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
 | `waiting_fix` | Unresolved review threads all from `fullsend-ai-review[bot]`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
@@ -89,7 +89,7 @@ like production dispatch: first whitespace token of the first comment line.
 | Status | Next action | Trivial? |
 |--------|-------------|----------|
 | `needs_assign` | Unassigned with no other automation/decision signal → assign yourself | Yes |
-| `needs_triage` | Stale triage launch/start, **or** completed triage older than 3 days / followed by non-exempt comments (does **not** override a non-stale `waiting_code`) → `/fs-triage` | Yes |
+| `needs_triage` | Stale triage launch/start, **or** completed triage (terminal agent-status **or** sticky `<!-- fullsend:triage-agent -->` when status is absent) older than 3 days / followed by non-exempt comments (does **not** override a non-stale `waiting_code`) → `/fs-triage` | Yes |
 | `promote_code` | `triaged` (feature work) → decide whether to promote | Decision |
 | `close_or_plan` | Has sub-issues and all are closed → close the parent, or plan further work / open new sub-issues | Decision |
 | `trigger_code` | Stale `ready-to-code` / `/fs-code` / stuck Code start → `/fs-code` | Yes |
