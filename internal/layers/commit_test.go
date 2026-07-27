@@ -311,6 +311,43 @@ func TestCommitScaffoldViaPR_SameRepoUsesCreateBranch(t *testing.T) {
 	assert.Empty(t, client.CreatedBranchSHAs, "same-repo should not use CreateBranchFromSHA")
 }
 
+func TestCommitScaffoldViaPR_CrossForkCreateBranchFromSHAForbidden(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	client.CreateBranchErrors = map[string]error{
+		"contributor/widget": fmt.Errorf("API error: %w", forge.ErrForbidden),
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "403 forbidden")
+}
+
+func TestCommitScaffoldViaPR_CrossForkGetBranchRefError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	// No BranchRefs entry → GetBranchRef returns ErrNotFound.
+	client.Errors = map[string]error{
+		"GetBranchRef": fmt.Errorf("API timeout"),
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting upstream branch ref")
+	assert.Contains(t, err.Error(), "acme/widget@main")
+}
+
 func TestCommitScaffoldViaPR_FindExistingForkError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"

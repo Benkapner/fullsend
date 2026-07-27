@@ -571,6 +571,56 @@ func TestCreateBranch(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCreateBranchFromSHA(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "feature-branch", body["branch"])
+		assert.Equal(t, "abc123sha", body["ref"])
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"name": "feature-branch"})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.NoError(t, err)
+}
+
+func TestCreateBranchFromSHA_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Branch already exists",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsAlreadyExists(err), "expected ErrAlreadyExists, got: %v", err)
+}
+
+func TestCreateBranchFromSHA_GenericError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Internal server error",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create branch feature-branch from SHA")
+	assert.False(t, forge.IsAlreadyExists(err), "non-400 error should not be ErrAlreadyExists")
+}
+
 func TestGetRef(t *testing.T) {
 	t.Run("heads prefix", func(t *testing.T) {
 		client, mux := setupTest(t)
