@@ -25,10 +25,10 @@ type fakeWranglerRunner struct {
 }
 
 type deployCall struct {
-	sourceDir  string
-	workerName string
-	preview    bool
-	envVars    map[string]string
+	sourceDir    string
+	workerName   string
+	previewAlias string
+	envVars      map[string]string
 }
 
 type secretCall struct {
@@ -37,12 +37,12 @@ type secretCall struct {
 	value      []byte
 }
 
-func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName string, preview bool, envVars map[string]string) (string, error) {
+func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (string, error) {
 	f.deployCalls = append(f.deployCalls, deployCall{
-		sourceDir:  sourceDir,
-		workerName: workerName,
-		preview:    preview,
-		envVars:    envVars,
+		sourceDir:    sourceDir,
+		workerName:   workerName,
+		previewAlias: previewAlias,
+		envVars:      envVars,
 	})
 	if f.deployErr != nil {
 		return "", f.deployErr
@@ -124,7 +124,7 @@ func TestProvisioner_Provision_WithSourceDir(t *testing.T) {
 	require.Len(t, fake.deployCalls, 1)
 	assert.Equal(t, sourceDir, fake.deployCalls[0].sourceDir)
 	assert.Equal(t, "test-mint", fake.deployCalls[0].workerName)
-	assert.False(t, fake.deployCalls[0].preview)
+	assert.Empty(t, fake.deployCalls[0].previewAlias)
 }
 
 func TestProvisioner_Provision_Preview(t *testing.T) {
@@ -132,16 +132,17 @@ func TestProvisioner_Provision_Preview(t *testing.T) {
 	fake := &fakeWranglerRunner{}
 
 	p := NewProvisioner(Config{
-		AccountID:  "abc123",
-		WorkerName: "test-mint-preview",
-		DeployMode: DeployPreview,
-		SourceDir:  sourceDir,
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
 	}, fake)
 
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 1)
-	assert.True(t, fake.deployCalls[0].preview)
+	assert.Equal(t, "bt-run-42", fake.deployCalls[0].previewAlias)
 }
 
 func TestProvisioner_Provision_EnvVars(t *testing.T) {
@@ -228,27 +229,33 @@ func TestProvisioner_Provision_OmitsEmptyVersion(t *testing.T) {
 }
 
 func TestProvisioner_Provision_KeepVarsAlwaysPassed(t *testing.T) {
-	// Verify that --keep-vars is always passed to wrangler deploy,
-	// not just for preview deploys, to avoid wiping existing secrets.
+	// Verify that Deploy is called for both durable and preview modes.
+	// --keep-vars is handled inside LiveWranglerRunner.deployDurable.
 	sourceDir := createFakeWorkerSourceDir(t)
 
-	for _, mode := range []DeployMode{DeployDurable, DeployPreview} {
-		t.Run(fmt.Sprintf("mode=%d", mode), func(t *testing.T) {
+	tests := []struct {
+		name         string
+		mode         DeployMode
+		previewAlias string
+	}{
+		{"durable", DeployDurable, ""},
+		{"preview", DeployPreview, "bt-test"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeWranglerRunner{}
 			p := NewProvisioner(Config{
-				AccountID:  "abc123",
-				WorkerName: "test-mint",
-				SourceDir:  sourceDir,
-				DeployMode: mode,
+				AccountID:    "abc123",
+				WorkerName:   "test-mint",
+				SourceDir:    sourceDir,
+				DeployMode:   tc.mode,
+				PreviewAlias: tc.previewAlias,
 			}, fake)
 
 			_, err := p.Provision(context.Background())
 			require.NoError(t, err)
 			require.Len(t, fake.deployCalls, 1)
-			// The deploy call always passes preview=true/false to Deploy(),
-			// but --keep-vars is handled inside LiveWranglerRunner.Deploy.
-			// This test verifies Deploy() is called; the --keep-vars
-			// behavior is tested in integration tests via the runner.
+			assert.Equal(t, tc.previewAlias, fake.deployCalls[0].previewAlias)
 		})
 	}
 }
@@ -366,7 +373,23 @@ func TestProvisioner_StoreAgentPEM_Error(t *testing.T) {
 
 // --- Teardown tests ---
 
-func TestProvisioner_Teardown_Preview(t *testing.T) {
+func TestProvisioner_Teardown_PreviewWithAlias(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+	}, fake)
+
+	err := p.Teardown(context.Background())
+	require.NoError(t, err)
+	// Preview-alias teardown should NOT delete the Worker script.
+	assert.Empty(t, fake.deleteCalls, "preview-alias teardown must not call Delete")
+}
+
+func TestProvisioner_Teardown_PreviewLegacyBareFlag(t *testing.T) {
+	// Legacy path: DeployPreview without alias deletes the Worker.
 	fake := &fakeWranglerRunner{}
 	p := NewProvisioner(Config{
 		AccountID:  "abc123",
@@ -393,7 +416,7 @@ func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
 	assert.Contains(t, err.Error(), "only supported for preview")
 }
 
-func TestProvisioner_Teardown_Error(t *testing.T) {
+func TestProvisioner_Teardown_LegacyDeleteError(t *testing.T) {
 	fake := &fakeWranglerRunner{
 		deleteErr: fmt.Errorf("delete failed"),
 	}
@@ -447,6 +470,29 @@ func TestValidateWorkerName(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.valid, ValidateWorkerName(tc.name))
+		})
+	}
+}
+
+// --- ValidatePreviewAlias tests ---
+
+func TestValidatePreviewAlias(t *testing.T) {
+	tests := []struct {
+		alias string
+		valid bool
+	}{
+		{"bt-run-42", true},
+		{"my-preview", true},
+		{"ab", true},
+		{"a", false},                   // too short
+		{"UPPER", false},               // uppercase
+		{"has_underscore", false},      // underscore
+		{"-starts-with-hyphen", false}, // starts with hyphen
+		{"", false},                    // empty
+	}
+	for _, tc := range tests {
+		t.Run(tc.alias, func(t *testing.T) {
+			assert.Equal(t, tc.valid, ValidatePreviewAlias(tc.alias))
 		})
 	}
 }
@@ -656,7 +702,7 @@ func TestValidateSourceDir_NotADirectory(t *testing.T) {
 // cancelled context so the exec call fails immediately without
 // hitting the network.
 
-func TestLiveWranglerRunner_Deploy_CommandError(t *testing.T) {
+func TestLiveWranglerRunner_Deploy_DurableCommandError(t *testing.T) {
 	dir := t.TempDir()
 	runner := &LiveWranglerRunner{AccountID: "test-account"}
 
@@ -665,9 +711,22 @@ func TestLiveWranglerRunner_Deploy_CommandError(t *testing.T) {
 	cancel()
 
 	envVars := map[string]string{"KEY": "value"}
-	_, err := runner.Deploy(ctx, dir, "test-worker", false, envVars)
+	_, err := runner.Deploy(ctx, dir, "test-worker", "", envVars)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrangler deploy failed")
+}
+
+func TestLiveWranglerRunner_Deploy_PreviewCommandError(t *testing.T) {
+	dir := t.TempDir()
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	envVars := map[string]string{"KEY": "value"}
+	_, err := runner.Deploy(ctx, dir, "test-worker", "bt-alias", envVars)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler versions upload failed")
 }
 
 func TestLiveWranglerRunner_PutSecret_CommandError(t *testing.T) {

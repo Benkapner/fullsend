@@ -52,7 +52,7 @@ type fakeCFDeployCall struct {
 	workerName string
 }
 
-func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, _ bool, _ map[string]string) (string, error) {
+func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, _ string, _ map[string]string) (string, error) {
 	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName})
 	if f.deployErr != nil {
 		return "", f.deployErr
@@ -254,7 +254,7 @@ func TestMintDeployCmd_CloudflareFlags(t *testing.T) {
 
 	previewFlag := cmd.Flags().Lookup("preview")
 	require.NotNil(t, previewFlag, "expected --preview flag")
-	assert.Equal(t, "false", previewFlag.DefValue)
+	assert.Equal(t, "", previewFlag.DefValue)
 }
 
 func TestMintDeployCmd_InvalidPlatform(t *testing.T) {
@@ -332,9 +332,27 @@ func TestMintDeployCmd_CloudflareDryRunPreview(t *testing.T) {
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run", "--preview"})
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run", "--preview=bt-test-42"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareDryRunPreviewInvalidAlias(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--preview=INVALID_ALIAS"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --preview alias")
 }
 
 // --- Cloudflare non-dry-run deploy tests ---
@@ -396,14 +414,14 @@ func TestMintDeployCmd_CloudflarePreviewDeploy(t *testing.T) {
 	withCFEnvVars(t)
 	sourceDir := createMinimalWorkerSourceDir(t)
 	withMintCFWrangler(t, &fakeCFWranglerRunner{
-		deployURL: "https://fullsend-mint-preview.workers.dev",
+		deployURL: "https://bt-run-42-fullsend-mint.workers.dev",
 	})
 
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",
 		"--platform=cloudflare",
-		"--preview",
+		"--preview=bt-run-42",
 		"--source-dir=" + sourceDir,
 	})
 	err := cmd.Execute()
