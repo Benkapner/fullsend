@@ -46,6 +46,20 @@ var selectAll = func(candidates []RepoCandidate) ([]string, error) {
 // nopProgress is a no-op progress callback for tests.
 func nopProgress(_, _, _ string) {}
 
+// --- Init: forge validation ---
+
+func TestInit_EmptyForge_ReturnsError(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	_, err := Init(context.Background(), InitConfig{
+		Target:      "acme/api",
+		MintProject: "proj",
+	}, newTestClientFactory(fc), nil, nopProgress)
+
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "Forge is required")
+}
+
 // --- Init: greenfield org tests ---
 
 func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
@@ -58,6 +72,7 @@ func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "my-project",
 		MintRegion:       "us-central1",
 		InferenceProject: "my-inference",
@@ -91,6 +106,7 @@ func TestInit_GreenfieldOrg_ExplicitRepos(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		Repos:            []string{"acme/api", "acme/web"},
+		Forge:            ForgeGitHub,
 		MintProject:      "p",
 		MintRegion:       "r",
 		InferenceProject: "inf",
@@ -111,6 +127,7 @@ func TestInit_GreenfieldOrg_ExplicitRepos_NotFound(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
+		Forge:  ForgeGitHub,
 		Repos:  []string{"acme/api", "acme/nonexistent"},
 	}, newTestClientFactory(fc), nil, nopProgress)
 
@@ -155,6 +172,7 @@ repos:
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -191,6 +209,7 @@ func TestInit_OnlyPerRepoInstallations(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:         "acme",
 		All:            true,
+		Forge:          ForgeGitHub,
 		MintProject:    "proj",
 		MintRegion:     "us-central1",
 		MaxConcurrency: 2,
@@ -223,6 +242,7 @@ repos:
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -248,6 +268,7 @@ func TestInit_SingleRepo_PerRepoInstalled(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme/api",
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 	}, newTestClientFactory(fc), nil, nopProgress)
@@ -278,6 +299,7 @@ repos:
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -293,6 +315,7 @@ func TestInit_SingleRepo_RejectsAllFlag(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
+		Forge:  ForgeGitHub,
 		All:    true,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
@@ -305,6 +328,7 @@ func TestInit_SingleRepo_RejectsReposFlag(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
+		Forge:  ForgeGitHub,
 		Repos:  []string{"acme/other"},
 	}, newTestClientFactory(fc), nil, nopProgress)
 
@@ -317,6 +341,7 @@ func TestInit_SingleRepo_NotInstalled(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -356,6 +381,7 @@ func TestInit_DefaultsComputation_MostCommonRef(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme",
 		All:         true,
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 	}, newTestClientFactory(fc), nil, nopProgress)
@@ -402,6 +428,7 @@ func TestInit_PerRepoOverrides_DifferentRegion(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme",
 		All:         true,
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 	}, newTestClientFactory(fc), nil, nopProgress)
@@ -443,6 +470,7 @@ func TestInit_InteractiveSelection(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "r",
 		InferenceProject: "inf",
@@ -469,6 +497,7 @@ func TestInit_NilCallback_RequiresFlag(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
+		Forge:  ForgeGitHub,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
@@ -482,6 +511,7 @@ func TestInit_TODOs_NoMintProject(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:     "acme/api",
+		Forge:      ForgeGitHub,
 		MintRegion: "us-central1",
 		CLIVersion: "1.0.0",
 	}, newTestClientFactory(fc), nil, nopProgress)
@@ -496,6 +526,7 @@ func TestInit_TODOs_NoMintURL_Greenfield(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme/api",
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 		CLIVersion:  "1.0.0",
@@ -528,6 +559,7 @@ func TestInit_TODOs_MultipleMintURLs(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme",
 		All:         true,
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "r",
 	}, newTestClientFactory(fc), nil, nopProgress)
@@ -546,6 +578,7 @@ func TestBuildManifest_SimpleEntries(t *testing.T) {
 		{Owner: "acme", Repo: "web", Source: "new"},
 	}
 	m, todos := buildManifest(repos, InitConfig{
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -571,6 +604,7 @@ func TestBuildManifest_MixedOverrides(t *testing.T) {
 		{Owner: "acme", Repo: "r3", Source: "per-repo", FullsendRef: "v2.1.0", InferenceRegion: "us-east1", MintURL: "https://mint.example.com"},
 	}
 	m, _ := buildManifest(repos, InitConfig{
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -710,6 +744,7 @@ func TestInit_RoundTrip(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -737,6 +772,7 @@ func TestInit_ListOrgReposError(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
+		Forge:  ForgeGitHub,
 		All:    true,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
@@ -750,6 +786,7 @@ func TestInit_ListRepoVariablesError(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
+		Forge:  ForgeGitHub,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
@@ -770,6 +807,7 @@ func TestInit_OrgConfigParseError_SingleRepo_Warns(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme/api",
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 		CLIVersion:  "1.0.0",
@@ -794,6 +832,7 @@ func TestInit_OrgConfigFetchError_SingleRepo(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
+		Forge:  ForgeGitHub,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
@@ -808,6 +847,7 @@ func TestInit_OrgConfigFetchError_Org(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
+		Forge:  ForgeGitHub,
 		All:    true,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
@@ -827,6 +867,7 @@ func TestInit_ConfigRepoExcluded(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -852,6 +893,7 @@ func TestInit_DiscoveryErrors_Tracked(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -1238,6 +1280,7 @@ func TestInit_CLIVersionFallback(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -1253,6 +1296,7 @@ func TestInit_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -1268,6 +1312,7 @@ func TestInit_CLIVersionDev_FallsBackToDefault(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -1288,6 +1333,7 @@ func TestInit_DefaultConcurrency(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "r",
 		InferenceProject: "inf",
@@ -1307,6 +1353,7 @@ func TestInit_ConcurrencyUpperBound(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "r",
 		InferenceProject: "inf",

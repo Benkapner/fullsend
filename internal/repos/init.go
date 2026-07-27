@@ -66,6 +66,10 @@ type InitResult struct {
 func Init(ctx context.Context, cfg InitConfig, clients ForgeClientFactory,
 	selectRepos RepoSelectFunc, progress ProgressFunc) (*InitResult, error) {
 
+	if cfg.Forge == "" {
+		return nil, fmt.Errorf("Forge is required")
+	}
+
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 8
 	}

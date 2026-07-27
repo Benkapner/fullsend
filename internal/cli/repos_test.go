@@ -97,7 +97,7 @@ func TestReposInitCmd_InvalidForge(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported")
+	assert.Contains(t, err.Error(), "not a valid forge platform")
 }
 
 func TestReposInitCmd_ForgeFlagRequired(t *testing.T) {
@@ -879,7 +879,7 @@ func TestRunReposAdd_InvalidForge(t *testing.T) {
 		forge:    "unknown",
 	}, []string{"acme/web"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported")
+	assert.Contains(t, err.Error(), "not a valid forge platform")
 }
 
 func TestRunReposAdd_ForgeMatchesDefault_NoOverride(t *testing.T) {

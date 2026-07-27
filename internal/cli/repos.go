@@ -75,7 +75,7 @@ that reflects current reality.`,
 			cfg.gitlabToken = getGitLabToken(cmd)
 
 			if !repos.IsValidForge(cfg.forge) {
-				return fmt.Errorf("--forge value %q is not supported; use %q or %q", cfg.forge, repos.ForgeGitHub, repos.ForgeGitLab)
+				return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", cfg.forge, repos.ForgeGitHub, repos.ForgeGitLab)
 			}
 
 			clients := newForgeClientFactory(cfg.gitlabToken)
@@ -545,7 +545,7 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 	}
 
 	if !repos.IsValidForge(opts.forge) {
-		return fmt.Errorf("--forge value %q is not supported; use %q or %q", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
+		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
 	}
 
 	printer := ui.New(os.Stdout)
