@@ -67,7 +67,10 @@ func (c *Client) AccessToken(ctx context.Context) (string, error) {
 // returned TokenSource handles refresh internally.
 func (c *Client) adcToken(ctx context.Context) (string, error) {
 	c.adcOnce.Do(func() {
-		creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
+		// Use WithoutCancel so credential discovery is not tied to a
+		// single request's lifecycle — a cancelled first-caller context
+		// must not permanently poison the cached result.
+		creds, err := google.FindDefaultCredentials(context.WithoutCancel(ctx), "https://www.googleapis.com/auth/cloud-platform")
 		if err != nil {
 			c.adcErr = fmt.Errorf("finding GCP credentials: %w (ensure 'gcloud auth application-default login' has been run or GOOGLE_APPLICATION_CREDENTIALS is set)", err)
 			return
