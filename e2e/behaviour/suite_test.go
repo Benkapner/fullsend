@@ -20,18 +20,27 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
+// poolSize is the number of enrolled test-repo-NN repos in the pool org.
+// GODOG_CONCURRENCY must not exceed this — extra workers would block in
+// pool.Acquire with no warning because the pool org only has test-repo-01
+// through test-repo-12 with per-repo mint enrollment.
+const poolSize = 12
+
 func TestBehaviourSuite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping behaviour tests in short mode")
 	}
 
-	concurrency := 12
+	concurrency := poolSize
 	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" {
 		n, err := strconv.Atoi(c)
 		if err != nil || n < 1 {
 			t.Fatalf("GODOG_CONCURRENCY must be a positive integer, got %q", c)
 		}
 		concurrency = n
+	}
+	if concurrency > poolSize {
+		t.Fatalf("GODOG_CONCURRENCY=%d exceeds repo pool size %d", concurrency, poolSize)
 	}
 
 	cfg := env.LoadRunnerConfig()
@@ -72,7 +81,7 @@ func TestBehaviourSuite(t *testing.T) {
 		}
 	})
 
-	pool, err := world.NewRepoPool(12)
+	pool, err := world.NewRepoPool(poolSize)
 	if err != nil {
 		t.Fatalf("creating repo pool: %v", err)
 	}
