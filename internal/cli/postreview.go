@@ -379,6 +379,7 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 
 			fallbackBody := buildFallbackReviewBody(reviewBody, inlineComments)
 			if retryErr := client.CreatePullRequestReview(ctx, owner, repo, pr, event, fallbackBody, commitSHA, nil); retryErr != nil {
+				logAPIErrorDetails(retryErr, printer)
 				return fmt.Errorf("submitting review (fallback without inline comments also failed): %w", retryErr)
 			}
 			printer.StepDone("Review submitted (inline comments omitted due to 422)")

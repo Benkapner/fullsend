@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -979,6 +980,39 @@ func TestCheckStatus_EmptyBody(t *testing.T) {
 	require.ErrorAs(t, csErr, &apiErr)
 	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
 	assert.Equal(t, "Unprocessable Entity", apiErr.Message)
+}
+
+func TestCheckStatus_MultiByteTruncation(t *testing.T) {
+	// When the raw body contains multi-byte UTF-8 characters and
+	// exceeds the truncation limit, the result should not split a
+	// character — truncation operates on runes, not bytes.
+	// Build a body that is >200 runes, using multi-byte chars.
+	body := strings.Repeat("日", 201) // 201 three-byte runes = 603 bytes
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+
+	// Should be exactly 200 runes + "..." — no invalid byte sequences.
+	runes := []rune(apiErr.Message)
+	truncated := string(runes[:len(runes)-1]) // strip the trailing rune of "..."
+	assert.True(t, strings.HasSuffix(apiErr.Message, "..."), "should end with ellipsis")
+	// The message without "..." should be exactly 200 runes of "日".
+	withoutEllipsis := strings.TrimSuffix(apiErr.Message, "...")
+	assert.Equal(t, 200, len([]rune(withoutEllipsis)), "should truncate at 200 runes")
+	assert.True(t, utf8.ValidString(apiErr.Message), "truncated message must be valid UTF-8")
+	_ = truncated // avoid unused variable
 }
 
 func TestListRepoPullRequests(t *testing.T) {

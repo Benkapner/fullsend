@@ -1366,6 +1366,48 @@ func TestSubmitFormalReview_422FallbackLogsAPIErrorDetails(t *testing.T) {
 	assert.Contains(t, output, "Rejected comment: internal/handler.go:10")
 }
 
+func TestSubmitFormalReview_422FallbackRetryError_LogsAPIErrorDetails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	// First call: 422 triggers fallback. Second call (retry): also fails with error details.
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Message:    "Validation Failed",
+			Errors: []gh.APIErrorDetail{
+				{Resource: "PullRequestReviewComment", Field: "line", Code: "invalid"},
+			},
+		},
+		&gh.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Message:    "Validation Failed",
+			Errors: []gh.APIErrorDetail{
+				{Resource: "PullRequestReview", Field: "body", Code: "invalid", Message: "body is too long"},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 42, Description: "Bug."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fallback without inline comments also failed")
+
+	output := out.String()
+	// The retry error's API details should be logged.
+	assert.Contains(t, output, "body is too long")
+}
+
 func TestIs422Error(t *testing.T) {
 	tests := []struct {
 		name string

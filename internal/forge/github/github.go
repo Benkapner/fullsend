@@ -316,8 +316,9 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 	if len(data) > 0 {
 		body := string(data)
 		const maxLen = 200
-		if len(body) > maxLen {
-			body = body[:maxLen] + "..."
+		runes := []rune(body)
+		if len(runes) > maxLen {
+			body = string(runes[:maxLen]) + "..."
 		}
 		return &APIError{StatusCode: resp.StatusCode, Message: body}
 	}
