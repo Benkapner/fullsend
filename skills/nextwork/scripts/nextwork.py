@@ -151,6 +151,8 @@ def parse_open_blockers(blocked_by: dict[str, Any] | None) -> list[dict[str, Any
 # HTML markers from internal/statuscomment — durable signal that an agent run is live.
 AGENT_STATUS_MARKER = "fullsend:agent-status:"
 AGENT_TERMINAL_MARKER = "fullsend:status:terminal"
+# Sticky result posts (post-triage / post-review / prioritize), not human discussion.
+AGENT_RESULT_MARKER_RE = re.compile(r"fullsend:[a-z0-9-]+-agent\b")
 
 # Role word in the status body (e.g. "🤖 Review · Started …") → waiting status.
 _INFLIGHT_ROLE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -417,6 +419,8 @@ def is_completed_triage_stale(comments: list[dict[str, Any]], now: datetime) -> 
             continue
         body = c.get("body") or ""
         if AGENT_STATUS_MARKER in body:
+            continue
+        if AGENT_RESULT_MARKER_RE.search(body):
             continue
         # Launch/promote slash commands are handled by classify_launch_wait /
         # waiting_code — they must not themselves flip completed triage stale.

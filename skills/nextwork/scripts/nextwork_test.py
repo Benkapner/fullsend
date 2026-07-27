@@ -705,6 +705,32 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertNotEqual(result.status, "needs_triage")
         self.assertEqual(result.status, "waiting_code")
 
+    def test_triage_agent_summary_does_not_stale_completed_triage(self):
+        item = make_issue(
+            labels=["triaged"],
+            updated_at="2024-01-09T12:05:00Z",
+            comments=[
+                {
+                    "body": (
+                        "<!-- fullsend:agent-status:t1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "created_at": "2024-01-09T12:00:00Z",
+                },
+                {
+                    "body": (
+                        "<!-- fullsend:triage-agent -->\n"
+                        "## Triage Summary\n\nLooks good."
+                    ),
+                    "created_at": "2024-01-09T12:05:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertNotEqual(result.status, "needs_triage")
+        self.assertEqual(result.status, "promote_code")
+
     def test_stale_inflight_triage_retriggers(self):
         item = make_issue(
             labels=["ready-for-triage"],
