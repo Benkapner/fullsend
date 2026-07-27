@@ -91,8 +91,8 @@ type StatusResult struct {
 // Status compares the manifest's desired state against the actual forge
 // state for each repo. It returns a StatusResult with per-repo status
 // and aggregate counts. API calls are parallelised up to maxConcurrency.
-func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxConcurrency int, repoFilter []string) (*StatusResult, error) {
-	resolved, err := manifest.ExpandGlobs(ctx, client)
+func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string) (*StatusResult, error) {
+	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
@@ -131,8 +131,17 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
-			fc := ForgeConfigFor(cfg.Forge)
-			status := checkRepoStatus(ctx, client, rr.Owner, rr.Repo, cfg, fc)
+			fc, fcErr := clients.ConfigFor(cfg.Forge)
+			if fcErr != nil {
+				results[idx] = RepoStatus{
+					Owner: rr.Owner,
+					Repo:  rr.Repo,
+					Error: fcErr.Error(),
+				}
+				return
+			}
+			cfg.ForgeConfig = fc
+			status := checkRepoStatus(ctx, cfg)
 			results[idx] = status
 		}(i, rr)
 	}
@@ -156,7 +165,12 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 	return &StatusResult{Repos: results, Summary: summary, Warnings: warnings}, nil
 }
 
-func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig, fc ForgeConfig) RepoStatus {
+func checkRepoStatus(ctx context.Context, cfg ResolvedConfig) RepoStatus {
+	owner := cfg.Owner
+	repo := cfg.Repo
+	client := cfg.ForgeConfig.Client
+	fc := cfg.ForgeConfig
+
 	status := RepoStatus{
 		Owner:           owner,
 		Repo:            repo,

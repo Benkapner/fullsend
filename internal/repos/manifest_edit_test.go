@@ -203,7 +203,7 @@ func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 
 	result, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, fc, nil)
+	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -236,7 +236,7 @@ func TestAddToManifest_DiscoverInstalledMatchesDefaults(t *testing.T) {
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, fc, nil)
+	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -261,7 +261,7 @@ func TestAddToManifest_DiscoverNotInstalled(t *testing.T) {
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, fc, nil)
+	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -281,7 +281,7 @@ func TestAddToManifest_DiscoverGlobSkipped(t *testing.T) {
 	manifest := testManifest()
 	result, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/*"}}, fc, nil)
+	}, []RepoEntry{{Repo: "acme/*"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -300,7 +300,7 @@ func TestAddToManifest_DiscoverProbeError(t *testing.T) {
 
 	result, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, fc, nil)
+	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v, want graceful skip on probe error", err)

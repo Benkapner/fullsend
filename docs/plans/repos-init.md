@@ -103,7 +103,7 @@ type InitResult struct {
 }
 
 func Init(ctx context.Context, cfg InitConfig,
-    client forge.Client,
+    clients ForgeClientFactory,
     selectRepos RepoSelectFunc,
     progress ProgressFunc) (*InitResult, error)
 ```

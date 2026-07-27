@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
@@ -52,18 +53,72 @@ func newForgeClient(forgeName, gitlabToken string) (forge.Client, error) {
 	}
 }
 
-// forgeClientFromManifest resolves the dominant forge from the manifest
-// defaults and returns the appropriate client. For manifests with a
-// single forge type, this returns the correct client. Mixed-forge
-// manifests (e.g., both GitHub and GitLab entries) are not yet fully
-// supported — the default forge client is used and GitLab-specific
-// entries will fail with a clear error.
-func forgeClientFromManifest(m *repos.Manifest, gitlabToken string) (forge.Client, error) {
-	forgeName := m.Defaults.Forge
+// forgeClientFactory lazily creates and caches per-forge API clients.
+// Each client is created on first use and reused for subsequent calls
+// with the same forge name. The sync.Mutex protects the client cache
+// for concurrent goroutines in per-repo batch loops.
+type forgeClientFactory struct {
+	gitlabToken string
+	mu          sync.Mutex
+	clients     map[string]forge.Client
+}
+
+// newForgeClientFactory returns a ForgeClientFactory that lazily creates
+// and caches forge clients. A GitLab token is only resolved if the
+// factory is asked for a GitLab client, so single-forge GitHub manifests
+// never require GITLAB_TOKEN.
+func newForgeClientFactory(gitlabToken string) repos.ForgeClientFactory {
+	return &forgeClientFactory{
+		gitlabToken: gitlabToken,
+		clients:     make(map[string]forge.Client),
+	}
+}
+
+// ConfigFor returns a ForgeConfig with a live Client for the named forge.
+// Clients are created lazily and cached — at most 2 clients per command
+// invocation (one GitHub, one GitLab).
+func (f *forgeClientFactory) ConfigFor(forgeName string) (repos.ForgeConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// Normalize empty forge name to github (backward compat).
 	if forgeName == "" {
 		forgeName = repos.ForgeGitHub
 	}
-	return newForgeClient(forgeName, gitlabToken)
+
+	client, ok := f.clients[forgeName]
+	if !ok {
+		var err error
+		client, err = newForgeClient(forgeName, f.gitlabToken)
+		if err != nil {
+			return repos.ForgeConfig{}, err
+		}
+		f.clients[forgeName] = client
+	}
+
+	cfg := repos.ForgeConfigFor(forgeName)
+	cfg.Client = client
+	return cfg, nil
+}
+
+// singleClientFactory wraps a single forge.Client as a ForgeClientFactory,
+// returning the same client for any forge name. Used in tests and CLI
+// test-override paths where a single FakeClient backs all operations.
+type singleClientFactory struct {
+	client forge.Client
+}
+
+func newSingleClientFactory(client forge.Client) repos.ForgeClientFactory {
+	return &singleClientFactory{client: client}
+}
+
+func (f *singleClientFactory) ConfigFor(forgeName string) (repos.ForgeConfig, error) {
+	if forgeName == "" {
+		forgeName = repos.ForgeGitHub
+	}
+	cfg := repos.ForgeConfigFor(forgeName)
+	cfg.Client = f.client
+	return cfg, nil
 }
 
 // getGitLabToken extracts the --gitlab-token flag from the command chain.

@@ -198,7 +198,7 @@ func TestBatchInstall_AllFresh(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestBatchInstall_SomeAlreadyInstalled(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestBatchInstall_RepoFilter(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestBatchInstall_DryRun(t *testing.T) {
 		Roles:          []string{"triage"},
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestBatchInstall_DryRunSkipsInstalled(t *testing.T) {
 		Roles:          []string{"triage"},
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestBatchInstall_WIFSerialization(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc, noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc, noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestBatchInstall_OrgMintFailure(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestBatchInstall_SkipMintCheck(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestBatchInstall_WIFProvisionFailure(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestBatchInstall_RegisterWIFFailure_OneRepo(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestBatchInstall_RegisterWIFFailure_CleanupErrorInResult(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestBatchInstall_ScaffoldFailure_WIFCleanup(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestBatchInstall_EmptyManifest(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestBatchInstall_InvalidManifest(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	_, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err == nil {
 		t.Fatal("expected error for invalid manifest")
 	}
@@ -695,7 +695,7 @@ func TestBatchInstall_MissingInferenceProject(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestBatchInstall_MissingInferenceRegion(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -776,7 +776,7 @@ func TestBatchInstall_MultiOrg(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -829,7 +829,7 @@ func TestBatchInstall_TOCTOUReCheck(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -862,7 +862,7 @@ func TestBatchInstall_PartialInstall_RepairsWhenComponentsMissing(t *testing.T) 
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -899,7 +899,7 @@ func TestBatchInstall_TOCTOUReCheck_PartialInstallProceeds(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -938,7 +938,7 @@ func TestBatchInstall_ScaffoldFailure_OneRepo(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc, noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc, noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -972,7 +972,7 @@ func TestBatchInstall_NilProgress(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), nil)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), nil)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -997,7 +997,7 @@ func TestBatchInstall_DefaultConcurrency(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1049,7 +1049,7 @@ func TestBatchInstall_ConcurrencyCap(t *testing.T) {
 		close(done)
 	}()
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc, noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc, noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1092,7 +1092,7 @@ func TestBatchInstall_InvalidConcurrency(t *testing.T) {
 				Direct:         true,
 			}
 
-			_, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+			_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 			if err == nil {
 				t.Errorf("expected error for concurrency=%d, got nil", tt.concurrency)
 			}
@@ -1117,7 +1117,7 @@ func TestBatchInstall_RepoFilterCaseInsensitive(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1143,7 +1143,7 @@ func TestBatchInstall_DiscoveryError(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1173,7 +1173,7 @@ func TestBatchInstall_ScaffoldErrorCollection(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
 	}
@@ -1218,7 +1218,7 @@ func TestBatchInstall_ContextCancellation_Phase1(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(ctx, cfg, client, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(ctx, cfg, newTestClientFactory(client), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
 	}
@@ -1259,7 +1259,7 @@ func TestBatchInstall_ContextCancellation_Phase2(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(ctx, cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(ctx, cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
 	}
@@ -1289,7 +1289,7 @@ func TestBatchInstall_ContextCancellation_OrgMintLoop(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(ctx, cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(ctx, cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
 	}
@@ -1422,7 +1422,7 @@ func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1459,7 +1459,7 @@ func TestBatchInstall_TOCTOUReCheck_ComponentCheckError(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, fc, factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}

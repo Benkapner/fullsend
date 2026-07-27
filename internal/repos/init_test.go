@@ -63,7 +63,7 @@ func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
 		InferenceProject: "my-inference",
 		CLIVersion:       "2.3.0",
 		MaxConcurrency:   2,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.PerRepoCount)
@@ -95,7 +95,7 @@ func TestInit_GreenfieldOrg_ExplicitRepos(t *testing.T) {
 		MintRegion:       "r",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.NewCount)
@@ -112,7 +112,7 @@ func TestInit_GreenfieldOrg_ExplicitRepos_NotFound(t *testing.T) {
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
 		Repos:  []string{"acme/api", "acme/nonexistent"},
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "not found in org")
@@ -159,7 +159,7 @@ repos:
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		MaxConcurrency:   4,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerRepoCount)
@@ -194,7 +194,7 @@ func TestInit_OnlyPerRepoInstallations(t *testing.T) {
 		MintProject:    "proj",
 		MintRegion:     "us-central1",
 		MaxConcurrency: 2,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.PerRepoCount)
@@ -226,7 +226,7 @@ repos:
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.PerRepoCount)
@@ -250,7 +250,7 @@ func TestInit_SingleRepo_PerRepoInstalled(t *testing.T) {
 		Target:      "acme/api",
 		MintProject: "proj",
 		MintRegion:  "us-central1",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerRepoCount)
@@ -281,7 +281,7 @@ repos:
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerOrgCount)
@@ -294,7 +294,7 @@ func TestInit_SingleRepo_RejectsAllFlag(t *testing.T) {
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
 		All:    true,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "--all flag cannot be used with a single repo target")
@@ -306,7 +306,7 @@ func TestInit_SingleRepo_RejectsReposFlag(t *testing.T) {
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
 		Repos:  []string{"acme/other"},
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "--repos flag cannot be used with a single repo target")
@@ -321,7 +321,7 @@ func TestInit_SingleRepo_NotInstalled(t *testing.T) {
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "2.5.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)
@@ -358,7 +358,7 @@ func TestInit_DefaultsComputation_MostCommonRef(t *testing.T) {
 		All:         true,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	// v2.3.0 is most common, should be the default.
@@ -404,7 +404,7 @@ func TestInit_PerRepoOverrides_DifferentRegion(t *testing.T) {
 		All:         true,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 
@@ -446,7 +446,7 @@ func TestInit_InteractiveSelection(t *testing.T) {
 		MintProject:      "proj",
 		MintRegion:       "r",
 		InferenceProject: "inf",
-	}, fc, selectFn, nopProgress)
+	}, newTestClientFactory(fc), selectFn, nopProgress)
 
 	require.NoError(t, err)
 	require.Len(t, result.Manifest.Repos, 2)
@@ -469,7 +469,7 @@ func TestInit_NilCallback_RequiresFlag(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "org target requires --all or --repos flag")
@@ -484,7 +484,7 @@ func TestInit_TODOs_NoMintProject(t *testing.T) {
 		Target:     "acme/api",
 		MintRegion: "us-central1",
 		CLIVersion: "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Contains(t, result.TODOs, "mint.project: provide via --mint-project flag")
@@ -499,7 +499,7 @@ func TestInit_TODOs_NoMintURL_Greenfield(t *testing.T) {
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 		CLIVersion:  "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Contains(t, result.TODOs, "mint.url: set the Cloud Run endpoint URL")
@@ -530,7 +530,7 @@ func TestInit_TODOs_MultipleMintURLs(t *testing.T) {
 		All:         true,
 		MintProject: "proj",
 		MintRegion:  "r",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	// Most common URL should be used.
@@ -713,7 +713,7 @@ func TestInit_RoundTrip(t *testing.T) {
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 	require.NoError(t, err)
 
 	// Marshal and re-parse.
@@ -738,7 +738,7 @@ func TestInit_ListOrgReposError(t *testing.T) {
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
 		All:    true,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "listing repos for org")
@@ -750,7 +750,7 @@ func TestInit_ListRepoVariablesError(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "listing variables")
@@ -773,7 +773,7 @@ func TestInit_OrgConfigParseError_SingleRepo_Warns(t *testing.T) {
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 		CLIVersion:  "1.0.0",
-	}, fc, nil, progress)
+	}, newTestClientFactory(fc), nil, progress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)
@@ -794,7 +794,7 @@ func TestInit_OrgConfigFetchError_SingleRepo(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "fetching org config")
@@ -809,7 +809,7 @@ func TestInit_OrgConfigFetchError_Org(t *testing.T) {
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
 		All:    true,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "fetching org config")
@@ -831,7 +831,7 @@ func TestInit_ConfigRepoExcluded(t *testing.T) {
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.NewCount)
@@ -856,7 +856,7 @@ func TestInit_DiscoveryErrors_Tracked(t *testing.T) {
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	// Repo with error should be excluded from manifest.
@@ -1184,7 +1184,7 @@ func TestInit_SingleRepo_GitLabForge(t *testing.T) {
 		Forge:       ForgeGitLab,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerRepoCount)
@@ -1242,7 +1242,7 @@ func TestInit_CLIVersionFallback(t *testing.T) {
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "3.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, "v3.0.0", result.Manifest.Defaults.FullsendRef)
@@ -1257,7 +1257,7 @@ func TestInit_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "v0.32.0-82-gcb2bcd9f",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, "v0.32.0-82-gcb2bcd9f", result.Manifest.Defaults.FullsendRef)
@@ -1272,7 +1272,7 @@ func TestInit_CLIVersionDev_FallsBackToDefault(t *testing.T) {
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "dev",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, config.DefaultUpstreamRef, result.Manifest.Defaults.FullsendRef)
@@ -1293,7 +1293,7 @@ func TestInit_DefaultConcurrency(t *testing.T) {
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
 		MaxConcurrency:   0, // should default to 8
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)
@@ -1312,7 +1312,7 @@ func TestInit_ConcurrencyUpperBound(t *testing.T) {
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
 		MaxConcurrency:   200, // should clamp to 64
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)

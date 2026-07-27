@@ -561,7 +561,7 @@ func LoadManifest(pathOrURL string) (*Manifest, error)
 func (m *Manifest) Validate() error
 
 func (m *Manifest) ExpandGlobs(ctx context.Context,
-    client forge.Client) ([]ResolvedRepo, error)
+    clients ForgeClientFactory) ([]ResolvedRepo, error)
 
 func (m *Manifest) ResolveConfig(owner, repo string) ResolvedConfig
 ```
@@ -819,7 +819,7 @@ type Drift struct {
 }
 
 func Status(ctx context.Context, manifest *Manifest,
-    client forge.Client, maxConcurrency int) ([]RepoStatus, error)
+    clients ForgeClientFactory, maxConcurrency int) ([]RepoStatus, error)
 ```
 
 Per-repo discovery (parallelizable, read-only):
@@ -907,7 +907,7 @@ type BatchInstallResult struct {
 }
 
 func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
-    client forge.Client, provisionerFactory ProvisionerFactory,
+    clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
     progress ProgressFunc) (*BatchInstallResult, error)
 ```
 
@@ -1025,10 +1025,10 @@ type Change struct {
 }
 
 func Diff(ctx context.Context, manifest *Manifest,
-    client forge.Client, maxConcurrency int) ([]Change, error)
+    clients ForgeClientFactory, maxConcurrency int) ([]Change, error)
 
 func Sync(ctx context.Context, manifest *Manifest,
-    client forge.Client, maxConcurrency int,
+    clients ForgeClientFactory, maxConcurrency int,
     progress ProgressFunc) ([]Change, error)
 ```
 
@@ -1124,7 +1124,7 @@ type UpgradeResult struct {
 }
 
 func Upgrade(ctx context.Context, cfg UpgradeConfig,
-    client forge.Client,
+    clients ForgeClientFactory,
     progress ProgressFunc) ([]UpgradeResult, error)
 
 func UpgradeMint(ctx context.Context, manifest *Manifest,
@@ -1264,7 +1264,7 @@ type RemoveResult struct {
 }
 
 func Remove(ctx context.Context, cfg RemoveConfig,
-    client forge.Client, provisionerFactory ProvisionerFactory,
+    clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
     progress ProgressFunc) ([]RemoveResult, error)
 ```
 

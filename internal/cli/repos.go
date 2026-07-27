@@ -74,8 +74,9 @@ that reflects current reality.`,
 			target := args[0]
 			cfg.gitlabToken = getGitLabToken(cmd)
 
-			client, err := newForgeClient(cfg.forge, cfg.gitlabToken)
-			if err != nil {
+			clients := newForgeClientFactory(cfg.gitlabToken)
+			// Eagerly validate that a client can be created for the forge.
+			if _, err := clients.ConfigFor(cfg.forge); err != nil {
 				return err
 			}
 			printerOut := os.Stdout
@@ -119,7 +120,7 @@ that reflects current reality.`,
 				printer.StepInfo(fmt.Sprintf("[%s] %s: %s", phase, repo, message))
 			}
 
-			result, err := repos.Init(ctx, initCfg, client, nil, progress)
+			result, err := repos.Init(ctx, initCfg, clients, nil, progress)
 			if err != nil {
 				return err
 			}
@@ -219,12 +220,9 @@ func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, re
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	client, err := forgeClientFromManifest(m, getGitLabToken(cmd))
-	if err != nil {
-		return err
-	}
+	clients := newForgeClientFactory(getGitLabToken(cmd))
 
-	result, err := repos.Status(ctx, m, client, concurrency, repoFilter)
+	result, err := repos.Status(ctx, m, clients, concurrency, repoFilter)
 	if err != nil {
 		return err
 	}
@@ -382,18 +380,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
 
-	var client forge.Client
+	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
-		client = opts.testClient
+		clients = newSingleClientFactory(opts.testClient)
 	} else {
-		var clientErr error
-		client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
-		if clientErr != nil {
-			return clientErr
-		}
+		clients = newForgeClientFactory(opts.gitlabToken)
 	}
 
-	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+	if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
 		return err
 	}
 
@@ -426,14 +420,22 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
-		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
+		rc, ok := manifest.ResolveConfigWithGlobs(owner, repo)
+		if !ok {
+			return fmt.Errorf("repo %s/%s not found in manifest", owner, repo)
+		}
+		fc, fcErr := clients.ConfigFor(rc.Forge)
+		if fcErr != nil {
+			return fcErr
+		}
+		targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
 		if repoErr != nil {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
 		commitMsg := "chore: initialize fullsend per-repo installation"
 		prTitle := "chore: initialize fullsend per-repo installation"
 		prBody := defaultScaffoldPRBody
-		_, commitErr := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
+		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
 			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
 		return commitErr
 	}
@@ -468,7 +470,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		printer.StepStart("Installing fullsend on manifest repos")
 	}
 
-	result, err := repos.BatchInstall(ctx, cfg, client, provisionerFactory, scaffoldCommitFn, progressFn)
+	result, err := repos.BatchInstall(ctx, cfg, clients, provisionerFactory, scaffoldCommitFn, progressFn)
 	if err != nil {
 		return err
 	}
@@ -546,15 +548,11 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
 
-	var client forge.Client
+	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
-		client = opts.testClient
+		clients = newSingleClientFactory(opts.testClient)
 	} else {
-		var clientErr error
-		client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
-		if clientErr != nil {
-			return clientErr
-		}
+		clients = newForgeClientFactory(opts.gitlabToken)
 	}
 
 	entries := make([]repos.RepoEntry, len(repoArgs))
@@ -575,7 +573,7 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 		Manifest:     manifest,
 		ManifestPath: opts.manifest,
 		DryRun:       opts.dryRun,
-	}, entries, client, progressFn)
+	}, entries, clients, progressFn)
 	if err != nil {
 		return err
 	}
@@ -698,15 +696,11 @@ func runReposRemove(ctx context.Context, opts *reposRemoveConfig, repoArgs []str
 				printer.StepStart("Uninstalling fullsend from repos before removing from manifest")
 			}
 
-			var client forge.Client
+			var uninstallClients repos.ForgeClientFactory
 			if opts.testClient != nil {
-				client = opts.testClient
-			} else if !opts.dryRun {
-				var clientErr error
-				client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
-				if clientErr != nil {
-					return clientErr
-				}
+				uninstallClients = newSingleClientFactory(opts.testClient)
+			} else {
+				uninstallClients = newForgeClientFactory(opts.gitlabToken)
 			}
 
 			uninstallCfg := repos.UninstallConfig{
@@ -725,7 +719,7 @@ func runReposRemove(ctx context.Context, opts *reposRemoveConfig, repoArgs []str
 					printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
 				}
 			}
-			results, uninstallErr := repos.Uninstall(ctx, uninstallCfg, client, provFactory, progressFn)
+			results, uninstallErr := repos.Uninstall(ctx, uninstallCfg, uninstallClients, provFactory, progressFn)
 			if uninstallErr != nil {
 				return uninstallErr
 			}
@@ -862,18 +856,14 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		}
 	}
 
-	var client forge.Client
+	var uninstallClients repos.ForgeClientFactory
 	if opts.testClient != nil {
-		client = opts.testClient
+		uninstallClients = newSingleClientFactory(opts.testClient)
 	} else {
-		var clientErr error
-		client, clientErr = forgeClientFromManifest(manifest, opts.gitlabToken)
-		if clientErr != nil {
-			return clientErr
-		}
+		uninstallClients = newForgeClientFactory(opts.gitlabToken)
 	}
 
-	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+	if err := checkAllForgeScopes(ctx, manifest, uninstallClients, printer); err != nil {
 		return err
 	}
 
@@ -903,7 +893,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		printer.StepStart("Uninstalling fullsend from repos")
 	}
 
-	results, err := repos.Uninstall(ctx, cfg, client, provFactory, progressFn)
+	results, err := repos.Uninstall(ctx, cfg, uninstallClients, provFactory, progressFn)
 	if err != nil {
 		return err
 	}
@@ -1099,22 +1089,18 @@ func runReposDiff(ctx context.Context, opts *reposDiffConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	var client forge.Client
+	var diffClients repos.ForgeClientFactory
 	if opts.testClient != nil {
-		client = opts.testClient
+		diffClients = newSingleClientFactory(opts.testClient)
 	} else {
-		var clientErr error
-		client, clientErr = forgeClientFromManifest(m, opts.gitlabToken)
-		if clientErr != nil {
-			return clientErr
-		}
+		diffClients = newForgeClientFactory(opts.gitlabToken)
 	}
 
-	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+	if err := checkAllForgeScopes(ctx, m, diffClients, printer); err != nil {
 		return err
 	}
 
-	result, err := repos.Diff(ctx, m, client, opts.concurrency, opts.repoFilter)
+	result, err := repos.Diff(ctx, m, diffClients, opts.concurrency, opts.repoFilter)
 	if err != nil {
 		return err
 	}
@@ -1188,23 +1174,19 @@ func runReposSync(ctx context.Context, opts *reposSyncConfig) error {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	var client forge.Client
+	var syncClients repos.ForgeClientFactory
 	if opts.testClient != nil {
-		client = opts.testClient
+		syncClients = newSingleClientFactory(opts.testClient)
 	} else {
-		var clientErr error
-		client, clientErr = forgeClientFromManifest(m, opts.gitlabToken)
-		if clientErr != nil {
-			return clientErr
-		}
+		syncClients = newForgeClientFactory(opts.gitlabToken)
 	}
 
-	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+	if err := checkAllForgeScopes(ctx, m, syncClients, printer); err != nil {
 		return err
 	}
 
 	if opts.dryRun {
-		result, diffErr := repos.Diff(ctx, m, client, opts.concurrency, opts.repoFilter)
+		result, diffErr := repos.Diff(ctx, m, syncClients, opts.concurrency, opts.repoFilter)
 		if diffErr != nil {
 			return diffErr
 		}
@@ -1231,7 +1213,7 @@ func runReposSync(ctx context.Context, opts *reposSyncConfig) error {
 		}
 	}
 
-	result, err := repos.Sync(ctx, m, client, opts.concurrency, opts.repoFilter, progressFn)
+	result, err := repos.Sync(ctx, m, syncClients, opts.concurrency, opts.repoFilter, progressFn)
 	if err != nil && result == nil {
 		return err
 	}
@@ -1328,18 +1310,14 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(m.Repos)))
 
-	var client forge.Client
+	var upgradeClients repos.ForgeClientFactory
 	if opts.testClient != nil {
-		client = opts.testClient
+		upgradeClients = newSingleClientFactory(opts.testClient)
 	} else {
-		var clientErr error
-		client, clientErr = forgeClientFromManifest(m, opts.gitlabToken)
-		if clientErr != nil {
-			return clientErr
-		}
+		upgradeClients = newForgeClientFactory(opts.gitlabToken)
 	}
 
-	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+	if err := checkAllForgeScopes(ctx, m, upgradeClients, printer); err != nil {
 		return err
 	}
 
@@ -1360,7 +1338,15 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 	}
 
 	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, isDirect bool) error {
-		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
+		rc, ok := m.ResolveConfigWithGlobs(owner, repo)
+		if !ok {
+			return fmt.Errorf("repo %s/%s not found in manifest", owner, repo)
+		}
+		fc, fcErr := upgradeClients.ConfigFor(rc.Forge)
+		if fcErr != nil {
+			return fcErr
+		}
+		targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
 		if repoErr != nil {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
@@ -1368,7 +1354,7 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 		prTitle := "chore: upgrade fullsend scaffold ref"
 		prBody := "This PR upgrades the fullsend scaffold workflow ref.\n\n" +
 			"Merge this PR to activate the updated workflows."
-		_, commitErr := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
+		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
 			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, isDirect, nil)
 		return commitErr
 	}
@@ -1399,7 +1385,7 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 		printer.StepStart("Upgrading repos")
 	}
 
-	results, err := repos.Upgrade(ctx, cfg, client, commitFn, progressFn)
+	results, err := repos.Upgrade(ctx, cfg, upgradeClients, commitFn, progressFn)
 	if err != nil {
 		return err
 	}
@@ -1483,5 +1469,24 @@ func runReposUpgradeMint(ctx context.Context, opts *reposUpgradeMintConfig) erro
 	}
 
 	printer.StepDone("Mint verified successfully")
+	return nil
+}
+
+// checkAllForgeScopes validates GitHub token permissions for forges used
+// in the manifest. Only GitHub forges are checked because scope
+// introspection is not supported by other forge providers.
+func checkAllForgeScopes(ctx context.Context, m *repos.Manifest, clients repos.ForgeClientFactory, printer *ui.Printer) error {
+	for _, forgeName := range m.DistinctForges() {
+		if forgeName != "" && forgeName != repos.ForgeGitHub {
+			continue
+		}
+		fc, err := clients.ConfigFor(forgeName)
+		if err != nil {
+			return err
+		}
+		if err := checkPerRepoScopes(ctx, fc.Client, printer); err != nil {
+			return err
+		}
+	}
 	return nil
 }

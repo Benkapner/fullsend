@@ -113,7 +113,7 @@ func TestStatus_AllInstalled_NoDrift(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestStatus_RepoNotInstalled(t *testing.T) {
 		"https://mint.example.com", "us-central1")
 	// web-frontend has no variables — not installed.
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestStatus_MintURLDrift(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestStatus_RefDrift(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.1.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestStatus_RegionDrift(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-west1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestStatus_MultipleDrifts(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.1.0",
 		"https://old.example.com", "us-west1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestStatus_WorkflowMissing_NotInstalled(t *testing.T) {
 	}
 
 	// Guard variable not set → not installed, workflow not checked.
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestStatus_WorkflowYAMLExtension(t *testing.T) {
 	// Use .yaml extension instead of .yml
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yaml"] = []byte(shimWorkflow)
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestStatus_RepoFilter(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestStatus_RepoFilterCaseInsensitive(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, []string{"ACME-CORP/API-SERVER"})
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"ACME-CORP/API-SERVER"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestStatus_APIError(t *testing.T) {
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestStatus_GlobExpansion(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "legacy", "v2.1.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestStatus_DefaultConcurrency(t *testing.T) {
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
-	result, err := Status(context.Background(), m, fc, 0, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestStatus_EmptyManifest(t *testing.T) {
 		},
 	}
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.Errors["GetFileContent"] = fmt.Errorf("server error")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -602,7 +602,7 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestStatus_GuardVarFalse(t *testing.T) {
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "false"
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -870,7 +870,7 @@ func TestStatus_MultiOrg(t *testing.T) {
 	populateInstalledRepo(fc, "org-a", "repo1", "v2.3.0", "https://mint.example.com", "us-central1")
 	populateInstalledRepo(fc, "org-b", "repo2", "v2.3.0", "https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -897,7 +897,7 @@ func TestStatus_GlobExpandError(t *testing.T) {
 		Repos: []RepoEntry{{Repo: "bad-org/*"}},
 	}
 
-	_, err := Status(context.Background(), m, fc, 4, nil)
+	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err == nil {
 		t.Fatal("expected error from glob expansion")
 	}
@@ -921,7 +921,7 @@ func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://some-mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -945,7 +945,7 @@ func TestStatus_EmptyExpectedRef_NoDrift(t *testing.T) {
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -978,7 +978,7 @@ func TestStatus_Concurrency(t *testing.T) {
 		populateInstalledRepo(fc, "org", repo, "v2.3.0", "https://mint.example.com", "us-central1")
 	}
 
-	result, err := Status(context.Background(), m, fc, 2, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 2, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -998,7 +998,7 @@ func TestStatus_RepoFilterAllUnmatched(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	_, err := Status(context.Background(), m, fc, 4, []string{"org/nonexistent"})
+	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"org/nonexistent"})
 	if err == nil {
 		t.Fatal("expected error when --repo filter matches nothing")
 	}
@@ -1011,7 +1011,7 @@ func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4,
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
 		[]string{"acme-corp/api-server", "org/nonexistent"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

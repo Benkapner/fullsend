@@ -70,33 +70,27 @@ func TestNewForgeClient_Unsupported(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported forge")
 }
 
-func TestForgeClientFromManifest_GitHub(t *testing.T) {
+func TestNewForgeClientFactory_GitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	m := &repos.Manifest{
-		Defaults: repos.DefaultsConfig{Forge: repos.ForgeGitHub},
-	}
-	client, err := forgeClientFromManifest(m, "")
+	factory := newForgeClientFactory("")
+	cfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
-	assert.NotNil(t, client)
+	assert.NotNil(t, cfg.Client)
 }
 
-func TestForgeClientFromManifest_EmptyForgeDefaultsToGitHub(t *testing.T) {
+func TestNewForgeClientFactory_EmptyForgeDefaultsToGitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	m := &repos.Manifest{
-		Defaults: repos.DefaultsConfig{Forge: ""},
-	}
-	client, err := forgeClientFromManifest(m, "")
+	factory := newForgeClientFactory("")
+	cfg, err := factory.ConfigFor("")
 	require.NoError(t, err)
-	assert.NotNil(t, client)
+	assert.NotNil(t, cfg.Client)
 }
 
-func TestForgeClientFromManifest_GitLab(t *testing.T) {
-	m := &repos.Manifest{
-		Defaults: repos.DefaultsConfig{Forge: repos.ForgeGitLab},
-	}
-	client, err := forgeClientFromManifest(m, "glpat-direct")
+func TestNewForgeClientFactory_GitLab(t *testing.T) {
+	factory := newForgeClientFactory("glpat-direct")
+	cfg, err := factory.ConfigFor(repos.ForgeGitLab)
 	require.NoError(t, err)
-	assert.NotNil(t, client)
+	assert.NotNil(t, cfg.Client)
 }
 
 func TestGetGitLabToken_FromFlag(t *testing.T) {
@@ -120,4 +114,32 @@ func TestGetGitLabToken_FromParentFlag(t *testing.T) {
 func TestGetGitLabToken_Empty(t *testing.T) {
 	cmd := &cobra.Command{}
 	assert.Equal(t, "", getGitLabToken(cmd))
+}
+
+func TestNewForgeClientFactory_Caching(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	factory := newForgeClientFactory("")
+
+	cfg1, err := factory.ConfigFor(repos.ForgeGitHub)
+	require.NoError(t, err)
+
+	cfg2, err := factory.ConfigFor(repos.ForgeGitHub)
+	require.NoError(t, err)
+
+	assert.Same(t, cfg1.Client, cfg2.Client, "same forge should return the same cached client instance")
+}
+
+func TestNewForgeClientFactory_MixedForge(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	factory := newForgeClientFactory("glpat-test-token")
+
+	ghCfg, err := factory.ConfigFor(repos.ForgeGitHub)
+	require.NoError(t, err)
+
+	glCfg, err := factory.ConfigFor(repos.ForgeGitLab)
+	require.NoError(t, err)
+
+	assert.NotSame(t, ghCfg.Client, glCfg.Client, "different forges should return different clients")
+	assert.NotNil(t, ghCfg.Client)
+	assert.NotNil(t, glCfg.Client)
 }

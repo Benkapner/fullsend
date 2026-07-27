@@ -21,7 +21,7 @@ func TestDiff_NoDrift(t *testing.T) {
 	fc.Secrets["acme-corp/api-server/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme-corp/web-frontend/FULLSEND_GCP_PROJECT_ID"] = true
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestDiff_VariableDrift_MintURL(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestDiff_VariableDrift_Region(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-west1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestDiff_MissingGuardVariable(t *testing.T) {
 	fc.VariableValues["acme-corp/api-server/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["acme-corp/api-server/FULLSEND_GCP_REGION"] = "us-central1"
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestDiff_SecretMissing(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestDiff_SecretExists_NoChange(t *testing.T) {
 		"https://mint.example.com", "us-central1")
 	fc.Secrets["acme-corp/api-server/FULLSEND_GCP_PROJECT_ID"] = true
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestDiff_RepoNotInstalled_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestDiff_APIError_Warning(t *testing.T) {
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("rate limit exceeded")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestDiff_MultipleRepos(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-west1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestDiff_RepoFilter(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestDiff_GlobExpansion(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestDiff_EmptyManifest(t *testing.T) {
 		},
 	}
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestDiff_EmptyDesiredValue_Skips(t *testing.T) {
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
 		"https://some-mint.example.com", "us-west1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestDiff_ConcurrencyValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Diff(context.Background(), m, fc, tt.concurrency, nil)
+			_, err := Diff(context.Background(), m, newTestClientFactory(fc), tt.concurrency, nil)
 			if err == nil {
 				t.Error("expected error for invalid concurrency")
 			}
@@ -404,7 +404,7 @@ func TestDiff_SecretCheckError_Warning(t *testing.T) {
 		"https://mint.example.com", "us-central1")
 	fc.Errors["RepoSecretExists"] = fmt.Errorf("secret API error")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -430,7 +430,7 @@ func TestSync_NoDrift_NoVariableWrites(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestSync_AppliesVariableChanges(t *testing.T) {
 		progressCalls = append(progressCalls, fmt.Sprintf("%s/%s/%s", repo, phase, msg))
 	}
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, progress)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, progress)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestSync_AppliesSecretChanges(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestSync_VariableWriteError(t *testing.T) {
 
 	fc.Errors["CreateOrUpdateRepoVariable"] = fmt.Errorf("write error")
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err == nil {
 		t.Fatal("expected error from variable write failure")
 	}
@@ -541,7 +541,7 @@ func TestSync_SecretWriteError(t *testing.T) {
 
 	fc.Errors["CreateRepoSecret"] = fmt.Errorf("secret write error")
 
-	_, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	_, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err == nil {
 		t.Fatal("expected error from secret write failure")
 	}
@@ -554,7 +554,7 @@ func TestSync_NilProgress(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	_, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	_, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error with nil progress: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestSync_DiffAPIError_SkipsReconciliation(t *testing.T) {
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("expected no error (warnings only), got: %v", err)
 	}
@@ -592,7 +592,7 @@ func TestSync_MultipleRepos(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -613,7 +613,7 @@ func TestSync_ConcurrencyValidation(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	_, err := Sync(context.Background(), m, fc, 0, nil, nil)
+	_, err := Sync(context.Background(), m, newTestClientFactory(fc), 0, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid concurrency")
 	}
@@ -648,7 +648,7 @@ func TestSync_GlobWithPerEntryOverride(t *testing.T) {
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestDiff_GlobExpandError(t *testing.T) {
 		Repos: []RepoEntry{{Repo: "bad-org/*"}},
 	}
 
-	_, err := Diff(context.Background(), m, fc, 4, nil)
+	_, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err == nil {
 		t.Fatal("expected error from glob expansion")
 	}
@@ -813,7 +813,7 @@ func TestDiff_PerRepoOverride(t *testing.T) {
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
 		"https://mint.example.com", "eu-west1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -834,7 +834,7 @@ func TestSync_RepoFilter(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestDiff_GuardVarFalse_Warning(t *testing.T) {
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "false"
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -902,7 +902,7 @@ func TestSync_GlobExpansion(t *testing.T) {
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -939,7 +939,7 @@ func TestDiff_MultiOrg(t *testing.T) {
 	populateInstalledRepo(fc, "org-a", "repo1", "v2.3.0", "https://old.example.com", "us-central1")
 	populateInstalledRepo(fc, "org-b", "repo2", "v2.3.0", "https://old.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -977,7 +977,7 @@ func TestSync_EnsuresSecretsOnNoDrift(t *testing.T) {
 		"https://mint.example.com", "us-central1")
 	fc.Secrets["acme-corp/api-server/FULLSEND_GCP_PROJECT_ID"] = true
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

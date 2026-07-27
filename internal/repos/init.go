@@ -63,7 +63,7 @@ type InitResult struct {
 // Init discovers existing fullsend installations and generates a
 // repos.yaml manifest. It supports both greenfield onboarding and
 // migration from existing per-repo or per-org installations.
-func Init(ctx context.Context, cfg InitConfig, client forge.Client,
+func Init(ctx context.Context, cfg InitConfig, clients ForgeClientFactory,
 	selectRepos RepoSelectFunc, progress ProgressFunc) (*InitResult, error) {
 
 	if cfg.MaxConcurrency <= 0 {
@@ -88,9 +88,9 @@ func Init(ctx context.Context, cfg InitConfig, client forge.Client,
 		if cfg.Repos != nil {
 			return nil, fmt.Errorf("--repos flag cannot be used with a single repo target")
 		}
-		return initSingleRepo(ctx, cfg, client, owner, repo, progress)
+		return initSingleRepo(ctx, cfg, clients, owner, repo, progress)
 	}
-	return initOrg(ctx, cfg, client, owner, selectRepos, progress)
+	return initOrg(ctx, cfg, clients, owner, selectRepos, progress)
 }
 
 func parseInitTarget(target string) (owner, repo string, isRepo bool, err error) {
@@ -111,10 +111,16 @@ func parseInitTarget(target string) (owner, repo string, isRepo bool, err error)
 }
 
 // initSingleRepo discovers a single repo and generates a one-entry manifest.
-func initSingleRepo(ctx context.Context, cfg InitConfig, client forge.Client,
+func initSingleRepo(ctx context.Context, cfg InitConfig, clients ForgeClientFactory,
 	owner, repo string, progress ProgressFunc) (*InitResult, error) {
 
 	progress(owner+"/"+repo, "discover", "checking installation status")
+
+	fc, fcErr := clients.ConfigFor(cfg.Forge)
+	if fcErr != nil {
+		return nil, fcErr
+	}
+	client := fc.Client
 
 	// Check for per-org config if the repo isn't per-repo installed.
 	var orgCfg config.OrgConfigReader
@@ -145,8 +151,14 @@ func initSingleRepo(ctx context.Context, cfg InitConfig, client forge.Client,
 }
 
 // initOrg discovers all repos in an org and generates a manifest.
-func initOrg(ctx context.Context, cfg InitConfig, client forge.Client,
+func initOrg(ctx context.Context, cfg InitConfig, clients ForgeClientFactory,
 	org string, selectRepos RepoSelectFunc, progress ProgressFunc) (*InitResult, error) {
+
+	fc, fcErr := clients.ConfigFor(cfg.Forge)
+	if fcErr != nil {
+		return nil, fcErr
+	}
+	client := fc.Client
 
 	progress(org, "discover", "listing org repos")
 	allOrgRepos, err := client.ListOrgRepos(ctx, org, false)

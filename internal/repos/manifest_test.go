@@ -657,7 +657,7 @@ repos:
 	}
 
 	ctx := context.Background()
-	resolved, err := m.ExpandGlobs(ctx, fc)
+	resolved, err := m.ExpandGlobs(ctx, newTestClientFactory(fc))
 	require.NoError(t, err)
 
 	// Should have: explicit-repo, service-api, service-priv, service-web
@@ -703,7 +703,7 @@ repos:
 	}
 
 	ctx := context.Background()
-	resolved, err := m.ExpandGlobs(ctx, fc)
+	resolved, err := m.ExpandGlobs(ctx, newTestClientFactory(fc))
 	require.NoError(t, err)
 
 	// Private repos should be included (per-repo mode), but archived
@@ -743,7 +743,7 @@ repos:
 	}
 
 	ctx := context.Background()
-	resolved, err := m.ExpandGlobs(ctx, fc)
+	resolved, err := m.ExpandGlobs(ctx, newTestClientFactory(fc))
 	require.NoError(t, err)
 
 	require.Len(t, resolved, 2)
@@ -778,7 +778,7 @@ repos:
 	}
 
 	ctx := context.Background()
-	_, err := m.ExpandGlobs(ctx, fc)
+	_, err := m.ExpandGlobs(ctx, newTestClientFactory(fc))
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "expanding glob")
 	assert.ErrorContains(t, err, "listing repos for org")
@@ -800,7 +800,7 @@ repos:
 
 	fc := forge.NewFakeClient()
 	ctx := context.Background()
-	resolved, err := m.ExpandGlobs(ctx, fc)
+	resolved, err := m.ExpandGlobs(ctx, newTestClientFactory(fc))
 	require.NoError(t, err)
 
 	require.Len(t, resolved, 2)
@@ -949,7 +949,7 @@ repos:
 	}
 
 	ctx := context.Background()
-	resolved, err := m.ExpandGlobs(ctx, fc)
+	resolved, err := m.ExpandGlobs(ctx, newTestClientFactory(fc))
 	require.NoError(t, err)
 	require.Len(t, resolved, 2)
 
@@ -1220,7 +1220,7 @@ repos:
 	}
 
 	ctx := context.Background()
-	resolved, err := m.ExpandGlobs(ctx, fc)
+	resolved, err := m.ExpandGlobs(ctx, newTestClientFactory(fc))
 	require.NoError(t, err)
 
 	// org-a/* matches app, lib (from org-a).
@@ -1235,4 +1235,78 @@ repos:
 	assert.True(t, repoNames["org-a/lib"])
 	assert.True(t, repoNames["org-b/service-api"])
 	assert.False(t, repoNames["org-b/other"], "other should not match service-*")
+}
+
+func TestValidate_RejectsSameOwnerMixedForge(t *testing.T) {
+	input := `
+version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: r
+defaults:
+  forge: github
+repos:
+  - acme/api
+  - repo: acme/ml-pipeline
+    forge: gitlab
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all repos under the same owner must use the same forge")
+	assert.Contains(t, err.Error(), `owner "acme"`)
+}
+
+func TestValidate_AllowsDifferentOwnersDifferentForges(t *testing.T) {
+	input := `
+version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: r
+defaults:
+  forge: github
+repos:
+  - acme/api
+  - repo: gitlab-group/ml-pipeline
+    forge: gitlab
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	err := m.Validate()
+	require.NoError(t, err)
+}
+
+func TestDistinctForges(t *testing.T) {
+	input := `
+version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: r
+defaults:
+  forge: github
+repos:
+  - acme/api
+  - acme/web
+  - repo: gitlab-group/ml
+    forge: gitlab
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	forges := m.DistinctForges()
+	assert.Equal(t, []string{"github", "gitlab"}, forges)
+}
+
+func TestDistinctForges_SingleForge(t *testing.T) {
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(validManifest), &m))
+
+	forges := m.DistinctForges()
+	assert.Equal(t, []string{"github"}, forges)
 }
