@@ -2,8 +2,34 @@ name: Build Site
 
 on:
   pull_request:
+    paths:
+      - "web/**"
+      - "website/**"
+      - "docs/**"
+      - "cloudflare_site/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "experiments"
+      - "experiments/**"
+      - ".gitmodules"
+      - ".github/workflows/site-build.yml"
+      - ".github/workflows/site-deploy.yml"
   push:
     branches: [main]
+    paths:
+      - "web/**"
+      - "website/**"
+      - "docs/**"
+      - "cloudflare_site/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "experiments"
+      - "experiments/**"
+      - ".gitmodules"
+      - ".github/workflows/site-build.yml"
+      - ".github/workflows/site-deploy.yml"
 
 permissions:
   contents: read
