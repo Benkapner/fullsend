@@ -241,6 +241,13 @@ func (p *Provisioner) validate() error {
 	if !ValidateWorkerName(p.cfg.WorkerName) {
 		return fmt.Errorf("invalid Worker name %q: must be 2-63 lowercase alphanumeric characters or hyphens", p.cfg.WorkerName)
 	}
+	// Guard against DeployPreview with an empty alias: Provision routes
+	// on PreviewAlias (empty → durable deploy) while Teardown routes on
+	// DeployMode (DeployPreview → delete). This mismatch would cause a
+	// durable deploy followed by a destructive teardown.
+	if p.cfg.DeployMode == DeployPreview && p.cfg.PreviewAlias == "" {
+		return fmt.Errorf("DeployPreview requires a non-empty PreviewAlias")
+	}
 	return nil
 }
 
@@ -444,6 +451,10 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, workerName, previewAlias string, envVars map[string]string) (string, error) {
 	args := []string{"wrangler", "versions", "upload", "--name", workerName}
 	args = append(args, fmt.Sprintf("--preview-alias=%s", previewAlias))
+	// Pass --keep-vars to preserve existing Worker secrets (PEM keys
+	// stored via StoreAgentPEM). Preview-alias deploys target the same
+	// Worker script as production, so omitting this could wipe secrets.
+	args = append(args, "--keep-vars")
 
 	// Pass env vars to wrangler via --var flags.
 	for k, v := range envVars {

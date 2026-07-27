@@ -49,11 +49,12 @@ type fakeCFWranglerRunner struct {
 }
 
 type fakeCFDeployCall struct {
-	workerName string
+	workerName   string
+	previewAlias string
 }
 
-func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, _ string, _ map[string]string) (string, error) {
-	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName})
+func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, _ map[string]string) (string, error) {
+	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias})
 	if f.deployErr != nil {
 		return "", f.deployErr
 	}
@@ -413,9 +414,10 @@ func TestMintDeployCmd_CloudflareDurableDeploy(t *testing.T) {
 func TestMintDeployCmd_CloudflarePreviewDeploy(t *testing.T) {
 	withCFEnvVars(t)
 	sourceDir := createMinimalWorkerSourceDir(t)
-	withMintCFWrangler(t, &fakeCFWranglerRunner{
+	fake := &fakeCFWranglerRunner{
 		deployURL: "https://bt-run-42-fullsend-mint.workers.dev",
-	})
+	}
+	withMintCFWrangler(t, fake)
 
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
@@ -426,6 +428,8 @@ func TestMintDeployCmd_CloudflarePreviewDeploy(t *testing.T) {
 	})
 	err := cmd.Execute()
 	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-run-42", fake.deployCalls[0].previewAlias)
 }
 
 func TestMintDeployCmd_CloudflareCustomWorkerName(t *testing.T) {
