@@ -493,14 +493,31 @@ func (c *orgConfig) DefaultRoles() []string {
 // Stored in .fullsend/config.yaml within the target repository.
 // Consumer packages should use the PerRepoConfigReader or ConfigWriter
 // interfaces rather than referencing this type directly.
+//
+// The parent field implements a fallback chain per ADR 0069 Decision 2:
+// accessors check the local struct first, then fall through to parent
+// when the local value is unset. The terminal parent is perRepoDefaults,
+// which returns compiled-in code defaults.
 type perRepoConfig struct {
-	Version                string              `yaml:"version"`
-	KillSwitch             bool                `yaml:"kill_switch,omitempty"`
-	Runtime                string              `yaml:"runtime,omitempty"`
-	Roles                  []string            `yaml:"roles,omitempty"`
-	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
+	// omitempty so unset version is not marshaled (unlike orgConfig,
+	// where version is always required). This allows the fallback
+	// chain to inherit version from the parent layer.
+	Version    string       `yaml:"version,omitempty"`
+	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
+	Runtime    string       `yaml:"runtime,omitempty"`
+	Roles      []string     `yaml:"roles,omitempty"`
+	Agents     []AgentEntry `yaml:"agents,omitempty"`
+	// AllowedRemoteResources holds the locally-set allowed remote
+	// resource prefixes. MarshalYAML preserves the nil-vs-empty
+	// distinction: nil (unset) is omitted, empty (deny-all) is
+	// marshaled as `allowed_remote_resources: []`.
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+
+	// parent is the next layer in the fallback chain. Getters consult
+	// parent when the local field is unset. Excluded from YAML
+	// serialization so Marshal emits only locally-set values.
+	parent PerRepoConfigReader `yaml:"-"`
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -522,6 +539,7 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		Version:                "1",
 		Roles:                  roles,
 		AllowedRemoteResources: DefaultAllowedRemoteResources(),
+		parent:                 &perRepoDefaults{},
 	}
 	if targetRepo != "" {
 		cfg.CreateIssues = &CreateIssuesConfig{
@@ -539,6 +557,7 @@ func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
+	cfg.parent = &perRepoDefaults{}
 	return &cfg, nil
 }
 
@@ -549,6 +568,7 @@ func ParsePerRepoConfigWriter(data []byte) (ConfigWriter, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
+	cfg.parent = &perRepoDefaults{}
 	return &cfg, nil
 }
 
@@ -561,23 +581,69 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 	return []byte(perRepoConfigHeader + string(body)), nil
 }
 
+// perRepoConfigMarshal is a shadow struct used by MarshalYAML to
+// preserve the nil-vs-empty distinction for AllowedRemoteResources.
+// With the plain []string + omitempty tag, yaml.v3 omits both nil
+// and empty slices. Using *[]string here means a nil pointer (unset)
+// is omitted while a non-nil pointer to an empty slice (deny-all)
+// is marshaled as `allowed_remote_resources: []`.
+type perRepoConfigMarshal struct {
+	Version                string              `yaml:"version,omitempty"`
+	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
+	Runtime                string              `yaml:"runtime,omitempty"`
+	Roles                  []string            `yaml:"roles,omitempty"`
+	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
+	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+}
+
+// MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
+// distinction for AllowedRemoteResources through YAML roundtrips.
+// nil (unset) is omitted; an explicit empty slice (deny-all) is
+// marshaled as `allowed_remote_resources: []`.
+func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
+	h := perRepoConfigMarshal{
+		Version:      c.Version,
+		KillSwitch:   c.KillSwitch,
+		Runtime:      c.Runtime,
+		Roles:        c.Roles,
+		Agents:       c.Agents,
+		CreateIssues: c.CreateIssues,
+	}
+	if c.AllowedRemoteResources != nil {
+		h.AllowedRemoteResources = &c.AllowedRemoteResources
+	}
+	return &h, nil
+}
+
 // Validate checks the PerRepoConfig for structural correctness.
+// Locally-set fields are validated; resolved values (e.g.,
+// AllowedResources) are used where validation requires the full
+// effective config.
 func (c *perRepoConfig) Validate() error {
-	if c.Version != "1" {
+	// Version: empty means "inherit from parent"; non-empty must be "1".
+	if c.Version != "" && c.Version != "1" {
 		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
 	}
-	valid := ValidRoles()
-	seen := make(map[string]bool, len(c.Roles))
-	for _, role := range c.Roles {
-		if !slices.Contains(valid, role) {
-			return fmt.Errorf("invalid role %q: must be one of %s", role, strings.Join(valid, ", "))
+	// Roles: nil means "inherit from parent"; non-nil (including empty)
+	// is locally set and validated.
+	if c.Roles != nil {
+		valid := ValidRoles()
+		seen := make(map[string]bool, len(c.Roles))
+		for _, role := range c.Roles {
+			if !slices.Contains(valid, role) {
+				return fmt.Errorf("invalid role %q: must be one of %s", role, strings.Join(valid, ", "))
+			}
+			if seen[role] {
+				return fmt.Errorf("duplicate role %q in roles", role)
+			}
+			seen[role] = true
 		}
-		if seen[role] {
-			return fmt.Errorf("duplicate role %q in roles", role)
-		}
-		seen[role] = true
 	}
-	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
+	// Agents are validated against the resolved allowlist (including
+	// parent resources) so that URL agents covered by a parent or
+	// default prefix pass validation.
+	if err := ValidateAgentEntries(c.Agents, c.AllowedResources()); err != nil {
 		return err
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {
