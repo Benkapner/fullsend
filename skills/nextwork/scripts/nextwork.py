@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -67,6 +68,8 @@ COMMENT_TRUNCATE_CHARS = 500
 INCLUDE_TEXT_COMMENT_COUNT = 3
 
 MAX_QUEUE_VISITS = 100
+# Cap open-PR pagination used for issue↔PR linking (100 nodes per page).
+MAX_OPEN_PR_PAGES_FOR_LINKING = 5
 
 
 # ------------------------------- Ref parsing -------------------------------
@@ -268,9 +271,7 @@ def _role_waiting_status(body: str) -> str:
 
 def latest_agent_status(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Chronologically latest agent-status comment, with waiting_status + terminal flag."""
-    agent_comments = [
-        c for c in comments if AGENT_STATUS_MARKER in (c.get("body") or "")
-    ]
+    agent_comments = [c for c in comments if AGENT_STATUS_MARKER in (c.get("body") or "")]
     if not agent_comments:
         return None
     latest = max(agent_comments, key=lambda c: c.get("created_at") or "")
@@ -315,9 +316,7 @@ def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | 
     terminal = latest_terminal_agent(comments, "waiting_triage")
     if terminal is not None and terminal.get("created_at"):
         return terminal
-    matches = [
-        c for c in comments if TRIAGE_RESULT_MARKER in (c.get("body") or "")
-    ]
+    matches = [c for c in comments if TRIAGE_RESULT_MARKER in (c.get("body") or "")]
     if not matches:
         return None
     latest = max(matches, key=lambda c: c.get("created_at") or "")
@@ -331,9 +330,7 @@ def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | 
 
 def latest_fs_command_at(comments: list[dict[str, Any]], command: str) -> str | None:
     """created_at of the latest comment whose first-line command equals command."""
-    matches = [
-        c for c in comments if comment_command(c.get("body") or "") == command
-    ]
+    matches = [c for c in comments if comment_command(c.get("body") or "") == command]
     if not matches:
         return None
     return max(matches, key=lambda c: c.get("created_at") or "").get("created_at")
@@ -405,11 +402,7 @@ def classify_launch_wait(
         return None
     # A matching non-terminal start is handled by classify_inflight_agent.
     latest = latest_agent_status(comments)
-    if (
-        latest
-        and not latest["terminal"]
-        and latest["waiting_status"] == spec["waiting"]
-    ):
+    if latest and not latest["terminal"] and latest["waiting_status"] == spec["waiting"]:
         return None
     # Slash/label launch already satisfied by a completed agent for this role.
     # Without this, a fresh /fs-* comment keeps waiting_* forever (until stale
@@ -517,7 +510,12 @@ class Classification:
 
 
 def classify_issue(
-    item: dict[str, Any], user: str, stale_hours: float, now: datetime
+    item: dict[str, Any],
+    user: str,
+    stale_hours: float,
+    now: datetime,
+    *,
+    resolve_linked_prs: Callable[[], list[int]] | None = None,
 ) -> Classification | None:
     """Classify a normalized open issue. Returns None if it should be dropped entirely."""
     labels = set(item["labels"])
@@ -566,13 +564,17 @@ def classify_issue(
             ],
         )
 
-    if item["linked_prs"]:
-        refs = ", ".join(f"#{n}" for n in item["linked_prs"])
+    linked_prs = item.get("linked_prs") or []
+    if not linked_prs and resolve_linked_prs is not None:
+        linked_prs = resolve_linked_prs()
+        item["linked_prs"] = linked_prs
+    if linked_prs:
+        refs = ", ".join(f"#{n}" for n in linked_prs)
         return Classification(
             status="waiting_linked_pr",
             reason=f"Open linked PR(s): {refs}",
             eliminated=True,
-            linked_prs=item["linked_prs"],
+            linked_prs=linked_prs,
         )
 
     if "needs-info" in labels:
@@ -667,12 +669,12 @@ def _classify_fix_from_threads(
             suggested_actions=["Resolve threads or remove fullsend-no-fix to allow /fs-fix"],
         )
     cmd_at = latest_fs_command_at(comments, "/fs-fix")
-    thread_times = [t.get("created_at") for t in unresolved if t.get("created_at")]
+    thread_times = [
+        created_at for t in unresolved if (created_at := t.get("created_at")) is not None
+    ]
     thread_at = max(thread_times) if thread_times else None
     signal_at = cmd_at or thread_at or item.get("updated_at")
-    launch = classify_launch_wait(
-        item, "fix", comments, stale_hours, now, signal_at=signal_at
-    )
+    launch = classify_launch_wait(item, "fix", comments, stale_hours, now, signal_at=signal_at)
     if launch:
         return launch
     return Classification(
@@ -737,9 +739,7 @@ def classify_pr(
     if unresolved_count > 0:
         authors = [t.get("author") for t in unresolved]
         if authors and all(a == REVIEW_BOT_LOGIN for a in authors):
-            return _classify_fix_from_threads(
-                item, comments, unresolved, stale_hours, now
-            )
+            return _classify_fix_from_threads(item, comments, unresolved, stale_hours, now)
         return Classification(
             status="needs_review_decision",
             reason=f"{unresolved_count} unresolved review conversation(s) need a human decision",
@@ -771,10 +771,7 @@ def classify_pr(
                 eliminated=False,
                 suggested_actions=["Satisfy branch protection (reviews, conversations, checks)"],
             )
-        elif (
-            merge_state in merge_ready_states
-            and item.get("mergeable") != "CONFLICTING"
-        ):
+        elif merge_state in merge_ready_states and item.get("mergeable") != "CONFLICTING":
             return Classification(
                 status="ready_to_merge",
                 reason="Approved and ready to merge",
@@ -782,9 +779,10 @@ def classify_pr(
                 suggested_actions=["Merge, or enqueue in the merge queue"],
             )
         else:
+            state = merge_state or "unknown"
             return Classification(
                 status="needs_review_decision",
-                reason=f"ready-for-merge label present but merge state is {merge_state or 'unknown'}",
+                reason=f"ready-for-merge label present but merge state is {state}",
                 eliminated=False,
                 suggested_actions=["Inspect PR merge readiness on GitHub"],
             )
@@ -812,13 +810,27 @@ def classify_pr(
             suggested_actions=["comment:/fs-review"],
         )
 
+    # Already approved: do not treat a leftover ready-for-review label as waiting.
+    if review_decision == "APPROVED":
+        return Classification(
+            status="human_work",
+            reason="Approved but not labeled ready-for-merge",
+            eliminated=False,
+            suggested_actions=["Add ready-for-merge when merge-ready, or merge if allowed"],
+        )
+
     review_signal = launch_signal_at(item, "review", comments)
     if not review_signal and review_decision in (None, "REVIEW_REQUIRED"):
         # Treat review-required path as a launch signal via updated_at.
         review_signal = item.get("updated_at")
-    if review_signal or "ready-for-review" in labels or review_decision in (
-        None,
-        "REVIEW_REQUIRED",
+    if (
+        review_signal
+        or "ready-for-review" in labels
+        or review_decision
+        in (
+            None,
+            "REVIEW_REQUIRED",
+        )
     ):
         launch = classify_launch_wait(
             item,
@@ -863,7 +875,8 @@ def annotate_orphaned_blocked_label(
     """If labeled blocked but no open structured blockers, suggest removing the label."""
     labels = item.get("labels") or []
     blockers = item.get("blockers") or []
-    if "blocked" in labels and not blockers and REMOVE_BLOCKED_LABEL not in classification.suggested_actions:
+    already = REMOVE_BLOCKED_LABEL in classification.suggested_actions
+    if "blocked" in labels and not blockers and not already:
         classification.suggested_actions = [
             *classification.suggested_actions,
             REMOVE_BLOCKED_LABEL,
@@ -872,10 +885,17 @@ def annotate_orphaned_blocked_label(
 
 
 def classify_item(
-    item: dict[str, Any], user: str, stale_hours: float, now: datetime
+    item: dict[str, Any],
+    user: str,
+    stale_hours: float,
+    now: datetime,
+    *,
+    resolve_linked_prs: Callable[[], list[int]] | None = None,
 ) -> Classification | None:
     if item["kind"] == "issue":
-        classification = classify_issue(item, user, stale_hours, now)
+        classification = classify_issue(
+            item, user, stale_hours, now, resolve_linked_prs=resolve_linked_prs
+        )
     else:
         classification = classify_pr(item, user, stale_hours, now)
     if classification is None:
@@ -927,9 +947,7 @@ def graphql_var_flags(variables: dict[str, Any]) -> list[str]:
         # -f always sends a string; GraphQL Int!/Boolean! reject coerced strings.
         if isinstance(value, bool):
             flags.extend(["-F", f"{key}={json.dumps(value)}"])
-        elif isinstance(value, int) and not isinstance(value, bool):
-            flags.extend(["-F", f"{key}={value}"])
-        elif isinstance(value, float):
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
             flags.extend(["-F", f"{key}={value}"])
         else:
             flags.extend(["-f", f"{key}={value}"])
@@ -979,8 +997,22 @@ def resolve_repo(override: str | None) -> str:
             print(f"error: --repo must be owner/name, got: {override!r}", file=sys.stderr)
             sys.exit(2)
         return override
-    raw = run_gh(["repo", "view", "--json", "nameWithOwner"])
-    repo = json.loads(raw)["nameWithOwner"]
+    try:
+        result = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        _gh_not_found()
+    except subprocess.CalledProcessError:
+        print(
+            "error: not inside a git repository known to gh; use --repo owner/name",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    repo = json.loads(result.stdout.strip())["nameWithOwner"]
     if not repo:
         print(
             "error: not inside a git repository known to gh; use --repo owner/name",
@@ -1108,6 +1140,7 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       id
+      state
       blockedBy(first: 50) {
         nodes { number repository { nameWithOwner } }
       }
@@ -1156,7 +1189,7 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
     comments = [
         {
             "author": (c.get("author") or {}).get("login"),
-            "body": (c.get("body") or "")[:COMMENT_TRUNCATE_CHARS],
+            "body": c.get("body") or "",
             "created_at": c.get("createdAt"),
         }
         for c in node.get("comments", {}).get("nodes", [])
@@ -1254,8 +1287,6 @@ class GhFetcher:
         if node is None:
             return None
         item = normalize_item(repo, node)
-        if item["kind"] == "issue":
-            item["linked_prs"] = self.get_linked_prs(repo, item["number"])
         return item
 
     def _pulls_for_linking(self, repo: str) -> list[dict[str, Any]]:
@@ -1263,6 +1294,7 @@ class GhFetcher:
             owner, name = repo.split("/", 1)
             nodes: list[dict[str, Any]] = []
             cursor: str | None = None
+            pages = 0
             while True:
                 data = gh_graphql_or_none(
                     OPEN_PULLS_FOR_LINKING_QUERY,
@@ -1273,8 +1305,18 @@ class GhFetcher:
                     break
                 conn = data["repository"]["pullRequests"]
                 nodes.extend(conn["nodes"])
+                pages += 1
                 page = conn["pageInfo"]
                 if not page["hasNextPage"]:
+                    break
+                if pages >= MAX_OPEN_PR_PAGES_FOR_LINKING:
+                    if not self.quiet:
+                        print(
+                            f"warning: linked-PR scan capped at "
+                            f"{MAX_OPEN_PR_PAGES_FOR_LINKING} pages for {repo}; "
+                            "some links may be missed",
+                            file=sys.stderr,
+                        )
                     break
                 cursor = page["endCursor"]
             self._pulls_by_repo[repo] = nodes
@@ -1328,7 +1370,7 @@ def seed_from_cli(items: list[str], default_repo: str | None) -> list[tuple[str,
 def seed_from_assigned(repo: str, user: str, *, quiet: bool = False) -> list[tuple[str, int]]:
     refs: list[tuple[str, int]] = []
     # gh defaults --limit to 30; raise so "dozens" of assigned items are not truncated.
-    issues_raw = try_run_gh(
+    issues_raw = run_gh(
         [
             "issue",
             "list",
@@ -1342,12 +1384,12 @@ def seed_from_assigned(repo: str, user: str, *, quiet: bool = False) -> list[tup
             "1000",
             "--json",
             "number",
-        ]
+        ],
+        quiet=quiet,
     )
-    if issues_raw:
-        for row in json.loads(issues_raw):
-            refs.append((repo, row["number"]))
-    pulls_raw = try_run_gh(
+    for row in json.loads(issues_raw or "[]"):
+        refs.append((repo, row["number"]))
+    pulls_raw = run_gh(
         [
             "pr",
             "list",
@@ -1361,11 +1403,11 @@ def seed_from_assigned(repo: str, user: str, *, quiet: bool = False) -> list[tup
             "1000",
             "--json",
             "number",
-        ]
+        ],
+        quiet=quiet,
     )
-    if pulls_raw:
-        for row in json.loads(pulls_raw):
-            refs.append((repo, row["number"]))
+    for row in json.loads(pulls_raw or "[]"):
+        refs.append((repo, row["number"]))
     return refs
 
 
@@ -1399,7 +1441,18 @@ def build_queue(
         if item is None or item["state"] != "OPEN":
             continue
 
-        classification = classify_item(item, user, stale_hours, now)
+        resolve_linked_prs: Callable[[], list[int]] | None = None
+        get_linked = getattr(fetcher, "get_linked_prs", None)
+        if item["kind"] == "issue" and callable(get_linked):
+
+            def _resolve_linked(r=repo, n=number, fn=get_linked) -> list[int]:
+                return list(fn(r, n))
+
+            resolve_linked_prs = _resolve_linked
+
+        classification = classify_item(
+            item, user, stale_hours, now, resolve_linked_prs=resolve_linked_prs
+        )
         if classification is None:
             continue
 
@@ -1534,7 +1587,14 @@ def link_blocker(
             "dependent": format_ref(dep_repo, dep_number),
             "blocker": format_ref(blk_repo, blk_number),
             "action": "error",
-            "detail": "dependent ref is not an open Issue (GitHub blocked-by is issue-only)",
+            "detail": "dependent ref is not an Issue (GitHub blocked-by is issue-only)",
+        }
+    if issue.get("state") != "OPEN":
+        return {
+            "dependent": format_ref(dep_repo, dep_number),
+            "blocker": format_ref(blk_repo, blk_number),
+            "action": "error",
+            "detail": "dependent Issue is not open",
         }
 
     existing = {
@@ -1637,7 +1697,13 @@ def item_output_dict(item: dict[str, Any], *, include_text: bool) -> dict[str, A
         out["sub_issues_completed"] = item.get("sub_issues_completed", 0)
     if include_text:
         out["body"] = item.get("body", "")[:BODY_TRUNCATE_CHARS]
-        out["comments"] = item.get("comments", [])[-INCLUDE_TEXT_COMMENT_COUNT:]
+        out["comments"] = [
+            {
+                **c,
+                "body": (c.get("body") or "")[:COMMENT_TRUNCATE_CHARS],
+            }
+            for c in item.get("comments", [])[-INCLUDE_TEXT_COMMENT_COUNT:]
+        ]
     return out
 
 
@@ -1754,7 +1820,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Perform trivial actions: assign:self first when suggested, post /fs-* comments, remove orphaned blocked labels",
+        help=(
+            "Perform trivial actions: assign:self first when suggested, "
+            "post /fs-* comments, remove orphaned blocked labels"
+        ),
     )
     parser.add_argument(
         "--take-over",

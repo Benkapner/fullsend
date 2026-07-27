@@ -8,7 +8,7 @@ import os
 import sys
 import unittest
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -37,6 +37,8 @@ from nextwork import (  # noqa: E402
     parse_pr_links,
     parse_ref,
     parse_take_over_specs,
+    resolve_repo,
+    seed_from_assigned,
     take_over,
 )
 
@@ -719,10 +721,7 @@ class TestClassifyIssue(unittest.TestCase):
                     "created_at": "2024-01-09T12:00:00Z",
                 },
                 {
-                    "body": (
-                        "<!-- fullsend:triage-agent -->\n"
-                        "## Triage Summary\n\nLooks good."
-                    ),
+                    "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nLooks good."),
                     "created_at": "2024-01-09T12:05:00Z",
                 },
             ],
@@ -739,8 +738,7 @@ class TestClassifyIssue(unittest.TestCase):
             comments=[
                 {
                     "body": (
-                        "<!-- fullsend:triage-agent -->\n"
-                        "## Triage Summary\n\nReady to implement."
+                        "<!-- fullsend:triage-agent -->\n## Triage Summary\n\nReady to implement."
                     ),
                     "created_at": "2024-01-01T00:00:00Z",
                 },
@@ -756,10 +754,7 @@ class TestClassifyIssue(unittest.TestCase):
             updated_at="2024-01-09T12:00:00Z",
             comments=[
                 {
-                    "body": (
-                        "<!-- fullsend:triage-agent -->\n"
-                        "## Triage Summary\n\nLooks good."
-                    ),
+                    "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nLooks good."),
                     "created_at": "2024-01-09T12:00:00Z",
                 },
             ],
@@ -780,10 +775,7 @@ class TestClassifyIssue(unittest.TestCase):
                 },
                 {
                     "author": "fullsend-ai-triage",
-                    "body": (
-                        "<!-- fullsend:triage-agent -->\n"
-                        "## Triage Summary\n\nDone."
-                    ),
+                    "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nDone."),
                     "created_at": "2024-01-09T22:05:00Z",
                 },
             ],
@@ -969,9 +961,7 @@ class TestClassifyPr(unittest.TestCase):
             labels=["fullsend-fix"],
             review_decision="CHANGES_REQUESTED",
             updated_at="2024-01-09T23:00:00Z",
-            unresolved_threads=[
-                {"author": "carol", "created_at": "2024-01-09T23:00:00Z"}
-            ],
+            unresolved_threads=[{"author": "carol", "created_at": "2024-01-09T23:00:00Z"}],
         )
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_review_decision")
@@ -1059,6 +1049,17 @@ class TestClassifyPr(unittest.TestCase):
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "human_work")
         self.assertFalse(result.eliminated)
+
+    def test_approved_with_stale_ready_for_review_is_actionable(self):
+        item = make_pr(
+            labels=["ready-for-review"],
+            review_decision="APPROVED",
+            checks_state="SUCCESS",
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "human_work")
+        self.assertFalse(result.eliminated)
+        self.assertNotEqual(result.status, "waiting_review")
 
 
 class FakeFetcher:
@@ -1178,18 +1179,12 @@ class TestBuildQueue(unittest.TestCase):
     def test_dropped_fetches_do_not_burn_visit_budget(self):
         # Closed + duplicate seeds must not steal slots from an open blocker chain.
         items = {
-            ("acme/widget", 99): make_issue(
-                repo="acme/widget", number=99, state="CLOSED"
-            ),
-            ("acme/widget", 98): make_issue(
-                repo="acme/widget", number=98, labels=["duplicate"]
-            ),
+            ("acme/widget", 99): make_issue(repo="acme/widget", number=99, state="CLOSED"),
+            ("acme/widget", 98): make_issue(repo="acme/widget", number=98, labels=["duplicate"]),
         }
         for n in range(1, 6):
             blockers = [{"repo": "acme/widget", "number": n + 1}] if n < 5 else []
-            items[("acme/widget", n)] = make_issue(
-                repo="acme/widget", number=n, blockers=blockers
-            )
+            items[("acme/widget", n)] = make_issue(repo="acme/widget", number=n, blockers=blockers)
         fetcher = FakeFetcher(items)
         results = build_queue(
             [("acme/widget", 99), ("acme/widget", 98), ("acme/widget", 1)],
@@ -1410,7 +1405,7 @@ class TestLinkBlocker(unittest.TestCase):
     @patch("nextwork.gh_graphql_or_none")
     def test_creates_new_link(self, mock_gql, mock_mutation):
         mock_gql.side_effect = [
-            {"repository": {"issue": {"id": "I_DEP", "blockedBy": {"nodes": []}}}},
+            {"repository": {"issue": {"id": "I_DEP", "state": "OPEN", "blockedBy": {"nodes": []}}}},
             {"repository": {"issue": {"id": "I_BLK"}}},
         ]
         result = link_blocker(("acme/widget", 1), ("acme/widget", 2))
@@ -1426,6 +1421,7 @@ class TestLinkBlocker(unittest.TestCase):
             "repository": {
                 "issue": {
                     "id": "I_DEP",
+                    "state": "OPEN",
                     "blockedBy": {
                         "nodes": [{"number": 2, "repository": {"nameWithOwner": "acme/widget"}}]
                     },
@@ -1441,13 +1437,25 @@ class TestLinkBlocker(unittest.TestCase):
     def test_dependent_not_an_issue_errors(self, _mock_gql, mock_mutation):
         result = link_blocker(("acme/widget", 99), ("acme/widget", 2))
         self.assertEqual(result["action"], "error")
+        self.assertIn("not an Issue", result["detail"])
+        mock_mutation.assert_not_called()
+
+    @patch("nextwork.gh_graphql")
+    @patch("nextwork.gh_graphql_or_none")
+    def test_dependent_closed_errors(self, mock_gql, mock_mutation):
+        mock_gql.return_value = {
+            "repository": {"issue": {"id": "I_DEP", "state": "CLOSED", "blockedBy": {"nodes": []}}}
+        }
+        result = link_blocker(("acme/widget", 1), ("acme/widget", 2))
+        self.assertEqual(result["action"], "error")
+        self.assertIn("not open", result["detail"])
         mock_mutation.assert_not_called()
 
     @patch("nextwork.gh_graphql")
     @patch("nextwork.gh_graphql_or_none")
     def test_blocker_not_an_issue_errors(self, mock_gql, mock_mutation):
         mock_gql.side_effect = [
-            {"repository": {"issue": {"id": "I_DEP", "blockedBy": {"nodes": []}}}},
+            {"repository": {"issue": {"id": "I_DEP", "state": "OPEN", "blockedBy": {"nodes": []}}}},
             {"repository": {"issue": None}},
         ]
         result = link_blocker(("acme/widget", 1), ("acme/widget", 404))
@@ -1532,6 +1540,48 @@ class TestFormatOutputs(unittest.TestCase):
         from nextwork import TRIVIAL_STATUSES
 
         self.assertEqual(DECISION_STATUSES & TRIVIAL_STATUSES, set())
+
+
+class TestResolveRepo(unittest.TestCase):
+    def test_override_ok(self):
+        self.assertEqual(resolve_repo("acme/widget"), "acme/widget")
+
+    def test_override_invalid_exits_2(self):
+        with self.assertRaises(SystemExit) as ctx:
+            resolve_repo("not-a-repo")
+        self.assertEqual(ctx.exception.code, 2)
+
+    @patch("nextwork.subprocess.run")
+    def test_gh_failure_exits_1(self, mock_run):
+        import subprocess
+
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["gh"])
+        with self.assertRaises(SystemExit) as ctx:
+            resolve_repo(None)
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("nextwork.subprocess.run")
+    def test_gh_success(self, mock_run):
+        mock_run.return_value = Mock(stdout='{"nameWithOwner":"acme/widget"}\n')
+        self.assertEqual(resolve_repo(None), "acme/widget")
+
+
+class TestSeedFromAssigned(unittest.TestCase):
+    @patch("nextwork.run_gh")
+    def test_merges_issues_and_prs(self, mock_run_gh):
+        mock_run_gh.side_effect = [
+            '[{"number":1},{"number":2}]',
+            '[{"number":9}]',
+        ]
+        refs = seed_from_assigned("acme/widget", "alice")
+        self.assertEqual(refs, [("acme/widget", 1), ("acme/widget", 2), ("acme/widget", 9)])
+        self.assertEqual(mock_run_gh.call_count, 2)
+
+    @patch("nextwork.run_gh", side_effect=SystemExit(3))
+    def test_propagates_gh_failure(self, _mock_run_gh):
+        with self.assertRaises(SystemExit) as ctx:
+            seed_from_assigned("acme/widget", "alice")
+        self.assertEqual(ctx.exception.code, 3)
 
 
 if __name__ == "__main__":

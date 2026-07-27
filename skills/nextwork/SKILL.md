@@ -14,8 +14,17 @@ Deterministically build a queue of **open** issues/PRs (assigned to you, or
 explicit refs), follow **open** GitHub `blockedBy` links and **open**
 sub-issues breadth-first (`blockedBy` may be cross-repo; sub-issues are
 same-repo), classify every item into a status catalog, and recommend the
-next action. Unlike [`/topissues`](../topissues/SKILL.md), this has no
-RICE/project dependency — it is readiness-oriented, not priority-scored.
+next action.
+
+## vs `/topissues`
+
+[`/topissues`](../topissues/SKILL.md) answers “what is highest priority?”
+using RICE scores from a GitHub Project. `/nextwork` answers “what can I
+act on next?” from assignment + readiness signals (blockers, stale agent
+waits, review/CI state) with no project dependency. Keep both: priority
+planning and day-to-day unblocking are different jobs, and consolidating
+them would force every readiness check through project fields that many
+repos do not maintain.
 
 ## Prerequisites
 
@@ -57,6 +66,10 @@ Portable `/nextwork` is defined in [commands/nextwork.md](../../commands/nextwor
 Every item gets exactly one `status`. Eliminated statuses (`eliminated: true`)
 are not shown in the default markdown output (add `--show-blocked` to see
 them); actionable statuses always appear under "Do now".
+
+**Classification priority:** structured blockers and
+`assigned_elsewhere` win over in-flight automation waits. Catalog sections
+below are grouped for reading, not evaluation order.
 
 **Eliminated — waiting on automation** (launch label or `/fs-*`, or non-terminal
 agent-status start). `--stale-hours` flips these to the Stale → column when the
@@ -180,3 +193,6 @@ like production dispatch: first whitespace token of the first comment line.
 - Merge-queue membership is only checked for PRs labeled `ready-for-merge`
   (to avoid an extra API call per PR); other PRs never report
   `in_merge_queue`.
+- Linked-PR detection scans open PRs only when an issue reaches that check
+  (after blockers / assignment / sub-issues). The scan is capped at five
+  GraphQL pages (~500 PRs) per repo; beyond that, some links may be missed.
