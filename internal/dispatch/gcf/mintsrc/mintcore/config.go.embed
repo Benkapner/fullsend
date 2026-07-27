@@ -35,6 +35,14 @@ type WorkerConfig struct {
 	// CustomRolePermissions is a JSON-encoded map of custom role permissions.
 	// Same format as the CUSTOM_ROLE_PERMISSIONS environment variable.
 	CustomRolePermissions string
+
+	// Version is the fullsend semver stamped on the deployed Worker.
+	// For WASM deployments this is injected via the config JSON since
+	// the binary is precompiled and cannot embed version at compile time.
+	Version string
+
+	// Commit is the git SHA stamped on the deployed Worker.
+	Commit string
 }
 
 // ParseWorkerConfig parses a WorkerConfig and returns a Handler.
@@ -49,6 +57,17 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 	}
 	if cfg.AllowedOrgs == "" {
 		return nil, fmt.Errorf("AllowedOrgs is required")
+	}
+
+	// Stamp version metadata from the config so that /health and /status
+	// report the deployed version. For GCF deploys this is compiled into
+	// the source (version.go); for WASM deploys it arrives at runtime via
+	// the config JSON because the binary is precompiled.
+	if cfg.Version != "" {
+		Version = cfg.Version
+	}
+	if cfg.Commit != "" {
+		Commit = cfg.Commit
 	}
 
 	if cfg.CustomRolePermissions != "" {

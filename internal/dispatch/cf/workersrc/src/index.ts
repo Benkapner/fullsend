@@ -26,6 +26,12 @@
 // copied into this directory at build time. The Go class it exports
 // bootstraps the Go runtime and provides the import object required
 // by the WASM binary.
+// Deploy-time version constants. The CF provisioner generates this file
+// (writeVersionTS) with the version/commit stamped at deploy time —
+// mirroring how the GCF provisioner writes version.go into the zip.
+// The values are compiled into the Worker bundle so they cannot diverge
+// from the deployed code via admin changes to environment variables.
+import { FULLSEND_VERSION, FULLSEND_COMMIT } from "./version";
 import "../wasm_exec.js";
 
 // ES module import of the compiled WASM binary. Wrangler handles this
@@ -158,6 +164,11 @@ function buildWasmConfig(env: Env): string {
     AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "",
     PerRepoWIFRepos: env.PER_REPO_WIF_REPOS ?? "",
     CustomRolePermissions: env.CUSTOM_ROLE_PERMISSIONS ?? "",
+    // Version constants are imported from the generated version.ts file
+    // (written by writeVersionTS at deploy time) rather than read from
+    // env vars, so they cannot diverge from the deployed code.
+    Version: FULLSEND_VERSION,
+    Commit: FULLSEND_COMMIT,
   });
 }
 
