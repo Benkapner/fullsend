@@ -74,6 +74,10 @@ that reflects current reality.`,
 			target := args[0]
 			cfg.gitlabToken = getGitLabToken(cmd)
 
+			if !repos.IsValidForge(cfg.forge) {
+				return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", cfg.forge, repos.ForgeGitHub, repos.ForgeGitLab)
+			}
+
 			clients := newForgeClientFactory(cfg.gitlabToken)
 			// Eagerly validate that a client can be created for the forge.
 			if _, err := clients.ConfigFor(cfg.forge); err != nil {
@@ -178,7 +182,8 @@ that reflects current reality.`,
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "default GCP project for inference")
 	cmd.Flags().IntVar(&cfg.concurrency, "concurrency", 8, "max parallel API calls (capped at 64)")
 	cmd.Flags().BoolVar(&cfg.force, "force", false, "overwrite output file if it already exists")
-	cmd.Flags().StringVar(&cfg.forge, "forge", repos.ForgeGitHub, "forge type for discovered repos (github or gitlab)")
+	cmd.Flags().StringVar(&cfg.forge, "forge", "", "forge type for discovered repos (github or gitlab)")
+	_ = cmd.MarkFlagRequired("forge")
 	cmd.MarkFlagsMutuallyExclusive("repos", "all")
 
 	return cmd
@@ -497,6 +502,7 @@ type reposAddConfig struct {
 	concurrency int
 	direct      bool
 	roles       []string
+	forge       string
 	gitlabToken string
 
 	testClient      forge.Client
@@ -527,6 +533,8 @@ the manifest.`,
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install (used with --install)")
+	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for added repos (github or gitlab)")
+	_ = cmd.MarkFlagRequired("forge")
 
 	return cmd
 }
@@ -534,6 +542,10 @@ the manifest.`,
 func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) error {
 	if opts.install && (opts.concurrency < 1 || opts.concurrency > 32) {
 		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
+	}
+
+	if !repos.IsValidForge(opts.forge) {
+		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
 	}
 
 	printer := ui.New(os.Stdout)
@@ -557,7 +569,13 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 
 	entries := make([]repos.RepoEntry, len(repoArgs))
 	for i, r := range repoArgs {
-		entries[i] = repos.RepoEntry{Repo: r}
+		entry := repos.RepoEntry{Repo: r}
+		// Set per-entry forge override only when it differs from the
+		// manifest default — keeps the YAML clean.
+		if opts.forge != manifest.Defaults.Forge {
+			entry.Forge = repos.NullableString{Set: true, Value: opts.forge}
+		}
+		entries[i] = entry
 	}
 
 	progressFn := func(repo, phase, msg string) {

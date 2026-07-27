@@ -88,7 +88,40 @@ func TestReposInitCmd_ForgeFlag(t *testing.T) {
 	cmd := newReposInitCmd()
 	forgeFlag := cmd.Flags().Lookup("forge")
 	require.NotNil(t, forgeFlag, "expected --forge flag")
-	assert.Equal(t, repos.ForgeGitHub, forgeFlag.DefValue)
+	assert.Equal(t, "", forgeFlag.DefValue, "--forge should have no default (required)")
+}
+
+func TestReposInitCmd_InvalidForge(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "--forge", "unknown", "test-org", "--all"})
+	t.Setenv("GH_TOKEN", "test-token")
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestReposInitCmd_ForgeFlagRequired(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "test-org", "--all"})
+	t.Setenv("GH_TOKEN", "test-token")
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required flag(s) \"forge\" not set")
+}
+
+func TestReposAddCmd_ForgeFlagRequired(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "add", "acme/web"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required flag(s) \"forge\" not set")
+}
+
+func TestReposAddCmd_ForgeFlag(t *testing.T) {
+	cmd := newReposAddCmd()
+	forgeFlag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, forgeFlag, "expected --forge flag")
+	assert.Equal(t, "", forgeFlag.DefValue, "--forge should have no default (required)")
 }
 
 func TestReposCmd_GitLabTokenFlag(t *testing.T) {
@@ -169,7 +202,7 @@ func TestReposInitCmd_OutputShorthand(t *testing.T) {
 func TestReposInitCmd_ValidatesOrgName(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--", "-invalid"})
+	cmd.SetArgs([]string{"repos", "init", "--forge", "github", "--", "-invalid"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot start or end with a hyphen")
@@ -178,7 +211,7 @@ func TestReposInitCmd_ValidatesOrgName(t *testing.T) {
 func TestReposInitCmd_ReposAllMutuallyExclusive(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "test-org", "--all", "--repos", "foo/bar"})
+	cmd.SetArgs([]string{"repos", "init", "test-org", "--forge", "github", "--all", "--repos", "foo/bar"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "if any flags in the group [repos all] are set none of the others can be")
@@ -787,6 +820,7 @@ func TestRunReposAdd_Basic(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub,
 		testClient: fc,
 	}, []string{"acme/web"})
 	require.NoError(t, err)
@@ -802,6 +836,7 @@ func TestRunReposAdd_Duplicate(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub,
 		testClient: fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
@@ -817,6 +852,7 @@ func TestRunReposAdd_DryRun(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub,
 		testClient: fc,
 		dryRun:     true,
 	}, []string{"acme/web"})
@@ -830,9 +866,60 @@ func TestRunReposAdd_DryRun(t *testing.T) {
 func TestRunReposAdd_InvalidManifest(t *testing.T) {
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest: "/nonexistent/repos.yaml",
+		forge:    repos.ForgeGitHub,
 	}, []string{"acme/web"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loading manifest")
+}
+
+func TestRunReposAdd_InvalidForge(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest: manifestPath,
+		forge:    "unknown",
+	}, []string{"acme/web"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestRunReposAdd_ForgeMatchesDefault_NoOverride(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := forge.NewFakeClient()
+
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub, // matches defaults.forge
+		testClient: fc,
+	}, []string{"acme/web"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.Equal(t, 2, len(m.Repos))
+	// The new entry should not have a per-entry forge override.
+	newEntry := m.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Repo)
+	assert.False(t, newEntry.Forge.Set, "forge should not be set when matching defaults")
+}
+
+func TestRunReposAdd_ForgeDiffersFromDefault_WritesOverride(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := forge.NewFakeClient()
+
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest:   manifestPath,
+		forge:      repos.ForgeGitLab, // differs from defaults.forge (github)
+		testClient: fc,
+	}, []string{"gitlab-group/web"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.Equal(t, 2, len(m.Repos))
+	newEntry := m.Repos[1]
+	assert.Equal(t, "gitlab-group/web", newEntry.Repo)
+	assert.True(t, newEntry.Forge.Set, "forge should be set when differing from defaults")
+	assert.Equal(t, repos.ForgeGitLab, newEntry.Forge.Value)
 }
 
 // --- repos remove ---
@@ -1308,6 +1395,7 @@ func TestRunReposAdd_WithInstall(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:        manifestPath,
+		forge:           repos.ForgeGitHub,
 		install:         true,
 		concurrency:     4,
 		direct:          true,
@@ -2038,7 +2126,7 @@ func TestReposAddCmd_GitLabNoToken(t *testing.T) {
 	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
 	manifestPath := writeTestManifest(t, m)
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "add", "--manifest", manifestPath, "acme/repo"})
+	cmd.SetArgs([]string{"repos", "add", "--forge", "gitlab", "--manifest", manifestPath, "acme/repo"})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
@@ -2070,7 +2158,7 @@ repos:
 func TestReposInitCmd_GitLabNoToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--forge", "gitlab", "test-org"})
+	cmd.SetArgs([]string{"repos", "init", "--forge", "gitlab", "--all", "test-org"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no GitLab token found")

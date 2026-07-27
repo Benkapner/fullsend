@@ -44,7 +44,7 @@ fullsend
 │   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
 │   │   ├── --repos <list>                   #   Comma-separated repos to include
 │   │   ├── --all                            #   Include all eligible repos
-│   │   ├── --forge <type>                   #   Forge type: github or gitlab (default: github)
+│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
 │   │   ├── --mint-project <id>              #   GCP project for the mint
 │   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
 │   │   ├── --inference-project <id>         #   Default GCP project for inference
@@ -59,6 +59,7 @@ fullsend
 │   │   └── --direct                         #   Push scaffold to default branch (skip PR)
 │   ├── add          <repos...>              # Add repo entries to manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
+│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --install                        #   Also install fullsend on the added repos
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
