@@ -2189,6 +2189,20 @@ func resolveWorkItemID() string {
 	if num != "" {
 		return num
 	}
+	// Fall back to PR-shaped env vars. Review agents triggered by
+	// pull_request / pull_request_target events have GITHUB_PR_URL and
+	// PR_NUMBER set but no issue-shaped equivalents. See #5621.
+	if repo != "" {
+		if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
+			return repo + "#" + prNum
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("GITHUB_PR_URL")); v != "" {
+		return v
+	}
+	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
+		return prNum
+	}
 	return "unknown"
 }
 
