@@ -1005,14 +1005,11 @@ func TestCheckStatus_MultiByteTruncation(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
 
 	// Should be exactly 200 runes + "..." — no invalid byte sequences.
-	runes := []rune(apiErr.Message)
-	truncated := string(runes[:len(runes)-1]) // strip the trailing rune of "..."
 	assert.True(t, strings.HasSuffix(apiErr.Message, "..."), "should end with ellipsis")
 	// The message without "..." should be exactly 200 runes of "日".
 	withoutEllipsis := strings.TrimSuffix(apiErr.Message, "...")
 	assert.Equal(t, 200, len([]rune(withoutEllipsis)), "should truncate at 200 runes")
 	assert.True(t, utf8.ValidString(apiErr.Message), "truncated message must be valid UTF-8")
-	_ = truncated // avoid unused variable
 }
 
 func TestListRepoPullRequests(t *testing.T) {

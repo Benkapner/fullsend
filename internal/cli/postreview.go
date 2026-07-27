@@ -474,7 +474,7 @@ func is422Error(err error) bool {
 // would otherwise be lost in the wrapped error message.
 func logAPIErrorDetails(err error, printer *ui.Printer) {
 	var apiErr *gh.APIError
-	if errors.As(err, &apiErr) && len(apiErr.Errors) > 0 {
+	if errors.As(err, &apiErr) {
 		for _, d := range apiErr.Errors {
 			printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
 		}
