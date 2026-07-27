@@ -276,9 +276,10 @@ func (c *perRepoConfig) IsKillSwitchActive() bool {
 // AllowedResources returns the effective allowed remote resource
 // prefixes. nil (key omitted) falls through to parent. An explicit
 // empty slice signals deny-all with no fallthrough. A non-empty
-// slice is unioned with parent resources and code defaults when a
-// parent is present; without a parent, the local list is returned
-// as-is for backwards compatibility.
+// slice is unioned with parent resources when a parent is present;
+// without a parent, the local list is returned as-is for backwards
+// compatibility. Code defaults surface only through the terminal
+// perRepoDefaults parent — intermediate parents may omit them.
 func (c *perRepoConfig) AllowedResources() []string {
 	if c.AllowedRemoteResources == nil {
 		if c.parent != nil {
@@ -292,7 +293,7 @@ func (c *perRepoConfig) AllowedResources() []string {
 	if c.parent == nil {
 		return c.AllowedRemoteResources
 	}
-	// Non-empty with parent: union overlay + parent + code defaults.
+	// Non-empty with parent: union overlay + parent.
 	seen := make(map[string]bool, len(c.AllowedRemoteResources))
 	result := make([]string, len(c.AllowedRemoteResources))
 	copy(result, c.AllowedRemoteResources)
@@ -303,16 +304,6 @@ func (c *perRepoConfig) AllowedResources() []string {
 		if !seen[r] {
 			result = append(result, r)
 			seen[r] = true
-		}
-	}
-	// Defensive: ensure code defaults are always present even if a
-	// future intermediate parent omits them. With the current terminal
-	// parent (perRepoDefaults) this is redundant — parent.AllowedResources()
-	// already returns DefaultAllowedRemoteResources() — but guards
-	// against custom parent implementations that filter defaults.
-	for _, d := range DefaultAllowedRemoteResources() {
-		if !seen[d] {
-			result = append(result, d)
 		}
 	}
 	return result

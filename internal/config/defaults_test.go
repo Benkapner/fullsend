@@ -266,14 +266,14 @@ func TestPerRepoConfig_AllowedResources_Fallback(t *testing.T) {
 		assert.Empty(t, result)
 	})
 
-	t.Run("non-empty unions with parent and code defaults", func(t *testing.T) {
+	t.Run("non-empty unions with parent", func(t *testing.T) {
 		cfg := &perRepoConfig{
 			AllowedRemoteResources: []string{"https://example.com/custom/"},
 			parent:                 &perRepoDefaults{},
 		}
 		result := cfg.AllowedResources()
 		assert.Contains(t, result, "https://example.com/custom/")
-		// Code defaults from parent should be included.
+		// Defaults surface via the terminal perRepoDefaults parent.
 		for _, d := range DefaultAllowedRemoteResources() {
 			assert.Contains(t, result, d)
 		}
@@ -309,9 +309,30 @@ func TestPerRepoConfig_AllowedResources_Fallback(t *testing.T) {
 		}
 		result := overlay.AllowedResources()
 		assert.Contains(t, result, "https://example.com/")
-		// Parent returned deny-all (empty), so only overlay + code defaults.
+		// Parent returned deny-all (empty), so overlay union contains
+		// only the overlay entries — code defaults are not re-injected.
+		assert.Len(t, result, 1)
+	})
+
+	t.Run("custom parent without code defaults is honored", func(t *testing.T) {
+		// An intermediate parent that returns a custom allowlist without
+		// baked-in prefixes. The overlay getter honors the parent's
+		// effective list without re-injecting code defaults.
+		parent := &perRepoConfig{
+			AllowedRemoteResources: []string{"https://custom.example.com/"},
+		}
+		overlay := &perRepoConfig{
+			AllowedRemoteResources: []string{"https://overlay.example.com/"},
+			parent:                 parent,
+		}
+		result := overlay.AllowedResources()
+		assert.Contains(t, result, "https://overlay.example.com/")
+		assert.Contains(t, result, "https://custom.example.com/")
+		assert.Len(t, result, 2)
+		// Code defaults are NOT present — the parent did not include
+		// them, and the overlay getter honors that.
 		for _, d := range DefaultAllowedRemoteResources() {
-			assert.Contains(t, result, d)
+			assert.NotContains(t, result, d)
 		}
 	})
 }
