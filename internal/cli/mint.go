@@ -39,6 +39,11 @@ var mintGCFClientFactory = func(projectID string) gcf.GCFClient {
 	return gcf.NewLiveGCFClient(projectID)
 }
 
+// mintCFWranglerFactory creates Wrangler runners for CF mint deploy. Overridden in tests.
+var mintCFWranglerFactory = func(accountID string) cf.WranglerRunner {
+	return cf.NewLiveWranglerRunner(accountID)
+}
+
 // defaultMintRoles returns the default roles for mint enrollment.
 // The "fix" role is an alias for "coder" (same app, same PEM) and is
 // not a separate enrollment target.
@@ -638,7 +643,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 		Commit:     commitSHA,
 	}
 
-	wrangler := cf.NewLiveWranglerRunner(accountID)
+	wrangler := mintCFWranglerFactory(accountID)
 	provisioner := cf.NewProvisioner(cfg, wrangler)
 
 	modeLabel := "durable"

@@ -52,13 +52,14 @@ var _ dispatch.Dispatcher = (*Provisioner)(nil)
 // `make wasm-stage`. The provisioner expects them to be present in
 // the source directory at deploy time.
 //
-//go:embed workersrc/src/index.ts workersrc/wrangler.toml workersrc/package.json workersrc/tsconfig.json workersrc/wasm.d.ts workersrc/wasm_exec.d.ts
+//go:embed workersrc/src/index.ts workersrc/src/version.ts workersrc/wrangler.toml workersrc/package.json workersrc/tsconfig.json workersrc/wasm.d.ts workersrc/wasm_exec.d.ts
 var embeddedWorkerSource embed.FS
 
 // embeddedWorkerFiles lists the embedded files for extraction.
 // Maps embedded path (under workersrc/) to extraction path.
 var embeddedWorkerFiles = []string{
 	"workersrc/src/index.ts",
+	"workersrc/src/version.ts",
 	"workersrc/wrangler.toml",
 	"workersrc/package.json",
 	"workersrc/tsconfig.json",

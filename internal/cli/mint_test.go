@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch/cf"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
@@ -38,6 +39,37 @@ func generateTestPEM(t *testing.T) []byte {
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
+}
+
+// fakeCFWranglerRunner implements cf.WranglerRunner for CLI tests.
+type fakeCFWranglerRunner struct {
+	deployErr   error
+	deployURL   string
+	deployCalls []fakeCFDeployCall
+}
+
+type fakeCFDeployCall struct {
+	workerName string
+}
+
+func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, _ bool, _ map[string]string) (string, error) {
+	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName})
+	if f.deployErr != nil {
+		return "", f.deployErr
+	}
+	url := f.deployURL
+	if url == "" {
+		url = fmt.Sprintf("https://%s.workers.dev", workerName)
+	}
+	return url, nil
+}
+
+func (f *fakeCFWranglerRunner) PutSecret(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (f *fakeCFWranglerRunner) Delete(context.Context, string) error {
+	return nil
 }
 
 func TestMintCommand_HasSubcommands(t *testing.T) {
@@ -303,6 +335,133 @@ func TestMintDeployCmd_CloudflareDryRunPreview(t *testing.T) {
 	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run", "--preview"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+// --- Cloudflare non-dry-run deploy tests ---
+
+// withMintCFWrangler overrides the mintCFWranglerFactory package-level
+// variable to return a fake WranglerRunner for the test's lifetime.
+func withMintCFWrangler(t *testing.T, runner cf.WranglerRunner) {
+	t.Helper()
+	old := mintCFWranglerFactory
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return runner }
+	t.Cleanup(func() { mintCFWranglerFactory = old })
+}
+
+// createMinimalWorkerSourceDir creates a temp directory with the minimal
+// files required by validateSourceDir (src/index.ts, wrangler.toml,
+// package.json) so Provision can succeed without real wrangler.
+func createMinimalWorkerSourceDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/index.ts"), []byte("export default {}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wrangler.toml"), []byte("name = \"test\""), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+	return dir
+}
+
+// withCFEnvVars sets the required Cloudflare env vars and restores them
+// after the test.
+func withCFEnvVars(t *testing.T) {
+	t.Helper()
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+	t.Cleanup(func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	})
+}
+
+func TestMintDeployCmd_CloudflareDurableDeploy(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflarePreviewDeploy(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint-preview.workers.dev",
+	})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareCustomWorkerName(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://custom-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--worker-name=custom-mint",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "custom-mint", fake.deployCalls[0].workerName)
+}
+
+func TestMintDeployCmd_CloudflareDeployFailure(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{
+		deployErr: fmt.Errorf("wrangler deploy failed: exit status 1"),
+	})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deploying worker")
+}
+
+func TestMintDeployCmd_CloudflareDeployBadSourceDir(t *testing.T) {
+	withCFEnvVars(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=/nonexistent/path",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deploying worker")
 }
 
 func TestMintDeployCmd_GCPDefaultPlatform(t *testing.T) {
