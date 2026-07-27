@@ -29,7 +29,7 @@ fullsend across an organization. Individual repo owners should use
 Generate a `repos.yaml` manifest by discovering existing installations:
 
 ```bash
-fullsend repos init <org> --all \
+fullsend repos init <org> --forge github --all \
   --mint-project <GCP_PROJECT> \
   --inference-project <GCP_PROJECT>
 ```
@@ -37,13 +37,13 @@ fullsend repos init <org> --all \
 For a single repo:
 
 ```bash
-fullsend repos init <owner/repo> --mint-project <GCP_PROJECT>
+fullsend repos init <owner/repo> --forge github --mint-project <GCP_PROJECT>
 ```
 
 Instead of `--all`, specify a subset of repos with `--repos`:
 
 ```bash
-fullsend repos init acme --repos acme/api,acme/web \
+fullsend repos init acme --forge github --repos acme/api,acme/web \
   --mint-project <GCP_PROJECT>
 ```
 
@@ -52,7 +52,7 @@ fullsend repos init acme --repos acme/api,acme/web \
 If a `repos.yaml` file already exists, pass `--force` to overwrite it:
 
 ```bash
-fullsend repos init <org> --all --force --mint-project <GCP_PROJECT>
+fullsend repos init <org> --forge github --all --force --mint-project <GCP_PROJECT>
 ```
 
 The command discovers per-repo and per-org installations, extracts
@@ -253,21 +253,21 @@ shim version (`@ref`) — use `repos upgrade` for that.
 Add repos to the manifest and optionally install them:
 
 ```bash
-fullsend repos add acme/new-api acme/new-web
-fullsend repos add acme/new-api --install --direct
+fullsend repos add acme/new-api acme/new-web --forge github
+fullsend repos add acme/new-api --forge github --install --direct
 ```
 
 Preview what would be added:
 
 ```bash
-fullsend repos add acme/new-api --dry-run
+fullsend repos add acme/new-api --forge github --dry-run
 ```
 
 Specify which agent roles to install (defaults to
 `triage,coder,review,fix,retro,prioritize`):
 
 ```bash
-fullsend repos add acme/new-api --install --roles triage,coder,review
+fullsend repos add acme/new-api --forge github --install --roles triage,coder,review
 ```
 
 ### Removing repos
@@ -370,7 +370,7 @@ per-repo manifest management can use the following workflow.
 ### Step 1: Generate a manifest from existing installations
 
 ```bash
-fullsend repos init <org> --all \
+fullsend repos init <org> --forge github --all \
   --mint-project <GCP_PROJECT> \
   --inference-project <GCP_PROJECT>
 ```

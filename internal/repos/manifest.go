@@ -35,6 +35,11 @@ var validForges = map[string]bool{
 	ForgeGitLab: true,
 }
 
+// IsValidForge reports whether the given forge name is supported.
+func IsValidForge(name string) bool {
+	return validForges[name]
+}
+
 // Manifest is the top-level structure of a repos.yaml file.
 type Manifest struct {
 	Version  int            `yaml:"version"`

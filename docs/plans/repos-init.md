@@ -60,7 +60,7 @@ Flags:
 - `--repos` (string, comma-separated): explicit list of repo names to
   include. Skips interactive selection.
 - `--all` (bool): include all eligible repos without prompting.
-- `--forge` (string, default `github`): forge type (`github` or `gitlab`).
+- `--forge` (string, **required**): forge type (`github` or `gitlab`).
 - `--mint-project` (string): GCP project for the `mint.project` field.
 - `--mint-region` (string, default `us-central1`): GCP region for
   the `mint.region` field.

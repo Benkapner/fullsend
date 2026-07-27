@@ -34,13 +34,13 @@ These flags are inherited by all `repos` subcommands:
 Discovers existing fullsend installations (per-repo and per-org) and generates a `repos.yaml` manifest reflecting their current state. Supports greenfield onboarding and migration from existing installations.
 
 ```bash
-fullsend repos init <org> --all --mint-project <PROJECT> --inference-project <PROJECT>
+fullsend repos init <org> --forge github --all --mint-project <PROJECT> --inference-project <PROJECT>
 ```
 
 Single-repo mode:
 
 ```bash
-fullsend repos init <owner/repo> --mint-project <PROJECT>
+fullsend repos init <owner/repo> --forge github --mint-project <PROJECT>
 ```
 
 ### Flags
@@ -54,7 +54,7 @@ fullsend repos init <owner/repo> --mint-project <PROJECT>
 | `--mint-region` | `us-central1` | GCP region for the mint |
 | `--inference-project` | | Default GCP project for inference |
 | `--concurrency` | `8` | Max parallel API calls (capped at 64) |
-| `--forge` | `github` | Forge type for discovered repos (`github` or `gitlab`) |
+| `--forge` | **(required)** | Forge type for discovered repos (`github` or `gitlab`) |
 | `--force` | `false` | Overwrite output file if it already exists |
 
 ### Discovery
@@ -256,9 +256,9 @@ Sync reconciles variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`) and secre
 Add one or more repo entries to the `repos.yaml` manifest file, editing it in place. Use `--install` to also install fullsend on the added repos after updating the manifest.
 
 ```bash
-fullsend repos add acme/new-api acme/new-web
-fullsend repos add acme/new-api --install --direct
-fullsend repos add acme/new-api --dry-run
+fullsend repos add acme/new-api acme/new-web --forge github
+fullsend repos add acme/new-api --forge github --install --direct
+fullsend repos add acme/new-api --forge github --dry-run
 ```
 
 ### Flags
@@ -266,6 +266,7 @@ fullsend repos add acme/new-api --dry-run
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml manifest |
+| `--forge` | **(required)** | Forge type for added repos (`github` or `gitlab`). If it matches `defaults.forge`, the per-entry forge field is omitted from the YAML. If it differs, the per-entry override is written. |
 | `--dry-run` | `false` | Preview what would be added without making changes |
 | `--install` | `false` | Also install fullsend on the added repos |
 | `--concurrency` | `4` | Max parallel operations (1-32, used with `--install`) |
