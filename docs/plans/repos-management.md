@@ -255,7 +255,7 @@ Adds repo entries to the `repos.yaml` manifest. Supports glob patterns
 (e.g. `acme/*`) and validates repo name format (`owner/repo`). Skips
 duplicates. With `--install`, also installs fullsend on the added repos.
 
-Supports `--dry-run`, `--install`, `--concurrency`, `--direct`.
+Supports `--forge` (required), `--dry-run`, `--install`, `--concurrency`, `--direct`.
 
 #### `fullsend repos remove`
 
@@ -1217,6 +1217,7 @@ Add `newReposAddCmd()`, `newReposRemoveCmd()`, `newReposUninstallCmd()`.
 
 `repos add` — adds repo entries to the manifest:
 - Positional args: repos to add (supports globs).
+- `--forge` (required): forge type (`github` or `gitlab`). Omits per-entry override when matching `defaults.forge`.
 - `--manifest` / `-f`.
 - `--dry-run`.
 - `--install`: also install fullsend on added repos.

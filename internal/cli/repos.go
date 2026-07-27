@@ -74,6 +74,10 @@ that reflects current reality.`,
 			target := args[0]
 			cfg.gitlabToken = getGitLabToken(cmd)
 
+			if !repos.IsValidForge(cfg.forge) {
+				return fmt.Errorf("--forge value %q is not supported; use %q or %q", cfg.forge, repos.ForgeGitHub, repos.ForgeGitLab)
+			}
+
 			clients := newForgeClientFactory(cfg.gitlabToken)
 			// Eagerly validate that a client can be created for the forge.
 			if _, err := clients.ConfigFor(cfg.forge); err != nil {

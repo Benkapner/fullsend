@@ -91,6 +91,15 @@ func TestReposInitCmd_ForgeFlag(t *testing.T) {
 	assert.Equal(t, "", forgeFlag.DefValue, "--forge should have no default (required)")
 }
 
+func TestReposInitCmd_InvalidForge(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "--forge", "unknown", "test-org", "--all"})
+	t.Setenv("GH_TOKEN", "test-token")
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported")
+}
+
 func TestReposInitCmd_ForgeFlagRequired(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "init", "test-org", "--all"})

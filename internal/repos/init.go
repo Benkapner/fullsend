@@ -453,9 +453,6 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 	}
 
 	forgeName := cfg.Forge
-	if forgeName == "" {
-		forgeName = ForgeGitHub
-	}
 
 	manifest := &Manifest{
 		Version: 1,
