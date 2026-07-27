@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -908,6 +909,127 @@ func TestAPIError_FieldCode(t *testing.T) {
 	}
 	assert.Contains(t, err2.Error(), "Branch not found")
 	assert.NotContains(t, err2.Error(), "field=head")
+}
+
+func TestCheckStatus_EmptyMessageWithErrors(t *testing.T) {
+	// When GitHub returns 422 with an empty top-level message but
+	// populated errors, checkStatus should preserve the error details.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "",
+			"errors": []map[string]any{
+				{"resource": "PullRequestReviewComment", "field": "line", "code": "invalid"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	assert.Equal(t, "Unprocessable Entity", apiErr.Message)
+	require.Len(t, apiErr.Errors, 1)
+	assert.Equal(t, "PullRequestReviewComment", apiErr.Errors[0].Resource)
+	assert.Equal(t, "line", apiErr.Errors[0].Field)
+	assert.Equal(t, "invalid", apiErr.Errors[0].Code)
+}
+
+func TestCheckStatus_NoMessageNoErrors_UsesRawBody(t *testing.T) {
+	// When GitHub returns a non-standard JSON body without a message
+	// or errors array, checkStatus should include the raw body.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, `{"error":"something unexpected"}`)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Message, "something unexpected")
+}
+
+func TestCheckStatus_NonJSONBody(t *testing.T) {
+	// When GitHub returns a non-JSON body, checkStatus should use
+	// the raw body as the error message.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, "Bad Gateway: upstream timeout")
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Message, "Bad Gateway: upstream timeout")
+}
+
+func TestCheckStatus_EmptyBody(t *testing.T) {
+	// When the response body is empty, fall back to http.StatusText.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	assert.Equal(t, "Unprocessable Entity", apiErr.Message)
+}
+
+func TestCheckStatus_MultiByteTruncation(t *testing.T) {
+	// When the raw body contains multi-byte UTF-8 characters and
+	// exceeds the truncation limit, the result should not split a
+	// character — truncation operates on runes, not bytes.
+	// Build a body that is >200 runes, using multi-byte chars.
+	body := strings.Repeat("日", 201) // 201 three-byte runes = 603 bytes
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+
+	// Should be exactly 200 runes + "..." — no invalid byte sequences.
+	assert.True(t, strings.HasSuffix(apiErr.Message, "..."), "should end with ellipsis")
+	// The message without "..." should be exactly 200 runes of "日".
+	withoutEllipsis := strings.TrimSuffix(apiErr.Message, "...")
+	assert.Equal(t, 200, len([]rune(withoutEllipsis)), "should truncate at 200 runes")
+	assert.True(t, utf8.ValidString(apiErr.Message), "truncated message must be valid UTF-8")
 }
 
 func TestListRepoPullRequests(t *testing.T) {
