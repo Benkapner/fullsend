@@ -137,9 +137,11 @@ func TestPerRepoConfig_AgentEntries(t *testing.T) {
 }
 
 func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
-	cfg := &perRepoConfig{KillSwitch: true}
+	tr := true
+	cfg := &perRepoConfig{KillSwitch: &tr}
 	assert.True(t, cfg.IsKillSwitchActive())
-	cfg.KillSwitch = false
+	f := false
+	cfg.KillSwitch = &f
 	assert.False(t, cfg.IsKillSwitchActive())
 }
 
@@ -186,9 +188,11 @@ func TestPerRepoConfig_ConfigRuntime(t *testing.T) {
 func TestPerRepoConfig_SetKillSwitch(t *testing.T) {
 	cfg := &perRepoConfig{}
 	cfg.SetKillSwitch(true)
-	assert.True(t, cfg.KillSwitch)
+	require.NotNil(t, cfg.KillSwitch)
+	assert.True(t, *cfg.KillSwitch)
 	cfg.SetKillSwitch(false)
-	assert.False(t, cfg.KillSwitch)
+	require.NotNil(t, cfg.KillSwitch)
+	assert.False(t, *cfg.KillSwitch)
 }
 
 func TestPerRepoConfig_SetAgents(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -186,35 +187,185 @@ func (c *orgConfig) SetRepo(name string, rc RepoConfig) {
 }
 
 // --- perRepoConfig getter methods ---
+//
+// All getters implement fallback: local value -> parent -> zero value.
+// The parent chain terminates at perRepoDefaults which returns
+// compiled-in code defaults (ADR 0069 Decision 2).
 
-// AgentEntries returns the registered agent entries.
-func (c *perRepoConfig) AgentEntries() []AgentEntry { return c.Agents }
+// AgentEntries returns the merged agent set. When the local Agents
+// field is nil (key omitted from YAML), parent agents are returned
+// unchanged. When local Agents is non-nil (including empty), a keyed
+// merge by DerivedName is performed: overlay entries can toggle
+// enable/disable or replace the source of a parent agent without
+// replacing the entire agent list.
+func (c *perRepoConfig) AgentEntries() []AgentEntry {
+	var parentAgents []AgentEntry
+	if c.parent != nil {
+		parentAgents = c.parent.AgentEntries()
+	}
+	if c.Agents == nil {
+		return parentAgents
+	}
+	if len(parentAgents) == 0 {
+		return c.Agents
+	}
+	// Build overlay index by lowercase DerivedName. Multiple entries
+	// with the same name may exist (disable-then-enable pairs).
+	type overlayInfo struct {
+		entry AgentEntry
+		used  bool
+	}
+	overlayByName := make(map[string][]*overlayInfo, len(c.Agents))
+	overlayOrder := make([]*overlayInfo, 0, len(c.Agents))
+	for _, a := range c.Agents {
+		oi := &overlayInfo{entry: a}
+		key := strings.ToLower(a.DerivedName())
+		overlayByName[key] = append(overlayByName[key], oi)
+		overlayOrder = append(overlayOrder, oi)
+	}
+
+	// For each parent agent, apply matching overlay entries.
+	result := make([]AgentEntry, 0, len(parentAgents)+len(c.Agents))
+	for _, pa := range parentAgents {
+		key := strings.ToLower(pa.DerivedName())
+		overlays, hasOverlay := overlayByName[key]
+		if !hasOverlay {
+			result = append(result, pa)
+			continue
+		}
+		// Apply overlays in order (last wins per field).
+		merged := pa
+		for _, oi := range overlays {
+			oi.used = true
+			if oi.entry.Source != "" {
+				merged.Source = oi.entry.Source
+			}
+			if oi.entry.Enabled != nil {
+				merged.Enabled = oi.entry.Enabled
+			}
+			if oi.entry.Name != "" {
+				merged.Name = oi.entry.Name
+			}
+		}
+		result = append(result, merged)
+	}
+
+	// Append overlay entries that did not match any parent agent.
+	for _, oi := range overlayOrder {
+		if !oi.used {
+			result = append(result, oi.entry)
+		}
+	}
+
+	return result
+}
 
 // IsKillSwitchActive reports whether the kill switch is engaged.
-func (c *perRepoConfig) IsKillSwitchActive() bool { return c.KillSwitch }
+// KillSwitch is a *bool: nil falls through to parent, non-nil
+// (including explicit false) is the local decision.
+func (c *perRepoConfig) IsKillSwitchActive() bool {
+	if c.KillSwitch != nil {
+		return *c.KillSwitch
+	}
+	if c.parent != nil {
+		return c.parent.IsKillSwitchActive()
+	}
+	return false
+}
 
-// AllowedResources returns the allowed remote resource prefixes.
-func (c *perRepoConfig) AllowedResources() []string { return c.AllowedRemoteResources }
+// AllowedResources returns the effective allowed remote resource
+// prefixes. nil (key omitted) falls through to parent. An explicit
+// empty slice signals deny-all with no fallthrough. A non-empty
+// slice is unioned with parent resources when a parent is present;
+// without a parent, the local list is returned as-is for backwards
+// compatibility. Code defaults surface only through the terminal
+// perRepoDefaults parent — intermediate parents may omit them.
+func (c *perRepoConfig) AllowedResources() []string {
+	if c.AllowedRemoteResources == nil {
+		if c.parent != nil {
+			return c.parent.AllowedResources()
+		}
+		return nil
+	}
+	if len(c.AllowedRemoteResources) == 0 {
+		return c.AllowedRemoteResources
+	}
+	if c.parent == nil {
+		return c.AllowedRemoteResources
+	}
+	// Non-empty with parent: union overlay + parent.
+	seen := make(map[string]bool, len(c.AllowedRemoteResources))
+	result := make([]string, len(c.AllowedRemoteResources))
+	copy(result, c.AllowedRemoteResources)
+	for _, r := range c.AllowedRemoteResources {
+		seen[r] = true
+	}
+	for _, r := range c.parent.AllowedResources() {
+		if !seen[r] {
+			result = append(result, r)
+			seen[r] = true
+		}
+	}
+	return result
+}
 
 // IssueCreationConfig returns the cross-repo issue creation config.
-func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig { return c.CreateIssues }
+// nil falls through to parent.
+func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig {
+	if c.CreateIssues != nil {
+		return c.CreateIssues
+	}
+	if c.parent != nil {
+		return c.parent.IssueCreationConfig()
+	}
+	return nil
+}
 
-// ConfigVersion returns the config schema version.
-func (c *perRepoConfig) ConfigVersion() string { return c.Version }
+// ConfigVersion returns the config schema version. Empty falls
+// through to parent (code default "1").
+func (c *perRepoConfig) ConfigVersion() string {
+	if c.Version != "" {
+		return c.Version
+	}
+	if c.parent != nil {
+		return c.parent.ConfigVersion()
+	}
+	return ""
+}
 
 // IsOrgMode reports that this is a per-repo configuration.
 func (c *perRepoConfig) IsOrgMode() bool { return false }
 
-// ConfigRoles returns the configured agent roles.
-func (c *perRepoConfig) ConfigRoles() []string { return c.Roles }
+// ConfigRoles returns the configured agent roles. nil (key omitted)
+// falls through to parent. Non-nil (including empty) replaces the
+// parent list entirely.
+func (c *perRepoConfig) ConfigRoles() []string {
+	if c.Roles != nil {
+		return c.Roles
+	}
+	if c.parent != nil {
+		return c.parent.ConfigRoles()
+	}
+	return nil
+}
 
-// ConfigRuntime returns the configured agent runtime.
-func (c *perRepoConfig) ConfigRuntime() string { return c.Runtime }
+// ConfigRuntime returns the configured agent runtime. Empty falls
+// through to parent (code default "claude").
+func (c *perRepoConfig) ConfigRuntime() string {
+	if c.Runtime != "" {
+		return c.Runtime
+	}
+	if c.parent != nil {
+		return c.parent.ConfigRuntime()
+	}
+	return ""
+}
 
 // --- perRepoConfig setter methods ---
 
-// SetKillSwitch sets the kill switch state.
-func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
+// SetKillSwitch sets the kill switch state. Stores a *bool so that
+// an explicit false is distinguishable from unset (nil) across layers.
+func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = &v }
 
 // SetAgents replaces the registered agent entries.
 func (c *perRepoConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
