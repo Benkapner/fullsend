@@ -1059,6 +1059,62 @@ class TestBuildQueue(unittest.TestCase):
         self.assertTrue(parent["eliminated"])
         self.assertEqual(len(parent["open_sub_issues"]), 2)
 
+    def test_deepen_first_before_unrelated_seeds(self):
+        # Seeds: blocked parent, then a leaf. FIFO append would visit the leaf
+        # before the blocker under max_visits=2; deepen-first must reach the root.
+        items = {
+            ("acme/widget", 1): make_issue(
+                repo="acme/widget",
+                number=1,
+                blockers=[{"repo": "acme/widget", "number": 2}],
+            ),
+            ("acme/widget", 2): make_issue(
+                repo="acme/widget", number=2, labels=["question"], assignees=["alice"]
+            ),
+            ("acme/widget", 3): make_issue(
+                repo="acme/widget", number=3, labels=["question"], assignees=["alice"]
+            ),
+        }
+        fetcher = FakeFetcher(items)
+        results = build_queue(
+            [("acme/widget", 1), ("acme/widget", 3)],
+            fetcher,
+            "alice",
+            6,
+            NOW,
+            max_visits=2,
+        )
+        numbers = [r["number"] for r in results]
+        self.assertEqual(numbers, [1, 2])
+        self.assertNotIn(3, numbers)
+
+    def test_dropped_fetches_do_not_burn_visit_budget(self):
+        # Closed + duplicate seeds must not steal slots from an open blocker chain.
+        items = {
+            ("acme/widget", 99): make_issue(
+                repo="acme/widget", number=99, state="CLOSED"
+            ),
+            ("acme/widget", 98): make_issue(
+                repo="acme/widget", number=98, labels=["duplicate"]
+            ),
+        }
+        for n in range(1, 6):
+            blockers = [{"repo": "acme/widget", "number": n + 1}] if n < 5 else []
+            items[("acme/widget", n)] = make_issue(
+                repo="acme/widget", number=n, blockers=blockers
+            )
+        fetcher = FakeFetcher(items)
+        results = build_queue(
+            [("acme/widget", 99), ("acme/widget", 98), ("acme/widget", 1)],
+            fetcher,
+            "alice",
+            6,
+            NOW,
+            max_visits=3,
+        )
+        self.assertEqual(len(results), 3)
+        self.assertEqual([r["number"] for r in results], [1, 2, 3])
+
 
 class TestApplyTrivialActions(unittest.TestCase):
     @patch("nextwork.run_gh")

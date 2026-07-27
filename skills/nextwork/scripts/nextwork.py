@@ -66,7 +66,7 @@ BODY_TRUNCATE_CHARS = 1000
 COMMENT_TRUNCATE_CHARS = 500
 INCLUDE_TEXT_COMMENT_COUNT = 3
 
-MAX_QUEUE_VISITS = 50
+MAX_QUEUE_VISITS = 100
 
 
 # ------------------------------- Ref parsing -------------------------------
@@ -1340,12 +1340,18 @@ def build_queue(
     *,
     max_visits: int = MAX_QUEUE_VISITS,
 ) -> list[dict[str, Any]]:
-    """BFS over the seed refs, following open blockedBy links. Returns classified items."""
+    """Walk seed refs, deepen-first via open blockedBy / sub-issues.
+
+    Only classified open items count toward ``max_visits`` (closed, missing, and
+    duplicate-dropped fetches are de-duped but do not burn budget). Discovered
+    blockers and sub-issues are prepended so dependency chains complete before
+    remaining unrelated seeds.
+    """
     visited: set[tuple[str, int]] = set()
     to_visit: deque[tuple[str, int]] = deque(seeds)
     results: list[dict[str, Any]] = []
 
-    while to_visit and len(visited) < max_visits:
+    while to_visit and len(results) < max_visits:
         ref = to_visit.popleft()
         if ref in visited:
             continue
@@ -1375,15 +1381,15 @@ def build_queue(
         results.append(result)
 
         if classification.status == "blocked_by":
-            for blocker in classification.blockers:
+            for blocker in reversed(classification.blockers):
                 bref = (blocker["repo"], blocker["number"])
                 if bref not in visited:
-                    to_visit.append(bref)
+                    to_visit.appendleft(bref)
         elif classification.status == "waiting_sub_issues":
-            for child in classification.open_sub_issues:
+            for child in reversed(classification.open_sub_issues):
                 cref = (child["repo"], child["number"])
                 if cref not in visited:
-                    to_visit.append(cref)
+                    to_visit.appendleft(cref)
 
     return results
 
