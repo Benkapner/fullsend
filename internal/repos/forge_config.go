@@ -1,6 +1,10 @@
 package repos
 
-import "regexp"
+import (
+	"regexp"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
 
 var (
 	ghWorkflowRefPattern = regexp.MustCompile(
@@ -19,8 +23,13 @@ var (
 
 // ForgeConfig holds forge-specific CI paths and regex patterns used by
 // status and upgrade operations. Each forge has different workflow file
-// conventions and ref syntax.
+// conventions and ref syntax. When populated by a ForgeClientFactory,
+// the Client field carries a live API client for the forge.
 type ForgeConfig struct {
+	// Client is the API client for this forge. Set by ForgeClientFactory;
+	// nil when ForgeConfig is constructed by ForgeConfigFor (pattern-only).
+	Client forge.Client
+
 	// WorkflowPaths lists the shim workflow file paths to try, in order.
 	WorkflowPaths []string
 
@@ -30,6 +39,15 @@ type ForgeConfig struct {
 	// ShimRefPattern matches all @ref occurrences in fullsend uses: lines
 	// within a workflow file, used by upgrade to rewrite refs.
 	ShimRefPattern *regexp.Regexp
+}
+
+// ForgeClientFactory creates ForgeConfig instances with a live Client.
+// The CLI layer implements this with lazy client creation and caching.
+type ForgeClientFactory interface {
+	// ConfigFor returns a ForgeConfig with a live Client for the named forge.
+	// The factory lazily creates and caches clients, so a GitLab token is
+	// only required if the manifest actually contains GitLab entries.
+	ConfigFor(forgeName string) (ForgeConfig, error)
 }
 
 // GitHubForgeConfig returns the ForgeConfig for GitHub repositories.

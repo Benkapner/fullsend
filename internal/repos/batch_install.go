@@ -55,7 +55,7 @@ type ProvisionerFactory func(cfg ResolvedConfig) WIFProvisioner
 //
 // Errors on individual repos do not abort the batch.
 func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
-	client forge.Client, provisionerFactory ProvisionerFactory,
+	clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
 	commitScaffold ScaffoldCommitFunc,
 	progress ProgressFunc) (*BatchInstallResult, error) {
 
@@ -72,7 +72,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
 
-	repos, err := manifest.ExpandGlobs(ctx, client)
+	repos, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("expanding globs: %w", err)
 	}
@@ -125,15 +125,21 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			fullName := rr.Owner + "/" + rr.Repo
 			progress(fullName, "discover", "Checking installation status")
 
-			guardVal, guardExists, guardErr := client.GetRepoVariable(ctx, rr.Owner, rr.Repo, forge.PerRepoGuardVar)
+			fc, fcErr := clients.ConfigFor(resolved.Forge)
+			if fcErr != nil {
+				discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: fcErr}
+				return
+			}
+			resolved.ForgeConfig = fc
+
+			guardVal, guardExists, guardErr := fc.Client.GetRepoVariable(ctx, rr.Owner, rr.Repo, forge.PerRepoGuardVar)
 			if guardErr != nil {
 				discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: guardErr}
 				return
 			}
 			installed := false
 			if guardExists && guardVal == "true" {
-				fc := ForgeConfigFor(resolved.Forge)
-				fullyInstalled, checkErr := checkInstallComponents(ctx, client, rr.Owner, rr.Repo, fc)
+				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, fc)
 				if checkErr != nil {
 					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
 					return
@@ -280,7 +286,9 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 		fullName := d.repo.Owner + "/" + d.repo.Repo
 
 		// TOCTOU re-check: guard variable may have changed since Phase 1.
-		guardVal, guardExists, guardErr := client.GetRepoVariable(ctx, d.repo.Owner, d.repo.Repo, forge.PerRepoGuardVar)
+		// ForgeConfig was resolved during Phase 1 and cached in d.resolved.
+		repoClient := d.resolved.ForgeConfig.Client
+		guardVal, guardExists, guardErr := repoClient.GetRepoVariable(ctx, d.repo.Owner, d.repo.Repo, forge.PerRepoGuardVar)
 		if guardErr != nil {
 			result.Failed = append(result.Failed, InstallResult{
 				Owner: d.repo.Owner,
@@ -291,8 +299,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			continue
 		}
 		if guardExists && guardVal == "true" {
-			fc := ForgeConfigFor(d.resolved.Forge)
-			fullyInstalled, checkErr := checkInstallComponents(ctx, client, d.repo.Owner, d.repo.Repo, fc)
+			fullyInstalled, checkErr := checkInstallComponents(ctx, repoClient, d.repo.Owner, d.repo.Repo, d.resolved.ForgeConfig)
 			if checkErr != nil {
 				result.Failed = append(result.Failed, InstallResult{
 					Owner: d.repo.Owner,
@@ -406,7 +413,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				Direct:           cfg.Direct,
 			}
 
-			installResult, installErr := Install(ctx, installCfg, client, nil, commitScaffold, progress)
+			installResult, installErr := Install(ctx, installCfg, dr.resolved.ForgeConfig.Client, nil, commitScaffold, progress)
 
 			mu.Lock()
 			defer mu.Unlock()

@@ -58,7 +58,7 @@ func TestUpgrade_AllBehindTarget(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestUpgrade_AllAtTarget(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestUpgrade_MixedStates(t *testing.T) {
 		MaxConcurrency: 4,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestUpgrade_ForceOverridesNewerCheck(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestUpgrade_RefOverride(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestUpgrade_RepoFilter(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestUpgrade_DryRun(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, dryRunCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), dryRunCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestUpgrade_WorkflowNotFound(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestUpgrade_CommitError(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, errCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), errCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestUpgrade_VerifiesWorkflowContent(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestUpgrade_NoTargetRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestUpgrade_NonSemverCurrentRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestUpgrade_PerRepoOverrideRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 2}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -616,7 +616,7 @@ func TestUpgrade_YAMLExtension(t *testing.T) {
 		return nil
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestUpgrade_ProgressCallback(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	_, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, progressFn)
+	_, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, progressFn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -918,7 +918,7 @@ func TestUpgrade_ContextCancellation(t *testing.T) {
 	m := newUpgradeManifest("v2.3.0")
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
 
-	_, err := Upgrade(ctx, cfg, fc, noopCommitFn, nil)
+	_, err := Upgrade(ctx, cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err == nil {
 		t.Error("expected context cancellation error")
 	}
@@ -1044,7 +1044,7 @@ func TestUpgrade_APIErrorOnWorkflowRead(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1104,7 +1104,7 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, trackingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), trackingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1119,7 +1119,7 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 	cfg.Direct = true
 
-	results, err = Upgrade(context.Background(), cfg, fc, trackingCommitFn, nil)
+	results, err = Upgrade(context.Background(), cfg, newTestClientFactory(fc), trackingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1162,7 +1162,7 @@ jobs:
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1, Direct: true}
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1231,7 +1231,7 @@ func TestUpgrade_PrereleaseDowngradeBlocked(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1285,7 +1285,7 @@ func TestUpgrade_InvalidManifestRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1383,7 +1383,7 @@ func TestUpgrade_SHAPinnedRepoPreservesPin(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1433,7 +1433,7 @@ func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1469,7 +1469,7 @@ func TestUpgrade_SHAPinnedTagResolutionError(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1517,7 +1517,7 @@ func TestUpgrade_MixedPinningStyles(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 2}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1571,7 +1571,7 @@ func TestUpgrade_DryRunSHAPinnedSkipsGetRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1643,7 +1643,7 @@ func TestUpgrade_SkipReasonMessages(t *testing.T) {
 			}
 
 			cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-			results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+			results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1677,7 +1677,7 @@ func TestUpgrade_SHAPinnedAlreadyAtTarget(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

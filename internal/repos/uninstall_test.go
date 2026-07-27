@@ -92,7 +92,7 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -143,7 +143,7 @@ func TestUninstall_GlobManifestEntry_WIFCleanup(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -161,7 +161,7 @@ func TestUninstall_GlobManifestEntry_WIFCleanup(t *testing.T) {
 
 func TestResolveConfigWithGlobs_ExactMatch(t *testing.T) {
 	m := testManifest("acme/api")
-	resolved, ok := resolveConfigWithGlobs(m, "acme", "api")
+	resolved, ok := m.ResolveConfigWithGlobs("acme", "api")
 	if !ok {
 		t.Fatal("expected ok=true for exact match")
 	}
@@ -173,7 +173,7 @@ func TestResolveConfigWithGlobs_ExactMatch(t *testing.T) {
 func TestResolveConfigWithGlobs_GlobMatch(t *testing.T) {
 	m := testManifest()
 	m.Repos = []RepoEntry{{Repo: "acme/*"}}
-	resolved, ok := resolveConfigWithGlobs(m, "acme", "api")
+	resolved, ok := m.ResolveConfigWithGlobs("acme", "api")
 	if !ok {
 		t.Fatal("expected ok=true for glob match")
 	}
@@ -184,7 +184,7 @@ func TestResolveConfigWithGlobs_GlobMatch(t *testing.T) {
 
 func TestResolveConfigWithGlobs_NoMatch(t *testing.T) {
 	m := testManifest("other/repo")
-	_, ok := resolveConfigWithGlobs(m, "acme", "api")
+	_, ok := m.ResolveConfigWithGlobs("acme", "api")
 	if ok {
 		t.Error("expected ok=false for no match")
 	}
@@ -199,7 +199,7 @@ func TestUninstall_NonInstalledRepo(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -224,7 +224,7 @@ func TestUninstall_YamlExtensionFallback(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -257,7 +257,7 @@ func TestUninstall_SkipWIFCleanup(t *testing.T) {
 		Repos:          []string{"acme/api"},
 		SkipWIFCleanup: true,
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -284,7 +284,7 @@ func TestUninstall_DryRun(t *testing.T) {
 		Repos:          []string{"acme/api"},
 		DryRun:         true,
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -317,7 +317,7 @@ func TestUninstall_MultipleRepos(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web", "acme/docs"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -350,7 +350,7 @@ func TestUninstall_PartialFailure(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web"},
 		MaxConcurrency: 1,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -382,7 +382,7 @@ func TestUninstall_WorkflowFailure_SkipsVarsAndSecrets(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -449,7 +449,7 @@ func TestUninstall_WIFSequential(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          repos,
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -481,7 +481,7 @@ func TestUninstall_WIFFailure_DoesNotAffectOtherRepos(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -517,7 +517,7 @@ func TestUninstall_WIFFailure_DoesNotAffectOtherRepos(t *testing.T) {
 func TestUninstall_EmptyRepos(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		MaxConcurrency: 4,
-	}, forge.NewFakeClient(), nil, nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for empty repos")
@@ -528,7 +528,7 @@ func TestUninstall_InvalidRepoFormat(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"just-a-name"},
 		MaxConcurrency: 4,
-	}, forge.NewFakeClient(), nil, nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for invalid repo format")
@@ -539,7 +539,7 @@ func TestUninstall_InvalidConcurrency(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 0,
-	}, forge.NewFakeClient(), nil, nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for invalid concurrency")
@@ -554,7 +554,7 @@ func TestUninstall_NoManifest_SkipsWIF(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -581,7 +581,7 @@ func TestUninstall_RepoNotInManifest_SkipsWIF(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -606,7 +606,7 @@ func TestUninstall_VariableDeleteError(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -634,7 +634,7 @@ func TestUninstall_SecretDeleteError(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -665,7 +665,7 @@ func TestUninstall_ProgressCallbacks(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, client, factory, progress)
+	}, newTestClientFactory(client), factory, progress)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -711,7 +711,7 @@ func TestUninstall_ContextCancelled_SkipsWIF(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web"},
 		MaxConcurrency: 1,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -732,7 +732,7 @@ func TestUninstall_ContextCancelled_SkipsWIF(t *testing.T) {
 		Manifest:       testManifest("acme/api2"),
 		Repos:          []string{"acme/api2"},
 		MaxConcurrency: 4,
-	}, client2, factory2, nil)
+	}, newTestClientFactory(client2), factory2, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -756,7 +756,7 @@ func TestUninstall_ContextCancelledDuringPhase2_MarksRemaining(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web"},
 		MaxConcurrency: 1,
-	}, client, factory, nil)
+	}, newTestClientFactory(client), factory, nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)

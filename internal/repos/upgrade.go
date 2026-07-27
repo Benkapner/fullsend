@@ -83,7 +83,7 @@ func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig) ([]by
 // It reads each repo's current workflow file, determines whether an upgrade
 // is needed, and commits the updated workflow with the new ref.
 func Upgrade(ctx context.Context, cfg UpgradeConfig,
-	client forge.Client,
+	clients ForgeClientFactory,
 	commitFn ScaffoldCommitFunc,
 	progress ProgressFunc) ([]UpgradeResult, error) {
 
@@ -91,7 +91,7 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 		progress = func(_, _, _ string) {}
 	}
 
-	resolved, err := cfg.Manifest.ExpandGlobs(ctx, client)
+	resolved, err := cfg.Manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
@@ -128,8 +128,13 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 			defer func() { <-sem }()
 
 			resolvedCfg := cfg.Manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
-			fc := ForgeConfigFor(resolvedCfg.Forge)
-			result := upgradeRepo(ctx, client, commitFn, rr.Owner, rr.Repo, resolvedCfg, cfg, fc, progress)
+			fc, err := clients.ConfigFor(resolvedCfg.Forge)
+			if err != nil {
+				results[idx] = UpgradeResult{Owner: rr.Owner, Repo: rr.Repo, Error: err}
+				return
+			}
+			resolvedCfg.ForgeConfig = fc
+			result := upgradeRepo(ctx, resolvedCfg, cfg, commitFn, progress)
 			results[idx] = result
 		}(i, rr)
 	}
@@ -138,14 +143,16 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 	return results, nil
 }
 
-func upgradeRepo(ctx context.Context, client forge.Client,
-	commitFn ScaffoldCommitFunc,
-	owner, repo string,
+func upgradeRepo(ctx context.Context,
 	resolvedCfg ResolvedConfig,
 	cfg UpgradeConfig,
-	fc ForgeConfig,
+	commitFn ScaffoldCommitFunc,
 	progress ProgressFunc) UpgradeResult {
 
+	owner := resolvedCfg.Owner
+	repo := resolvedCfg.Repo
+	client := resolvedCfg.ForgeConfig.Client
+	fc := resolvedCfg.ForgeConfig
 	repoFullName := owner + "/" + repo
 	result := UpgradeResult{Owner: owner, Repo: repo}
 

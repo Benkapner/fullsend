@@ -82,15 +82,14 @@ repos:
     forge: gitlab
 ```
 
+All repos under the same owner must use the same forge. A GitHub org
+and a GitLab group with the same name are different entities, and
+mixing forges under one owner would route API calls incorrectly.
+
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 `--gitlab-token` to `fullsend repos` subcommands. For self-hosted GitLab
 instances, set `GITLAB_API_URL` to the API base URL (e.g.
 `https://gitlab.example.com/api/v4`).
-
-> **Note:** Mixed-forge manifests currently require that all repos share the
-> same forge as `defaults.forge`. Per-entry client switching (connecting to
-> both GitHub and GitLab APIs in a single run) is planned but not yet
-> implemented.
 
 See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
 for all flags.

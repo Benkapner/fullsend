@@ -70,12 +70,12 @@ func validateConcurrency(n int) error {
 //
 // For secrets, Diff only reports missing secrets (action "create")
 // because secret values cannot be read back for comparison.
-func Diff(ctx context.Context, manifest *Manifest, client forge.Client, maxConcurrency int, repoFilter []string) (*DiffResult, error) {
+func Diff(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string) (*DiffResult, error) {
 	if err := validateConcurrency(maxConcurrency); err != nil {
 		return nil, err
 	}
 
-	resolved, err := manifest.ExpandGlobs(ctx, client)
+	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
@@ -114,7 +114,13 @@ func Diff(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
-			changes, warnings, _ := diffRepo(ctx, client, rr.Owner, rr.Repo, cfg)
+			fc, fcErr := clients.ConfigFor(cfg.Forge)
+			if fcErr != nil {
+				results[idx] = repoResult{warnings: []string{fmt.Sprintf("%s/%s: forge client error: %v", rr.Owner, rr.Repo, fcErr)}}
+				return
+			}
+			cfg.ForgeConfig = fc
+			changes, warnings, _ := diffRepo(ctx, cfg)
 			results[idx] = repoResult{changes: changes, warnings: warnings}
 		}(i, rr)
 	}
@@ -134,7 +140,9 @@ func Diff(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 // The returned bool is true when the repo was successfully examined;
 // false means a fatal condition (API error, guard missing) and callers
 // should not attempt further writes.
-func diffRepo(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig) ([]Change, []string, bool) {
+func diffRepo(ctx context.Context, cfg ResolvedConfig) ([]Change, []string, bool) {
+	owner, repo := cfg.Owner, cfg.Repo
+	client := cfg.ForgeConfig.Client
 	vars, err := client.ListRepoVariables(ctx, owner, repo)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("%s/%s: error listing variables: %v", owner, repo, err)}, false
@@ -207,7 +215,7 @@ func diffRepo(ctx context.Context, client forge.Client, owner, repo string, cfg 
 //
 // Sync does NOT touch scaffold shim version (@ref) or harness files.
 // Version changes are managed by `repos upgrade`.
-func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcurrency int, repoFilter []string, progress ProgressFunc) (*SyncResult, error) {
+func Sync(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string, progress ProgressFunc) (*SyncResult, error) {
 	if err := validateConcurrency(maxConcurrency); err != nil {
 		return nil, err
 	}
@@ -216,7 +224,7 @@ func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 		progress = func(_, _, _ string) {}
 	}
 
-	resolved, err := manifest.ExpandGlobs(ctx, client)
+	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
@@ -258,7 +266,14 @@ func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
 			repoFullName := rr.Owner + "/" + rr.Repo
 
-			changes, diffWarnings, ok := diffRepo(ctx, client, rr.Owner, rr.Repo, cfg)
+			fc, fcErr := clients.ConfigFor(cfg.Forge)
+			if fcErr != nil {
+				results[idx] = repoResult{warnings: []string{fmt.Sprintf("%s: forge client error: %v", repoFullName, fcErr)}}
+				return
+			}
+			cfg.ForgeConfig = fc
+
+			changes, diffWarnings, ok := diffRepo(ctx, cfg)
 			var res repoResult
 			res.warnings = append(res.warnings, diffWarnings...)
 
@@ -268,7 +283,7 @@ func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 			}
 
 			if len(changes) == 0 {
-				secretChanges, secretErr := ensureSecrets(ctx, client, rr.Owner, rr.Repo, cfg, progress)
+				secretChanges, secretErr := ensureSecrets(ctx, cfg, progress)
 				res.applied = append(res.applied, secretChanges...)
 				if secretErr != nil {
 					res.warnings = append(res.warnings, secretErr.Error())
@@ -279,7 +294,7 @@ func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 				return
 			}
 
-			applied, applyErr := applyChanges(ctx, client, rr.Owner, rr.Repo, cfg, changes, progress)
+			applied, applyErr := applyChanges(ctx, cfg, changes, progress)
 			res.applied = append(res.applied, applied...)
 			if applyErr != nil {
 				res.warnings = append(res.warnings, applyErr.Error())
@@ -313,7 +328,9 @@ func Sync(ctx context.Context, manifest *Manifest, client forge.Client, maxConcu
 
 // ensureSecrets writes all managed secrets for convergence, since their
 // values cannot be read back for comparison.
-func ensureSecrets(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig, progress ProgressFunc) ([]Change, error) {
+func ensureSecrets(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) ([]Change, error) {
+	owner, repo := cfg.Owner, cfg.Repo
+	client := cfg.ForgeConfig.Client
 	repoFullName := owner + "/" + repo
 	var applied []Change
 
@@ -338,7 +355,9 @@ func ensureSecrets(ctx context.Context, client forge.Client, owner, repo string,
 	return applied, nil
 }
 
-func applyChanges(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig, changes []Change, progress ProgressFunc) ([]Change, error) {
+func applyChanges(ctx context.Context, cfg ResolvedConfig, changes []Change, progress ProgressFunc) ([]Change, error) {
+	owner, repo := cfg.Owner, cfg.Repo
+	client := cfg.ForgeConfig.Client
 	repoFullName := owner + "/" + repo
 	var applied []Change
 
@@ -353,7 +372,7 @@ func applyChanges(ctx context.Context, client forge.Client, owner, repo string, 
 		applied = append(applied, c)
 	}
 
-	secretChanges, secretErr := ensureSecrets(ctx, client, owner, repo, cfg, progress)
+	secretChanges, secretErr := ensureSecrets(ctx, cfg, progress)
 	applied = append(applied, secretChanges...)
 
 	return applied, secretErr

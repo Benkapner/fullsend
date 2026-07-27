@@ -131,12 +131,13 @@ defaults:
   inference_region: us-central1
 repos: []
 `
+	// With lazy client creation, status on an empty GitLab manifest
+	// succeeds without a token — no repos means no API calls.
 	manifestPath := writeTestManifest(t, manifestYAML)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	require.NoError(t, err)
 }
 
 func TestRunReposStatus_GitLabWithToken(t *testing.T) {
@@ -1944,7 +1945,7 @@ func TestRunReposSync_DryRun_JSON(t *testing.T) {
 }
 
 // --- forge-aware CLI integration tests ---
-// These tests exercise the RunE closures and forgeClientFromManifest paths
+// These tests exercise the RunE closures and newForgeClientFactory paths
 // that are only reachable through the Cobra command chain.
 
 var emptyReposManifestYAML = `version: 1
@@ -1960,50 +1961,54 @@ repos: []
 `
 
 func TestReposDiffCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
 	manifestPath := writeTestManifest(t, m)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "diff", "--manifest", manifestPath})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	require.NoError(t, err)
 }
 
 func TestReposSyncCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
 	manifestPath := writeTestManifest(t, m)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "sync", "--manifest", manifestPath})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	require.NoError(t, err)
 }
 
 func TestReposUpgradeCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token;
+	// the command may still fail on mint verification but NOT on token lookup.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
 	manifestPath := writeTestManifest(t, m)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "upgrade", "--manifest", manifestPath})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	if err != nil {
+		assert.NotContains(t, err.Error(), "no GitLab token found")
+	}
 }
 
 func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
 	manifestPath := writeTestManifest(t, m)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	require.NoError(t, err)
 }
 
 func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
+	// The token error now surfaces per-repo instead of at scope checking.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := `version: 1
 mint:
@@ -2022,18 +2027,44 @@ repos:
 	cmd.SetArgs([]string{"repos", "uninstall", "--yes", "--manifest", manifestPath, "acme/repo"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	assert.Contains(t, err.Error(), "failed to uninstall")
 }
 
 func TestReposAddCmd_GitLabNoToken(t *testing.T) {
+	// With lazy client creation, adding a repo to a GitLab manifest
+	// succeeds without a token — the client is only needed for probing
+	// existing installation state, which is non-fatal when it fails.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
 	manifestPath := writeTestManifest(t, m)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "add", "--manifest", manifestPath, "acme/repo"})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
+	require.NoError(t, err)
+}
+
+func TestReposDiffCmd_GitLabNoToken_WithRepos(t *testing.T) {
+	// With actual repos, the missing GitLab token surfaces per-repo.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos:
+  - acme/repo
+`
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "diff", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	// The error is reported as a warning, not a fatal error, because
+	// the diff operation treats per-repo forge client errors as warnings.
 }
 
 func TestReposInitCmd_GitLabNoToken(t *testing.T) {
