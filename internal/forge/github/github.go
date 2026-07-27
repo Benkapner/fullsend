@@ -1630,6 +1630,7 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 // CreateBranchFromSHA creates a new branch pointing at the given commit SHA.
 // Unlike CreateBranch (which resolves the repo's default branch), this allows
 // the caller to specify an explicit starting point.
+// Returns forge.ErrForbidden on insufficient permissions.
 func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error {
 	payload := map[string]string{
 		"ref": "refs/heads/" + branchName,

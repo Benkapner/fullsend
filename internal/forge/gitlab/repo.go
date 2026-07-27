@@ -380,6 +380,7 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 
 // CreateBranchFromSHA creates a new branch pointing at the given commit SHA.
 // GitLab's branch creation API accepts a commit SHA as the ref parameter.
+// Returns forge.ErrAlreadyExists if the branch already exists.
 func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error {
 	proj := projectPath(owner, repo)
 	payload := map[string]string{
