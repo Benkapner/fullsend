@@ -305,6 +305,11 @@ func (c *perRepoConfig) AllowedResources() []string {
 			seen[r] = true
 		}
 	}
+	// Defensive: ensure code defaults are always present even if a
+	// future intermediate parent omits them. With the current terminal
+	// parent (perRepoDefaults) this is redundant — parent.AllowedResources()
+	// already returns DefaultAllowedRemoteResources() — but guards
+	// against custom parent implementations that filter defaults.
 	for _, d := range DefaultAllowedRemoteResources() {
 		if !seen[d] {
 			result = append(result, d)

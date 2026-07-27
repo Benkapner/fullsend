@@ -11,11 +11,26 @@ type perRepoDefaults struct{}
 // Compile-time assertion that perRepoDefaults satisfies PerRepoConfigReader.
 var _ PerRepoConfigReader = (*perRepoDefaults)(nil)
 
-func (d *perRepoDefaults) ConfigVersion() string                    { return "1" }
-func (d *perRepoDefaults) ConfigRuntime() string                    { return "claude" }
-func (d *perRepoDefaults) IsKillSwitchActive() bool                 { return false }
-func (d *perRepoDefaults) ConfigRoles() []string                    { return PerRepoDefaultRoles() }
-func (d *perRepoDefaults) AgentEntries() []AgentEntry               { return nil }
-func (d *perRepoDefaults) AllowedResources() []string               { return DefaultAllowedRemoteResources() }
+// ConfigVersion returns the default schema version.
+func (d *perRepoDefaults) ConfigVersion() string { return "1" }
+
+// ConfigRuntime returns the default runtime.
+func (d *perRepoDefaults) ConfigRuntime() string { return "claude" }
+
+// IsKillSwitchActive returns the default kill switch state (off).
+func (d *perRepoDefaults) IsKillSwitchActive() bool { return false }
+
+// ConfigRoles returns the default agent roles.
+func (d *perRepoDefaults) ConfigRoles() []string { return PerRepoDefaultRoles() }
+
+// AgentEntries returns nil — no agents are configured by default.
+func (d *perRepoDefaults) AgentEntries() []AgentEntry { return nil }
+
+// AllowedResources returns the default allowed remote resource prefixes.
+func (d *perRepoDefaults) AllowedResources() []string { return DefaultAllowedRemoteResources() }
+
+// IssueCreationConfig returns nil — no issue creation config by default.
 func (d *perRepoDefaults) IssueCreationConfig() *CreateIssuesConfig { return nil }
-func (d *perRepoDefaults) IsOrgMode() bool                          { return false }
+
+// IsOrgMode returns false — per-repo configs are never org mode.
+func (d *perRepoDefaults) IsOrgMode() bool { return false }

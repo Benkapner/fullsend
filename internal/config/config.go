@@ -499,11 +499,18 @@ func (c *orgConfig) DefaultRoles() []string {
 // when the local value is unset. The terminal parent is perRepoDefaults,
 // which returns compiled-in code defaults.
 type perRepoConfig struct {
-	Version                string              `yaml:"version,omitempty"`
-	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
-	Runtime                string              `yaml:"runtime,omitempty"`
-	Roles                  []string            `yaml:"roles,omitempty"`
-	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
+	// omitempty so unset version is not marshaled (unlike orgConfig,
+	// where version is always required). This allows the fallback
+	// chain to inherit version from the parent layer.
+	Version    string       `yaml:"version,omitempty"`
+	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
+	Runtime    string       `yaml:"runtime,omitempty"`
+	Roles      []string     `yaml:"roles,omitempty"`
+	Agents     []AgentEntry `yaml:"agents,omitempty"`
+	// NOTE: omitempty means an empty slice (deny-all) is not marshaled.
+	// After a YAML roundtrip, deny-all becomes nil and AllowedResources()
+	// falls through to parent defaults. This is a pre-existing
+	// limitation of the yaml.v3 omitempty behavior.
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 
@@ -575,8 +582,9 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 }
 
 // Validate checks the PerRepoConfig for structural correctness.
-// Only locally-set fields are validated — unset fields (which fall
-// through to parent) are the parent's responsibility to validate.
+// Locally-set fields are validated; resolved values (e.g.,
+// AllowedResources) are used where validation requires the full
+// effective config.
 func (c *perRepoConfig) Validate() error {
 	// Version: empty means "inherit from parent"; non-empty must be "1".
 	if c.Version != "" && c.Version != "1" {
