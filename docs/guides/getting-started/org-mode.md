@@ -5,8 +5,7 @@ sidebar_position: 4
 # Per-Org Mode
 
 > **Deprecated:** Per-org installation mode is deprecated in favor of per-repo
-> installation per [ADR-0044](../../ADRs/0044-deprecate-per-org-installation-mode.md).
-> New installations should use the [per-repo Getting Started guides](README.md).
+> installation. New installations should use the [per-repo Getting Started guides](README.md).
 > Existing per-org installations continue to work and are fully supported during
 > the transition. To migrate, run `fullsend github setup` per-repo instead of
 > `fullsend admin install` per-org.

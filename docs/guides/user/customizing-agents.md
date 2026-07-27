@@ -404,8 +404,7 @@ variables to protect sandbox operation.
 
 ### Adding a Custom Skill
 
-> **Deprecated:** The `customized/skills/` path is deprecated per
-> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> **Deprecated:** The `customized/skills/` path is deprecated.
 > Use config-driven agent registration instead — see
 > [Bring Your Own Agent](bring-your-own-agent.md).
 
@@ -425,8 +424,7 @@ The skill will be automatically available to all agents that include `skills/my-
 
 ### Overriding an Agent Definition
 
-> **Deprecated:** The `customized/agents/` override is deprecated per
-> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> **Deprecated:** The `customized/agents/` override is deprecated.
 > Use `base:` composition instead — see
 > [Configuring existing agents](bring-your-own-agent.md#configuring-existing-agents).
 

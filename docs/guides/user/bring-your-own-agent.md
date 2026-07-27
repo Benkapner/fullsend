@@ -232,7 +232,7 @@ env:
     MY_VAR: "${MY_VAR}"
   sandbox:                           # Available inside sandbox
     MY_SETTING: "value"
-runner_env:                          # ⚠ Deprecated: use env.runner instead (ADR 0055)
+runner_env:                          # ⚠ Deprecated: use env.runner instead
   MY_VAR: "${MY_VAR}"
 
 # ── Timeouts ──────────────────────────────────────────────────
@@ -272,8 +272,7 @@ security:
 
 ### Deprecated fields
 
-> **Deprecated:** `runner_env` is deprecated per
-> [ADR-0055](../../ADRs/0055-unified-env-var-delivery.md). Use `env.runner`
+> **Deprecated:** `runner_env` is deprecated. Use `env.runner`
 > instead. The `runner_env` field still works but emits a deprecation warning
 > at runtime. Migration: move `runner_env:` entries under `env: runner:` and
 > delete the `runner_env:` block.

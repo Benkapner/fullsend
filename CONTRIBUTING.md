@@ -85,15 +85,13 @@ Place a blockquote at the top of the section that describes the deprecated
 feature. Use this format:
 
 ```markdown
-> **Deprecated:** `<feature>` is deprecated per
-> [ADR-NNNN](path/to/adr.md). Use `<replacement>` instead.
+> **Deprecated:** `<feature>` is deprecated. Use `<replacement>` instead.
 > <Migration guidance — one or two sentences explaining how to migrate.>
 ```
 
 Key elements:
 - Start with **`> **Deprecated:**`** (bold, followed by a colon).
 - Name the deprecated feature explicitly.
-- Link to the ADR or issue that made the decision.
 - Describe the replacement and how to migrate.
 
 ### Inline annotation (for field references and tables)
@@ -102,7 +100,7 @@ When a deprecated item appears in a table, code block, or field reference,
 add a short inline annotation:
 
 ```yaml
-runner_env:    # ⚠ Deprecated: use env.runner instead (ADR 0055)
+runner_env:    # ⚠ Deprecated: use env.runner instead
 ```
 
 ```markdown
@@ -129,8 +127,8 @@ for a future release; no migration is needed").
 
 ### When to add notices
 
-- When an ADR deprecates a feature, update the affected user-facing docs in
-  the same PR or a follow-up.
+- When a feature is deprecated, update the affected user-facing docs in the
+  same PR or a follow-up.
 - When touching a doc page that references a deprecated feature without a
   notice, add one.
 - Do not remove deprecated content from docs — label it so users on older
