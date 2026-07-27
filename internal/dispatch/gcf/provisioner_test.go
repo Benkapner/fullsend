@@ -174,6 +174,21 @@ func TestStoreAgentPEM_MissingProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
 
+func TestStoreAgentPEM_MalformedProjectID(t *testing.T) {
+	fake := newFakeGCFClient()
+	for _, id := range []string{"UPPER_CASE", "ab", "valid-but-has-special!chars"} {
+		p := newTestProvisioner(Config{ProjectID: id}, fake)
+		err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
+		require.Error(t, err, "project ID %q should be rejected", id)
+		assert.Contains(t, err.Error(), "invalid GCP project ID")
+	}
+	// Valid project ID passes validation and proceeds to API calls.
+	p := newTestProvisioner(Config{ProjectID: "my-project-123"}, fake)
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
+	require.NoError(t, err)
+	assert.NotEmpty(t, fake.calls, "valid project ID should reach GCP API")
+}
+
 func TestStoreAgentPEM_InvalidRole(t *testing.T) {
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, newFakeGCFClient())
 	for _, role := range []string{"CODER", "co der", "../escape", "role;drop"} {

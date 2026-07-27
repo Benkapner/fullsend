@@ -206,6 +206,9 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
 	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
+	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
 	}
