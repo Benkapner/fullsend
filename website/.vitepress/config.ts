@@ -258,6 +258,10 @@ export default defineConfig({
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Distributed Tracing", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
+            {
+              text: "Layered Config Reference",
+              link: "/guides/infrastructure/layered-config-reference",
+            },
           ],
         },
         {
