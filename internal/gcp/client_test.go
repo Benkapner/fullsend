@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -269,6 +271,58 @@ func TestDoRequest_TokenError(t *testing.T) {
 	_, err := c.DoRequest(context.Background(), http.MethodGet, "http://example.com", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auth failure")
+}
+
+func TestAdcToken_RealDiscoverySuccess(t *testing.T) {
+	// Exercise the real FindDefaultCredentials code path inside the
+	// sync.Once closure by providing a fake authorized_user credential
+	// file.  FindDefaultCredentials will parse it successfully (covering
+	// the closure's happy path), but Token() will fail because the
+	// refresh token is bogus — that error is already a covered path.
+	credsJSON := `{
+		"type": "authorized_user",
+		"client_id": "fake-client-id.apps.googleusercontent.com",
+		"client_secret": "fake-secret",
+		"refresh_token": "fake-refresh-token"
+	}`
+	tmpFile := filepath.Join(t.TempDir(), "creds.json")
+	require.NoError(t, os.WriteFile(tmpFile, []byte(credsJSON), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmpFile)
+
+	c := NewClient() // tokenFunc defaults to adcToken; adcOnce is fresh
+	_, err := c.AccessToken(context.Background())
+	require.Error(t, err)
+	// Discovery succeeded, but the bogus refresh token causes Token() to fail.
+	assert.Contains(t, err.Error(), "obtaining GCP access token")
+	// Verify the TokenSource was cached and no discovery error was recorded.
+	assert.NotNil(t, c.adcTS, "TokenSource should be cached after successful discovery")
+	assert.NoError(t, c.adcErr, "discovery error should be nil on success")
+}
+
+func TestAdcToken_RealDiscoveryFailure(t *testing.T) {
+	// Exercise the error branch inside the sync.Once closure by
+	// pointing GOOGLE_APPLICATION_CREDENTIALS at a file containing
+	// invalid credential JSON.
+	tmpFile := filepath.Join(t.TempDir(), "bad-creds.json")
+	require.NoError(t, os.WriteFile(tmpFile, []byte(`not-json`), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmpFile)
+
+	c := NewClient()
+	_, err := c.AccessToken(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finding GCP credentials")
+	// Verify discovery error was cached.
+	assert.Error(t, c.adcErr, "discovery error should be cached")
+}
+
+func TestDoRequest_InvalidMethod(t *testing.T) {
+	c := NewClient()
+	c.tokenFunc = func(_ context.Context) (string, error) { return "test-token", nil }
+
+	// A method containing a space is rejected by http.NewRequestWithContext.
+	_, err := c.DoRequest(context.Background(), "BAD METHOD", "http://example.com", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating request")
 }
 
 // tokenSourceFunc adapts a plain function to the oauth2.TokenSource
