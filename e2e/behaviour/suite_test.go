@@ -5,6 +5,7 @@ package behaviour_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -23,8 +24,14 @@ func TestBehaviourSuite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping behaviour tests in short mode")
 	}
-	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" && c != "1" {
-		t.Fatalf("behaviour suite does not support GODOG_CONCURRENCY=%q: per-scenario World isolation is in place but drivers (SCM, CI, Install) are shared by reference and have not been validated under -race with concurrent scenarios yet; see #5441 for parallel support", c)
+
+	concurrency := 12
+	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" {
+		n, err := strconv.Atoi(c)
+		if err != nil || n < 1 {
+			t.Fatalf("GODOG_CONCURRENCY must be a positive integer, got %q", c)
+		}
+		concurrency = n
 	}
 
 	cfg := env.LoadRunnerConfig()
@@ -96,7 +103,7 @@ func TestBehaviourSuite(t *testing.T) {
 			Paths:       []string{"features"},
 			TestingT:    t,
 			Tags:        os.Getenv("GODOG_TAGS"),
-			Concurrency: 1,
+			Concurrency: concurrency,
 		},
 	}
 	if st := suiteRunner.Run(); st != 0 {
