@@ -467,7 +467,7 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 
 	for _, entry := range irrelevant[platform] {
 		if cmd.Flags().Changed(entry.flag) {
-			fmt.Fprintf(os.Stderr, "Warning: --%s is a %s flag and has no effect with --platform=%s\n", entry.flag, entry.owner, platform)
+			fmt.Fprintf(os.Stderr, "WARNING: --%s is a %s flag and has no effect with --platform=%s\n", entry.flag, entry.owner, platform)
 		}
 	}
 }

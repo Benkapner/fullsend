@@ -554,7 +554,7 @@ func TestMintDeployCmd_NoWarningForCorrectPlatformFlags(t *testing.T) {
 
 	out, _ := io.ReadAll(r)
 	stderr := string(out)
-	assert.NotContains(t, stderr, "Warning:")
+	assert.NotContains(t, stderr, "WARNING:")
 }
 
 // --- lookupAppID tests ---
