@@ -1810,7 +1810,12 @@ allowed_remote_resources:
 	require.Len(t, cfg.AgentEntries(), 2)
 	assert.Contains(t, cfg.AgentEntries()[0].Source, "triage.yaml")
 	assert.Equal(t, "lint", cfg.AgentEntries()[1].Name)
-	assert.Equal(t, []string{"https://raw.githubusercontent.com/fullsend-ai/agents/"}, cfg.AllowedResources())
+	// AllowedResources now unions with parent defaults (code defaults).
+	resources := cfg.AllowedResources()
+	assert.Contains(t, resources, "https://raw.githubusercontent.com/fullsend-ai/agents/")
+	for _, d := range DefaultAllowedRemoteResources() {
+		assert.Contains(t, resources, d)
+	}
 }
 
 func TestPerRepoConfig_Validate_WithAgents(t *testing.T) {
@@ -1894,7 +1899,12 @@ func TestPerRepoConfig_RoundTrip_WithAgents(t *testing.T) {
 	require.Len(t, parsed.AgentEntries(), 2)
 	assert.Equal(t, original.Agents[0].Source, parsed.AgentEntries()[0].Source)
 	assert.Equal(t, original.Agents[1].Name, parsed.AgentEntries()[1].Name)
-	assert.Equal(t, original.AllowedRemoteResources, parsed.AllowedResources())
+	// Parsed config has a parent so AllowedResources unions with
+	// code defaults. Verify local resource is present.
+	resources := parsed.AllowedResources()
+	assert.Contains(t, resources, "https://example.com/")
+	// Verify the raw struct field was preserved.
+	assert.Equal(t, original.AllowedRemoteResources, parsed.(*perRepoConfig).AllowedRemoteResources)
 }
 
 func TestOrgConfig_RoundTrip_WithAgents(t *testing.T) {

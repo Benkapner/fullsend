@@ -1,0 +1,586 @@
+package config
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- perRepoDefaults interface satisfaction ---
+
+func TestPerRepoDefaults_SatisfiesPerRepoConfigReader(t *testing.T) {
+	var _ PerRepoConfigReader = (*perRepoDefaults)(nil)
+}
+
+// --- perRepoDefaults returns compiled-in code defaults ---
+
+func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
+	d := &perRepoDefaults{}
+
+	assert.Equal(t, "1", d.ConfigVersion())
+	assert.Equal(t, "claude", d.ConfigRuntime())
+	assert.False(t, d.IsKillSwitchActive())
+	assert.Equal(t, PerRepoDefaultRoles(), d.ConfigRoles())
+	assert.Nil(t, d.AgentEntries())
+	assert.Equal(t, DefaultAllowedRemoteResources(), d.AllowedResources())
+	assert.Nil(t, d.IssueCreationConfig())
+	assert.False(t, d.IsOrgMode())
+}
+
+// --- Unset fields resolve through parent to code defaults ---
+
+func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
+	cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.Equal(t, "claude", cfg.ConfigRuntime())
+	assert.False(t, cfg.IsKillSwitchActive())
+	assert.Equal(t, PerRepoDefaultRoles(), cfg.ConfigRoles())
+	assert.Nil(t, cfg.AgentEntries())
+	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
+	assert.Nil(t, cfg.IssueCreationConfig())
+	assert.False(t, cfg.IsOrgMode())
+}
+
+// --- Local values override parent values ---
+
+func TestPerRepoConfig_LocalOverridesParent(t *testing.T) {
+	tr := true
+	cfg := &perRepoConfig{
+		Version:    "1",
+		KillSwitch: &tr,
+		Runtime:    "dummy",
+		Roles:      []string{"triage", "review"},
+		Agents: []AgentEntry{
+			{Source: "harness/code.yaml"},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+		CreateIssues: &CreateIssuesConfig{
+			AllowTargets: AllowTargets{Repos: []string{"org/repo"}},
+		},
+		parent: &perRepoDefaults{},
+	}
+
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.Equal(t, "dummy", cfg.ConfigRuntime())
+	assert.True(t, cfg.IsKillSwitchActive())
+	assert.Equal(t, []string{"triage", "review"}, cfg.ConfigRoles())
+	require.Len(t, cfg.AgentEntries(), 1)
+	assert.Equal(t, "harness/code.yaml", cfg.AgentEntries()[0].Source)
+	require.NotNil(t, cfg.IssueCreationConfig())
+	assert.Equal(t, []string{"org/repo"}, cfg.IssueCreationConfig().AllowTargets.Repos)
+}
+
+// --- Chained fallback: overlay -> base -> defaults ---
+
+func TestPerRepoConfig_ChainedFallback(t *testing.T) {
+	// defaults -> base -> overlay
+	// base sets runtime="dummy" and roles; overlay sets only version.
+	base := &perRepoConfig{
+		Runtime: "dummy",
+		Roles:   []string{"triage"},
+		parent:  &perRepoDefaults{},
+	}
+	overlay := &perRepoConfig{
+		Version: "1",
+		parent:  base,
+	}
+
+	// overlay has version locally.
+	assert.Equal(t, "1", overlay.ConfigVersion())
+	// runtime falls through overlay (empty) -> base ("dummy").
+	assert.Equal(t, "dummy", overlay.ConfigRuntime())
+	// roles falls through overlay (nil) -> base.
+	assert.Equal(t, []string{"triage"}, overlay.ConfigRoles())
+	// kill_switch falls through overlay (nil) -> base (nil) -> defaults (false).
+	assert.False(t, overlay.IsKillSwitchActive())
+	// allowed_remote_resources: overlay nil -> base nil -> defaults.
+	assert.Equal(t, DefaultAllowedRemoteResources(), overlay.AllowedResources())
+}
+
+// --- KillSwitch *bool pointer semantics ---
+
+func TestPerRepoConfig_KillSwitch_PointerSemantics(t *testing.T) {
+	t.Run("nil falls through to parent default false", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.False(t, cfg.IsKillSwitchActive())
+	})
+
+	t.Run("explicit false does not fall through", func(t *testing.T) {
+		// Parent has kill_switch=true, overlay explicitly sets false.
+		tr := true
+		parentCfg := &perRepoConfig{
+			KillSwitch: &tr,
+			parent:     &perRepoDefaults{},
+		}
+		f := false
+		overlay := &perRepoConfig{
+			KillSwitch: &f,
+			parent:     parentCfg,
+		}
+		assert.False(t, overlay.IsKillSwitchActive())
+	})
+
+	t.Run("explicit true overrides parent false", func(t *testing.T) {
+		tr := true
+		cfg := &perRepoConfig{
+			KillSwitch: &tr,
+			parent:     &perRepoDefaults{},
+		}
+		assert.True(t, cfg.IsKillSwitchActive())
+	})
+}
+
+// --- Agents keyed merge by DerivedName ---
+
+func TestPerRepoConfig_AgentsMerge(t *testing.T) {
+	t.Run("nil overlay returns parent agents", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Source: "harness/triage.yaml"},
+			},
+			parent: &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			// Agents is nil (key omitted).
+			parent: parent,
+		}
+		agents := overlay.AgentEntries()
+		require.Len(t, agents, 1)
+		assert.Equal(t, "harness/triage.yaml", agents[0].Source)
+	})
+
+	t.Run("empty overlay preserves parent agents", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Source: "harness/triage.yaml"},
+				{Source: "harness/review.yaml"},
+			},
+			parent: &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			Agents: []AgentEntry{}, // explicit empty
+			parent: parent,
+		}
+		agents := overlay.AgentEntries()
+		require.Len(t, agents, 2)
+		assert.Equal(t, "triage", agents[0].DerivedName())
+		assert.Equal(t, "review", agents[1].DerivedName())
+	})
+
+	t.Run("overlay disables parent agent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Source: "harness/triage.yaml"},
+				{Source: "harness/review.yaml"},
+			},
+			parent: &perRepoDefaults{},
+		}
+		f := false
+		overlay := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Name: "triage", Enabled: &f},
+			},
+			parent: parent,
+		}
+		agents := overlay.AgentEntries()
+		require.Len(t, agents, 2)
+		// triage should be disabled.
+		assert.Equal(t, "triage", agents[0].DerivedName())
+		assert.False(t, agents[0].IsEnabled())
+		// triage source preserved from parent.
+		assert.Equal(t, "harness/triage.yaml", agents[0].Source)
+		// review unchanged.
+		assert.Equal(t, "review", agents[1].DerivedName())
+		assert.True(t, agents[1].IsEnabled())
+	})
+
+	t.Run("overlay replaces parent agent source", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Source: "harness/triage.yaml"},
+			},
+			parent: &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Name: "triage", Source: "harness/custom-triage.yaml"},
+			},
+			parent: parent,
+		}
+		agents := overlay.AgentEntries()
+		require.Len(t, agents, 1)
+		assert.Equal(t, "triage", agents[0].DerivedName())
+		assert.Equal(t, "harness/custom-triage.yaml", agents[0].Source)
+		assert.True(t, agents[0].IsEnabled())
+	})
+
+	t.Run("overlay adds new agent not in parent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Source: "harness/triage.yaml"},
+			},
+			parent: &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Source: "harness/lint.yaml"},
+			},
+			parent: parent,
+		}
+		agents := overlay.AgentEntries()
+		require.Len(t, agents, 2)
+		assert.Equal(t, "triage", agents[0].DerivedName())
+		assert.Equal(t, "lint", agents[1].DerivedName())
+	})
+
+	t.Run("no parent returns local agents only", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Agents: []AgentEntry{
+				{Source: "harness/code.yaml"},
+			},
+		}
+		agents := cfg.AgentEntries()
+		require.Len(t, agents, 1)
+		assert.Equal(t, "code", agents[0].DerivedName())
+	})
+}
+
+// --- AllowedResources union and deny-all ---
+
+func TestPerRepoConfig_AllowedResources_Fallback(t *testing.T) {
+	t.Run("nil falls through to parent defaults", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
+	})
+
+	t.Run("explicit empty is deny-all", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			AllowedRemoteResources: []string{},
+			parent:                 &perRepoDefaults{},
+		}
+		result := cfg.AllowedResources()
+		assert.NotNil(t, result)
+		assert.Empty(t, result)
+	})
+
+	t.Run("non-empty unions with parent and code defaults", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			AllowedRemoteResources: []string{"https://example.com/custom/"},
+			parent:                 &perRepoDefaults{},
+		}
+		result := cfg.AllowedResources()
+		assert.Contains(t, result, "https://example.com/custom/")
+		// Code defaults from parent should be included.
+		for _, d := range DefaultAllowedRemoteResources() {
+			assert.Contains(t, result, d)
+		}
+	})
+
+	t.Run("non-empty with overlap produces no duplicates", func(t *testing.T) {
+		defaults := DefaultAllowedRemoteResources()
+		cfg := &perRepoConfig{
+			AllowedRemoteResources: []string{defaults[0], "https://example.com/"},
+			parent:                 &perRepoDefaults{},
+		}
+		result := cfg.AllowedResources()
+		// Count occurrences of defaults[0].
+		count := 0
+		for _, r := range result {
+			if r == defaults[0] {
+				count++
+			}
+		}
+		assert.Equal(t, 1, count, "should not duplicate existing entries")
+		assert.Contains(t, result, defaults[1], "missing default should be appended")
+		assert.Contains(t, result, "https://example.com/")
+	})
+
+	t.Run("deny-all in parent with non-empty overlay", func(t *testing.T) {
+		parent := &perRepoConfig{
+			AllowedRemoteResources: []string{}, // deny-all
+			parent:                 &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			AllowedRemoteResources: []string{"https://example.com/"},
+			parent:                 parent,
+		}
+		result := overlay.AllowedResources()
+		assert.Contains(t, result, "https://example.com/")
+		// Parent returned deny-all (empty), so only overlay + code defaults.
+		for _, d := range DefaultAllowedRemoteResources() {
+			assert.Contains(t, result, d)
+		}
+	})
+}
+
+// --- CreateIssues fallback ---
+
+func TestPerRepoConfig_CreateIssues_Fallback(t *testing.T) {
+	t.Run("nil falls through to parent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			CreateIssues: &CreateIssuesConfig{
+				AllowTargets: AllowTargets{Orgs: []string{"my-org"}},
+			},
+			parent: &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{parent: parent}
+		require.NotNil(t, overlay.IssueCreationConfig())
+		assert.Equal(t, []string{"my-org"}, overlay.IssueCreationConfig().AllowTargets.Orgs)
+	})
+
+	t.Run("local replaces parent entirely", func(t *testing.T) {
+		parent := &perRepoConfig{
+			CreateIssues: &CreateIssuesConfig{
+				AllowTargets: AllowTargets{Orgs: []string{"parent-org"}},
+			},
+			parent: &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			CreateIssues: &CreateIssuesConfig{
+				AllowTargets: AllowTargets{Repos: []string{"org/repo"}},
+			},
+			parent: parent,
+		}
+		require.NotNil(t, overlay.IssueCreationConfig())
+		assert.Empty(t, overlay.IssueCreationConfig().AllowTargets.Orgs)
+		assert.Equal(t, []string{"org/repo"}, overlay.IssueCreationConfig().AllowTargets.Repos)
+	})
+}
+
+// --- Roles fallback ---
+
+func TestPerRepoConfig_Roles_Fallback(t *testing.T) {
+	t.Run("nil falls through to parent", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.Equal(t, PerRepoDefaultRoles(), cfg.ConfigRoles())
+	})
+
+	t.Run("empty slice replaces parent (no roles)", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Roles:  []string{},
+			parent: &perRepoDefaults{},
+		}
+		assert.NotNil(t, cfg.ConfigRoles())
+		assert.Empty(t, cfg.ConfigRoles())
+	})
+
+	t.Run("non-empty replaces parent", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Roles:  []string{"triage"},
+			parent: &perRepoDefaults{},
+		}
+		assert.Equal(t, []string{"triage"}, cfg.ConfigRoles())
+	})
+}
+
+// --- Version fallback ---
+
+func TestPerRepoConfig_Version_Fallback(t *testing.T) {
+	t.Run("empty falls through to parent", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.Equal(t, "1", cfg.ConfigVersion())
+	})
+
+	t.Run("local overrides parent", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Version: "1",
+			parent:  &perRepoDefaults{},
+		}
+		assert.Equal(t, "1", cfg.ConfigVersion())
+	})
+}
+
+// --- Runtime fallback ---
+
+func TestPerRepoConfig_Runtime_Fallback(t *testing.T) {
+	t.Run("empty falls through to parent", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.Equal(t, "claude", cfg.ConfigRuntime())
+	})
+
+	t.Run("local overrides parent", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Runtime: "dummy",
+			parent:  &perRepoDefaults{},
+		}
+		assert.Equal(t, "dummy", cfg.ConfigRuntime())
+	})
+}
+
+// --- Marshal emits only locally-set fields ---
+
+func TestPerRepoConfig_MarshalOmitsInheritedValues(t *testing.T) {
+	// An empty config with parent should marshal to only the YAML
+	// header and an empty YAML body — no inherited values leak.
+	cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	output := string(data)
+	// Header is always present.
+	assert.Contains(t, output, "fullsend per-repo configuration")
+	// No inherited values should appear.
+	assert.NotContains(t, output, "version:")
+	assert.NotContains(t, output, "runtime:")
+	assert.NotContains(t, output, "kill_switch:")
+	assert.NotContains(t, output, "roles:")
+	assert.NotContains(t, output, "agents:")
+	assert.NotContains(t, output, "allowed_remote_resources:")
+	assert.NotContains(t, output, "create_issues:")
+	// But the config still resolves defaults via parent.
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.Equal(t, "claude", cfg.ConfigRuntime())
+}
+
+func TestPerRepoConfig_MarshalEmitsLocalValues(t *testing.T) {
+	tr := true
+	cfg := &perRepoConfig{
+		Version:    "1",
+		KillSwitch: &tr,
+		Runtime:    "dummy",
+		Roles:      []string{"triage"},
+		parent:     &perRepoDefaults{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	output := string(data)
+	assert.Contains(t, output, "version:")
+	assert.Contains(t, output, "kill_switch: true")
+	assert.Contains(t, output, "runtime: dummy")
+	assert.Contains(t, output, "- triage")
+}
+
+func TestPerRepoConfig_MarshalExplicitFalseKillSwitch(t *testing.T) {
+	f := false
+	cfg := &perRepoConfig{
+		Version:    "1",
+		KillSwitch: &f,
+		parent:     &perRepoDefaults{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	// Explicit false should appear in output (distinguishable from unset).
+	assert.Contains(t, string(data), "kill_switch: false")
+}
+
+// --- Validate with fallback ---
+
+func TestPerRepoConfig_ValidateEmptyVersion_FallsThrough(t *testing.T) {
+	// Empty version (inherits from parent) should pass validation.
+	cfg := &perRepoConfig{
+		Roles:  []string{"triage"},
+		parent: &perRepoDefaults{},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestPerRepoConfig_ValidateNilRoles_FallsThrough(t *testing.T) {
+	// Nil roles (inherits from parent) should pass validation.
+	cfg := &perRepoConfig{
+		Version: "1",
+		parent:  &perRepoDefaults{},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+// --- ParsePerRepoConfig sets parent ---
+
+func TestParsePerRepoConfig_SetsParent(t *testing.T) {
+	yamlData := `version: "1"
+roles:
+  - triage
+`
+	cfg, err := ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+	// ConfigRuntime should resolve through parent to "claude".
+	assert.Equal(t, "claude", cfg.ConfigRuntime())
+}
+
+func TestParsePerRepoConfigWriter_SetsParent(t *testing.T) {
+	yamlData := `version: "1"
+roles:
+  - triage
+`
+	cfg, err := ParsePerRepoConfigWriter([]byte(yamlData))
+	require.NoError(t, err)
+	// Cast to PerRepoConfigReader to access ConfigRuntime.
+	pcr, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+	assert.Equal(t, "claude", pcr.ConfigRuntime())
+}
+
+// --- Existing single-file behavior unchanged ---
+
+func TestPerRepoConfig_ExistingSingleFileBehavior(t *testing.T) {
+	// A fully populated config (like NewPerRepoConfig produces) should
+	// behave identically to pre-parent-chain behavior.
+	cfg := NewPerRepoConfig([]string{"triage", "coder", "review"}, "org/repo")
+
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.False(t, cfg.IsKillSwitchActive())
+	assert.False(t, cfg.IsOrgMode())
+	assert.Equal(t, []string{"triage", "coder", "review"}, cfg.ConfigRoles())
+	assert.Empty(t, cfg.AgentEntries())
+	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
+	require.NotNil(t, cfg.IssueCreationConfig())
+
+	// Marshal round-trip.
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	headerEnd := strings.Index(string(data), "version:")
+	require.True(t, headerEnd > 0)
+
+	parsed, err := ParsePerRepoConfig(data[headerEnd:])
+	require.NoError(t, err)
+	assert.Equal(t, cfg.ConfigVersion(), parsed.ConfigVersion())
+	assert.Equal(t, cfg.IsKillSwitchActive(), parsed.IsKillSwitchActive())
+	assert.Equal(t, cfg.ConfigRoles(), parsed.ConfigRoles())
+}
+
+// --- KillSwitch YAML round-trip ---
+
+func TestPerRepoConfig_KillSwitch_YAMLRoundTrip(t *testing.T) {
+	t.Run("kill_switch true round-trips", func(t *testing.T) {
+		yamlData := `version: "1"
+kill_switch: true
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.True(t, cfg.IsKillSwitchActive())
+	})
+
+	t.Run("kill_switch false round-trips", func(t *testing.T) {
+		yamlData := `version: "1"
+kill_switch: false
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.False(t, cfg.IsKillSwitchActive())
+		// Verify it was explicitly set (not inherited).
+		prc := cfg.(*perRepoConfig)
+		require.NotNil(t, prc.KillSwitch)
+		assert.False(t, *prc.KillSwitch)
+	})
+
+	t.Run("kill_switch omitted falls through to default", func(t *testing.T) {
+		yamlData := `version: "1"
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.False(t, cfg.IsKillSwitchActive())
+		// Verify it was not set.
+		prc := cfg.(*perRepoConfig)
+		assert.Nil(t, prc.KillSwitch)
+	})
+}

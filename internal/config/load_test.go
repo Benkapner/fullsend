@@ -43,7 +43,12 @@ allowed_remote_resources:
 	assert.True(t, cfg.IsKillSwitchActive())
 	require.Len(t, cfg.AgentEntries(), 1)
 	assert.Equal(t, "ping", cfg.AgentEntries()[0].Name)
-	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedResources())
+	// AllowedResources unions with parent defaults.
+	resources := cfg.AllowedResources()
+	assert.Contains(t, resources, "https://example.com/")
+	for _, d := range DefaultAllowedRemoteResources() {
+		assert.Contains(t, resources, d)
+	}
 }
 
 func TestLoadConfig_Org(t *testing.T) {
