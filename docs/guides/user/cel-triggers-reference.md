@@ -101,6 +101,7 @@ trigger: >
 ```yaml
 trigger: >
   event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
     && event.transition.comment.command == "/my-command"
     && event.entity.kind == "work_item"
     && event.state.change_proposal != null
@@ -132,6 +133,17 @@ trigger: >
     && event.actor.role in ["admin", "maintain", "write"]
 ```
 
+### Guarding optional fields with `has()`
+
+Some NormalizedEvent fields are optional — they are present only for certain transition kinds. For example, `event.transition.comment.command` is set only when the comment contains a slash command. Accessing an absent field in CEL produces a missing-key error. Use `has()` to guard access:
+
+```cel
+has(event.transition.comment.command)
+  && event.transition.comment.command == "/my-command"
+```
+
+Fields that require `has()` guards include `event.transition.comment.command` and any other field tagged as optional in the [NormalizedEvent v1 schema](../../normative/normalized-event/v1/normalized-event.schema.json). Fields like `event.transition.label` and `event.transition.comment` are inherently scoped by `event.transition.kind` checks and do not need `has()` when the trigger already filters on the correct transition kind.
+
 ### Checking a label on the entity
 
 Use `event.state.labels` to check labels on the issue or PR at event time:
@@ -140,6 +152,7 @@ Use `event.state.labels` to check labels on the issue or PR at event time:
 trigger: >
   event.entity.kind == "work_item"
     && event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
     && event.transition.comment.command == "/analyze"
     && "needs-analysis" in event.state.labels
 ```
