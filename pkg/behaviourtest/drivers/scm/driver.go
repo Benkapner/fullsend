@@ -7,6 +7,17 @@ import (
 )
 
 // Driver abstracts SCM operations for behaviour tests.
+//
+// Concurrency: the github.Driver implementation is an immutable wrapper
+// around forge.Client (which is itself safe for concurrent use) and
+// holds no unsynchronized mutable fields. Sharing a single Driver
+// across goroutines via World.Clone is safe by design for
+// GODOG_CONCURRENCY>1. TestConcurrentAccess in package
+// github exercises the real driver under -race with a FakeClient.
+//
+// If a future implementation adds mutable state (caches, counters,
+// buffers), it must synchronize access or be deep-copied per scenario
+// in World.Clone.
 type Driver interface {
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*forge.Issue, error)
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
@@ -22,6 +33,10 @@ type Driver interface {
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
+
+	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
+	// if the repository does not exist.
+	DeleteRepo(ctx context.Context, owner, repo string) error
 
 	// CreateFork creates a fork of owner/repo within the same
 	// organization as the source repository, using the given

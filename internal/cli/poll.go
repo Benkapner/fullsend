@@ -3,9 +3,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
@@ -17,6 +20,7 @@ func newPollCmd() *cobra.Command {
 		gitlabURL    string
 		outputPath   string
 		pollModeFlag string
+		fullsendDir  string
 	)
 
 	cmd := &cobra.Command{
@@ -47,9 +51,16 @@ func newPollCmd() *cobra.Command {
 			}
 			pollClient := gitlab.NewPollClient(glClient)
 
-			var botUserID int
-			// botUserID will be resolved via the authenticated user
-			// endpoint in a future change.
+			botUserID, err := pollClient.GetAuthenticatedUserID(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("resolve bot user ID: %w", err)
+			}
+
+			// Build the event router from config + agents-repo known agents.
+			router, err := buildRouter(fullsendDir)
+			if err != nil {
+				return fmt.Errorf("build event router: %w", err)
+			}
 
 			opts := poll.Options{
 				SlashCommandsOnly: slashCommandsOnly,
@@ -58,9 +69,7 @@ func newPollCmd() *cobra.Command {
 				GitLabURL:         gitlabURL,
 			}
 
-			// TODO: Replace nil router with a real implementation
-			// once event routing is wired.
-			poller := poll.New(pollClient, nil, projectPath, opts)
+			poller := poll.New(pollClient, router, projectPath, opts)
 			return poller.Run(cmd.Context())
 		},
 	}
@@ -71,10 +80,45 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
 	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON")
 	cmd.Flags().StringVar(&pollModeFlag, "poll-mode", "", "Poll mode: fast (slash commands only) or full")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	_ = cmd.MarkFlagRequired("fullsend-dir")
 
 	cmd.Hidden = true
 	cmd.AddCommand(newPollGenerateChildPipelineCmd())
 	return cmd
+}
+
+// buildRouter constructs a HarnessRouter from config-registered agents
+// and the known first-party agents available via agents-repo fallback.
+func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
+	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	seen := make(map[string]bool)
+	var names []string
+
+	entries := cfg.AgentEntries()
+	for i := len(entries) - 1; i >= 0; i-- {
+		name := entries[i].DerivedName()
+		lower := strings.ToLower(name)
+		if !seen[lower] {
+			seen[lower] = true
+			if entries[i].IsEnabled() {
+				names = append(names, name)
+			}
+		}
+	}
+
+	for name := range defaultAgentsRepoKnownAgents {
+		if !seen[name] && !config.IsAgentExplicitlyDisabled(entries, name) {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+
+	return dispatch.NewHarnessRouter(names), nil
 }
 
 func newPollGenerateChildPipelineCmd() *cobra.Command {

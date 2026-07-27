@@ -79,7 +79,43 @@ Use tags only for **exceptions** when a backend cannot run a scenario yet: `@ski
 make behaviour-test
 ```
 
+### Parallel execution
+
+The suite runs scenarios in parallel by default (`GODOG_CONCURRENCY=12`,
+matching the repo pool size). Each scenario gets its own `World` clone and
+leases a unique `test-repo-NN` from the pool, so no cross-scenario state
+is shared. The `behaviour-test` Make target includes `-race` to catch
+data races under concurrent execution.
+
+To adjust concurrency:
+
+```bash
+# Run at default concurrency (12)
+make behaviour-test
+
+# Run with explicit concurrency
+GODOG_CONCURRENCY=4 make behaviour-test
+
+# Serial mode for debugging
+GODOG_CONCURRENCY=1 make behaviour-test
+```
+
+Serial mode (`GODOG_CONCURRENCY=1`) is useful when debugging a single
+scenario or when `-v` output from multiple scenarios would interleave.
+
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+
+### Lazy create+install (`RepoEnsurer`)
+
+The `Given the enrolled test repository` step lazily creates and installs numbered pool repos (`test-repo-NN`) on demand via `RepoEnsurer`. When a scenario leases a repo name from the pool and an ensurer is configured, the step calls `EnsureRepo(ctx, org, repoName)` which:
+
+1. Creates the repo if it does not exist (the forge's `auto_init` provides the initial commit).
+2. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
+3. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
+
+Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
+
+**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
 
@@ -101,22 +137,26 @@ See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [A
 
 Fork dispatch scenarios test `pull_request_target` harness triggering from cross-fork pull requests.
 
+### Logical fork name → leased base
+
+Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased a numbered base (for example leased `test-repo-07` → actual fork repo `test-repo-07-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code `test-repo-NN-fork` in Gherkin.
+
 ### Pool-org prerequisites
 
 Fork scenarios require the pool org to have:
 
-- **A long-lived fork repository** of the enrolled `test-repo`. The fork is created once (idempotently) via the `Given a fork` step and persists across test runs. Do not delete the fork repo between scenarios or CI runs.
+- **Permission to create forks** of the leased enrolled base (`test-repo-NN`) under the same org. The `Given a fork` step creates `{leased}-fork` idempotently when missing.
 - **The same installation token** must have write access to both the base repo and the fork repo within the org, since the e2e bot commits to the fork and opens cross-fork PRs.
 
 ### Fork lifecycle
 
 | Resource | Lifecycle | Cleanup |
 |----------|-----------|---------|
-| Fork repo | Long-lived (created once per pool org) | Never deleted |
-| Fork branches | Per-scenario | Deleted by `CleanupScenario` |
+| Fork repo | Per-scenario (`{RepoName}-fork`); created on demand | Deleted by `CleanupScenario` |
+| Fork branches | Per-scenario | Deleted by `CleanupScenario` (before repo deletion) |
 | Fork PRs | Per-scenario | Closed by `CleanupScenario` |
 
-Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo and deletes the head branch on the fork repo.
+Fork repos are **ephemeral**: created when the `Given a fork` step runs and deleted by `CleanupScenario` after the scenario completes. Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo, deletes the head branch on the fork repo, and then deletes the fork repo itself. Do **not** mint-enroll fork names — forks are PR sources only; mint stays on the enrolled base.
 
 ### Background step usage
 
@@ -128,7 +168,43 @@ Background:
   And a fork "test-repo-fork" of the enrolled test repository
 ```
 
-The `Given a fork` step is idempotent: if the fork already exists, it reuses it without error. Each scenario then creates its own branch and PR within the fork.
+The `Given a fork` step remaps the logical name as above and is idempotent for that actual fork repo. Each scenario then creates its own branch and PR within the fork.
+
+## Forge operational constraints
+
+When modifying behaviour test repo provisioning, fork handling, or workflow dispatch, be aware of these constraints. They are not enforced by the compiler or linter — violations surface as cryptic API errors or silently dropped events in CI.
+
+### `auto_init` creates an initial commit
+
+The forge's `CreateRepo` uses `auto_init`, which creates an initial commit containing a README. Do **not** call `CreateFile("README.md")` (or any file that `auto_init` already provides) on a newly created repo — the GitHub API returns a 422 because the file already exists in the initial commit.
+
+If a scenario needs to seed additional files, use a filename that does not collide with the `auto_init` commit (e.g., `seed.txt` instead of `README.md`), or check for existence first.
+
+Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go) — see the `auto_init` comment and `CreateRepo` call.
+
+### Fork name derivation depends on `World.RepoName`
+
+The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `test-repo-07` resolves to `test-repo-07-fork`.
+
+When modifying repo naming, leasing, or provisioning logic, verify that fork steps still resolve correctly. If `World.RepoName` changes (e.g., because leasing logic changes), fork resolution breaks — scenarios that use `Given a fork` will create or look for the wrong repo.
+
+Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — maps logical fork names to actual repo names based on the leased base.
+
+### Actions workflow readiness after repo creation
+
+After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
+
+The `RepoEnsurer` handles this by polling `GetWorkflow` until the workflow file is visible (up to 30 attempts with 5-second intervals). The function returns success as soon as the API returns a non-nil workflow object — it logs the workflow state but does not gate on it. When writing new provisioning code or modifying the install flow, always poll for workflow readiness before dispatching events that depend on the workflow.
+
+Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is visible to the API.
+
+### CI timeout budgeting for lazy provisioning
+
+Each lazily provisioned repo adds approximately 3–5 minutes of overhead (create + inference provision + `github setup` + Actions settle). The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leased repos in the suite.
+
+Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos, verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
+
+Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 
 ## Version pinning for `fullsend-ai/agents`
 
@@ -165,5 +241,7 @@ suiteRunner := godog.TestSuite{
 ```
 
 **`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
+
+**`scm.Driver.DeleteRepo` addition:** The `scm.Driver` interface now includes a `DeleteRepo(ctx context.Context, owner, repo string) error` method. `CleanupScenario` calls it to delete ephemeral fork repos after each scenario. External `scm.Driver` implementations must add this method — return `forge.ErrNotFound` when the repository does not exist.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.

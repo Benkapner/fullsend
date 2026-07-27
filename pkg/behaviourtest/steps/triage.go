@@ -13,7 +13,7 @@ import (
 
 func registerTriageSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the enrolled test repository$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, givenEnrolledTestRepository(world.FromContext(ctx))
+		return ctx, givenEnrolledTestRepository(ctx, world.FromContext(ctx))
 	})
 	sc.Step(`^an enrolled repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {
 		return ctx, givenEnrolledRepository(world.FromContext(ctx), fullName)
@@ -35,7 +35,23 @@ func registerTriageSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-func givenEnrolledTestRepository(w *world.World) error {
+func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
+	// When a leased repo name is available (from the pool) and an ensurer
+	// is configured, lazily create and install the leased repo. This
+	// removes the requirement for pre-existing repos in the pool org.
+	if w.LeasedRepoName != "" && w.Ensurer != nil {
+		st, err := w.Ensurer.EnsureRepo(ctx, w.Org, w.LeasedRepoName)
+		if err != nil {
+			return fmt.Errorf("ensuring leased repo %s/%s: %w", w.Org, w.LeasedRepoName, err)
+		}
+		w.Install = st
+		w.RepoOwner = w.Org
+		w.RepoName = w.LeasedRepoName
+		w.RepoFull = w.Org + "/" + w.LeasedRepoName
+		return nil
+	}
+
+	// Fallback: use the suite-level install state (backward compat).
 	w.RepoOwner = w.Org
 	w.RepoName = w.Install.TestRepo()
 	w.RepoFull = w.Org + "/" + w.RepoName
@@ -85,11 +101,42 @@ func createIssue(w *world.World, title, body string) error {
 	w.IssueTitle = title
 	// fullsend.yaml triggers on issues opened and labeled. Drain the issue-open
 	// run before applying ready-for-triage so the labeled dispatch is not skipped.
-	ctx := context.Background()
-	if _, err := w.CI.WaitForWorkflow(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.Install.TriageWorkflowFile(), trigger, issueOpenEvent); err != nil {
-		return fmt.Errorf("waiting for issue-open workflow: %w", err)
+	if err := drainIssueOpenWorkflow(w, trigger); err != nil {
+		return err
 	}
 	return nil
+}
+
+// issueOpenDrainSkewBuffer is subtracted from the trigger timestamp on
+// retry to compensate for clock drift between the test runner and GitHub.
+// 30 s covers typical NTP drift without matching stale runs from prior
+// scenarios (pool repos are org-isolated).
+const issueOpenDrainSkewBuffer = 30 * time.Second
+
+// drainIssueOpenWorkflow waits for the fullsend.yaml workflow to process
+// the issues.opened event. If the first attempt fails (typically due to
+// GitHub Actions webhook delivery lag or clock skew between the runner
+// and GitHub), it retries once with a relaxed trigger timestamp.
+func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
+	ctx := context.Background()
+	repo := w.Install.TriageWorkflowRepo()
+	file := w.Install.TriageWorkflowFile()
+
+	_, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
+	if err == nil {
+		return nil
+	}
+
+	// Retry with a clock-skew buffer. When the test runner's clock is
+	// slightly ahead of GitHub's, the workflow run's CreatedAt falls
+	// before our trigger timestamp and the first poll window misses it.
+	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
+	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
+	if _, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
+		return nil
+	}
+
+	return fmt.Errorf("waiting for issue-open workflow: %w", err)
 }
 
 func whenIssueLabeled(w *world.World, label string) error {

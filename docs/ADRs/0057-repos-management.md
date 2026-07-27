@@ -77,6 +77,8 @@ to Terraform vs cloud provider CLIs.
 | `repos upgrade-mint` | Verify token mint deployment against manifest |
 | `repos remove` | Remove fullsend from specific repos |
 
+> **Note:** `repos upgrade` now includes automatic mint verification as a pre-flight step (unless `--skip-mint-check` is set). The standalone `repos upgrade-mint` command remains available for verification without triggering an upgrade.
+
 **Manifest:** a YAML file declaring desired state — mint config, default
 field values, and a list of repos (strings for defaults, objects for
 overrides). Supports glob patterns (`acme-corp/*`) and multi-org repos

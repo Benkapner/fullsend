@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -45,6 +46,20 @@ var selectAll = func(candidates []RepoCandidate) ([]string, error) {
 // nopProgress is a no-op progress callback for tests.
 func nopProgress(_, _, _ string) {}
 
+// --- Init: forge validation ---
+
+func TestInit_EmptyForge_ReturnsError(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	_, err := Init(context.Background(), InitConfig{
+		Target:      "acme/api",
+		MintProject: "proj",
+	}, newTestClientFactory(fc), nil, nopProgress)
+
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "Forge is required")
+}
+
 // --- Init: greenfield org tests ---
 
 func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
@@ -57,12 +72,13 @@ func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "my-project",
 		MintRegion:       "us-central1",
 		InferenceProject: "my-inference",
 		CLIVersion:       "2.3.0",
 		MaxConcurrency:   2,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.PerRepoCount)
@@ -90,11 +106,12 @@ func TestInit_GreenfieldOrg_ExplicitRepos(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		Repos:            []string{"acme/api", "acme/web"},
+		Forge:            ForgeGitHub,
 		MintProject:      "p",
 		MintRegion:       "r",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.NewCount)
@@ -110,8 +127,9 @@ func TestInit_GreenfieldOrg_ExplicitRepos_NotFound(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
+		Forge:  ForgeGitHub,
 		Repos:  []string{"acme/api", "acme/nonexistent"},
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "not found in org")
@@ -154,11 +172,12 @@ repos:
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		MaxConcurrency:   4,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerRepoCount)
@@ -190,10 +209,11 @@ func TestInit_OnlyPerRepoInstallations(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:         "acme",
 		All:            true,
+		Forge:          ForgeGitHub,
 		MintProject:    "proj",
 		MintRegion:     "us-central1",
 		MaxConcurrency: 2,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.PerRepoCount)
@@ -222,10 +242,11 @@ repos:
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.PerRepoCount)
@@ -247,9 +268,10 @@ func TestInit_SingleRepo_PerRepoInstalled(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme/api",
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerRepoCount)
@@ -277,10 +299,11 @@ repos:
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerOrgCount)
@@ -292,8 +315,9 @@ func TestInit_SingleRepo_RejectsAllFlag(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
+		Forge:  ForgeGitHub,
 		All:    true,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "--all flag cannot be used with a single repo target")
@@ -304,8 +328,9 @@ func TestInit_SingleRepo_RejectsReposFlag(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
+		Forge:  ForgeGitHub,
 		Repos:  []string{"acme/other"},
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "--repos flag cannot be used with a single repo target")
@@ -316,11 +341,12 @@ func TestInit_SingleRepo_NotInstalled(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "2.5.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)
@@ -355,9 +381,10 @@ func TestInit_DefaultsComputation_MostCommonRef(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme",
 		All:         true,
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	// v2.3.0 is most common, should be the default.
@@ -401,9 +428,10 @@ func TestInit_PerRepoOverrides_DifferentRegion(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme",
 		All:         true,
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 
@@ -442,10 +470,11 @@ func TestInit_InteractiveSelection(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "r",
 		InferenceProject: "inf",
-	}, fc, selectFn, nopProgress)
+	}, newTestClientFactory(fc), selectFn, nopProgress)
 
 	require.NoError(t, err)
 	require.Len(t, result.Manifest.Repos, 2)
@@ -468,7 +497,8 @@ func TestInit_NilCallback_RequiresFlag(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
-	}, fc, nil, nopProgress)
+		Forge:  ForgeGitHub,
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "org target requires --all or --repos flag")
@@ -481,9 +511,10 @@ func TestInit_TODOs_NoMintProject(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:     "acme/api",
+		Forge:      ForgeGitHub,
 		MintRegion: "us-central1",
 		CLIVersion: "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Contains(t, result.TODOs, "mint.project: provide via --mint-project flag")
@@ -495,10 +526,11 @@ func TestInit_TODOs_NoMintURL_Greenfield(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme/api",
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 		CLIVersion:  "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Contains(t, result.TODOs, "mint.url: set the Cloud Run endpoint URL")
@@ -527,9 +559,10 @@ func TestInit_TODOs_MultipleMintURLs(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme",
 		All:         true,
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "r",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	// Most common URL should be used.
@@ -545,6 +578,7 @@ func TestBuildManifest_SimpleEntries(t *testing.T) {
 		{Owner: "acme", Repo: "web", Source: "new"},
 	}
 	m, todos := buildManifest(repos, InitConfig{
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -570,6 +604,7 @@ func TestBuildManifest_MixedOverrides(t *testing.T) {
 		{Owner: "acme", Repo: "r3", Source: "per-repo", FullsendRef: "v2.1.0", InferenceRegion: "us-east1", MintURL: "https://mint.example.com"},
 	}
 	m, _ := buildManifest(repos, InitConfig{
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
@@ -709,10 +744,11 @@ func TestInit_RoundTrip(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 	require.NoError(t, err)
 
 	// Marshal and re-parse.
@@ -736,8 +772,9 @@ func TestInit_ListOrgReposError(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
+		Forge:  ForgeGitHub,
 		All:    true,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "listing repos for org")
@@ -749,7 +786,8 @@ func TestInit_ListRepoVariablesError(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
-	}, fc, nil, nopProgress)
+		Forge:  ForgeGitHub,
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "listing variables")
@@ -769,10 +807,11 @@ func TestInit_OrgConfigParseError_SingleRepo_Warns(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme/api",
+		Forge:       ForgeGitHub,
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 		CLIVersion:  "1.0.0",
-	}, fc, nil, progress)
+	}, newTestClientFactory(fc), nil, progress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)
@@ -793,7 +832,8 @@ func TestInit_OrgConfigFetchError_SingleRepo(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme/api",
-	}, fc, nil, nopProgress)
+		Forge:  ForgeGitHub,
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "fetching org config")
@@ -807,8 +847,9 @@ func TestInit_OrgConfigFetchError_Org(t *testing.T) {
 
 	_, err := Init(context.Background(), InitConfig{
 		Target: "acme",
+		Forge:  ForgeGitHub,
 		All:    true,
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "fetching org config")
@@ -826,11 +867,12 @@ func TestInit_ConfigRepoExcluded(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.NewCount)
@@ -851,11 +893,12 @@ func TestInit_DiscoveryErrors_Tracked(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	// Repo with error should be excluded from manifest.
@@ -874,7 +917,7 @@ func TestDiscoverReposParallel_ErrorsExcluded(t *testing.T) {
 		{Name: "web", FullName: "acme/web"},
 	}
 
-	dr := discoverReposParallel(context.Background(), fc, "acme", repos, nil, 4, nopProgress)
+	dr := discoverReposParallel(context.Background(), fc, "acme", repos, nil, "", 4, nopProgress)
 
 	assert.Empty(t, dr.repos)
 	assert.Len(t, dr.errors, 2)
@@ -965,7 +1008,7 @@ func TestDiscoverRepo_PerRepo(t *testing.T) {
 	setWorkflowFile(fc, "acme", "api",
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0")
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "per-repo", d.Source)
 	assert.Equal(t, "https://mint.example.com", d.MintURL)
@@ -978,16 +1021,19 @@ func TestDiscoverRepo_PerOrg(t *testing.T) {
 	setWorkflowFile(fc, "acme", "api",
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
 
-	orgCfg := &config.OrgConfig{
-		Dispatch: config.DispatchConfig{
-			MintURL: "https://mint-org.example.com",
-		},
-		Repos: map[string]config.RepoConfig{
-			"api": {Enabled: true},
-		},
-	}
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+  mint_url: https://mint-org.example.com
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "per-org", d.Source)
 	assert.Equal(t, "https://mint-org.example.com", d.MintURL)
@@ -997,13 +1043,18 @@ func TestDiscoverRepo_PerOrg(t *testing.T) {
 func TestDiscoverRepo_PerOrgDisabled(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	orgCfg := &config.OrgConfig{
-		Repos: map[string]config.RepoConfig{
-			"api": {Enabled: false},
-		},
-	}
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: false
+`))
+	require.NoError(t, parseErr)
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "new", d.Source)
 }
@@ -1011,11 +1062,176 @@ func TestDiscoverRepo_PerOrgDisabled(t *testing.T) {
 func TestDiscoverRepo_New(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, nopProgress)
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, "", nopProgress)
 	require.NoError(t, err)
 	assert.Equal(t, "new", d.Source)
 	assert.Empty(t, d.MintURL)
 	assert.Empty(t, d.FullsendRef)
+}
+
+// --- discoverRepo: org variable fallback tests ---
+
+func TestDiscoverRepo_PerOrg_OrgVarFallback(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	// Org config has no mint_url in dispatch settings.
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	// Set org-level variable as fallback.
+	fc.OrgVariables = map[string]bool{
+		"acme/FULLSEND_MINT_URL": true,
+	}
+	fc.OrgVariableValues = map[string]string{
+		"acme/FULLSEND_MINT_URL": "https://mint.example.com",
+	}
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Equal(t, "https://mint.example.com", d.MintURL)
+}
+
+func TestDiscoverRepo_PerOrg_OrgConfigTakesPrecedence(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	// Org config has a mint_url.
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+  mint_url: https://config-mint.example.com
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	// Org variable also set — should NOT be used.
+	fc.OrgVariables = map[string]bool{
+		"acme/FULLSEND_MINT_URL": true,
+	}
+	fc.OrgVariableValues = map[string]string{
+		"acme/FULLSEND_MINT_URL": "https://var-mint.example.com",
+	}
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Equal(t, "https://config-mint.example.com", d.MintURL)
+}
+
+func TestDiscoverRepo_PerOrg_OrgVarError_NonFatal(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	fc.Errors["GetOrgVariable"] = fmt.Errorf("forbidden")
+
+	// Org config has no mint_url.
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	var warnings []string
+	progress := func(_, _, msg string) {
+		warnings = append(warnings, msg)
+	}
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, "", progress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Empty(t, d.MintURL)
+
+	// Should have logged a warning about the org variable.
+	hasWarning := false
+	for _, w := range warnings {
+		if strings.Contains(w, "FULLSEND_MINT_URL") &&
+			strings.Contains(w, "warning") {
+			hasWarning = true
+			break
+		}
+	}
+	assert.True(t, hasWarning, "expected a warning about GetOrgVariable failure")
+}
+
+// --- discoverRepo: forge-aware tests ---
+
+func TestDiscoverRepo_GitLabForge_UsesGitLabPaths(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setRepoVars(fc, "acme", "api", map[string]string{
+		forge.PerRepoGuardVar: "true",
+		"FULLSEND_MINT_URL":   "https://mint.example.com",
+	})
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"  ref: v2.5.0\n")
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, ForgeGitLab, nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-repo", d.Source)
+	assert.Equal(t, "v2.5.0", d.FullsendRef)
+}
+
+func TestDiscoverRepo_GitLabForge_PerOrg_UsesGitLabPaths(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"  ref: v2.4.0\n")
+
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+  mint_url: https://mint-org.example.com
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, ForgeGitLab, nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Equal(t, "v2.4.0", d.FullsendRef)
+}
+
+func TestInit_SingleRepo_GitLabForge(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setRepoVars(fc, "acme", "api", map[string]string{
+		forge.PerRepoGuardVar: "true",
+		"FULLSEND_MINT_URL":   "https://mint.example.com",
+	})
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"  ref: v2.5.0\n")
+
+	result, err := Init(context.Background(), InitConfig{
+		Target:      "acme/api",
+		Forge:       ForgeGitLab,
+		MintProject: "proj",
+		MintRegion:  "us-central1",
+	}, newTestClientFactory(fc), nil, nopProgress)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.PerRepoCount)
+	assert.Equal(t, "v2.5.0", result.Manifest.Defaults.FullsendRef)
+	assert.Equal(t, ForgeGitLab, result.Manifest.Defaults.Forge)
 }
 
 // --- readWorkflowRef tests ---
@@ -1025,7 +1241,7 @@ func TestReadWorkflowRef_YmlExtension(t *testing.T) {
 	setWorkflowFile(fc, "acme", "api",
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0")
 
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	require.NoError(t, err)
 	assert.Equal(t, "v2.3.0", ref)
 }
@@ -1035,14 +1251,14 @@ func TestReadWorkflowRef_YamlExtension(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte(
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0")
 
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	require.NoError(t, err)
 	assert.Equal(t, "v1.0.0", ref)
 }
 
 func TestReadWorkflowRef_NoWorkflowFile(t *testing.T) {
 	fc := forge.NewFakeClient()
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	require.NoError(t, err)
 	assert.Empty(t, ref)
 }
@@ -1051,7 +1267,7 @@ func TestReadWorkflowRef_NonNotFoundError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["GetFileContent"] = fmt.Errorf("network timeout")
 
-	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api")
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "network timeout")
 	assert.Empty(t, ref)
@@ -1064,11 +1280,12 @@ func TestInit_CLIVersionFallback(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "3.0.0",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, "v3.0.0", result.Manifest.Defaults.FullsendRef)
@@ -1079,11 +1296,12 @@ func TestInit_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "v0.32.0-82-gcb2bcd9f",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, "v0.32.0-82-gcb2bcd9f", result.Manifest.Defaults.FullsendRef)
@@ -1094,11 +1312,12 @@ func TestInit_CLIVersionDev_FallsBackToDefault(t *testing.T) {
 
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme/api",
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "us-central1",
 		InferenceProject: "inf",
 		CLIVersion:       "dev",
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, config.DefaultUpstreamRef, result.Manifest.Defaults.FullsendRef)
@@ -1114,12 +1333,13 @@ func TestInit_DefaultConcurrency(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "r",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
 		MaxConcurrency:   0, // should default to 8
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)
@@ -1133,12 +1353,13 @@ func TestInit_ConcurrencyUpperBound(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:           "acme",
 		All:              true,
+		Forge:            ForgeGitHub,
 		MintProject:      "proj",
 		MintRegion:       "r",
 		InferenceProject: "inf",
 		CLIVersion:       "1.0.0",
 		MaxConcurrency:   200, // should clamp to 64
-	}, fc, nil, nopProgress)
+	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)

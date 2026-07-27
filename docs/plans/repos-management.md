@@ -36,6 +36,7 @@ mint:
 
 # Default configuration applied to all repos unless overridden.
 defaults:
+  forge: github
   inference_project: acme-inference-prod
   inference_region: us-central1
   fullsend_ref: v2.3.0
@@ -169,11 +170,14 @@ match; 1 if drift or missing repos.
 Installs fullsend on repos not yet installed. Three-phase execution:
 
 1. **Phase 1 (parallel):** Discover current state, check guard
-   variables, partition into `toInstall` and `alreadyInstalled`.
+   variable and all installation components via
+   `checkInstallComponents`, partition into `toInstall` and
+   `alreadyInstalled`.
 2. **Phase 2 (sequential):** `EnsureOrgInMint` once per unique org,
    then `RegisterPerRepoWIF` per repo. Re-checks the guard variable
-   before provisioning to narrow the TOCTOU window. Both operations
-   are not concurrent-safe (read-modify-write on Cloud Run env vars).
+   and all installation components before provisioning to narrow the
+   TOCTOU window. Both operations are not concurrent-safe
+   (read-modify-write on Cloud Run env vars).
 3. **Phase 3 (parallel):** Scaffold commits, variable/secret writes.
 
 Concurrent `repos install` and `fullsend github setup` targeting the
@@ -220,7 +224,7 @@ Upgrading repos:
   acme-corp/api-server       v2.1.0 → v2.3.0  ✓
   acme-corp/web-frontend     v2.1.0 → v2.3.0  ✓
   acme-corp/legacy-service   v2.1.0            (pinned, already current)
-  acme-corp/bleeding-edge    latest            (floating tag, skipped)
+  acme-corp/bleeding-edge    latest            floating ref "latest" (not eligible for upgrade)
 
 2 upgraded, 1 current, 1 skipped
 ```
@@ -241,8 +245,9 @@ rather than falling back to tag-only format.
 
 Verifies the token mint deployment matches the manifest configuration.
 Discovers the current mint via `DiscoverMint` and checks that its URL
-matches `mint.url`. Run before `repos upgrade` to confirm the mint
-is reachable and correctly configured.
+matches `mint.url`. `repos upgrade` now runs this check automatically
+as a pre-flight step (unless `--skip-mint-check` is set); this command
+remains available for standalone verification.
 
 #### `fullsend repos add`
 
@@ -250,7 +255,7 @@ Adds repo entries to the `repos.yaml` manifest. Supports glob patterns
 (e.g. `acme/*`) and validates repo name format (`owner/repo`). Skips
 duplicates. With `--install`, also installs fullsend on the added repos.
 
-Supports `--dry-run`, `--install`, `--concurrency`, `--direct`.
+Supports `--forge` (required), `--dry-run`, `--install`, `--concurrency`, `--direct`.
 
 #### `fullsend repos remove`
 
@@ -453,8 +458,11 @@ wrapping the progress callback for spinner output.
 Test `Install()` with a fake forge client and fake WIF provisioner:
 
 - Fresh install: verify scaffold committed, variables set, secrets set.
-- Already installed (guard variable present): returns
+- Already installed (all installation components present — guard
+  variable, workflow file, variables, and secrets): returns
   `AlreadyInstalled: true`, no writes.
+- Partial install (guard variable present but other components
+  missing): proceeds with repair.
 - Skip app setup: verify `appsetup.Run()` not called.
 - Skip mint check: verify `DiscoverMint()` not called.
 - WIF provisioning failure: returns error, no scaffold committed.
@@ -491,6 +499,7 @@ type MintConfig struct {
 }
 
 type DefaultsConfig struct {
+    Forge                  string   `yaml:"forge"`
     InferenceProject       string   `yaml:"inference_project"`
     InferenceRegion        string   `yaml:"inference_region"`
     FullsendRef            string   `yaml:"fullsend_ref"`
@@ -500,6 +509,7 @@ type DefaultsConfig struct {
 
 type RepoEntry struct {
     Repo             string         `yaml:"repo"`
+    Forge            NullableString `yaml:"forge,omitempty"`
     InferenceProject NullableString `yaml:"inference_project,omitempty"`
     InferenceRegion  NullableString `yaml:"inference_region,omitempty"`
     FullsendRef      NullableString `yaml:"fullsend_ref,omitempty"`
@@ -551,7 +561,7 @@ func LoadManifest(pathOrURL string) (*Manifest, error)
 func (m *Manifest) Validate() error
 
 func (m *Manifest) ExpandGlobs(ctx context.Context,
-    client forge.Client) ([]ResolvedRepo, error)
+    clients ForgeClientFactory) ([]ResolvedRepo, error)
 
 func (m *Manifest) ResolveConfig(owner, repo string) ResolvedConfig
 ```
@@ -809,26 +819,27 @@ type Drift struct {
 }
 
 func Status(ctx context.Context, manifest *Manifest,
-    client forge.Client, maxConcurrency int) ([]RepoStatus, error)
+    clients ForgeClientFactory, maxConcurrency int) ([]RepoStatus, error)
 ```
 
 Per-repo discovery (parallelizable, read-only):
 
 1. Call `ListRepoVariables(ctx, owner, repo)` to read guard variable,
    mint URL, region.
-2. Call `GetFileContent(ctx, owner, repo, ".github/workflows/fullsend.yml")`
-   (fall back to `.yaml`) to extract the current `@ref`.
+2. Call `GetFileContent` for each path in `ForgeConfig.WorkflowPaths`
+   (forge-specific; GitHub uses `.github/workflows/fullsend.yml`/`.yaml`,
+   GitLab uses `.gitlab/workflows/fullsend-dispatch.yml`) to extract the
+   current ref.
 3. Compare against manifest-resolved config.
 4. Build `RepoStatus` with drift entries.
 
 Ref extraction from workflow file:
 
 ```go
-var workflowRefPattern = regexp.MustCompile(
-    `uses:\s+fullsend-ai/fullsend/.*@(\S+)`,
-)
+// Patterns and extraction are now forge-specific via ForgeConfig.
+// See internal/repos/forge_config.go for the per-forge definitions.
 
-func extractWorkflowRef(content []byte) string
+func extractWorkflowRef(content []byte, fc ForgeConfig) string
 ```
 
 Exit code: 0 if all repos match; 1 if any drift or missing.
@@ -896,15 +907,19 @@ type BatchInstallResult struct {
 }
 
 func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
-    client forge.Client, provisionerFactory ProvisionerFactory,
+    clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
     progress ProgressFunc) (*BatchInstallResult, error)
 ```
 
 Three-phase execution:
 
-**Phase 1 (parallel):** For each repo (or filtered subset), call
-`ListRepoVariables` to check guard variable. Partition into
-`toInstall` and `alreadyInstalled`.
+**Phase 1 (parallel):** For each repo (or filtered subset), check the
+guard variable. When the guard is set, verify all installation
+components (workflow file, variables, and secrets) via
+`checkInstallComponents`. A repo is only classified as
+`alreadyInstalled` when every component is present; partial installs
+proceed to Phase 2 for repair. Repos without the guard go to
+`toInstall`.
 
 **Phase 2 (sequential):**
 
@@ -919,10 +934,12 @@ the error and excluded from per-repo WIF provisioning and Phase 3.
 
 Then, for each remaining repo in `toInstall`:
 
-- Re-check `FULLSEND_PER_REPO_INSTALL` guard variable. If it is now
-  `"true"` (another process installed between Phase 1 and Phase 2),
-  move the repo to `alreadyInstalled` and skip provisioning. This
-  narrows the TOCTOU window documented in the ADR.
+- Re-check the guard variable and all installation components via
+  `checkInstallComponents`. If the guard is now `"true"` and all
+  components are present (another process fully installed between
+  Phase 1 and Phase 2), move the repo to `alreadyInstalled` and skip
+  provisioning. If the guard is set but components are missing, proceed
+  with repair. This narrows the TOCTOU window documented in the ADR.
 - Call `ProvisionWIF(ctx)` — creates WIF provider for this repo.
   Store the returned provider name in a `map[string]string` keyed by
   `owner/repo` (e.g., `wifProviders["acme-corp/api"] = providerName`).
@@ -1008,10 +1025,10 @@ type Change struct {
 }
 
 func Diff(ctx context.Context, manifest *Manifest,
-    client forge.Client, maxConcurrency int) ([]Change, error)
+    clients ForgeClientFactory, maxConcurrency int) ([]Change, error)
 
 func Sync(ctx context.Context, manifest *Manifest,
-    client forge.Client, maxConcurrency int,
+    clients ForgeClientFactory, maxConcurrency int,
     progress ProgressFunc) ([]Change, error)
 ```
 
@@ -1107,7 +1124,7 @@ type UpgradeResult struct {
 }
 
 func Upgrade(ctx context.Context, cfg UpgradeConfig,
-    client forge.Client,
+    clients ForgeClientFactory,
     progress ProgressFunc) ([]UpgradeResult, error)
 
 func UpgradeMint(ctx context.Context, manifest *Manifest,
@@ -1136,7 +1153,7 @@ Upgrade logic per repo:
 Ref replacement in scaffold:
 
 ```go
-func replaceShimRef(content []byte, newRef, newTag string) ([]byte, bool)
+func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig) ([]byte, bool)
 ```
 
 Replaces all `@<oldRef>` occurrences (and optional trailing `# tag`
@@ -1200,6 +1217,7 @@ Add `newReposAddCmd()`, `newReposRemoveCmd()`, `newReposUninstallCmd()`.
 
 `repos add` — adds repo entries to the manifest:
 - Positional args: repos to add (supports globs).
+- `--forge` (required): forge type (`github` or `gitlab`). Omits per-entry override when matching `defaults.forge`.
 - `--manifest` / `-f`.
 - `--dry-run`.
 - `--install`: also install fullsend on added repos.
@@ -1247,7 +1265,7 @@ type RemoveResult struct {
 }
 
 func Remove(ctx context.Context, cfg RemoveConfig,
-    client forge.Client, provisionerFactory ProvisionerFactory,
+    clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
     progress ProgressFunc) ([]RemoveResult, error)
 ```
 
@@ -1259,8 +1277,8 @@ structure:
 
 For each repo:
 
-1. Delete workflow file (`.github/workflows/fullsend.yml`, fall back
-   to `.yaml`). Try `DeleteFile` first. A 404 means the file is
+1. Delete workflow file (forge-specific paths from
+   `ForgeConfig.WorkflowPaths`). Try `DeleteFile` first. A 404 means the file is
    already absent — treat as success (`WorkflowDeleted = true`).
    If it returns HTTP 403 or 422 (branch protection), fall back to
    `CommitFilesToBranch` + PR creation (same pattern as `repos

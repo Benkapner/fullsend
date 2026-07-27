@@ -30,6 +30,7 @@ var WIFProviderPattern = regexp.MustCompile(
 type InstallConfig struct {
 	Owner string
 	Repo  string
+	Forge string
 
 	// Roles is the list of agent roles to install (e.g., "triage", "code").
 	Roles []string
@@ -105,7 +106,8 @@ type WIFProvisioner interface {
 
 	// ProvisionWIF creates WIF infrastructure (service account, pool,
 	// provider, principal binding) and returns the full WIF provider
-	// resource name.
+	// resource name. Must be idempotent: partial-install repair may
+	// call this for repos that already have WIF provisioned.
 	ProvisionWIF(ctx context.Context) (string, error)
 
 	// RegisterPerRepoWIF adds a repo to the mint's PER_REPO_WIF_REPOS
@@ -166,18 +168,27 @@ func Install(ctx context.Context, cfg InstallConfig,
 		progress = func(_, _, _ string) {}
 	}
 
+	if cfg.Forge == ForgeGitLab {
+		return nil, fmt.Errorf("GitLab scaffold generation is not yet implemented; install is only supported for GitHub repos")
+	}
+
 	repoFullName := cfg.Owner + "/" + cfg.Repo
 	result := &InstallResult{
 		Owner: cfg.Owner,
 		Repo:  cfg.Repo,
 	}
 
-	// Step 1: Check guard variable to detect existing installations.
-	// Bulk-install callers use this to skip already-installed repos.
-	// Interactive CLI callers set SkipGuardCheck=true because they
-	// handle the guard check themselves (and always proceed with updates).
-	// Fails closed: a guard-check error returns an error rather than
-	// proceeding with a potentially duplicate install.
+	// Step 1: Check guard variable and all installation components to
+	// detect existing installations. A repo is only considered "already
+	// installed" when every component is present: guard variable,
+	// workflow file, variables, and secrets. If the guard is set but
+	// other components are missing (partial install), we proceed with
+	// repair instead of skipping. Bulk-install callers use this to skip
+	// already-installed repos. Interactive CLI callers set
+	// SkipGuardCheck=true because they handle the guard check themselves
+	// (and always proceed with updates). Fails closed: a guard-check
+	// error returns an error rather than proceeding with a potentially
+	// duplicate install.
 	if !cfg.SkipGuardCheck {
 		progress(repoFullName, "guard", "Checking installation status")
 		guardVal, guardExists, guardErr := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, forge.PerRepoGuardVar)
@@ -185,10 +196,17 @@ func Install(ctx context.Context, cfg InstallConfig,
 			return result, fmt.Errorf("checking guard variable: %w", guardErr)
 		}
 		if guardExists && guardVal == "true" {
-			result.AlreadyInstalled = true
-			result.Success = true
-			progress(repoFullName, "guard", "Already installed (per-repo mode)")
-			return result, nil
+			fullyInstalled, checkErr := checkInstallComponents(ctx, client, cfg.Owner, cfg.Repo, ForgeConfigFor(cfg.Forge))
+			if checkErr != nil {
+				return result, fmt.Errorf("checking installation components: %w", checkErr)
+			}
+			if fullyInstalled {
+				result.AlreadyInstalled = true
+				result.Success = true
+				progress(repoFullName, "guard", "Already installed (per-repo mode)")
+				return result, nil
+			}
+			progress(repoFullName, "guard", "Partial installation detected, repairing")
 		}
 	}
 
@@ -323,4 +341,61 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	})
 
 	return files, nil
+}
+
+// requiredVariables lists the per-repo variables (excluding the guard)
+// that must exist for a complete installation. Shared by install,
+// checkInstallComponents, and uninstall.
+var requiredVariables = []string{"FULLSEND_MINT_URL", "FULLSEND_GCP_REGION"}
+
+// requiredSecrets lists the per-repo secrets that must exist for a
+// complete installation. Shared by install, checkInstallComponents,
+// and uninstall.
+var requiredSecrets = []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROVIDER"}
+
+// checkInstallComponents verifies that all per-repo installation
+// components beyond the guard variable are present: workflow file,
+// variables, and secrets. The caller has already confirmed the guard
+// variable is set. Returns true only when every component exists.
+func checkInstallComponents(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (bool, error) {
+	// Workflow file (try forge-appropriate extensions).
+	workflowFound := false
+	for _, path := range fc.WorkflowPaths {
+		_, err := client.GetFileContent(ctx, owner, repo, path)
+		if err != nil {
+			if forge.IsNotFound(err) {
+				continue
+			}
+			return false, fmt.Errorf("checking workflow file: %w", err)
+		}
+		workflowFound = true
+		break
+	}
+	if !workflowFound {
+		return false, nil
+	}
+
+	// Variables.
+	for _, varName := range requiredVariables {
+		_, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
+		if err != nil {
+			return false, fmt.Errorf("checking variable %s: %w", varName, err)
+		}
+		if !exists {
+			return false, nil
+		}
+	}
+
+	// Secrets (existence check only — values cannot be read back).
+	for _, secretName := range requiredSecrets {
+		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
+		if err != nil {
+			return false, fmt.Errorf("checking secret %s: %w", secretName, err)
+		}
+		if !exists {
+			return false, nil
+		}
+	}
+
+	return true, nil
 }

@@ -60,6 +60,7 @@ Flags:
 - `--repos` (string, comma-separated): explicit list of repo names to
   include. Skips interactive selection.
 - `--all` (bool): include all eligible repos without prompting.
+- `--forge` (string, **required**): forge type (`github` or `gitlab`).
 - `--mint-project` (string): GCP project for the `mint.project` field.
 - `--mint-region` (string, default `us-central1`): GCP region for
   the `mint.region` field.
@@ -77,6 +78,7 @@ type InitConfig struct {
     Target           string   // org name or owner/repo
     Repos            []string // explicit repo names (nil = interactive/all)
     All              bool     // include all repos without prompting
+    Forge            string   // forge type ("github" or "gitlab")
     MintProject      string
     MintRegion       string
     InferenceProject string
@@ -101,7 +103,7 @@ type InitResult struct {
 }
 
 func Init(ctx context.Context, cfg InitConfig,
-    client forge.Client,
+    clients ForgeClientFactory,
     selectRepos RepoSelectFunc,
     progress ProgressFunc) (*InitResult, error)
 ```
@@ -160,13 +162,15 @@ manifest contains one entry.
      variable, mint URL, and region in one API call.
    - If `FULLSEND_PER_REPO_INSTALL == "true"`
      (`forge.PerRepoGuardVar`, `internal/forge/forge.go:17`):
-     - Read workflow file (`.github/workflows/fullsend.yml`, fall
-       back to `.yaml`) via `GetFileContent`.
-     - Extract `@ref` from `uses:` line.
+     - Read workflow file via `GetFileContent` using forge-specific
+       paths from `ForgeConfig.WorkflowPaths`.
+     - Extract ref using `ForgeConfig.WorkflowRefPattern`.
      - Mark `source: per-repo`.
    - Else if repo appears in per-org enrollment with
      `enabled: true`:
-     - Use mint URL and config from per-org `config.yaml`.
+     - Use mint URL and config from per-org `config.yaml`. If no
+       mint URL is set in `config.yaml`, fall back to reading the
+       `FULLSEND_MINT_URL` org-level variable via `GetOrgVariable`.
      - Read the per-org shim workflow file and extract `@ref` from
        the `uses:` line (same as per-repo discovery). Do not use
        `config.DefaultUpstreamRef` — it is `v0`, a major-version
@@ -242,17 +246,15 @@ provisioned by `repos install`).
 #### Ref extraction
 
 ```go
-var workflowRefPattern = regexp.MustCompile(
-    `uses:\s+fullsend-ai/fullsend/.*@(\S+)`,
-)
+// Patterns and extraction are now forge-specific via ForgeConfig.
+// GitHub uses a `uses:` action ref pattern; GitLab uses a `ref:` include pattern.
+// See internal/repos/forge_config.go for the per-forge definitions.
 
-func extractWorkflowRef(content []byte) string
+func extractWorkflowRef(content []byte, fc ForgeConfig) string
 ```
 
-Reuses the same regex pattern as `internal/repos/status.go` (PR 4 of
-the repos management plan). If this PR lands before PR 4, define the
-function in `init.go` and move it to a shared file (e.g.,
-`internal/repos/workflow.go`) when PR 4 lands.
+The ref pattern is now part of `ForgeConfig` rather than a standalone
+regex, allowing each forge to define its own extraction logic.
 
 #### Manifest serialization
 

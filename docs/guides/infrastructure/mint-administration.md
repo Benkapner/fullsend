@@ -1,10 +1,10 @@
 # Mint service administration
 
-This guide covers deploying and managing the fullsend token mint Cloud Function. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories.
+This guide covers deploying and managing the fullsend token mint. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker).
 
 | Command | Description |
 |---------|-------------|
-| `mint deploy` | Deploy or update the mint Cloud Function and GCP infrastructure |
+| `mint deploy` | Deploy or update the token mint (GCP Cloud Function or Cloudflare Worker) |
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
@@ -12,7 +12,7 @@ This guide covers deploying and managing the fullsend token mint Cloud Function.
 | `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
-> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
+> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
 
 ## Hosted mint
 
@@ -72,7 +72,7 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e; also what the behaviour install driver uses today) and `halfsend-NN/test-repo-01` … `test-repo-12` (pre-provisioned for planned behaviour parallelization in [#3454](https://github.com/fullsend-ai/fullsend/issues/3454) / [#5439](https://github.com/fullsend-ai/fullsend/issues/5439)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by `RepoEnsurer` — see [behaviour-testing.md](../dev/behaviour-testing.md#lazy-createinstall-repoensurer)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; `RepoEnsurer` creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 

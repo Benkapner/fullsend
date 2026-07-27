@@ -10,6 +10,7 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
 | `install.Driver` | `pkg/behaviourtest/drivers/install` | Provision and tear down fullsend in the acquired pool org |
 | `install.State` | `pkg/behaviourtest/drivers/install` | Post-install config paths (script commits, workflow polling) |
+| `install.RepoEnsurer` | `pkg/behaviourtest/drivers/install` | Lazily create and install numbered pool repos on demand; caches by org/repo key; concurrent-safe via singleflight |
 
 v1 reference implementations:
 
@@ -31,7 +32,7 @@ The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a po
 
 ### Install driver (v1 per-repo)
 
-Uses `fullsend inference provision <org>/test-repo` then `fullsend github setup <org>/test-repo --vendor --direct --skip-app-setup --runtime dummy` with the repo-scoped WIF provider from provision (`E2E_GCP_PROJECT_ID`). Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for `test-repo` (one-time GCP admin step on the hosted mint project). Numbered `test-repo-01` … `test-repo-12` names are also enrolled for planned parallelization; the driver does not select them yet. The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+Uses `fullsend inference provision <org>/test-repo` then `fullsend github setup <org>/test-repo --vendor --direct --skip-app-setup --runtime dummy` with the repo-scoped WIF provider from provision (`E2E_GCP_PROJECT_ID`). Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for `test-repo` (one-time GCP admin step on the hosted mint project). Numbered `test-repo-01` … `test-repo-12` are enrolled and actively leased from `world.RepoPool` during parallel scenario execution (see `GODOG_CONCURRENCY` in [behaviour-testing.md](behaviour-testing.md#parallel-execution)). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 Teardown removes shim workflows, stale branches, and open fullsend PRs on `test-repo` via `pkg/e2etest.TeardownPerRepoInstall`.
 

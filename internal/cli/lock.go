@@ -66,7 +66,7 @@ use the same pinned dependencies.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	cmd.Flags().BoolVar(&update, "update", false, "force re-resolve even if lock entry is current")
 	cmd.Flags().BoolVar(&lockAll, "all", false, "lock all harness files in the .fullsend/harness/ directory")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to lock (e.g. "github"); omit to lock all forge variants`)
@@ -179,7 +179,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	// handles the omitted-field case when a config is present.
 	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if orgCfg != nil {
-		orgAllowlist = orgCfg.AllowedRemoteResources
+		orgAllowlist = orgCfg.AllowedResources()
 	}
 
 	policy := fetch.DefaultPolicy
@@ -191,7 +191,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			if err != nil {
 				return nil, err
 			}
-			orgAllowlist = orgCfg.AllowedRemoteResources
+			orgAllowlist = orgCfg.AllowedResources()
 		}
 	}
 
@@ -286,9 +286,9 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			if err != nil {
 				return nil, err
 			}
-			orgAllowlist = orgCfg.AllowedRemoteResources
+			orgAllowlist = orgCfg.AllowedResources()
 		}
-		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedRemoteResources); err != nil {
+		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedResources()); err != nil {
 			printer.StepFail("Remote resource allowlist validation failed")
 			return nil, fmt.Errorf("validating allowed remote resources: %w", err)
 		}

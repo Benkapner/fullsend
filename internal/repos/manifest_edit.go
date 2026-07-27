@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 var repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
@@ -38,7 +36,7 @@ type ManifestRemoveResult struct {
 // discovered values differ from manifest defaults.
 // Returns the result and the modified manifest. The manifest is written to
 // disk only when ManifestPath is set and DryRun is false.
-func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEntry, client forge.Client, progress ProgressFunc) (*ManifestAddResult, *Manifest, error) {
+func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEntry, clients ForgeClientFactory, progress ProgressFunc) (*ManifestAddResult, *Manifest, error) {
 	if cfg.Manifest == nil {
 		return nil, nil, fmt.Errorf("manifest is required")
 	}
@@ -60,7 +58,7 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 		}
 	}
 
-	if client != nil {
+	if clients != nil {
 		for i := range entries {
 			if isGlob(entries[i].Repo) || existing[strings.ToLower(entries[i].Repo)] {
 				continue
@@ -69,7 +67,13 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 			if len(parts) != 2 {
 				continue
 			}
-			state, err := ProbeRepoState(ctx, client, parts[0], parts[1])
+			entryForge := resolveField(entries[i].Forge, cfg.Manifest.Defaults.Forge, ForgeGitHub)
+			fc, fcErr := clients.ConfigFor(entryForge)
+			if fcErr != nil {
+				progress(entries[i].Repo, "discover", fmt.Sprintf("forge client error: %v", fcErr))
+				continue
+			}
+			state, err := ProbeRepoState(ctx, fc.Client, parts[0], parts[1], fc)
 			if err != nil && !state.Installed {
 				progress(entries[i].Repo, "discover", fmt.Sprintf("probe failed: %v", err))
 				continue

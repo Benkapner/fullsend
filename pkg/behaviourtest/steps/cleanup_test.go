@@ -146,6 +146,116 @@ func TestCleanupScenario_DeleteBranchError_Logged(t *testing.T) {
 	assert.Contains(t, logged[0], "server error")
 }
 
+func TestCleanupScenario_DeletesForkRepo(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		SCM:       scmDriver,
+	}
+	CleanupScenario(w)
+
+	require.Len(t, scmDriver.deletedRepos, 1)
+	assert.Equal(t, "org", scmDriver.deletedRepos[0].owner)
+	assert.Equal(t, "repo-fork", scmDriver.deletedRepos[0].repo)
+}
+
+func TestCleanupScenario_DeleteForkRepoNotFound_SilentlyIgnored(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("delete repo: %w", forge.ErrNotFound)}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		SCM:       scmDriver,
+		Logf:      func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+
+	for _, msg := range logged {
+		assert.NotContains(t, msg, "fork repo", "ErrNotFound should be silently ignored")
+	}
+}
+
+func TestCleanupScenario_DeleteForkRepoError_Logged(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("server error")}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		SCM:       scmDriver,
+		Logf:      func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "delete fork repo org/repo-fork")
+	assert.Contains(t, logged[0], "server error")
+}
+
+func TestCleanupScenario_SkipsForkRepoDelete_WhenForkRepoEqualsRepoName(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo", // same as RepoName — must not be deleted
+		SCM:       scmDriver,
+	}
+	CleanupScenario(w)
+
+	assert.Empty(t, scmDriver.deletedRepos, "repo deletion should be skipped when ForkRepo == RepoName")
+}
+
+func TestCleanupScenario_SkipsForkRepoDelete_WhenFieldsMissing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		world *world.World
+	}{
+		{
+			name: "missing ForkOwner",
+			world: &world.World{
+				RepoOwner: "org",
+				RepoName:  "repo",
+				ForkRepo:  "repo-fork",
+				SCM:       &fakeCleanupSCM{},
+			},
+		},
+		{
+			name: "missing ForkRepo",
+			world: &world.World{
+				RepoOwner: "org",
+				RepoName:  "repo",
+				ForkOwner: "org",
+				SCM:       &fakeCleanupSCM{},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			scm := tt.world.SCM.(*fakeCleanupSCM)
+			CleanupScenario(tt.world)
+			assert.Empty(t, scm.deletedRepos, "repo deletion should be skipped when fields are missing")
+		})
+	}
+}
+
 func TestCleanupScenario_SkipsBranchDelete_WhenFieldsMissing(t *testing.T) {
 	t.Parallel()
 
@@ -200,6 +310,8 @@ type fakeCleanupSCM struct {
 	closeIssueErr   error
 	deletedBranches []deletedBranchRecord
 	deleteBranchErr error
+	deletedRepos    []deletedRepoRecord
+	deleteRepoErr   error
 }
 
 type closedIssueRecord struct {
@@ -212,6 +324,11 @@ type deletedBranchRecord struct {
 	owner  string
 	repo   string
 	branch string
+}
+
+type deletedRepoRecord struct {
+	owner string
+	repo  string
 }
 
 func (f *fakeCleanupSCM) CloseIssue(_ context.Context, owner, repo string, number int) error {
@@ -227,6 +344,14 @@ func (f *fakeCleanupSCM) DeleteBranch(_ context.Context, owner, repo, branch str
 		return f.deleteBranchErr
 	}
 	f.deletedBranches = append(f.deletedBranches, deletedBranchRecord{owner: owner, repo: repo, branch: branch})
+	return nil
+}
+
+func (f *fakeCleanupSCM) DeleteRepo(_ context.Context, owner, repo string) error {
+	if f.deleteRepoErr != nil {
+		return f.deleteRepoErr
+	}
+	f.deletedRepos = append(f.deletedRepos, deletedRepoRecord{owner: owner, repo: repo})
 	return nil
 }
 

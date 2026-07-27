@@ -114,6 +114,7 @@ type ChangeProposal struct {
 	Number int
 	Head   string
 	Base   string
+	Author string // login of the user who opened the PR/MR
 }
 
 // PullRequestInfo carries branch/repo context for dispatch enrichment.
@@ -423,6 +424,11 @@ type Client interface {
 
 	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
 
+	// CloseChangeProposal closes an open pull request / merge request by
+	// number without merging it. This is used to clean up stale PRs
+	// (e.g., scaffold PRs left over from a previous install mode).
+	CloseChangeProposal(ctx context.Context, owner, repo string, number int) error
+
 	// Organization metadata
 	// GetOrgPlan returns the billing plan name for the org (e.g. "free", "team", "enterprise").
 	GetOrgPlan(ctx context.Context, org string) (string, error)
@@ -568,6 +574,7 @@ type Client interface {
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 
 	// CI/CD branch-restricted variables (distinct from RepoVariable methods).
+	// UpdateCIVariable upserts a CI/CD variable (update if exists, create if not).
 	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
 	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.

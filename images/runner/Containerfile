@@ -38,7 +38,7 @@
 # Go compilation. UBI images pull anonymously from
 # registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:50899ce52cb2e85179e415be387079d9078455d6a58199c7fb4dc07eee125d4d AS build
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:1a6221864390b67f239bb19fc934004032150d2240485ec6e6a997171ae86930 AS build
 
 USER 0
 WORKDIR /src
@@ -236,10 +236,14 @@ RUN case "$TARGETARCH" in \
 ARG PRECOMMIT_VERSION=4.5.1
 ARG GITLINT_VERSION=0.19.1
 ARG JSONSCHEMA_VERSION=4.23.0
+# PyYAML is pinned explicitly because the GitLab scaffold templates use
+# python3 -c "import yaml" for config parsing (kill switch, roles).
+ARG PYYAML_VERSION=6.0.2
 RUN pip install --no-cache-dir --break-system-packages \
       "pre-commit==${PRECOMMIT_VERSION}" \
       "gitlint-core==${GITLINT_VERSION}" \
-      "jsonschema==${JSONSCHEMA_VERSION}"
+      "jsonschema==${JSONSCHEMA_VERSION}" \
+      "pyyaml==${PYYAML_VERSION}"
 
 # ---------------------------------------------------------------------------
 # fullsend CLI, built in the build stage from this repo's source.

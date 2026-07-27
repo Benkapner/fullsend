@@ -40,6 +40,8 @@ func TestResolveWorkItemID(t *testing.T) {
 		repoFull    string
 		issueNumber string
 		issueURL    string
+		prURL       string
+		prNumber    string
 		want        string
 	}{
 		{
@@ -68,6 +70,33 @@ func TestResolveWorkItemID(t *testing.T) {
 			want:        "42",
 		},
 		{
+			name:     "PR URL fallback when issue env absent",
+			repoFull: "octo/repo",
+			prURL:    "https://github.com/octo/repo/pull/5617",
+			prNumber: "5617",
+			want:     "octo/repo#5617",
+		},
+		{
+			name:     "PR URL used when repo missing",
+			prURL:    "https://github.com/octo/repo/pull/5617",
+			prNumber: "5617",
+			want:     "https://github.com/octo/repo/pull/5617",
+		},
+		{
+			name:     "bare PR number when only PR_NUMBER set",
+			prNumber: "42",
+			want:     "42",
+		},
+		{
+			name:        "issue env takes precedence over PR env",
+			repoFull:    "octo/repo",
+			issueURL:    "https://github.com/octo/repo/issues/9",
+			prURL:       "https://github.com/octo/repo/pull/9",
+			prNumber:    "9",
+			issueNumber: "9",
+			want:        "octo/repo#9",
+		},
+		{
 			name: "unknown when nothing is set",
 			want: "unknown",
 		},
@@ -78,6 +107,8 @@ func TestResolveWorkItemID(t *testing.T) {
 			t.Setenv("REPO_FULL_NAME", tc.repoFull)
 			t.Setenv("ISSUE_NUMBER", tc.issueNumber)
 			t.Setenv("GITHUB_ISSUE_URL", tc.issueURL)
+			t.Setenv("GITHUB_PR_URL", tc.prURL)
+			t.Setenv("PR_NUMBER", tc.prNumber)
 			assert.Equal(t, tc.want, resolveWorkItemID())
 		})
 	}

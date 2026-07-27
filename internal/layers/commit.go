@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile, direct bool, in io.Reader) (bool, error) {
 
+	commitMsg = adaptCommitMsg(ctx, client, printer, owner, repo, commitMsg)
+
 	if direct {
 		return commitScaffoldDirect(ctx, client, printer,
 			owner, repo, defaultBranch, commitMsg, prTitle, prBody, files, in)
@@ -47,6 +50,15 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 
 const defaultScaffoldBranch = "fullsend/scaffold-install"
 
+// knownScaffoldBranches lists all branch names that have been used to deliver
+// scaffold files across different install modes. Per-org mode uses
+// "fullsend/onboard" (via reconcile-repos.sh); per-repo mode uses
+// "fullsend/scaffold-install" (via the Go CLI).
+var knownScaffoldBranches = []string{
+	"fullsend/scaffold-install",
+	"fullsend/onboard",
+}
+
 // commitScaffoldViaPR creates a feature branch, commits files, and opens a PR.
 // For non-owner users, it defaults to creating a fork and opening a cross-fork
 // PR rather than pushing directly to the upstream repository.
@@ -61,6 +73,15 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 
 	// Owner pushes directly to the repo — no fork needed.
 	if strings.EqualFold(user, owner) {
+		return commitBranchAndPR(ctx, client, printer,
+			owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
+			commitMsg, prTitle, prBody, files)
+	}
+
+	// Non-owner with write access can push directly — avoids fork trust
+	// gates (/ok-to-test) that block CI on cross-fork PRs.
+	if hasWriteAccess(ctx, client, owner, repo, user) {
+		printer.StepInfo(fmt.Sprintf("User %s has write access — pushing directly to %s/%s", user, owner, repo))
 		return commitBranchAndPR(ctx, client, printer,
 			owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
@@ -155,6 +176,66 @@ func commitViaFork(ctx context.Context, client forge.Client, printer *ui.Printer
 		scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files)
 }
 
+// closeStaleScaffoldPRs finds and closes open scaffold PRs from install modes
+// other than the current one. When switching from per-org to per-repo (or vice
+// versa), the old mode's scaffold PR may remain open with stale content (e.g.,
+// referencing a deleted .fullsend repo). This function closes those PRs and
+// deletes their head branches so they cannot be accidentally merged.
+//
+// Only PRs authored by authenticatedUser are closed (fail-closed: PRs with an
+// empty author field are skipped), preventing accidental closure of PRs opened
+// by external contributors on predictable branch names.
+func closeStaleScaffoldPRs(ctx context.Context, client forge.Client, printer *ui.Printer,
+	upstreamOwner, upstreamRepo, currentBranch, authenticatedUser string) {
+
+	prs, err := client.ListRepoPullRequests(ctx, upstreamOwner, upstreamRepo)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check for stale scaffold PRs: %v", err))
+		return
+	}
+
+	for _, pr := range prs {
+		if pr.Head == currentBranch || !isKnownScaffoldBranch(pr.Head) {
+			continue
+		}
+
+		// Only close PRs authored by the authenticated user to avoid
+		// silently closing PRs opened by external contributors on
+		// predictable scaffold branch names. Fail-closed: if the author
+		// field is empty (unexpected API response), skip rather than
+		// risk closing someone else's PR.
+		if pr.Author == "" || !strings.EqualFold(pr.Author, authenticatedUser) {
+			continue
+		}
+
+		printer.StepStart(fmt.Sprintf("Closing stale scaffold PR #%d (%s)", pr.Number, pr.Head))
+		if closeErr := client.CloseChangeProposal(ctx, upstreamOwner, upstreamRepo, pr.Number); closeErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not close stale PR #%d: %v", pr.Number, closeErr))
+			continue
+		}
+
+		// Best-effort branch cleanup — the PR is already closed, so a
+		// failure here just leaves a dangling ref.
+		refPath := "heads/" + pr.Head
+		if delErr := client.DeleteRef(ctx, upstreamOwner, upstreamRepo, refPath); delErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not delete stale branch %s: %v", pr.Head, delErr))
+		}
+
+		printer.StepDone(fmt.Sprintf("Closed stale scaffold PR #%d from previous install mode", pr.Number))
+	}
+}
+
+// isKnownScaffoldBranch reports whether branch is one of the well-known branch
+// names used by scaffold installs (per-org or per-repo mode).
+func isKnownScaffoldBranch(branch string) bool {
+	for _, b := range knownScaffoldBranches {
+		if b == branch {
+			return true
+		}
+	}
+	return false
+}
+
 // commitBranchAndPR creates a branch on targetOwner/targetRepo, commits files,
 // and opens a PR against upstreamOwner/upstreamRepo. When target == upstream
 // (same-repo PR), head is the branch name. When target != upstream (cross-fork
@@ -163,6 +244,22 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	upstreamOwner, upstreamRepo, targetOwner, targetRepo,
 	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile) (bool, error) {
+
+	// Close stale scaffold PRs from a different install mode before
+	// creating or updating our own. This prevents merging a PR that
+	// references infrastructure from a mode that has been torn down.
+	//
+	// Only run in same-repo mode (target == upstream). In the fork path
+	// the caller's token likely lacks permission to close upstream PRs,
+	// which would produce unnecessary 403 warnings.
+	if strings.EqualFold(targetOwner, upstreamOwner) && strings.EqualFold(targetRepo, upstreamRepo) {
+		user, userErr := client.GetAuthenticatedUser(ctx)
+		if userErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not identify user for stale PR cleanup: %v", userErr))
+		} else {
+			closeStaleScaffoldPRs(ctx, client, printer, upstreamOwner, upstreamRepo, scaffoldBranch, user)
+		}
+	}
 
 	if branchErr := client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch); branchErr != nil {
 		if forge.IsForbidden(branchErr) {
@@ -420,4 +517,96 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 	}
 
 	return committed, nil
+}
+
+// adaptCommitMsg checks the target repo for a .gitlint title-match-regex. If
+// the current commit message doesn't match, it tries common conventional-commit
+// alternatives (chore:, ci:, build:, bare description). Falls back to warning when no
+// alternative matches — we can't fabricate a valid message for an arbitrary regex.
+func adaptCommitMsg(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, commitMsg string) string {
+	re := gitlintTitleRegex(ctx, client, owner, repo)
+	if re == nil {
+		return commitMsg
+	}
+	title := strings.SplitN(commitMsg, "\n", 2)[0]
+	if re.MatchString(title) {
+		return commitMsg
+	}
+
+	desc := title
+	if idx := strings.Index(title, ": "); idx >= 0 {
+		desc = title[idx+2:]
+	}
+	alternatives := []string{
+		"chore: " + desc,
+		"ci: " + desc,
+		"build: " + desc,
+		desc,
+	}
+	var body string
+	if parts := strings.SplitN(commitMsg, "\n", 2); len(parts) == 2 {
+		body = parts[1]
+	}
+	for _, alt := range alternatives {
+		if alt == title {
+			continue
+		}
+		if re.MatchString(alt) {
+			adapted := alt
+			if body != "" {
+				adapted += "\n" + body
+			}
+			printer.StepInfo(fmt.Sprintf("Adapted scaffold commit message to match .gitlint: %q", alt))
+			return adapted
+		}
+	}
+
+	printer.StepWarn(fmt.Sprintf("Scaffold commit message %q does not match this repo's .gitlint title-match-regex (%s) — commit-lint CI may fail",
+		title, re.String()))
+	return commitMsg
+}
+
+// gitlintTitleRegex reads .gitlint from the target repo and extracts the
+// title-match-regex value. Returns nil if the file doesn't exist or has no
+// title-match-regex rule.
+func gitlintTitleRegex(ctx context.Context, client forge.Client, owner, repo string) *regexp.Regexp {
+	content, err := client.GetFileContent(ctx, owner, repo, ".gitlint")
+	if err != nil {
+		return nil
+	}
+	inSection := false
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inSection = strings.EqualFold(line, "[title-match-regex]")
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if parts := strings.SplitN(line, "=", 2); len(parts) == 2 && strings.TrimSpace(parts[0]) == "regex" {
+			val := strings.TrimSpace(parts[1])
+			re, err := regexp.Compile(val)
+			if err != nil {
+				return nil
+			}
+			return re
+		}
+	}
+	return nil
+}
+
+// hasWriteAccess checks whether the user has write or admin permission on the
+// repo. Returns false on any error (or non-GitHub forges) so the caller falls
+// through to the fork path.
+func hasWriteAccess(ctx context.Context, client forge.Client, owner, repo, user string) bool {
+	ghExt, ok := client.(forge.GitHubExtensions)
+	if !ok {
+		return false
+	}
+	role, err := ghExt.GetCollaboratorPermission(ctx, owner, repo, user)
+	if err != nil {
+		return false
+	}
+	return role == "write" || role == "maintain" || role == "admin"
 }

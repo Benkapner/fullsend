@@ -83,10 +83,14 @@ slug: test-triage
 	// Local base -> no URL deps.
 	assert.Nil(t, deps)
 
-	// ValidationLoop inherited from base.
+	// ValidationLoop inherited from base. PreflightCheck is intentionally
+	// empty here: fullsend's own agents resolve from fullsend-ai/agents
+	// (not this local scaffold), so preflight_check belongs there instead
+	// — see fullsend-ai/agents#422.
 	assert.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "scripts/validate-output-schema.sh", h.ValidationLoop.Script)
 	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
+	assert.Empty(t, h.ValidationLoop.PreflightCheck)
 }
 
 // TestLoadWithBase_WrapperOverridesBaseFields verifies that wrapper-level
@@ -250,38 +254,6 @@ func TestHarnessContentHash_MatchesEmbeddedContent(t *testing.T) {
 			assert.Contains(t, fullURL, fakeCommitSHA)
 			assert.Contains(t, fullURL, name+".yaml")
 			assert.Contains(t, fullURL, "#sha256="+hash)
-		})
-	}
-}
-
-// TestLoadRaw_GeneratedWrapperFormat verifies that the wrapper YAML format
-// produced by HarnessWrappersLayer (base + role + slug) parses correctly via
-// LoadRaw and contains the expected identity fields.
-func TestLoadRaw_GeneratedWrapperFormat(t *testing.T) {
-	names, err := scaffold.HarnessNames()
-	require.NoError(t, err)
-
-	fakeCommitSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-
-	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
-			baseURL, err := scaffold.HarnessBaseURLWithHash(name, fakeCommitSHA)
-			require.NoError(t, err)
-
-			// Simulate the wrapper format produced by HarnessWrappersLayer.
-			wrapperYAML := "base: " + baseURL + "\n" +
-				"role: " + name + "\n" +
-				"slug: test-" + name + "\n"
-
-			dir := t.TempDir()
-			path := writeTestHarness(t, dir, name+".yaml", wrapperYAML)
-
-			h, err := LoadRaw(path)
-			require.NoError(t, err)
-
-			assert.Equal(t, baseURL, h.Base, "base should be the full URL with hash")
-			assert.Equal(t, name, h.Role)
-			assert.Equal(t, "test-"+name, h.Slug)
 		})
 	}
 }

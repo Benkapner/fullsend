@@ -63,24 +63,18 @@ func IsValidRef(ref string) bool {
 	return ref != "" && safeRefPattern.MatchString(ref)
 }
 
-// shimRefPattern matches all @ref occurrences in fullsend-ai/fullsend workflow uses: lines.
-// The trailing comment group uses [ \t]* (not \s*) to avoid matching across newlines.
-var shimRefPattern = regexp.MustCompile(
-	`(uses:\s+` + shimOwner + `/` + shimRepo + `/[^@]+@)\S+([ \t]*#.*)?`,
-)
-
 // replaceShimRef replaces the @ref (and optional trailing # tag comment) in all
-// fullsend-ai/fullsend uses: lines within a workflow file. The newRef and
-// newTag are formatted as "newRef # newTag" when newTag is non-empty and
-// differs from newRef.
-func replaceShimRef(content []byte, newRef, newTag string) ([]byte, bool) {
+// fullsend-ai/fullsend uses: lines within a workflow file, using the
+// forge-specific shim ref pattern. The newRef and newTag are formatted
+// as "newRef # newTag" when newTag is non-empty and differs from newRef.
+func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig) ([]byte, bool) {
 	suffix := newRef
 	if newTag != "" && newTag != newRef {
 		suffix = newRef + " # " + newTag
 	}
 
 	safe := strings.ReplaceAll(suffix, "$", "$$")
-	replaced := shimRefPattern.ReplaceAllString(string(content), "${1}"+safe)
+	replaced := fc.ShimRefPattern.ReplaceAllString(string(content), "${1}"+safe)
 	changed := replaced != string(content)
 	return []byte(replaced), changed
 }
@@ -89,7 +83,7 @@ func replaceShimRef(content []byte, newRef, newTag string) ([]byte, bool) {
 // It reads each repo's current workflow file, determines whether an upgrade
 // is needed, and commits the updated workflow with the new ref.
 func Upgrade(ctx context.Context, cfg UpgradeConfig,
-	client forge.Client,
+	clients ForgeClientFactory,
 	commitFn ScaffoldCommitFunc,
 	progress ProgressFunc) ([]UpgradeResult, error) {
 
@@ -97,15 +91,19 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 		progress = func(_, _, _ string) {}
 	}
 
-	resolved, err := cfg.Manifest.ExpandGlobs(ctx, client)
+	resolved, err := cfg.Manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
 
 	if len(cfg.RepoFilter) > 0 {
-		resolved, err = filterRepos(resolved, cfg.RepoFilter)
+		var unmatched []string
+		resolved, unmatched, err = filterRepos(resolved, cfg.RepoFilter)
 		if err != nil {
 			return nil, err
+		}
+		for _, p := range unmatched {
+			progress("", "filter", fmt.Sprintf("--repo filter %q matched no manifest entries", p))
 		}
 	}
 
@@ -130,7 +128,13 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 			defer func() { <-sem }()
 
 			resolvedCfg := cfg.Manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
-			result := upgradeRepo(ctx, client, commitFn, rr.Owner, rr.Repo, resolvedCfg, cfg, progress)
+			fc, err := clients.ConfigFor(resolvedCfg.Forge)
+			if err != nil {
+				results[idx] = UpgradeResult{Owner: rr.Owner, Repo: rr.Repo, Error: err}
+				return
+			}
+			resolvedCfg.ForgeConfig = fc
+			result := upgradeRepo(ctx, resolvedCfg, cfg, commitFn, progress)
 			results[idx] = result
 		}(i, rr)
 	}
@@ -139,13 +143,16 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 	return results, nil
 }
 
-func upgradeRepo(ctx context.Context, client forge.Client,
-	commitFn ScaffoldCommitFunc,
-	owner, repo string,
+func upgradeRepo(ctx context.Context,
 	resolvedCfg ResolvedConfig,
 	cfg UpgradeConfig,
+	commitFn ScaffoldCommitFunc,
 	progress ProgressFunc) UpgradeResult {
 
+	owner := resolvedCfg.Owner
+	repo := resolvedCfg.Repo
+	client := resolvedCfg.ForgeConfig.Client
+	fc := resolvedCfg.ForgeConfig
 	repoFullName := owner + "/" + repo
 	result := UpgradeResult{Owner: owner, Repo: repo}
 
@@ -166,13 +173,13 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 
 	if isFloatingRef(targetRef) {
 		result.Skipped = true
-		result.SkipReason = "floating tag, skipped"
+		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", targetRef)
 		return result
 	}
 
 	progress(repoFullName, "read", "Reading workflow file")
 
-	content, workflowPath, err := readWorkflowContent(ctx, client, owner, repo)
+	content, workflowPath, err := readWorkflowContent(ctx, client, owner, repo, fc)
 	if err != nil {
 		result.Error = fmt.Errorf("reading workflow: %w", err)
 		return result
@@ -183,19 +190,19 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 		return result
 	}
 
-	currentRef := extractWorkflowRef(content)
+	currentRef := extractWorkflowRef(content, fc)
 	result.OldRef = currentRef
 
 	if isFloatingRef(currentRef) {
 		result.Skipped = true
-		result.SkipReason = "floating tag, skipped"
+		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", currentRef)
 		return result
 	}
 
 	if !cfg.Force && isSemver(currentRef) && isSemver(targetRef) {
 		if compareSemver(currentRef, targetRef) > 0 {
 			result.Skipped = true
-			result.SkipReason = fmt.Sprintf("current %s is newer than target %s (use --force to override)", currentRef, targetRef)
+			result.SkipReason = fmt.Sprintf("%s → %s is a downgrade (use --force to allow)", currentRef, targetRef)
 			return result
 		}
 	}
@@ -203,10 +210,10 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 	if cfg.DryRun {
 		// Check if any uses: lines would change without resolving the SHA,
 		// so DryRun never makes API calls that could fail.
-		_, changed := replaceShimRef(content, targetRef, "")
+		_, changed := replaceShimRef(content, targetRef, "", fc)
 		if !changed {
 			result.Skipped = true
-			result.SkipReason = "no uses: lines matched for replacement"
+			result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
 			return result
 		}
 		result.Upgraded = true
@@ -223,19 +230,24 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 	// a tag, keep tag-only format (@<tag>).
 	var newContent []byte
 	var changed bool
-	if isSHARef(currentRef) {
+	// SHA pinning resolves tags on fullsend-ai/fullsend (always GitHub).
+	// Only resolve when the client targets GitHub's API (empty defaults to GitHub).
+	if isSHARef(currentRef) && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
 		sha, err := client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
 		if err != nil {
 			result.Error = fmt.Errorf("resolving tag %s to SHA: %w", targetRef, err)
 			return result
 		}
-		newContent, changed = replaceShimRef(content, sha, targetRef)
+		newContent, changed = replaceShimRef(content, sha, targetRef, fc)
 	} else {
-		newContent, changed = replaceShimRef(content, targetRef, "")
+		if isSHARef(currentRef) {
+			progress(repoFullName, "upgrade", "SHA pinning not preserved (non-GitHub forge); switching to tag ref")
+		}
+		newContent, changed = replaceShimRef(content, targetRef, "", fc)
 	}
 	if !changed {
 		result.Skipped = true
-		result.SkipReason = "no uses: lines matched for replacement"
+		result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
 		return result
 	}
 
@@ -259,8 +271,8 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 
 // readWorkflowContent tries each known shim workflow path and returns
 // the content and path of the first one found, or (nil, "", nil) if none.
-func readWorkflowContent(ctx context.Context, client forge.Client, owner, repo string) ([]byte, string, error) {
-	for _, path := range workflowPaths {
+func readWorkflowContent(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) ([]byte, string, error) {
+	for _, path := range fc.WorkflowPaths {
 		content, err := client.GetFileContent(ctx, owner, repo, path)
 		if err != nil {
 			if forge.IsNotFound(err) {
@@ -271,6 +283,13 @@ func readWorkflowContent(ctx context.Context, client forge.Client, owner, repo s
 		return content, path, nil
 	}
 	return nil, "", nil
+}
+
+func skipReasonForNoChange(currentRef, targetRef string) string {
+	if currentRef == targetRef || isSHARef(currentRef) {
+		return fmt.Sprintf("already at %s", targetRef)
+	}
+	return "no uses: lines matched for replacement"
 }
 
 // isFloatingRef returns true for refs that are not pinned versions —

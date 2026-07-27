@@ -77,15 +77,15 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
-| Fleet Admin | `fullsend repos init <org\|owner/repo>` | Generate a `repos.yaml` manifest by discovering existing installations |
+| Fleet Admin | `fullsend repos init --forge <type> <org\|owner/repo>` | Generate a `repos.yaml` manifest by discovering existing installations |
 | Platform Admin | `fullsend repos install [repos...]` | Bulk-install fullsend on repos from a declarative manifest (parallel discovery → sequential WIF → parallel scaffold) |
-| Fleet Admin | `fullsend repos add <repos...>` | Add repo entries to `repos.yaml` manifest (with optional `--install`) |
+| Fleet Admin | `fullsend repos add --forge <type> <repos...>` | Add repo entries to `repos.yaml` manifest (with optional `--install`) |
 | Fleet Admin | `fullsend repos remove <repos...>` | Remove repo entries from `repos.yaml` manifest (with optional `--uninstall`) |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos (workflow, variables, secrets, WIF) without modifying manifest |
 | Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
 | Fleet Admin | `fullsend repos diff` | Show configuration drift between manifest and actual forge state |
 | Platform Admin | `fullsend repos sync` | Reconcile configuration drift for installed repos (variables and secrets) |
-| Platform Admin | `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across manifest repos |
+| Platform Admin | `fullsend repos upgrade [repos...]` | Verify mint deployment then upgrade scaffold shim ref across manifest repos |
 | Platform Admin | `fullsend repos upgrade-mint` | Verify the token mint deployment matches the manifest |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |

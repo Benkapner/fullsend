@@ -164,7 +164,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 			return nil, fmt.Errorf("create request: %w", err)
 		}
 
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if body != nil {
@@ -300,8 +302,27 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 		Message string           `json:"message"`
 		Errors  []APIErrorDetail `json:"errors"`
 	}
-	if json.Unmarshal(data, &msg) == nil && msg.Message != "" {
-		return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: msg.Errors}
+	if json.Unmarshal(data, &msg) == nil {
+		if msg.Message != "" {
+			return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: msg.Errors}
+		}
+		// Unmarshal succeeded but top-level message is empty. Preserve
+		// any error details GitHub included and fall back to the raw
+		// response body so callers see the full server response.
+		if len(msg.Errors) > 0 {
+			return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode), Errors: msg.Errors}
+		}
+	}
+	// Unmarshal failed or yielded no useful fields — use raw body when
+	// available so the caller can see exactly what GitHub returned.
+	if len(data) > 0 {
+		body := string(data)
+		const maxLen = 200
+		runes := []rune(body)
+		if len(runes) > maxLen {
+			body = string(runes[:maxLen]) + "..."
+		}
+		return &APIError{StatusCode: resp.StatusCode, Message: body}
 	}
 	return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
 }
@@ -1742,6 +1763,15 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
+			Head    struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+			Base struct {
+				Ref string `json:"ref"`
+			} `json:"base"`
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
 		}
 		if err := decodeJSON(resp, &prs); err != nil {
 			return nil, fmt.Errorf("decode pull requests page %d: %w", page, err)
@@ -1752,6 +1782,9 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				URL:    pr.HTMLURL,
 				Title:  pr.Title,
 				Number: pr.Number,
+				Head:   pr.Head.Ref,
+				Base:   pr.Base.Ref,
+				Author: pr.User.Login,
 			})
 		}
 
@@ -1761,6 +1794,17 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 	}
 
 	return result, nil
+}
+
+// CloseChangeProposal closes an open pull request without merging it.
+func (c *LiveClient) CloseChangeProposal(ctx context.Context, owner, repo string, number int) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
+	resp, err := c.patch(ctx, path, map[string]string{"state": "closed"})
+	if err != nil {
+		return fmt.Errorf("close pull request #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // GetOrgPlan returns the billing plan name for the org (e.g. "free", "team", "enterprise").

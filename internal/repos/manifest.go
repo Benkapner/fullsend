@@ -23,6 +23,23 @@ import (
 
 const maxManifestBytes = 1 << 20 // 1 MB
 
+// Forge type constants used in the manifest's forge field.
+const (
+	ForgeGitHub = "github"
+	ForgeGitLab = "gitlab"
+)
+
+// validForges is the set of accepted forge values.
+var validForges = map[string]bool{
+	ForgeGitHub: true,
+	ForgeGitLab: true,
+}
+
+// IsValidForge reports whether the given forge name is supported.
+func IsValidForge(name string) bool {
+	return validForges[name]
+}
+
 // Manifest is the top-level structure of a repos.yaml file.
 type Manifest struct {
 	Version  int            `yaml:"version"`
@@ -41,6 +58,7 @@ type MintConfig struct {
 // DefaultsConfig holds default field values applied to every repo
 // unless overridden at the per-repo level.
 type DefaultsConfig struct {
+	Forge                  string   `yaml:"forge"`
 	InferenceProject       string   `yaml:"inference_project"`
 	InferenceRegion        string   `yaml:"inference_region"`
 	FullsendRef            string   `yaml:"fullsend_ref"`
@@ -53,6 +71,7 @@ type DefaultsConfig struct {
 // object with optional per-repo overrides.
 type RepoEntry struct {
 	Repo             string         `yaml:"repo"`
+	Forge            NullableString `yaml:"forge,omitempty"`
 	InferenceProject NullableString `yaml:"inference_project,omitempty"`
 	InferenceRegion  NullableString `yaml:"inference_region,omitempty"`
 	FullsendRef      NullableString `yaml:"fullsend_ref,omitempty"`
@@ -78,6 +97,10 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 		switch key.Value {
 		case "repo":
 			r.Repo = val.Value
+		case "forge":
+			if err := decodeNullable(val, &r.Forge); err != nil {
+				return fmt.Errorf("decoding forge: %w", err)
+			}
 		case "inference_project":
 			if err := decodeNullable(val, &r.InferenceProject); err != nil {
 				return fmt.Errorf("decoding inference_project: %w", err)
@@ -176,10 +199,14 @@ type ResolvedRepo struct {
 
 // ResolvedConfig is the fully resolved configuration for a single
 // repository after merging per-repo overrides, manifest defaults,
-// and built-in defaults.
+// and built-in defaults. The ForgeConfig field carries per-forge
+// patterns and (when populated by ForgeClientFactory.ConfigFor) a
+// live API client.
 type ResolvedConfig struct {
 	Owner                  string
 	Repo                   string
+	Forge                  string
+	ForgeConfig            ForgeConfig
 	MintURL                string
 	MintProject            string
 	MintRegion             string
@@ -350,6 +377,10 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("mint.region is required")
 	}
 
+	if m.Defaults.Forge != "" && !validForges[m.Defaults.Forge] {
+		return fmt.Errorf("defaults.forge %q is not a supported forge; use %q or %q", m.Defaults.Forge, ForgeGitHub, ForgeGitLab)
+	}
+
 	if m.Defaults.FullsendRef != "" && !IsValidRef(m.Defaults.FullsendRef) {
 		return fmt.Errorf("defaults.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Defaults.FullsendRef)
 	}
@@ -359,6 +390,17 @@ func (m *Manifest) Validate() error {
 	for i, entry := range m.Repos {
 		if entry.Repo == "" {
 			return fmt.Errorf("repos[%d]: repo field is required", i)
+		}
+
+		// Resolve and validate forge for this entry. No builtin default —
+		// forge is required from day one. This is not a breaking change (no
+		// `!` suffix needed) because no repos.yaml consumers exist yet (#5616).
+		entryForge := resolveField(entry.Forge, m.Defaults.Forge, "")
+		if entryForge == "" {
+			return fmt.Errorf("repos[%d]: forge is required (set per-entry or in defaults.forge)", i)
+		}
+		if !validForges[entryForge] {
+			return fmt.Errorf("repos[%d]: forge %q is not supported; use %q or %q", i, entryForge, ForgeGitHub, ForgeGitLab)
 		}
 
 		parts := strings.SplitN(entry.Repo, "/", 2)
@@ -389,6 +431,21 @@ func (m *Manifest) Validate() error {
 		seen[entry.Repo] = true
 	}
 
+	// Reject manifests where the same owner has entries with different forges.
+	// A GitHub org and a GitLab group named the same thing are different
+	// entities; mixing them under one owner would route API calls incorrectly.
+	ownerForge := make(map[string]string)
+	for i, entry := range m.Repos {
+		parts := strings.SplitN(entry.Repo, "/", 2)
+		owner := parts[0]
+		entryForge := resolveField(entry.Forge, m.Defaults.Forge, "")
+		if prev, ok := ownerForge[owner]; ok && prev != entryForge {
+			return fmt.Errorf("repos[%d]: owner %q has entries with forge %q and %q; "+
+				"all repos under the same owner must use the same forge", i, owner, prev, entryForge)
+		}
+		ownerForge[owner] = entryForge
+	}
+
 	return nil
 }
 
@@ -400,7 +457,10 @@ func (m *Manifest) Validate() error {
 // ListOrgRepos is called with includePrivate=true because repos.yaml
 // manifests are used in per-repo mode, where agents run on the target
 // repo itself. Archived and forked repos remain excluded.
-func (m *Manifest) ExpandGlobs(ctx context.Context, client forge.Client) ([]ResolvedRepo, error) {
+//
+// The clients factory provides per-forge API clients so glob entries
+// targeting different forges resolve against the correct API.
+func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) ([]ResolvedRepo, error) {
 	// First pass: separate explicit entries from glob patterns.
 	explicit := make(map[string]RepoEntry)
 	type globEntry struct {
@@ -440,8 +500,13 @@ func (m *Manifest) ExpandGlobs(ctx context.Context, client forge.Client) ([]Reso
 	for _, g := range globs {
 		repos, ok := orgRepoCache[g.org]
 		if !ok {
-			var err error
-			repos, err = client.ListOrgRepos(ctx, g.org, true)
+			// Resolve the forge for this glob entry to get the right client.
+			entryForge := resolveField(g.entry.Forge, m.Defaults.Forge, "")
+			fc, err := clients.ConfigFor(entryForge)
+			if err != nil {
+				return nil, fmt.Errorf("expanding glob %q: creating client for forge %q: %w", g.org+"/"+g.pattern, entryForge, err)
+			}
+			repos, err = fc.Client.ListOrgRepos(ctx, g.org, true)
 			if err != nil {
 				return nil, fmt.Errorf("expanding glob %q: listing repos for org %q: %w", g.org+"/"+g.pattern, g.org, err)
 			}
@@ -521,6 +586,21 @@ func (m *Manifest) ResolveConfig(owner, repo string) (ResolvedConfig, bool) {
 	return m.resolveWithEntry(owner, repo, RepoEntry{}), false
 }
 
+// ResolveConfigWithGlobs resolves config for a repo, falling back to
+// glob-pattern matching when the exact entry lookup fails.
+func (m *Manifest) ResolveConfigWithGlobs(owner, repo string) (ResolvedConfig, bool) {
+	if resolved, ok := m.ResolveConfig(owner, repo); ok {
+		return resolved, true
+	}
+	fullName := owner + "/" + repo
+	for _, e := range m.Repos {
+		if ok, _ := matchesPattern(e.Repo, fullName); ok {
+			return m.ResolveConfigForEntry(owner, repo, e), true
+		}
+	}
+	return ResolvedConfig{}, false
+}
+
 // ResolveConfigForEntry computes the fully merged configuration for
 // the given owner/repo using the provided RepoEntry. Use this with
 // entries returned by ExpandGlobs, which carry per-glob overrides
@@ -533,6 +613,7 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 	return ResolvedConfig{
 		Owner:                  owner,
 		Repo:                   repo,
+		Forge:                  resolveField(entry.Forge, m.Defaults.Forge, ""),
 		MintURL:                m.Mint.URL,
 		MintProject:            m.Mint.Project,
 		MintRegion:             m.Mint.Region,
@@ -567,6 +648,26 @@ func resolveField(override NullableString, fallback string, builtinDefault strin
 		return fallback
 	}
 	return builtinDefault
+}
+
+// DistinctForges returns the deduplicated set of forge names actually
+// used by entries in the manifest, after resolving per-entry overrides
+// against defaults. Only forges referenced by at least one repo entry
+// are included. The order is deterministic (sorted).
+func (m *Manifest) DistinctForges() []string {
+	seen := make(map[string]bool)
+	for _, entry := range m.Repos {
+		f := resolveField(entry.Forge, m.Defaults.Forge, "")
+		if f != "" {
+			seen[f] = true
+		}
+	}
+	forges := make([]string, 0, len(seen))
+	for f := range seen {
+		forges = append(forges, f)
+	}
+	sort.Strings(forges)
+	return forges
 }
 
 // Marshal serializes the manifest back to YAML.

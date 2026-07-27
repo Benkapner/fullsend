@@ -9,7 +9,7 @@ Guides for onboarding organizations and configuring GitHub — the first thing m
 - [Mint enrollment](getting-started/README.md) — Enroll your org or repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
-- [Organization Mode](getting-started/org-mode.md) — Org-wide setup with a shared `.fullsend` config repo
+- [Organization Mode](getting-started/org-mode.md) — _(deprecated — see [per-repo Getting Started](getting-started/configuring-github.md))_ Org-wide setup with a shared `.fullsend` config repo
 
 ## Operations & Advanced Setup
 
@@ -22,7 +22,7 @@ Guides for organization owners and repository administrators who manage fullsend
 
 Advanced guides for platform operators who deploy and manage the GCP-side infrastructure (token mint, WIF, secrets).
 
-- [Mint service administration](infrastructure/mint-administration.md) — Deploying and managing the token mint Cloud Function
+- [Mint service administration](infrastructure/mint-administration.md) — Deploying and managing the token mint (GCP or Cloudflare)
 - [Standalone mint](infrastructure/standalone-mint.md) — Running the token mint as a standalone HTTP server without GCP
 - [Infrastructure reference](infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [Enabling fullsend on private repositories](infrastructure/private-repositories.md) — Additional guardrails and configuration for private repos
@@ -38,6 +38,7 @@ Guides for developers working in repositories where fullsend is active.
 - [Customizing with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Customizing with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills with custom skill documents
 - [Bring Your Own Agent](user/bring-your-own-agent.md) — Add a custom agent or configure an existing one, from harness file to CI
+- [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
 - [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 

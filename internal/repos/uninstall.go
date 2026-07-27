@@ -4,22 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-var uninstallVariables = []string{
-	forge.PerRepoGuardVar,
-	"FULLSEND_MINT_URL",
-	"FULLSEND_GCP_REGION",
-}
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables)
 
-var uninstallSecrets = []string{
-	"FULLSEND_GCP_PROJECT_ID",
-	"FULLSEND_GCP_WIF_PROVIDER",
-}
+var uninstallSecrets = requiredSecrets
 
 // UninstallConfig holds all inputs for a multi-repo uninstall operation.
 type UninstallConfig struct {
@@ -54,7 +48,7 @@ type UninstallResult struct {
 //
 // Does NOT modify repos.yaml — use RemoveFromManifest for that.
 func Uninstall(ctx context.Context, cfg UninstallConfig,
-	client forge.Client, provisionerFactory ProvisionerFactory,
+	clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
 	progress ProgressFunc) ([]UninstallResult, error) {
 
 	if len(cfg.Repos) == 0 {
@@ -111,7 +105,18 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 			}
 			defer func() { <-sem }()
 
-			results[idx] = uninstallRepoResources(ctx, owner, repo, client, progress)
+			forgeName := ""
+			if cfg.Manifest != nil {
+				if rc, ok := cfg.Manifest.ResolveConfigWithGlobs(owner, repo); ok {
+					forgeName = rc.Forge
+				}
+			}
+			fc, fcErr := clients.ConfigFor(forgeName)
+			if fcErr != nil {
+				results[idx] = UninstallResult{Owner: owner, Repo: repo, Error: fcErr}
+				return
+			}
+			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, ForgeConfig: fc}, progress)
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
@@ -127,7 +132,7 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 					if results[j].Error != nil || !results[j].WorkflowDeleted {
 						continue
 					}
-					if _, ok := resolveConfigWithGlobs(cfg.Manifest, results[j].Owner, results[j].Repo); ok {
+					if _, ok := cfg.Manifest.ResolveConfigWithGlobs(results[j].Owner, results[j].Repo); ok {
 						results[j].Error = fmt.Errorf("WIF cleanup skipped: %w", ctx.Err())
 					}
 				}
@@ -135,7 +140,7 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 			}
 
 			fullName := results[i].Owner + "/" + results[i].Repo
-			resolved, ok := resolveConfigWithGlobs(cfg.Manifest, results[i].Owner, results[i].Repo)
+			resolved, ok := cfg.Manifest.ResolveConfigWithGlobs(results[i].Owner, results[i].Repo)
 			if !ok {
 				progress(fullName, "wif", "Not in manifest, skipping WIF cleanup")
 				results[i].Success = true
@@ -163,15 +168,16 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 	return results, nil
 }
 
-func uninstallRepoResources(ctx context.Context, owner, repo string,
-	client forge.Client, progress ProgressFunc) UninstallResult {
-
+func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) UninstallResult {
+	owner, repo := cfg.Owner, cfg.Repo
+	client := cfg.ForgeConfig.Client
+	fc := cfg.ForgeConfig
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
 	progress(fullName, "workflow", "Deleting workflow file")
 	_, err := client.DeleteFiles(ctx, owner, repo,
-		"chore: remove fullsend workflow", workflowPaths)
+		"chore: remove fullsend workflow", fc.WorkflowPaths)
 	if err != nil {
 		result.Error = fmt.Errorf("deleting workflow: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
@@ -228,21 +234,6 @@ func uninstallRepoResources(ctx context.Context, owner, repo string,
 
 	progress(fullName, "done", fmt.Sprintf("Removed: %d vars, %d secrets", varsDeleted, secretsDeleted))
 	return result
-}
-
-// resolveConfigWithGlobs resolves config for a repo, falling back to
-// glob-pattern matching when the exact entry lookup fails.
-func resolveConfigWithGlobs(m *Manifest, owner, repo string) (ResolvedConfig, bool) {
-	if resolved, ok := m.ResolveConfig(owner, repo); ok {
-		return resolved, true
-	}
-	fullName := owner + "/" + repo
-	for _, e := range m.Repos {
-		if ok, _ := matchesPattern(e.Repo, fullName); ok {
-			return m.ResolveConfigForEntry(owner, repo, e), true
-		}
-	}
-	return ResolvedConfig{}, false
 }
 
 // splitOwnerRepo splits "owner/repo" and rejects glob characters. Callers

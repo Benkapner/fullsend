@@ -75,7 +75,7 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
 
-Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour parallelization is planned to lease `halfsend-NN/test-repo-01` … `test-repo-12` once [#3454](https://github.com/fullsend-ai/fullsend/issues/3454) / [#5439](https://github.com/fullsend-ai/fullsend/issues/5439) land; mint enrollment for those names is pre-provisioned now so it is not on the critical path later. Today the install driver still uses the singular `test-repo` regardless of concurrency. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
+Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour tests lease numbered `halfsend-NN/test-repo-01` … `test-repo-12` names from a `RepoPool`; these repos are **lazily created and installed** on demand by `RepoEnsurer` (see [behaviour-testing.md](behaviour-testing.md#lazy-createinstall-repoensurer)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
 Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
@@ -162,33 +162,38 @@ automatically and e2e is skipped until a maintainer re-applies it after
 reviewing the latest changes. Freshness compares the label timestamp against
 the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`); the live
 API fallback may over-reject when non-push activity bumped `updated_at`.
-Applying the label triggers immediate authorization on `labeled` events.
+Applying the label triggers the **E2E ok-to-test** / **Functional ok-to-test**
+caller workflows, which `workflow_call` into the main suites.
+
+The main **E2E Tests** and **Functional Tests** workflows do **not** subscribe to
+`labeled` events. Only `opened` / `synchronize` / `reopened` cancel in-progress
+work in the per-PR concurrency group (code changed). Label events are
+authorization only: they **never** cancel an in-progress suite. If a suite is
+already running when `ok-to-test` is applied, GitHub may queue a second run
+behind it (no expression-only “skip if busy”); that is accepted.
 
 Other labels (for example `ready-for-review`, `requires-manual-review`, or
-`component/*`) do **not** authorize e2e and do **not** cancel an in-progress
-e2e or functional-test run for that PR. Only `opened` / `synchronize` /
-`reopened`, and `labeled` when the label is `ok-to-test`, cancel in-progress
-work in the per-PR concurrency group. GitHub still starts a workflow run for
-every `labeled` event (labels cannot be filtered at `on:`). For non-actionable
-labels the gate job is skipped entirely and no sticky `<!-- e2e-gate -->`
-comment is posted. If an actionable run is already in progress, that new run
-sits **pending** until the active run finishes (it does not skip immediately).
-If several non-actionable labels land in a burst, GitHub cancels earlier
-pending runs in the concurrency group; only the last dequeued run executes and
-skips. Either way the original in-progress run is left alone.
+`component/*`) do **not** authorize e2e. They may start the thin ok-to-test
+caller with a skipped `run` job (GitHub cannot filter by label name at `on:`),
+but they do not start skipped checks under the **E2E Tests** / **Functional
+Tests** workflow names, and they never enter the suite concurrency group.
 
 ### Blocked runs
 
 When the gate **runs** and denies authorization, a sticky PR comment (marker
 `<!-- e2e-gate -->`) explains why and what to do. That is distinct from a
-non-actionable label event, where the gate never runs and no comment appears.
-Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
+non-`ok-to-test` label event, where the thin caller skips without invoking the
+gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
 
 ## CI architecture
 
-1. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
+1. **PR open/sync** — **E2E Tests** / **Functional Tests** run gate then suite
+   jobs (trusted authors authorized immediately)
+2. **`ok-to-test` label** — thin **E2E ok-to-test** / **Functional ok-to-test**
+   workflows call the same suites via `workflow_call` (fork / external path)
+3. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
    checkout only; never checks out PR head)
-2. **E2E** — checkout PR head SHA, authenticate to GCP via WIF, mint cross-org
+4. **E2E** — checkout PR head SHA, authenticate to GCP via WIF, mint cross-org
    tokens per pool org, `make e2e-test`
 
 Pushes to `main`, merge queue, and `workflow_dispatch` skip the gate and run e2e

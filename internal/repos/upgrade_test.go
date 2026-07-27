@@ -22,6 +22,7 @@ func newUpgradeManifest(defaultRef string) *Manifest {
 			InferenceProject: "example-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      defaultRef,
+			Forge:            "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
@@ -57,7 +58,7 @@ func TestUpgrade_AllBehindTarget(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestUpgrade_AllAtTarget(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,8 +101,8 @@ func TestUpgrade_AllAtTarget(t *testing.T) {
 		if !r.Skipped {
 			t.Errorf("%s/%s: expected Skipped=true", r.Owner, r.Repo)
 		}
-		if r.SkipReason != "no uses: lines matched for replacement" {
-			t.Errorf("%s/%s: SkipReason = %q, want 'no uses: lines matched for replacement'", r.Owner, r.Repo, r.SkipReason)
+		if r.SkipReason != "already at v2.3.0" {
+			t.Errorf("%s/%s: SkipReason = %q, want 'already at v2.3.0'", r.Owner, r.Repo, r.SkipReason)
 		}
 	}
 }
@@ -134,7 +135,7 @@ func TestUpgrade_MixedStates(t *testing.T) {
 		MaxConcurrency: 4,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestUpgrade_MixedStates(t *testing.T) {
 		byRepo[r.Owner+"/"+r.Repo] = r
 	}
 
-	if r := byRepo["acme-corp/current"]; !r.Skipped || r.SkipReason != "no uses: lines matched for replacement" {
+	if r := byRepo["acme-corp/current"]; !r.Skipped || r.SkipReason != "already at v2.3.0" {
 		t.Errorf("current: expected skipped (already at target), got Skipped=%v, reason=%q", r.Skipped, r.SkipReason)
 	}
 	if r := byRepo["acme-corp/behind"]; !r.Upgraded {
@@ -167,7 +168,7 @@ func TestUpgrade_ForceOverridesNewerCheck(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestUpgrade_RefOverride(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -219,7 +220,7 @@ func TestUpgrade_RepoFilter(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -250,7 +251,7 @@ func TestUpgrade_DryRun(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, dryRunCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), dryRunCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -280,12 +281,12 @@ func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "latest" (not eligible for upgrade)` {
 		t.Errorf("expected floating tag skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -304,12 +305,12 @@ func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "v0" (not eligible for upgrade)` {
 		t.Errorf("expected floating current ref skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -328,12 +329,12 @@ func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "v2.3" (not eligible for upgrade)` {
 		t.Errorf("expected floating tag skip for partial version, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -352,12 +353,12 @@ func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "v1.2" (not eligible for upgrade)` {
 		t.Errorf("expected floating tag skip for partial version current ref, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -376,7 +377,7 @@ func TestUpgrade_WorkflowNotFound(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -404,7 +405,7 @@ func TestUpgrade_CommitError(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, errCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), errCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -437,7 +438,7 @@ func TestUpgrade_VerifiesWorkflowContent(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -513,7 +514,7 @@ func TestUpgrade_NoTargetRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -542,7 +543,7 @@ func TestUpgrade_NonSemverCurrentRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -571,7 +572,7 @@ func TestUpgrade_PerRepoOverrideRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 2}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -615,7 +616,7 @@ func TestUpgrade_YAMLExtension(t *testing.T) {
 		return nil
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -647,7 +648,7 @@ func TestUpgrade_ProgressCallback(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	_, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, progressFn)
+	_, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, progressFn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -724,7 +725,7 @@ func TestReplaceShimRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag)
+			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag, GitHubForgeConfig())
 			if changed != tt.wantDiff {
 				t.Errorf("changed = %v, want %v", changed, tt.wantDiff)
 			}
@@ -917,7 +918,7 @@ func TestUpgrade_ContextCancellation(t *testing.T) {
 	m := newUpgradeManifest("v2.3.0")
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
 
-	_, err := Upgrade(ctx, cfg, fc, noopCommitFn, nil)
+	_, err := Upgrade(ctx, cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err == nil {
 		t.Error("expected context cancellation error")
 	}
@@ -952,7 +953,7 @@ func TestUpgrade_PartialVersionTag(t *testing.T) {
 
 func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0", GitHubForgeConfig())
 	if !changed {
 		t.Error("expected change")
 	}
@@ -964,7 +965,7 @@ func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 
 func TestReplaceShimRef_EmptyTag(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Error("expected change")
 	}
@@ -976,7 +977,7 @@ func TestReplaceShimRef_EmptyTag(t *testing.T) {
 
 func TestReplaceShimRef_MultiWordComment(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0 # version 2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1043,7 +1044,7 @@ func TestUpgrade_APIErrorOnWorkflowRead(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1103,7 +1104,7 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, trackingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), trackingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1118,7 +1119,7 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 	cfg.Direct = true
 
-	results, err = Upgrade(context.Background(), cfg, fc, trackingCommitFn, nil)
+	results, err = Upgrade(context.Background(), cfg, newTestClientFactory(fc), trackingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1161,7 +1162,7 @@ jobs:
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1, Direct: true}
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1230,7 +1231,7 @@ func TestUpgrade_PrereleaseDowngradeBlocked(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1284,7 +1285,7 @@ func TestUpgrade_InvalidManifestRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1302,7 +1303,7 @@ func TestReplaceShimRef_StandaloneCommentPreserved(t *testing.T) {
     # This is a standalone comment on the next line
     with:
 `
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1382,7 +1383,7 @@ func TestUpgrade_SHAPinnedRepoPreservesPin(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1432,7 +1433,7 @@ func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1468,7 +1469,7 @@ func TestUpgrade_SHAPinnedTagResolutionError(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1516,7 +1517,7 @@ func TestUpgrade_MixedPinningStyles(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 2}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1570,7 +1571,7 @@ func TestUpgrade_DryRunSHAPinnedSkipsGetRef(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1590,9 +1591,150 @@ func TestUpgrade_DryRunSHAPinnedSkipsGetRef(t *testing.T) {
 	}
 }
 
+func TestUpgrade_SkipReasonMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetRef  string
+		currentRef string
+		wantReason string
+	}{
+		{
+			name:       "downgrade blocked",
+			targetRef:  "v0.31.0",
+			currentRef: "v0.32.0",
+			wantReason: `v0.32.0 → v0.31.0 is a downgrade (use --force to allow)`,
+		},
+		{
+			name:       "already at target",
+			targetRef:  "v0.32.0",
+			currentRef: "v0.32.0",
+			wantReason: "already at v0.32.0",
+		},
+		{
+			name:       "floating target ref",
+			targetRef:  "main",
+			currentRef: "v2.1.0",
+			wantReason: `floating ref "main" (not eligible for upgrade)`,
+		},
+		{
+			name:       "floating current ref",
+			targetRef:  "v2.3.0",
+			currentRef: "latest",
+			wantReason: `floating ref "latest" (not eligible for upgrade)`,
+		},
+		{
+			name:       "partial version target",
+			targetRef:  "v2",
+			currentRef: "v2.1.0",
+			wantReason: `floating ref "v2" (not eligible for upgrade)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.FileContents["acme-corp/repo/.github/workflows/fullsend.yml"] = makeWorkflow(tt.currentRef)
+
+			m := &Manifest{
+				Version:  1,
+				Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+				Defaults: DefaultsConfig{FullsendRef: tt.targetRef},
+				Repos:    []RepoEntry{{Repo: "acme-corp/repo"}},
+			}
+
+			cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+			results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(results) != 1 {
+				t.Fatalf("got %d results, want 1", len(results))
+			}
+			r := results[0]
+			if !r.Skipped {
+				t.Fatalf("expected Skipped=true, got false (err=%v)", r.Error)
+			}
+			if r.SkipReason != tt.wantReason {
+				t.Errorf("SkipReason = %q, want %q", r.SkipReason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestUpgrade_SHAPinnedAlreadyAtTarget(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "v2.3.0")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = sha
+
+	m := &Manifest{
+		Version:  1,
+		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{FullsendRef: "v2.3.0"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Skipped {
+		t.Fatalf("expected Skipped=true, got false (err=%v)", r.Error)
+	}
+	if r.SkipReason != "already at v2.3.0" {
+		t.Errorf("SkipReason = %q, want %q", r.SkipReason, "already at v2.3.0")
+	}
+}
+
+func TestSkipReasonForNoChange(t *testing.T) {
+	tests := []struct {
+		name       string
+		currentRef string
+		targetRef  string
+		want       string
+	}{
+		{
+			name:       "same tag",
+			currentRef: "v2.3.0",
+			targetRef:  "v2.3.0",
+			want:       "already at v2.3.0",
+		},
+		{
+			name:       "sha pinned current ref",
+			currentRef: "abc123def456789012345678901234567890abcd",
+			targetRef:  "v2.3.0",
+			want:       "already at v2.3.0",
+		},
+		{
+			name:       "different tags no match",
+			currentRef: "v2.1.0",
+			targetRef:  "v2.3.0",
+			want:       "no uses: lines matched for replacement",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := skipReasonForNoChange(tt.currentRef, tt.targetRef)
+			if got != tt.want {
+				t.Errorf("skipReasonForNoChange(%q, %q) = %q, want %q",
+					tt.currentRef, tt.targetRef, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReplaceShimRef_DollarSignInRef(t *testing.T) {
 	content := []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n")
-	result, changed := replaceShimRef(content, "v2.0.0$test", "")
+	result, changed := replaceShimRef(content, "v2.0.0$test", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}

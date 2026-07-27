@@ -52,12 +52,24 @@ type World struct {
 	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
 	// for this scenario's duration. Empty when no pool is configured.
 	LeasedRepoName string
+
+	// Ensurer lazily creates and installs repos on demand. Shared across
+	// scenarios (like other driver fields) and safe for concurrent use.
+	// Nil when lazy ensure is not configured.
+	Ensurer install.RepoEnsurer
 }
 
-// Clone creates a shallow copy of w. Driver fields (Config, SCM, CI,
-// Install) are shared by reference — this is safe today because drivers
-// hold no mutable state. If drivers acquire mutable state in the future,
-// Clone must deep-copy them or guard with synchronisation (see #5441).
+// Clone creates a shallow copy of w. Drivers and shared state (SCM,
+// CI, Install as install.State) are shared by reference — this is safe
+// because the production implementations are immutable wrappers:
+//   - scm/github.Driver holds only a forge.Client (concurrent-safe).
+//   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
+//   - install.perRepoState holds only immutable string fields.
+//
+// Race tests in each driver package (TestConcurrentAccess,
+// TestConcurrentStateAccess) verify the real types under -race with
+// forge.FakeClient. See scm.Driver, ci.Driver, and install.State doc
+// comments for the concurrency contract.
 //
 // Scenario-level fields are copied verbatim; callers should call
 // resetScenarioWorld (in package suite) to zero them for each new scenario.

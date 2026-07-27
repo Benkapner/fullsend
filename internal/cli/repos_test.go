@@ -84,6 +84,115 @@ func TestReposInitCmd_Flags(t *testing.T) {
 	assert.Equal(t, "false", forceFlag.DefValue)
 }
 
+func TestReposInitCmd_ForgeFlag(t *testing.T) {
+	cmd := newReposInitCmd()
+	forgeFlag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, forgeFlag, "expected --forge flag")
+	assert.Equal(t, "", forgeFlag.DefValue, "--forge should have no default (required)")
+}
+
+func TestReposInitCmd_InvalidForge(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "--forge", "unknown", "test-org", "--all"})
+	t.Setenv("GH_TOKEN", "test-token")
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestReposInitCmd_ForgeFlagRequired(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "test-org", "--all"})
+	t.Setenv("GH_TOKEN", "test-token")
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required flag(s) \"forge\" not set")
+}
+
+func TestReposAddCmd_ForgeFlagRequired(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "add", "acme/web"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required flag(s) \"forge\" not set")
+}
+
+func TestReposAddCmd_ForgeFlag(t *testing.T) {
+	cmd := newReposAddCmd()
+	forgeFlag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, forgeFlag, "expected --forge flag")
+	assert.Equal(t, "", forgeFlag.DefValue, "--forge should have no default (required)")
+}
+
+func TestReposCmd_GitLabTokenFlag(t *testing.T) {
+	cmd := newReposCmd()
+	tokenFlag := cmd.PersistentFlags().Lookup("gitlab-token")
+	require.NotNil(t, tokenFlag, "expected --gitlab-token persistent flag")
+	assert.Equal(t, "", tokenFlag.DefValue)
+}
+
+func TestRunReposStatus_EmptyManifest(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	manifestYAML := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+	manifestPath := writeTestManifest(t, manifestYAML)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath, "--json"})
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}
+
+func TestRunReposStatus_GitLabRequiresToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	manifestYAML := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+	// With lazy client creation, status on an empty GitLab manifest
+	// succeeds without a token — no repos means no API calls.
+	manifestPath := writeTestManifest(t, manifestYAML)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestRunReposStatus_GitLabWithToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	manifestYAML := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+	manifestPath := writeTestManifest(t, manifestYAML)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "status", "--manifest", manifestPath, "--json"})
+	err := cmd.Execute()
+	assert.NoError(t, err)
+}
+
 func TestReposInitCmd_OutputShorthand(t *testing.T) {
 	cmd := newReposInitCmd()
 	outputFlag := cmd.Flags().ShorthandLookup("o")
@@ -93,7 +202,7 @@ func TestReposInitCmd_OutputShorthand(t *testing.T) {
 func TestReposInitCmd_ValidatesOrgName(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--", "-invalid"})
+	cmd.SetArgs([]string{"repos", "init", "--forge", "github", "--", "-invalid"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot start or end with a hyphen")
@@ -102,7 +211,7 @@ func TestReposInitCmd_ValidatesOrgName(t *testing.T) {
 func TestReposInitCmd_ReposAllMutuallyExclusive(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "test-org", "--all", "--repos", "foo/bar"})
+	cmd.SetArgs([]string{"repos", "init", "test-org", "--forge", "github", "--all", "--repos", "foo/bar"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "if any flags in the group [repos all] are set none of the others can be")
@@ -467,6 +576,25 @@ func TestPrintStatusTable_ColumnAlignment(t *testing.T) {
 	assert.Greater(t, headerRefIdx, 0, "REF header should be present")
 }
 
+func TestPrintStatusTable_WithWarnings(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "acme-corp", Repo: "api-server", Installed: true, CurrentRef: "v2.3.0"},
+		},
+		Summary:  repos.StatusSummary{Total: 1, Installed: 1},
+		Warnings: []string{`--repo filter "org/nonexistent" matched no manifest entries`},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "WARNING:")
+	assert.Contains(t, output, "org/nonexistent")
+}
+
 type trackingProvisioner struct {
 	label string
 	calls []string
@@ -553,6 +681,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -636,6 +765,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: ""
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -690,6 +820,7 @@ func TestRunReposAdd_Basic(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub,
 		testClient: fc,
 	}, []string{"acme/web"})
 	require.NoError(t, err)
@@ -705,6 +836,7 @@ func TestRunReposAdd_Duplicate(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub,
 		testClient: fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
@@ -720,6 +852,7 @@ func TestRunReposAdd_DryRun(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub,
 		testClient: fc,
 		dryRun:     true,
 	}, []string{"acme/web"})
@@ -733,9 +866,60 @@ func TestRunReposAdd_DryRun(t *testing.T) {
 func TestRunReposAdd_InvalidManifest(t *testing.T) {
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest: "/nonexistent/repos.yaml",
+		forge:    repos.ForgeGitHub,
 	}, []string{"acme/web"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loading manifest")
+}
+
+func TestRunReposAdd_InvalidForge(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest: manifestPath,
+		forge:    "unknown",
+	}, []string{"acme/web"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
+func TestRunReposAdd_ForgeMatchesDefault_NoOverride(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := forge.NewFakeClient()
+
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub, // matches defaults.forge
+		testClient: fc,
+	}, []string{"acme/web"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.Equal(t, 2, len(m.Repos))
+	// The new entry should not have a per-entry forge override.
+	newEntry := m.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Repo)
+	assert.False(t, newEntry.Forge.Set, "forge should not be set when matching defaults")
+}
+
+func TestRunReposAdd_ForgeDiffersFromDefault_WritesOverride(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := forge.NewFakeClient()
+
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest:   manifestPath,
+		forge:      repos.ForgeGitLab, // differs from defaults.forge (github)
+		testClient: fc,
+	}, []string{"gitlab-group/web"})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.Equal(t, 2, len(m.Repos))
+	newEntry := m.Repos[1]
+	assert.Equal(t, "gitlab-group/web", newEntry.Repo)
+	assert.True(t, newEntry.Forge.Set, "forge should be set when differing from defaults")
+	assert.Equal(t, repos.ForgeGitLab, newEntry.Forge.Value)
 }
 
 // --- repos remove ---
@@ -774,6 +958,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -811,6 +996,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -991,6 +1177,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -1023,6 +1210,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -1057,6 +1245,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
 repos:
@@ -1206,6 +1395,7 @@ func TestRunReposAdd_WithInstall(t *testing.T) {
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
 		manifest:        manifestPath,
+		forge:           repos.ForgeGitHub,
 		install:         true,
 		concurrency:     4,
 		direct:          true,
@@ -1263,6 +1453,10 @@ func TestReposUpgradeCmd_Flags(t *testing.T) {
 	require.NotNil(t, forceFlag, "expected --force flag")
 	assert.Equal(t, "false", forceFlag.DefValue)
 
+	skipMintFlag := cmd.Flags().Lookup("skip-mint-check")
+	require.NotNil(t, skipMintFlag, "expected --skip-mint-check flag")
+	assert.Equal(t, "false", skipMintFlag.DefValue)
+
 	concurrencyFlag := cmd.Flags().Lookup("concurrency")
 	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
 	assert.Equal(t, "4", concurrencyFlag.DefValue)
@@ -1288,6 +1482,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1301,10 +1496,11 @@ repos:
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		dryRun:      true,
-		concurrency: 4,
-		testClient:  fc,
+		manifest:      manifestPath,
+		dryRun:        true,
+		skipMintCheck: true,
+		concurrency:   4,
+		testClient:    fc,
 	}, nil)
 	require.NoError(t, err)
 }
@@ -1340,6 +1536,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1357,10 +1554,11 @@ repos:
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		dryRun:      true,
-		concurrency: 4,
-		testClient:  fc,
+		manifest:      manifestPath,
+		dryRun:        true,
+		skipMintCheck: true,
+		concurrency:   4,
+		testClient:    fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
 }
@@ -1397,6 +1595,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v2.0.0
@@ -1410,10 +1609,11 @@ repos:
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		direct:      true,
-		testClient:  fc,
+		manifest:      manifestPath,
+		skipMintCheck: true,
+		concurrency:   4,
+		direct:        true,
+		testClient:    fc,
 	}, nil)
 	require.NoError(t, err)
 }
@@ -1426,11 +1626,12 @@ func TestRunReposUpgrade_WithRefOverride(t *testing.T) {
 	)
 
 	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
-		manifest:    manifestPath,
-		refOverride: "v2.0.0",
-		dryRun:      true,
-		concurrency: 4,
-		testClient:  fc,
+		manifest:      manifestPath,
+		refOverride:   "v2.0.0",
+		dryRun:        true,
+		skipMintCheck: true,
+		concurrency:   4,
+		testClient:    fc,
 	}, nil)
 	require.NoError(t, err)
 }
@@ -1509,12 +1710,167 @@ func TestRunReposUpgradeMint_Success(t *testing.T) {
 	assert.Contains(t, prov.calls, "DiscoverMint")
 }
 
+func TestResolveMintProvisioner_WithTestProv(t *testing.T) {
+	prov := &trackingProvisioner{label: "test"}
+	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
+	got := resolveMintProvisioner(prov, m)
+	assert.Equal(t, prov, got)
+}
+
+func TestResolveMintProvisioner_NilFallsBackToLive(t *testing.T) {
+	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
+	got := resolveMintProvisioner(nil, m)
+	require.NotNil(t, got)
+}
+
+// --- repos upgrade mint pre-flight ---
+
+func TestRunReposUpgrade_MintCheckBlocksOnMismatch(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Provisioner returns a different URL than the manifest — mint mismatch.
+	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint verification failed")
+	assert.Contains(t, prov.calls, "DiscoverMint")
+}
+
+func TestRunReposUpgrade_SkipMintCheckBypasses(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Provisioner would fail if called — but --skip-mint-check bypasses it.
+	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		skipMintCheck:   true,
+		concurrency:     4,
+		direct:          true,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, prov.calls, "DiscoverMint",
+		"--skip-mint-check should bypass mint verification")
+}
+
+func TestRunReposUpgrade_MintCheckPassesThenUpgrades(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Provisioner returns matching URL — mint check passes.
+	prov := &trackingProvisioner{label: "https://mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		direct:          true,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, prov.calls, "DiscoverMint",
+		"mint verification should run by default")
+}
+
+func TestRunReposUpgrade_MintCheckWithDryRun(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	// Mint mismatch should still block even during dry-run.
+	prov := &trackingProvisioner{label: "https://other-mint.example.com"}
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:        manifestPath,
+		dryRun:          true,
+		concurrency:     4,
+		testClient:      fc,
+		testProvisioner: prov,
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint verification failed")
+}
+
 const diffSyncManifestYAML = `version: 1
 mint:
   url: https://mint.example.com
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_project: inf-proj
   inference_region: us-central1
   fullsend_ref: v1.0.0
@@ -1530,6 +1886,7 @@ mint:
   project: mint-proj
   region: us-central1
 defaults:
+  forge: github
   inference_region: us-central1
   fullsend_ref: v1.0.0
 repos:
@@ -1673,4 +2030,136 @@ func TestRunReposSync_DryRun_JSON(t *testing.T) {
 	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
 	assert.Contains(t, output, `"changes"`)
 	assert.NotContains(t, output, "Checking token permissions")
+}
+
+// --- forge-aware CLI integration tests ---
+// These tests exercise the RunE closures and newForgeClientFactory paths
+// that are only reachable through the Cobra command chain.
+
+var emptyReposManifestYAML = `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: github
+  inference_project: proj
+  inference_region: us-central1
+repos: []
+`
+
+func TestReposDiffCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "diff", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestReposSyncCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "sync", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestReposUpgradeCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token;
+	// the command may still fail on mint verification but NOT on token lookup.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "upgrade", "--manifest", manifestPath})
+	err := cmd.Execute()
+	if err != nil {
+		assert.NotContains(t, err.Error(), "no GitLab token found")
+	}
+}
+
+func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
+	// With zero repos, a GitLab-default manifest does not require a token.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
+	// The token error now surfaces per-repo instead of at scope checking.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos:
+  - acme/repo
+`
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "uninstall", "--yes", "--manifest", manifestPath, "acme/repo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to uninstall")
+}
+
+func TestReposAddCmd_GitLabNoToken(t *testing.T) {
+	// With lazy client creation, adding a repo to a GitLab manifest
+	// succeeds without a token — the client is only needed for probing
+	// existing installation state, which is non-fatal when it fails.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "add", "--forge", "gitlab", "--manifest", manifestPath, "acme/repo"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestReposDiffCmd_GitLabNoToken_WithRepos(t *testing.T) {
+	// With actual repos, the missing GitLab token surfaces per-repo.
+	t.Setenv("GITLAB_TOKEN", "")
+	m := `version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: us-central1
+defaults:
+  forge: gitlab
+  inference_project: proj
+  inference_region: us-central1
+repos:
+  - acme/repo
+`
+	manifestPath := writeTestManifest(t, m)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "diff", "--manifest", manifestPath})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	// The error is reported as a warning, not a fatal error, because
+	// the diff operation treats per-repo forge client errors as warnings.
+}
+
+func TestReposInitCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "--forge", "gitlab", "--all", "test-org"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
 }

@@ -199,6 +199,7 @@ export default defineConfig({
             { text: "Getting Inference", link: "/guides/getting-started/getting-inference" },
             { text: "Configuring GitHub", link: "/guides/getting-started/configuring-github" },
             { text: "Per-Org Mode", link: "/guides/getting-started/org-mode" },
+            { text: "Repo Management", link: "/guides/getting-started/repo-management" },
             { text: "Operations", link: "/guides/getting-started/operations" },
           ],
         },
@@ -222,6 +223,7 @@ export default defineConfig({
           link: "/guides/",
           items: [
             { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+            { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Customizing Agents", link: "/guides/user/customizing-agents" },
             { text: "Customizing with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
@@ -272,6 +274,11 @@ export default defineConfig({
                 { text: "E2E Testing", link: "/guides/dev/e2e-testing" },
                 { text: "Testing Workflows", link: "/guides/dev/testing-workflows" },
               ],
+            },
+            {
+              text: "Contributor Guidelines",
+              collapsed: true,
+              items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
             { text: "Landscape", link: "/landscape" },

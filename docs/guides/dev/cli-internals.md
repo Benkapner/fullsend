@@ -39,10 +39,12 @@ fullsend
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── repos                                    # Manage per-repo installations via manifest
+│   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
 │   ├── init         <org|owner/repo>        # Generate repos.yaml from discovered installs
 │   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
 │   │   ├── --repos <list>                   #   Comma-separated repos to include
 │   │   ├── --all                            #   Include all eligible repos
+│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
 │   │   ├── --mint-project <id>              #   GCP project for the mint
 │   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
 │   │   ├── --inference-project <id>         #   Default GCP project for inference
@@ -57,6 +59,7 @@ fullsend
 │   │   └── --direct                         #   Push scaffold to default branch (skip PR)
 │   ├── add          <repos...>              # Add repo entries to manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
+│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --install                        #   Also install fullsend on the added repos
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
@@ -93,6 +96,7 @@ fullsend
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --force                          #   Upgrade even if current ref is newer
 │   │   ├── --direct                         #   Push directly to default branch (skip PR)
+│   │   ├── --skip-mint-check                #   Skip mint URL verification before upgrading
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   └── upgrade-mint                         # Verify token mint deployment matches manifest
 │       └── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
@@ -102,19 +106,19 @@ fullsend
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
 │   ├── remove       <name>                   # Unregister agent from config
 │   └── migrate-customizations               # Migrate customized/ → config agents
-│       ├── --fullsend-dir <dir>             #   Base directory with .fullsend layout
+│       ├── --fullsend-dir <dir>             #   .fullsend configuration directory
 │       ├── --repo <owner/repo>              #   Target repo for migration PR
 │       └── --dry-run                        #   Preview changes without PR
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
 │   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
@@ -182,7 +186,10 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
 
-> **Note:** The legacy `admin install` command wraps all phases into a single invocation but is deprecated. The standalone commands above are the recommended path. See the [Unified Installation Flow](#unified-installation-flow) section below for how the phases are structured internally.
+> **Deprecated:** The `admin install` command is deprecated. Use the
+> standalone commands above instead. See the
+> [Unified Installation Flow](#unified-installation-flow) section below for
+> how the phases are structured internally.
 
 ### Token Resolution Chain
 
@@ -347,12 +354,12 @@ type Layer interface {
 ```
 
 ```
-Stack order:  ConfigRepo → Workflows → HarnessWrappers → VendorBinary → Secrets → Inference → Dispatch → Enrollment
-Install:      process 1→8 (forward)
-Uninstall:    process 8→1 (reverse)
+Stack order:  ConfigRepo → Workflows → VendorBinary → Secrets → Inference → Dispatch → Enrollment
+Install:      process 1→7 (forward)
+Uninstall:    process 7→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (guard check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -460,20 +467,60 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ Extract output    │ SafeDownload() with sanitization:        │
 │  │                   │ - Remove dangerous symlinks (sandbox escape) │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
+│  │                   │                                          │
+│  │                   │ With validation_loop: SafeDownload       │
+│  │                   │ failure is non-fatal — clean up repo dir │
+│  │                   │ and continue to next iteration. Output   │
+│  │                   │ files (extracted separately) are kept.   │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
 │  │ Validation loop (if configured)          │                   │
 │  │                                          │                   │
-│  │ for i := 0; i < max_iterations; i++ {    │                   │
+│  │ Phase 1 — inline validation:             │                   │
+│  │ for i := 1; i <= max_iterations; i++ {   │                   │
+│  │   run agent → extract output             │                   │
+│  │   SafeDownload repo (non-fatal on fail)  │                   │
 │  │   run validation script                  │                   │
-│  │   if pass → break                        │                   │
-│  │   feed feedback → re-run agent           │                   │
+│  │   if pass → break (early exit)           │                   │
+│  │   feed feedback → next iteration         │                   │
 │  │ }                                        │                   │
+│  │                                          │                   │
+│  │ Phase 2 — post-loop sweep (#5393):       │                   │
+│  │ if no inline pass:                       │                   │
+│  │   for i := latest..1 {                   │                   │
+│  │     run validation on iteration-i dir    │                   │
+│  │     TARGET_REPO_DIR="" (repo dir is      │                   │
+│  │       unreliable across iterations)      │                   │
+│  │     if pass → use this iteration; break  │                   │
+│  │   }                                      │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Post-script       │ Run harness.post_script (host-side)      │
+│  │                   │ REPO_DIR set only when last SafeDownload │
+│  │                   │ succeeded and validated iteration is the │
+│  │                   │ latest; empty otherwise. post-fix.sh and │
+│  │                   │ post-code.sh both fail closed on empty   │
+│  │                   │ REPO_DIR in their own script logic; the  │
+│  │                   │ other validation_loop post-scripts don't │
+│  │                   │ reference REPO_DIR at all. code.yaml has │
+│  │                   │ no validation_loop, so post-code.sh      │
+│  │                   │ can't currently hit this path, but the   │
+│  │                   │ check is real, not dead code. There is   │
+│  │                   │ no per-iteration repo checkout, so post- │
+│  │                   │ fix.sh cannot recover a sweep-validated  │
+│  │                   │ non-final iteration; it fails closed     │
+│  │                   │ instead of pushing (known limitation,    │
+│  │                   │ see #5393).                              │
+│  │                   │                                          │
+│  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points  │
+│  │                   │ to the validated iteration's output dir, │
+│  │                   │ for forward compatibility. The scaffold- │
+│  │                   │ embedded post-scripts don't consume it   │
+│  │                   │ yet (tracked in fullsend-ai/agents#411)  │
+│  │                   │ — they still scan for the last iteration │
+│  │                   │ blindly.                                 │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -649,6 +696,7 @@ var executableFiles = map[string]struct{}{
 | `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |
 | `internal/mintcore/` | ~1425 | Shared mint library (handler, OIDC verifiers, GitHub API) |
 | `internal/dispatch/gcf/provisioner.go` | ~1959 | GCP infrastructure provisioner |
+| `internal/dispatch/cf/workersrc/` | ~800 | CF Worker adapter for mint (WASM bridge, I/O only) |
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
 | `internal/harness/harness.go` | ~486 | Harness YAML parsing |
 | `internal/layers/layers.go` | ~159 | Layer interface and stack |

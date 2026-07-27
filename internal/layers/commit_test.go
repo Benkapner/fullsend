@@ -78,6 +78,101 @@ func TestCommitScaffoldViaPR_ExistingForkReused(t *testing.T) {
 	require.Len(t, client.CreatedProposals, 1)
 }
 
+func TestCommitScaffoldViaPR_WriteAccessPushesDirect(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "write",
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "has write access")
+	assert.Empty(t, client.CreatedForks, "should not fork when user has write access")
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldViaPR_AdminAccessPushesDirect(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "admin",
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, client.CreatedForks)
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldViaPR_MaintainAccessPushesDirect(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "maintain",
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "has write access")
+	assert.Empty(t, client.CreatedForks)
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldViaPR_WriteAccessTakesPrecedenceOverFork(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "write",
+	}
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "has write access")
+	assert.NotContains(t, buf.String(), "Using existing fork")
+	assert.Empty(t, client.CreatedForks)
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0],
+		"write access should push to upstream, not the fork")
+}
+
+func TestCommitScaffoldViaPR_ReadAccessFallsThrough(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "read",
+	}
+	client.Repos = append(client.Repos, forge.Repository{
+		FullName: "contributor/widget", DefaultBranch: "main",
+	})
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.CreatedForks, 1, "read-only user should fork")
+}
+
 func TestCommitScaffoldViaPR_NonInteractiveForksByDefault(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
@@ -439,4 +534,323 @@ func TestPromptForkChoice_MaxRetries(t *testing.T) {
 	_, err := promptForkChoice(printer, in)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "too many invalid attempts")
+}
+
+func TestGitlintTitleRegex(t *testing.T) {
+	t.Run("no gitlint file", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		assert.Nil(t, re)
+	})
+
+	t.Run("gitlint with title-match-regex", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[general]\nignore=body-is-missing\n\n[title-match-regex]\nregex=^(feat|fix|chore)(\\(.+\\))?: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.True(t, re.MatchString("chore: initialize fullsend per-repo installation"))
+		assert.False(t, re.MatchString("PROJ-123: add stuff"))
+	})
+
+	t.Run("gitlint with custom regex requiring ticket prefix", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^PROJ-\\d+: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.False(t, re.MatchString("chore: initialize fullsend per-repo installation"),
+			"conventional commit should not match a ticket-prefix regex")
+	})
+
+	t.Run("gitlint without title-match-regex section", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[general]\nignore=body-is-missing\n\n[title-max-length]\nline-length=72\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		assert.Nil(t, re)
+	})
+
+	t.Run("gitlint with spaces around equals", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex = ^fix: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.True(t, re.MatchString("fix: something"))
+	})
+
+	t.Run("gitlint with tabs and extra spaces around equals", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex\t=  ^fix: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.True(t, re.MatchString("fix: something"))
+	})
+
+	t.Run("invalid regex is ignored", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=[invalid((\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		assert.Nil(t, re)
+	})
+}
+
+func TestAdaptCommitMsg(t *testing.T) {
+	t.Run("no gitlint warns nothing", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "chore: initialize fullsend per-repo installation", msg)
+		assert.NotContains(t, buf.String(), "gitlint")
+	})
+
+	t.Run("matching regex warns nothing", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(feat|fix|chore): .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "chore: initialize fullsend per-repo installation", msg)
+		assert.NotContains(t, buf.String(), "gitlint")
+	})
+
+	t.Run("adapts to ci prefix when chore does not match", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(ci|build): .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "ci: initialize fullsend per-repo installation", msg)
+		assert.Contains(t, buf.String(), "Adapted scaffold commit message")
+		assert.NotContains(t, buf.String(), "CI may fail")
+	})
+
+	t.Run("adapts to bare description when no prefix matches", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^[a-z]+ .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "initialize fullsend per-repo installation", msg)
+		assert.Contains(t, buf.String(), "Adapted scaffold commit message")
+	})
+
+	t.Run("warns when no alternative matches", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^PROJ-\\d+: .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "chore: initialize fullsend per-repo installation", msg)
+		assert.Contains(t, buf.String(), "title-match-regex")
+		assert.Contains(t, buf.String(), "commit-lint CI may fail")
+	})
+
+	t.Run("adapts non-scaffold commit message", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(ci|build): .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: upgrade fullsend config")
+		assert.Equal(t, "ci: upgrade fullsend config", msg)
+		assert.Contains(t, buf.String(), "Adapted scaffold commit message")
+	})
+
+	t.Run("preserves body when adapting", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(ci|build): .+\n")
+		printer, _ := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation\n\nSigned-off-by: bot")
+		assert.Equal(t, "ci: initialize fullsend per-repo installation\n\nSigned-off-by: bot", msg)
+	})
+}
+
+func TestCloseStaleScaffoldPRs_ClosesOnboardPR(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "chore: connect to fullsend agent pipeline", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Contains(t, client.ClosedProposals, 42)
+	assert.Contains(t, client.DeletedRefs, "acme/widget/heads/fullsend/onboard")
+	assert.Contains(t, buf.String(), "Closed stale scaffold PR #42")
+}
+
+func TestCloseStaleScaffoldPRs_SkipsCurrentBranch(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 10, Title: "scaffold PR", Head: "fullsend/scaffold-install", Base: "main", Author: "acme"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close the current branch's PR")
+}
+
+func TestCloseStaleScaffoldPRs_SkipsUnrelatedPRs(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 5, Title: "feat: add feature", Head: "feature/add-feature", Base: "main", Author: "acme"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close unrelated PRs")
+}
+
+func TestCloseStaleScaffoldPRs_ListError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"ListRepoPullRequests": fmt.Errorf("API rate limit"),
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals)
+	assert.Contains(t, buf.String(), "Could not check for stale scaffold PRs")
+}
+
+func TestCloseStaleScaffoldPRs_CloseError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	client.Errors = map[string]error{
+		"CloseChangeProposal": fmt.Errorf("forbidden"),
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not record if close failed")
+	assert.Contains(t, buf.String(), "Could not close stale PR #42")
+}
+
+func TestCommitScaffoldViaPR_ClosesStaleOnboardPR(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 99, Title: "chore: connect to fullsend", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, client.ClosedProposals, 99, "stale onboard PR should be closed")
+	assert.Contains(t, buf.String(), "Closed stale scaffold PR #99")
+
+	// Should still create its own branch and PR.
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCloseStaleScaffoldPRs_SkipsDifferentAuthor(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: "external-user"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close PRs from different author")
+}
+
+func TestCloseStaleScaffoldPRs_SkipsEmptyAuthor(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: ""},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close PRs with empty author (fail-closed)")
+}
+
+func TestCloseStaleScaffoldPRs_DeleteRefError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	client.Errors = map[string]error{
+		"DeleteRef": fmt.Errorf("ref not found"),
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Contains(t, client.ClosedProposals, 42, "PR should still be closed even if branch delete fails")
+	assert.Contains(t, buf.String(), "Could not delete stale branch fullsend/onboard")
+	assert.Contains(t, buf.String(), "Closed stale scaffold PR #42")
+}
+
+func TestCommitScaffoldViaPR_SkipsStaleCleanupInForkPath(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 99, Title: "chore: connect to fullsend", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, client.ClosedProposals, "should not close upstream PRs when using fork path")
+}
+
+func TestIsKnownScaffoldBranch(t *testing.T) {
+	assert.True(t, isKnownScaffoldBranch("fullsend/scaffold-install"))
+	assert.True(t, isKnownScaffoldBranch("fullsend/onboard"))
+	assert.False(t, isKnownScaffoldBranch("feature/add-stuff"))
+	assert.False(t, isKnownScaffoldBranch("fullsend/offboard"))
 }

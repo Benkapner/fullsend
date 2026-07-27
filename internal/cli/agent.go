@@ -69,7 +69,7 @@ Examples:
 			return runAgentAdd(cmd.Context(), args[0], name, fullsendDir, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	cmd.Flags().StringVar(&name, "name", "", "explicit agent name (default: derived from filename)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
@@ -87,7 +87,7 @@ func newAgentListCmd() *cobra.Command {
 			return runAgentList(fullsendDir, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
@@ -120,7 +120,7 @@ Only URL agents can be updated — local path agents have nothing to pin.`,
 			return runAgentUpdate(cmd.Context(), args[0], sha, fullsendDir, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
@@ -137,7 +137,7 @@ func newAgentRemoveCmd() *cobra.Command {
 			return runAgentRemove(fullsendDir, args[0], printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
@@ -212,7 +212,7 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 		return fmt.Errorf("resolving fullsend dir: %w", err)
 	}
 
-	dirCfg, err := config.LoadFromDir(absDir, config.LoadOpts{MissingOK: false})
+	dirCfg, err := config.LoadConfig(absDir, config.LoadOpts{MissingOK: false})
 	if err != nil {
 		return err
 	}
