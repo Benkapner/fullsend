@@ -11,5 +11,6 @@ func Register(sc *godog.ScenarioContext) {
 	registerTriageSteps(sc)
 	registerDispatchSteps(sc)
 	registerDispatchCountSteps(sc)
+	registerURLDispatchSteps(sc)
 	registerForkSteps(sc)
 }

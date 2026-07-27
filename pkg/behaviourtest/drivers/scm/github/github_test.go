@@ -219,6 +219,23 @@ func TestCreateFork_ExistingForkOfDifferentSource(t *testing.T) {
 	}
 }
 
+func TestCreateRepo_IdempotentAlreadyExists(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	// First create succeeds.
+	err := d.CreateRepo(context.Background(), "org", "my-repo", "desc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Second create of the same repo should succeed (idempotent).
+	err = d.CreateRepo(context.Background(), "org", "my-repo", "desc")
+	if err != nil {
+		t.Fatalf("idempotent CreateRepo should not error: %v", err)
+	}
+}
+
 func TestCreateFork_ExistingForkOfSameSource(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// Pre-populate with a fork of the same source repo (idempotent case).

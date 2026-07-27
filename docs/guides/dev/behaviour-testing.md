@@ -206,6 +206,41 @@ Current budget: **45 minutes** for both the CI job timeout and `go test -timeout
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 
+## URL-sourced harness scenarios
+
+URL dispatch scenarios test `FetchAgentHarness` URL resolution for agents whose harness YAML lives in a separate hosting repository rather than the local config directory.
+
+### Harness-hosting repository
+
+The `Given a harness-hosting repository "<name>"` step creates a public repository in the pool org to host harness YAML files. The repo is:
+
+- **Long-lived** — created once (idempotently) and reused across scenarios and CI runs. Do not delete it between scenarios.
+- **Public** — required for unauthenticated `raw.githubusercontent.com` access. The step calls `EnsureRepoPublic` to detect and fix org policies that force repos private.
+
+### URL-sourced custom harness
+
+The `Given a URL-sourced custom harness "<name>" with:` step:
+
+1. Commits the harness YAML to the hosting repo at `harness/<name>.yaml`
+2. Commits any relative resources (agent, policy files) referenced in the YAML (ADR-0045)
+3. Verifies accessibility via the Contents API and unauthenticated raw URL
+4. Registers the agent in `config.yaml` with the raw URL (including `#sha256=` integrity hash)
+5. Adds the hosting repo URL prefix to `allowed_remote_resources`
+
+Variants:
+- `with bad integrity hash:` — injects a wrong SHA256 to test integrity failure
+- `not in allowlist with:` — omits the URL prefix from the allowlist to test validation
+
+### Background step usage
+
+URL dispatch scenarios share a common `Background:` block:
+
+```gherkin
+Background:
+  Given the enrolled test repository
+  And a harness-hosting repository "url-harness-host"
+```
+
 ## Version pinning for `fullsend-ai/agents`
 
 External behaviour runners import the shared libraries from this module:

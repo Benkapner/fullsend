@@ -38,7 +38,7 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 
-	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg)
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
 	require.NoError(t, err)
 	assert.Empty(t, out)
 }
@@ -57,7 +57,7 @@ func TestListTriggeredHarnesses_DuplicateName(t *testing.T) {
 	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 
-	_, err = ListTriggeredHarnesses(context.Background(), dir, dirCfg)
+	_, err = ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate agent name")
 }
@@ -85,10 +85,40 @@ trigger: event.entity.kind == "work_item"
 	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 
-	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg)
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 	assert.Equal(t, "good", out[0].Name)
+}
+
+func TestDispatch_FetchPolicyPlumbing(t *testing.T) {
+	// Verify that Options.FetchPolicy is threaded through Dispatch →
+	// ListTriggeredHarnesses → ResolveRegisteredPath. A URL-sourced agent
+	// pointing at a non-github domain should be skipped (not error) when
+	// the default policy is used, confirming the policy is applied.
+	dir := t.TempDir()
+	rawURL := "https://evil.example.com/org/repo/sha/harness/evil.yaml#sha256=" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	allowlist := []string{"https://evil.example.com/"}
+
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.SetAgents([]config.AgentEntry{{Name: "evil", Source: rawURL}})
+	cfg.SetAllowedRemoteResources(allowlist)
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	ev := mustEvent(t, "issue-opened.json")
+
+	// nil FetchPolicy → DefaultPolicy (allows only github.com, raw.githubusercontent.com).
+	// evil.example.com is not in DefaultPolicy's AllowedDomains, so the agent
+	// is skipped. Dispatch should return empty results, not an error.
+	refs, err := Dispatch(context.Background(), Options{
+		ConfigDir: dir,
+		Event:     ev,
+		// FetchPolicy: nil → uses DefaultPolicy
+	})
+	require.NoError(t, err)
+	assert.Empty(t, refs, "URL-sourced agent with non-github domain should be skipped by DefaultPolicy")
 }
 
 func TestMatchHarnesses_InvalidTrigger(t *testing.T) {

@@ -53,6 +53,11 @@ func (p *panickingSCM) SubmitPullRequestReview(context.Context, string, string, 
 func (p *panickingSCM) CloseIssue(context.Context, string, string, int) error {
 	panic("simulated cleanup panic in CloseIssue")
 }
+func (p *panickingSCM) CreateRepo(context.Context, string, string, string) error { return nil }
+func (p *panickingSCM) EnsureRepoPublic(context.Context, string, string) error   { return nil }
+func (p *panickingSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	return "main", nil
+}
 func (p *panickingSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
@@ -70,14 +75,16 @@ func TestTagNames(t *testing.T) {
 
 func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	w := &world.World{
-		PRNumber:      99,
-		DispatchAgent: "dispatch",
-		IssueNumber:   1,
-		ArtifactDir:   "/tmp/x",
-		ForkOwner:     "org",
-		ForkRepo:      "repo-fork",
-		ForkPRNumber:  42,
-		ForkPRBranch:  "branch",
+		PRNumber:            99,
+		DispatchAgent:       "dispatch",
+		IssueNumber:         1,
+		ArtifactDir:         "/tmp/x",
+		ForkOwner:           "org",
+		ForkRepo:            "repo-fork",
+		ForkPRNumber:        42,
+		ForkPRBranch:        "branch",
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "harness-host",
 	}
 	resetScenarioWorld(w)
 	assert.Equal(t, 0, w.PRNumber)
@@ -89,6 +96,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Equal(t, "", w.ForkRepo)
 	assert.Equal(t, 0, w.ForkPRNumber)
 	assert.Equal(t, "", w.ForkPRBranch)
+	assert.Equal(t, "", w.URLHarnessRepoOwner)
+	assert.Equal(t, "", w.URLHarnessRepoName)
 }
 
 func TestSkipErrorForTagNames(t *testing.T) {

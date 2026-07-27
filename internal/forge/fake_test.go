@@ -70,6 +70,19 @@ func TestFakeClient_CreateRepo(t *testing.T) {
 	assert.Equal(t, "new-repo", fc.CreatedRepos[0].Name)
 }
 
+func TestFakeClient_CreateRepo_DuplicateReturnsErrAlreadyExists(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	_, err := fc.CreateRepo(ctx, "org", "repo", "desc", false)
+	require.NoError(t, err)
+
+	// Second create of the same repo should return ErrAlreadyExists.
+	_, err = fc.CreateRepo(ctx, "org", "repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, IsAlreadyExists(err), "duplicate CreateRepo should wrap ErrAlreadyExists")
+}
+
 func TestFakeClient_CreateFile(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
