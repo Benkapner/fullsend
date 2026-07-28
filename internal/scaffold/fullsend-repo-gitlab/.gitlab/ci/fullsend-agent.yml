@@ -21,6 +21,14 @@ agent:
     - |
       set -euo pipefail
 
+      # Back-link to the poll job that dispatched this pipeline
+      if [ -n "${FULLSEND_POLL_JOB_URL:-}" ]; then
+        case "${FULLSEND_POLL_JOB_URL}" in
+          https://*) echo "Dispatched by: ${FULLSEND_POLL_JOB_URL}" ;;
+          *) echo "WARNING: FULLSEND_POLL_JOB_URL is not a valid HTTPS URL — ignoring" ;;
+        esac
+      fi
+
       # CI_DEBUG_TRACE guard
       if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
         echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
@@ -55,6 +63,57 @@ agent:
         echo "ERROR: FULLSEND_FORGE_TOKEN is not set after credential retrieval"
         exit 1
       fi
+
+      # Bot identity verification (#5572 mitigation #1) — uses the
+      # Pipelines API to fetch the server-side .source field (unforgeable,
+      # unlike the CI_PIPELINE_SOURCE env var) and .user.id (stable across
+      # human job retries, unlike the Jobs API). Deny-by-default: only
+      # "api" and "parent_pipeline" are recognized; unknown/empty sources
+      # abort the job.
+      #
+      # RESIDUAL RISK: CI_API_V4_URL, CI_PROJECT_ID, CI_PIPELINE_ID are
+      # overridable by pipeline variables. An attacker who overrides
+      # CI_API_V4_URL can redirect these API calls. Full mitigation
+      # requires OIDC JWT verification (FULLSEND_ID_TOKEN), tracked
+      # in #5572.
+      PIPELINE_RESPONSE=""
+      if ! PIPELINE_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}" \
+        -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+        echo "ERROR: Cannot fetch pipeline metadata — aborting (fail-closed)"
+        exit 1
+      fi
+      PIPELINE_SOURCE=$(printf '%s' "${PIPELINE_RESPONSE}" | jq -r '.source // empty')
+      case "${PIPELINE_SOURCE}" in
+        api)
+          BOT_USER_ID=""
+          if BOT_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+            "${CI_API_V4_URL}/user" \
+            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+            BOT_USER_ID=$(printf '%s' "${BOT_RESPONSE}" | jq -r '.id // empty')
+          fi
+          if [ -z "${BOT_USER_ID}" ]; then
+            echo "ERROR: Cannot verify bot identity — aborting (fail-closed)"
+            exit 1
+          fi
+          PIPELINE_CREATOR_ID=$(printf '%s' "${PIPELINE_RESPONSE}" | jq -r '.user.id // empty')
+          if [ -z "${PIPELINE_CREATOR_ID}" ]; then
+            echo "ERROR: Cannot read pipeline creator — aborting (fail-closed)"
+            exit 1
+          fi
+          if [ "${PIPELINE_CREATOR_ID}" != "${BOT_USER_ID}" ]; then
+            echo "ERROR: Pipeline created by user ${PIPELINE_CREATOR_ID}, expected bot ${BOT_USER_ID} — rejecting forged dispatch"
+            exit 1
+          fi
+          ;;
+        parent_pipeline)
+          # MR child pipeline — creator is the MR author, not the bot
+          ;;
+        *)
+          echo "ERROR: unexpected pipeline source '${PIPELINE_SOURCE:-<empty>}' — aborting (fail-closed)"
+          exit 1
+          ;;
+      esac
 
       # Read config from default branch (trusted), not MR source branch.
       # GitHub reads config from pull_request.base.sha; this is the GitLab
@@ -155,4 +214,4 @@ agent:
         --status-number "${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:
-    - if: $STAGE != ""
+    - if: $STAGE
