@@ -80,9 +80,9 @@ func TestLoadConfig_MalformedYAML(t *testing.T) {
 
 	_, err := LoadConfig(dir, LoadOpts{MissingOK: false})
 	require.Error(t, err)
-	// Malformed YAML falls through IsPerRepoYAML (returns false) and
-	// surfaces as a ParseOrgConfig error.
-	assert.Contains(t, err.Error(), "parsing org config")
+	// Malformed YAML is detected before type probing so the error
+	// names config.yaml rather than the misleading "parsing org config".
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestLoadConfig_SharedFieldsDefaultPerRepo(t *testing.T) {
@@ -384,9 +384,8 @@ func TestLoadConfig_MalformedOverlayWithBase(t *testing.T) {
 
 	_, err := LoadConfig(dir, LoadOpts{})
 	require.Error(t, err)
-	// Malformed overlay with per-repo-like base: the overlay is not
-	// recognizable as org mode, so IsPerRepoYAML returns false and we
-	// try org parse which surfaces the error.
+	// Malformed overlay is detected before type probing.
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestLoadConfig_BothExist_FallbackToCodeDefaults(t *testing.T) {
@@ -417,4 +416,76 @@ func TestLoadConfig_BothExist_FallbackToCodeDefaults(t *testing.T) {
 	// Agents from overlay.
 	require.Len(t, cfg.AgentEntries(), 1)
 	assert.Equal(t, "ping", cfg.AgentEntries()[0].Name)
+}
+
+func TestLoadConfig_BothExist_AgentEntryMergeAcrossLayers(t *testing.T) {
+	dir := t.TempDir()
+	// Base defines two agents: triage and review.
+	base := `version: "1"
+agents:
+  - name: triage
+    source: harness/triage.yaml
+  - name: review
+    source: harness/review.yaml
+`
+	// Overlay overrides triage's source and adds a new agent (deploy).
+	overlay := `agents:
+  - name: triage
+    source: harness/triage-v2.yaml
+  - name: deploy
+    source: harness/deploy.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(overlay), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	agents := cfg.AgentEntries()
+	// Expect 3 agents: triage (overridden), review (inherited), deploy (additive).
+	require.Len(t, agents, 3)
+
+	// triage: source overridden by overlay.
+	assert.Equal(t, "triage", agents[0].DerivedName())
+	assert.Equal(t, "harness/triage-v2.yaml", agents[0].Source)
+
+	// review: inherited from base unchanged.
+	assert.Equal(t, "review", agents[1].DerivedName())
+	assert.Equal(t, "harness/review.yaml", agents[1].Source)
+
+	// deploy: additive from overlay only.
+	assert.Equal(t, "deploy", agents[2].DerivedName())
+	assert.Equal(t, "harness/deploy.yaml", agents[2].Source)
+}
+
+func TestLoadConfig_BothExist_AllowedResourcesUnionAcrossLayers(t *testing.T) {
+	dir := t.TempDir()
+	// Base defines one custom resource prefix.
+	base := `version: "1"
+allowed_remote_resources:
+  - "https://example.com/base/"
+`
+	// Overlay defines a different custom resource prefix.
+	overlay := `allowed_remote_resources:
+  - "https://example.com/overlay/"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(overlay), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	resources := cfg.AllowedResources()
+	// Should contain overlay, base, and code-default resources (union with dedup).
+	assert.Contains(t, resources, "https://example.com/overlay/")
+	assert.Contains(t, resources, "https://example.com/base/")
+	for _, d := range DefaultAllowedRemoteResources() {
+		assert.Contains(t, resources, d)
+	}
+	// Verify no duplicates.
+	seen := make(map[string]bool, len(resources))
+	for _, r := range resources {
+		assert.False(t, seen[r], "duplicate resource: %s", r)
+		seen[r] = true
+	}
 }

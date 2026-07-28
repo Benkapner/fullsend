@@ -410,6 +410,15 @@ func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 			&os.PathError{Op: "open", Path: filepath.Join(dir, "config.yaml"), Err: os.ErrNotExist})
 	}
 
+	// Detect malformed YAML before type detection so the error message
+	// names config.yaml rather than the misleading "parsing org config".
+	if haveOverlay {
+		var probe interface{}
+		if err := yaml.Unmarshal(overlayData, &probe); err != nil {
+			return nil, fmt.Errorf("parsing config.yaml: %w", err)
+		}
+	}
+
 	// Org-mode overlay: base layering does not apply.
 	if haveOverlay && !IsPerRepoYAML(overlayData) {
 		return ParseOrgConfig(overlayData)
@@ -438,6 +447,15 @@ func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 		}
 		return nil, fmt.Errorf("reading config: %w",
 			&os.PathError{Op: "open", Path: filepath.Join(dir, "config.yaml"), Err: os.ErrNotExist})
+	}
+
+	// Detect malformed YAML before type detection so the error message
+	// names config.yaml rather than the misleading "parsing org config".
+	if haveOverlay {
+		var probe interface{}
+		if err := yaml.Unmarshal(overlayData, &probe); err != nil {
+			return nil, fmt.Errorf("parsing config.yaml: %w", err)
+		}
 	}
 
 	// Org-mode overlay: base layering does not apply.
