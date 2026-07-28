@@ -134,6 +134,19 @@ func parseProviderDef(content []byte, index int, source string) (harness.Provide
 	return def, w, nil
 }
 
+// isContainedPath reports whether the absolute path p is inside root.
+// Used as defense-in-depth when reading local profile/provider files —
+// upstream guards (ResolveRelativeTo, validateBaseRelPath) already constrain
+// paths, but this check catches bugs in those guards.
+func isContainedPath(p, root string) bool {
+	if root == "" {
+		return true // no containment boundary configured
+	}
+	cleaned := filepath.Clean(p)
+	rootCleaned := filepath.Clean(root)
+	return cleaned == rootCleaned || strings.HasPrefix(cleaned, rootCleaned+string(filepath.Separator))
+}
+
 // ResolveOpts controls how URL-referenced resources are resolved.
 type ResolveOpts struct {
 	WorkspaceRoot string
@@ -351,6 +364,9 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		} else {
 			localPath = p
 
+			if !isContainedPath(localPath, opts.WorkspaceRoot) {
+				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: path %q is outside workspace root", i, localPath)
+			}
 			content, err := os.ReadFile(localPath)
 			if err != nil {
 				return ResolveResult{}, fmt.Errorf("reading profile %s: %w", localPath, err)
@@ -371,6 +387,9 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	for i, p := range h.Providers {
 		if !harness.IsURL(p) {
 			if filepath.IsAbs(p) {
+				if !isContainedPath(p, opts.WorkspaceRoot) {
+					return ResolveResult{}, fmt.Errorf("providers[%d]: path %q is outside workspace root", i, p)
+				}
 				content, err := os.ReadFile(p)
 				if err != nil {
 					return ResolveResult{}, fmt.Errorf("reading provider %s: %w", p, err)

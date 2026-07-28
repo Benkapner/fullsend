@@ -2136,3 +2136,56 @@ func TestResolveHarness_LocalProviderWarnings(t *testing.T) {
 	require.Len(t, result.Warnings, 1)
 	assert.Contains(t, result.Warnings[0], "SECRET")
 }
+
+func TestIsContainedPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		root string
+		want bool
+	}{
+		{"under root", "/workspace/.fullsend/profiles/net.yaml", "/workspace/.fullsend", true},
+		{"at root", "/workspace/.fullsend", "/workspace/.fullsend", true},
+		{"outside root", "/etc/passwd", "/workspace/.fullsend", false},
+		{"traversal", "/workspace/.fullsend/../../etc/passwd", "/workspace/.fullsend", false},
+		{"empty root", "/any/path", "", true},
+		{"sibling prefix", "/workspace/.fullsend-other/file", "/workspace/.fullsend", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isContainedPath(tt.path, tt.root))
+		})
+	}
+}
+
+func TestResolveHarness_ProfileOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"/etc/not-in-workspace/profile.yaml"},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside workspace root")
+}
+
+func TestResolveHarness_ProviderOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{"/etc/not-in-workspace/provider.yaml"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside workspace root")
+}

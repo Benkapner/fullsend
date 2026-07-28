@@ -423,7 +423,7 @@ func (h *Harness) Validate() error {
 	}
 	for i, p := range h.Providers {
 		if IsURL(p) || filepath.IsAbs(p) || IsProviderPath(p) {
-			continue // URL or path — validated by ValidateResourceTypes below
+			continue // URL validated by ValidateResourceTypes; paths validated downstream by ResolveHarness/parseProviderDef
 		}
 		if !validProviderName.MatchString(p) {
 			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
