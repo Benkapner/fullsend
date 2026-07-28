@@ -15,7 +15,8 @@ REPO="${1:-fullsend-ai/fullsend}"
 DAYS="${2:-30}"
 FOLLOWUP_DAYS="${3:-7}"
 
-SINCE=$(date -d "-${DAYS} days" +%Y-%m-%dT00:00:00Z 2>/dev/null || date -v-"${DAYS}"d +%Y-%m-%dT00:00:00Z)
+SINCE=$(date -u -d "-${DAYS} days" +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v-"${DAYS}"d +%Y-%m-%dT00:00:00Z)
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 echo "Rework Rate Report"
 echo "Repository: ${REPO}"
@@ -23,15 +24,20 @@ echo "Window: last ${DAYS} days (since ${SINCE})"
 echo "Follow-up window: ${FOLLOWUP_DAYS} days after merge"
 echo ""
 
-# Fetch merged PRs by bot authors (both app identity and [bot] login)
-BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:fullsend-ai-coder[bot]+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
-  --jq '.items[] | {number: .number, title: .title, closed_at: .closed_at}' 2>/dev/null || echo "")
-
-if [ -z "$BOT_PRS" ]; then
+# Fetch merged PRs by bot authors (paginated)
+BOT_PRS_ERR=$(mktemp)
+if ! BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:fullsend-ai-coder[bot]+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
+  --paginate --jq '.items[] | {number: .number, title: .title, closed_at: .closed_at}' 2>"$BOT_PRS_ERR"); then
+  echo "WARNING: bot PR search failed: $(cat "$BOT_PRS_ERR")"
   # Fallback: try app/ prefix
-  BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:app/fullsend-ai-coder+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
-    --jq '.items[] | {number: .number, title: .title, closed_at: .closed_at}' 2>/dev/null || echo "")
+  if ! BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:app/fullsend-ai-coder+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
+    --paginate --jq '.items[] | {number: .number, title: .title, closed_at: .closed_at}' 2>"$BOT_PRS_ERR"); then
+    echo "ERROR: could not fetch bot PRs: $(cat "$BOT_PRS_ERR")"
+    rm -f "$BOT_PRS_ERR"
+    exit 1
+  fi
 fi
+rm -f "$BOT_PRS_ERR"
 
 if [ -z "$BOT_PRS" ]; then
   echo "No agent PRs found in the last ${DAYS} days."
@@ -43,9 +49,10 @@ echo "Found ${PR_COUNT} agent PRs to check."
 echo ""
 
 TOTAL=0
+CHECKED=0
 REWORKED=0
 SKIPPED=0
-REWORKED_LIST=""
+REWORKED_LINES=()
 
 while IFS= read -r pr_json; do
   PR_NUM=$(echo "$pr_json" | jq -r '.number')
@@ -55,21 +62,9 @@ while IFS= read -r pr_json; do
 
   echo "  Checking PR ${TOTAL}/${PR_COUNT} (#${PR_NUM})..."
 
-  # Get files changed in this PR (paginated)
-  if ! PR_FILES=$(gh api "repos/${REPO}/pulls/${PR_NUM}/files" --paginate \
-    --jq '.[].filename' 2>&1); then
-    echo "    WARNING: could not fetch files for #${PR_NUM}, skipping"
-    SKIPPED=$((SKIPPED + 1))
-    continue
-  fi
-
-  if [ -z "$PR_FILES" ]; then
-    continue
-  fi
-
-  # Check for human commits touching the same files after merge
-  FOLLOWUP_UNTIL=$(date -d "${MERGED_AT} +${FOLLOWUP_DAYS} days" +%Y-%m-%dT23:59:59Z 2>/dev/null \
-    || date -j -f "%Y-%m-%dT%H:%M:%SZ" "${MERGED_AT}" -v+"${FOLLOWUP_DAYS}"d +%Y-%m-%dT23:59:59Z 2>/dev/null \
+  # Skip PRs whose follow-up window hasn't fully elapsed yet
+  FOLLOWUP_UNTIL=$(date -u -d "${MERGED_AT} +${FOLLOWUP_DAYS} days" +%Y-%m-%dT23:59:59Z 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "${MERGED_AT}" -v+"${FOLLOWUP_DAYS}"d +%Y-%m-%dT23:59:59Z 2>/dev/null \
     || echo "")
 
   if [ -z "$FOLLOWUP_UNTIL" ]; then
@@ -77,61 +72,109 @@ while IFS= read -r pr_json; do
     continue
   fi
 
-  # Get commits after merge by non-bot authors
-  if ! FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
-    --jq '[.[] | select(.author.type != "Bot" and .author.login != "fullsend-ai-coder[bot]" and .author.login != "fullsend-ai-fullsend[bot]") | {sha: .sha, author: .author.login, message: .commit.message}]' 2>&1); then
-    echo "    WARNING: could not fetch follow-up commits for #${PR_NUM}, skipping"
+  if [[ "$FOLLOWUP_UNTIL" > "$NOW" ]]; then
+    echo "    follow-up window not elapsed yet, skipping"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
 
-  if [ "$FOLLOWUP_COMMITS" = "[]" ] || [ -z "$FOLLOWUP_COMMITS" ]; then
+  # Get files changed in this PR (paginated)
+  PR_FILES_ERR=$(mktemp)
+  if ! PR_FILES=$(gh api "repos/${REPO}/pulls/${PR_NUM}/files" --paginate \
+    --jq '.[].filename' 2>"$PR_FILES_ERR"); then
+    echo "    WARNING: could not fetch files for #${PR_NUM}: $(cat "$PR_FILES_ERR")"
+    rm -f "$PR_FILES_ERR"
+    SKIPPED=$((SKIPPED + 1))
+    continue
+  fi
+  rm -f "$PR_FILES_ERR"
+
+  if [ -z "$PR_FILES" ]; then
+    CHECKED=$((CHECKED + 1))
     continue
   fi
 
-  # Check if any follow-up commit touches the same files
+  # Get the PR's own merge commit SHA to exclude it from follow-up detection
+  PR_MERGE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUM}" --jq '.merge_commit_sha' 2>/dev/null || echo "")
+
+  # Get commits after merge by non-bot authors (paginated)
+  COMMITS_ERR=$(mktemp)
+  if ! FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
+    --paginate --jq '[.[] | select(.author.type != "Bot") | {sha: .sha, author: .author.login, parents: (.parents | length)}]' 2>"$COMMITS_ERR"); then
+    echo "    WARNING: could not fetch follow-up commits for #${PR_NUM}: $(cat "$COMMITS_ERR")"
+    rm -f "$COMMITS_ERR"
+    SKIPPED=$((SKIPPED + 1))
+    continue
+  fi
+  rm -f "$COMMITS_ERR"
+
+  if [ "$FOLLOWUP_COMMITS" = "[]" ] || [ -z "$FOLLOWUP_COMMITS" ]; then
+    CHECKED=$((CHECKED + 1))
+    continue
+  fi
+
+  # Check if any single-parent follow-up commit touches the same files
   FOUND_REWORK=""
   while IFS= read -r commit_json; do
     COMMIT_SHA=$(echo "$commit_json" | jq -r '.sha')
     COMMIT_AUTHOR=$(echo "$commit_json" | jq -r '.author')
+    PARENT_COUNT=$(echo "$commit_json" | jq -r '.parents')
 
-    if ! COMMIT_FILES=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" \
-      --jq '.files[].filename' 2>&1); then
+    # Skip merge commits (2+ parents); their files list reflects the full merge, not incremental work
+    if [ "$PARENT_COUNT" -gt 1 ]; then
       continue
     fi
+
+    # Skip the PR's own merge commit
+    if [ -n "$PR_MERGE_SHA" ] && [ "$COMMIT_SHA" = "$PR_MERGE_SHA" ]; then
+      continue
+    fi
+
+    COMMIT_FILES_ERR=$(mktemp)
+    if ! COMMIT_FILES=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" \
+      --jq '.files[].filename' 2>"$COMMIT_FILES_ERR"); then
+      echo "    WARNING: could not fetch files for commit ${COMMIT_SHA:0:7}: $(cat "$COMMIT_FILES_ERR")"
+      rm -f "$COMMIT_FILES_ERR"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+    rm -f "$COMMIT_FILES_ERR"
 
     OVERLAP=$(comm -12 <(echo "$PR_FILES" | sort) <(echo "$COMMIT_FILES" | sort) 2>/dev/null || echo "")
 
     if [ -n "$OVERLAP" ]; then
       FOUND_REWORK="yes"
-      REWORKED_LIST="${REWORKED_LIST}\n  #${PR_NUM} - ${PR_TITLE}\n    Follow-up: ${COMMIT_SHA:0:7} by @${COMMIT_AUTHOR} (same files: $(echo "$OVERLAP" | head -3 | tr '\n' ', '))"
+      REWORKED_LINES+=("  #${PR_NUM} - ${PR_TITLE}")
+      REWORKED_LINES+=("    Follow-up: ${COMMIT_SHA:0:7} by @${COMMIT_AUTHOR} (same files: $(echo "$OVERLAP" | head -3 | tr '\n' ', '))")
       break
     fi
   done < <(echo "$FOLLOWUP_COMMITS" | jq -c '.[]')
 
+  CHECKED=$((CHECKED + 1))
   if [ -n "$FOUND_REWORK" ]; then
     REWORKED=$((REWORKED + 1))
   fi
 done < <(echo "$BOT_PRS" | jq -c '.')
 
-if [ "$TOTAL" -eq 0 ]; then
+if [ "$CHECKED" -eq 0 ]; then
   RATE="0.0"
 else
-  RATE=$(awk "BEGIN {printf \"%.1f\", ($REWORKED / $TOTAL) * 100}")
+  RATE=$(awk "BEGIN {printf \"%.1f\", ($REWORKED / $CHECKED) * 100}")
 fi
 
 echo ""
 echo "Results"
 echo "-------"
-echo "Agent PRs merged (last ${DAYS} days): ${TOTAL}"
+echo "Agent PRs found: ${TOTAL}"
+echo "Agent PRs checked: ${CHECKED}"
 echo "Reworked by humans: ${REWORKED}"
 echo "Rework rate: ${RATE}%"
 if [ "$SKIPPED" -gt 0 ]; then
-  echo "Skipped (API errors): ${SKIPPED}"
+  echo "Skipped (window not elapsed or API errors): ${SKIPPED}"
 fi
 
-if [ -n "$REWORKED_LIST" ]; then
+if [ ${#REWORKED_LINES[@]} -gt 0 ]; then
   echo ""
   echo "Reworked PRs:"
-  echo -e "$REWORKED_LIST"
+  printf '%s\n' "${REWORKED_LINES[@]}"
 fi
