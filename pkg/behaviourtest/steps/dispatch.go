@@ -35,9 +35,6 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
 	})
-	sc.Step(`^the fullsend workflow dispatches the review stage$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, thenFullsendWorkflowDispatchesReview(world.FromContext(ctx))
-	})
 }
 
 func givenDisabledCustomHarness(w *world.World, name, doc string) error {
@@ -250,21 +247,4 @@ func whenPullRequestReviewComment(w *world.World) error {
 	w.ScenarioStart = time.Now()
 	// COMMENT works when the e2e bot authored the PR; APPROVE returns 422 self-review.
 	return w.SCM.SubmitPullRequestReview(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
-}
-
-// thenFullsendWorkflowDispatchesReview waits for the bash-routed review
-// stage to complete on a fork pull request. It polls for the
-// fullsend-review artifact (uploaded by the review agent) to confirm
-// the bash router dispatched the review stage end-to-end.
-func thenFullsendWorkflowDispatchesReview(w *world.World) error {
-	if w.ScenarioStart.IsZero() {
-		return fmt.Errorf("no workflow trigger time recorded")
-	}
-	ctx := context.Background()
-	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.Install.TriageWorkflowRepo(), "review", w.ScenarioStart)
-	if err != nil {
-		return err
-	}
-	w.WorkflowRun = run
-	return ensureHarnessArtifacts(w, "review")
 }

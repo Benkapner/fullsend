@@ -14,5 +14,5 @@ Feature: Fork PR bash routing smoke
       | Prove bash routing   | write_fixture | output/bash-routing-ok.json, fixtures/dispatch/ok.json     |
     When a fork pull request is opened
     And the fork pull request is labeled "ready-for-review"
-    Then the fullsend workflow dispatches the review stage
+    Then the harness "review" workflow completes successfully
     And the agent will succeed to Prove bash routing
