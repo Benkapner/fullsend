@@ -304,6 +304,120 @@ func TestCleanupScenario_SkipsBranchDelete_WhenFieldsMissing(t *testing.T) {
 	}
 }
 
+// --- URL harness hosting repo cleanup tests ---
+
+func TestCleanupScenario_DeletesHostingRepo(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "test-repo-07-url-harness-host",
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+
+	require.Len(t, scmDriver.deletedRepos, 1)
+	assert.Equal(t, "org", scmDriver.deletedRepos[0].owner)
+	assert.Equal(t, "test-repo-07-url-harness-host", scmDriver.deletedRepos[0].repo)
+}
+
+func TestCleanupScenario_SkipsHostingRepoDelete_WhenEqualsRepoName(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "repo", // same as RepoName — must not be deleted
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+
+	assert.Empty(t, scmDriver.deletedRepos, "repo deletion should be skipped when URLHarnessRepoName == RepoName")
+}
+
+func TestCleanupScenario_SkipsHostingRepoDelete_WhenFieldsMissing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		world *world.World
+	}{
+		{
+			name: "missing URLHarnessRepoOwner",
+			world: &world.World{
+				RepoOwner:          "org",
+				RepoName:           "repo",
+				URLHarnessRepoName: "host-repo",
+				SCM:                &fakeCleanupSCM{},
+			},
+		},
+		{
+			name: "missing URLHarnessRepoName",
+			world: &world.World{
+				RepoOwner:           "org",
+				RepoName:            "repo",
+				URLHarnessRepoOwner: "org",
+				SCM:                 &fakeCleanupSCM{},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			scm := tt.world.SCM.(*fakeCleanupSCM)
+			CleanupScenario(tt.world)
+			assert.Empty(t, scm.deletedRepos, "repo deletion should be skipped when hosting repo fields are missing")
+		})
+	}
+}
+
+func TestCleanupScenario_DeleteHostingRepoNotFound_SilentlyIgnored(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("delete repo: %w", forge.ErrNotFound)}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host-repo",
+		SCM:                 scmDriver,
+		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+
+	for _, msg := range logged {
+		assert.NotContains(t, msg, "harness-hosting repo", "ErrNotFound should be silently ignored")
+	}
+}
+
+func TestCleanupScenario_DeleteHostingRepoError_Logged(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("server error")}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host-repo",
+		SCM:                 scmDriver,
+		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+
+	// The shared deleteRepoErr causes log messages for both hosting repo
+	// (no fork fields set, so only hosting repo cleanup fires).
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "delete harness-hosting repo org/host-repo")
+	assert.Contains(t, logged[0], "server error")
+}
+
 // fakeCleanupSCM implements scm.Driver for cleanup unit tests.
 type fakeCleanupSCM struct {
 	closedIssues    []closedIssueRecord

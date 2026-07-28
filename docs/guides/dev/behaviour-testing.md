@@ -214,7 +214,7 @@ URL dispatch scenarios test `FetchAgentHarness` URL resolution for agents whose 
 
 The `Given a harness-hosting repository "<name>"` step creates a public repository in the pool org to host harness YAML files. The repo is:
 
-- **Long-lived** — created once (idempotently) and reused across scenarios and CI runs. Do not delete it between scenarios.
+- **Ephemeral / per-scenario** — created per-scenario and deleted by `CleanupScenario` (same lifecycle as fork repos). When a leased repo is in use, the logical name is remapped via `resolveHostRepoName` (e.g. `"url-harness-host"` + leased `"test-repo-07"` → `"test-repo-07-url-harness-host"`) so parallel scenarios each get their own isolated hosting repo.
 - **Public** — required for unauthenticated `raw.githubusercontent.com` access. The step calls `EnsureRepoPublic` to detect and fix org policies that force repos private.
 
 ### URL-sourced custom harness

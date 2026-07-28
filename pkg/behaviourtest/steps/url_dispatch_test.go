@@ -121,6 +121,50 @@ func TestGivenHarnessHostingRepo_FailsWhenNotPublic(t *testing.T) {
 	assert.Contains(t, err.Error(), "org enforces private repos")
 }
 
+// --- resolveHostRepoName unit tests ---
+
+func TestResolveHostRepoName_NoLease(t *testing.T) {
+	w := &world.World{RepoName: "test-repo"}
+	got := resolveHostRepoName(w, "url-harness-host")
+	assert.Equal(t, "url-harness-host", got, "without lease, logical name is unchanged")
+}
+
+func TestResolveHostRepoName_LeasedRepoMaps(t *testing.T) {
+	w := &world.World{
+		LeasedRepoName: "test-repo-07",
+		RepoName:       "test-repo-07",
+	}
+	got := resolveHostRepoName(w, "url-harness-host")
+	assert.Equal(t, "test-repo-07-url-harness-host", got,
+		"leased repo should remap url-harness-host to test-repo-07-url-harness-host")
+}
+
+func TestResolveHostRepoName_DifferentLease(t *testing.T) {
+	w := &world.World{
+		LeasedRepoName: "test-repo-03",
+		RepoName:       "test-repo-03",
+	}
+	got := resolveHostRepoName(w, "my-host")
+	assert.Equal(t, "test-repo-03-my-host", got,
+		"should prefix any logical name with leased repo name")
+}
+
+func TestGivenHarnessHostingRepo_LeasedRepoResolvesHostName(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}, repos: map[string]bool{}}
+	w := &world.World{
+		Org:            "org",
+		RepoOwner:      "org",
+		RepoName:       "test-repo-07",
+		LeasedRepoName: "test-repo-07",
+		SCM:            scm,
+	}
+	err := givenHarnessHostingRepo(w, "url-harness-host")
+	require.NoError(t, err)
+	assert.Equal(t, "test-repo-07-url-harness-host", w.URLHarnessRepoName,
+		"world field should contain the resolved host repo name")
+	assert.Equal(t, "org", w.URLHarnessRepoOwner)
+}
+
 func TestGivenURLSourcedCustomHarness_Validation(t *testing.T) {
 	w := &world.World{}
 	require.Error(t, givenURLSourcedCustomHarness(w, "", "doc", urlHarnessOpts{}))

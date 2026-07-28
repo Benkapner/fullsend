@@ -47,6 +47,18 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- URL harness hosting repo cleanup ---
+	// Hosting repos are ephemeral: created per-scenario and deleted here
+	// (same lifecycle as fork repos). Guard against deleting the enrolled
+	// test repo itself.
+	if w.URLHarnessRepoOwner != "" && w.URLHarnessRepoName != "" && w.URLHarnessRepoName != w.RepoName {
+		if err := w.SCM.DeleteRepo(ctx, w.URLHarnessRepoOwner, w.URLHarnessRepoName); err != nil {
+			if !forge.IsNotFound(err) {
+				worldLogf(w, "behaviour cleanup: delete harness-hosting repo %s/%s: %v", w.URLHarnessRepoOwner, w.URLHarnessRepoName, err)
+			}
+		}
+	}
+
 	// --- Artifact cleanup ---
 	if w.ArtifactDir != "" && shouldRemoveArtifactDir(w.ArtifactDir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
 		if err := os.RemoveAll(w.ArtifactDir); err != nil {

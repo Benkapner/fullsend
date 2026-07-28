@@ -40,9 +40,12 @@ type urlHarnessOpts struct {
 // givenHarnessHostingRepo creates a public repository to host URL-sourced
 // harness YAML files. The repo is created in the same org as the test
 // repository. It is idempotent — if the repo already exists, it returns
-// without error. The hosting repo is long-lived (like fork repos) and
-// is NOT deleted per-scenario; unique per-scenario harness paths make
-// reuse safe.
+// without error.
+//
+// The hosting repo is ephemeral: created per-scenario and deleted by
+// CleanupScenario (same lifecycle as fork repos). When a leased repo is
+// in use, the logical name is remapped via resolveHostRepoName so each
+// parallel scenario gets its own isolated hosting repo.
 func givenHarnessHostingRepo(w *world.World, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -54,25 +57,47 @@ func givenHarnessHostingRepo(w *world.World, name string) error {
 		return fmt.Errorf("org must be set before creating harness-hosting repo")
 	}
 
+	resolved := resolveHostRepoName(w, name)
+
 	ctx := context.Background()
-	if err := w.SCM.CreateRepo(ctx, org, name, "behaviour test: URL harness host"); err != nil {
+	if err := w.SCM.CreateRepo(ctx, org, resolved, "behaviour test: URL harness host"); err != nil {
 		return fmt.Errorf("creating harness-hosting repo: %w", err)
 	}
 
 	// Set world fields immediately after CreateRepo so that cleanup
 	// can reference the repo if subsequent steps fail.
 	w.URLHarnessRepoOwner = org
-	w.URLHarnessRepoName = name
+	w.URLHarnessRepoName = resolved
 
 	// The repo must be public so raw.githubusercontent.com URLs are accessible
 	// without authentication. Orgs may force repos private despite the
 	// CreateRepo(private=false) request; detect and fix that immediately rather
 	// than letting the scenario hang later when the URL fetch fails silently.
-	if err := w.SCM.EnsureRepoPublic(ctx, org, name); err != nil {
-		return fmt.Errorf("harness-hosting repo %s/%s must be public for URL-sourced dispatch: %w", org, name, err)
+	if err := w.SCM.EnsureRepoPublic(ctx, org, resolved); err != nil {
+		return fmt.Errorf("harness-hosting repo %s/%s must be public for URL-sourced dispatch: %w", org, resolved, err)
 	}
 
 	return nil
+}
+
+// resolveHostRepoName maps a logical harness-hosting repo name from a
+// Gherkin feature file to the actual GitHub repository name. When a
+// leased repo is in use (w.LeasedRepoName is set), the logical name
+// is prefixed with the leased repo name so each parallel scenario gets
+// its own isolated hosting repository.
+//
+// This mirrors resolveForkName in fork.go — both use the leased repo
+// name to namespace ephemeral repos created per-scenario.
+//
+// Examples:
+//
+//	"url-harness-host" + leased "test-repo-07" → "test-repo-07-url-harness-host"
+//	"url-harness-host" + no lease              → "url-harness-host" (unchanged)
+func resolveHostRepoName(w *world.World, logicalName string) string {
+	if w.LeasedRepoName == "" {
+		return logicalName
+	}
+	return w.RepoName + "-" + logicalName
 }
 
 // givenURLSourcedCustomHarness commits a harness YAML to the harness-hosting
