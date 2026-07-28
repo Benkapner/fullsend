@@ -388,6 +388,21 @@ func TestProvisioner_Teardown_PreviewWithAlias(t *testing.T) {
 	assert.Empty(t, fake.deleteCalls, "preview-alias teardown must not call Delete")
 }
 
+func TestProvisioner_Provision_DurableWithPreviewAliasRejected(t *testing.T) {
+	sourceDir := createFakeWorkerSourceDir(t)
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployDurable,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+	}, &fakeWranglerRunner{})
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires DeployMode=DeployPreview")
+}
+
 func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
 	fake := &fakeWranglerRunner{}
 	p := NewProvisioner(Config{
