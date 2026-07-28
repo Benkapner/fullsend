@@ -1,12 +1,12 @@
 # Roadmap
 
-Same commitments as the July 28 planning board:
+Where fullsend is going, organized by delivery horizon from the July 28, 2026 planning session:
 
 - **Now** — August 2026 window (~30 days)
 - **Next** — matters, but not promised this month
 - **Later** — on the horizon
 
-Order is board order, not rank. Tracking spans [fullsend-ai/fullsend](https://github.com/fullsend-ai/fullsend) and [fullsend-ai/agents](https://github.com/fullsend-ai/agents) (best-effort). The team also does maintenance and platform work that is not listed here.
+Items are listed in planning order, not priority rank. Tracking spans [fullsend-ai/fullsend](https://github.com/fullsend-ai/fullsend) and [fullsend-ai/agents](https://github.com/fullsend-ai/agents) (best-effort). The team also does maintenance and platform work that is not listed here.
 
 ## Now
 
