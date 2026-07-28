@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -744,6 +745,15 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
 			}
 			localPath = treePath
+			if isScriptLockField(lockDep.Field) {
+				scriptName := path.Base(lockDep.URL)
+				dirName := path.Base(path.Dir(lockDep.URL))
+				namedPath, symlinkErr := fetch.CacheNamedSymlink(treePath, dirName)
+				if symlinkErr != nil {
+					return resolve.ResolveResult{}, fmt.Errorf("naming cached script dir for %s: %w", lockDep.Field, symlinkErr)
+				}
+				localPath = filepath.Join(namedPath, scriptName)
+			}
 		} else {
 			content, _, err := fetch.CacheGet(workspaceRoot, lockDep.SHA256)
 			if err != nil {
@@ -923,4 +933,16 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		Profiles:  profiles,
 		Providers: providers,
 	}, nil
+}
+
+func isScriptLockField(field string) bool {
+	switch {
+	case field == "pre_script" || field == "post_script" || field == "validation_loop.script":
+		return true
+	case strings.HasPrefix(field, "forge.") &&
+		(strings.HasSuffix(field, ".pre_script") || strings.HasSuffix(field, ".post_script") || strings.HasSuffix(field, ".validation_loop.script")):
+		return true
+	default:
+		return false
+	}
 }
