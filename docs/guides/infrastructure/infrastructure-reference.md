@@ -31,43 +31,43 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  └──────────┬───────────────────────────────────────┘           │
 │             │                                                   │
 │             ▼                                                   │
-│  ┌──────────────────────────────────────────────────┐           │
-│  │              GCF: Token Mint                      │           │
-│  │                                                   │           │
-│  │  1. Prevalidate OIDC JWT                          │           │
-│  │     ├─ Check iss == token.actions.githubusercontent.com      │
-│  │     ├─ Extract repository_owner → ALLOWED_ORGS check       │
-│  │     │   (explicit org list, or * for public mint mode)       │
-│  │     └─ Validate job_workflow_ref provenance                  │
-│  │        (tight: .fullsend / upstream / per-repo;              │
-│  │         public: upstream fullsend-ai/fullsend only)          │
-│  │                                                   │           │
-│  │  2. STS Token Exchange                            │           │
-│  │     ├─ POST securitytoken.googleapis.com          │           │
-│  │     │   grant_type=urn:ietf:params:oauth:         │           │
-│  │     │   grant-type:token-exchange                 │           │
-│  │     ├─ WIF pool validates OIDC token              │           │
-│  │     └─ Returns GCP federated access token         │           │
-│  │                                                   │           │
-│  │  3. Lookup PEM from Secret Manager                │           │
-│  │     ├─ Secret name: fullsend-{role}-app-pem       │           │
-│  │     └─ Returns PEM private key bytes              │           │
-│  │                                                   │           │
-│  │  4. Generate GitHub App JWT                       │           │
-│  │     ├─ Sign with PEM key (RS256)                  │           │
-│  │     ├─ App ID from ROLE_APP_IDS env               │           │
-│  │     └─ 10-minute expiry                           │           │
-│  │                                                   │           │
-│  │  5. Find Installation                             │           │
-│  │     ├─ GET /app/installations                     │           │
-│  │     └─ Match by org login                         │           │
-│  │                                                   │           │
-│  │  6. Create Scoped Installation Token              │           │
-│  │     ├─ POST /installations/{id}/access_tokens     │           │
-│  │     ├─ Scope to requested repos[]                 │           │
-│  │     └─ Apply RolePermissions() minimum set         │           │
-│  │                                                   │           │
-│  └──────────┬───────────────────────────────────────┘           │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │              GCF: Token Mint                             │   │
+│  │                                                          │   │
+│  │  1. Prevalidate OIDC JWT                                 │   │
+│  │     ├─ Check iss == token.actions.githubusercontent.com  │   │
+│  │     ├─ Extract repository_owner → ALLOWED_ORGS check     │   │
+│  │     │   (explicit org list, or * for public mint mode)   │   │
+│  │     └─ Validate job_workflow_ref provenance              │   │
+│  │        (tight: .fullsend / upstream / per-repo;          │   │
+│  │         public: upstream fullsend-ai/fullsend only)      │   │
+│  │                                                          │   │
+│  │  2. STS Token Exchange                                   │   │
+│  │     ├─ POST securitytoken.googleapis.com                 │   │
+│  │     │   grant_type=urn:ietf:params:oauth:                │   │
+│  │     │   grant-type:token-exchange                        │   │
+│  │     ├─ WIF pool validates OIDC token                     │   │
+│  │     └─ Returns GCP federated access token                │   │
+│  │                                                          │   │
+│  │  3. Lookup PEM from Secret Manager                       │   │
+│  │     ├─ Secret name: fullsend-{role}-app-pem              │   │
+│  │     └─ Returns PEM private key bytes                     │   │
+│  │                                                          │   │
+│  │  4. Generate GitHub App JWT                              │   │
+│  │     ├─ Sign with PEM key (RS256)                         │   │
+│  │     ├─ App ID from ROLE_APP_IDS env                      │   │
+│  │     └─ 10-minute expiry                                  │   │
+│  │                                                          │   │
+│  │  5. Find Installation                                    │   │
+│  │     ├─ GET /app/installations                            │   │
+│  │     └─ Match by org login                                │   │
+│  │                                                          │   │
+│  │  6. Create Scoped Installation Token                     │   │
+│  │     ├─ POST /installations/{id}/access_tokens            │   │
+│  │     ├─ Scope to requested repos[]                        │   │
+│  │     └─ Apply RolePermissions() minimum set               │   │
+│  │                                                          │   │
+│  └──────────┬───────────────────────────────────────────────┘   │
 │             │                                                   │
 │             ▼                                                   │
 │  Response: { "token": "ghs_...", "expires_at": "..." }          │
@@ -147,7 +147,7 @@ Inference authentication uses GCP Workload Identity Federation (WIF) to allow Gi
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│               Inference Authentication Flow                  │
+│               Inference Authentication Flow                 │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  GitHub Actions Runner                                      │
@@ -157,19 +157,19 @@ Inference authentication uses GCP Workload Identity Federation (WIF) to allow Gi
 │  └──────────┬──────────┘                                    │
 │             │                                               │
 │             ▼                                               │
-│  ┌─────────────────────────────────┐                        │
-│  │ GCP Security Token Service (STS)│                        │
-│  │                                 │                        │
-│  │ WIF Pool: fullsend-inference     │                        │
-│  │ WIF Provider: github-oidc       │                        │
-│  │                                 │                        │
-│  │ Validates OIDC issuer:          │                        │
-│  │   token.actions.githubusercontent.com                    │
-│  │                                 │                        │
-│  │ Attribute mapping:              │                        │
-│  │   sub → assertion.sub           │                        │
-│  │   repo → assertion.repository   │                        │
-│  └──────────┬──────────────────────┘                        │
+│  ┌──────────────────────────────────────────┐               │
+│  │ GCP Security Token Service (STS)         │               │
+│  │                                          │               │
+│  │ WIF Pool: fullsend-inference             │               │
+│  │ WIF Provider: github-oidc                │               │
+│  │                                          │               │
+│  │ Validates OIDC issuer:                   │               │
+│  │   token.actions.githubusercontent.com    │               │
+│  │                                          │               │
+│  │ Attribute mapping:                       │               │
+│  │   sub → assertion.sub                    │               │
+│  │   repo → assertion.repository            │               │
+│  └──────────┬───────────────────────────────┘               │
 │             │                                               │
 │             ▼                                               │
 │  ┌─────────────────────────────────┐                        │
@@ -259,11 +259,11 @@ The GCF provisioner handles full GCP infrastructure deployment:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│               GCF Provisioner: Provision() Flow                  │
+│               GCF Provisioner: Provision() Flow                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌───────────────────┐                                          │
-│  │ Get GCP project   │ resourcemanager.projects.get              │
+│  │ Get GCP project   │ resourcemanager.projects.get             │
 │  │ number            │                                          │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
@@ -273,7 +273,7 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
-│  │ Create WIF Pool   │ fullsend-inference (or fullsend-pool)     │
+│  │ Create WIF Pool   │ fullsend-inference (or fullsend-pool)    │
 │  │                   │ (skip if exists)                         │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
@@ -292,7 +292,7 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
 │  │ Store PEMs in     │ fullsend-{role}-app-pem                  │
-│  │ Secret Manager    │ once per agent role (shared)           │
+│  │ Secret Manager    │ once per agent role (shared)             │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
@@ -313,8 +313,8 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  │                   │ POST /v1/token (expect 401)              │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
-│  Return: FULLSEND_MINT_URL = https://{region}-{project}.       │
-│          cloudfunctions.net/fullsend-mint                        │
+│  Return: FULLSEND_MINT_URL = https://{region}-{project}.        │
+│          cloudfunctions.net/fullsend-mint                       │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```

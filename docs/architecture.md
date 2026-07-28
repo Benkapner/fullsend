@@ -629,14 +629,14 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ╔═══════════════════════════════════════════════════════════════╗
                  ║ DISPATCH WORKFLOW (.fullsend repo, dispatch.yml)              ║
                  ║                                                               ║
-                 ║ Mints OIDC token → Cloud Function (token mint) → scoped      ║
-                 ║ GitHub App installation token per agent role.                  ║
+                 ║ Mints OIDC token → Cloud Function (token mint) → scoped       ║
+                 ║ GitHub App installation token per agent role.                 ║
                  ║ Dispatches per-role agent workflows (code.yml, triage.yml).   ║
                  ╚═══════════════════════════════════════════════════════════════╝
                        │
                        ▼
                  ╔═══════════════════════════════════════════════════════════════╗
-                 ║ AGENT WORKFLOW (.fullsend repo, e.g. code.yml)               ║
+                 ║ AGENT WORKFLOW (.fullsend repo, e.g. code.yml)                ║
                  ║                                                               ║
                  ║ Validates source repo is enrolled in config.yaml.             ║
                  ║ Uses scoped GitHub App tokens:                                ║
