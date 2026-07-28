@@ -12,7 +12,9 @@ Feature: Fork PR bash routing smoke
     Given a dummy agent that would:
       | description          | op            | args                                                       |
       | Prove bash routing   | write_fixture | output/bash-routing-ok.json, fixtures/dispatch/ok.json     |
+      | Emit review JSON     | write_fixture | output/agent-result.json, fixtures/review/comment.json     |
     When a fork pull request is opened
     And the fork pull request is labeled "ready-for-review"
     Then the harness "review" workflow completes successfully
     And the agent will succeed to Prove bash routing
+    And the agent will succeed to Emit review JSON
