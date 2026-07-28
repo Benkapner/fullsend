@@ -289,6 +289,8 @@ type Client interface {
 	ListOrgRepos(ctx context.Context, org string, includePrivate bool) ([]Repository, error)
 	GetRepo(ctx context.Context, owner, repo string) (*Repository, error)
 	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
+	// UpdateRepoVisibility sets a repository's visibility to public or private.
+	UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error
 	DeleteRepo(ctx context.Context, owner, repo string) error
 
 	// FindExistingFork checks whether the authenticated user already has

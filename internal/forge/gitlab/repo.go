@@ -212,6 +212,16 @@ func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description stri
 	}, nil
 }
 
+func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error {
+	visibility := "public"
+	if private {
+		visibility = "private"
+	}
+	body := map[string]string{"visibility": visibility}
+	_, err := c.put(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)), body)
+	return err
+}
+
 func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)))
 }

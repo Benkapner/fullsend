@@ -528,6 +528,15 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 	}, nil
 }
 
+// UpdateRepoVisibility sets a repository's visibility to public or private.
+func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error {
+	body := struct {
+		Private bool `json:"private"`
+	}{Private: private}
+	_, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo), body)
+	return err
+}
+
 // DeleteRepo deletes a repository.
 func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
