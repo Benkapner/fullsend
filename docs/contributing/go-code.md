@@ -77,6 +77,20 @@ Convention: use 12 goroutines. This is high enough to trigger races reliably but
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
 
+## Running the fullsend CLI
+
+When agents (or humans working from this checkout) need the fullsend CLI, invoke it from the **repo root** with:
+
+```bash
+go run ./cmd/fullsend <subcommand> …
+```
+
+**Do not** use a preinstalled `fullsend` from mise, `$PATH`, `GOBIN`, `go install`, or another clone. Those binaries often lag the branch you are on. Enrollment and other mint-mutating commands rewrite Cloud Run env vars; a stale CLI can apply obsolete merge logic against the hosted mint.
+
+This already happened: an enrollment for `crc-org/crc` used a June-era mise `fullsend` that still wrote org-scoped `ROLE_APP_IDS` keys and re-derived `ALLOWED_ROLES` from slash-keyed entries only. Shared role-only keys such as `e2e` and `fix` were ignored, so the mint dropped those roles from `ALLOWED_ROLES` and e2e broke until the mint was restored. Current tree enroll is safer, but the durable fix for agents is to always run the CLI from source.
+
+`make go-build` / `bin/fullsend` is fine when you intentionally build **this** checkout first. Prefer `go run` unless you have a reason to keep a built binary.
+
 ## Running e2e tests
 
 The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Pool-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.

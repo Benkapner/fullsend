@@ -11,6 +11,7 @@ Fullsend is a platform for fully autonomous agentic development for Git-hosted o
 - Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
 - The target audience for problem documents is any contributor community considering autonomous agents — keep language accessible and avoid presuming solutions.
 - Always stage your changes before running `make lint` and fix any failures. Pre-commit only checks staged files — without staging first, it stashes your work and finds nothing to lint.
+- When invoking the fullsend CLI from this checkout, **prefer** `go run ./cmd/fullsend …` from the repo root. Do **not** use a `fullsend` binary from mise, `$PATH`, `go install`, or another checkout — those often lag this tree. A stale CLI once rewrote hosted-mint `ALLOWED_ROLES` during enrollment (dropping `e2e`/`fix`) and broke e2e. Details: [Go Code](docs/contributing/go-code.md#running-the-fullsend-cli).
 - You **must** read and follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages and PR titles. Getting the prefix right is not optional — GoReleaser uses PR titles to build release notes. Breaking changes **must** carry the `!` suffix in both commit messages and PR titles; a missing `!` is an important-severity review finding.
 - This repository requires a [Developer Certificate of Origin (DCO)](https://developercertificate.org/). Human-proposed commits **must** be signed off: use `git commit -s` (or add `Signed-off-by: Your Name <email>` as a trailer). Human-driven agent sessions (e.g., using Claude Code locally) should also sign off — the human directing the session is the one certifying the DCO. **Autonomous agent commits are exempt** and must never supply the DCO with `-s` or with `Signed-off-by`. These agents commit using the GitHub App's bot identity, which the [Probot DCO app](https://github.com/apps/dco) auto-skips.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
@@ -22,7 +23,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 
 | File | When to read |
 |------|-------------|
-| [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, and suite-timeout policy |
+| [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, suite-timeout policy, and preferring `go run` for the CLI |
 | [Behaviour Testing](docs/guides/dev/behaviour-testing.md) | Modifying behaviour test repo provisioning, fork handling, or workflow dispatch — covers forge API constraints (`auto_init`, fork name derivation, Actions readiness, CI timeout budgeting) |
 | [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls and jq patterns |
 | [Forge Abstraction](docs/contributing/forge-abstraction.md) | Adding forge operations — covers `forge.Client` interface rules |
