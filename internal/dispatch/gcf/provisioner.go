@@ -197,6 +197,9 @@ func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("project ID is required")
 	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
+	}
 	return p.gcpAPI.CreateServiceAccount(ctx, p.cfg.ProjectID, saName, "Fullsend token mint Cloud Function")
 }
 
@@ -244,6 +247,9 @@ func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
 	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
+	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
 	}
@@ -259,6 +265,9 @@ func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
 func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -299,6 +308,9 @@ func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) err
 func (p *Provisioner) RemoveRoleFromMint(ctx context.Context, role string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)

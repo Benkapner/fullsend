@@ -227,6 +227,15 @@ func TestEnsureMintServiceAccount_MissingProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "project ID is required")
 }
 
+func TestEnsureMintServiceAccount_MalformedProjectID(t *testing.T) {
+	for _, id := range []string{"UPPER_CASE", "ab", "valid-but-has-special!chars"} {
+		p := newTestProvisioner(Config{ProjectID: id}, newFakeGCFClient())
+		err := p.EnsureMintServiceAccount(context.Background())
+		require.Error(t, err, "project ID %q should be rejected", id)
+		assert.Contains(t, err.Error(), "invalid GCP project ID")
+	}
+}
+
 // --- self-managed provision tests ---
 
 func TestProvisioner_Provision_FullFlow(t *testing.T) {
@@ -2325,7 +2334,7 @@ func TestGetExistingRoleAppIDs_ReturnsMap(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	m, err := p.GetExistingRoleAppIDs(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
@@ -2338,7 +2347,7 @@ func TestGetExistingRoleAppIDs_NoFunction(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = nil
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	m, err := p.GetExistingRoleAppIDs(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, m)
@@ -2351,7 +2360,7 @@ func TestGetExistingRoleAppIDs_EmptyEnvVars(t *testing.T) {
 		EnvVars: map[string]string{},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	m, err := p.GetExistingRoleAppIDs(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, m)
@@ -2366,7 +2375,7 @@ func TestGetExistingRoleAppIDs_MalformedJSON(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	m, err := p.GetExistingRoleAppIDs(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, m)
@@ -2376,7 +2385,7 @@ func TestGetExistingRoleAppIDs_GetFunctionError(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetFunction"] = fmt.Errorf("permission denied")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	m, err := p.GetExistingRoleAppIDs(context.Background())
 	require.Error(t, err)
 	assert.Nil(t, m)
@@ -2392,7 +2401,7 @@ func TestGetFunctionURL_ReturnsURL(t *testing.T) {
 		State: "ACTIVE",
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	url, err := p.GetFunctionURL(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "https://fullsend-mint-abc123.run.app", url)
@@ -2402,7 +2411,7 @@ func TestGetFunctionURL_NoFunction(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = nil
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	_, err := p.GetFunctionURL(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
@@ -2415,7 +2424,7 @@ func TestGetFunctionURL_EmptyURI(t *testing.T) {
 		URI:   "",
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	_, err := p.GetFunctionURL(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
@@ -2489,7 +2498,7 @@ func TestEnsureOrgInMint_OrgAlreadyCovered(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2506,7 +2515,7 @@ func TestEnsureOrgInMint_AddsNewOrg(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2525,7 +2534,7 @@ func TestEnsureOrgInMint_FunctionNotFound(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetFunction"] = fmt.Errorf("function not found")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting mint function")
@@ -2540,7 +2549,7 @@ func TestEnsureOrgInMint_URLMismatch(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint URL mismatch")
@@ -2557,7 +2566,7 @@ func TestEnsureOrgInMint_OrgAlreadyEnrolled_NoRoleChange(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2574,7 +2583,7 @@ func TestEnsureOrgInMint_UpdateFails(t *testing.T) {
 	}
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating mint env vars")
@@ -2592,7 +2601,7 @@ func TestEnsureOrgInMint_PartialFailureSurfacesRevision(t *testing.T) {
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
 	fake.updateServiceRevision = "fullsend-mint-00115-abc"
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "revision fullsend-mint-00115-abc created but traffic routing may have failed")
@@ -2608,7 +2617,7 @@ func TestEnsureOrgInMint_EmptyRoleAppIDs(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2619,7 +2628,7 @@ func TestEnsureOrgInMint_NilReturn(t *testing.T) {
 	fake := newFakeGCFClient()
 	// functionInfo defaults to nil, simulating a 404 (nil, nil) return.
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint function not found")
@@ -2636,7 +2645,7 @@ func TestEnsureOrgInMint_LowercasesOrg(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "AcmeCorp")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2655,7 +2664,7 @@ func TestEnsureOrgInMint_DefaultsAllowedWorkflowFiles(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.Equal(t, "*", fake.lastUpdateServiceEnvVars["ALLOWED_WORKFLOW_FILES"])
@@ -2673,7 +2682,7 @@ func TestEnsureOrgInMint_PreservesExistingAllowedWorkflowFiles(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.Equal(t, ".github/workflows/ci.yml", fake.lastUpdateServiceEnvVars["ALLOWED_WORKFLOW_FILES"])
@@ -2701,7 +2710,7 @@ func TestEnsureOrgInMint_ReadsFromTrafficServingRevision(t *testing.T) {
 		"ALLOWED_ROLES": "coder",
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
@@ -2728,7 +2737,7 @@ func TestEnsureOrgInMint_TrafficEnvVarsError(t *testing.T) {
 	}
 	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("Cloud Run API unavailable")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
@@ -2764,7 +2773,7 @@ func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
 		"ROLE_APP_IDS": `{}`,
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2787,7 +2796,7 @@ func TestEnsureOrgInMint_PublicModeNoOp(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2802,7 +2811,7 @@ func TestRegisterPerRepoWIF_PublicModeRejected(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "public mode")
@@ -2818,7 +2827,7 @@ func TestRemoveOrgFromMint_PublicModeRejected(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "acme-corp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "public mode")
@@ -2832,7 +2841,7 @@ func TestRegisterPerRepoWIF_AddsNewRepo(t *testing.T) {
 		EnvVars: map[string]string{},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2848,7 +2857,7 @@ func TestRegisterPerRepoWIF_AppendsToExisting(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/second-repo")
 	require.NoError(t, err)
 	assert.Equal(t, "acme-corp/first-repo,acme-corp/second-repo", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
@@ -2863,7 +2872,7 @@ func TestRegisterPerRepoWIF_Idempotent(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
@@ -2873,7 +2882,7 @@ func TestRegisterPerRepoWIF_ServiceNotFound(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("unexpected status 404 getting Cloud Run service")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
@@ -2886,14 +2895,14 @@ func TestRegisterPerRepoWIF_LowercasesRepo(t *testing.T) {
 		EnvVars: map[string]string{},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "Acme-Corp/My-Service")
 	require.NoError(t, err)
 	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
 }
 
 func TestRegisterPerRepoWIF_RejectsInvalidFormat(t *testing.T) {
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, newFakeGCFClient())
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, newFakeGCFClient())
 
 	tests := []struct {
 		name, repo string
@@ -2918,7 +2927,7 @@ func TestRegisterPerRepoWIF_NilEnvVars(t *testing.T) {
 		EnvVars: nil,
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.NoError(t, err)
 	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
@@ -2928,7 +2937,7 @@ func TestRegisterPerRepoWIF_GetFunctionError(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("permission denied")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
@@ -2943,7 +2952,7 @@ func TestRegisterPerRepoWIF_PartialFailureSurfacesRevision(t *testing.T) {
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
 	fake.updateServiceRevision = "fullsend-mint-00116-def"
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "revision fullsend-mint-00116-def created but traffic routing may have failed")
@@ -2963,7 +2972,7 @@ func TestRegisterPerRepoWIF_ReadsFromTrafficServingRevision(t *testing.T) {
 		"ALLOWED_ORGS":       "existing-org",
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "new-org/new-repo")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
@@ -2986,7 +2995,7 @@ func TestRemoveOrgFromMint_RemovesOrgOnly(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "acme")
 	require.NoError(t, err)
 
@@ -3008,7 +3017,7 @@ func TestRemoveOrgFromMint_FunctionNotFound(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = nil
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "acme")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
@@ -3018,7 +3027,7 @@ func TestRemoveOrgFromMint_GetFunctionError(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetFunction"] = fmt.Errorf("permission denied")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "acme")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting mint function")
@@ -3034,7 +3043,7 @@ func TestRemoveOrgFromMint_LowercasesOrg(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "ACME")
 	require.NoError(t, err)
 
@@ -3055,7 +3064,7 @@ func TestRemoveOrgFromMint_ReadsFromTrafficServingRevision(t *testing.T) {
 		"ALLOWED_ROLES": "coder",
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "remove-org")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
@@ -3081,7 +3090,7 @@ func TestRemoveOrgFromMint_UpdateFails(t *testing.T) {
 	}
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "acme")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "removing org from mint env vars")
@@ -3099,7 +3108,7 @@ func TestRemoveOrgFromMint_PartialFailureSurfacesRevision(t *testing.T) {
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
 	fake.updateServiceRevision = "fullsend-mint-00117-ghi"
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveOrgFromMint(context.Background(), "acme")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "revision fullsend-mint-00117-ghi created but traffic routing may have failed")
@@ -3117,7 +3126,7 @@ func TestRemoveRepoFromMint_RemovesRepo(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRepoFromMint(context.Background(), "acme/first")
 	require.NoError(t, err)
 
@@ -3134,7 +3143,7 @@ func TestRemoveRepoFromMint_LastRepo(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRepoFromMint(context.Background(), "acme/only")
 	require.NoError(t, err)
 
@@ -3145,7 +3154,7 @@ func TestRemoveRepoFromMint_FunctionNotFound(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = nil
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRepoFromMint(context.Background(), "acme/repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint function not found")
@@ -3164,7 +3173,7 @@ func TestRemoveRepoFromMint_ReadsFromTrafficServingRevision(t *testing.T) {
 		"ALLOWED_ORGS":       "acme",
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRepoFromMint(context.Background(), "acme/remove-repo")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
@@ -3182,7 +3191,7 @@ func TestRemoveRepoFromMint_LowercasesRepo(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRepoFromMint(context.Background(), "Acme/Widget")
 	require.NoError(t, err)
 
@@ -3200,7 +3209,7 @@ func TestRemoveRepoFromMint_PartialFailureSurfacesRevision(t *testing.T) {
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
 	fake.updateServiceRevision = "fullsend-mint-00118-jkl"
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRepoFromMint(context.Background(), "acme/first")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "revision fullsend-mint-00118-jkl created but traffic routing may have failed")
@@ -3211,7 +3220,7 @@ func TestRemoveRepoFromMint_PartialFailureSurfacesRevision(t *testing.T) {
 
 func TestDisableWIFProvider_Success(t *testing.T) {
 	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, fake)
 	err := p.DisableWIFProvider(context.Background(), "gh-acme-widget")
 	require.NoError(t, err)
 
@@ -3223,7 +3232,7 @@ func TestDisableWIFProvider_GetProjectNumberError(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetProjectNumber"] = fmt.Errorf("permission denied")
 
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, fake)
 	err := p.DisableWIFProvider(context.Background(), "gh-acme-widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting project number")
@@ -3233,7 +3242,7 @@ func TestDisableWIFProvider_GetProjectNumberError(t *testing.T) {
 
 func TestDeleteWIFProvider_Success(t *testing.T) {
 	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, fake)
 	err := p.DeleteWIFProvider(context.Background(), "gh-acme-widget")
 	require.NoError(t, err)
 
@@ -3245,7 +3254,7 @@ func TestDeleteWIFProvider_GetProjectNumberError(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetProjectNumber"] = fmt.Errorf("permission denied")
 
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, fake)
 	err := p.DeleteWIFProvider(context.Background(), "gh-acme-widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting project number")
@@ -3411,7 +3420,7 @@ func TestEnsureOrgInMint_DerivesAllowedRolesWhenEmpty(t *testing.T) {
 		"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
 	assert.Equal(t, "coder,triage", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
@@ -3544,7 +3553,7 @@ func TestAddRoleToMint_MergesRoleAppIDs(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.AddRoleToMint(context.Background(), "review", "200")
 	require.NoError(t, err)
 
@@ -3563,6 +3572,15 @@ func TestAddRoleToMint_MissingProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
 
+func TestAddRoleToMint_MalformedProjectID(t *testing.T) {
+	for _, id := range []string{"UPPER_CASE", "ab", "valid-but-has-special!chars"} {
+		p := NewProvisioner(Config{ProjectID: id, Region: "us-central1"}, newFakeGCFClient())
+		err := p.AddRoleToMint(context.Background(), "coder", "123")
+		require.Error(t, err, "project ID %q should be rejected", id)
+		assert.Contains(t, err.Error(), "invalid GCP project ID")
+	}
+}
+
 func TestRemoveRoleFromMint_PrunesRoleAppIDs(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
@@ -3573,7 +3591,7 @@ func TestRemoveRoleFromMint_PrunesRoleAppIDs(t *testing.T) {
 		},
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRoleFromMint(context.Background(), "review")
 	require.NoError(t, err)
 
@@ -3586,7 +3604,7 @@ func TestRemoveRoleFromMint_PrunesRoleAppIDs(t *testing.T) {
 
 func TestDeleteAgentPEM(t *testing.T) {
 	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, fake)
 	err := p.DeleteAgentPEM(context.Background(), "coder")
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "DeleteSecret")
@@ -3594,7 +3612,7 @@ func TestDeleteAgentPEM(t *testing.T) {
 
 func TestDeleteAgentPEM_FixRoleUsesCoderSecret(t *testing.T) {
 	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, fake)
 	err := p.DeleteAgentPEM(context.Background(), "fix")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"fullsend-coder-app-pem"}, fake.deletedSecretIDs)
@@ -3607,6 +3625,15 @@ func TestDeleteAgentPEM_MissingProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
 
+func TestDeleteAgentPEM_MalformedProjectID(t *testing.T) {
+	for _, id := range []string{"UPPER_CASE", "ab", "valid-but-has-special!chars"} {
+		p := NewProvisioner(Config{ProjectID: id}, newFakeGCFClient())
+		err := p.DeleteAgentPEM(context.Background(), "coder")
+		require.Error(t, err, "project ID %q should be rejected", id)
+		assert.Contains(t, err.Error(), "invalid GCP project ID")
+	}
+}
+
 func TestRemoveRoleFromMint_MissingProjectID(t *testing.T) {
 	p := NewProvisioner(Config{}, newFakeGCFClient())
 	err := p.RemoveRoleFromMint(context.Background(), "coder")
@@ -3614,15 +3641,24 @@ func TestRemoveRoleFromMint_MissingProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
 
+func TestRemoveRoleFromMint_MalformedProjectID(t *testing.T) {
+	for _, id := range []string{"UPPER_CASE", "ab", "valid-but-has-special!chars"} {
+		p := NewProvisioner(Config{ProjectID: id, Region: "us-central1"}, newFakeGCFClient())
+		err := p.RemoveRoleFromMint(context.Background(), "coder")
+		require.Error(t, err, "project ID %q should be rejected", id)
+		assert.Contains(t, err.Error(), "invalid GCP project ID")
+	}
+}
+
 func TestAddRoleToMint_InvalidRole(t *testing.T) {
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, newFakeGCFClient())
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, newFakeGCFClient())
 	err := p.AddRoleToMint(context.Background(), "BAD", "123")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid role name")
 }
 
 func TestAddRoleToMint_EmptyAppID(t *testing.T) {
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, newFakeGCFClient())
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, newFakeGCFClient())
 	err := p.AddRoleToMint(context.Background(), "coder", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "app ID is required")
@@ -3631,7 +3667,7 @@ func TestAddRoleToMint_EmptyAppID(t *testing.T) {
 func TestAddRoleToMint_MalformedExistingJSON(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.trafficEnvVars = map[string]string{"ROLE_APP_IDS": "not-json"}
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.AddRoleToMint(context.Background(), "coder", "123")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "merging ROLE_APP_IDS")
@@ -3644,14 +3680,14 @@ func TestAddRoleToMint_UpdateEnvVarsError(t *testing.T) {
 		EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
 	}
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.AddRoleToMint(context.Background(), "review", "200")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating mint env vars")
 }
 
 func TestRemoveRoleFromMint_InvalidRole(t *testing.T) {
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, newFakeGCFClient())
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, newFakeGCFClient())
 	err := p.RemoveRoleFromMint(context.Background(), "BAD")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid role name")
@@ -3660,14 +3696,14 @@ func TestRemoveRoleFromMint_InvalidRole(t *testing.T) {
 func TestRemoveRoleFromMint_MalformedExistingJSON(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.trafficEnvVars = map[string]string{"ROLE_APP_IDS": "not-json"}
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRoleFromMint(context.Background(), "coder")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pruning ROLE_APP_IDS")
 }
 
 func TestDeleteAgentPEM_InvalidRole(t *testing.T) {
-	p := NewProvisioner(Config{ProjectID: "proj1"}, newFakeGCFClient())
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, newFakeGCFClient())
 	err := p.DeleteAgentPEM(context.Background(), "BAD")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid role name")
@@ -3676,7 +3712,7 @@ func TestDeleteAgentPEM_InvalidRole(t *testing.T) {
 func TestDeleteAgentPEM_DeleteFails(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["DeleteSecret"] = fmt.Errorf("permission denied")
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1"}, fake)
 	err := p.DeleteAgentPEM(context.Background(), "coder")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deleting secret")
@@ -3690,7 +3726,7 @@ func TestAddRoleToMint_RevisionRoutingFails(t *testing.T) {
 	}
 	fake.updateServiceRevision = "fullsend-mint-00099"
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("routing failed")
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.AddRoleToMint(context.Background(), "review", "200")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "traffic routing may have failed")
@@ -3707,7 +3743,7 @@ func TestRemoveRoleFromMint_UpdateEnvVarsError(t *testing.T) {
 		},
 	}
 	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.RemoveRoleFromMint(context.Background(), "review")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating mint env vars")
@@ -3721,7 +3757,7 @@ func TestDiscoverMint_FallsBackToCloudRunOnCFForbidden(t *testing.T) {
 		"ROLE_APP_IDS": `{"triage":"123"}`,
 	}
 
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	d, err := p.DiscoverMint(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "https://mint.example.com", d.URL)
