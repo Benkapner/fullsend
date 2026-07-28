@@ -56,4 +56,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/retro.yaml`](../../internal/scaffold/fullsend-repo/harness/retro.yaml)
+[`fullsend-ai/agents` — `harness/retro.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/retro.yaml)

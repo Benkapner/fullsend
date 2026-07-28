@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,18 +12,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
-
-// customizedReviewHarness returns the embedded review scaffold harness with
-// the model field changed, producing a valid diff that only changes a scalar.
-func customizedReviewHarness(t *testing.T, newModel string) string {
-	t.Helper()
-	data, err := scaffold.HarnessContent("review")
-	require.NoError(t, err)
-	return strings.Replace(string(data), "model: opus", "model: "+newModel, 1)
-}
 
 func setupCustomizedDir(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
@@ -477,217 +466,10 @@ func TestMigrateCustomizations_ExecutableScriptMode(t *testing.T) {
 	t.Fatal("scripts/deploy.sh not found in committed files")
 }
 
-func TestBuildModifiedAgentFiles_DiffAbort(t *testing.T) {
-	origSHA := commitSHA
-	commitSHA = "abcdef1234567890abcdef1234567890abcdef12"
-	t.Cleanup(func() { commitSHA = origSHA })
-
-	dir := t.TempDir()
-	customizedBase := filepath.Join(dir, "customized")
-	require.NoError(t, os.MkdirAll(filepath.Join(customizedBase, "harness"), 0o755))
-
-	// Create a customized harness that removes skills from the scaffold base.
-	// The review scaffold harness has skills, so an empty skills list triggers removal.
-	require.NoError(t, os.WriteFile(
-		filepath.Join(customizedBase, "harness", "review.yaml"),
-		[]byte("agent: agents/review.md\nmodel: opus\nimage: ghcr.io/fullsend-ai/fullsend-code:latest\nskills: []\n"),
-		0o644,
-	))
-
-	cfg := func() config.ConfigWriter {
-		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-		c, _ := config.ParseOrgConfigWriter(data)
-		return c
-	}()
-
-	m := agentMigration{
-		name:   "review",
-		action: migrateModified,
-		files:  []string{"harness/review.yaml"},
-	}
-
-	printer := ui.New(io.Discard)
-	_, err := buildModifiedAgentFiles(customizedBase, "customized/", "", m, cfg, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "diff aborted")
-}
-
-func TestBuildModifiedAgentFiles_DevCommitSHAError(t *testing.T) {
-	origSHA := commitSHA
-	commitSHA = "dev"
-	t.Cleanup(func() { commitSHA = origSHA })
-
-	dir := t.TempDir()
-	customizedBase := filepath.Join(dir, "customized")
-	require.NoError(t, os.MkdirAll(filepath.Join(customizedBase, "harness"), 0o755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(customizedBase, "harness", "review.yaml"),
-		[]byte(customizedReviewHarness(t, "sonnet")),
-		0o644,
-	))
-
-	cfg := func() config.ConfigWriter {
-		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-		c, _ := config.ParseOrgConfigWriter(data)
-		return c
-	}()
-
-	m := agentMigration{
-		name:   "review",
-		action: migrateModified,
-		files:  []string{"harness/review.yaml"},
-	}
-
-	printer := ui.New(io.Discard)
-	_, err := buildModifiedAgentFiles(customizedBase, "customized/", "", m, cfg, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot determine base URL")
-}
-
-func TestMigrateCustomizations_ModifiedAgent_DryRun(t *testing.T) {
-	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
-
-	setupCustomizedDir(t, dir, map[string]string{
-		"harness/review.yaml": customizedReviewHarness(t, "sonnet"),
-	})
-
-	printer := ui.New(io.Discard)
-	err := runMigrateCustomizations(context.Background(), dir, "", true, nil, printer)
-	require.NoError(t, err)
-
-	// Dry-run should not modify anything.
-	_, err = os.Stat(filepath.Join(dir, "customized", "harness", "review.yaml"))
-	assert.NoError(t, err, "dry-run should not delete files")
-}
-
-func TestMigrateCustomizations_ModifiedAgent_CreatesPR(t *testing.T) {
-	// Set commitSHA to a valid value so scaffold URL fallback works.
-	origSHA := commitSHA
-	commitSHA = "abcdef1234567890abcdef1234567890abcdef12"
-	t.Cleanup(func() { commitSHA = origSHA })
-
-	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
-
-	setupCustomizedDir(t, dir, map[string]string{
-		"harness/review.yaml": customizedReviewHarness(t, "sonnet"),
-	})
-
-	fc := fakeClientWithRepo("my-org", ".fullsend")
-	printer := ui.New(io.Discard)
-	err := runMigrateCustomizations(context.Background(), dir, "my-org/.fullsend", false, fc, printer)
-	require.NoError(t, err)
-
-	require.Len(t, fc.CommittedFilesToBranch, 1)
-	record := fc.CommittedFilesToBranch[0]
-
-	pathMap := make(map[string]forge.TreeFile)
-	for _, f := range record.Files {
-		pathMap[f.Path] = f
-	}
-
-	// Should have a composition harness with base: URL and diff content.
-	harnessFile, ok := pathMap["harness/review.yaml"]
-	require.True(t, ok, "composition harness should be created")
-	harnessContent := string(harnessFile.Content)
-	assert.Contains(t, harnessContent, "base:")
-	assert.Contains(t, harnessContent, "raw.githubusercontent.com")
-	assert.Contains(t, harnessContent, "model: sonnet", "diff should include the changed model field")
-	assert.NotContains(t, harnessContent, "model: opus", "base model should not appear in diff")
-
-	// Old customized harness should be deleted.
-	assert.True(t, pathMap["customized/harness/review.yaml"].Delete)
-
-	// Config should have the agent registered.
-	cfgFile, ok := pathMap["config.yaml"]
-	require.True(t, ok)
-	assert.Contains(t, string(cfgFile.Content), "harness/review.yaml")
-
-	// PR created.
-	require.Len(t, fc.CreatedProposals, 1)
-}
-
-func TestBuildModifiedAgentFiles_WithAssociatedFiles(t *testing.T) {
-	origSHA := commitSHA
-	commitSHA = "abcdef1234567890abcdef1234567890abcdef12"
-	t.Cleanup(func() { commitSHA = origSHA })
-
-	dir := t.TempDir()
-	customizedBase := filepath.Join(dir, "customized")
-
-	// Set up customized harness + associated agent prompt.
-	require.NoError(t, os.MkdirAll(filepath.Join(customizedBase, "harness"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(customizedBase, "agents"), 0o755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(customizedBase, "harness", "review.yaml"),
-		[]byte(customizedReviewHarness(t, "sonnet")),
-		0o644,
-	))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(customizedBase, "agents", "review.md"),
-		[]byte("Custom review agent prompt.\n"),
-		0o644,
-	))
-
-	cfg := func() config.ConfigWriter {
-		data := []byte(`version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  roles: [fullsend]
-repos: {}
-`)
-		c, _ := config.ParseOrgConfigWriter(data)
-		return c
-	}()
-
-	m := agentMigration{
-		name:   "review",
-		action: migrateModified,
-		files:  []string{"harness/review.yaml", "agents/review.md"},
-	}
-
-	printer := ui.New(io.Discard)
-	files, err := buildModifiedAgentFiles(customizedBase, "customized/", "", m, cfg, printer)
-	require.NoError(t, err)
-
-	pathMap := make(map[string]forge.TreeFile)
-	for _, f := range files {
-		pathMap[f.Path] = f
-	}
-
-	// Composition harness should have base: URL.
-	harnessFile, ok := pathMap["harness/review.yaml"]
-	require.True(t, ok)
-	assert.Contains(t, string(harnessFile.Content), "base:")
-
-	// Old customized harness deleted.
-	assert.True(t, pathMap["customized/harness/review.yaml"].Delete)
-
-	// Associated agent file moved.
-	agentFile, ok := pathMap["agents/review.md"]
-	require.True(t, ok)
-	assert.Equal(t, "Custom review agent prompt.\n", string(agentFile.Content))
-
-	// Customized agent file deleted.
-	assert.True(t, pathMap["customized/agents/review.md"].Delete)
-
-	// Agent registered in config.
-	found := false
-	for _, a := range cfg.AgentEntries() {
-		if a.Source == "harness/review.yaml" {
-			found = true
-		}
-	}
-	assert.True(t, found, "agent should be registered in config")
-}
-
 func TestPlanMigrations_Categories(t *testing.T) {
 	files := []string{
 		"harness/review.yaml",    // in config → dead
-		"harness/triage.yaml",    // in scaffold, not in config → modified
-		"harness/my-custom.yaml", // not in scaffold → custom
+		"harness/my-custom.yaml", // not in config → custom
 	}
 
 	cfg := func() config.ConfigWriter {
@@ -707,17 +489,8 @@ allowed_remote_resources:
 		return c
 	}()
 
-	scaffoldSet := map[string]bool{
-		"triage":     true,
-		"code":       true,
-		"fix":        true,
-		"review":     true,
-		"retro":      true,
-		"prioritize": true,
-	}
-
-	migrations := planMigrations(files, cfg, scaffoldSet)
-	require.Len(t, migrations, 3)
+	migrations := planMigrations(files, cfg)
+	require.Len(t, migrations, 2)
 
 	byName := make(map[string]agentMigration)
 	for _, m := range migrations {
@@ -725,7 +498,6 @@ allowed_remote_resources:
 	}
 
 	assert.Equal(t, migrateDead, byName["review"].action)
-	assert.Equal(t, migrateModified, byName["triage"].action)
 	assert.Equal(t, migrateCustom, byName["my-custom"].action)
 }
 
@@ -750,8 +522,7 @@ repos: {}
 		return c
 	}()
 
-	scaffoldSet := map[string]bool{"review": true}
-	migrations := planMigrations(files, cfg, scaffoldSet)
+	migrations := planMigrations(files, cfg)
 	require.Len(t, migrations, 1)
 
 	m := migrations[0]
@@ -782,8 +553,7 @@ func TestPlanMigrations_NonPerAgentDirBecomesStandalone(t *testing.T) {
 		return c
 	}()
 
-	scaffoldSet := map[string]bool{"review": true}
-	migrations := planMigrations(files, cfg, scaffoldSet)
+	migrations := planMigrations(files, cfg)
 	require.Len(t, migrations, 1)
 
 	m := migrations[0]
@@ -832,54 +602,6 @@ func TestCheckDuplicateDestinations_DeletesIgnored(t *testing.T) {
 		{Path: "customized/harness/review.yaml", Delete: true},
 	}
 	assert.NoError(t, checkDuplicateDestinations(files))
-}
-
-func TestResolveBaseURL_DevCommitSHA(t *testing.T) {
-	origSHA := commitSHA
-	commitSHA = "dev"
-	t.Cleanup(func() { commitSHA = origSHA })
-
-	_, err := resolveBaseURL("review")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot determine base URL")
-}
-
-func TestResolveBaseURL_ValidCommitSHA(t *testing.T) {
-	origSHA := commitSHA
-	commitSHA = "abc123abc123abc123abc123abc123abc123abc1"
-	t.Cleanup(func() { commitSHA = origSHA })
-
-	url, err := resolveBaseURL("review")
-	require.NoError(t, err)
-	assert.Contains(t, url, commitSHA)
-	assert.Contains(t, url, "review")
-}
-
-func TestRegisterMigratedAgent_AddsEntryAndAllowlist(t *testing.T) {
-	data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-	orgCfg, err := config.ParseOrgConfigWriter(data)
-	require.NoError(t, err)
-	var cfg config.ConfigWriter = orgCfg
-
-	baseURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/harness/triage.yaml"
-	registerMigratedAgent(cfg, "triage", baseURL)
-
-	_, found := findAgentByName(cfg.AgentEntries(), "triage")
-	assert.True(t, found, "agent should be registered")
-
-	resources := cfg.AllowedResources()
-	assert.NotEmpty(t, resources, "allowlist should have an entry")
-}
-
-func TestRegisterMigratedAgent_NoDuplicate(t *testing.T) {
-	data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\nagents:\n  - source: \"harness/review.yaml\"\n")
-	orgCfg, err := config.ParseOrgConfigWriter(data)
-	require.NoError(t, err)
-	var cfg config.ConfigWriter = orgCfg
-
-	before := len(cfg.AgentEntries())
-	registerMigratedAgent(cfg, "review", "https://example.com/review.yaml")
-	assert.Equal(t, before, len(cfg.AgentEntries()), "should not duplicate existing agent")
 }
 
 func TestMigrateCustomizations_DeadOverrideWithNonHarnessFiles(t *testing.T) {

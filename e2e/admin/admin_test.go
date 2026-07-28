@@ -171,7 +171,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 		".github/workflows/prioritize.yml",
 		".github/workflows/prioritize-scheduler.yml",
 		".github/workflows/reusable-triage.yml",
-		".defaults/internal/scaffold/fullsend-repo/agents/triage.md",
+		".defaults/internal/scaffold/fullsend-repo/scripts/fullsend-check-output",
 		".defaults/.github/actions/mint-token/action.yml",
 		".defaults/action.yml",
 		"customized/agents/.gitkeep",

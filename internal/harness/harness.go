@@ -268,7 +268,7 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
 	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"` // source-repo-only; not resolved at runtime, used by lint-agent-docs
+	Doc                    string                  `yaml:"doc,omitempty"`
 	Description            string                  `yaml:"description,omitempty"`
 	Role                   string                  `yaml:"role,omitempty"`
 	Slug                   string                  `yaml:"slug,omitempty"`

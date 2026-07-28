@@ -152,4 +152,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/fix.yaml`](../../internal/scaffold/fullsend-repo/harness/fix.yaml)
+[`fullsend-ai/agents` — `harness/fix.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/fix.yaml)
