@@ -534,6 +534,18 @@ To test against `stage-redhat.atlassian.net`:
 - Do we need `write:jira-work` scope for entity property writes, or is there a narrower scope?
 - Should the Jira client auto-detect auth method based on which credentials are provided (email → basic, client_id → oauth2)?
 
+## Getting-started documentation
+
+**Status:** Required before merge.
+
+Add a user-facing guide at `docs/guides/user/jira-integration.md` covering:
+
+- **Prerequisites:** Users must request an OAuth 2.0 service account (OpenID client credentials) from their Atlassian org admin to use the Jira integration. Personal API tokens are typically restricted on managed Atlassian Cloud instances and will not work.
+- **Credential setup:** How to obtain `JIRA_CLIENT_ID` and `JIRA_CLIENT_SECRET`, configure scopes (`read:jira-work`, `read:jira-user`, `write:jira-work`), and store them as repo secrets.
+- **Repo configuration:** Minimal `.fullsend/config.yaml` and harness YAML for Jira-triggered agents, including `trigger` CEL expressions that filter on `event.source.system == "jira"`.
+- **Scheduled workflow:** Example `.github/workflows/fullsend-poll.yml` that runs `fullsend poll --input-driver jira-poll` on a cron schedule.
+- **Troubleshooting:** Common failure modes (API token access restricted, wrong auth method, project not visible).
+
 ## References
 
 - [ADR 0063 — Polling-based work discovery via dispatch drivers](../ADRs/0063-polling-based-work-discovery.md)
