@@ -190,7 +190,7 @@ func TestAdcToken_CachesTokenSource(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			tok, err := c.AccessToken(context.Background())
-			require.NoError(t, err)
+			assert.NoError(t, err)
 			assert.Equal(t, "cached-token", tok)
 		}()
 	}
