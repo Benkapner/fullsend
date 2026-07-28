@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -253,6 +254,95 @@ func TestGivenFork_LeasedRepoResolvesForkName(t *testing.T) {
 	assert.Equal(t, "test-repo-07-fork", w.ForkRepo)
 }
 
+// --- awaitForkReady unit tests ---
+
+func TestGivenFork_PollsForDefaultBranch(t *testing.T) {
+	// GetDefaultBranch fails 3 times (simulating replication delay),
+	// then succeeds on the 4th call. givenFork should retry and
+	// ultimately succeed.
+	scmDriver := &fakeForkSCM{
+		forkRepo:                 "repo-fork",
+		getDefaultBranchFailures: 3,
+	}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		SCM:       scmDriver,
+	}
+	err := givenFork(w, "repo-fork")
+	require.NoError(t, err)
+	assert.Equal(t, "org", w.ForkOwner)
+	assert.Equal(t, "repo-fork", w.ForkRepo)
+	assert.Equal(t, 4, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called 3 failures + 1 success = 4 times")
+}
+
+func TestGivenFork_DefaultBranchImmediateSuccess(t *testing.T) {
+	// GetDefaultBranch succeeds on the first call — no replication
+	// delay. givenFork should return immediately without retries.
+	scmDriver := &fakeForkSCM{
+		forkRepo:                 "repo-fork",
+		getDefaultBranchFailures: 0,
+	}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		SCM:       scmDriver,
+	}
+	err := givenFork(w, "repo-fork")
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called exactly once on immediate success")
+}
+
+func TestAwaitForkReady_PollExhausted(t *testing.T) {
+	// GetDefaultBranch always fails — simulates a fork that never
+	// finishes replicating. awaitForkReady should return a clear
+	// timeout error after exhausting all attempts.
+	scmDriver := &fakeForkSCM{
+		getDefaultBranchFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	// Use small maxAttempts to avoid real sleeps.
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not readable after 5 attempts")
+	assert.Equal(t, 5, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called exactly maxAttempts times")
+}
+
+func TestAwaitForkReady_RetriesThenSucceeds(t *testing.T) {
+	// GetDefaultBranch fails twice then succeeds on the 3rd call.
+	scmDriver := &fakeForkSCM{
+		getDefaultBranchFailures: 2,
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 3, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called 2 failures + 1 success = 3 times")
+}
+
+func TestAwaitForkReady_ContextCancelled(t *testing.T) {
+	// Verify that awaitForkReady respects context cancellation
+	// and does not block indefinitely.
+	scmDriver := &fakeForkSCM{
+		getDefaultBranchFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	err := awaitForkReady(ctx, w, "org", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
 // fakeInstallState implements install.State for fork step unit tests.
 type fakeInstallState struct {
 	testRepo string
@@ -283,6 +373,13 @@ type fakeForkSCM struct {
 	createForkPRErr    error
 	addedLabels        []addedLabelRecord
 	addIssueLabelsErr  error
+
+	// getDefaultBranchFailures controls how many times GetDefaultBranch
+	// returns an error before succeeding. Each call decrements the
+	// counter; when it reaches 0, GetDefaultBranch returns success.
+	// A value of -1 means GetDefaultBranch always fails.
+	getDefaultBranchFailures int
+	getDefaultBranchCalls    int
 }
 
 type addedLabelRecord struct {
@@ -393,5 +490,13 @@ func (f *fakeForkSCM) EnsureRepoPublic(context.Context, string, string) error {
 }
 
 func (f *fakeForkSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	f.getDefaultBranchCalls++
+	if f.getDefaultBranchFailures == -1 {
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	if f.getDefaultBranchFailures > 0 {
+		f.getDefaultBranchFailures--
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
 	return "main", nil
 }

@@ -26,9 +26,26 @@ func registerForkSteps(sc *godog.ScenarioContext) {
 	})
 }
 
+const (
+	// forkReadyMaxAttempts is how many times awaitForkReady polls
+	// GetDefaultBranch before giving up. GitHub's fork API returns
+	// before Git data is fully replicated; the default-branch ref
+	// may not be readable immediately.
+	forkReadyMaxAttempts = 30
+
+	// forkReadyPoll is the delay between GetDefaultBranch polls.
+	forkReadyPoll = 2 * time.Second
+)
+
 // givenFork creates a fork of the enrolled test repository if absent, or
 // reuses it if it already exists. The fork is created within the same
 // organization as the source repository.
+//
+// After creation, givenFork polls GetDefaultBranch until the fork's
+// default branch ref is readable. GitHub's fork API returns before the
+// fork's Git data is fully replicated; without this poll, subsequent
+// steps (e.g. CreateBranch) can fail with a 409 "Git Repository is
+// empty" error under parallel godog concurrency.
 //
 // When the world uses a leased repo (w.LeasedRepoName is set), the
 // logical fork name from the Gherkin feature file is mapped to
@@ -51,7 +68,44 @@ func givenFork(w *world.World, forkName string) error {
 	}
 	w.ForkOwner = w.RepoOwner
 	w.ForkRepo = forkRepo
+
+	if err := awaitForkReady(ctx, w, w.RepoOwner, forkRepo, forkReadyMaxAttempts, forkReadyPoll); err != nil {
+		return fmt.Errorf("waiting for fork %q readiness: %w", forkRepo, err)
+	}
+
 	return nil
+}
+
+// awaitForkReady polls GetDefaultBranch until the fork's default branch
+// ref is readable, or until the attempt limit is exhausted. This handles
+// the race between GitHub's fork API returning and the fork's Git data
+// being fully replicated.
+//
+// maxAttempts and poll are explicit parameters so that unit tests can
+// pass small values to avoid real sleeps.
+func awaitForkReady(ctx context.Context, w *world.World, owner, repo string, maxAttempts int, poll time.Duration) error {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err := w.SCM.GetDefaultBranch(ctx, owner, repo)
+		if err == nil {
+			return nil
+		}
+
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf(
+					"context cancelled waiting for default branch on %s/%s: %w",
+					owner, repo, ctx.Err(),
+				)
+			case <-time.After(poll):
+			}
+		}
+	}
+
+	return fmt.Errorf(
+		"fork %s/%s default branch not readable after %d attempts",
+		owner, repo, maxAttempts,
+	)
 }
 
 // resolveForkName maps a logical fork name from a Gherkin feature file to
