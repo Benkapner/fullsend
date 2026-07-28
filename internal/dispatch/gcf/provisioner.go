@@ -195,7 +195,7 @@ func (p *Provisioner) SecretExists(ctx context.Context, role string) (bool, erro
 // secrets can reference the service account.
 func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
 	if p.cfg.ProjectID == "" {
-		return fmt.Errorf("project ID is required")
+		return fmt.Errorf("GCP project ID is required")
 	}
 	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
 		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)

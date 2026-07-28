@@ -224,7 +224,7 @@ func TestEnsureMintServiceAccount_MissingProjectID(t *testing.T) {
 	p := newTestProvisioner(Config{}, newFakeGCFClient())
 	err := p.EnsureMintServiceAccount(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "project ID is required")
+	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
 
 func TestEnsureMintServiceAccount_MalformedProjectID(t *testing.T) {
