@@ -936,6 +936,12 @@ func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
 	// A lock entry with an "agent_source" field dependency should not corrupt
 	// skills or other harness fields. The agent_source dep is informational —
 	// the harness is already loaded from the resolved path.
+	//
+	// The agent_source URL deliberately uses a different domain
+	// (org-registry.example.com) that is NOT in the harness's own
+	// AllowedRemoteResources. Agent source URLs are validated against the
+	// org-level allowlist during lock creation, so resolveFromLock must
+	// skip the harness-level allowlist check for agent_source entries.
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	harnessSource := []byte("agent: agents/code.md\nrole: test\n")
@@ -945,12 +951,12 @@ func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
 
 	root := t.TempDir()
 	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
-	require.NoError(t, fetch.CachePut(root, "https://example.com/harness/code.yaml", harnessSource))
+	require.NoError(t, fetch.CachePut(root, "https://org-registry.example.com/harness/code.yaml", harnessSource))
 	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/a", skillContent))
 
 	entry := &lock.HarnessLock{
 		Dependencies: []lock.DependencyEntry{
-			{Field: "agent_source", URL: "https://example.com/harness/code.yaml", SHA256: harnessSourceHash},
+			{Field: "agent_source", URL: "https://org-registry.example.com/harness/code.yaml", SHA256: harnessSourceHash},
 			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
 			{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: skillHash},
 		},

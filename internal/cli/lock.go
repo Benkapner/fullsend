@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -529,6 +530,10 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 	return nil
 }
 
+// errHarnessNotFound is returned by resolveHarnessPath when neither
+// <agent>.yaml nor <agent>.yml exists in the harness directory.
+var errHarnessNotFound = errors.New("harness file not found")
+
 // resolveHarnessPath finds the harness file for agentName, preferring .yaml
 // over .yml. Warns via printer when both extensions exist.
 func resolveHarnessPath(dir, agentName string, printer *ui.Printer) (string, error) {
@@ -542,7 +547,7 @@ func resolveHarnessPath(dir, agentName string, printer *ui.Printer) (string, err
 			if !os.IsNotExist(ymlErr) {
 				return "", fmt.Errorf("checking harness file: %w", ymlErr)
 			}
-			return "", fmt.Errorf("harness file not found: tried %s.yaml and %s.yml", agentName, agentName)
+			return "", fmt.Errorf("%w: tried %s.yaml and %s.yml", errHarnessNotFound, agentName, agentName)
 		}
 		return ymlPath, nil
 	}
@@ -564,7 +569,7 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 
 	// Only fall back to config when the harness file was not found.
 	// Permission errors and other I/O failures should propagate directly.
-	if !strings.Contains(localErr.Error(), "harness file not found") {
+	if !errors.Is(localErr, errHarnessNotFound) {
 		return "", nil, localErr
 	}
 
@@ -718,7 +723,10 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	var providers []resolve.ResolvedProvider
 
 	for _, lockDep := range entry.Dependencies {
-		if h.MatchingAllowedPrefix(lockDep.URL) == "" {
+		// Agent source URLs are validated against the org-level allowlist
+		// during lock creation, not the harness's own AllowedRemoteResources.
+		// Skip the harness-level allowlist check for these entries.
+		if lockDep.Field != "agent_source" && h.MatchingAllowedPrefix(lockDep.URL) == "" {
 			return resolve.ResolveResult{}, fmt.Errorf(
 				"locked dependency %s (%s) is no longer in allowed_remote_resources — run 'fullsend lock' to update",
 				lockDep.Field, lockDep.URL)
