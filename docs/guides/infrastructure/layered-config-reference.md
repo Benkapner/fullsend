@@ -41,7 +41,10 @@ the local layer. Values resolved through a parent layer are never written
 back. This means:
 
 - Round-tripping a config through parse → marshal preserves only locally-set
-  fields.
+  fields. For slice fields (`roles`, `allowed_remote_resources`), the
+  nil-vs-empty distinction is also preserved: an explicitly empty list
+  (e.g., `roles: []`) survives the roundtrip and does **not** collapse
+  to nil, which would cause unwanted fallthrough to parent defaults.
 - Upgrading a base layer (e.g., refreshing `config.base.yaml` from a new
   preset) does not require editing `config.yaml` — the overlay inherits new
   defaults automatically for any field it does not override.
@@ -101,7 +104,8 @@ The `roles` field uses replace-if-set semantics with **no union**:
   code default `PerRepoDefaultRoles()`.
 - Non-nil including `roles: []` (explicit empty list) — **replaces** the
   parent value entirely. There is no merge or union of role lists across
-  layers.
+  layers. An explicit `roles: []` is preserved through marshal roundtrips
+  (it will not be dropped or collapse to nil).
 
 Example:
 
