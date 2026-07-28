@@ -996,6 +996,20 @@ func TestLockOneAgent_ConfigFallback(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result, "config-resolved agent should have dependencies to lock")
 	assert.NotEmpty(t, result.deps, "should have at least one dependency")
+
+	// Source should use the agent name, not the cache-internal basename.
+	assert.Equal(t, filepath.Join("harness", "code.yaml"), result.harnessLock.Source,
+		"URL-resolved agent should have a readable Source, not a cache-internal path")
+
+	// The agent_source dep should exist in the lock deps.
+	var hasAgentSource bool
+	for _, dep := range result.harnessLock.Dependencies {
+		if dep.Field == "agent_source" {
+			hasAgentSource = true
+			break
+		}
+	}
+	assert.True(t, hasAgentSource, "URL-resolved agent should have an agent_source dependency entry")
 }
 
 func TestLockAll_IncludesConfigAgents(t *testing.T) {

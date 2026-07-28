@@ -932,6 +932,49 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	assert.True(t, baseDep.CacheHit)
 }
 
+func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
+	// A lock entry with an "agent_source" field dependency should not corrupt
+	// skills or other harness fields. The agent_source dep is informational —
+	// the harness is already loaded from the resolved path.
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	harnessSource := []byte("agent: agents/code.md\nrole: test\n")
+	harnessSourceHash := fetch.ComputeSHA256(harnessSource)
+	skillContent := []byte("# Skill A")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/harness/code.yaml", harnessSource))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/a", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "agent_source", URL: "https://example.com/harness/code.yaml", SHA256: harnessSourceHash},
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+			{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: skillHash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + skillHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+
+	// All three deps should be returned.
+	require.Len(t, lockResult.Deps, 3)
+
+	// Skills should have exactly one entry — the agent_source dep must NOT
+	// be appended to skills.
+	require.Len(t, h.Skills, 1, "agent_source dep must not be appended to skills")
+	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"), "skill should be resolved to cache path")
+}
+
 func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)

@@ -377,9 +377,18 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		lockDeps = append(lockDeps, entry)
 	}
 
+	// When the harness was resolved from a config URL, harnessPath is a
+	// cache-internal path (e.g. .fullsend-cache/<sha>/content) whose
+	// basename is meaningless. Use the agent name to construct a stable,
+	// human-readable Source identifier instead.
+	source := filepath.Join("harness", filepath.Base(harnessPath))
+	if len(agentSourceDeps) > 0 {
+		source = filepath.Join("harness", agentName+".yaml")
+	}
+
 	return &lockResult{
 		harnessLock: lock.HarnessLock{
-			Source:       filepath.Join("harness", filepath.Base(harnessPath)),
+			Source:       source,
 			SHA256:       harnessHash,
 			ResolvedAt:   now,
 			Dependencies: lockDeps,
@@ -415,7 +424,9 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
 	if orgCfg != nil {
 		registered, regErr := harness.RegisteredAgents(orgCfg)
-		if regErr == nil {
+		if regErr != nil {
+			printer.StepWarn("Could not discover config-registered agents: " + regErr.Error())
+		} else {
 			localSet := make(map[string]bool, len(agentNames))
 			for _, n := range agentNames {
 				localSet[n] = true
@@ -606,6 +617,7 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 			FetchedAt: resolved.Dep.FetchedAt,
 			CacheHit:  resolved.Dep.CacheHit,
 			Type:      resolved.Dep.Type,
+			Warning:   resolved.Dep.Warning,
 		}
 		return resolved.Path, []resolve.Dependency{dep}, nil
 	}
@@ -857,6 +869,10 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		case strings.HasPrefix(m.field, "providers["):
 			// Providers are consumed via ResolvedProvider list; URL entries
 			// are stripped from h.Providers below.
+		case m.field == "agent_source":
+			// Agent source is informational — the harness is already loaded
+			// from the resolved path. This entry exists for cache verification
+			// and lock-file completeness; no harness mutation needed.
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) {
