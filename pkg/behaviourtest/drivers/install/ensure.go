@@ -125,7 +125,11 @@ func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) (Sta
 	return v.(State), nil
 }
 
-// doEnsure performs the actual create-if-missing + install-if-needed work.
+// doEnsure performs the actual create-if-missing + install work.
+// It always re-vendors the CLI binary so that pool repos run the
+// binary built from the current checkout. Without this, leased repos
+// that pass post-install validation keep a stale vendored binary from
+// a prior run, silently missing dispatch fixes on the current branch.
 func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State, error) {
 	target := org + "/" + repoName
 
@@ -134,26 +138,28 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 		return nil, err
 	}
 
-	// Step 2: install fullsend if post-install validation fails.
-	needsSettle := false
-	if installErr := validatePerRepoPostInstall(ctx, e.client, org, repoName); installErr != nil {
-		e.logf("[ensure] %s needs install (validation: %v)", target, installErr)
-		if err := e.installFullsend(ctx, org, repoName, target); err != nil {
-			return nil, err
-		}
-		if err := validatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
-			return nil, fmt.Errorf("post-install validation for %s: %w", target, err)
-		}
-		needsSettle = true
+	// Step 2: check whether fullsend was previously installed. We always
+	// re-vendor (step 3), but skip the settle wait when the workflow file
+	// already exists — GitHub Actions already indexed it.
+	alreadyInstalled := validatePerRepoPostInstall(ctx, e.client, org, repoName) == nil
+	if alreadyInstalled {
+		e.logf("[ensure] %s already installed, re-vendoring to keep binary current", target)
 	} else {
-		e.logf("[ensure] %s already installed, skipping", target)
+		e.logf("[ensure] %s needs install", target)
 	}
 
-	// Step 3: wait for Actions to recognise the workflow file.
-	// On freshly created/installed repos, GitHub Actions needs time to
-	// index the workflow before it can dispatch events (e.g. issues).
-	// For already-installed repos the first poll succeeds immediately.
-	if needsSettle && e.settle != nil {
+	// Step 3: always run github setup --vendor to push the current binary.
+	if err := e.installFullsend(ctx, org, repoName, target); err != nil {
+		return nil, err
+	}
+	if err := validatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
+		return nil, fmt.Errorf("post-install validation for %s: %w", target, err)
+	}
+
+	// Step 4: wait for Actions to recognise the workflow file only on
+	// fresh installs. Re-vendors update the binary and workflow files
+	// but GitHub Actions already indexed the workflow on the prior install.
+	if !alreadyInstalled && e.settle != nil {
 		if err := e.settle(ctx, e.client, org, repoName, perRepoTriageWorkflow, e.logf); err != nil {
 			return nil, fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
 		}

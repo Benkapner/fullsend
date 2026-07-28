@@ -96,6 +96,11 @@ func TestFakeEnsurer_IndependentRepos(t *testing.T) {
 
 // --- repoEnsurer unit tests (caching layer + create logic) ---
 
+// noopCLI is a CLIRunnerFunc that succeeds without doing anything.
+// Used in tests that exercise caching/create logic but don't test
+// the install flow itself.
+func noopCLI(_, _ string, _ ...string) (string, error) { return "", nil }
+
 // validPerRepoConfig is the minimal YAML that passes
 // config.ParsePerRepoConfig + Validate + Runtime == "dummy".
 const validPerRepoConfig = `version: "1"
@@ -185,6 +190,7 @@ func TestRepoEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
 		client:  sc,
+		runCLI:  noopCLI,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -205,6 +211,7 @@ func TestRepoEnsurer_CacheKeyIncludesOrg(t *testing.T) {
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
 		client:  sc,
+		runCLI:  noopCLI,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -230,6 +237,7 @@ func TestRepoEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
 		client:  sc,
+		runCLI:  noopCLI,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -245,6 +253,7 @@ func TestRepoEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
 		client:  sc,
+		runCLI:  noopCLI,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -260,6 +269,7 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
 		client:  sc,
+		runCLI:  noopCLI,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -459,6 +469,7 @@ func TestRepoEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
 		client:  sc,
+		runCLI:  noopCLI,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -622,10 +633,10 @@ func TestDoEnsure_EnsureRepoExistsError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "network timeout")
 }
 
-func TestDoEnsure_AlreadyInstalledSkipsCLI(t *testing.T) {
-	// Exercises the doEnsure "already installed, skipping" path where
-	// validation passes on the first check and installFullsend is never
-	// invoked.
+func TestDoEnsure_AlreadyInstalledReVendors(t *testing.T) {
+	// Exercises the doEnsure "already installed, re-vendoring" path where
+	// validation passes on the first check but installFullsend is still
+	// invoked to keep the vendored binary current with the runner binary.
 	sc := &stubClient{installed: true}
 	cliCalled := false
 	e := &repoEnsurer{
@@ -641,11 +652,11 @@ func TestDoEnsure_AlreadyInstalledSkipsCLI(t *testing.T) {
 		ensured: make(map[string]State),
 	}
 
-	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-skip")
+	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-revendor")
 	require.NoError(t, err)
 	require.NotNil(t, st)
-	assert.Equal(t, "test-repo-skip", st.TestRepo())
-	assert.False(t, cliCalled, "CLI should not be called when validation passes")
+	assert.Equal(t, "test-repo-revendor", st.TestRepo())
+	assert.True(t, cliCalled, "CLI should be called to re-vendor even when validation passes")
 }
 
 // --- awaitWorkflowReady unit tests ---
