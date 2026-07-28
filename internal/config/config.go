@@ -582,33 +582,40 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 }
 
 // perRepoConfigMarshal is a shadow struct used by MarshalYAML to
-// preserve the nil-vs-empty distinction for AllowedRemoteResources.
+// preserve the nil-vs-empty distinction for slice fields where nil
+// (unset, inherit parent) and empty (explicitly no values) carry
+// different semantics.
+//
 // With the plain []string + omitempty tag, yaml.v3 omits both nil
-// and empty slices. Using *[]string here means a nil pointer (unset)
-// is omitted while a non-nil pointer to an empty slice (deny-all)
-// is marshaled as `allowed_remote_resources: []`.
+// and empty slices. Using *[]string means a nil pointer (unset)
+// is omitted while a non-nil pointer to an empty slice is marshaled
+// as an empty YAML sequence (e.g. `roles: []`,
+// `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
 	Version                string              `yaml:"version,omitempty"`
 	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
 	Runtime                string              `yaml:"runtime,omitempty"`
-	Roles                  []string            `yaml:"roles,omitempty"`
+	Roles                  *[]string           `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
-// distinction for AllowedRemoteResources through YAML roundtrips.
-// nil (unset) is omitted; an explicit empty slice (deny-all) is
-// marshaled as `allowed_remote_resources: []`.
+// distinction for Roles and AllowedRemoteResources through YAML
+// roundtrips. nil (unset) is omitted so the field inherits from
+// parent; an explicit empty slice is marshaled as an empty YAML
+// sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:      c.Version,
 		KillSwitch:   c.KillSwitch,
 		Runtime:      c.Runtime,
-		Roles:        c.Roles,
 		Agents:       c.Agents,
 		CreateIssues: c.CreateIssues,
+	}
+	if c.Roles != nil {
+		h.Roles = &c.Roles
 	}
 	if c.AllowedRemoteResources != nil {
 		h.AllowedRemoteResources = &c.AllowedRemoteResources
