@@ -1,8 +1,9 @@
 # Agents
 
 Reference documentation for the agents shipped by fullsend.
-The default agents below are defined by the YAML files in
-[`internal/scaffold/fullsend-repo/harness/`](../../internal/scaffold/fullsend-repo/harness/).
+The default agents are defined in the
+[`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository
+and resolved at runtime via config entries or agents-repo fallback.
 Custom agents can be registered via the `agents:` field in org or per-repo
 config (see [ADR 0058](../ADRs/0058-agent-registration.md)).
 

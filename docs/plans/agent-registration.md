@@ -462,7 +462,6 @@ follow-up tracked by a GitHub issue, filed once all first-party
 agents have been extracted from the scaffold.
 
 **Related:** `fullsend agent migrate-customizations` (implemented in
-ADR-0064 / PR #2932) migrates existing `customized/` overrides into
-config-driven agents. It uses `DiffHarness` to compute minimal `base:`
-composition harnesses and registers agents via the same config schema
-defined in Phase 1.
+ADR-0064 / PR #2932) migrated existing `customized/` overrides into
+config-driven agents. The `DiffHarness`-based composition path was
+removed when agents moved to `fullsend-ai/agents` (PR #5552).

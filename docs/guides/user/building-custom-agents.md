@@ -445,7 +445,10 @@ jobs:
         run: |
           set -euo pipefail
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          LAYERED_DIRS="agents skills schemas harness policies scripts env"
+          # Agent files (harness, agents, policies, etc.) are now resolved
+          # from the fullsend-ai/agents repo at runtime by `fullsend run`.
+          # Only infrastructure scripts remain in the scaffold.
+          LAYERED_DIRS="scripts"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p ".fullsend/${dir}"

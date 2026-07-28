@@ -211,7 +211,7 @@ To add a custom skill to the code agent's harness (deprecated — use `base:` co
    ```bash
    # ⚠ Deprecated: use `fullsend agent migrate-customizations` to convert to config-driven agents
    curl -o .fullsend/customized/harness/code.yaml \
-     https://raw.githubusercontent.com/fullsend-ai/fullsend/main/internal/scaffold/fullsend-repo/harness/code.yaml
+     https://raw.githubusercontent.com/fullsend-ai/agents/main/harness/code.yaml
    ```
 
 2. **Edit the copy** to add your skill:

@@ -168,10 +168,7 @@ Migration actions per agent:
 | Override type | Detection | Action |
 |---------------|-----------|--------|
 | Dead | Agent already registered in config | Delete customized files |
-| Custom | Not in upstream scaffold | Move files, register local path in config |
-| Modified | Standard scaffold agent, not in config | Compute `base:` composition harness via `DiffHarness`, register in config |
-
-The diff engine (`internal/harness/diff.go`) computes the minimal child harness that reproduces the customized version when composed with the upstream base. It mirrors `mergeBaseIntoChild` semantics: scalar overrides, basename-aware skill overrides (matching `mergeSkills`), slice concatenation extras for plugins/providers, map merge deltas, and security fields always included.
+| Custom | Not in config | Move files, register local path in config |
 
 ### Command Decomposition
 
@@ -614,10 +611,14 @@ Since `embed.FS` doesn't preserve Unix permissions, executable files are tracked
 
 ```go
 var executableFiles = map[string]struct{}{
-    "scripts/post-code.sh":       {},
-    "scripts/pre-triage.sh":      {},
-    "scripts/scan-secrets":       {},
-    // ... 20+ entries
+    "scripts/fullsend-check-output":          {},
+    "scripts/install-precommit-tools.sh":     {},
+    "scripts/pre-code.sh":                    {},
+    "scripts/prepare-sandbox-credentials.sh": {},
+    "scripts/reconcile-repos.sh":             {},
+    "scripts/resolve-precommit-tools.py":     {},
+    "scripts/setup-prioritize.sh":            {},
+    "scripts/validate-source-repo.sh":        {},
 }
 ```
 

@@ -52,4 +52,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/code.yaml`](../../internal/scaffold/fullsend-repo/harness/code.yaml)
+[`fullsend-ai/agents` — `harness/code.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/code.yaml)

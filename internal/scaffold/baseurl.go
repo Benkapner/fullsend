@@ -77,11 +77,12 @@ func HarnessContent(harnessName string) ([]byte, error) {
 }
 
 // HarnessNames returns the sorted list of harness template names
-// available in the embedded scaffold (e.g., ["code", "fix", "triage"]).
+// available in the embedded scaffold.
+// Returns an empty list when no harness directory exists in the embed.
 func HarnessNames() ([]string, error) {
 	entries, err := fs.ReadDir(content, "fullsend-repo/harness")
 	if err != nil {
-		return nil, fmt.Errorf("reading embedded harness directory: %w", err)
+		return nil, nil
 	}
 	var names []string
 	for _, e := range entries {

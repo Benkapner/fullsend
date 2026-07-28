@@ -727,7 +727,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 | Sandbox image | `ghcr.io/fullsend-ai/fullsend-code:latest` (pre-built with tools, runtimes, security scanners) | |
 | Credential isolation | Read-only GitHub App token inside sandbox; write token only in post-script | [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) |
 | Validation | Host-side schema validation script with retry loop | [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) |
-| Post-script | `post-code.sh`: protected-path check, gitleaks scan, pre-commit, push, PR creation | |
+| Post-script | `post-code.sh` (in `fullsend-ai/agents`): protected-path check, gitleaks scan, pre-commit, push, PR creation | |
 | Observability | JSONL transcript extraction, security findings, trace ID correlation | [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md) |
 
 ## Repository layout (design workspace vs. web delivery)

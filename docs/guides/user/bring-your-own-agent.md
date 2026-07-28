@@ -390,7 +390,7 @@ Create a thin harness that inherits from the upstream code agent and adds your s
 
 **`harness/code.yaml`:**
 ```yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/code.yaml#sha256=abc...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
 skills:
   - skills/my-custom-linting        # Merged with base skills (child overrides by basename)
@@ -425,7 +425,7 @@ Because config-registered agents take precedence over built-in agents on name co
 ### Example: swap the model for review
 
 ```yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/review.yaml#sha256=abc...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/review.yaml#sha256=abc...
 
 model: sonnet
 ```
@@ -433,7 +433,7 @@ model: sonnet
 ### Example: add org-specific environment variables
 
 ```yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/code.yaml#sha256=abc...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
 env:
   runner:
