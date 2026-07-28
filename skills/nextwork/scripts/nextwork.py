@@ -1294,6 +1294,12 @@ class ItemFetcher(Protocol):
     def fetch_item(self, repo: str, number: int) -> dict[str, Any] | None: ...
 
 
+class MergeQueueChecker(Protocol):
+    """Structural interface for merge-queue membership checks."""
+
+    def is_in_merge_queue(self, repo: str, number: int) -> bool: ...
+
+
 class GhFetcher:
     """Fetches and caches item + linking data from gh GraphQL. Isolated for testability."""
 
@@ -1527,7 +1533,7 @@ def build_queue(
     return results, remaining
 
 
-def maybe_check_merge_queue(items: list[dict[str, Any]], fetcher: GhFetcher) -> None:
+def maybe_check_merge_queue(items: list[dict[str, Any]], fetcher: MergeQueueChecker) -> None:
     """Second pass: only hits the merge-queue API for PRs labeled ready-for-merge."""
     for item in items:
         if item["kind"] == "pull" and "ready-for-merge" in item.get("labels", []):
