@@ -170,6 +170,21 @@ Background:
 
 The `Given a fork` step remaps the logical name as above and is idempotent for that actual fork repo. Each scenario then creates its own branch and PR within the fork.
 
+### Fork PR behaviour contract
+
+The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contract for `harness-dispatch`. Each CEL port PR ([#2896](https://github.com/fullsend-ai/fullsend/issues/2896)–[#2901](https://github.com/fullsend-ai/fullsend/issues/2901)) should follow this contract when adding fork-PR rows to the agent's harness behaviour feature file.
+
+| Scenario | Expected | How tested |
+|----------|----------|------------|
+| Fork PR matches CEL trigger; authorized actor | Agent runs via `harness-dispatch`; workflow completes | Positive dispatch + artifact assertion |
+| Kill switch active on fork event | Empty matrix, exit 0 | Disabled harness in same scenario; assert agent did not run |
+| Fork PR `synchronize` re-triggers | Agent runs again per concurrency rules | Separate scenario with sync + label |
+| CEL `is_fork` exclusion (`!event.state.change_proposal.is_fork`) | Empty matrix, exit 0 | Harness with `is_fork` guard in same scenario; assert agent did not run |
+
+**Consolidation pattern:** To conserve parallel execution slots, add negative-path harnesses (kill switch, CEL exclusion) alongside the positive-path harness in a single scenario rather than creating separate scenarios. The positive harness wait acts as the settle window for negative assertions (piggyback pattern — see `negativeSettleDuration` in `dispatch.go`).
+
+**Unauthorized-actor denial** (ADR 54) for fork PRs is tracked separately in [#5613](https://github.com/fullsend-ai/fullsend/issues/5613) and is not part of this contract.
+
 ## Forge operational constraints
 
 When modifying behaviour test repo provisioning, fork handling, or workflow dispatch, be aware of these constraints. They are not enforced by the compiler or linter — violations surface as cryptic API errors or silently dropped events in CI.
