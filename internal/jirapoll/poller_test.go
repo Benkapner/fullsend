@@ -1,0 +1,906 @@
+package jirapoll
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/poll"
+)
+
+// newTestPoller creates a Poller with a no-op sleep for fast tests.
+func newTestPoller(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
+	p := New(client, router, opts)
+	p.sleepFn = func(_ time.Duration) {} // skip jitter in tests
+	return p
+}
+
+// mockClient implements JiraClient with configurable return values.
+type mockClient struct {
+	mu sync.Mutex
+
+	searchResult []jira.Issue
+	searchErr    error
+
+	issues   map[string]*jira.Issue
+	issueErr map[string]error
+
+	comments   map[string][]jira.Comment
+	commentErr map[string]error
+
+	changelog    map[string][]jira.ChangelogEntry
+	changelogErr map[string]error
+
+	properties     map[string]map[string]json.RawMessage // issueKey -> propertyKey -> value
+	propertyGetErr map[string]error                      // propertyKey -> error
+	propertySetErr map[string]error                      // propertyKey -> error
+
+	myselfUser *jira.User
+	myselfErr  error
+
+	roleMembership map[string]string // accountID -> role name
+}
+
+func newMockClient() *mockClient {
+	return &mockClient{
+		issues:         make(map[string]*jira.Issue),
+		issueErr:       make(map[string]error),
+		comments:       make(map[string][]jira.Comment),
+		commentErr:     make(map[string]error),
+		changelog:      make(map[string][]jira.ChangelogEntry),
+		changelogErr:   make(map[string]error),
+		properties:     make(map[string]map[string]json.RawMessage),
+		propertyGetErr: make(map[string]error),
+		propertySetErr: make(map[string]error),
+	}
+}
+
+func (m *mockClient) SearchIssues(_ context.Context, _ string) ([]jira.Issue, error) {
+	if m.searchErr != nil {
+		return nil, m.searchErr
+	}
+	return m.searchResult, nil
+}
+
+func (m *mockClient) GetIssue(_ context.Context, key string) (*jira.Issue, error) {
+	if err, ok := m.issueErr[key]; ok && err != nil {
+		return nil, err
+	}
+	issue, ok := m.issues[key]
+	if !ok {
+		return nil, nil
+	}
+	return issue, nil
+}
+
+func (m *mockClient) ListComments(_ context.Context, key string) ([]jira.Comment, error) {
+	if err, ok := m.commentErr[key]; ok && err != nil {
+		return nil, err
+	}
+	return m.comments[key], nil
+}
+
+func (m *mockClient) ListChangelog(_ context.Context, key string) ([]jira.ChangelogEntry, error) {
+	if err, ok := m.changelogErr[key]; ok && err != nil {
+		return nil, err
+	}
+	return m.changelog[key], nil
+}
+
+func (m *mockClient) GetEntityProperty(_ context.Context, issueKey, propKey string) (json.RawMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err, ok := m.propertyGetErr[propKey]; ok && err != nil {
+		return nil, err
+	}
+	props, ok := m.properties[issueKey]
+	if !ok {
+		return nil, nil
+	}
+	val, ok := props[propKey]
+	if !ok {
+		return nil, nil
+	}
+	return val, nil
+}
+
+func (m *mockClient) SetEntityProperty(_ context.Context, issueKey, propKey string, value any) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err, ok := m.propertySetErr[propKey]; ok && err != nil {
+		return err
+	}
+	if m.properties[issueKey] == nil {
+		m.properties[issueKey] = make(map[string]json.RawMessage)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	m.properties[issueKey][propKey] = data
+	return nil
+}
+
+func (m *mockClient) DeleteEntityProperty(_ context.Context, issueKey, propKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if props, ok := m.properties[issueKey]; ok {
+		delete(props, propKey)
+	}
+	return nil
+}
+
+func (m *mockClient) GetMyself(_ context.Context) (*jira.User, error) {
+	if m.myselfErr != nil {
+		return nil, m.myselfErr
+	}
+	return m.myselfUser, nil
+}
+
+func (m *mockClient) GetProjectRoleMembership(_ context.Context, _ string) (map[string]string, error) {
+	if m.roleMembership != nil {
+		return m.roleMembership, nil
+	}
+	return map[string]string{}, nil
+}
+
+// stubRouter implements dispatch.EventRouter for testing.
+type stubRouter struct {
+	stages []string
+	err    error
+}
+
+func (r *stubRouter) Route(_ *dispatch.NormalizedEvent) ([]string, error) {
+	return r.stages, r.err
+}
+
+func TestNew(t *testing.T) {
+	mc := newMockClient()
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+	if p.opts.M != 50 {
+		t.Errorf("M = %d, want default 50", p.opts.M)
+	}
+	if p.opts.N != 5 {
+		t.Errorf("N = %d, want default 5", p.opts.N)
+	}
+	if p.opts.StaleThreshold != 900*time.Second {
+		t.Errorf("StaleThreshold = %v, want default 900s", p.opts.StaleThreshold)
+	}
+}
+
+func TestRunEmptyPoll(t *testing.T) {
+	mc := newMockClient()
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	p := newTestPoller(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(data) != "[]\n" {
+		t.Errorf("output = %q, want empty JSON array", string(data))
+	}
+}
+
+func TestRunHappyPath_CommentWithSlashCommand(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{
+		"557058:abc123def456": "Developers",
+	}
+	mc.searchResult = []jira.Issue{
+		{
+			ID:   "10042",
+			Key:  "PROJ-123",
+			Self: "https://acme.atlassian.net/rest/api/3/issue/10042",
+			Fields: jira.IssueFields{
+				Summary: "Test issue",
+				Labels:  []string{"needs-info", "bug"},
+				Status: jira.Status{
+					Name:           "Open",
+					StatusCategory: jira.StatusCategory{Key: "new"},
+				},
+				Reporter: jira.User{
+					AccountID:   "reporter-id",
+					AccountType: "atlassian",
+				},
+				Created: now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated: now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage check acceptance criteria",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author: jira.User{
+				AccountID:   "557058:abc123def456",
+				AccountType: "atlassian",
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []poll.Dispatch
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	found := false
+	for _, d := range dispatches {
+		if d.Stage == "triage" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected triage dispatch, got dispatches: %+v", dispatches)
+	}
+}
+
+func TestRunLabelChange(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{
+		"user1": "Developers",
+	}
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels: []string{"ready-to-code"},
+				Status: jira.Status{
+					Name:           "Open",
+					StatusCategory: jira.StatusCategory{Key: "new"},
+				},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "100",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author: jira.User{
+				AccountID:   "user1",
+				AccountType: "atlassian",
+			},
+			Items: []jira.ChangeItem{
+				{
+					Field:      "labels",
+					FromString: "",
+					ToString:   "ready-to-code",
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"code"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []poll.Dispatch
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	found := false
+	for _, d := range dispatches {
+		if d.Stage == "code" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected code dispatch from label change, got: %+v", dispatches)
+	}
+}
+
+func TestRunBotFiltering(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels: []string{"bug"},
+				Status: jira.Status{
+					Name:           "Open",
+					StatusCategory: jira.StatusCategory{Key: "new"},
+				},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	setLastCheck(mc, "PROJ-123", "acme", "platform", now.Add(-30*time.Minute))
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage handle this",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author: jira.User{
+				AccountID:   "bot-account",
+				AccountType: "app",
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []poll.Dispatch
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(dispatches) != 0 {
+		t.Errorf("expected 0 dispatches (bot filtered), got %d", len(dispatches))
+	}
+}
+
+func TestRunLockContention(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels:   []string{"bug"},
+				Reporter: jira.User{AccountID: "reporter-id"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+
+	lockPropKey := lockPropertyKey("acme", "platform")
+	lockVal := LockValue{
+		ID:    "other-poller-uuid",
+		TS:    now.Format(time.RFC3339),
+		Phase: "running",
+	}
+	lockData, _ := json.Marshal(lockVal)
+	mc.properties["PROJ-123"] = map[string]json.RawMessage{
+		lockPropKey: lockData,
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(data) != "[]\n" {
+		t.Errorf("expected empty dispatches (locked), got %q", string(data))
+	}
+}
+
+func TestRunStaleLock(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{
+		"user1": "Developers",
+	}
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels:   []string{"bug"},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+
+	lockPropKey := lockPropertyKey("acme", "platform")
+	lockVal := LockValue{
+		ID:    "old-poller-uuid",
+		TS:    now.Add(-2 * time.Hour).Format(time.RFC3339),
+		Phase: "running",
+	}
+	lockData, _ := json.Marshal(lockVal)
+	mc.properties["PROJ-123"] = map[string]json.RawMessage{
+		lockPropKey: lockData,
+	}
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage handle this",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author: jira.User{
+				AccountID:   "user1",
+				AccountType: "atlassian",
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:     "acme/platform",
+		JiraBaseURL:    "https://acme.atlassian.net",
+		JiraProject:    "PROJ",
+		OutputPath:     outputPath,
+		StaleThreshold: 15 * time.Minute,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []poll.Dispatch
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(dispatches) == 0 {
+		t.Error("expected dispatches after stale lock cleanup")
+	}
+}
+
+func TestRunNoChangesSinceLastCheck(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels:   []string{"bug"},
+				Reporter: jira.User{AccountID: "reporter-id"},
+				Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+
+	setLastCheck(mc, "PROJ-123", "acme", "platform", now.Add(1*time.Hour))
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "old comment",
+			Created: now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author: jira.User{
+				AccountID:   "user1",
+				AccountType: "atlassian",
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(data) != "[]\n" {
+		t.Errorf("expected empty dispatches (no changes), got %q", string(data))
+	}
+}
+
+func TestRunMultipleEvents(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{
+		"user1": "Developers",
+	}
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels: []string{"ready-to-code", "bug"},
+				Status: jira.Status{
+					Name:           "Open",
+					StatusCategory: jira.StatusCategory{Key: "new"},
+				},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+
+	setLastCheck(mc, "PROJ-123", "acme", "platform", now.Add(-30*time.Minute))
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage check this",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+		},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "100",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+			Items: []jira.ChangeItem{
+				{
+					Field:      "labels",
+					FromString: "bug",
+					ToString:   "ready-to-code bug",
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []poll.Dispatch
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(dispatches) < 2 {
+		t.Errorf("expected at least 2 dispatches (comment + label), got %d: %+v", len(dispatches), dispatches)
+	}
+}
+
+func TestIsLockStale(t *testing.T) {
+	threshold := 15 * time.Minute
+
+	tests := []struct {
+		name string
+		lock LockValue
+		want bool
+	}{
+		{
+			name: "fresh lock",
+			lock: LockValue{ID: "uuid", TS: time.Now().Format(time.RFC3339)},
+			want: false,
+		},
+		{
+			name: "stale lock",
+			lock: LockValue{ID: "uuid", TS: time.Now().Add(-1 * time.Hour).Format(time.RFC3339)},
+			want: true,
+		},
+		{
+			name: "unparseable timestamp",
+			lock: LockValue{ID: "uuid", TS: "garbage"},
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isLockStale(tc.lock, threshold)
+			if got != tc.want {
+				t.Errorf("isLockStale() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSelectRandom(t *testing.T) {
+	issues := make([]jira.Issue, 10)
+	for i := range issues {
+		issues[i] = jira.Issue{Key: "PROJ-" + string(rune('0'+i))}
+	}
+
+	selected := selectRandom(issues, 3)
+	if len(selected) != 3 {
+		t.Errorf("selected %d, want 3", len(selected))
+	}
+
+	all := selectRandom(make([]jira.Issue, 2), 5)
+	if len(all) != 2 {
+		t.Errorf("selected %d, want 2", len(all))
+	}
+}
+
+func TestDeduplicate(t *testing.T) {
+	now := time.Now()
+	events := []JiraEvent{
+		{Type: "comment_added", CommentID: "123", IssueKey: "PROJ-1", UpdatedAt: now},
+		{Type: "comment_added", CommentID: "123", IssueKey: "PROJ-1", UpdatedAt: now},
+		{Type: "comment_added", CommentID: "456", IssueKey: "PROJ-1", UpdatedAt: now},
+	}
+
+	unique := deduplicate(events)
+	if len(unique) != 2 {
+		t.Errorf("expected 2 unique events, got %d", len(unique))
+	}
+}
+
+func TestFilterBotEvents(t *testing.T) {
+	events := []JiraEvent{
+		{
+			Type:          "comment_added",
+			CommentAuthor: jira.User{AccountID: "bot", AccountType: "app"},
+		},
+		{
+			Type:          "comment_added",
+			CommentAuthor: jira.User{AccountID: "human", AccountType: "atlassian"},
+		},
+	}
+
+	filtered := filterBotEvents(events)
+	if len(filtered) != 1 {
+		t.Errorf("expected 1 event after bot filter, got %d", len(filtered))
+	}
+	if filtered[0].CommentAuthor.AccountID != "human" {
+		t.Error("expected human event to remain")
+	}
+}
+
+func TestSplitOwnerRepo(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantOwner string
+		wantRepo  string
+	}{
+		{"acme/platform", "acme", "platform"},
+		{"org/sub/project", "org/sub", "project"},
+		{"project", "", "project"},
+	}
+	for _, tc := range tests {
+		owner, repo := splitOwnerRepo(tc.input)
+		if owner != tc.wantOwner || repo != tc.wantRepo {
+			t.Errorf("splitOwnerRepo(%q) = (%q, %q), want (%q, %q)",
+				tc.input, owner, repo, tc.wantOwner, tc.wantRepo)
+		}
+	}
+}
+
+func TestDetectChanges_FirstPoll(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Labels:   []string{"bug"},
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  now.Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+
+	events, err := p.detectChanges(context.Background(), issue, time.Time{})
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+
+	found := false
+	for _, e := range events {
+		if e.Type == "opened" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected 'opened' event on first poll")
+	}
+}
+
+func TestDetectChanges_StatusChange(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-30 * time.Minute)
+	mc := newMockClient()
+
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "200",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+			Items: []jira.ChangeItem{
+				{
+					Field:      "status",
+					FromString: "Open",
+					ToString:   "Done",
+				},
+			},
+		},
+	}
+
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Labels: []string{"bug"},
+			Status: jira.Status{
+				Name:           "Done",
+				StatusCategory: jira.StatusCategory{Key: "done"},
+			},
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+
+	events, err := p.detectChanges(context.Background(), issue, lastCheck)
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+
+	found := false
+	for _, e := range events {
+		if e.Type == "closed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected 'closed' event from status change to Done category")
+	}
+}
+
+func TestParseJiraTimestamp(t *testing.T) {
+	tests := []struct {
+		input string
+		valid bool
+	}{
+		{"2026-01-15T10:30:00.000-0500", true},
+		{"2026-01-15T10:30:00.000+0000", true},
+		{"2026-01-15T10:30:00.000Z", true},
+		{"2026-01-15T10:30:00Z", true},
+		{"garbage", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			_, err := parseJiraTimestamp(tc.input)
+			if tc.valid && err != nil {
+				t.Errorf("parseJiraTimestamp(%q) unexpected error: %v", tc.input, err)
+			}
+			if !tc.valid && err == nil {
+				t.Errorf("parseJiraTimestamp(%q) expected error, got nil", tc.input)
+			}
+		})
+	}
+}
+
+// setLastCheck is a test helper to pre-populate lastCheck for an issue.
+func setLastCheck(mc *mockClient, issueKey, owner, repo string, t time.Time) {
+	propKey := lastCheckPropertyKey(owner, repo)
+	ts, _ := json.Marshal(t.UTC().Format(time.RFC3339))
+	if mc.properties[issueKey] == nil {
+		mc.properties[issueKey] = make(map[string]json.RawMessage)
+	}
+	mc.properties[issueKey][propKey] = ts
+}

@@ -10,24 +10,36 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
 func newPollCmd() *cobra.Command {
 	var (
 		forgeFlag    string
+		inputDriver  string
 		projectPath  string
 		gitlabURL    string
+		outputPath   string
 		pollModeFlag string
 		fullsendDir  string
+		jiraURL      string
+		jiraProject  string
+		jqlOverride  string
+		targetRepo   string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "poll",
-		Short: "Poll GitLab API for new events and dispatch agent stages",
+		Short: "Poll forge or external tracker APIs for new events and dispatch agent stages",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if inputDriver == "jira-poll" {
+				return runJiraPoll(cmd, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
+			}
+
 			if forgeFlag != "gitlab" {
-				return fmt.Errorf("poll command currently supports --forge gitlab only (got %q)", forgeFlag)
+				return fmt.Errorf("poll command supports --forge gitlab or --input-driver jira-poll (got forge=%q, input-driver=%q)", forgeFlag, inputDriver)
 			}
 
 			forgeToken := os.Getenv("FULLSEND_FORGE_TOKEN")
@@ -82,16 +94,74 @@ func newPollCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&forgeFlag, "forge", "", "Forge platform (required: gitlab)")
-	_ = cmd.MarkFlagRequired("forge")
+	cmd.Flags().StringVar(&forgeFlag, "forge", "", "Forge platform (gitlab)")
+	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll)")
 	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH)")
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
+	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON")
 	cmd.Flags().StringVar(&pollModeFlag, "poll-mode", "", "Poll mode: fast (slash commands only) or full")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
+	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL)")
+	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping")
+	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override")
+	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY)")
 
 	cmd.Hidden = true
 	return cmd
+}
+
+func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
+	jiraToken := os.Getenv("JIRA_TOKEN")
+	if jiraToken == "" {
+		return fmt.Errorf("JIRA_TOKEN environment variable is required")
+	}
+	jiraEmail := os.Getenv("JIRA_USER_EMAIL")
+
+	if jiraURL == "" {
+		jiraURL = os.Getenv("JIRA_BASE_URL")
+	}
+	if jiraURL == "" {
+		return fmt.Errorf("--jira-url or JIRA_BASE_URL is required")
+	}
+
+	if targetRepo == "" {
+		targetRepo = os.Getenv("GITHUB_REPOSITORY")
+	}
+	if targetRepo == "" {
+		return fmt.Errorf("--target-repo or GITHUB_REPOSITORY is required")
+	}
+
+	if jiraProject == "" && jqlOverride == "" {
+		return fmt.Errorf("--jira-project or --jql is required")
+	}
+
+	var jiraOpts []jira.Option
+	jiraOpts = append(jiraOpts, jira.WithBaseURL(jiraURL))
+	if jiraEmail != "" {
+		jiraOpts = append(jiraOpts, jira.WithEmail(jiraEmail))
+	}
+
+	jiraClient, err := jira.New(jiraToken, jiraOpts...)
+	if err != nil {
+		return fmt.Errorf("create Jira client: %w", err)
+	}
+
+	router, err := buildRouter(fullsendDir)
+	if err != nil {
+		return fmt.Errorf("build event router: %w", err)
+	}
+
+	opts := jirapoll.Options{
+		TargetRepo:  targetRepo,
+		JiraBaseURL: jiraURL,
+		JiraProject: jiraProject,
+		JQL:         jqlOverride,
+		OutputPath:  outputPath,
+	}
+
+	poller := jirapoll.New(jiraClient, router, opts)
+	return poller.Run(cmd.Context())
 }
 
 // buildRouter constructs a HarnessRouter from config-registered agents
