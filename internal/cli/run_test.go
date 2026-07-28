@@ -387,7 +387,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	assert.Nil(t, cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
