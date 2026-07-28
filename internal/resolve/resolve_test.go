@@ -2158,6 +2158,78 @@ func TestIsContainedPath(t *testing.T) {
 	}
 }
 
+func TestResolveHarness_LocalProfileReadError(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{filepath.Join(root, "nonexistent", "profile.yaml")},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading profile")
+}
+
+func TestResolveHarness_LocalProfileBadID(t *testing.T) {
+	root := t.TempDir()
+
+	profilePath := filepath.Join(root, "profiles", "bad.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(profilePath), 0755))
+	require.NoError(t, os.WriteFile(profilePath, []byte("network:\n  egress: []\n"), 0644))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell.profiles[0]")
+}
+
+func TestResolveHarness_LocalProviderReadError(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{filepath.Join(root, "nonexistent", "provider.yaml")},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading provider")
+}
+
+func TestResolveHarness_LocalProviderParseError(t *testing.T) {
+	root := t.TempDir()
+
+	providerPath := filepath.Join(root, "providers", "bad.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(providerPath), 0755))
+	require.NoError(t, os.WriteFile(providerPath, []byte("name: valid\n"), 0644))
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{providerPath},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider type is required")
+}
+
 func TestResolveHarness_ProfileOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
 
