@@ -142,6 +142,50 @@ func TestMatchHarnesses_NoCandidates(t *testing.T) {
 	assert.Empty(t, matched)
 }
 
+func TestListTriggeredHarnesses_BaseComposition(t *testing.T) {
+	dir := t.TempDir()
+	harnessDir := filepath.Join(dir, "harness")
+	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+
+	// Base harness with shared config (agent, role, image).
+	baseYAML := `agent: agents/triage.md
+role: triage
+slug: base-harness
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`
+	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "base.yaml"), []byte(baseYAML), 0o644))
+
+	// Child harness that inherits from base via base: field and adds its
+	// own trigger. This is the standard per-repo pattern (ADR-0045): the
+	// child overrides slug and trigger while inheriting agent, role, image
+	// from the upstream base.
+	childYAML := `base: base.yaml
+slug: child-harness
+trigger: |
+  event.entity.kind == "work_item"
+  && event.transition.kind == "label_changed"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "child.yaml"), []byte(childYAML), 0o644))
+
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.SetAgents([]config.AgentEntry{{Name: "child", Source: "harness/child.yaml"}})
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, "child", out[0].Name)
+	// Verify base fields were inherited through composition.
+	assert.Equal(t, "triage", out[0].Harness.Role)
+	assert.Contains(t, out[0].Harness.Trigger, "work_item")
+}
+
 func TestDispatch_PRMatch(t *testing.T) {
 	dir := t.TempDir()
 	harnessDir := filepath.Join(dir, "harness")

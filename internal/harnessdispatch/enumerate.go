@@ -42,18 +42,28 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		policy = *fetchPolicy
 	}
 
+	composeOpts := harness.ComposeOpts{
+		WorkspaceRoot: filepath.Dir(configDir),
+		OrgAllowlist:  allowlist,
+		FetchPolicy:   policy,
+	}
+
 	var out []TriggeredHarness
 	for _, agent := range registered {
-		resolved, err := harness.ResolveRegisteredPath(ctx, configDir, agent.Entry, allowlist, harness.ComposeOpts{
-			WorkspaceRoot: filepath.Dir(configDir),
-			OrgAllowlist:  allowlist,
-			FetchPolicy:   policy,
-		})
+		resolved, err := harness.ResolveRegisteredPath(ctx, configDir, agent.Entry, allowlist, composeOpts)
 		if err != nil {
 			log.Printf("harness dispatch: skipping agent %s: resolve failed: %v", agent.Name, err)
 			continue
 		}
-		h, err := harness.Load(resolved.Path)
+		// Use LoadWithBase to handle harnesses with base: composition
+		// (ADR-0045). Load() rejects harnesses with base: fields, but
+		// per-repo harnesses commonly use base: to inherit from upstream
+		// harness definitions.
+		loadOpts := composeOpts
+		if harness.IsURL(agent.Entry.Source) {
+			loadOpts.SourceURL = agent.Entry.Source
+		}
+		h, _, err := harness.LoadWithBase(ctx, resolved.Path, loadOpts)
 		if err != nil {
 			log.Printf("harness dispatch: skipping agent %s: load failed: %v", agent.Name, err)
 			continue
