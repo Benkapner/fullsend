@@ -79,7 +79,13 @@ Stubs that implement an interface with no-ops or stateless pass-throughs hold no
 
 ## Running the fullsend CLI
 
-When agents (or humans working from this checkout) need the fullsend CLI, invoke it from the **repo root** with:
+**Audience:** contributors and agents working from a **repo checkout**. Do not
+change end-user or operator guides under `docs/guides/getting-started/`,
+`docs/guides/user/`, or `docs/guides/infrastructure/` to require `go run` —
+those audiences install a released `fullsend` binary.
+
+When agents (or humans working from this checkout) need the fullsend CLI,
+invoke it from the **repo root** with:
 
 ```bash
 go run ./cmd/fullsend <subcommand> …

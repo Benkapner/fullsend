@@ -2,8 +2,9 @@
 name: mint-enroll
 description: >
   SRE runbook for enrolling new GitHub orgs or repos into the fullsend token
-  mint service using the fullsend CLI. Use when onboarding a new org, adding a
-  per-repo WIF provider, or re-enrolling after infrastructure changes.
+  mint service using `go run ./cmd/fullsend` from this checkout. Use when
+  onboarding a new org, adding a per-repo WIF provider, or re-enrolling after
+  infrastructure changes.
 allowed-tools: Bash
 triggers:
   - mint enroll
