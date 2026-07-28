@@ -1107,6 +1107,145 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 	}
 }
 
+func TestHandler_FullFlowWithRepos_Retro(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"retro":"600"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"retro": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	var capturedTokenReq map[string]interface{}
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/my-repo/installation":
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 1, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			reqBody, _ := io.ReadAll(r.Body)
+			json.Unmarshal(reqBody, &capturedTokenReq)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_retro_token",
+				ExpiresAt: "2026-05-06T12:00:00Z",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"retro","repos":["my-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	perms, ok := capturedTokenReq["permissions"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected permissions in token request")
+	}
+	if perms["actions"] != "read" {
+		t.Fatalf("expected actions:read for retro role, got %v", perms["actions"])
+	}
+	if perms["contents"] != "read" {
+		t.Fatalf("expected contents:read for retro role, got %v", perms["contents"])
+	}
+	if perms["pull_requests"] != "write" {
+		t.Fatalf("expected pull_requests:write for retro role, got %v", perms["pull_requests"])
+	}
+	if perms["issues"] != "write" {
+		t.Fatalf("expected issues:write for retro role, got %v", perms["issues"])
+	}
+	if perms["metadata"] != "read" {
+		t.Fatalf("expected metadata:read for retro role, got %v", perms["metadata"])
+	}
+	if len(perms) != 5 {
+		t.Fatalf("expected exactly 5 permissions for retro role, got %d: %v", len(perms), perms)
+	}
+}
+
+func TestHandler_FullFlowWithRepos_Prioritize(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"prioritize":"700"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"prioritize": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	var capturedTokenReq map[string]interface{}
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/my-repo/installation":
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 1, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			reqBody, _ := io.ReadAll(r.Body)
+			json.Unmarshal(reqBody, &capturedTokenReq)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_prioritize_token",
+				ExpiresAt: "2026-05-06T12:00:00Z",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"prioritize","repos":["my-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	perms, ok := capturedTokenReq["permissions"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected permissions in token request")
+	}
+	if perms["contents"] != "read" {
+		t.Fatalf("expected contents:read for prioritize role, got %v", perms["contents"])
+	}
+	if perms["issues"] != "write" {
+		t.Fatalf("expected issues:write for prioritize role, got %v", perms["issues"])
+	}
+	if perms["organization_projects"] != "write" {
+		t.Fatalf("expected organization_projects:write for prioritize role, got %v", perms["organization_projects"])
+	}
+	if perms["metadata"] != "read" {
+		t.Fatalf("expected metadata:read for prioritize role, got %v", perms["metadata"])
+	}
+	if len(perms) != 4 {
+		t.Fatalf("expected exactly 4 permissions for prioritize role, got %d: %v", len(perms), perms)
+	}
+}
+
 func TestHandler_InstallationNotFound(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 

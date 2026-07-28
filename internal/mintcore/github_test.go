@@ -175,6 +175,27 @@ func TestRolePermissions_E2e(t *testing.T) {
 	assert.Equal(t, "write", perms["workflows"])
 }
 
+func TestRolePermissions_Retro(t *testing.T) {
+	perms := RolePermissionsFor("retro")
+	require.NotNil(t, perms)
+	assert.Equal(t, "read", perms["actions"])
+	assert.Equal(t, "read", perms["contents"])
+	assert.Equal(t, "write", perms["pull_requests"])
+	assert.Equal(t, "write", perms["issues"])
+	assert.Equal(t, "read", perms["metadata"])
+	assert.Len(t, perms, 5, "retro role should have exactly 5 permissions")
+}
+
+func TestRolePermissions_Prioritize(t *testing.T) {
+	perms := RolePermissionsFor("prioritize")
+	require.NotNil(t, perms)
+	assert.Equal(t, "read", perms["contents"])
+	assert.Equal(t, "write", perms["issues"])
+	assert.Equal(t, "write", perms["organization_projects"])
+	assert.Equal(t, "read", perms["metadata"])
+	assert.Len(t, perms, 4, "prioritize role should have exactly 4 permissions")
+}
+
 func TestRolePermissions_ReturnsCopy(t *testing.T) {
 	// Mutating the returned map must not affect the canonical definitions.
 	perms := RolePermissions()
