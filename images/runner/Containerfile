@@ -38,7 +38,7 @@
 # Go compilation. UBI images pull anonymously from
 # registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:1a6221864390b67f239bb19fc934004032150d2240485ec6e6a997171ae86930 AS build
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:2504bf2b087a8db36232970693a6a3ac620f63d411bb2c686166951d0bbe6e17 AS build
 
 USER 0
 WORKDIR /src
