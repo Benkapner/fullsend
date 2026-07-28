@@ -150,7 +150,16 @@ func printResolvedDeps(printer *ui.Printer, deps []resolve.Dependency) {
 // lock entry without writing to disk. Returns nil (no error) when the harness
 // has no remote dependencies or the lock entry is already up to date.
 func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag string, update bool, lf *lock.LockFile, rFlags resolveFlags, printer *ui.Printer) (*lockResult, error) {
-	harnessPath, err := resolveHarnessPath(absFullsendDir, agentName, printer)
+	// Load org config early — needed for config-driven agent resolution
+	// fallback and later for allowlist validation.
+	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
+	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+
+	policy := fetch.DefaultPolicy
+	policy.Offline = rFlags.offline
+
+	// Try local harness path first, then fall back to config-driven resolution.
+	harnessPath, agentSourceDeps, err := resolveHarnessForLock(ctx, absFullsendDir, agentName, orgCfg, rFlags, policy, printer)
 	if err != nil {
 		return nil, err
 	}
@@ -172,18 +181,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	if err != nil {
 		return nil, err
 	}
-
-	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
 	// handles the omitted-field case when a config is present.
 	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if orgCfg != nil {
 		orgAllowlist = orgCfg.AllowedResources()
 	}
-
-	policy := fetch.DefaultPolicy
-	policy.Offline = rFlags.offline
 
 	if orgCfg == nil {
 		if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && rawH.Base != "" && harness.IsURL(rawH.Base) {
@@ -195,8 +198,14 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 	}
 
+	// Seed dependencies with the agent source fetch (if harness was
+	// resolved from a config URL rather than a local file).
 	var allDeps []resolve.Dependency
 	seen := make(map[string]bool)
+	for _, dep := range agentSourceDeps {
+		seen[dep.URL] = true
+		allDeps = append(allDeps, dep)
+	}
 	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
 
 	composeGitToken := rFlags.gitToken
@@ -400,8 +409,29 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 		return err
 	}
 
+	// Merge config-registered agent names so --all covers agents
+	// resolved from config entries (not just local harness files).
+	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
+	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	if orgCfg != nil {
+		registered, regErr := harness.RegisteredAgents(orgCfg)
+		if regErr == nil {
+			localSet := make(map[string]bool, len(agentNames))
+			for _, n := range agentNames {
+				localSet[n] = true
+			}
+			for _, ra := range registered {
+				if !localSet[ra.Name] {
+					localSet[ra.Name] = true
+					agentNames = append(agentNames, ra.Name)
+				}
+			}
+			sort.Strings(agentNames)
+		}
+	}
+
 	if len(agentNames) == 0 {
-		printer.StepWarn("No harness files found in " + harnessDir)
+		printer.StepWarn("No harness files found locally or in config")
 		return nil
 	}
 
@@ -509,6 +539,78 @@ func resolveHarnessPath(dir, agentName string, printer *ui.Printer) (string, err
 		printer.StepWarn(fmt.Sprintf("Both %s.yaml and %s.yml exist; using .yaml", agentName, agentName))
 	}
 	return yamlPath, nil
+}
+
+// resolveHarnessForLock finds the harness for agentName, trying the local
+// harness directory first and falling back to config-driven resolution
+// when no local file exists. Returns the local filesystem path and any
+// fetch dependencies from URL-based agent resolution.
+func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string, orgCfg config.ConfigReader, rFlags resolveFlags, policy fetch.FetchPolicy, printer *ui.Printer) (string, []resolve.Dependency, error) {
+	harnessPath, localErr := resolveHarnessPath(absFullsendDir, agentName, printer)
+	if localErr == nil {
+		return harnessPath, nil, nil
+	}
+
+	// Only fall back to config when the harness file was not found.
+	// Permission errors and other I/O failures should propagate directly.
+	if !strings.Contains(localErr.Error(), "harness file not found") {
+		return "", nil, localErr
+	}
+
+	// Local file not found — try config-driven resolution.
+	if orgCfg == nil {
+		return "", nil, fmt.Errorf("agent %q: harness file not found locally and no config.yaml for fallback resolution", agentName)
+	}
+
+	if config.IsAgentExplicitlyDisabled(orgCfg.AgentEntries(), agentName) {
+		return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
+	}
+
+	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)
+	if entry == nil {
+		return "", nil, fmt.Errorf("agent %q not found in local harness directory or config", agentName)
+	}
+
+	composeGitToken := rFlags.gitToken
+	if composeGitToken == "" {
+		var tokenErr error
+		composeGitToken, tokenErr = resolveToken()
+		if tokenErr != nil {
+			printer.StepWarn("Git token not available; private repo agent fetches may fail")
+		}
+	}
+
+	if harness.IsURL(entry.Source) {
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agentName))
+	}
+	resolved, resolveErr := harness.ResolveRegisteredPath(ctx, absFullsendDir, *entry, orgCfg.AllowedResources(), harness.ComposeOpts{
+		WorkspaceRoot: absFullsendDir,
+		FetchPolicy:   policy,
+		TreeFetcher:   rFlags.treeFetcher,
+		GitToken:      composeGitToken,
+	})
+	if resolveErr != nil {
+		if harness.IsURL(entry.Source) {
+			printer.StepFail("Failed to fetch agent harness")
+		}
+		return "", nil, fmt.Errorf("resolving config agent %q: %w", agentName, resolveErr)
+	}
+
+	if harness.IsURL(entry.Source) {
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agentName))
+		dep := resolve.Dependency{
+			Field:     "agent_source",
+			URL:       resolved.Dep.URL,
+			LocalPath: resolved.Dep.LocalPath,
+			SHA256:    resolved.Dep.SHA256,
+			FetchedAt: resolved.Dep.FetchedAt,
+			CacheHit:  resolved.Dep.CacheHit,
+			Type:      resolved.Dep.Type,
+		}
+		return resolved.Path, []resolve.Dependency{dep}, nil
+	}
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agentName))
+	return resolved.Path, nil, nil
 }
 
 // discoverHarnessNames returns sorted agent names from *.yaml and *.yml files
