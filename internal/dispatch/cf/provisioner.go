@@ -92,7 +92,7 @@ type Config struct {
 	// When set (and DeployMode is DeployPreview), the provisioner uses
 	// `wrangler versions upload --preview-alias=<alias>` instead of
 	// `wrangler deploy`. The preview mint URL is deterministic:
-	// https://<alias>-<worker-name>.<subdomain>.workers.dev
+	// https://<alias>-<worker-name>.workers.dev
 	PreviewAlias string
 
 	// EnvVars are non-secret environment variables to set on the Worker
@@ -207,29 +207,22 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 // Teardown cleans up a preview Worker deployment. Only valid when
 // DeployMode is DeployPreview.
 //
-// When a preview alias is set, teardown abandons the preview version
-// without deleting the durable Worker script. The preview alias is
-// simply left unrouted — it will be overwritten on the next preview
-// deploy or can be cleaned up manually via `wrangler versions list`.
+// Preview-alias deploys use `wrangler versions upload`, which creates
+// a version routed via the alias. The durable Worker script is shared
+// with production, so teardown abandons the preview version without
+// deleting the Worker script. The alias is simply left unrouted — it
+// will be overwritten on the next preview deploy or can be cleaned up
+// manually via `wrangler versions list`.
 //
-// When no preview alias is set (legacy bare --preview), teardown
-// falls back to deleting the Worker entirely via `wrangler delete`.
+// Note: validate() enforces that DeployPreview always has a non-empty
+// PreviewAlias, so the bare-preview (delete Worker) path is no longer
+// reachable through normal Provisioner lifecycle.
 func (p *Provisioner) Teardown(ctx context.Context) error {
 	if p.cfg.DeployMode != DeployPreview {
 		return fmt.Errorf("teardown is only supported for preview Workers")
 	}
-	if p.cfg.PreviewAlias != "" {
-		// Preview-alias deploys use `wrangler versions upload`, which
-		// creates a version routed via the alias. The durable Worker
-		// script is shared with production, so we must NOT delete it.
-		// Abandoning the alias is safe — it stops routing but leaves
-		// the script intact for production traffic.
-		return nil
-	}
-	// Legacy path: bare --preview without alias deletes the Worker.
-	if err := p.wrangler.Delete(ctx, p.cfg.WorkerName); err != nil {
-		return fmt.Errorf("deleting worker %s: %w", p.cfg.WorkerName, err)
-	}
+	// Preview-alias teardown: abandon the alias without deleting the
+	// durable Worker script, which is shared with production.
 	return nil
 }
 
@@ -473,12 +466,10 @@ func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, worke
 	}
 
 	// Preview URL is deterministic from the alias and worker name.
-	// Try to parse from wrangler output first, fall back to the
-	// known pattern: https://<alias>-<workerName>.workers.dev
-	url := parseWorkerURL(string(output), workerName)
-	if url == "" {
-		url = fmt.Sprintf("https://%s-%s.workers.dev", previewAlias, workerName)
-	}
+	// We don't use parseWorkerURL here because wrangler output may
+	// contain the production Worker URL, which parseWorkerURL would
+	// match as a false positive. The deterministic pattern is reliable.
+	url := fmt.Sprintf("https://%s-%s.workers.dev", previewAlias, workerName)
 	return url, nil
 }
 

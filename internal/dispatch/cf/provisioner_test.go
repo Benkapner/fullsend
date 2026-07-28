@@ -388,21 +388,6 @@ func TestProvisioner_Teardown_PreviewWithAlias(t *testing.T) {
 	assert.Empty(t, fake.deleteCalls, "preview-alias teardown must not call Delete")
 }
 
-func TestProvisioner_Teardown_PreviewLegacyBareFlag(t *testing.T) {
-	// Legacy path: DeployPreview without alias deletes the Worker.
-	fake := &fakeWranglerRunner{}
-	p := NewProvisioner(Config{
-		AccountID:  "abc123",
-		WorkerName: "test-mint-preview",
-		DeployMode: DeployPreview,
-	}, fake)
-
-	err := p.Teardown(context.Background())
-	require.NoError(t, err)
-	require.Len(t, fake.deleteCalls, 1)
-	assert.Equal(t, "test-mint-preview", fake.deleteCalls[0])
-}
-
 func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
 	fake := &fakeWranglerRunner{}
 	p := NewProvisioner(Config{
@@ -414,21 +399,6 @@ func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
 	err := p.Teardown(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only supported for preview")
-}
-
-func TestProvisioner_Teardown_LegacyDeleteError(t *testing.T) {
-	fake := &fakeWranglerRunner{
-		deleteErr: fmt.Errorf("delete failed"),
-	}
-	p := NewProvisioner(Config{
-		AccountID:  "abc123",
-		WorkerName: "test-mint-preview",
-		DeployMode: DeployPreview,
-	}, fake)
-
-	err := p.Teardown(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "deleting worker")
 }
 
 // --- pemSecretName tests ---

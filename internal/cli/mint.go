@@ -411,7 +411,7 @@ Cloudflare mode (--platform=cloudflare):
   'wrangler versions upload --preview-alias=<alias>' instead of
   'wrangler deploy', so the durable Worker script is not affected.
   The preview mint URL is deterministic from the alias and worker name:
-    https://<alias>-<worker-name>.<subdomain>.workers.dev
+    https://<alias>-<worker-name>.workers.dev
   Callers (e.g. BT) can compute this URL and pass it to
   'fullsend github setup --mint-url' or 'fullsend mint enroll'.
   Preview teardown abandons the alias without deleting the Worker script.
