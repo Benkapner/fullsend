@@ -12,9 +12,9 @@ allowed-tools: Bash(python3 skills/nextwork/scripts/nextwork.py:*)
 
 Deterministically build a queue of **open** issues/PRs (assigned to you, or
 explicit refs), follow **open** GitHub `blockedBy` links and **open**
-sub-issues breadth-first (`blockedBy` may be cross-repo; sub-issues are
-same-repo), classify every item into a status catalog, and recommend the
-next action.
+sub-issues deepen-first (`blockedBy` may be cross-repo; sub-issues are
+same-repo; dependency chains are preferred over unrelated seeds), classify
+every item into a status catalog, and recommend the next action.
 
 ## vs `/topissues`
 
@@ -54,6 +54,8 @@ python3 skills/nextwork/scripts/nextwork.py [ITEMS...] [OPTIONS]
 | `--link-blocker DEPENDENT=BLOCKER` | Repeatable. Persist a real GitHub `blockedBy` dependency (DEPENDENT is blocked by BLOCKER, both as `owner/repo#N`). Idempotent if the link already exists. **The dependent must be an open Issue** — GitHub's blocked-by relationship is issue-only, so a PR cannot be the dependent side. |
 | `--decisions-only` | Filter output to non-trivial decisions only (statuses in the "Decision?" = No/Decision column below) |
 | `--stale-hours N` | Default 6. Hours after which a **stuck in-flight** agent-status start, or a **never-started** launch label/`/fs-*` command, becomes an actionable re-trigger |
+| `--triage-stale-hours N` | Default 72. Hours after which a **completed** triage (terminal status or sticky triage result) is considered stale |
+| `--max-visits N` | Default 100. Cap on classified items when walking blockers/sub-issues; stderr warns (and JSON sets `truncated`) when hit |
 | `--quiet` | Suppress stderr on API failures |
 | `--include-text` | Include truncated body + last comments in JSON output, for the skill's prose-dependency mining pass |
 
@@ -196,3 +198,10 @@ like production dispatch: first whitespace token of the first comment line.
 - Linked-PR detection scans open PRs only when an issue reaches that check
   (after blockers / assignment / sub-issues). The scan is capped at five
   GraphQL pages (~500 PRs) per repo; beyond that, some links may be missed.
+- Queue walking is **deepen-first**: newly discovered blockers/sub-issues are
+  prepended so a dependency chain finishes before unrelated seeds. A long
+  chain can consume `--max-visits` before other seeds are fetched.
+- Commit check rollup (`statusCheckRollup`) is not scoped to branch-protection
+  required checks; wording says “commit checks,” not “required checks.”
+- `--apply` / `--link-blocker` / `--take-over` continue on per-item mutation
+  failures and record `action: error` entries instead of aborting the run.

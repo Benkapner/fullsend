@@ -2,10 +2,11 @@
 """Build a readiness-oriented queue of open issues/PRs via gh GraphQL (stdlib only).
 
 Deterministic core for the `/nextwork` skill. Seeds a queue (assigned work or
-explicit refs), follows open GitHub `blockedBy` links breadth-first, classifies
-every item into a status catalog (waiting on automation / blocked / assigned
-elsewhere / actionable), and optionally applies trivial actions or persists
-prose-discovered blockers as real GitHub dependency links.
+explicit refs), follows open GitHub `blockedBy` links deepen-first (dependency
+chains before unrelated seeds), classifies every item into a status catalog
+(waiting on automation / blocked / assigned elsewhere / actionable), and
+optionally applies trivial actions or persists prose-discovered blockers as
+real GitHub dependency links.
 
 See skills/nextwork/SKILL.md for the full flag reference and skill loop.
 """
@@ -21,7 +22,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 # --- Shared regex / link-parsing helpers (copied from skills/topissues/scripts/topissues.py) ---
 
@@ -428,8 +429,13 @@ def classify_launch_wait(
     )
 
 
-def is_completed_triage_stale(comments: list[dict[str, Any]], now: datetime) -> bool:
-    """Completed Triage older than 3 days, or non-exempt comments after it.
+def is_completed_triage_stale(
+    comments: list[dict[str, Any]],
+    now: datetime,
+    *,
+    triage_stale_hours: float = TRIAGE_STALE_HOURS,
+) -> bool:
+    """Completed Triage older than triage_stale_hours, or non-exempt comments after it.
 
     Completion is a terminal Triage agent-status, or a sticky
     ``<!-- fullsend:triage-agent -->`` result when status is missing.
@@ -437,7 +443,7 @@ def is_completed_triage_stale(comments: list[dict[str, Any]], now: datetime) -> 
     completed = latest_completed_triage(comments)
     if completed is None or not completed["created_at"]:
         return False
-    if hours_since(completed["created_at"], now) >= TRIAGE_STALE_HOURS:
+    if hours_since(completed["created_at"], now) >= triage_stale_hours:
         return True
     triage_at = completed["created_at"]
     for c in comments:
@@ -452,7 +458,7 @@ def is_completed_triage_stale(comments: list[dict[str, Any]], now: datetime) -> 
         # Launch/promote slash commands are handled by classify_launch_wait /
         # waiting_code — they must not themselves flip completed triage stale.
         cmd = comment_command(body)
-        if cmd in ("/fs-code", "/fs-triage"):
+        if cmd in ("/fs-code", "/fs-triage", "/fs-review", "/fs-fix"):
             continue
         return True
     return False
@@ -516,6 +522,7 @@ def classify_issue(
     now: datetime,
     *,
     resolve_linked_prs: Callable[[], list[int]] | None = None,
+    triage_stale_hours: float = TRIAGE_STALE_HOURS,
 ) -> Classification | None:
     """Classify a normalized open issue. Returns None if it should be dropped entirely."""
     labels = set(item["labels"])
@@ -599,7 +606,7 @@ def classify_issue(
             eliminated=True,
         )
 
-    if is_completed_triage_stale(comments, now):
+    if is_completed_triage_stale(comments, now, triage_stale_hours=triage_stale_hours):
         return Classification(
             status="needs_triage",
             reason="Stale completed triage; re-trigger",
@@ -725,7 +732,7 @@ def classify_pr(
     if checks_state in CHECKS_FAILED:
         return Classification(
             status="needs_review_decision",
-            reason=f"Required checks failed ({checks_state})",
+            reason=f"Commit check rollup failed ({checks_state})",
             eliminated=False,
             suggested_actions=["Inspect failed CI and decide the next step"],
         )
@@ -749,6 +756,17 @@ def classify_pr(
             ],
         )
 
+    if review_decision == "CHANGES_REQUESTED":
+        reason = "Reviewer requested changes"
+        if "ready-for-merge" in labels:
+            reason += " (ready-for-merge label is present)"
+        return Classification(
+            status="needs_review_decision",
+            reason=reason,
+            eliminated=False,
+            suggested_actions=["Address review feedback or discuss with the reviewer"],
+        )
+
     if "ready-for-merge" in labels:
         if item.get("in_merge_queue"):
             return Classification(
@@ -759,10 +777,10 @@ def classify_pr(
         if checks_pending:
             return Classification(
                 status="waiting_ci",
-                reason="ready-for-merge label present but required checks are still running",
+                reason="ready-for-merge label present but commit checks are still running",
                 eliminated=True,
             )
-        if review_decision in ("REVIEW_REQUIRED", "CHANGES_REQUESTED"):
+        if review_decision == "REVIEW_REQUIRED":
             pass  # fall through to review launch wait
         elif merge_state == "BLOCKED":
             return Classification(
@@ -790,7 +808,7 @@ def classify_pr(
     if checks_pending:
         return Classification(
             status="waiting_ci",
-            reason="Required checks are still running",
+            reason="Commit checks are still running",
             eliminated=True,
         )
 
@@ -891,10 +909,16 @@ def classify_item(
     now: datetime,
     *,
     resolve_linked_prs: Callable[[], list[int]] | None = None,
+    triage_stale_hours: float = TRIAGE_STALE_HOURS,
 ) -> Classification | None:
     if item["kind"] == "issue":
         classification = classify_issue(
-            item, user, stale_hours, now, resolve_linked_prs=resolve_linked_prs
+            item,
+            user,
+            stale_hours,
+            now,
+            resolve_linked_prs=resolve_linked_prs,
+            triage_stale_hours=triage_stale_hours,
         )
     else:
         classification = classify_pr(item, user, stale_hours, now)
@@ -907,23 +931,18 @@ def classify_item(
 # ------------------------------- gh CLI plumbing -------------------------------
 
 
-def _gh_not_found() -> None:
+def _gh_not_found() -> NoReturn:
     print("error: gh CLI not found; install https://cli.github.com/", file=sys.stderr)
     sys.exit(1)
 
 
 def try_run_gh(args: list[str]) -> str | None:
     """Run gh and return stdout, or None if the command failed."""
-    try:
-        result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
-    except FileNotFoundError:
-        _gh_not_found()
-    except subprocess.CalledProcessError:
-        return None
-    return result.stdout.strip()
+    return run_gh_soft(args, quiet=True)
 
 
-def run_gh(args: list[str], *, quiet: bool = False) -> str:
+def run_gh_soft(args: list[str], *, quiet: bool = False) -> str | None:
+    """Like run_gh, but return None on failure instead of exiting (except missing gh)."""
     try:
         result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
     except FileNotFoundError:
@@ -934,8 +953,15 @@ def run_gh(args: list[str], *, quiet: bool = False) -> str:
                 print(exc.stderr.strip(), file=sys.stderr)
             if exc.stdout:
                 print(exc.stdout.strip(), file=sys.stderr)
-        sys.exit(3)
+        return None
     return result.stdout.strip()
+
+
+def run_gh(args: list[str], *, quiet: bool = False) -> str:
+    out = run_gh_soft(args, quiet=quiet)
+    if out is None:
+        sys.exit(3)
+    return out
 
 
 def graphql_var_flags(variables: dict[str, Any]) -> list[str]:
@@ -1352,7 +1378,7 @@ class GhFetcher:
         return any((e.get("pullRequest") or {}).get("number") == number for e in entries)
 
 
-# ------------------------------- Seeding + BFS -------------------------------
+# ------------------------------- Seeding + deepen-first queue -------------------------------
 
 
 def seed_from_cli(items: list[str], default_repo: str | None) -> list[tuple[str, int]]:
@@ -1419,13 +1445,18 @@ def build_queue(
     now: datetime,
     *,
     max_visits: int = MAX_QUEUE_VISITS,
-) -> list[dict[str, Any]]:
+    triage_stale_hours: float = TRIAGE_STALE_HOURS,
+    quiet: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
     """Walk seed refs, deepen-first via open blockedBy / sub-issues.
 
     Only classified open items count toward ``max_visits`` (closed, missing, and
     duplicate-dropped fetches are de-duped but do not burn budget). Discovered
     blockers and sub-issues are prepended so dependency chains complete before
     remaining unrelated seeds.
+
+    Returns ``(results, remaining)`` where ``remaining`` is how many queued refs
+    were left unprocessed when the visit cap was hit (0 if the queue drained).
     """
     visited: set[tuple[str, int]] = set()
     to_visit: deque[tuple[str, int]] = deque(seeds)
@@ -1451,7 +1482,12 @@ def build_queue(
             resolve_linked_prs = _resolve_linked
 
         classification = classify_item(
-            item, user, stale_hours, now, resolve_linked_prs=resolve_linked_prs
+            item,
+            user,
+            stale_hours,
+            now,
+            resolve_linked_prs=resolve_linked_prs,
+            triage_stale_hours=triage_stale_hours,
         )
         if classification is None:
             continue
@@ -1482,7 +1518,13 @@ def build_queue(
                 if cref not in visited:
                     to_visit.appendleft(cref)
 
-    return results
+    remaining = sum(1 for ref in to_visit if ref not in visited)
+    if remaining and not quiet:
+        print(
+            f"warning: visit cap ({max_visits}) reached; {remaining} queued ref(s) not processed",
+            file=sys.stderr,
+        )
+    return results, remaining
 
 
 def maybe_check_merge_queue(items: list[dict[str, Any]], fetcher: GhFetcher) -> None:
@@ -1511,19 +1553,24 @@ def apply_trivial_actions(
 
         # Self-assign first (actionable unassigned side-action).
         if ASSIGN_SELF in suggested:
-            run_gh(
-                [
-                    sub,
-                    "edit",
-                    str(item["number"]),
-                    "--repo",
-                    item["repo"],
-                    "--add-assignee",
-                    user,
-                ],
-                quiet=quiet,
-            )
-            applied.append({**base, "action": ASSIGN_SELF})
+            if (
+                run_gh_soft(
+                    [
+                        sub,
+                        "edit",
+                        str(item["number"]),
+                        "--repo",
+                        item["repo"],
+                        "--add-assignee",
+                        user,
+                    ],
+                    quiet=quiet,
+                )
+                is None
+            ):
+                applied.append({**base, "action": "error", "detail": f"failed {ASSIGN_SELF}"})
+            else:
+                applied.append({**base, "action": ASSIGN_SELF})
 
         # Primary trivial status (slash commands; needs_assign is assign-only).
         if (
@@ -1532,27 +1579,57 @@ def apply_trivial_actions(
             and item["status"] != "needs_assign"
         ):
             command = SLASH_COMMAND_BY_STATUS[item["status"]]
-            run_gh(
-                [sub, "comment", str(item["number"]), "--repo", item["repo"], "--body", command],
-                quiet=quiet,
-            )
-            applied.append({**base, "action": f"comment:{command}"})
+            if (
+                run_gh_soft(
+                    [
+                        sub,
+                        "comment",
+                        str(item["number"]),
+                        "--repo",
+                        item["repo"],
+                        "--body",
+                        command,
+                    ],
+                    quiet=quiet,
+                )
+                is None
+            ):
+                applied.append(
+                    {
+                        **base,
+                        "action": "error",
+                        "detail": f"failed comment:{command}",
+                    }
+                )
+            else:
+                applied.append({**base, "action": f"comment:{command}"})
 
         # Orphaned blocked label — trivial side-action for any primary status.
         if REMOVE_BLOCKED_LABEL in suggested:
-            run_gh(
-                [
-                    sub,
-                    "edit",
-                    str(item["number"]),
-                    "--repo",
-                    item["repo"],
-                    "--remove-label",
-                    "blocked",
-                ],
-                quiet=quiet,
-            )
-            applied.append({**base, "action": REMOVE_BLOCKED_LABEL})
+            if (
+                run_gh_soft(
+                    [
+                        sub,
+                        "edit",
+                        str(item["number"]),
+                        "--repo",
+                        item["repo"],
+                        "--remove-label",
+                        "blocked",
+                    ],
+                    quiet=quiet,
+                )
+                is None
+            ):
+                applied.append(
+                    {
+                        **base,
+                        "action": "error",
+                        "detail": f"failed {REMOVE_BLOCKED_LABEL}",
+                    }
+                )
+            else:
+                applied.append({**base, "action": REMOVE_BLOCKED_LABEL})
     return applied
 
 
@@ -1565,7 +1642,18 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     if node is None:
         return {"ref": format_ref(repo, number), "action": "error", "detail": "ref not found"}
     sub = "issue" if node["__typename"] == "Issue" else "pr"
-    run_gh([sub, "edit", str(number), "--repo", repo, "--add-assignee", user], quiet=quiet)
+    if (
+        run_gh_soft(
+            [sub, "edit", str(number), "--repo", repo, "--add-assignee", user],
+            quiet=quiet,
+        )
+        is None
+    ):
+        return {
+            "ref": format_ref(repo, number),
+            "action": "error",
+            "detail": f"failed to assign {user}",
+        }
     return {"ref": format_ref(repo, number), "action": "assigned", "detail": f"assigned to {user}"}
 
 
@@ -1574,6 +1662,13 @@ def link_blocker(
 ) -> dict[str, Any]:
     dep_repo, dep_number = dependent
     blk_repo, blk_number = blocker
+    if dependent == blocker:
+        return {
+            "dependent": format_ref(dep_repo, dep_number),
+            "blocker": format_ref(blk_repo, blk_number),
+            "action": "error",
+            "detail": "an issue cannot block itself",
+        }
     dep_owner, dep_name = dep_repo.split("/", 1)
 
     data = gh_graphql_or_none(
@@ -1626,11 +1721,18 @@ def link_blocker(
             "detail": "blocker ref is not an Issue (GitHub blocked-by is issue-only)",
         }
 
-    gh_graphql(
+    mutation = gh_graphql_or_none(
         ADD_BLOCKED_BY_MUTATION,
         {"issueId": issue["id"], "blockingIssueId": blocker_issue["id"]},
         quiet=quiet,
     )
+    if mutation is None:
+        return {
+            "dependent": format_ref(dep_repo, dep_number),
+            "blocker": format_ref(blk_repo, blk_number),
+            "action": "error",
+            "detail": "failed to create blockedBy link",
+        }
     return {
         "dependent": format_ref(dep_repo, dep_number),
         "blocker": format_ref(blk_repo, blk_number),
@@ -1717,6 +1819,7 @@ def format_json_output(
     include_text: bool,
     link_results: list[dict[str, Any]] | None = None,
     take_over_results: list[dict[str, Any]] | None = None,
+    truncated_remaining: int = 0,
 ) -> str:
     payload: dict[str, Any] = {
         "repo": repo,
@@ -1726,6 +1829,9 @@ def format_json_output(
         "items": [item_output_dict(i, include_text=include_text) for i in items],
         "applied": applied,
     }
+    if truncated_remaining:
+        payload["truncated"] = True
+        payload["truncated_remaining"] = truncated_remaining
     if link_results:
         payload["link_results"] = link_results
     if take_over_results:
@@ -1854,6 +1960,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "launch label/command becomes actionable (default: 6)"
         ),
     )
+    parser.add_argument(
+        "--triage-stale-hours",
+        type=float,
+        default=TRIAGE_STALE_HOURS,
+        metavar="N",
+        help=(
+            "Hours after which a completed triage is considered stale "
+            f"(default: {TRIAGE_STALE_HOURS:g})"
+        ),
+    )
+    parser.add_argument(
+        "--max-visits",
+        type=int,
+        default=MAX_QUEUE_VISITS,
+        metavar="N",
+        help=f"Max classified items to visit when walking blockers (default: {MAX_QUEUE_VISITS})",
+    )
     parser.add_argument("--quiet", action="store_true", help="Suppress stderr on API failures")
     parser.add_argument(
         "--include-text",
@@ -1863,6 +1986,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.stale_hours < 0:
         print("error: --stale-hours must be non-negative", file=sys.stderr)
+        sys.exit(2)
+    if args.triage_stale_hours < 0:
+        print("error: --triage-stale-hours must be non-negative", file=sys.stderr)
+        sys.exit(2)
+    if args.max_visits < 1:
+        print("error: --max-visits must be at least 1", file=sys.stderr)
         sys.exit(2)
     return args
 
@@ -1903,12 +2032,27 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(2)
 
     fetcher = GhFetcher(quiet=args.quiet)
-    items = build_queue(seeds, fetcher, user, args.stale_hours, now)
+    items, truncated_remaining = build_queue(
+        seeds,
+        fetcher,
+        user,
+        args.stale_hours,
+        now,
+        max_visits=args.max_visits,
+        triage_stale_hours=args.triage_stale_hours,
+        quiet=args.quiet,
+    )
     maybe_check_merge_queue(items, fetcher)
     # Merge-queue membership can change ready_to_merge -> waiting_merge_queue; reclassify.
     for item in items:
         if item["kind"] == "pull" and "ready-for-merge" in item.get("labels", []):
-            classification = classify_item(item, user, args.stale_hours, now)
+            classification = classify_item(
+                item,
+                user,
+                args.stale_hours,
+                now,
+                triage_stale_hours=args.triage_stale_hours,
+            )
             if classification is not None:
                 item["status"] = classification.status
                 item["reason"] = classification.reason
@@ -1918,7 +2062,7 @@ def main(argv: list[str] | None = None) -> None:
     applied: list[dict[str, Any]] = []
     if args.apply:
         applied = apply_trivial_actions(items, user, quiet=args.quiet)
-        applied_refs = {(a["repo"], a["number"]) for a in applied}
+        applied_refs = {(a["repo"], a["number"]) for a in applied if a.get("action") != "error"}
         for item in items:
             if (item["repo"], item["number"]) in applied_refs:
                 item["reason"] = f"{item['reason']} (applied)"
@@ -1937,6 +2081,7 @@ def main(argv: list[str] | None = None) -> None:
                 include_text=args.include_text,
                 link_results=link_results,
                 take_over_results=take_over_results,
+                truncated_remaining=truncated_remaining,
             )
         )
     else:

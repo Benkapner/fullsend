@@ -30,7 +30,9 @@ from nextwork import (  # noqa: E402
     hours_since,
     is_stale,
     link_blocker,
+    maybe_check_merge_queue,
     normalize_item,
+    parse_args,
     parse_inflight_agent,
     parse_link_blocker_spec,
     parse_open_blockers,
@@ -969,8 +971,20 @@ class TestClassifyPr(unittest.TestCase):
     def test_changes_requested_without_threads_not_fix(self):
         item = make_pr(author="carol", review_decision="CHANGES_REQUESTED")
         result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_review_decision")
+        self.assertIn("requested changes", result.reason.lower())
         self.assertNotEqual(result.status, "trigger_fix")
         self.assertNotEqual(result.status, "waiting_fix")
+
+    def test_changes_requested_with_ready_for_merge(self):
+        item = make_pr(
+            labels=["ready-for-merge"],
+            review_decision="CHANGES_REQUESTED",
+            checks_state="SUCCESS",
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_review_decision")
+        self.assertIn("ready-for-merge", result.reason)
 
     def test_fullsend_no_fix_with_review_bot_threads(self):
         item = make_pr(
@@ -1074,7 +1088,7 @@ class FakeFetcher:
 
 
 class TestBuildQueue(unittest.TestCase):
-    def test_bfs_follows_open_blockers_cross_repo(self):
+    def test_follows_open_blockers_cross_repo(self):
         items = {
             ("acme/widget", 1): make_issue(
                 repo="acme/widget",
@@ -1084,7 +1098,7 @@ class TestBuildQueue(unittest.TestCase):
             ("acme/other", 2): make_issue(repo="acme/other", number=2, labels=["question"]),
         }
         fetcher = FakeFetcher(items)
-        results = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         numbers = {(r["repo"], r["number"]) for r in results}
         self.assertEqual(numbers, {("acme/widget", 1), ("acme/other", 2)})
         first = next(r for r in results if r["number"] == 1)
@@ -1093,32 +1107,36 @@ class TestBuildQueue(unittest.TestCase):
     def test_does_not_revisit(self):
         items = {("acme/widget", 1): make_issue(repo="acme/widget", number=1)}
         fetcher = FakeFetcher(items)
-        results = build_queue([("acme/widget", 1), ("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining = build_queue(
+            [("acme/widget", 1), ("acme/widget", 1)], fetcher, "alice", 6, NOW
+        )
         self.assertEqual(len(results), 1)
 
     def test_drops_closed_items(self):
         items = {("acme/widget", 1): make_issue(repo="acme/widget", number=1, state="CLOSED")}
         fetcher = FakeFetcher(items)
-        results = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         self.assertEqual(results, [])
 
     def test_drops_duplicate_labeled(self):
         items = {("acme/widget", 1): make_issue(repo="acme/widget", number=1, labels=["duplicate"])}
         fetcher = FakeFetcher(items)
-        results = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         self.assertEqual(results, [])
 
     def test_respects_max_visits_cap(self):
-        # Build a long blocker chain: 1 <- 2 <- 3 <- ... to verify the visit cap stops BFS.
+        # Long blocker chain: 1 <- 2 <- 3 <- ...; visit cap stops deepen-first walking.
         items = {}
         for n in range(1, 10):
             blockers = [{"repo": "acme/widget", "number": n + 1}] if n < 9 else []
             items[("acme/widget", n)] = make_issue(repo="acme/widget", number=n, blockers=blockers)
         fetcher = FakeFetcher(items)
-        results = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW, max_visits=3)
+        results, _remaining = build_queue(
+            [("acme/widget", 1)], fetcher, "alice", 6, NOW, max_visits=3
+        )
         self.assertEqual(len(results), 3)
 
-    def test_bfs_enqueues_open_sub_issues(self):
+    def test_enqueues_open_sub_issues(self):
         items = {
             ("acme/widget", 1): make_issue(
                 repo="acme/widget",
@@ -1139,7 +1157,7 @@ class TestBuildQueue(unittest.TestCase):
             ),
         }
         fetcher = FakeFetcher(items)
-        results = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         numbers = {r["number"] for r in results}
         self.assertEqual(numbers, {1, 2, 3})
         parent = next(r for r in results if r["number"] == 1)
@@ -1164,7 +1182,7 @@ class TestBuildQueue(unittest.TestCase):
             ),
         }
         fetcher = FakeFetcher(items)
-        results = build_queue(
+        results, _remaining = build_queue(
             [("acme/widget", 1), ("acme/widget", 3)],
             fetcher,
             "alice",
@@ -1186,7 +1204,7 @@ class TestBuildQueue(unittest.TestCase):
             blockers = [{"repo": "acme/widget", "number": n + 1}] if n < 5 else []
             items[("acme/widget", n)] = make_issue(repo="acme/widget", number=n, blockers=blockers)
         fetcher = FakeFetcher(items)
-        results = build_queue(
+        results, _remaining = build_queue(
             [("acme/widget", 99), ("acme/widget", 98), ("acme/widget", 1)],
             fetcher,
             "alice",
@@ -1199,8 +1217,8 @@ class TestBuildQueue(unittest.TestCase):
 
 
 class TestApplyTrivialActions(unittest.TestCase):
-    @patch("nextwork.run_gh")
-    def test_assigns_unassigned(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_assigns_unassigned(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "issue",
@@ -1214,13 +1232,13 @@ class TestApplyTrivialActions(unittest.TestCase):
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual(len(applied), 1)
         self.assertEqual(applied[0]["action"], ASSIGN_SELF)
-        mock_run_gh.assert_called_once_with(
+        mock_run_gh_soft.assert_called_once_with(
             ["issue", "edit", "1", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
 
-    @patch("nextwork.run_gh")
-    def test_posts_slash_command_for_pr(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_posts_slash_command_for_pr(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "pull",
@@ -1232,13 +1250,13 @@ class TestApplyTrivialActions(unittest.TestCase):
         ]
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual(applied[0]["action"], "comment:/fs-review")
-        mock_run_gh.assert_called_once_with(
+        mock_run_gh_soft.assert_called_once_with(
             ["pr", "comment", "99", "--repo", "acme/widget", "--body", "/fs-review"],
             quiet=False,
         )
 
-    @patch("nextwork.run_gh")
-    def test_assign_before_slash_comment(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_assign_before_slash_comment(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "issue",
@@ -1253,16 +1271,16 @@ class TestApplyTrivialActions(unittest.TestCase):
         actions = [a["action"] for a in applied]
         self.assertEqual(actions, [ASSIGN_SELF, "comment:/fs-code"])
         self.assertEqual(
-            mock_run_gh.call_args_list[0].args[0],
+            mock_run_gh_soft.call_args_list[0].args[0],
             ["issue", "edit", "7", "--repo", "acme/widget", "--add-assignee", "alice"],
         )
         self.assertEqual(
-            mock_run_gh.call_args_list[1].args[0],
+            mock_run_gh_soft.call_args_list[1].args[0],
             ["issue", "comment", "7", "--repo", "acme/widget", "--body", "/fs-code"],
         )
 
-    @patch("nextwork.run_gh")
-    def test_assign_on_pr_uses_pr_subcommand(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_assign_on_pr_uses_pr_subcommand(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "pull",
@@ -1275,13 +1293,13 @@ class TestApplyTrivialActions(unittest.TestCase):
         ]
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual(applied[0]["action"], ASSIGN_SELF)
-        mock_run_gh.assert_any_call(
+        mock_run_gh_soft.assert_any_call(
             ["pr", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
 
-    @patch("nextwork.run_gh")
-    def test_skips_eliminated_and_non_trivial(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_skips_eliminated_and_non_trivial(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "issue",
@@ -1300,10 +1318,10 @@ class TestApplyTrivialActions(unittest.TestCase):
         ]
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual(applied, [])
-        mock_run_gh.assert_not_called()
+        mock_run_gh_soft.assert_not_called()
 
-    @patch("nextwork.run_gh")
-    def test_removes_orphaned_blocked_label(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_removes_orphaned_blocked_label(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "issue",
@@ -1317,13 +1335,13 @@ class TestApplyTrivialActions(unittest.TestCase):
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual(len(applied), 1)
         self.assertEqual(applied[0]["action"], REMOVE_BLOCKED_LABEL)
-        mock_run_gh.assert_called_once_with(
+        mock_run_gh_soft.assert_called_once_with(
             ["issue", "edit", "5", "--repo", "acme/widget", "--remove-label", "blocked"],
             quiet=False,
         )
 
-    @patch("nextwork.run_gh")
-    def test_apply_both_primary_and_remove_blocked(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_apply_both_primary_and_remove_blocked(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "pull",
@@ -1337,18 +1355,18 @@ class TestApplyTrivialActions(unittest.TestCase):
         applied = apply_trivial_actions(items, "alice")
         actions = [a["action"] for a in applied]
         self.assertEqual(actions, [ASSIGN_SELF, REMOVE_BLOCKED_LABEL])
-        self.assertEqual(mock_run_gh.call_count, 2)
-        mock_run_gh.assert_any_call(
+        self.assertEqual(mock_run_gh_soft.call_count, 2)
+        mock_run_gh_soft.assert_any_call(
             ["pr", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
-        mock_run_gh.assert_any_call(
+        mock_run_gh_soft.assert_any_call(
             ["pr", "edit", "99", "--repo", "acme/widget", "--remove-label", "blocked"],
             quiet=False,
         )
 
-    @patch("nextwork.run_gh")
-    def test_apply_assign_on_decision_status(self, mock_run_gh):
+    @patch("nextwork.run_gh_soft", return_value="")
+    def test_apply_assign_on_decision_status(self, mock_run_gh_soft):
         items = [
             {
                 "kind": "issue",
@@ -1361,35 +1379,35 @@ class TestApplyTrivialActions(unittest.TestCase):
         ]
         applied = apply_trivial_actions(items, "alice")
         self.assertEqual([a["action"] for a in applied], [ASSIGN_SELF])
-        mock_run_gh.assert_called_once_with(
+        mock_run_gh_soft.assert_called_once_with(
             ["issue", "edit", "3", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
 
 
 class TestTakeOver(unittest.TestCase):
-    @patch("nextwork.run_gh")
+    @patch("nextwork.run_gh_soft", return_value="")
     @patch("nextwork.gh_graphql_or_none")
-    def test_assigns_issue(self, mock_gql, mock_run_gh):
+    def test_assigns_issue(self, mock_gql, mock_run_gh_soft):
         mock_gql.return_value = {
             "repository": {"issueOrPullRequest": {"__typename": "Issue", "id": "I_1"}}
         }
         result = take_over("acme/widget", 1, "alice")
         self.assertEqual(result["action"], "assigned")
-        mock_run_gh.assert_called_once_with(
+        mock_run_gh_soft.assert_called_once_with(
             ["issue", "edit", "1", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
 
-    @patch("nextwork.run_gh")
+    @patch("nextwork.run_gh_soft", return_value="")
     @patch("nextwork.gh_graphql_or_none")
-    def test_assigns_pull_request(self, mock_gql, mock_run_gh):
+    def test_assigns_pull_request(self, mock_gql, mock_run_gh_soft):
         mock_gql.return_value = {
             "repository": {"issueOrPullRequest": {"__typename": "PullRequest", "id": "PR_1"}}
         }
         result = take_over("acme/widget", 99, "alice")
         self.assertEqual(result["action"], "assigned")
-        mock_run_gh.assert_called_once_with(
+        mock_run_gh_soft.assert_called_once_with(
             ["pr", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
@@ -1401,22 +1419,21 @@ class TestTakeOver(unittest.TestCase):
 
 
 class TestLinkBlocker(unittest.TestCase):
-    @patch("nextwork.gh_graphql")
     @patch("nextwork.gh_graphql_or_none")
-    def test_creates_new_link(self, mock_gql, mock_mutation):
+    def test_creates_new_link(self, mock_gql):
         mock_gql.side_effect = [
             {"repository": {"issue": {"id": "I_DEP", "state": "OPEN", "blockedBy": {"nodes": []}}}},
             {"repository": {"issue": {"id": "I_BLK"}}},
+            {"addBlockedBy": {"issue": {"number": 1}}},
         ]
         result = link_blocker(("acme/widget", 1), ("acme/widget", 2))
         self.assertEqual(result["action"], "linked")
-        mock_mutation.assert_called_once()
-        _args, kwargs = mock_mutation.call_args
+        self.assertEqual(mock_gql.call_count, 3)
+        _args, _kwargs = mock_gql.call_args_list[2]
         self.assertEqual(_args[1], {"issueId": "I_DEP", "blockingIssueId": "I_BLK"})
 
-    @patch("nextwork.gh_graphql")
     @patch("nextwork.gh_graphql_or_none")
-    def test_already_linked_is_idempotent(self, mock_gql, mock_mutation):
+    def test_already_linked_is_idempotent(self, mock_gql):
         mock_gql.return_value = {
             "repository": {
                 "issue": {
@@ -1430,30 +1447,25 @@ class TestLinkBlocker(unittest.TestCase):
         }
         result = link_blocker(("acme/widget", 1), ("acme/widget", 2))
         self.assertEqual(result["action"], "already_linked")
-        mock_mutation.assert_not_called()
+        self.assertEqual(mock_gql.call_count, 1)
 
-    @patch("nextwork.gh_graphql")
     @patch("nextwork.gh_graphql_or_none", return_value={"repository": {"issue": None}})
-    def test_dependent_not_an_issue_errors(self, _mock_gql, mock_mutation):
+    def test_dependent_not_an_issue_errors(self, _mock_gql):
         result = link_blocker(("acme/widget", 99), ("acme/widget", 2))
         self.assertEqual(result["action"], "error")
         self.assertIn("not an Issue", result["detail"])
-        mock_mutation.assert_not_called()
 
-    @patch("nextwork.gh_graphql")
     @patch("nextwork.gh_graphql_or_none")
-    def test_dependent_closed_errors(self, mock_gql, mock_mutation):
+    def test_dependent_closed_errors(self, mock_gql):
         mock_gql.return_value = {
             "repository": {"issue": {"id": "I_DEP", "state": "CLOSED", "blockedBy": {"nodes": []}}}
         }
         result = link_blocker(("acme/widget", 1), ("acme/widget", 2))
         self.assertEqual(result["action"], "error")
         self.assertIn("not open", result["detail"])
-        mock_mutation.assert_not_called()
 
-    @patch("nextwork.gh_graphql")
     @patch("nextwork.gh_graphql_or_none")
-    def test_blocker_not_an_issue_errors(self, mock_gql, mock_mutation):
+    def test_blocker_not_an_issue_errors(self, mock_gql):
         mock_gql.side_effect = [
             {"repository": {"issue": {"id": "I_DEP", "state": "OPEN", "blockedBy": {"nodes": []}}}},
             {"repository": {"issue": None}},
@@ -1461,7 +1473,11 @@ class TestLinkBlocker(unittest.TestCase):
         result = link_blocker(("acme/widget", 1), ("acme/widget", 404))
         self.assertEqual(result["action"], "error")
         self.assertIn("issue-only", result["detail"])
-        mock_mutation.assert_not_called()
+
+    def test_self_blocker_errors(self):
+        result = link_blocker(("acme/widget", 5), ("acme/widget", 5))
+        self.assertEqual(result["action"], "error")
+        self.assertIn("cannot block itself", result["detail"])
 
 
 class TestSpecParsing(unittest.TestCase):
@@ -1582,6 +1598,81 @@ class TestSeedFromAssigned(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             seed_from_assigned("acme/widget", "alice")
         self.assertEqual(ctx.exception.code, 3)
+
+
+class TestParseArgs(unittest.TestCase):
+    def test_rejects_negative_stale_hours(self):
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--stale-hours", "-1"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_rejects_zero_max_visits(self):
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--max-visits", "0"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_accepts_triage_stale_hours(self):
+        args = parse_args(["--triage-stale-hours", "24"])
+        self.assertEqual(args.triage_stale_hours, 24)
+
+
+class TestMaybeCheckMergeQueue(unittest.TestCase):
+    def test_sets_flag_only_for_ready_for_merge_prs(self):
+        class StubFetcher:
+            def is_in_merge_queue(self, repo, number):
+                return number == 2
+
+        items = [
+            {"kind": "pull", "repo": "a/b", "number": 1, "labels": ["ready-for-review"]},
+            {"kind": "pull", "repo": "a/b", "number": 2, "labels": ["ready-for-merge"]},
+            {"kind": "issue", "repo": "a/b", "number": 3, "labels": ["ready-for-merge"]},
+        ]
+        maybe_check_merge_queue(items, StubFetcher())
+        self.assertNotIn("in_merge_queue", items[0])
+        self.assertTrue(items[1]["in_merge_queue"])
+        self.assertNotIn("in_merge_queue", items[2])
+
+
+class TestApplyContinuesOnError(unittest.TestCase):
+    @patch("nextwork.run_gh_soft", side_effect=[None, ""])
+    def test_records_error_and_continues(self, _mock_soft):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "a/b",
+                "number": 1,
+                "status": "needs_assign",
+                "eliminated": False,
+                "suggested_actions": [ASSIGN_SELF],
+            },
+            {
+                "kind": "issue",
+                "repo": "a/b",
+                "number": 2,
+                "status": "needs_assign",
+                "eliminated": False,
+                "suggested_actions": [ASSIGN_SELF],
+            },
+        ]
+        applied = apply_trivial_actions(items, "alice")
+        self.assertEqual(applied[0]["action"], "error")
+        self.assertEqual(applied[1]["action"], ASSIGN_SELF)
+
+
+class TestJsonTruncationFlag(unittest.TestCase):
+    def test_truncated_fields(self):
+        out = format_json_output(
+            [],
+            "a/b",
+            "alice",
+            6,
+            [],
+            include_text=False,
+            truncated_remaining=3,
+        )
+        payload = json.loads(out)
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncated_remaining"], 3)
 
 
 if __name__ == "__main__":
