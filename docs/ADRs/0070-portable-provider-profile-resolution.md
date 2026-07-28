@@ -1,6 +1,6 @@
 ---
 title: "70. Portable provider and profile resolution"
-status: Accepted
+status: Superseded
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -19,15 +19,7 @@ Date: 2026-07-03
 
 ## Status
 
-Accepted
-
-Amended (2026-07-27, [#5461](https://github.com/fullsend-ai/fullsend/pull/5461)):
-extended Decision to allow local file paths for `openshell.profiles` and
-`providers`, matching existing local-path resolution for other harness
-resources (agent, policy, skills, scripts, host_files). The original
-Decision restricted profiles to URL-only; this amendment lifts that
-restriction so profiles and providers participate in `base:` composition
-and `ResolveRelativeTo` like every other resource field.
+Superseded by [ADR 0074](0074-local-path-profiles-providers.md)
 
 ## Context
 
@@ -64,30 +56,26 @@ profiles. Today, providers and profiles are an exception.
 
 Extend the harness schema with two new fields:
 
-1. **`openshell.profiles`** — A new list field accepting HTTPS URLs with `#sha256=...`
-   integrity hashes, and local file paths (resolved relative to the harness
-   directory or inherited as absolute cache paths from `base:` composition).
-   Profiles define openshell-level credential type schemas.
+1. **`openshell.profiles`** — A new list field accepting only HTTPS URLs with `#sha256=...`
+   integrity hashes. Profiles define openshell-level credential type schemas and
+   belong in shared repositories, not locally. No local-path form.
 
-2. **`providers`** — Extend the existing list field to accept local provider
-   names (existing behavior), local file paths (resolved relative to the
-   harness directory), and remote HTTPS URLs with `#sha256=...` hashes.
+2. **`providers`** — Extend the existing list field to accept both local provider
+   names (existing behavior) and remote HTTPS URLs with `#sha256=...` hashes.
    Mixed forms allowed in the same list.
 
 ### Schema
 
 ```yaml
-# openshell.profiles field (local paths or URLs)
+# New openshell.profiles field (URL-only)
 openshell:
   profiles:
-  - profiles/claude-code.yaml      # Local path (resolved relative to harness)
   - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=abc..."
   - "https://github.com/org/profiles/tree/main/google-vertex-ai.yaml#sha256=def..."
 
-# Extended providers field (mixed local names, paths, and URLs)
+# Extended providers field (mixed local names and URLs)
 providers:
-  - "my-local-provider"  # Local name: loaded from providers/my-local-provider.yaml
-  - providers/custom.yaml  # Local path (resolved relative to harness)
+  - "my-local-provider"  # Local name (existing)
   - "https://github.com/org/repo/tree/main/providers/my-provider.yaml#sha256=789..."  # Remote
 ```
 
@@ -188,9 +176,8 @@ Result after merge and resolution:
 
 ### Schema validation (`ValidateResourceTypes`)
 
-- `openshell.profiles[]`: if `IsURL()`, require a valid `#sha256=...` integrity hash.
-  Otherwise, accept as a local file path (resolved relative to the harness directory
-  or inherited as an absolute cache path from `base:` composition).
+- `openshell.profiles[]`: every entry must pass `IsURL()` and have a valid `#sha256=...`
+  integrity hash. Profiles are always remote.
 - `providers[]`: if `IsURL()`, require `#sha256=...` integrity hash. If not URL,
   accept as local provider name (no change).
 
