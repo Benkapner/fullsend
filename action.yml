@@ -257,10 +257,7 @@ runs:
 
     - name: Install Podman
       shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y podman
-        podman --version
+      run: "$GITHUB_ACTION_PATH/.github/scripts/install-podman.sh"
 
     - name: Configure rootless Podman
       shell: bash
