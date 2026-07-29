@@ -171,7 +171,7 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
 │  └──────────────────────┘                                    │
 │                                                              │
 │  Layered directories:                                        │
-│    agents/  skills/  schemas/  harness/  plugins/             │
+│    agents/  skills/  schemas/  harness/  plugins/            │
 │    policies/  scripts/  env/                                 │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
@@ -326,31 +326,23 @@ See [ADR 0056](../../ADRs/0056-per-repo-precommit-tools-registry.md) for the ful
 
 Each agent role has its own identity, permissions, and purpose:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   Agent Role Architecture                    │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  Role          GitHub App                  Purpose          │
-│  ─────         ──────────                  ───────          │
-│  fullsend      {org}-fullsend[bot]         Dispatch/control │
-│  triage        {org}-triage[bot]           Issue triage     │
-│  coder         {org}-coder[bot]            Code generation  │
-│  review        {org}-review[bot]           PR review        │
-│  fix           (reuses coder app)          Fix failures     │
-│  retro         {org}-retro[bot]            Retrospectives   │
-│  prioritize    {org}-prioritize[bot]       Backlog priority │
-│                                                             │
-│  App naming: {org}-{role}                                   │
-│  Bot naming: {org}-{role}[bot]                              │
-│  PEM storage: GCP Secret Manager or filesystem (standalone)  │
-│  Secret name: fullsend-{role}-app-pem                       │
-│                                                             │
-│  Note: "fix" role reuses the "coder" app and PEM — no       │
-│  separate GitHub App or secret is created for it.          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| Role | GitHub App | Purpose |
+|------|------------|---------|
+| `fullsend` | `{org}-fullsend[bot]` | Dispatch/control |
+| `triage` | `{org}-triage[bot]` | Issue triage |
+| `coder` | `{org}-coder[bot]` | Code generation |
+| `review` | `{org}-review[bot]` | PR review |
+| `fix` | (reuses coder app) | Fix failures |
+| `retro` | `{org}-retro[bot]` | Retrospectives |
+| `prioritize` | `{org}-prioritize[bot]` | Backlog priority |
+
+**Naming conventions:**
+- App naming: `{org}-{role}`
+- Bot naming: `{org}-{role}[bot]`
+- PEM storage: GCP Secret Manager or filesystem (standalone)
+- Secret name: `fullsend-{role}-app-pem`
+
+> **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
 
 ## Customization Examples
 

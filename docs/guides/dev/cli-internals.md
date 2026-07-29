@@ -215,21 +215,21 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│              Unified Install Pipeline (both modes)               │
+│              Unified Install Pipeline (both modes)              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  fullsend admin install <target>                                │
 │  ┌──────────────────────┐                                       │
 │  │ Parse target          │                                      │
-│  │  "acme"      → org   │                                      │
-│  │  "acme/repo" → repo  │                                      │
+│  │  "acme"      → org   │                                       │
+│  │  "acme/repo" → repo  │                                       │
 │  └──────────┬───────────┘                                       │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 1: Discover (read-only)                              │ │
 │  │                                                            │ │
 │  │  a. Discover mint   --mint-url / --mint-project / default  │ │
-│  │     └─ DiscoverMint() → check if GCF exists, get URL      │ │
+│  │     └─ DiscoverMint() → check if GCF exists, get URL       │ │
 │  │  b. Resolve existing app IDs from mint env vars            │ │
 │  │     └─ ROLE_APP_IDS (role → app ID, shared) → skip app     │ │
 │  │        creation when all roles are present                 │ │
@@ -239,7 +239,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 2: App setup (shared: runAppSetup)                   │ │
 │  │                                                            │ │
 │  │  For each role in --agents:                                │ │
-│  │    - Create/reuse GitHub App ({appSet}-{role} via --app-set)│ │
+│  │    - Create/reuse GitHub App ({appSet}-{role} --app-set)   │ │
 │  │    - Download PEM key from App creation flow               │ │
 │  │    - Store PEM in GCP Secret Manager                       │ │
 │  │    - Record App ID + Client ID                             │ │
@@ -266,8 +266,8 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │                                                            │ │
 │  │  Both modes: ProvisionWIF() → create pool, provider, IAM   │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  org-wide WIF provider           │              │ │
-│  │  │ Per-repo: repo-scoped (mintcore.BuildRepoProviderID)│     │ │
+│  │  │ Per-org:  org-wide WIF provider          │              │ │
+│  │  │ Per-repo: repo-scoped WIF provider       │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -275,19 +275,19 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
 │  │  Both modes: write workflow files (customized/ deprecated  │ │
-│  │  by ADR-0064; use migrate-customizations to convert)      │ │
-│  │  CommitScaffoldFiles() delivery modes:                      │ │
+│  │  by ADR-0064; use migrate-customizations to convert)       │ │
+│  │  CommitScaffoldFiles() delivery modes:                     │ │
 │  │    Default (PR):  create feature branch → commit → open PR │ │
 │  │    --direct:      try CommitFiles (default branch)         │ │
 │  │      if ErrBranchProtected → fall back to PR mode          │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  create .fullsend config repo    │              │ │
-│  │  │           push reusable workflows         │              │ │
-│  │  │           vendor fullsend binary (opt)    │              │ │
-│  │  │                                           │              │ │
-│  │  │ Per-repo: write .fullsend/ dir in repo    │              │ │
-│  │  │           push shim workflow template     │              │ │
-│  │  │           vendor fullsend binary (opt)    │              │ │
+│  │  │ Per-org:  create .fullsend config repo   │              │ │
+│  │  │           push reusable workflows        │              │ │
+│  │  │           vendor fullsend binary (opt)   │              │ │
+│  │  │                                          │              │ │
+│  │  │ Per-repo: write .fullsend/ dir in repo   │              │ │
+│  │  │           push shim workflow template    │              │ │
+│  │  │           vendor fullsend binary (opt)   │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -297,18 +297,18 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  Both modes write the same credential set:                 │ │
 │  │    Secrets:   FULLSEND_GCP_PROJECT_ID                      │ │
 │  │              FULLSEND_GCP_WIF_PROVIDER                     │ │
-│  │    Variables: FULLSEND_GCP_REGION                           │ │
-│  │              FULLSEND_MINT_URL                              │ │
+│  │    Variables: FULLSEND_GCP_REGION                          │ │
+│  │              FULLSEND_MINT_URL                             │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  secrets → .fullsend config repo │              │ │
-│  │  │           MINT_URL → org variable         │              │ │
-│  │  │           + repo var (dot-prefix fix)      │              │ │
-│  │  │           + PEM keys as repo secrets       │              │ │
-│  │  │           + client IDs as repo variables   │              │ │
-│  │  │                                           │              │ │
-│  │  │ Per-repo: secrets → target repo            │              │ │
-│  │  │           + FULLSEND_PER_REPO_GUARD=true   │              │ │
+│  │  │ Per-org:  secrets → .fullsend config repo│              │ │
+│  │  │           MINT_URL → org variable        │              │ │
+│  │  │           + repo var (dot-prefix fix)    │              │ │
+│  │  │           + PEM keys as repo secrets     │              │ │
+│  │  │           + client IDs as repo variables │              │ │
+│  │  │                                          │              │ │
+│  │  │ Per-repo: secrets → target repo          │              │ │
+│  │  │           + FULLSEND_PER_REPO_GUARD=true │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -378,11 +378,11 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                   Sandbox Lifecycle (run.go)                     │
+│                   Sandbox Lifecycle (run.go)                    │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────────┐                                                │
-│  │ Load harness │ LoadWithBase: unmarshal → compose base →       │
+│  │ Load harness │ LoadWithBase: unmarshal → compose base →      │
 │  │              │ ResolveForge(--forge / env) → Validate        │
 │  └──────┬──────┘                                                │
 │         ▼                                                       │
@@ -409,9 +409,9 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
-│  │ Create()          │ openshell sandbox create                  │
-│  │                   │ --image {harness.image}                   │
-│  │                   │ Returns sandbox ID                        │
+│  │ Create()          │ openshell sandbox create                 │
+│  │                   │ --image {harness.image}                  │
+│  │                   │ Returns sandbox ID                       │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
@@ -431,7 +431,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
-│  │  ├── FULLSEND_FETCH_TOKEN=<per-run token> (if above)│       │
+│  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
 │  │  └── sources .env.d/*.env files          │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
@@ -462,7 +462,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Extract output    │ SafeDownload() with sanitization:        │
-│  │                   │ - Remove dangerous symlinks (sandbox escape) │
+│  │                   │ - Remove dangerous symlinks (escape)     │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
 │  │                   │                                          │
 │  │                   │ With validation_loop: SafeDownload       │
@@ -521,7 +521,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
-│  │ Delete()          │ openshell sandbox delete                  │
+│  │ Delete()          │ openshell sandbox delete                 │
 │  │                   │ Cleanup sandbox resources                │
 │  └──────────────────┘                                           │
 │                                                                 │
@@ -630,7 +630,7 @@ var executableFiles = map[string]struct{}{
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│           End-to-End: Issue Triage → Code → Review               │
+│           End-to-End: Issue Triage → Code → Review              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  1. Issue created on target repo                                │
