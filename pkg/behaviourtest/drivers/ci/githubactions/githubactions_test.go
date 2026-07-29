@@ -278,15 +278,13 @@ func TestWaitForHarnessAgent_FailFastOnFailure(t *testing.T) {
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
 	// No success artifact — the harness failed before uploading one.
-	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
-		"org/repo": {
-			{
-				ID:         42,
-				Status:     "completed",
-				Conclusion: "failure",
-				CreatedAt:  "2026-01-02T00:00:00Z",
-				HTMLURL:    "https://github.com/org/repo/actions/runs/42",
-			},
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID:         42,
+			Status:     "completed",
+			Conclusion: "failure",
+			CreatedAt:  "2026-01-02T00:00:00Z",
+			HTMLURL:    "https://github.com/org/repo/actions/runs/42",
 		},
 	}
 
@@ -304,15 +302,13 @@ func TestWaitForHarnessAgent_FailFastOnTimedOut(t *testing.T) {
 
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
-	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
-		"org/repo": {
-			{
-				ID:         50,
-				Status:     "completed",
-				Conclusion: "timed_out",
-				CreatedAt:  "2026-01-02T00:00:00Z",
-				HTMLURL:    "https://github.com/org/repo/actions/runs/50",
-			},
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID:         50,
+			Status:     "completed",
+			Conclusion: "timed_out",
+			CreatedAt:  "2026-01-02T00:00:00Z",
+			HTMLURL:    "https://github.com/org/repo/actions/runs/50",
 		},
 	}
 
@@ -328,15 +324,13 @@ func TestWaitForHarnessAgent_FailFastOnStartupFailure(t *testing.T) {
 
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
-	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
-		"org/repo": {
-			{
-				ID:         60,
-				Status:     "completed",
-				Conclusion: "startup_failure",
-				CreatedAt:  "2026-01-02T00:00:00Z",
-				HTMLURL:    "https://github.com/org/repo/actions/runs/60",
-			},
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID:         60,
+			Status:     "completed",
+			Conclusion: "startup_failure",
+			CreatedAt:  "2026-01-02T00:00:00Z",
+			HTMLURL:    "https://github.com/org/repo/actions/runs/60",
 		},
 	}
 
@@ -352,16 +346,16 @@ func TestWaitForHarnessAgent_SkippedDoesNotTriggerFailFast(t *testing.T) {
 
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
-	// A skipped run exists but should not trigger fail-fast.
-	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
-		"org/repo": {
-			{
-				ID:         70,
-				Status:     "completed",
-				Conclusion: "skipped",
-				CreatedAt:  "2026-01-02T00:00:00Z",
-				HTMLURL:    "https://github.com/org/repo/actions/runs/70",
-			},
+	// A skipped harness run exists but should not trigger fail-fast.
+	// The success run is keyed separately so GetWorkflowRun finds it by ID.
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 70, Status: "completed", Conclusion: "skipped",
+			CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/70",
+		},
+		"org/repo/success": {
+			ID: 99, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z",
 		},
 	}
 	// Provide a success artifact so the function can succeed.
@@ -373,11 +367,6 @@ func TestWaitForHarnessAgent_SkippedDoesNotTriggerFailFast(t *testing.T) {
 				CreatedAt:     "2026-01-02T00:00:00Z",
 				WorkflowRunID: 99,
 			},
-		},
-	}
-	client.WorkflowRuns = map[string]*forge.WorkflowRun{
-		"org/repo/fullsend.yaml": {
-			ID: 99, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z",
 		},
 	}
 
@@ -393,16 +382,16 @@ func TestWaitForHarnessAgent_CancelledDoesNotTriggerFailFast(t *testing.T) {
 
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
-	// A cancelled run should not trigger fail-fast.
-	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
-		"org/repo": {
-			{
-				ID:         80,
-				Status:     "completed",
-				Conclusion: "cancelled",
-				CreatedAt:  "2026-01-02T00:00:00Z",
-				HTMLURL:    "https://github.com/org/repo/actions/runs/80",
-			},
+	// A cancelled harness run should not trigger fail-fast.
+	// The success run is keyed separately so GetWorkflowRun finds it by ID.
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 80, Status: "completed", Conclusion: "cancelled",
+			CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/80",
+		},
+		"org/repo/success": {
+			ID: 99, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z",
 		},
 	}
 	// Provide a success artifact so the function can succeed.
@@ -414,11 +403,6 @@ func TestWaitForHarnessAgent_CancelledDoesNotTriggerFailFast(t *testing.T) {
 				CreatedAt:     "2026-01-02T00:00:00Z",
 				WorkflowRunID: 99,
 			},
-		},
-	}
-	client.WorkflowRuns = map[string]*forge.WorkflowRun{
-		"org/repo/fullsend.yaml": {
-			ID: 99, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z",
 		},
 	}
 
@@ -434,16 +418,16 @@ func TestWaitForHarnessAgent_IgnoresRunsBeforeTriggerTime(t *testing.T) {
 
 	after := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
-	// Failed run is before the trigger time — should not trigger fail-fast.
-	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
-		"org/repo": {
-			{
-				ID:         90,
-				Status:     "completed",
-				Conclusion: "failure",
-				CreatedAt:  "2026-01-02T00:00:00Z",
-				HTMLURL:    "https://github.com/org/repo/actions/runs/90",
-			},
+	// Failed harness run is before the trigger time — should not trigger fail-fast.
+	// The success run is keyed separately so GetWorkflowRun finds it by ID.
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 90, Status: "completed", Conclusion: "failure",
+			CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/90",
+		},
+		"org/repo/success": {
+			ID: 99, Status: "completed", Conclusion: "success", CreatedAt: "2026-07-01T00:00:00Z",
 		},
 	}
 	// Provide a success artifact so the function can succeed.
@@ -455,11 +439,6 @@ func TestWaitForHarnessAgent_IgnoresRunsBeforeTriggerTime(t *testing.T) {
 				CreatedAt:     "2026-07-01T00:00:00Z",
 				WorkflowRunID: 99,
 			},
-		},
-	}
-	client.WorkflowRuns = map[string]*forge.WorkflowRun{
-		"org/repo/fullsend.yaml": {
-			ID: 99, Status: "completed", Conclusion: "success", CreatedAt: "2026-07-01T00:00:00Z",
 		},
 	}
 
@@ -476,15 +455,12 @@ func TestWaitForHarnessAgent_TimeoutIncludesDiagnostics(t *testing.T) {
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
 	// No artifacts, no terminal failures — will time out.
-	// Use in-progress runs to avoid fail-fast.
-	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
-		"org/repo": {
-			{
-				ID:        100,
-				Status:    "in_progress",
-				CreatedAt: "2026-01-02T00:00:00Z",
-				HTMLURL:   "https://github.com/org/repo/actions/runs/100",
-			},
+	// Use in-progress harness run to avoid fail-fast.
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 100, Status: "in_progress",
+			CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/100",
 		},
 	}
 

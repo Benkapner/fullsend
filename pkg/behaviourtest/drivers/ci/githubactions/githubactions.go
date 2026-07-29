@@ -27,6 +27,11 @@ const (
 
 	assertNoWorkflowChecks = 3
 	assertNoWorkflowDelay  = 10 * time.Second
+
+	// harnessWorkflowFile is the workflow filename used by the harness.
+	// Used to scope fail-fast and diagnostic queries to harness runs only,
+	// avoiding false positives from unrelated workflow failures.
+	harnessWorkflowFile = "fullsend.yaml"
 )
 
 // Driver implements ci.Driver against GitHub Actions.
@@ -444,11 +449,11 @@ func isTerminalFailure(conclusion string) bool {
 	}
 }
 
-// listRecentRunsAfter returns recent workflow runs created after the given
-// time. It is used by WaitForHarnessAgent for fail-fast detection and
-// timeout diagnostics.
-func (d *Driver) listRecentRunsAfter(ctx context.Context, owner, repo string, after time.Time) []forge.WorkflowRun {
-	runs, err := d.Client.ListRecentWorkflowRuns(ctx, owner, repo, 30)
+// listHarnessRunsAfter returns recent harness workflow runs created after the
+// given time. It queries only the harness workflow (fullsend.yaml) to avoid
+// false-positive fail-fast from unrelated workflow failures in the same repo.
+func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, after time.Time) []forge.WorkflowRun {
+	runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
 		return nil
 	}
@@ -510,17 +515,17 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 		}
 
 		// Fail-fast: check recent runs for terminal failures.
-		recentRuns := d.listRecentRunsAfter(ctx, owner, repo, after)
+		recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
 		for _, r := range recentRuns {
 			if r.Status == "completed" && isTerminalFailure(r.Conclusion) {
-				return nil, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url: %s)",
+				return nil, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
 					agent, r.ID, r.Conclusion, r.HTMLURL)
 			}
 		}
 	}
 
 	// Timeout: include diagnostics about recent workflow runs.
-	recentRuns := d.listRecentRunsAfter(ctx, owner, repo, after)
+	recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
 	return nil, fmt.Errorf("harness agent %q did not complete successfully; %s",
 		agent, formatRunDiagnostics(recentRuns))
 }
