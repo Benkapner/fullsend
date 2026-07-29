@@ -142,8 +142,18 @@ func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	return nil
 }
 
-// PostCompletion posts or edits a completion comment.
-// status should be "success", "failure", or "cancelled".
+// PostCompletion posts or edits a completion comment with no extra
+// detail. See PostCompletionWithDetail.
+func (n *Notifier) PostCompletion(ctx context.Context, description, status string) error {
+	return n.PostCompletionWithDetail(ctx, description, status, "")
+}
+
+// PostCompletionWithDetail posts or edits a completion comment.
+// status should be "success", "failure", "cancelled", or "skipped".
+//
+// detail is an optional short explanation rendered after the status label
+// (e.g. the pre-script's skip reason). It may come from script output, so
+// it is sanitized before rendering — see sanitizeDetail.
 //
 // Placement follows three rules:
 //  1. If the agent posted output after the start comment (a bot-authored
@@ -155,7 +165,7 @@ func (n *Notifier) PostStart(ctx context.Context, description string) error {
 //  3. Otherwise (other activity pushed past the start, but no agent
 //     output), a new completion comment is posted so the user sees the
 //     result while reading forward.
-func (n *Notifier) PostCompletion(ctx context.Context, description, status string) error {
+func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, status, detail string) error {
 	completionTime := n.now().UTC()
 
 	if !commentEnabled(n.cfg.Comment.Completion) {
@@ -175,7 +185,7 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 		return err
 	}
 
-	body := n.buildCompletionBody(description, status, completionTime)
+	body := n.buildCompletionBody(description, status, detail, completionTime)
 
 	if n.startCommentID != 0 {
 		agentPosted, startIsLast, err := n.analyzeTimeline(ctx)
@@ -254,8 +264,11 @@ func (n *Notifier) buildStartBody(description string) string {
 	return b.String()
 }
 
-func (n *Notifier) buildCompletionBody(description, status string, completionTime time.Time) string {
+func (n *Notifier) buildCompletionBody(description, status, detail string, completionTime time.Time) string {
 	statusLabel := statusEmoji(status) + " " + capitalize(status)
+	if d := sanitizeDetail(detail); d != "" {
+		statusLabel += " (" + d + ")"
+	}
 
 	var b strings.Builder
 	b.WriteString(n.marker)
@@ -331,6 +344,63 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// maxDetailLen caps the rendered status detail so a verbose script cannot
+// turn the one-line status comment into a wall of text.
+const maxDetailLen = 200
+
+// sanitizeDetail makes a status detail safe to embed in the completion
+// comment. The detail can originate in script output (the pre-script skip
+// reason), which may in turn carry forge-sourced text, so it must not be
+// able to break out of the single status line, forge an HTML comment
+// marker (the `fullsend:agent-status` / `fullsend:status:terminal` tags
+// that ReconcileOrphaned depends on), or inject raw HTML.
+func sanitizeDetail(detail string) string {
+	if detail == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range detail {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			// Control characters — including the newlines that would let a
+			// reason escape the status line — collapse to a single space.
+			if !lastSpace {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		case r == ' ':
+			if !lastSpace {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		case r == '<':
+			// Blocks `<!--`, so a reason cannot forge a status marker, and
+			// blocks raw HTML generally. GitHub renders the entity as `<`.
+			b.WriteString("&lt;")
+			lastSpace = false
+		case r == '[':
+			// Blocks `[text](url)`, so a reason cannot render a link whose
+			// visible text lies about its destination — the same concern
+			// isSafeURL guards for the run URL on the line below. Bare
+			// URLs still autolink under GFM, but those display their real
+			// target.
+			b.WriteString("&#91;")
+			lastSpace = false
+		default:
+			b.WriteRune(r)
+			lastSpace = false
+		}
+	}
+
+	out := strings.TrimSpace(b.String())
+	if runes := []rune(out); len(runes) > maxDetailLen {
+		out = strings.TrimSpace(string(runes[:maxDetailLen])) + "…"
+	}
+	return out
+}
+
 func buildMarker(runID string) (string, error) {
 	if !validRunID.MatchString(runID) {
 		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
@@ -352,6 +422,8 @@ func statusEmoji(status string) string {
 		return "✅"
 	case "failure":
 		return "❌"
+	case "skipped":
+		return "⏭️"
 	default:
 		return "⚠️"
 	}

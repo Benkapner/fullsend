@@ -562,6 +562,7 @@ event ──► DISPATCHER
           ║                                                       ║
           ║ Runs pre-script on host:                              ║
           ║   validate inputs, prefetch data                      ║
+          ║   may request skip, exiting before sandbox creation   ║
           ║                                                       ║
           ║ ┌───────────────────────────────────────────────────┐ ║
           ║ │ SANDBOX (ephemeral, per-run)                      │ ║
