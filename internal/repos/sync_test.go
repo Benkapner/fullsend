@@ -195,11 +195,11 @@ func TestDiff_APIError_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
@@ -278,12 +278,13 @@ func TestDiff_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:           "github",
 			InferenceRegion: "us-central1",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/*"}},
@@ -312,11 +313,11 @@ func TestDiff_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 	}
 
 	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -333,12 +334,13 @@ func TestDiff_EmptyDesiredValue_Skips(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:           "github",
 			InferenceRegion: "",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
@@ -388,12 +390,13 @@ func TestDiff_SecretCheckError_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:            "github",
 			InferenceProject: "my-project",
 			InferenceRegion:  "us-central1",
 		},
@@ -630,12 +633,13 @@ func TestSync_GlobWithPerEntryOverride(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:            "github",
 			InferenceProject: "default-project",
 			InferenceRegion:  "us-central1",
 		},
@@ -776,11 +780,11 @@ func TestDiff_GlobExpandError(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Repos: []RepoEntry{{Repo: "bad-org/*"}},
 	}
 
@@ -794,12 +798,13 @@ func TestDiff_PerRepoOverride(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:           "github",
 			InferenceRegion: "us-central1",
 		},
 		Repos: []RepoEntry{
@@ -850,11 +855,11 @@ func TestDiff_GuardVarFalse_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
@@ -888,12 +893,13 @@ func TestSync_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:           "github",
 			InferenceRegion: "us-central1",
 		},
 		Repos: []RepoEntry{{Repo: "acme/*"}},
@@ -922,12 +928,13 @@ func TestDiff_MultiOrg(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:           "github",
 			InferenceRegion: "us-central1",
 		},
 		Repos: []RepoEntry{

@@ -462,8 +462,8 @@ func UpgradeMint(ctx context.Context, manifest *Manifest,
 
 	progress("mint", "discover", fmt.Sprintf("Found mint at %s", discovery.URL))
 
-	if discovery.URL != manifest.Mint.URL {
-		return fmt.Errorf("discovered mint URL %q does not match manifest mint URL %q", discovery.URL, manifest.Mint.URL)
+	if discovery.URL != manifest.Forge.GitHub.MintURL {
+		return fmt.Errorf("discovered mint URL %q does not match manifest forge.github.mint_url %q", discovery.URL, manifest.Forge.GitHub.MintURL)
 	}
 
 	progress("mint", "done", "Mint verified successfully")

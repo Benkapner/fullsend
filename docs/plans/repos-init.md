@@ -61,9 +61,9 @@ Flags:
   include. Skips interactive selection.
 - `--all` (bool): include all eligible repos without prompting.
 - `--forge` (string, **required**): forge type (`github` or `gitlab`).
-- `--mint-project` (string): GCP project for the `mint.project` field.
+- `--mint-project` (string): GCP project for the `forge.github.mint_project` field.
 - `--mint-region` (string, default `us-central1`): GCP region for
-  the `mint.region` field.
+  the `forge.github.mint_region` field.
 - `--inference-project` (string): default GCP project for inference.
 - `--concurrency` (int, default 8): max parallel API calls.
 
@@ -201,15 +201,15 @@ func buildManifest(repos []DiscoveredRepo,
     cfg InitConfig) (*Manifest, []string)
 ```
 
-1. **Compute `mint:` block:**
-   - `url`: from discovered `FULLSEND_MINT_URL` (should be uniform
+1. **Compute `forge.github:` block** (only when `--forge=github`):
+   - `mint_url`: from discovered `FULLSEND_MINT_URL` (should be uniform
      across repos sharing a mint). If repos report different mint
      URLs, use the most common and add a TODO. For greenfield (no
      discovered URLs), leave as TODO (Cloud Run URLs contain a random
      hash and cannot be derived from the project name alone).
-   - `project`: from `--mint-project` flag. If not provided, add to
+   - `mint_project`: from `--mint-project` flag. If not provided, add to
      TODO list.
-   - `region`: from `--mint-region` flag (default `us-central1`).
+   - `mint_region`: from `--mint-region` flag (default `us-central1`).
 
 2. **Compute `defaults:` block** by finding the mode (most common
    value) for each field across discovered repos. For greenfield
@@ -233,7 +233,7 @@ func buildManifest(repos []DiscoveredRepo,
    - New repos (not yet installed) are included as normal entries.
 
 4. **Return TODO list** for fields that could not be discovered (e.g.,
-   `inference_project` when no flag provided, `mint.project` when
+   `inference_project` when no flag provided, `forge.github.mint_project` when
    omitted).
 
 **Secret limitation:** `FULLSEND_GCP_PROJECT_ID` and

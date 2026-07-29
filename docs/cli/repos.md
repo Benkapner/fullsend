@@ -368,7 +368,7 @@ If tag-to-SHA resolution fails (e.g. the tag does not exist or the API is unreac
 
 ## `repos upgrade-mint`
 
-Verifies the token mint Cloud Function matches the manifest configuration. Discovers the current mint deployment and checks that its URL matches the manifest's `mint.url`.
+Verifies the token mint Cloud Function matches the manifest configuration. Discovers the current mint deployment and checks that its URL matches the manifest's `forge.github.mint_url`.
 
 `repos upgrade` now runs mint verification automatically as a pre-flight check. This command remains available for standalone verification without triggering an upgrade.
 

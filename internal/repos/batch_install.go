@@ -201,6 +201,9 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	if !cfg.SkipMintCheck {
 		orgRepresentative := make(map[string]ResolvedConfig)
 		for _, d := range toInstall {
+			if d.resolved.Forge != ForgeGitHub {
+				continue
+			}
 			if _, seen := orgRepresentative[d.resolved.Owner]; !seen {
 				orgRepresentative[d.resolved.Owner] = d.resolved
 			}
@@ -321,6 +324,11 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 		}
 
+		if d.resolved.Forge != ForgeGitHub {
+			phase3Candidates = append(phase3Candidates, d)
+			continue
+		}
+
 		prov := provisionerFactory(d.resolved)
 		progress(fullName, "wif", "Provisioning WIF")
 		providerName, provErr := prov.ProvisionWIF(ctx)
@@ -419,9 +427,11 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			defer mu.Unlock()
 
 			if installErr != nil {
-				prov := provisionerFactory(dr.resolved)
-				if cleanupErr := prov.DeletePerRepoWIF(ctx, fullName); cleanupErr != nil {
-					progress(fullName, "wif-cleanup", fmt.Sprintf("WIF cleanup after scaffold failure also failed: %v", cleanupErr))
+				if dr.resolved.Forge == ForgeGitHub {
+					prov := provisionerFactory(dr.resolved)
+					if cleanupErr := prov.DeletePerRepoWIF(ctx, fullName); cleanupErr != nil {
+						progress(fullName, "wif-cleanup", fmt.Sprintf("WIF cleanup after scaffold failure also failed: %v", cleanupErr))
+					}
 				}
 				ir := InstallResult{
 					Owner:       dr.repo.Owner,

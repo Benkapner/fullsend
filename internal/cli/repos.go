@@ -972,17 +972,20 @@ func confirmBulkAction(printer *ui.Printer, action string, patterns []string, ma
 	return nil
 }
 
-func resolveMintProvisioner(testProv repos.WIFProvisioner, m *repos.Manifest) repos.WIFProvisioner {
+func resolveMintProvisioner(testProv repos.WIFProvisioner, m *repos.Manifest) (repos.WIFProvisioner, error) {
 	if testProv != nil {
-		return testProv
+		return testProv, nil
+	}
+	if m.Forge.GitHub.MintProject == "" {
+		return nil, fmt.Errorf("resolveMintProvisioner requires GitHub forge config (mint_project); guard with m.HasForge(repos.ForgeGitHub)")
 	}
 	return &gcfProvisionerAdapter{
 		provisioner: gcf.NewProvisioner(gcf.Config{
-			ProjectID: m.Mint.Project,
-			Region:    m.Mint.Region,
-			MintURL:   m.Mint.URL,
-		}, gcf.NewLiveGCFClient(m.Mint.Project)),
-	}
+			ProjectID: m.Forge.GitHub.MintProject,
+			Region:    m.Forge.GitHub.MintRegion,
+			MintURL:   m.Forge.GitHub.MintURL,
+		}, gcf.NewLiveGCFClient(m.Forge.GitHub.MintProject)),
+	}, nil
 }
 
 // buildProvisionerFactory creates a ProvisionerFactory for uninstall operations.
@@ -1339,10 +1342,13 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 		return err
 	}
 
-	if !opts.skipMintCheck {
+	if !opts.skipMintCheck && m.HasForge(repos.ForgeGitHub) {
 		printer.StepStart("Verifying mint deployment")
 
-		provisioner := resolveMintProvisioner(opts.testProvisioner, m)
+		provisioner, err := resolveMintProvisioner(opts.testProvisioner, m)
+		if err != nil {
+			return err
+		}
 
 		mintProgressFn := func(repo, phase, msg string) {
 			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
@@ -1450,7 +1456,7 @@ func newReposUpgradeMintCmd() *cobra.Command {
 		Long: `Verifies the token mint Cloud Function matches the manifest configuration.
 
 Discovers the current mint deployment and checks that its URL matches
-the manifest's mint.url. This check runs automatically as a pre-flight
+the manifest's forge.github.mint_url. This check runs automatically as a pre-flight
 step in 'repos upgrade'; this command is available for standalone
 verification without triggering an upgrade.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1476,7 +1482,15 @@ func runReposUpgradeMint(ctx context.Context, opts *reposUpgradeMintConfig) erro
 	}
 	printer.StepDone("Loaded manifest")
 
-	provisioner := resolveMintProvisioner(opts.testProvisioner, m)
+	if !m.HasForge(repos.ForgeGitHub) {
+		printer.StepDone("No GitHub repos in manifest — skipping mint verification")
+		return nil
+	}
+
+	provisioner, err := resolveMintProvisioner(opts.testProvisioner, m)
+	if err != nil {
+		return err
+	}
 
 	progressFn := func(repo, phase, msg string) {
 		printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))

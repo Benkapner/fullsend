@@ -26,13 +26,15 @@ The manifest declares desired state for all managed repos:
 ```yaml
 version: 1
 
-# Shared mint infrastructure — one mint serves all repos.
-# url: Cloud Run endpoint (contains a random hash, not derivable from project/region).
-# project + region: needed for WIF provisioning (IAM bindings), not for addressing the mint.
-mint:
-  url: https://fullsend-mint-abc123-uc.a.run.app
-  project: acme-fullsend-prod
-  region: us-central1
+# Per-forge infrastructure configuration.
+forge:
+  github:
+    # Shared mint infrastructure — one mint serves all repos.
+    # mint_url: Cloud Run endpoint (contains a random hash, not derivable from project/region).
+    # mint_project + mint_region: needed for WIF provisioning (IAM bindings).
+    mint_url: https://fullsend-mint-abc123-uc.a.run.app
+    mint_project: acme-fullsend-prod
+    mint_region: us-central1
 
 # Default configuration applied to all repos unless overridden.
 defaults:
@@ -78,7 +80,7 @@ Manifest fields map to repo-level resources as follows:
 | `inference_project` | `FULLSEND_GCP_PROJECT_ID` | Secret |
 | `inference_region` | `FULLSEND_GCP_REGION` | Variable |
 | `fullsend_ref` | `@ref` in scaffold shim `uses:` line | Workflow file |
-| `mint.url` | `FULLSEND_MINT_URL` | Variable |
+| `forge.github.mint_url` | `FULLSEND_MINT_URL` | Variable |
 | `base_harness` | `.fullsend/harness.yaml` `base:` field | Config file |
 | `allowed_remote_resources` | `allowed_remote_resources` in org `config.yaml` | Config file ¹ |
 
@@ -203,7 +205,7 @@ Reconciles configuration drift for installed repos.
 
 | Resource | Action |
 |----------|--------|
-| `FULLSEND_MINT_URL` variable | Upsert to match manifest `mint.url` |
+| `FULLSEND_MINT_URL` variable | Upsert to match manifest `forge.github.mint_url` |
 | `FULLSEND_GCP_REGION` variable | Upsert to match resolved `inference_region` |
 | `FULLSEND_GCP_PROJECT_ID` secret | Upsert to match resolved `inference_project` |
 
@@ -245,7 +247,7 @@ rather than falling back to tag-only format.
 
 Verifies the token mint deployment matches the manifest configuration.
 Discovers the current mint via `DiscoverMint` and checks that its URL
-matches `mint.url`. `repos upgrade` now runs this check automatically
+matches `forge.github.mint_url`. `repos upgrade` now runs this check automatically
 as a pre-flight step (unless `--skip-mint-check` is set); this command
 remains available for standalone verification.
 
@@ -487,15 +489,20 @@ Unit tests with fakes. Run `make go-test` to verify no regressions in
 ```go
 type Manifest struct {
     Version  int            `yaml:"version"`
-    Mint     MintConfig     `yaml:"mint"`
+    Forge    ForgeSection   `yaml:"forge"`
     Defaults DefaultsConfig `yaml:"defaults"`
     Repos    []RepoEntry    `yaml:"repos"`
 }
 
-type MintConfig struct {
-    URL     string `yaml:"url"`
-    Project string `yaml:"project"`
-    Region  string `yaml:"region"`
+type ForgeSection struct {
+    GitHub GitHubForgeInfra `yaml:"github,omitempty"`
+    GitLab GitLabForgeInfra `yaml:"gitlab,omitempty"`
+}
+
+type GitHubForgeInfra struct {
+    MintURL     string `yaml:"mint_url,omitempty"`
+    MintProject string `yaml:"mint_project,omitempty"`
+    MintRegion  string `yaml:"mint_region,omitempty"`
 }
 
 type DefaultsConfig struct {
@@ -589,8 +596,8 @@ the URL fetching logic from the harness resource loader.
 `Validate()` checks:
 
 - `version` is 1 (only supported version).
-- `mint.url` is a valid HTTPS URL.
-- `mint.project` and `mint.region` are non-empty.
+- `forge.github.mint_url` is a valid HTTPS URL (when GitHub repos are present).
+- `forge.github.mint_project` and `forge.github.mint_region` are non-empty (when GitHub repos are present).
 - Each repo entry has a valid `owner/repo` format.
 - No duplicate repos (after glob expansion).
 - Glob patterns are valid `filepath.Match` patterns with an `org/`
@@ -1036,7 +1043,7 @@ What sync reconciles:
 
 | Resource | Action |
 |----------|--------|
-| `FULLSEND_MINT_URL` | Upsert to match `mint.url` |
+| `FULLSEND_MINT_URL` | Upsert to match `forge.github.mint_url` |
 | `FULLSEND_GCP_REGION` | Upsert to match resolved `inference_region` |
 | `FULLSEND_PER_REPO_INSTALL` | Ensure `"true"` |
 | `FULLSEND_GCP_PROJECT_ID` | Upsert to match resolved `inference_project` |
@@ -1176,7 +1183,7 @@ rather than falling back to tag-only format.
 
 - Create provisioner from manifest's mint config.
 - Discover the current mint deployment via `DiscoverMint`.
-- Verify discovered mint URL matches the manifest's `mint.url`.
+- Verify discovered mint URL matches the manifest's `forge.github.mint_url`.
 
 #### `internal/repos/upgrade_test.go` (new)
 
