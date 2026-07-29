@@ -73,6 +73,22 @@ func TestConcurrentAccess(t *testing.T) {
 
 Convention: use 12 goroutines. This is high enough to trigger races reliably but low enough to avoid resource exhaustion in CI. See [`pkg/behaviourtest/drivers/scm/github/race_test.go`](../../pkg/behaviourtest/drivers/scm/github/race_test.go) for the canonical example.
 
+### Assertions inside goroutines: `assert` not `require`
+
+Inside goroutines spawned by a test, use `assert.XXX` (`testify/assert`), **not** `require.XXX` (`testify/require`). `require` calls `t.FailNow()`, which calls `runtime.Goexit()`. Go's `testing` package [documents](https://pkg.go.dev/testing#T.FailNow) that `FailNow` must be called from the goroutine running the test function, not from other goroutines — calling it from a spawned goroutine violates this contract and can silently mispass the test or crash the process. `assert` calls `t.Errorf()`, which is safe from any goroutine.
+
+```go
+go func() {
+    defer wg.Done()
+    tok, err := d.AccessToken(ctx)
+    assert.NoError(t, err)   // safe from any goroutine
+    assert.Equal(t, "expected", tok)
+    // require.NoError(t, err) — never use require inside a goroutine
+}()
+```
+
+This applies to all `require` functions (`require.NoError`, `require.Equal`, `require.NotNil`, etc.) — the entire `require` package uses `FailNow` internally. The test goroutine itself (the function passed to `t.Run` or the `Test*` function) can use `require` normally.
+
 ### Why synthetic stubs don't work
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
