@@ -474,6 +474,8 @@ Authentication for CLI commands uses the `gh` CLI or `GH_TOKEN` environment vari
 
 The examples above show customizing built-in agents via `base`. If you've built an entirely new agent from scratch, register it the same way — just point to a local harness instead of a URL.
 
+> **Routing label convention:** Per-repo installs have no prefix constraint; harness agents route via CEL triggers on arbitrary labels. Per-org installs use a managed `dispatch.yml` that routes only through a fixed stage table — custom harness agents are not routed by per-org dispatch regardless of trigger type. If your agent needs custom routing, use a per-repo install. On per-org installs, the workflow-call shim `if:` guard admits every `ready-`-prefixed label, of which only `ready-for-triage`, `ready-to-code`, and `ready-for-review` route to a stage — others such as `ready-for-merge` still reach `dispatch.yml` and exit early.
+
 ### CLI
 
 ```bash
