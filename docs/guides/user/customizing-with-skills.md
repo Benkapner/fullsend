@@ -1,4 +1,4 @@
-# Customizing Agents with Skills
+# Configuring Agents with Skills
 
 Fullsend agents use [agent skills](https://agentskills.io/) — self-contained
 markdown documents that teach an agent how to perform a specific task. Each
@@ -153,7 +153,7 @@ These skills ship with fullsend and can be overridden via `customized/skills/`
 ## When to use skills vs. AGENTS.md
 
 Use **skills** when you need to change how a specific agent performs a specific
-task — especially when the customization involves domain knowledge, helper
+task — especially when the configuration involves domain knowledge, helper
 scripts, or external data sources that only one agent needs.
 
 Use **[AGENTS.md](customizing-with-agents-md.md)** for broad instructions that

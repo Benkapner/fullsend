@@ -2,7 +2,7 @@
 
 Add a custom agent to fullsend — or change the configuration of an existing one — from harness file to CI.
 
-This guide covers the end-to-end workflow for building, registering, and dispatching custom agents on GitHub. For details on harness YAML structure and layered resolution, see [Customizing agents](customizing-agents.md).
+This guide covers the end-to-end workflow for building, registering, and dispatching custom agents on GitHub. For details on harness YAML structure and layered resolution, see [Configuring agent behavior](customizing-agents.md).
 
 This guide uses the [fullsend-ai/agents](https://github.com/fullsend-ai/agents) triage agent as a running example.
 
@@ -594,8 +594,8 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
-- [Customizing Agents with Skills](customizing-with-skills.md) — creating and managing skills
-- [Customizing Agents with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
-- [Customizing agents](customizing-agents.md) — harness configurations and layered content resolution
+- [Configuring with Skills](customizing-with-skills.md) — creating and managing skills
+- [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
+- [Configuring agent behavior](customizing-agents.md) — harness configurations and layered content resolution
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory
 - [Standalone mint](../infrastructure/standalone-mint.md) — custom agent roles and identity
