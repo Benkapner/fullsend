@@ -75,7 +75,7 @@ Convention: use 12 goroutines. This is high enough to trigger races reliably but
 
 ### Assertions inside goroutines: `assert` not `require`
 
-Inside goroutines spawned by a test, use `assert.XXX` (`testify/assert`), **not** `require.XXX` (`testify/require`). `require` calls `t.FailNow()`, which calls `runtime.Goexit()`. Go's `testing` package [documents](https://pkg.go.dev/testing#T.FailNow) that `FailNow` must be called from the goroutine running the test function, not from other goroutines — calling it from a spawned goroutine causes a runtime panic. `assert` calls `t.Errorf()`, which is safe from any goroutine.
+Inside goroutines spawned by a test, use `assert.XXX` (`testify/assert`), **not** `require.XXX` (`testify/require`). `require` calls `t.FailNow()`, which calls `runtime.Goexit()`. Go's `testing` package [documents](https://pkg.go.dev/testing#T.FailNow) that `FailNow` must be called from the goroutine running the test function, not from other goroutines — calling it from a spawned goroutine violates this contract and can silently mispass the test or crash the process. `assert` calls `t.Errorf()`, which is safe from any goroutine.
 
 ```go
 go func() {
