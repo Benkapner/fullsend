@@ -43,16 +43,30 @@ func IsValidForge(name string) bool {
 // Manifest is the top-level structure of a repos.yaml file.
 type Manifest struct {
 	Version  int            `yaml:"version"`
-	Mint     MintConfig     `yaml:"mint"`
+	Forge    ForgeSection   `yaml:"forge"`
 	Defaults DefaultsConfig `yaml:"defaults"`
 	Repos    []RepoEntry    `yaml:"repos"`
 }
 
-// MintConfig holds the mint service connection parameters.
-type MintConfig struct {
-	URL     string `yaml:"url"`
-	Project string `yaml:"project"`
-	Region  string `yaml:"region"`
+// ForgeSection holds per-forge infrastructure configuration.
+// Each key maps a forge name to its infrastructure settings.
+// Only forges actually referenced by repos in the manifest need
+// entries here.
+type ForgeSection struct {
+	GitHub GitHubForgeInfra `yaml:"github,omitempty"`
+	GitLab GitLabForgeInfra `yaml:"gitlab,omitempty"`
+}
+
+// GitHubForgeInfra holds GitHub-specific infrastructure settings
+// for the token mint service.
+type GitHubForgeInfra struct {
+	MintURL     string `yaml:"mint_url,omitempty"`
+	MintProject string `yaml:"mint_project,omitempty"`
+	MintRegion  string `yaml:"mint_region,omitempty"`
+}
+
+// GitLabForgeInfra holds GitLab-specific infrastructure settings.
+type GitLabForgeInfra struct {
 }
 
 // DefaultsConfig holds default field values applied to every repo
@@ -253,6 +267,16 @@ func LoadManifest(ctx context.Context, pathOrURL string) (*Manifest, error) {
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing manifest YAML: %w", err)
 	}
+
+	// Detect the old top-level mint: key and provide a clear migration error.
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err == nil {
+		if _, hasMint := raw["mint"]; hasMint {
+			return nil, fmt.Errorf("manifest uses the deprecated top-level 'mint:' key; " +
+				"migrate to the per-forge section: forge: { github: { mint_url, mint_project, mint_region } }")
+		}
+	}
+
 	return &m, nil
 }
 
@@ -351,8 +375,9 @@ func fetchManifestURL(ctx context.Context, rawURL string, skipIPCheck bool) ([]b
 
 // Validate checks the manifest for structural correctness:
 //   - version must be 1
-//   - mint.url must be a valid HTTPS URL
-//   - mint.project and mint.region must be non-empty
+//   - forge.github.mint_url/mint_project/mint_region are required when
+//     at least one repo resolves to forge: github
+//   - the gitlab section has no required fields
 //   - each repo entry must have a valid owner/repo or owner/glob format
 //   - glob characters are only allowed in the repo name, not the owner
 //   - no duplicate repo entries (before glob expansion)
@@ -360,21 +385,6 @@ func fetchManifestURL(ctx context.Context, rawURL string, skipIPCheck bool) ([]b
 func (m *Manifest) Validate() error {
 	if m.Version != 1 {
 		return fmt.Errorf("unsupported manifest version %d (expected 1)", m.Version)
-	}
-
-	// Validate mint config.
-	if m.Mint.URL == "" {
-		return fmt.Errorf("mint.url is required")
-	}
-	u, err := url.Parse(m.Mint.URL)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("mint.url must be a valid HTTPS URL, got %q", m.Mint.URL)
-	}
-	if m.Mint.Project == "" {
-		return fmt.Errorf("mint.project is required")
-	}
-	if m.Mint.Region == "" {
-		return fmt.Errorf("mint.region is required")
 	}
 
 	if m.Defaults.Forge != "" && !validForges[m.Defaults.Forge] {
@@ -444,6 +454,28 @@ func (m *Manifest) Validate() error {
 				"all repos under the same owner must use the same forge", i, owner, prev, entryForge)
 		}
 		ownerForge[owner] = entryForge
+	}
+
+	// Validate forge-specific infrastructure. GitHub mint fields are
+	// only required when at least one repo resolves to forge: github.
+	usedForges := m.DistinctForges()
+	for _, f := range usedForges {
+		if f == ForgeGitHub {
+			if m.Forge.GitHub.MintURL == "" {
+				return fmt.Errorf("forge.github.mint_url is required when GitHub repos are present")
+			}
+			u, err := url.Parse(m.Forge.GitHub.MintURL)
+			if err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("forge.github.mint_url must be a valid HTTPS URL, got %q", m.Forge.GitHub.MintURL)
+			}
+			if m.Forge.GitHub.MintProject == "" {
+				return fmt.Errorf("forge.github.mint_project is required when GitHub repos are present")
+			}
+			if m.Forge.GitHub.MintRegion == "" {
+				return fmt.Errorf("forge.github.mint_region is required when GitHub repos are present")
+			}
+		}
+		// GitLab section has no required fields.
 	}
 
 	return nil
@@ -610,19 +642,24 @@ func (m *Manifest) ResolveConfigForEntry(owner, repo string, entry RepoEntry) Re
 }
 
 func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) ResolvedConfig {
-	return ResolvedConfig{
+	cfg := ResolvedConfig{
 		Owner:                  owner,
 		Repo:                   repo,
 		Forge:                  resolveField(entry.Forge, m.Defaults.Forge, ""),
-		MintURL:                m.Mint.URL,
-		MintProject:            m.Mint.Project,
-		MintRegion:             m.Mint.Region,
 		InferenceProject:       resolveField(entry.InferenceProject, m.Defaults.InferenceProject, ""),
 		InferenceRegion:        resolveField(entry.InferenceRegion, m.Defaults.InferenceRegion, ""),
 		FullsendRef:            resolveField(entry.FullsendRef, m.Defaults.FullsendRef, ""),
 		BaseHarness:            resolveField(entry.BaseHarness, m.Defaults.BaseHarness, ""),
 		AllowedRemoteResources: m.Defaults.AllowedRemoteResources,
 	}
+	// Source mint config from the forge-specific section. GitLab repos
+	// do not use the mint, so these fields remain empty for them.
+	if cfg.Forge == ForgeGitHub {
+		cfg.MintURL = m.Forge.GitHub.MintURL
+		cfg.MintProject = m.Forge.GitHub.MintProject
+		cfg.MintRegion = m.Forge.GitHub.MintRegion
+	}
+	return cfg
 }
 
 // resolveField implements the three-level fallback chain for a
@@ -668,6 +705,17 @@ func (m *Manifest) DistinctForges() []string {
 	}
 	sort.Strings(forges)
 	return forges
+}
+
+// HasForge reports whether any repo in the manifest resolves to the
+// given forge name.
+func (m *Manifest) HasForge(name string) bool {
+	for _, f := range m.DistinctForges() {
+		if f == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Marshal serializes the manifest back to YAML.

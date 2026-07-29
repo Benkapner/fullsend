@@ -68,10 +68,11 @@ entry. Per-repo overrides are supported for mixed-forge manifests:
 
 ```yaml
 version: 1
-mint:
-  url: https://mint.example.com
-  project: my-project
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: my-project
+    mint_region: us-central1
 defaults:
   forge: github
   fullsend_ref: v2.5.0

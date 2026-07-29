@@ -147,6 +147,12 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 				continue
 			}
 
+			if resolved.Forge != ForgeGitHub {
+				progress(fullName, "wif", "Skipping WIF cleanup for non-GitHub forge")
+				results[i].Success = true
+				continue
+			}
+
 			prov := provisionerFactory(resolved)
 			progress(fullName, "wif", "Deregistering from mint and deleting WIF provider")
 			if err := prov.DeletePerRepoWIF(ctx, fullName); err != nil {

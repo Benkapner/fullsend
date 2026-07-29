@@ -13,16 +13,16 @@ import (
 func newUpgradeManifest(defaultRef string) *Manifest {
 	return &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "example-project",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:            "github",
 			InferenceProject: "example-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      defaultRef,
-			Forge:            "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
@@ -110,12 +110,13 @@ func TestUpgrade_AllAtTarget(t *testing.T) {
 func TestUpgrade_MixedStates(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "example-project",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{
@@ -273,8 +274,9 @@ func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "latest",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -297,8 +299,9 @@ func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -321,8 +324,9 @@ func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -345,8 +349,9 @@ func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -369,8 +374,9 @@ func TestUpgrade_WorkflowNotFound(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -397,8 +403,9 @@ func TestUpgrade_CommitError(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -430,8 +437,9 @@ func TestUpgrade_VerifiesWorkflowContent(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -508,7 +516,7 @@ func TestUpgrade_NoTargetRef(t *testing.T) {
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{},
 		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -535,8 +543,9 @@ func TestUpgrade_NonSemverCurrentRef(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -561,8 +570,9 @@ func TestUpgrade_PerRepoOverrideRef(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{
@@ -599,8 +609,9 @@ func TestUpgrade_YAMLExtension(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -635,8 +646,9 @@ func TestUpgrade_ProgressCallback(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -1036,8 +1048,9 @@ func TestUpgrade_APIErrorOnWorkflowRead(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -1089,8 +1102,9 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "us-central1"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "us-central1"}},
 		Defaults: DefaultsConfig{
+			Forge:            "github",
 			InferenceProject: "inf",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v2.3.0",
@@ -1150,7 +1164,7 @@ jobs:
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{FullsendRef: "v2.3.0"},
 		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -1217,8 +1231,9 @@ func TestUpgrade_PrereleaseDowngradeBlocked(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "us-central1"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "us-central1"}},
 		Defaults: DefaultsConfig{
+			Forge:            "github",
 			InferenceProject: "inf",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v2.3.0-rc1",
@@ -1279,7 +1294,7 @@ func TestUpgrade_InvalidManifestRef(t *testing.T) {
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{FullsendRef: "v3.0.0; rm -rf /"},
 		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -1375,8 +1390,9 @@ func TestUpgrade_SHAPinnedRepoPreservesPin(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -1425,8 +1441,9 @@ func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -1461,8 +1478,9 @@ func TestUpgrade_SHAPinnedTagResolutionError(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -1508,7 +1526,7 @@ func TestUpgrade_MixedPinningStyles(t *testing.T) {
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{FullsendRef: "v2.3.0"},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/sha-pinned"},
@@ -1563,8 +1581,9 @@ func TestUpgrade_DryRunSHAPinnedSkipsGetRef(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{
+			Forge:       "github",
 			FullsendRef: "v2.3.0",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
@@ -1637,7 +1656,7 @@ func TestUpgrade_SkipReasonMessages(t *testing.T) {
 
 			m := &Manifest{
 				Version:  1,
-				Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+				Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 				Defaults: DefaultsConfig{FullsendRef: tt.targetRef},
 				Repos:    []RepoEntry{{Repo: "acme-corp/repo"}},
 			}
@@ -1671,7 +1690,7 @@ func TestUpgrade_SHAPinnedAlreadyAtTarget(t *testing.T) {
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
 		Defaults: DefaultsConfig{FullsendRef: "v2.3.0"},
 		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}

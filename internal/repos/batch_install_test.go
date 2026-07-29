@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // batchFakeProvisioner is a test double for WIFProvisioner that records
@@ -154,16 +156,16 @@ func newBatchManifest(repos ...string) *Manifest {
 	}
 	return &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "test-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "test-project",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:            "github",
 			InferenceProject: "test-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v1.0.0",
-			Forge:            "github",
 		},
 		Repos: entries,
 	}
@@ -804,6 +806,57 @@ func TestBatchInstall_MultiOrg(t *testing.T) {
 	if orgCalls[0] != "acme" || orgCalls[1] != "other-org" {
 		t.Errorf("expected deterministic org order [acme, other-org], got %v", orgCalls)
 	}
+}
+
+func TestBatchInstall_MixedForge_SkipsGitLabOrgMint(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api", "gl-group/proj")
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "test-project",
+			MintRegion:  "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge:            ForgeGitHub,
+			InferenceProject: "test-inference",
+			InferenceRegion:  "us-central1",
+			FullsendRef:      "v1.0.0",
+		},
+		Repos: []RepoEntry{
+			{Repo: "acme/api"},
+			{Repo: "gl-group/proj", Forge: NullableString{Set: true, Value: ForgeGitLab}},
+		},
+	}
+
+	var orgCalls []string
+	prov := &batchFakeProvisioner{}
+	factory := func(_ ResolvedConfig) WIFProvisioner {
+		return &trackingOrgProvisioner{inner: prov, orgCalls: &orgCalls}
+	}
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	require.NoError(t, err)
+
+	// Only the GitHub org should have EnsureOrgInMint called.
+	assert.Equal(t, []string{"acme"}, orgCalls)
+	// GitLab repo install will fail (not implemented), but the point is
+	// that mint was not called for gl-group.
+	githubInstalled := 0
+	for _, r := range result.Installed {
+		if r.Owner == "acme" {
+			githubInstalled++
+		}
+	}
+	assert.Equal(t, 1, githubInstalled)
 }
 
 func TestBatchInstall_TOCTOUReCheck(t *testing.T) {

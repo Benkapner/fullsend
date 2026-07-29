@@ -412,24 +412,27 @@ func discoverRepo(ctx context.Context, client forge.Client,
 func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string) {
 	var todos []string
 
-	// Compute mint block.
-	mintURL := computeMode(repos, func(d DiscoveredRepo) string { return d.MintURL })
-	if mintURL == "" {
-		mintURL = "# TODO: set mint URL"
-		todos = append(todos, "mint.url: set the Cloud Run endpoint URL")
-	} else if countDistinct(repos, func(d DiscoveredRepo) string { return d.MintURL }) > 1 {
-		todos = append(todos, "mint.url: multiple mint URLs discovered; using most common — verify correctness")
-	}
+	// Compute mint block (only relevant for GitHub forge).
+	var mintURL, mintProject, mintRegion string
+	if cfg.Forge == ForgeGitHub {
+		mintURL = computeMode(repos, func(d DiscoveredRepo) string { return d.MintURL })
+		if mintURL == "" {
+			mintURL = "# TODO: set mint URL"
+			todos = append(todos, "forge.github.mint_url: set the Cloud Run endpoint URL")
+		} else if countDistinct(repos, func(d DiscoveredRepo) string { return d.MintURL }) > 1 {
+			todos = append(todos, "forge.github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
+		}
 
-	mintProject := cfg.MintProject
-	if mintProject == "" {
-		mintProject = "# TODO: set GCP project"
-		todos = append(todos, "mint.project: provide via --mint-project flag")
-	}
+		mintProject = cfg.MintProject
+		if mintProject == "" {
+			mintProject = "# TODO: set GCP project"
+			todos = append(todos, "forge.github.mint_project: provide via --mint-project flag")
+		}
 
-	mintRegion := cfg.MintRegion
-	if mintRegion == "" {
-		mintRegion = "us-central1"
+		mintRegion = cfg.MintRegion
+		if mintRegion == "" {
+			mintRegion = "us-central1"
+		}
 	}
 
 	// Compute defaults.
@@ -460,11 +463,6 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 
 	manifest := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     mintURL,
-			Project: mintProject,
-			Region:  mintRegion,
-		},
 		Defaults: DefaultsConfig{
 			Forge:            forgeName,
 			InferenceProject: inferenceProject,
@@ -472,6 +470,16 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 			FullsendRef:      defaultRef,
 		},
 	}
+
+	// Populate forge section based on the target forge.
+	if forgeName == ForgeGitHub {
+		manifest.Forge.GitHub = GitHubForgeInfra{
+			MintURL:     mintURL,
+			MintProject: mintProject,
+			MintRegion:  mintRegion,
+		}
+	}
+	// GitLab uses an empty section (no required fields).
 
 	// Build repo entries.
 	for _, d := range repos {

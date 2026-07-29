@@ -134,10 +134,11 @@ func TestReposCmd_GitLabTokenFlag(t *testing.T) {
 func TestRunReposStatus_EmptyManifest(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
 	manifestYAML := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: p
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: proj
@@ -154,10 +155,11 @@ repos: []
 func TestRunReposStatus_GitLabRequiresToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 	manifestYAML := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: p
+    mint_region: us-central1
 defaults:
   forge: gitlab
   inference_project: proj
@@ -176,10 +178,11 @@ repos: []
 func TestRunReposStatus_GitLabWithToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
 	manifestYAML := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: p
+    mint_region: us-central1
 defaults:
   forge: gitlab
   inference_project: proj
@@ -676,10 +679,11 @@ func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 }
 
 const testManifestYAML = `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -760,10 +764,11 @@ func TestRunReposInstall_InvalidManifestPath(t *testing.T) {
 
 func TestRunReposInstall_FailedReposReturnError(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: ""
@@ -953,10 +958,11 @@ func TestReposRemoveCmd_RequiresArgs(t *testing.T) {
 
 func TestRunReposRemove_Basic(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -991,10 +997,11 @@ func TestRunReposRemove_NotFound(t *testing.T) {
 
 func TestRunReposRemove_DryRun(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1172,10 +1179,11 @@ func TestReposInstallCmd_PositionalArgs(t *testing.T) {
 
 func TestRunReposInstall_WithFilter(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1205,10 +1213,11 @@ repos:
 
 func TestRunReposRemove_WithUninstall(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1240,10 +1249,11 @@ repos:
 
 func TestRunReposRemove_WithUninstall_PartialFailure(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1477,10 +1487,11 @@ func TestReposUpgradeCmd_ManifestShortFlag(t *testing.T) {
 
 func TestRunReposUpgrade_DryRun(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1531,10 +1542,11 @@ func TestRunReposUpgrade_ConcurrencyValidation(t *testing.T) {
 
 func TestRunReposUpgrade_WithFilter(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1590,10 +1602,11 @@ func TestRunReposUpgrade_HighConcurrency(t *testing.T) {
 
 func TestRunReposUpgrade_FullUpgrade(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1638,10 +1651,11 @@ func TestRunReposUpgrade_WithRefOverride(t *testing.T) {
 
 func TestRunReposUpgrade_ManifestValidationFailure(t *testing.T) {
 	badManifest := `version: 99
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 repos:
   - repo: acme/api
 `
@@ -1682,10 +1696,11 @@ func TestRunReposUpgradeMint_InvalidManifest(t *testing.T) {
 
 func TestRunReposUpgradeMint_ManifestValidationFailure(t *testing.T) {
 	badManifest := `version: 99
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 repos:
   - repo: acme/api
 `
@@ -1712,25 +1727,35 @@ func TestRunReposUpgradeMint_Success(t *testing.T) {
 
 func TestResolveMintProvisioner_WithTestProv(t *testing.T) {
 	prov := &trackingProvisioner{label: "test"}
-	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
-	got := resolveMintProvisioner(prov, m)
+	m := &repos.Manifest{Forge: repos.ForgeSection{GitHub: repos.GitHubForgeInfra{MintProject: "p", MintRegion: "r", MintURL: "https://mint.example.com"}}}
+	got, err := resolveMintProvisioner(prov, m)
+	require.NoError(t, err)
 	assert.Equal(t, prov, got)
 }
 
 func TestResolveMintProvisioner_NilFallsBackToLive(t *testing.T) {
-	m := &repos.Manifest{Mint: repos.MintConfig{Project: "p", Region: "r", URL: "https://mint.example.com"}}
-	got := resolveMintProvisioner(nil, m)
+	m := &repos.Manifest{Forge: repos.ForgeSection{GitHub: repos.GitHubForgeInfra{MintProject: "p", MintRegion: "r", MintURL: "https://mint.example.com"}}}
+	got, err := resolveMintProvisioner(nil, m)
+	require.NoError(t, err)
 	require.NotNil(t, got)
+}
+
+func TestResolveMintProvisioner_EmptyMintProject(t *testing.T) {
+	m := &repos.Manifest{}
+	_, err := resolveMintProvisioner(nil, m)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint_project")
 }
 
 // --- repos upgrade mint pre-flight ---
 
 func TestRunReposUpgrade_MintCheckBlocksOnMismatch(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1761,10 +1786,11 @@ repos:
 
 func TestRunReposUpgrade_SkipMintCheckBypasses(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1797,10 +1823,11 @@ repos:
 
 func TestRunReposUpgrade_MintCheckPassesThenUpgrades(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1832,10 +1859,11 @@ repos:
 
 func TestRunReposUpgrade_MintCheckWithDryRun(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1865,10 +1893,11 @@ repos:
 }
 
 const diffSyncManifestYAML = `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: inf-proj
@@ -1881,10 +1910,11 @@ repos:
 
 func TestRunReposDiff_NoDrift(t *testing.T) {
 	yaml := `version: 1
-mint:
-  url: https://mint.example.com
-  project: mint-proj
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: mint-proj
+    mint_region: us-central1
 defaults:
   forge: github
   inference_region: us-central1
@@ -2037,10 +2067,11 @@ func TestRunReposSync_DryRun_JSON(t *testing.T) {
 // that are only reachable through the Cobra command chain.
 
 var emptyReposManifestYAML = `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: p
+    mint_region: us-central1
 defaults:
   forge: github
   inference_project: proj
@@ -2099,10 +2130,11 @@ func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
 	// The token error now surfaces per-repo instead of at scope checking.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: p
+    mint_region: us-central1
 defaults:
   forge: gitlab
   inference_project: proj
@@ -2135,10 +2167,11 @@ func TestReposDiffCmd_GitLabNoToken_WithRepos(t *testing.T) {
 	// With actual repos, the missing GitLab token surfaces per-repo.
 	t.Setenv("GITLAB_TOKEN", "")
 	m := `version: 1
-mint:
-  url: https://mint.example.com
-  project: p
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    mint_project: p
+    mint_region: us-central1
 defaults:
   forge: gitlab
   inference_project: proj

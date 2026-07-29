@@ -85,12 +85,12 @@ func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
 	assert.Equal(t, 0, result.PerOrgCount)
 	assert.Equal(t, 3, result.NewCount)
 	// Greenfield: no mint URL discovered → TODO generated.
-	assert.Contains(t, result.TODOs, "mint.url: set the Cloud Run endpoint URL")
+	assert.Contains(t, result.TODOs, "forge.github.mint_url: set the Cloud Run endpoint URL")
 
 	m := result.Manifest
 	assert.Equal(t, 1, m.Version)
-	assert.Equal(t, "my-project", m.Mint.Project)
-	assert.Equal(t, "us-central1", m.Mint.Region)
+	assert.Equal(t, "my-project", m.Forge.GitHub.MintProject)
+	assert.Equal(t, "us-central1", m.Forge.GitHub.MintRegion)
 	assert.Equal(t, "my-inference", m.Defaults.InferenceProject)
 	assert.Equal(t, "v2.3.0", m.Defaults.FullsendRef)
 	require.Len(t, m.Repos, 3)
@@ -218,7 +218,7 @@ func TestInit_OnlyPerRepoInstallations(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.PerRepoCount)
 	assert.Equal(t, 0, result.PerOrgCount)
-	assert.Equal(t, "https://mint.example.com", result.Manifest.Mint.URL)
+	assert.Equal(t, "https://mint.example.com", result.Manifest.Forge.GitHub.MintURL)
 }
 
 func TestInit_OnlyPerOrgEnrollments(t *testing.T) {
@@ -251,7 +251,7 @@ repos:
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.PerRepoCount)
 	assert.Equal(t, 1, result.PerOrgCount)
-	assert.Equal(t, "https://mint-org.example.com", result.Manifest.Mint.URL)
+	assert.Equal(t, "https://mint-org.example.com", result.Manifest.Forge.GitHub.MintURL)
 }
 
 // --- Init: single repo tests ---
@@ -277,7 +277,7 @@ func TestInit_SingleRepo_PerRepoInstalled(t *testing.T) {
 	assert.Equal(t, 1, result.PerRepoCount)
 	require.Len(t, result.Manifest.Repos, 1)
 	assert.Equal(t, "acme/api", result.Manifest.Repos[0].Repo)
-	assert.Equal(t, "https://mint.example.com", result.Manifest.Mint.URL)
+	assert.Equal(t, "https://mint.example.com", result.Manifest.Forge.GitHub.MintURL)
 	assert.Equal(t, "v2.3.0", result.Manifest.Defaults.FullsendRef)
 }
 
@@ -307,7 +307,7 @@ repos:
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerOrgCount)
-	assert.Equal(t, "https://mint-org.example.com", result.Manifest.Mint.URL)
+	assert.Equal(t, "https://mint-org.example.com", result.Manifest.Forge.GitHub.MintURL)
 }
 
 func TestInit_SingleRepo_RejectsAllFlag(t *testing.T) {
@@ -517,7 +517,7 @@ func TestInit_TODOs_NoMintProject(t *testing.T) {
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
-	assert.Contains(t, result.TODOs, "mint.project: provide via --mint-project flag")
+	assert.Contains(t, result.TODOs, "forge.github.mint_project: provide via --mint-project flag")
 	assert.Contains(t, result.TODOs, "defaults.inference_project: provide via --inference-project flag")
 }
 
@@ -533,7 +533,7 @@ func TestInit_TODOs_NoMintURL_Greenfield(t *testing.T) {
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
-	assert.Contains(t, result.TODOs, "mint.url: set the Cloud Run endpoint URL")
+	assert.Contains(t, result.TODOs, "forge.github.mint_url: set the Cloud Run endpoint URL")
 }
 
 func TestInit_TODOs_MultipleMintURLs(t *testing.T) {
@@ -566,8 +566,8 @@ func TestInit_TODOs_MultipleMintURLs(t *testing.T) {
 
 	require.NoError(t, err)
 	// Most common URL should be used.
-	assert.Equal(t, "https://mint-a.example.com", result.Manifest.Mint.URL)
-	assert.Contains(t, result.TODOs, "mint.url: multiple mint URLs discovered; using most common — verify correctness")
+	assert.Equal(t, "https://mint-a.example.com", result.Manifest.Forge.GitHub.MintURL)
+	assert.Contains(t, result.TODOs, "forge.github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
 }
 
 // --- buildManifest tests ---
@@ -594,7 +594,7 @@ func TestBuildManifest_SimpleEntries(t *testing.T) {
 		assert.False(t, entry.InferenceRegion.Set)
 	}
 	// Greenfield: no mint URL discovered → TODO generated.
-	assert.Contains(t, todos, "mint.url: set the Cloud Run endpoint URL")
+	assert.Contains(t, todos, "forge.github.mint_url: set the Cloud Run endpoint URL")
 }
 
 func TestBuildManifest_MixedOverrides(t *testing.T) {
@@ -705,11 +705,11 @@ func TestCountDistinct(t *testing.T) {
 func TestMarshalWithHeader(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "proj",
+			MintRegion:  "us-central1",
+		}},
 		Repos: []RepoEntry{
 			{Repo: "acme/api"},
 		},
@@ -759,8 +759,8 @@ func TestInit_RoundTrip(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &parsed))
 
 	assert.Equal(t, 1, parsed.Version)
-	assert.Equal(t, "https://mint.example.com", parsed.Mint.URL)
-	assert.Equal(t, "proj", parsed.Mint.Project)
+	assert.Equal(t, "https://mint.example.com", parsed.Forge.GitHub.MintURL)
+	assert.Equal(t, "proj", parsed.Forge.GitHub.MintProject)
 	assert.Len(t, parsed.Repos, 2)
 }
 
@@ -1232,6 +1232,9 @@ func TestInit_SingleRepo_GitLabForge(t *testing.T) {
 	assert.Equal(t, 1, result.PerRepoCount)
 	assert.Equal(t, "v2.5.0", result.Manifest.Defaults.FullsendRef)
 	assert.Equal(t, ForgeGitLab, result.Manifest.Defaults.Forge)
+	assert.Empty(t, result.Manifest.Forge.GitHub.MintURL)
+	assert.Empty(t, result.Manifest.Forge.GitHub.MintProject)
+	assert.Empty(t, result.Manifest.Forge.GitHub.MintRegion)
 }
 
 // --- readWorkflowRef tests ---

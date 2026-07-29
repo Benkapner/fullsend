@@ -65,16 +65,16 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 func testManifest(repos ...string) *Manifest {
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "test-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "test-project",
+			MintRegion:  "us-central1",
+		}},
 		Defaults: DefaultsConfig{
+			Forge:            "github",
 			InferenceProject: "test-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v1.0.0",
-			Forge:            "github",
 		},
 	}
 	for _, r := range repos {
