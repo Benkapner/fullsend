@@ -53,6 +53,7 @@ type reposInitConfig struct {
 	concurrency      int
 	force            bool
 	forge            string
+	forgeURL         string
 	gitlabToken      string
 }
 
@@ -78,7 +79,8 @@ that reflects current reality.`,
 				return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", cfg.forge, repos.ForgeGitHub, repos.ForgeGitLab)
 			}
 
-			clients := newForgeClientFactory(cfg.gitlabToken)
+			forgeSection := repos.ForgeSectionFromURL(cfg.forge, cfg.forgeURL)
+			clients := newForgeClientFactory(cfg.gitlabToken, forgeSection)
 			// Eagerly validate that a client can be created for the forge.
 			if _, err := clients.ConfigFor(cfg.forge); err != nil {
 				return err
@@ -105,6 +107,7 @@ that reflects current reality.`,
 				Target:           target,
 				All:              cfg.all,
 				Forge:            cfg.forge,
+				ForgeURL:         cfg.forgeURL,
 				MintProject:      cfg.mintProject,
 				MintRegion:       cfg.mintRegion,
 				InferenceProject: cfg.inferenceProject,
@@ -184,6 +187,7 @@ that reflects current reality.`,
 	cmd.Flags().BoolVar(&cfg.force, "force", false, "overwrite output file if it already exists")
 	cmd.Flags().StringVar(&cfg.forge, "forge", "", "forge type for discovered repos (github or gitlab)")
 	_ = cmd.MarkFlagRequired("forge")
+	cmd.Flags().StringVar(&cfg.forgeURL, "forge-url", "", "forge instance URL (required for gitlab; defaults to https://github.com for github)")
 	cmd.MarkFlagsMutuallyExclusive("repos", "all")
 
 	return cmd
@@ -225,7 +229,7 @@ func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, re
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	clients := newForgeClientFactory(getGitLabToken(cmd))
+	clients := newForgeClientFactory(getGitLabToken(cmd), m.Forge)
 
 	result, err := repos.Status(ctx, m, clients, concurrency, repoFilter)
 	if err != nil {
@@ -389,7 +393,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
 	} else {
-		clients = newForgeClientFactory(opts.gitlabToken)
+		clients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
 	}
 
 	if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
@@ -564,7 +568,7 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
 	} else {
-		clients = newForgeClientFactory(opts.gitlabToken)
+		clients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
 	}
 
 	entries := make([]repos.RepoEntry, len(repoArgs))
@@ -718,7 +722,7 @@ func runReposRemove(ctx context.Context, opts *reposRemoveConfig, repoArgs []str
 			if opts.testClient != nil {
 				uninstallClients = newSingleClientFactory(opts.testClient)
 			} else {
-				uninstallClients = newForgeClientFactory(opts.gitlabToken)
+				uninstallClients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
 			}
 
 			uninstallCfg := repos.UninstallConfig{
@@ -878,7 +882,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if opts.testClient != nil {
 		uninstallClients = newSingleClientFactory(opts.testClient)
 	} else {
-		uninstallClients = newForgeClientFactory(opts.gitlabToken)
+		uninstallClients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
 	}
 
 	if err := checkAllForgeScopes(ctx, manifest, uninstallClients, printer); err != nil {
@@ -1114,7 +1118,7 @@ func runReposDiff(ctx context.Context, opts *reposDiffConfig) error {
 	if opts.testClient != nil {
 		diffClients = newSingleClientFactory(opts.testClient)
 	} else {
-		diffClients = newForgeClientFactory(opts.gitlabToken)
+		diffClients = newForgeClientFactory(opts.gitlabToken, m.Forge)
 	}
 
 	if err := checkAllForgeScopes(ctx, m, diffClients, printer); err != nil {
@@ -1199,7 +1203,7 @@ func runReposSync(ctx context.Context, opts *reposSyncConfig) error {
 	if opts.testClient != nil {
 		syncClients = newSingleClientFactory(opts.testClient)
 	} else {
-		syncClients = newForgeClientFactory(opts.gitlabToken)
+		syncClients = newForgeClientFactory(opts.gitlabToken, m.Forge)
 	}
 
 	if err := checkAllForgeScopes(ctx, m, syncClients, printer); err != nil {
@@ -1335,7 +1339,7 @@ func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter [
 	if opts.testClient != nil {
 		upgradeClients = newSingleClientFactory(opts.testClient)
 	} else {
-		upgradeClients = newForgeClientFactory(opts.gitlabToken)
+		upgradeClients = newForgeClientFactory(opts.gitlabToken, m.Forge)
 	}
 
 	if err := checkAllForgeScopes(ctx, m, upgradeClients, printer); err != nil {

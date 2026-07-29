@@ -812,11 +812,14 @@ func TestBatchInstall_MixedForge_SkipsGitLabOrgMint(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api", "gl-group/proj")
 	manifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "test-project",
-			MintRegion:  "us-central1",
-		}},
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				MintURL:     "https://mint.example.com",
+				MintProject: "test-project",
+				MintRegion:  "us-central1",
+			},
+			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
+		},
 		Defaults: DefaultsConfig{
 			Forge:            ForgeGitHub,
 			InferenceProject: "test-inference",

@@ -19,6 +19,7 @@ type InitConfig struct {
 	Repos            []string
 	All              bool
 	Forge            string
+	ForgeURL         string
 	MintProject      string
 	MintRegion       string
 	InferenceProject string
@@ -474,12 +475,21 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 	// Populate forge section based on the target forge.
 	if forgeName == ForgeGitHub {
 		manifest.Forge.GitHub = GitHubForgeInfra{
+			URL:         cfg.ForgeURL,
 			MintURL:     mintURL,
 			MintProject: mintProject,
 			MintRegion:  mintRegion,
 		}
 	}
-	// GitLab uses an empty section (no required fields).
+	if forgeName == ForgeGitLab {
+		gitlabURL := cfg.ForgeURL
+		if gitlabURL == "" {
+			todos = append(todos, "forge.gitlab.url: set the GitLab instance URL (e.g. https://gitlab.example.com)")
+		}
+		manifest.Forge.GitLab = GitLabForgeInfra{
+			URL: gitlabURL,
+		}
+	}
 
 	// Build repo entries.
 	for _, d := range repos {

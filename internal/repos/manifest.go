@@ -60,13 +60,32 @@ type ForgeSection struct {
 // GitHubForgeInfra holds GitHub-specific infrastructure settings
 // for the token mint service.
 type GitHubForgeInfra struct {
+	URL         string `yaml:"url,omitempty"`
 	MintURL     string `yaml:"mint_url,omitempty"`
 	MintProject string `yaml:"mint_project,omitempty"`
 	MintRegion  string `yaml:"mint_region,omitempty"`
 }
 
+// DefaultGitHubURL is the default forge URL for GitHub.com.
+const DefaultGitHubURL = "https://github.com"
+
+// ForgeSectionFromURL constructs a ForgeSection with only the URL field
+// populated for the named forge. Used when no full manifest is available
+// (e.g. repos init).
+func ForgeSectionFromURL(forgeName, forgeURL string) ForgeSection {
+	var s ForgeSection
+	switch forgeName {
+	case ForgeGitHub:
+		s.GitHub.URL = forgeURL
+	case ForgeGitLab:
+		s.GitLab.URL = forgeURL
+	}
+	return s
+}
+
 // GitLabForgeInfra holds GitLab-specific infrastructure settings.
 type GitLabForgeInfra struct {
+	URL string `yaml:"url"`
 }
 
 // DefaultsConfig holds default field values applied to every repo
@@ -375,13 +394,16 @@ func fetchManifestURL(ctx context.Context, rawURL string, skipIPCheck bool) ([]b
 
 // Validate checks the manifest for structural correctness:
 //   - version must be 1
-//   - forge.github.mint_url/mint_project/mint_region are required when
-//     at least one repo resolves to forge: github
-//   - the gitlab section has no required fields
+//   - forge.github.url defaults to https://github.com when unset;
+//     mint_url/mint_project/mint_region are required when at least one
+//     repo resolves to forge: github
+//   - forge.gitlab.url is required when at least one repo resolves to
+//     forge: gitlab
 //   - each repo entry must have a valid owner/repo or owner/glob format
 //   - glob characters are only allowed in the repo name, not the owner
 //   - no duplicate repo entries (before glob expansion)
 //   - glob patterns must be valid filepath.Match patterns
+//   - forge URLs must be valid HTTPS URLs with no path component
 func (m *Manifest) Validate() error {
 	if m.Version != 1 {
 		return fmt.Errorf("unsupported manifest version %d (expected 1)", m.Version)
@@ -461,11 +483,22 @@ func (m *Manifest) Validate() error {
 	usedForges := m.DistinctForges()
 	for _, f := range usedForges {
 		if f == ForgeGitHub {
+			githubURL := m.Forge.GitHub.URL
+			if githubURL == "" {
+				githubURL = DefaultGitHubURL
+			}
+			u, err := url.Parse(githubURL)
+			if err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("forge.github.url must be a valid HTTPS URL, got %q", githubURL)
+			}
+			if err := rejectExtraneousURLParts(u, "forge.github.url"); err != nil {
+				return err
+			}
 			if m.Forge.GitHub.MintURL == "" {
 				return fmt.Errorf("forge.github.mint_url is required when GitHub repos are present")
 			}
-			u, err := url.Parse(m.Forge.GitHub.MintURL)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
+			mu, err := url.Parse(m.Forge.GitHub.MintURL)
+			if err != nil || mu.Scheme != "https" || mu.Host == "" {
 				return fmt.Errorf("forge.github.mint_url must be a valid HTTPS URL, got %q", m.Forge.GitHub.MintURL)
 			}
 			if m.Forge.GitHub.MintProject == "" {
@@ -475,9 +508,36 @@ func (m *Manifest) Validate() error {
 				return fmt.Errorf("forge.github.mint_region is required when GitHub repos are present")
 			}
 		}
-		// GitLab section has no required fields.
+		if f == ForgeGitLab {
+			if m.Forge.GitLab.URL == "" {
+				return fmt.Errorf("forge.gitlab.url is required when GitLab repos are present")
+			}
+			u, err := url.Parse(m.Forge.GitLab.URL)
+			if err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("forge.gitlab.url must be a valid HTTPS URL, got %q", m.Forge.GitLab.URL)
+			}
+			if err := rejectExtraneousURLParts(u, "forge.gitlab.url"); err != nil {
+				return err
+			}
+		}
 	}
 
+	return nil
+}
+
+func rejectExtraneousURLParts(u *url.URL, field string) error {
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("%s must not contain a path component, got %q", field, u.String())
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s must not contain userinfo, got %q", field, u.String())
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("%s must not contain query parameters, got %q", field, u.String())
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("%s must not contain a fragment, got %q", field, u.String())
+	}
 	return nil
 }
 

@@ -29,12 +29,16 @@ version: 1
 # Per-forge infrastructure configuration.
 forge:
   github:
+    # Instance URL — defaults to https://github.com; set for GitHub Enterprise Server.
+    # url: https://github.example.com
     # Shared mint infrastructure — one mint serves all repos.
     # mint_url: Cloud Run endpoint (contains a random hash, not derivable from project/region).
     # mint_project + mint_region: needed for WIF provisioning (IAM bindings).
     mint_url: https://fullsend-mint-abc123-uc.a.run.app
     mint_project: acme-fullsend-prod
     mint_region: us-central1
+  # gitlab:
+  #   url: https://gitlab.example.com  # required, no default
 
 # Default configuration applied to all repos unless overridden.
 defaults:
@@ -500,9 +504,14 @@ type ForgeSection struct {
 }
 
 type GitHubForgeInfra struct {
+    URL         string `yaml:"url,omitempty"`
     MintURL     string `yaml:"mint_url,omitempty"`
     MintProject string `yaml:"mint_project,omitempty"`
     MintRegion  string `yaml:"mint_region,omitempty"`
+}
+
+type GitLabForgeInfra struct {
+    URL string `yaml:"url"`
 }
 
 type DefaultsConfig struct {
@@ -596,8 +605,10 @@ the URL fetching logic from the harness resource loader.
 `Validate()` checks:
 
 - `version` is 1 (only supported version).
+- `forge.github.url` defaults to `https://github.com` when unset; must be a valid HTTPS URL with no path.
 - `forge.github.mint_url` is a valid HTTPS URL (when GitHub repos are present).
 - `forge.github.mint_project` and `forge.github.mint_region` are non-empty (when GitHub repos are present).
+- `forge.gitlab.url` is required and must be a valid HTTPS URL with no path (when GitLab repos are present).
 - Each repo entry has a valid `owner/repo` format.
 - No duplicate repos (after glob expansion).
 - Glob patterns are valid `filepath.Match` patterns with an `org/`

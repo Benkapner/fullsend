@@ -360,6 +360,7 @@ func TestValidate_MissingMintRegion_GitHubRepos(t *testing.T) {
 func TestValidate_GitLabOnly_NoMintRequired(t *testing.T) {
 	m := Manifest{
 		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"}},
 		Defaults: DefaultsConfig{Forge: "gitlab"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
@@ -369,6 +370,7 @@ func TestValidate_GitLabOnly_NoMintRequired(t *testing.T) {
 func TestValidate_MixedForge_RequiresMint(t *testing.T) {
 	m := Manifest{
 		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"}},
 		Defaults: DefaultsConfig{Forge: "gitlab"},
 		Repos: []RepoEntry{
 			{Repo: "gitlab-group/repo"},
@@ -583,11 +585,14 @@ func TestValidate_InvalidPerRepoForge(t *testing.T) {
 func TestValidate_GitLabForge(t *testing.T) {
 	m := Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
-		}},
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				MintURL:     "https://mint.example.com",
+				MintProject: "p",
+				MintRegion:  "r",
+			},
+			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
+		},
 		Defaults: DefaultsConfig{Forge: "gitlab"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
@@ -597,11 +602,14 @@ func TestValidate_GitLabForge(t *testing.T) {
 func TestValidate_PerRepoForgeOverride(t *testing.T) {
 	m := Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
-		}},
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				MintURL:     "https://mint.example.com",
+				MintProject: "p",
+				MintRegion:  "r",
+			},
+			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
+		},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos: []RepoEntry{{
 			Repo:  "acme/repo",
@@ -1313,6 +1321,8 @@ forge:
     mint_url: https://mint.example.com
     mint_project: p
     mint_region: r
+  gitlab:
+    url: https://gitlab.example.com
 defaults:
   forge: github
 repos:
@@ -1356,4 +1366,242 @@ func TestDistinctForges_SingleForge(t *testing.T) {
 
 	forges := m.DistinctForges()
 	assert.Equal(t, []string{"github"}, forges)
+}
+
+func TestValidate_GitHubURL_DefaultsToGitHubCom(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "p",
+			MintRegion:  "r",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	require.NoError(t, m.Validate())
+	assert.Empty(t, m.Forge.GitHub.URL, "Validate must not mutate the receiver")
+}
+
+func TestValidate_GitHubURL_ExplicitValue(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			URL:         "https://ghes.example.com",
+			MintURL:     "https://mint.example.com",
+			MintProject: "p",
+			MintRegion:  "r",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	require.NoError(t, m.Validate())
+	assert.Equal(t, "https://ghes.example.com", m.Forge.GitHub.URL)
+}
+
+func TestValidate_GitHubURL_InvalidURL(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			URL:         "http://insecure.example.com",
+			MintURL:     "https://mint.example.com",
+			MintProject: "p",
+			MintRegion:  "r",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "forge.github.url must be a valid HTTPS URL")
+}
+
+func TestValidate_GitLabURL_Required(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "forge.gitlab.url is required")
+}
+
+func TestValidate_GitLabURL_Valid(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.cee.redhat.com"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	require.NoError(t, m.Validate())
+}
+
+func TestValidate_GitLabURL_InvalidURL(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "http://insecure.example.com"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "forge.gitlab.url must be a valid HTTPS URL")
+}
+
+func TestValidate_GitLabURL_NotRequiredWhenNotReferenced(t *testing.T) {
+	// GitLab URL is only required when GitLab repos are present.
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			MintProject: "p",
+			MintRegion:  "r",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	require.NoError(t, m.Validate())
+}
+
+func TestParseManifest_URLFields(t *testing.T) {
+	input := `
+version: 1
+forge:
+  github:
+    url: https://ghes.example.com
+    mint_url: https://mint.example.com
+    mint_project: p
+    mint_region: r
+  gitlab:
+    url: https://gitlab.cee.redhat.com
+defaults:
+  forge: github
+repos:
+  - acme/repo
+`
+	var m Manifest
+	err := yaml.Unmarshal([]byte(input), &m)
+	require.NoError(t, err)
+	assert.Equal(t, "https://ghes.example.com", m.Forge.GitHub.URL)
+	assert.Equal(t, "https://gitlab.cee.redhat.com", m.Forge.GitLab.URL)
+}
+
+func TestMarshalRoundTrip_URLFields(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				URL:         "https://ghes.example.com",
+				MintURL:     "https://mint.example.com",
+				MintProject: "p",
+				MintRegion:  "r",
+			},
+			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
+		},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	data, err := m.Marshal()
+	require.NoError(t, err)
+
+	var roundTripped Manifest
+	require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+	assert.Equal(t, "https://ghes.example.com", roundTripped.Forge.GitHub.URL)
+	assert.Equal(t, "https://gitlab.example.com", roundTripped.Forge.GitLab.URL)
+}
+
+func TestValidate_GitHubURL_RejectsPathComponent(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			URL:         "https://ghes.example.com/prefix",
+			MintURL:     "https://mint.example.com",
+			MintProject: "p",
+			MintRegion:  "r",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain a path component")
+}
+
+func TestValidate_GitLabURL_RejectsPathComponent(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com/api/v4"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain a path component")
+}
+
+func TestValidate_GitHubURL_TrailingSlashAccepted(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			URL:         "https://ghes.example.com/",
+			MintURL:     "https://mint.example.com",
+			MintProject: "p",
+			MintRegion:  "r",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	require.NoError(t, m.Validate())
+}
+
+func TestValidate_ForgeURL_RejectsUserinfo(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{URL: "https://user@ghes.example.com", MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "userinfo")
+}
+
+func TestValidate_ForgeURL_RejectsQueryParams(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com?token=abc"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "query parameters")
+}
+
+func TestValidate_ForgeURL_RejectsFragment(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com#section"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fragment")
+}
+
+func TestForgeSectionFromURL_GitHub(t *testing.T) {
+	s := ForgeSectionFromURL(ForgeGitHub, "https://ghes.example.com")
+	assert.Equal(t, "https://ghes.example.com", s.GitHub.URL)
+	assert.Empty(t, s.GitLab.URL)
+}
+
+func TestForgeSectionFromURL_GitLab(t *testing.T) {
+	s := ForgeSectionFromURL(ForgeGitLab, "https://gitlab.example.com")
+	assert.Equal(t, "https://gitlab.example.com", s.GitLab.URL)
+	assert.Empty(t, s.GitHub.URL)
+}
+
+func TestForgeSectionFromURL_Empty(t *testing.T) {
+	s := ForgeSectionFromURL(ForgeGitHub, "")
+	assert.Empty(t, s.GitHub.URL)
+	assert.Empty(t, s.GitLab.URL)
 }

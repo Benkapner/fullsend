@@ -61,6 +61,8 @@ Flags:
   include. Skips interactive selection.
 - `--all` (bool): include all eligible repos without prompting.
 - `--forge` (string, **required**): forge type (`github` or `gitlab`).
+- `--forge-url` (string): forge instance URL. Required for `gitlab`;
+  defaults to `https://github.com` for `github`.
 - `--mint-project` (string): GCP project for the `forge.github.mint_project` field.
 - `--mint-region` (string, default `us-central1`): GCP region for
   the `forge.github.mint_region` field.
@@ -79,6 +81,7 @@ type InitConfig struct {
     Repos            []string // explicit repo names (nil = interactive/all)
     All              bool     // include all repos without prompting
     Forge            string   // forge type ("github" or "gitlab")
+    ForgeURL         string   // forge instance URL
     MintProject      string
     MintRegion       string
     InferenceProject string
