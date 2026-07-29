@@ -2153,6 +2153,44 @@ func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
 	}
 }
 
+func TestPostScriptEnv_IncludesOutputSchema(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/path/to/schema.json",
+		},
+	}
+	env := postScriptEnv(h, "")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/path/to/schema.json")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := postScriptEnv(h, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := postScriptEnv(h, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
 // writeValScript creates a validation script at dir/name that exits 0 if a
 // marker file named "pass" exists in the script's working directory, and
 // exits 1 otherwise. Returns the absolute path to the script.

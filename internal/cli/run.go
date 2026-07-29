@@ -988,7 +988,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
+			postCmd.Env = postScriptEnv(h, traceparent)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
@@ -2275,6 +2275,17 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	}
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
+// postScriptEnv builds the environment for post-script execution.
+// It starts with childScriptEnv and conditionally appends
+// FULLSEND_OUTPUT_SCHEMA when the harness specifies a validation loop schema.
+func postScriptEnv(h *harness.Harness, traceparent string) []string {
+	env := childScriptEnv(h.RunnerEnv, traceparent)
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
 }
