@@ -39,6 +39,7 @@ type callerWorkflow struct {
 }
 
 type callerJob struct {
+	If          string            `yaml:"if"`
 	Uses        string            `yaml:"uses"`
 	With        map[string]string `yaml:"with"`
 	Secrets     map[string]string `yaml:"secrets"`
@@ -612,6 +613,172 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 				"%s agent step must pass pr-head-sha to action.yml", stage)
 			assert.Contains(t, section, ".pull_request.head.sha",
 				"%s agent pr-head-sha must be populated from event_payload", stage)
+		})
+	}
+}
+
+// TestShimLabeledEventFiltering validates that shim workflows use the ready-
+// prefix filter at the if: guard level and label-aware concurrency keys so
+// routing labels don't cancel each other (#2452).
+//
+// The per-repo shim is exempt from the prefix filter because it has no
+// concurrency group and BYOA harness agents may trigger on arbitrary labels.
+func TestShimLabeledEventFiltering(t *testing.T) {
+	type shimCase struct {
+		name           string
+		content        func(t *testing.T) []byte
+		hasConcurrency bool
+	}
+
+	cases := []shimCase{
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), true},
+		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true},
+		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), false},
+	}
+
+	// Workflow-call shims must have the ready- prefix filter in the if: guard.
+	// The per-repo shim is exempt (no concurrency group, BYOA compat).
+	for _, tc := range cases {
+		if !tc.hasConcurrency {
+			continue
+		}
+		t.Run(tc.name+"/guard", func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok, "%s must have a dispatch job", tc.name)
+
+			// Pin the full composed clause including enclosing parens and the
+			// joining && that conjoins it with the preceding guards. Without
+			// the parens, && binds tighter than || in GHA expressions and the
+			// ready- prefix gate floats to the top of the entire if:. Without
+			// the joining &&, the clause could be OR'd, bypassing the
+			// scaffold-install and bot-comment guards. Whitespace is flexible
+			// via \s* to tolerate reformatting.
+			assert.Regexp(t,
+				`\)\s*&&\s*\(\s*github\.event\.action\s*!=\s*'labeled'\s*\|\|\s*startsWith\(github\.event\.label\.name,\s*'ready-'\)\s*\)`,
+				job.If,
+				"%s if: guard must AND-conjoin the ready- prefix filter with enclosing parens", tc.name)
+		})
+	}
+
+	// Per-repo shim must NOT have the ready- prefix filter (BYOA compat).
+	for _, tc := range cases {
+		if tc.hasConcurrency {
+			continue
+		}
+		t.Run(tc.name+"/no-label-guard", func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok, "%s must have a dispatch job", tc.name)
+
+			assert.NotContains(t, job.If, "startsWith(github.event.label.name",
+				"%s per-repo shim must not filter on label prefix — BYOA harness agents may use arbitrary labels", tc.name)
+		})
+	}
+
+	// Workflow-call shims must have a label-aware concurrency key (#2452).
+	for _, tc := range cases {
+		if !tc.hasConcurrency {
+			continue
+		}
+		t.Run(tc.name+"/concurrency", func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok, "%s must have a dispatch job", tc.name)
+			require.NotNil(t, job.Concurrency, "%s dispatch job must have a concurrency group", tc.name)
+
+			assert.Regexp(t,
+				`fullsend-dispatch-\$\{\{\s*github\.event\.issue\.number\s*\|\|\s*github\.event\.pull_request\.number\s*\}\}-\$\{\{\s*github\.event\.action\s*==\s*'labeled'\s*&&\s*format\('label-\{0\}',\s*github\.event\.label\.name\)\s*\|\|\s*'dispatch'\s*\}\}`,
+				job.Concurrency.Group,
+				"%s concurrency group must match full label-aware structure", tc.name)
+			assert.False(t, job.Concurrency.CancelInProgress,
+				"%s concurrency group must have cancel-in-progress: false", tc.name)
+		})
+	}
+
+	// Per-repo shim must NOT have a job-level concurrency group (ADR 0034);
+	// per-role groups live in reusable-dispatch.yml stage jobs.
+	for _, tc := range cases {
+		if tc.hasConcurrency {
+			continue
+		}
+		t.Run(tc.name+"/no-concurrency", func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok, "%s must have a dispatch job", tc.name)
+			assert.Nil(t, job.Concurrency,
+				"%s per-repo shim must not have job-level concurrency (ADR 0034: per-role groups live in reusable-dispatch.yml)", tc.name)
+		})
+	}
+}
+
+// TestRoutingLabelPrefixDrift validates that every TRIGGERING_LABEL comparison
+// in the per-org scaffold dispatch workflow satisfies the ready- prefix
+// predicate used by the workflow-call shim if: guard. If someone adds a
+// routing label without the prefix, this test converts a silent production
+// skip into a build break (#2452).
+//
+// Scope: scaffold/dispatch.yml only — the router that per-org (workflow-call)
+// shims deploy. reusable-dispatch.yml serves per-repo installs whose shim
+// has no prefix guard (BYOA compat), so it is intentionally excluded.
+func TestRoutingLabelPrefixDrift(t *testing.T) {
+	dispatchFiles := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+
+	// Match all forms of TRIGGERING_LABEL comparison. Braces and quotes
+	// are optional so unbraced ($TRIGGERING_LABEL) and unquoted RHS forms
+	// are visible. For case blocks, the header is matched first and then
+	// every arm up to esac is collected, splitting on | for joined arms.
+	eqPattern := regexp.MustCompile(`TRIGGERING_LABEL\}?"?\s*={1,2}\s*"?([^")\s]+)"?`)
+	rePattern := regexp.MustCompile(`TRIGGERING_LABEL\}?"?\s*=~\s*"?([^")\s]+)"?`)
+	caseHeader := regexp.MustCompile(`(?m)case\s+"?\$\{?TRIGGERING_LABEL\}?"?\s+in\b`)
+	caseArm := regexp.MustCompile(`(?m)^\s*([\w|*?-]+)\)`)
+
+	extractLabels := func(content string) []string {
+		var labels []string
+		for _, m := range eqPattern.FindAllStringSubmatch(content, -1) {
+			labels = append(labels, m[1])
+		}
+		for _, m := range rePattern.FindAllStringSubmatch(content, -1) {
+			labels = append(labels, m[1])
+		}
+		for _, headerLoc := range caseHeader.FindAllStringIndex(content, -1) {
+			block := content[headerLoc[1]:]
+			esacIdx := strings.Index(block, "esac")
+			if esacIdx >= 0 {
+				block = block[:esacIdx]
+			}
+			for _, m := range caseArm.FindAllStringSubmatch(block, -1) {
+				for _, arm := range strings.Split(m[1], "|") {
+					labels = append(labels, arm)
+				}
+			}
+		}
+		return labels
+	}
+
+	for _, df := range dispatchFiles {
+		t.Run(df.name, func(t *testing.T) {
+			content := string(df.content(t))
+			labels := extractLabels(content)
+			require.Len(t, labels, 4,
+				"%s: expected exactly 4 TRIGGERING_LABEL comparisons (found %d) — "+
+					"if a comparison was added or restyled, update this count and verify "+
+					"the new label satisfies the ready- prefix predicate", df.name, len(labels))
+
+			for _, label := range labels {
+				assert.True(t, strings.HasPrefix(label, "ready-"),
+					"%s: routing label %q does not satisfy the ready- prefix predicate — "+
+						"per-org workflow-call shim if: guard will silently skip it (#2452)", df.name, label)
+			}
 		})
 	}
 }
