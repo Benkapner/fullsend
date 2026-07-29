@@ -267,21 +267,21 @@ func TestGivenFork_LeasedRepoResolvesForkName(t *testing.T) {
 func TestGivenFork_PollsBranchRef(t *testing.T) {
 	// GetDefaultBranch succeeds immediately (repo metadata ready),
 	// but GetBranchRef fails once (git ref not yet replicated),
-	// then succeeds on the 2nd call. givenFork should retry the
-	// ref poll and ultimately succeed.
+	// then succeeds on the 2nd call. awaitForkReady should retry
+	// the ref poll and ultimately succeed.
+	//
+	// Calls awaitForkReady directly with poll=0 to avoid the 2s
+	// real sleep from the production forkReadyPoll constant; the
+	// givenFork → awaitForkReady wiring is proven by
+	// TestGivenFork_BranchRefImmediateSuccess.
 	scmDriver := &fakeForkSCM{
-		forkRepo:             "repo-fork",
 		getBranchRefFailures: 1,
 	}
 	w := &world.World{
-		RepoOwner: "org",
-		RepoName:  "repo",
-		SCM:       scmDriver,
+		SCM: scmDriver,
 	}
-	err := givenFork(w, "repo-fork")
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 10, 0)
 	require.NoError(t, err)
-	assert.Equal(t, "org", w.ForkOwner)
-	assert.Equal(t, "repo-fork", w.ForkRepo)
 	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
 		"GetDefaultBranch should be called once to resolve the branch name")
 	assert.Equal(t, 2, scmDriver.getBranchRefCalls,
