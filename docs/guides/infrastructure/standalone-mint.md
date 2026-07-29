@@ -116,6 +116,7 @@ The standalone mint is configured entirely through environment variables:
 | `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://fullsend-mint-gljhbkcloq-uc.a.run.app` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `PER_REPO_WIF_REPOS` | Comma-separated repos requiring per-repo WIF | `myorg/private-repo` |
+| `PER_ORG_FOREIGN_COMPAT` | When `1`/`true`/`yes`, allow org-mode `repos` shapes: any non-empty list from `.fullsend` callers; `[.fullsend]` or `{self,.fullsend}` from enrolled callers. Default off (same-org = requesting repo only). Does not allow same-org installation-wide tokens. | `true` |
 | `PORT` | HTTP listen port | `8080` (default) |
 
 ### Public mint mode

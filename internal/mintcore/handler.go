@@ -64,6 +64,9 @@ type Handler struct {
 	foreignInflight map[string]*foreignInflight
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
+
+	// perOrgForeignCompat enables org-mode repos shapes under PER_ORG_FOREIGN_COMPAT.
+	perOrgForeignCompat bool
 }
 
 type foreignInflight struct {
@@ -82,13 +85,14 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	h := &Handler{
-		httpClient:      httpClient,
-		pemAccessor:     pemAccessor,
-		oidcVerifier:    oidcVerifier,
-		githubBaseURL:   "https://api.github.com",
-		foreignCache:    make(map[string]foreignCacheEntry),
-		foreignInflight: make(map[string]*foreignInflight),
-		foreignCacheTTL: defaultForeignCacheTTL,
+		httpClient:          httpClient,
+		pemAccessor:         pemAccessor,
+		oidcVerifier:        oidcVerifier,
+		githubBaseURL:       "https://api.github.com",
+		foreignCache:        make(map[string]foreignCacheEntry),
+		foreignInflight:     make(map[string]*foreignInflight),
+		foreignCacheTTL:     defaultForeignCacheTTL,
+		perOrgForeignCompat: envTruthy(os.Getenv("PER_ORG_FOREIGN_COMPAT")),
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -200,6 +204,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Repos = normalizeMintRepos(req.Repos)
+
 	if len(req.Repos) > maxRepos {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many repos (max %d)", maxRepos))
 		return
@@ -233,6 +239,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetOrg = callerOrg
 	}
 
+	foreign := !strings.EqualFold(targetOrg, callerOrg)
+	if err := validateReposScope(foreign, claims.Repository, req.Repos, h.perOrgForeignCompat); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+
 	if len(req.Repos) == 0 {
 		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
 			targetOrg, req.Role, callerOrg, claims.Repository)
@@ -241,7 +253,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var token, expiresAt string
 	var granted *GrantedScope
 
-	if strings.EqualFold(targetOrg, callerOrg) {
+	if !foreign {
 		token, expiresAt, granted, err = h.mintToken(ctx, callerOrg, req.Role, req.Repos)
 	} else {
 		token, expiresAt, granted, err = h.mintTokenCrossOrg(ctx, claims, targetOrg, req.Role, req.Repos)

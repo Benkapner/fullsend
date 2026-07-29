@@ -83,3 +83,11 @@ orgs control over their own policy.
 - Same-org mint for enrolled orgs adds zero FOREIGN API calls; optional `repos` omission uses
   org-level installation lookup when callers need installation-wide scope.
 - Pool org provisioning must install the e2e App and set `FULLSEND_FOREIGN_E2E_REPOS` for CI callers.
+
+## Later note (repos scope hardening)
+
+Same-org installation-wide tokens and unrestricted `repos` lists are no longer the default.
+Cross-org (foreign) requests still require empty `repos` (or the `["*"]` alias for empty).
+Same-org requests must list exactly the requesting repository unless `PER_ORG_FOREIGN_COMPAT`
+is enabled: then `.fullsend` callers may pass any non-empty validated list, and enrolled
+callers may mint exactly `[.fullsend]` or `{self,.fullsend}` for org-mode dispatch.
