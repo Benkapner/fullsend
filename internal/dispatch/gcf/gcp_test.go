@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/gcp"
 	"github.com/stretchr/testify/assert"
@@ -384,6 +385,38 @@ func TestLiveGCFClient_SetSecretIAMBinding(t *testing.T) {
 	})
 }
 
+// --- iamRetryDelay ---
+
+func TestIAMRetryDelay(t *testing.T) {
+	t.Run("exponential growth capped at 10s", func(t *testing.T) {
+		// Collect many samples at each attempt to verify bounds.
+		for attempt := 0; attempt < 8; attempt++ {
+			for range 20 {
+				d := iamRetryDelay(attempt)
+				// Minimum is 50% of the base (500ms << attempt).
+				base := 500 * time.Millisecond * time.Duration(1<<uint(attempt))
+				if base > 10*time.Second {
+					base = 10 * time.Second
+				}
+				minDelay := base / 2
+				assert.GreaterOrEqual(t, d, minDelay,
+					"attempt %d: delay %v should be >= %v", attempt, d, minDelay)
+				assert.LessOrEqual(t, d, base,
+					"attempt %d: delay %v should be <= %v", attempt, d, base)
+			}
+		}
+	})
+
+	t.Run("has jitter", func(t *testing.T) {
+		seen := make(map[time.Duration]bool)
+		for range 20 {
+			seen[iamRetryDelay(2)] = true
+		}
+		assert.Greater(t, len(seen), 1,
+			"iamRetryDelay should produce varying results due to jitter")
+	})
+}
+
 // --- SetProjectIAMBinding ---
 
 func TestLiveGCFClient_SetProjectIAMBinding(t *testing.T) {
@@ -434,6 +467,10 @@ func TestLiveGCFClient_SetProjectIAMBinding(t *testing.T) {
 	})
 
 	t.Run("retries on 409 conflict", func(t *testing.T) {
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
 		callCount := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			callCount++
@@ -460,6 +497,67 @@ func TestLiveGCFClient_SetProjectIAMBinding(t *testing.T) {
 			"proj", "member", "role")
 		require.NoError(t, err)
 		assert.Equal(t, 4, callCount)
+	})
+
+	t.Run("retries past old 3-attempt limit on repeated 409", func(t *testing.T) {
+		// Verify that SetProjectIAMBinding can survive more than 3
+		// consecutive 409 conflicts (the old limit). With 12 concurrent
+		// callers this scenario is common.
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
+		conflictsBeforeSuccess := 4 // more than old maxRetries=3
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			// Odd calls are getIamPolicy, even calls are setIamPolicy.
+			if callCount%2 == 1 {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"bindings":[],"etag":"v1"}`)
+				return
+			}
+			attempt := callCount / 2 // 1-based attempt number
+			if attempt <= conflictsBeforeSuccess {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprintln(w, `{"error":{"message":"conflict"}}`)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).SetProjectIAMBinding(context.Background(),
+			"proj", "member", "role")
+		require.NoError(t, err)
+		// 4 conflicts + 1 success = 5 attempts × 2 calls each = 10
+		assert.Equal(t, 10, callCount)
+	})
+
+	t.Run("exhausts all retries on persistent 409", func(t *testing.T) {
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount%2 == 1 {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"bindings":[],"etag":"v1"}`)
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprintln(w, `{"error":{"message":"conflict"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).SetProjectIAMBinding(context.Background(),
+			"proj", "member", "role")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "IAM policy conflict")
+		// 7 attempts × 2 calls each = 14
+		assert.Equal(t, 14, callCount)
 	})
 
 	t.Run("getIamPolicy error", func(t *testing.T) {
