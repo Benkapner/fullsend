@@ -58,6 +58,9 @@ func (p *panickingSCM) EnsureRepoPublic(context.Context, string, string) error  
 func (p *panickingSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
 	return "main", nil
 }
+func (p *panickingSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
+}
 func (p *panickingSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }

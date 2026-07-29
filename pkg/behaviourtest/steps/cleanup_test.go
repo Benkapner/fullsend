@@ -527,6 +527,10 @@ func (f *fakeCleanupSCM) GetDefaultBranch(context.Context, string, string) (stri
 	return "main", nil
 }
 
+func (f *fakeCleanupSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
+}
+
 func (f *fakeCleanupSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
