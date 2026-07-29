@@ -916,8 +916,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}()
 
 	// 4. Run pre-script on the host (if configured). The pre-script may
-	// request a skip via the FULLSEND_PRESCRIPT_OUTPUT protocol (issue
-	// #4718), in which case the run ends here — before sandbox creation.
+	// request a skip via the pre-script output protocol
+	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
+	// ends here — before sandbox creation.
 	var preResult prescript.Result
 	if h.PreScript != "" {
 		preResult, err = runPreScript(h, runDir, traceparent, printer)
@@ -2309,9 +2310,9 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
-// runPreScript executes the harness pre-script with the skip-protocol
-// output file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
-// the result. See internal/prescript for the contract (issue #4718).
+// runPreScript executes the harness pre-script with the pre-script output
+// protocol's file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
+// the result. See internal/prescript for the protocol (issue #4718).
 // A non-zero script exit remains a hard failure; a malformed output file
 // is also a hard failure so a mistyped skip cannot silently proceed.
 func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {

@@ -53,7 +53,7 @@ outputs:
   skipped:
     description: >-
       "true" when the harness pre-script requested a skip via the
-      FULLSEND_PRESCRIPT_OUTPUT protocol, so the agent did not run.
+      pre-script output protocol, so the agent did not run.
       "false" when the run proceeded. Empty when the CLI predates the
       protocol, or when the run failed before the skip decision — check
       the step outcome before reading empty as a version signal.

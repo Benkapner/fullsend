@@ -1,8 +1,9 @@
 # Pre-script output v1
 
-Contract between `fullsend run` and a harness `pre_script` ([issue #4718](https://github.com/fullsend-ai/fullsend/issues/4718)).
+The **pre-script output protocol** — the contract between `fullsend run` and a
+harness `pre_script` ([issue #4718](https://github.com/fullsend-ai/fullsend/issues/4718)).
 
-A pre-script uses this contract to tell `fullsend run` **not to run the agent** —
+A pre-script uses this protocol to tell `fullsend run` **not to run the agent** —
 for example when an open PR already addresses the issue. The decision lives in
 the CLI rather than in workflow YAML, so every forge inherits it: GitLab and
 Forgejo scaffolds invoke `fullsend run` directly and get the same gating with no
@@ -11,7 +12,7 @@ CI-side reimplementation.
 This document is normative. The Go implementation lives in
 [`internal/prescript`](../../../../internal/prescript/prescript.go).
 
-## Contract
+## Protocol
 
 `fullsend run` creates an empty file inside the run directory and exports its
 absolute path to the pre-script:

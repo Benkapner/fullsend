@@ -1,4 +1,4 @@
-// Package prescript implements the pre-script skip protocol (issue #4718).
+// Package prescript implements the pre-script output protocol (issue #4718).
 //
 // fullsend run hands the harness pre-script an output file path via the
 // FULLSEND_PRESCRIPT_OUTPUT environment variable. The script may append
@@ -7,7 +7,7 @@
 // exits. When skipped=true, fullsend run reports a "skipped" status and
 // exits successfully before creating the sandbox.
 //
-// The normative contract lives in docs/normative/prescript-output/v1;
+// The protocol is specified normatively in docs/normative/prescript-output/v1;
 // that document, not this comment, is what pre-script authors write
 // against. The summary below is a convenience for readers of this package.
 //
