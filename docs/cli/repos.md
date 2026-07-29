@@ -55,6 +55,7 @@ fullsend repos init <owner/repo> --forge github --mint-project <PROJECT>
 | `--inference-project` | | Default GCP project for inference |
 | `--concurrency` | `8` | Max parallel API calls (capped at 64) |
 | `--forge` | **(required)** | Forge type for discovered repos (`github` or `gitlab`) |
+| `--forge-url` | | Forge instance URL (required for `gitlab`; defaults to `https://github.com` for `github`) |
 | `--force` | `false` | Overwrite output file if it already exists |
 
 ### Discovery

@@ -2135,6 +2135,8 @@ forge:
     mint_url: https://mint.example.com
     mint_project: p
     mint_region: us-central1
+  gitlab:
+    url: https://gitlab.example.com
 defaults:
   forge: gitlab
   inference_project: proj
@@ -2172,6 +2174,8 @@ forge:
     mint_url: https://mint.example.com
     mint_project: p
     mint_region: us-central1
+  gitlab:
+    url: https://gitlab.example.com
 defaults:
   forge: gitlab
   inference_project: proj

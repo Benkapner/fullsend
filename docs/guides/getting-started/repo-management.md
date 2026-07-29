@@ -73,6 +73,8 @@ forge:
     mint_url: https://mint.example.com
     mint_project: my-project
     mint_region: us-central1
+  gitlab:
+    url: https://gitlab.example.com
 defaults:
   forge: github
   fullsend_ref: v2.5.0
@@ -88,9 +90,10 @@ and a GitLab group with the same name are different entities, and
 mixing forges under one owner would route API calls incorrectly.
 
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. For self-hosted GitLab
-instances, set `GITLAB_API_URL` to the API base URL (e.g.
-`https://gitlab.example.com/api/v4`).
+`--gitlab-token` to `fullsend repos` subcommands. Self-hosted GitLab
+instances require `forge.gitlab.url` in the manifest (e.g.
+`https://gitlab.example.com`). The `GITLAB_API_URL` environment variable
+is kept as a fallback for callers without a manifest.
 
 See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
 for all flags.

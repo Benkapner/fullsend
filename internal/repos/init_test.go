@@ -1224,6 +1224,7 @@ func TestInit_SingleRepo_GitLabForge(t *testing.T) {
 	result, err := Init(context.Background(), InitConfig{
 		Target:      "acme/api",
 		Forge:       ForgeGitLab,
+		ForgeURL:    "https://gitlab.example.com",
 		MintProject: "proj",
 		MintRegion:  "us-central1",
 	}, newTestClientFactory(fc), nil, nopProgress)
@@ -1232,9 +1233,32 @@ func TestInit_SingleRepo_GitLabForge(t *testing.T) {
 	assert.Equal(t, 1, result.PerRepoCount)
 	assert.Equal(t, "v2.5.0", result.Manifest.Defaults.FullsendRef)
 	assert.Equal(t, ForgeGitLab, result.Manifest.Defaults.Forge)
+	assert.Equal(t, "https://gitlab.example.com", result.Manifest.Forge.GitLab.URL)
 	assert.Empty(t, result.Manifest.Forge.GitHub.MintURL)
 	assert.Empty(t, result.Manifest.Forge.GitHub.MintProject)
 	assert.Empty(t, result.Manifest.Forge.GitHub.MintRegion)
+	require.NoError(t, result.Manifest.Validate())
+}
+
+func TestInit_SingleRepo_GitLabForge_NoForgeURL(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setRepoVars(fc, "acme", "api", map[string]string{
+		forge.PerRepoGuardVar: "true",
+		"FULLSEND_MINT_URL":   "https://mint.example.com",
+	})
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"  ref: v2.5.0\n")
+
+	result, err := Init(context.Background(), InitConfig{
+		Target:      "acme/api",
+		Forge:       ForgeGitLab,
+		MintProject: "proj",
+		MintRegion:  "us-central1",
+	}, newTestClientFactory(fc), nil, nopProgress)
+
+	require.NoError(t, err)
+	assert.Empty(t, result.Manifest.Forge.GitLab.URL)
+	assert.Contains(t, result.TODOs, "forge.gitlab.url: set the GitLab instance URL (e.g. https://gitlab.example.com)")
 }
 
 // --- readWorkflowRef tests ---
