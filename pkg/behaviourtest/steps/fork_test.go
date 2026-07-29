@@ -257,12 +257,14 @@ func TestGivenFork_LeasedRepoResolvesForkName(t *testing.T) {
 // --- awaitForkReady unit tests ---
 
 func TestGivenFork_PollsForDefaultBranch(t *testing.T) {
-	// GetDefaultBranch fails 3 times (simulating replication delay),
-	// then succeeds on the 4th call. givenFork should retry and
-	// ultimately succeed.
+	// GetDefaultBranch fails once (simulating replication delay),
+	// then succeeds on the 2nd call. givenFork should retry and
+	// ultimately succeed. Using 1 failure (instead of more) keeps
+	// the test fast — givenFork uses the production forkReadyPoll
+	// (2s), so each failure costs real wall-clock time.
 	scmDriver := &fakeForkSCM{
 		forkRepo:                 "repo-fork",
-		getDefaultBranchFailures: 3,
+		getDefaultBranchFailures: 1,
 	}
 	w := &world.World{
 		RepoOwner: "org",
@@ -273,8 +275,8 @@ func TestGivenFork_PollsForDefaultBranch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "org", w.ForkOwner)
 	assert.Equal(t, "repo-fork", w.ForkRepo)
-	assert.Equal(t, 4, scmDriver.getDefaultBranchCalls,
-		"GetDefaultBranch should be called 3 failures + 1 success = 4 times")
+	assert.Equal(t, 2, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called 1 failure + 1 success = 2 times")
 }
 
 func TestGivenFork_DefaultBranchImmediateSuccess(t *testing.T) {

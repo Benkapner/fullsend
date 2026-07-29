@@ -26,16 +26,14 @@ func registerForkSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-const (
-	// forkReadyMaxAttempts is how many times awaitForkReady polls
-	// GetDefaultBranch before giving up. GitHub's fork API returns
-	// before Git data is fully replicated; the default-branch ref
-	// may not be readable immediately.
-	forkReadyMaxAttempts = 30
+// forkReadyMaxAttempts is how many times awaitForkReady polls
+// GetDefaultBranch before giving up. GitHub's fork API returns
+// before Git data is fully replicated; the default-branch ref
+// may not be readable immediately.
+const forkReadyMaxAttempts = 30
 
-	// forkReadyPoll is the delay between GetDefaultBranch polls.
-	forkReadyPoll = 2 * time.Second
-)
+// forkReadyPoll is the delay between GetDefaultBranch polls.
+const forkReadyPoll = 2 * time.Second
 
 // givenFork creates a fork of the enrolled test repository if absent, or
 // reuses it if it already exists. The fork is created within the same
