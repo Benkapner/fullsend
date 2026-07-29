@@ -314,6 +314,30 @@ echo "Pre-script complete."
 
 The pre-script has full credentials on the trusted runner. It fetches data from external systems and writes it to files that the harness copies into the sandbox. Credentials never enter the sandbox.
 
+#### Skipping the run from the pre-script
+
+A pre-script can tell `fullsend run` not to start the agent at all — useful when
+an open PR already addresses the issue, or when the work is otherwise
+redundant. `fullsend run` exports `FULLSEND_PRESCRIPT_OUTPUT` (a file path); the
+script appends `skipped=true` to it and the run reports a ⏭️ skipped status and
+exits 0 **before the sandbox is created**.
+
+```bash
+if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+  {
+    echo "skipped=true"
+    echo "reason=PR #${EXISTING_PR} already addresses this issue"
+  } >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  exit 0
+fi
+```
+
+Always guard on the variable being set — older `fullsend` versions do not export
+it, and appending to an empty path would fail the script. Malformed content is a
+hard error rather than a silent proceed, so a mistyped skip cannot turn into a
+duplicate agent run. See the [pre-script output v1 contract](../../normative/prescript-output/v1/README.md)
+for the full grammar, error semantics, and CI relay behavior.
+
 ### Post-script (action execution)
 
 `.fullsend/customized/scripts/post-my-agent.sh`:

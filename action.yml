@@ -49,6 +49,19 @@ inputs:
       wrapper. Takes precedence over GITHUB_EVENT_PATH extraction.
     default: ""
 
+outputs:
+  skipped:
+    description: >-
+      "true" when the harness pre-script requested a skip via the
+      pre-script output protocol, so the agent did not run.
+      "false" when the run proceeded. Empty when the CLI predates the
+      protocol, or when the run failed before the skip decision — check
+      the step outcome before reading empty as a version signal.
+    value: ${{ steps.run.outputs.skipped }}
+  skip-reason:
+    description: Human-readable reason accompanying a skip, if the pre-script gave one.
+    value: ${{ steps.run.outputs.reason }}
+
 runs:
   using: composite
   steps:
@@ -301,6 +314,7 @@ runs:
         cache: false
 
     - name: Run fullsend
+      id: run
       if: inputs.agent != '__install_only__'
       shell: bash
       env:

@@ -34,6 +34,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -646,6 +647,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// runSkipped records that the pre-script requested a skip (issue #4718);
+	// the status-notification defer below reports it as "skipped" rather
+	// than "success", with runSkipReason as the visible explanation.
+	var runSkipped bool
+	var runSkipReason string
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
@@ -664,14 +671,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			defer func() {
 				status := "success"
+				detail := ""
 				if ctx.Err() != nil {
 					status = "cancelled"
 				} else if runErr != nil {
 					status = "failure"
+				} else if runSkipped {
+					status = "skipped"
+					detail = runSkipReason
 				}
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
-				if err := notifier.PostCompletion(dCtx, description, status); err != nil {
+				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
 					printer.StepWarn("Failed to post completion status: " + err.Error())
 				}
 			}()
@@ -867,6 +878,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		rootSpan.SetAttributes(
 			attribute.Int("exit_code", exitCode),
 		)
+		// A pre-script skip exits 0 like a success, so without this a
+		// skipped run is indistinguishable from a completed one in traces
+		// — and skip rate is the metric issue #4718 exists to move. Only
+		// set for harnesses that actually have a pre-script, so an absent
+		// attribute means "nothing could have skipped this run".
+		if h != nil && h.PreScript != "" {
+			rootSpan.SetAttributes(attribute.Bool("fullsend.prescript.skipped", runSkipped))
+		}
+		if runSkipped && runSkipReason != "" {
+			rootSpan.SetAttributes(attribute.String("fullsend.prescript.skip_reason", runSkipReason))
+		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(
 				attribute.String("gen_ai.request.model", aggMetrics.Model),
@@ -893,19 +915,50 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		tracingCleanup(flushCtx)
 	}()
 
-	// 4. Run pre-script on the host (if configured).
+	// 4. Run pre-script on the host (if configured). The pre-script may
+	// request a skip via the pre-script output protocol
+	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
+	// ends here — before sandbox creation.
+	var preResult prescript.Result
 	if h.PreScript != "" {
-		preStart := time.Now()
-		printer.StepStart("Running pre-script: " + h.PreScript)
-		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
-		preCmd.Stdout = os.Stdout
-		preCmd.Stderr = os.Stderr
-		if err := preCmd.Run(); err != nil {
-			printer.StepFail("Pre-script failed")
-			return fmt.Errorf("running pre-script: %w", err)
+		preResult, err = runPreScript(h, runDir, traceparent, printer)
+		if err != nil {
+			return err
 		}
-		printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+		// Log the outputs so non-GitHub CIs and local runs still see what
+		// the pre-script reported.
+		if line := prescript.LogLine(preResult); line != "" {
+			printer.StepDone("Pre-script outputs: " + line)
+		}
+	}
+
+	// Relay on every path that reaches the skip decision — skip, proceed,
+	// and harnesses with no pre-script at all — so an absent skipped
+	// output narrows to two cases: a CLI predating this protocol, or a run
+	// that failed before deciding. See docs/normative/prescript-output/v1.
+	if relayed, relayErr := prescript.Relay(preResult); relayErr != nil {
+		// Fail closed: a relay target exists but we could not write to it,
+		// so workflow-level gating would disagree with the decision
+		// fullsend just made — exactly the duplicate-run failure this
+		// protocol exists to prevent.
+		printer.StepFail("Failed to relay skip decision")
+		return fmt.Errorf("relaying pre-script outputs: %w", relayErr)
+	} else if relayed && h.PreScript != "" {
+		// Only worth a line when a pre-script actually produced something;
+		// otherwise this fires on every CI run and names a script that
+		// does not exist.
+		printer.StepDone("Pre-script outputs relayed to GITHUB_OUTPUT")
+	}
+
+	if preResult.Skipped {
+		runSkipped = true
+		runSkipReason = preResult.Reason
+		reason := preResult.Reason
+		if reason == "" {
+			reason = "no reason given"
+		}
+		printer.StepDone("Run skipped by pre-script: " + reason)
+		return nil
 	}
 
 	// 4a. Create sandbox.
@@ -2255,6 +2308,37 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 		Traceparent: traceparent,
 		SpanKind:    spanKind,
 	}
+}
+
+// runPreScript executes the harness pre-script with the pre-script output
+// protocol's file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
+// the result. See internal/prescript for the protocol (issue #4718).
+// A non-zero script exit remains a hard failure; a malformed output file
+// is also a hard failure so a mistyped skip cannot silently proceed.
+func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {
+	preStart := time.Now()
+	printer.StepStart("Running pre-script: " + h.PreScript)
+	outPath, cleanup, err := prescript.Prepare(runDir)
+	if err != nil {
+		printer.StepFail("Pre-script setup failed")
+		return prescript.Result{}, fmt.Errorf("preparing pre-script output file: %w", err)
+	}
+	defer cleanup()
+	preCmd := exec.Command(h.PreScript)
+	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
+	preCmd.Stdout = os.Stdout
+	preCmd.Stderr = os.Stderr
+	if err := preCmd.Run(); err != nil {
+		printer.StepFail("Pre-script failed")
+		return prescript.Result{}, fmt.Errorf("running pre-script: %w", err)
+	}
+	result, err := prescript.ParseFile(outPath)
+	if err != nil {
+		printer.StepFail("Pre-script output invalid")
+		return prescript.Result{}, fmt.Errorf("parsing pre-script output: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+	return result, nil
 }
 
 // childScriptEnv builds the environment for a host-side child script (pre- or
