@@ -375,6 +375,14 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			if err != nil {
 				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, localPath)
 			}
+
+			ext := strings.ToLower(filepath.Ext(localPath))
+			if ext != ".yaml" && ext != ".yml" {
+				localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
+				if err != nil {
+					return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)
+				}
+			}
 			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
 		}
 	}

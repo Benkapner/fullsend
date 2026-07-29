@@ -2158,6 +2158,69 @@ func TestIsContainedPath(t *testing.T) {
 	}
 }
 
+func TestResolveHarness_LocalProfile_CachePathGetsYAMLExtension(t *testing.T) {
+	root := t.TempDir()
+
+	profileContent := []byte("id: claude-code\nnetwork:\n  egress:\n    - host: api.example.com\n")
+
+	// Simulate fetchBaseFile's cache layout: content stored as extensionless
+	// "content" file inside a hash-based cache directory.
+	require.NoError(t, fetch.CachePut(root, "https://example.com/profiles/claude-code.yaml", profileContent))
+	hash := fetch.ComputeSHA256(profileContent)
+	cachePath, err := fetch.CachePath(root, hash)
+	require.NoError(t, err)
+	contentPath := filepath.Join(cachePath, "content")
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{contentPath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Profiles, 1)
+	assert.Equal(t, "claude-code", result.Profiles[0].ID)
+	assert.True(t, strings.HasSuffix(result.Profiles[0].LocalPath, ".yaml"),
+		"cache-sourced profile should get .yaml extension, got %s", result.Profiles[0].LocalPath)
+	assert.NotEqual(t, contentPath, result.Profiles[0].LocalPath,
+		"extensionless cache path should have been renamed")
+
+	// Verify the symlinked file has the right content
+	got, err := os.ReadFile(result.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, got)
+}
+
+func TestResolveHarness_LocalProfile_YAMLExtensionUnchanged(t *testing.T) {
+	root := t.TempDir()
+
+	profileContent := []byte("id: test-profile\nnetwork:\n  egress:\n    - host: example.com\n")
+	profilePath := filepath.Join(root, "profiles", "test-profile.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(profilePath), 0755))
+	require.NoError(t, os.WriteFile(profilePath, profileContent, 0644))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Profiles, 1)
+	assert.Equal(t, profilePath, result.Profiles[0].LocalPath,
+		"profile with .yaml extension should keep its original path")
+}
+
 func TestResolveHarness_LocalProfileReadError(t *testing.T) {
 	root := t.TempDir()
 
