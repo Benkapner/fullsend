@@ -23,6 +23,14 @@ set -euo pipefail
 # runner images bundle a crun compatible with podman 5.x.
 PODMAN_STATIC_TAG="v4.9.5"
 
+# SHA-256 checksums for the pinned release archives. Verify after
+# download to guard against a compromised upstream release.
+# To update: download each archive and run `sha256sum podman-linux-<arch>.tar.gz`.
+declare -A EXPECTED_SHA256=(
+  [amd64]="PLACEHOLDER_COMPUTE_BEFORE_MERGE_amd64"
+  [arm64]="PLACEHOLDER_COMPUTE_BEFORE_MERGE_arm64"
+)
+
 case "$(uname -m)" in
   x86_64)  arch="amd64" ;;
   aarch64) arch="arm64" ;;
@@ -38,6 +46,17 @@ trap 'rm -f "${archive_path}"' EXIT
 
 echo "Downloading podman static ${PODMAN_STATIC_TAG} (${arch})..."
 curl -fsSL --retry 3 --retry-delay 5 -o "${archive_path}" "${archive_url}"
+
+# Verify the downloaded archive against the pinned checksum before
+# extracting anything as root. Fail loudly on mismatch.
+expected="${EXPECTED_SHA256[${arch}]}"
+if [[ "${expected}" == PLACEHOLDER_* ]]; then
+  echo "::error::SHA-256 checksum for ${arch} is a placeholder. Compute the real checksum and update this script."
+  echo "::error::Run: curl -fsSL '${archive_url}' | sha256sum"
+  exit 1
+fi
+echo "${expected}  ${archive_path}" | sha256sum -c --strict
+echo "SHA-256 checksum verified for podman-linux-${arch}.tar.gz"
 
 # The archive contains a top-level podman-linux-<arch>/ directory with
 # usr/ and etc/ sub-trees. Extracting with --strip-components=1 into /
