@@ -24,71 +24,55 @@ COMMIT_DETAIL="${TMPDIR}/commit_detail.json"
 GH_LOG="${TMPDIR}/gh.log"
 GH_FAIL="false"
 
-# Write mock gh that routes by URL pattern and applies --jq filters
-cat >"${MOCK_BIN}/gh" <<'MOCK_EOF'
+# Write mock gh using unquoted heredoc so paths interpolate at generation time.
+# Parts that must stay literal at runtime use \$ escaping.
+cat >"${MOCK_BIN}/gh" <<MOCK_EOF
 #!/usr/bin/env bash
-echo "gh $*" >> "GHLOG_PLACEHOLDER"
-if [[ "${GH_FAIL}" == "true" ]]; then
+echo "gh \$*" >> "${GH_LOG}"
+if [[ "\${GH_FAIL}" == "true" ]]; then
   echo "simulated gh failure" >&2
   exit 1
 fi
 
 # Extract --jq filter if present
 JQ_FILTER=""
-ARGS=("$@")
-for i in "${!ARGS[@]}"; do
-  if [[ "${ARGS[$i]}" == "--jq" ]]; then
-    JQ_FILTER="${ARGS[$((i+1))]}"
+ARGS=("\$@")
+for i in "\${!ARGS[@]}"; do
+  if [[ "\${ARGS[\$i]}" == "--jq" ]]; then
+    JQ_FILTER="\${ARGS[\$((\$i+1))]}"
     break
   fi
 done
 
-# Route by URL pattern (use first positional arg after "api")
-url_arg=""
-for arg in "$@"; do
-  [[ "$arg" == "api" ]] && continue
-  [[ "$arg" == --* ]] && continue
-  url_arg="$arg"
-  break
-done
-
 output=""
-case "$*" in
+case "\$*" in
   *"search/issues"*)
-    output=$(cat "SEARCH_PLACEHOLDER")
+    output=\$(cat "${SEARCH_RESULTS}")
     ;;
   *"/pulls/"*"/files"*)
-    output=$(cat "PRFILES_PLACEHOLDER")
+    output=\$(cat "${PR_FILES}")
     ;;
   *"/pulls/"*)
-    output=$(cat "PRDETAIL_PLACEHOLDER")
+    output=\$(cat "${PR_DETAIL}")
     ;;
   *"/commits?"*)
-    output=$(cat "COMMITS_PLACEHOLDER")
+    output=\$(cat "${FOLLOWUP_COMMITS}")
     ;;
   *"/commits/"*)
-    output=$(cat "COMMITDETAIL_PLACEHOLDER")
+    output=\$(cat "${COMMIT_DETAIL}")
     ;;
   *)
-    echo "unexpected gh call: $*" >&2
+    echo "unexpected gh call: \$*" >&2
     exit 1
     ;;
 esac
 
-if [[ -n "${JQ_FILTER}" ]]; then
-  echo "${output}" | jq -r "${JQ_FILTER}"
+if [[ -n "\${JQ_FILTER}" ]]; then
+  echo "\${output}" | jq -r "(\${JQ_FILTER}) | if type == \"object\" or type == \"array\" then tojson else . end"
 else
-  echo "${output}"
+  echo "\${output}"
 fi
 MOCK_EOF
-
-# Replace placeholders with actual paths
-sed -i "s|GHLOG_PLACEHOLDER|${GH_LOG}|g" "${MOCK_BIN}/gh"
-sed -i "s|SEARCH_PLACEHOLDER|${SEARCH_RESULTS}|g" "${MOCK_BIN}/gh"
-sed -i "s|PRFILES_PLACEHOLDER|${PR_FILES}|g" "${MOCK_BIN}/gh"
-sed -i "s|PRDETAIL_PLACEHOLDER|${PR_DETAIL}|g" "${MOCK_BIN}/gh"
-sed -i "s|COMMITS_PLACEHOLDER|${FOLLOWUP_COMMITS}|g" "${MOCK_BIN}/gh"
-sed -i "s|COMMITDETAIL_PLACEHOLDER|${COMMIT_DETAIL}|g" "${MOCK_BIN}/gh"
 
 chmod +x "${MOCK_BIN}/gh"
 export PATH="${MOCK_BIN}:${PATH}"
@@ -115,7 +99,7 @@ run_case() {
 }
 
 # --- Test 1: Genuine single-parent rework ---
-# Bot PR #10 merged, human commit abc1234 touches the same file → rework
+# Bot PR #10 merged, human commit abc1234 touches the same file -> rework
 cat >"${SEARCH_RESULTS}" <<'EOF'
 {"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z"}]}
 EOF
@@ -135,7 +119,7 @@ EOF
 run_case "genuine single-parent rework detected" "Rework rate: 100.0%"
 
 # --- Test 2: Merge commit must NOT count as rework ---
-# Follow-up commit has 2 parents (merge commit) touching same file → no rework
+# Follow-up commit has 2 parents (merge commit) touching same file -> no rework
 cat >"${FOLLOWUP_COMMITS}" <<'EOF'
 [{"sha":"merge999","author":{"type":"User","login":"human"},"parents":[{"sha":"p1"},{"sha":"p2"}]}]
 EOF
@@ -146,7 +130,7 @@ EOF
 run_case "merge commit (2 parents) excluded from rework" "Rework rate: 0.0%"
 
 # --- Test 3: PR's own merge SHA excluded ---
-# Follow-up commit SHA matches the PR's merge_commit_sha → must not count
+# Follow-up commit SHA matches the PR's merge_commit_sha -> must not count
 cat >"${PR_DETAIL}" <<'EOF'
 {"merge_commit_sha":"abc1234"}
 EOF

@@ -64,7 +64,7 @@ while IFS= read -r pr_json; do
 
   # Skip PRs whose follow-up window hasn't fully elapsed yet
   FOLLOWUP_UNTIL=$(date -u -d "${MERGED_AT} +${FOLLOWUP_DAYS} days" +%Y-%m-%dT23:59:59Z 2>/dev/null \
-    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "${MERGED_AT}" -v+"${FOLLOWUP_DAYS}"d +%Y-%m-%dT23:59:59Z 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" -v+"${FOLLOWUP_DAYS}"d "${MERGED_AT}" +%Y-%m-%dT23:59:59Z 2>/dev/null \
     || echo "")
 
   if [ -z "$FOLLOWUP_UNTIL" ]; then
@@ -95,12 +95,17 @@ while IFS= read -r pr_json; do
   fi
 
   # Get the PR's own merge commit SHA to exclude it from follow-up detection
-  PR_MERGE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUM}" --jq '.merge_commit_sha' 2>/dev/null || echo "")
+  MERGE_SHA_ERR=$(mktemp)
+  if ! PR_MERGE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUM}" --jq '.merge_commit_sha' 2>"$MERGE_SHA_ERR"); then
+    echo "    WARNING: could not fetch merge SHA for #${PR_NUM}: $(cat "$MERGE_SHA_ERR")"
+    PR_MERGE_SHA=""
+  fi
+  rm -f "$MERGE_SHA_ERR"
 
   # Get commits after merge by non-bot authors (paginated)
   COMMITS_ERR=$(mktemp)
   if ! FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
-    --paginate --jq '[.[] | select(.author.type != "Bot") | {sha: .sha, author: .author.login, parents: (.parents | length)}]' 2>"$COMMITS_ERR"); then
+    --paginate --jq '.[] | select(.author.type != "Bot") | {sha: .sha, author: .author.login, parents: (.parents | length)}' 2>"$COMMITS_ERR"); then
     echo "    WARNING: could not fetch follow-up commits for #${PR_NUM}: $(cat "$COMMITS_ERR")"
     rm -f "$COMMITS_ERR"
     SKIPPED=$((SKIPPED + 1))
@@ -108,13 +113,14 @@ while IFS= read -r pr_json; do
   fi
   rm -f "$COMMITS_ERR"
 
-  if [ "$FOLLOWUP_COMMITS" = "[]" ] || [ -z "$FOLLOWUP_COMMITS" ]; then
+  if [ -z "$FOLLOWUP_COMMITS" ]; then
     CHECKED=$((CHECKED + 1))
     continue
   fi
 
   # Check if any single-parent follow-up commit touches the same files
   FOUND_REWORK=""
+  PR_HAD_ERROR=""
   while IFS= read -r commit_json; do
     COMMIT_SHA=$(echo "$commit_json" | jq -r '.sha')
     COMMIT_AUTHOR=$(echo "$commit_json" | jq -r '.author')
@@ -135,7 +141,7 @@ while IFS= read -r pr_json; do
       --jq '.files[].filename' 2>"$COMMIT_FILES_ERR"); then
       echo "    WARNING: could not fetch files for commit ${COMMIT_SHA:0:7}: $(cat "$COMMIT_FILES_ERR")"
       rm -f "$COMMIT_FILES_ERR"
-      SKIPPED=$((SKIPPED + 1))
+      PR_HAD_ERROR="yes"
       continue
     fi
     rm -f "$COMMIT_FILES_ERR"
@@ -148,7 +154,12 @@ while IFS= read -r pr_json; do
       REWORKED_LINES+=("    Follow-up: ${COMMIT_SHA:0:7} by @${COMMIT_AUTHOR} (same files: $(echo "$OVERLAP" | head -3 | tr '\n' ', '))")
       break
     fi
-  done < <(echo "$FOLLOWUP_COMMITS" | jq -c '.[]')
+  done <<< "$FOLLOWUP_COMMITS"
+
+  if [ -n "$PR_HAD_ERROR" ] && [ -z "$FOUND_REWORK" ]; then
+    SKIPPED=$((SKIPPED + 1))
+    continue
+  fi
 
   CHECKED=$((CHECKED + 1))
   if [ -n "$FOUND_REWORK" ]; then
