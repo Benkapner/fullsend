@@ -44,6 +44,10 @@ type Driver interface {
 	EnsureRepoPublic(ctx context.Context, owner, repo string) error
 	// GetDefaultBranch returns the name of a repository's default branch.
 	GetDefaultBranch(ctx context.Context, owner, repo string) (string, error)
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns an error if the branch ref does not exist (e.g. the
+	// fork's Git data has not been replicated yet).
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error)
 	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
 	// if the repository does not exist.
 	DeleteRepo(ctx context.Context, owner, repo string) error

@@ -90,6 +90,10 @@ func (d *Driver) GetDefaultBranch(ctx context.Context, owner, repo string) (stri
 	return r.DefaultBranch, nil
 }
 
+func (d *Driver) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	return d.Client.GetBranchRef(ctx, owner, repo, branch)
+}
+
 func (d *Driver) EnsureRepoPublic(ctx context.Context, owner, repo string) error {
 	r, err := d.Client.GetRepo(ctx, owner, repo)
 	if err != nil {
