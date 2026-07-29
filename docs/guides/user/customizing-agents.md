@@ -52,6 +52,22 @@ env:
     REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
+> **Where relative script paths resolve.** A **local** harness — the case for
+> the example above — resolves `pre_script` / `post_script` against your
+> workspace root, so `scripts/pre-code.sh` means *your* `scripts/` directory
+> and the harness must ship its own copy. A **URL-sourced** harness resolves
+> them against the parent of the harness file's directory in the source repo;
+> for the stock agents that is [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents),
+> which owns `scripts/pre-code.sh` and `scripts/post-code.sh`.
+>
+> The fullsend scaffold no longer ships `scripts/pre-code.sh` or
+> `scripts/pre-fix.sh`, so copying a stock agents harness into a local file
+> without also copying its scripts will fail validation. Reference the
+> agents-repo harness by URL instead, or supply your own scripts.
+>
+> A `pre_script` can also stop the run before the sandbox starts — see the
+> [pre-script output protocol](../../normative/prescript-output/v1/README.md).
+
 **Optional fields** (all have secure defaults and can be omitted):
 
 ```yaml

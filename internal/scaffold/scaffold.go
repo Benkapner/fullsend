@@ -26,7 +26,6 @@ func FullsendRepoFile(path string) ([]byte, error) {
 var executableFiles = map[string]struct{}{
 	"scripts/fullsend-check-output":          {},
 	"scripts/install-precommit-tools.sh":     {},
-	"scripts/pre-code.sh":                    {},
 	"scripts/prepare-sandbox-credentials.sh": {},
 	"scripts/reconcile-repos.sh":             {},
 	"scripts/resolve-precommit-tools.py":     {},
