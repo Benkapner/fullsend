@@ -1,6 +1,6 @@
-# Customizing Agents
+# Configuring Agent Behavior
 
-This guide explains how to customize fullsend agents for your organization and repositories through harness configurations and layered content resolution.
+This guide explains how to configure fullsend agents for your organization and repositories through harness configurations and layered content resolution.
 
 ## Harness Configuration
 
@@ -177,9 +177,9 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Customization Directory Structure
+### The `customized/` Directory Structure
 
-Orgs customize layered directories by placing overrides in `customized/` subdirectories:
+Orgs configure layered directories by placing overrides in `customized/` subdirectories:
 
 ```
 .fullsend/                          (config repo)
@@ -240,7 +240,7 @@ To add a custom skill to the code agent's harness (deprecated — use `base:` co
 
 **Important:** You must maintain the full harness structure. You cannot add just a `skills:` field—the entire YAML file must be present and valid.
 
-### Customizing Pre-commit Tool Dependencies
+### Configuring Pre-commit Tool Dependencies
 
 > **Note:** The `customized/scripts/.pre-commit-tools.yaml` L1 overlay path
 > referenced below uses the deprecated `customized/` mechanism.
@@ -344,9 +344,9 @@ Each agent role has its own identity, permissions, and purpose:
 
 > **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
 
-## Customization Examples
+## Configuration Examples
 
-### Adding Custom Executables
+### Adding Executables
 
 The sandbox already has `/sandbox/workspace/bin` on its `PATH`. To make a
 script available as a command, drop it there:
@@ -394,7 +394,7 @@ When you need a directory outside `/sandbox/workspace/bin` on the `PATH`
 **Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
 variables to protect sandbox operation.
 
-### Adding a Custom Skill
+### Adding a Skill
 
 > **Deprecated:** The `customized/skills/` path is deprecated.
 > Use config-driven agent registration instead — see
@@ -424,19 +424,19 @@ Create `.fullsend/customized/agents/code.md` to override the default code agent
 with org-specific instructions:
 
 ```markdown
-# Code Agent (Customized)
+# Code Agent (Configured)
 
-[Custom instructions for your org...]
+[Org-specific instructions...]
 ```
 
-### Customizing Harness Configuration
+### Configuring the Harness
 
 Create `.fullsend/customized/harness/code.yaml` to override the code agent's execution environment.
 
 **Important:** This is a complete file replacement. Start by copying the upstream harness, then modify it:
 
 ```yaml
-# Copy of upstream code.yaml with customizations
+# Copy of upstream code.yaml with configuration overrides
 agent: agents/code.md
 model: claude-opus-4-6           # Changed from: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
@@ -449,7 +449,7 @@ timeout_minutes: 45              # Changed from: 35
 
 skills:
   - skills/code-implementation
-  - skills/my-custom-linting     # Added: org-specific skill
+  - skills/my-custom-linting     # Added: org-specific skill configuration
 
 plugins:
   - plugins/gopls-lsp
@@ -468,8 +468,8 @@ pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 
 validation_loop:
-  script: scripts/custom-validate.sh  # Changed script
-  schema: schemas/custom-result.schema.json
+  script: scripts/org-validate.sh      # Changed script
+  schema: schemas/org-result.schema.json
   max_iterations: 5                   # Changed from: 2
 
 env:
@@ -479,19 +479,19 @@ env:
     REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
-Then create your custom skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.
+Then create your skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.
 
 ### Per-Repo Overrides
 
-Target repos can override org-level customizations by placing files in `.fullsend/customized/` within the repo:
+Target repos can override org-level configuration by placing files in `.fullsend/customized/` within the repo:
 
 ```
 my-repo/
 ├── .fullsend/
 │   └── customized/
-│       ├── agents/code.md         # Repo-specific agent instructions
+│       ├── agents/code.md         # Repo-specific agent configuration
 │       ├── skills/repo-skill/     # Repo-specific skill (contains SKILL.md)
-│       └── harness/code.yaml      # Repo-specific harness config
+│       └── harness/code.yaml      # Repo-specific harness configuration
 ```
 
 ## Disabling Agents

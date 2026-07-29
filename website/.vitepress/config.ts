@@ -225,9 +225,9 @@ export default defineConfig({
             { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
             { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
-            { text: "Customizing Agents", link: "/guides/user/customizing-agents" },
-            { text: "Customizing with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
-            { text: "Customizing with Skills", link: "/guides/user/customizing-with-skills" },
+            { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },
+            { text: "Configuring with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
+            { text: "Configuring with Skills", link: "/guides/user/customizing-with-skills" },
             {
               text: "Building custom agents from scratch (deprecated)",
               link: "/guides/user/building-custom-agents",
