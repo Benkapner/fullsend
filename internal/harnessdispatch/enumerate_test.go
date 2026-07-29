@@ -158,8 +158,9 @@ func urlHarnessServer(t *testing.T, harnessName, harnessYAML string, badHash boo
 	harnessPath := "/harness/" + harnessName + ".yaml"
 
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Serve harness YAML at the expected path.
-		if r.URL.Path == harnessPath {
+		// Serve harness YAML at any /harness/*.yaml path so a single server
+		// can host multiple agents (e.g. fail1 and fail2 in the multi-failure test).
+		if strings.HasPrefix(r.URL.Path, "/harness/") && strings.HasSuffix(r.URL.Path, ".yaml") {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(content)
 			return
