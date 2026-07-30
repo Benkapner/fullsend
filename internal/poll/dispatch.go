@@ -2,7 +2,10 @@ package poll
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -72,6 +75,13 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		variables["FULLSEND_POLL_JOB_URL"] = p.opts.PollJobURL
 	}
 
+	if p.opts.DispatchSecret != "" {
+		variables["FULLSEND_DISPATCH_HMAC"] = computeDispatchHMAC(p.opts.DispatchSecret, variables)
+	} else if !p.warnedNoHMAC {
+		p.warnedNoHMAC = true
+		log.Printf("WARNING: FULLSEND_DISPATCH_SECRET not set — dispatch variables are unsigned; configure a protected, masked CI/CD variable to enable HMAC verification")
+	}
+
 	_, webURL, err := p.client.CreatePipeline(ctx, owner, repo, p.opts.PipelineRef, variables)
 	if err != nil {
 		return fmt.Errorf("create pipeline for %s/%s: %w", stage, rk, err)
@@ -94,6 +104,36 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		IID:             event.IID,
 	})
 	return nil
+}
+
+// signedDispatchKeys lists the pipeline variables included in the
+// HMAC signature, in sorted order. Both the Go poller and the shell
+// verifier in fullsend-agent.yml must use the same key list and order.
+var signedDispatchKeys = []string{
+	"ACTOR_ID",
+	"EVENT_PAYLOAD_B64",
+	"EVENT_TYPE",
+	"FULLSEND_POLL_JOB_URL",
+	"IS_FORK",
+	"MR_AUTHOR_ID",
+	"RESOURCE_KEY",
+	"STAGE",
+	"STATUS_IID",
+}
+
+// computeDispatchHMAC computes an HMAC-SHA256 over a canonical
+// representation of the dispatch variables. The canonical format is
+// key=value pairs joined by newlines, with keys in sorted order.
+// Missing keys use an empty string value.
+func computeDispatchHMAC(secret string, variables map[string]string) string {
+	parts := make([]string, len(signedDispatchKeys))
+	for i, k := range signedDispatchKeys {
+		parts[i] = k + "=" + variables[k]
+	}
+	message := strings.Join(parts, "\n")
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(message))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // buildEventPayload creates a JSON payload from a RoutableEvent,
