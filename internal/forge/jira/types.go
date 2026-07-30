@@ -75,12 +75,12 @@ type User struct {
 	Active      bool   `json:"active"`
 }
 
-// SearchResult is the response from the Jira issue search API.
+// SearchResult is the response from the POST /rest/api/3/search/jql endpoint.
+// Uses cursor-based pagination (nextPageToken + isLast).
 type SearchResult struct {
-	Issues     []Issue `json:"issues"`
-	Total      int     `json:"total"`
-	MaxResults int     `json:"maxResults"`
-	StartAt    int     `json:"startAt"`
+	Issues        []Issue `json:"issues"`
+	NextPageToken string  `json:"nextPageToken,omitempty"`
+	IsLast        bool    `json:"isLast"`
 }
 
 // EntityPropertyValue wraps a JSON value stored as a Jira entity property.

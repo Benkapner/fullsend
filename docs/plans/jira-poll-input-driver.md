@@ -333,15 +333,11 @@ Option 2 is the safest short-term fix if full role resolution is deferred.
 
 ## Pre-merge: search/jql API migration
 
-**Status:** In progress. Partially fixed, needs completion.
+**Status:** Resolved. All three breaking changes fixed:
 
-The old `GET /rest/api/3/search` endpoint has been removed by Atlassian (410 Gone). The replacement is `POST /rest/api/3/search/jql` with these breaking changes discovered during live testing against `stage-redhat.atlassian.net`:
-
-1. **`expand` is a comma-delimited string, not an array.** Sending `["changelog"]` returns 400. Must send `"changelog"`. Fixed in client but tests need updating.
-2. **Cursor-based pagination.** The new endpoint returns `nextPageToken` + `isLast` instead of `startAt`/`total`/`maxResults`. The client's `SearchIssues` loop uses `startAt`-based pagination which won't work. Must switch to passing `nextPageToken` in subsequent requests.
-3. **Default response is IDs only.** Unlike the old endpoint, `fields` defaults to `["id"]`. Must explicitly request `["*all"]` or specific fields to get issue data back.
-
-These need to be fixed before the poller works against any live Jira Cloud instance.
+1. `expand` sends comma-delimited string (`"changelog"`), not an array.
+2. Pagination uses cursor-based `nextPageToken` + `isLast` instead of `startAt`/`total`/`maxResults`.
+3. Request body includes `fields: ["*all"]` to get full issue data.
 
 ## Verification Checklist
 

@@ -91,41 +91,43 @@ func TestSearchIssues_Pagination(t *testing.T) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		var body searchRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+
+		// Verify expand is a comma-delimited string, not an array.
+		assert.Equal(t, "changelog", body.Expand)
+		// Verify fields requests all data.
+		assert.Equal(t, []string{"*all"}, body.Fields)
+
 		callCount++
-		switch body.StartAt {
-		case 0:
+		switch body.NextPageToken {
+		case "":
 			issues := make([]Issue, 50)
 			for i := range issues {
 				issues[i] = Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
 			}
 			writeJSON(t, w, http.StatusOK, SearchResult{
-				Issues:     issues,
-				Total:      120,
-				MaxResults: 50,
-				StartAt:    0,
+				Issues:        issues,
+				NextPageToken: "page-2-token",
 			})
-		case 50:
+		case "page-2-token":
 			issues := make([]Issue, 50)
 			for i := range issues {
 				issues[i] = Issue{ID: fmt.Sprintf("%d", i+51), Key: fmt.Sprintf("PROJ-%d", i+51)}
 			}
 			writeJSON(t, w, http.StatusOK, SearchResult{
-				Issues:     issues,
-				Total:      120,
-				MaxResults: 50,
-				StartAt:    50,
+				Issues:        issues,
+				NextPageToken: "page-3-token",
 			})
-		case 100:
+		case "page-3-token":
 			issues := make([]Issue, 20)
 			for i := range issues {
 				issues[i] = Issue{ID: fmt.Sprintf("%d", i+101), Key: fmt.Sprintf("PROJ-%d", i+101)}
 			}
 			writeJSON(t, w, http.StatusOK, SearchResult{
-				Issues:     issues,
-				Total:      120,
-				MaxResults: 50,
-				StartAt:    100,
+				Issues: issues,
+				IsLast: true,
 			})
+		default:
+			t.Fatalf("unexpected nextPageToken: %s", body.NextPageToken)
 		}
 	})
 
@@ -771,12 +773,12 @@ func TestSearchIssues_SinglePage(t *testing.T) {
 		var body searchRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Contains(t, body.JQL, "project = TEST")
-		assert.Contains(t, body.Expand, "changelog")
+		assert.Equal(t, "changelog", body.Expand)
+		assert.Equal(t, []string{"*all"}, body.Fields)
+		assert.Empty(t, body.NextPageToken, "first request should have no nextPageToken")
 		writeJSON(t, w, http.StatusOK, SearchResult{
-			Issues:     []Issue{{ID: "1", Key: "TEST-1"}},
-			Total:      1,
-			MaxResults: 50,
-			StartAt:    0,
+			Issues: []Issue{{ID: "1", Key: "TEST-1"}},
+			IsLast: true,
 		})
 	})
 

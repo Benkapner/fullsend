@@ -431,23 +431,26 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 
 // searchRequest is the POST body for /rest/api/3/search/jql.
 type searchRequest struct {
-	JQL        string   `json:"jql"`
-	StartAt    int      `json:"startAt"`
-	MaxResults int      `json:"maxResults"`
-	Expand     []string `json:"expand,omitempty"`
+	JQL           string   `json:"jql"`
+	MaxResults    int      `json:"maxResults"`
+	Fields        []string `json:"fields"`
+	Expand        string   `json:"expand,omitempty"`
+	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
 // SearchIssues executes a JQL search and exhausts pagination, returning all
-// matching issues. Uses the /search/jql POST endpoint (v3).
+// matching issues. Uses the POST /rest/api/3/search/jql endpoint with
+// cursor-based pagination (nextPageToken + isLast).
 func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) {
 	var all []Issue
-	startAt := 0
+	var nextPageToken string
 	for {
 		body := searchRequest{
-			JQL:        jql,
-			StartAt:    startAt,
-			MaxResults: 50,
-			Expand:     []string{"changelog"},
+			JQL:           jql,
+			MaxResults:    50,
+			Fields:        []string{"*all"},
+			Expand:        "changelog",
+			NextPageToken: nextPageToken,
 		}
 		bodyJSON, err := json.Marshal(body)
 		if err != nil {
@@ -455,13 +458,13 @@ func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) 
 		}
 		var page SearchResult
 		if err := c.do(ctx, http.MethodPost, "/search/jql", bytes.NewReader(bodyJSON), &page); err != nil {
-			return nil, fmt.Errorf("search issues (startAt=%d): %w", startAt, err)
+			return nil, fmt.Errorf("search issues: %w", err)
 		}
 		all = append(all, page.Issues...)
-		if startAt+len(page.Issues) >= page.Total || len(page.Issues) == 0 {
+		if page.IsLast || len(page.Issues) == 0 || page.NextPageToken == "" {
 			break
 		}
-		startAt += len(page.Issues)
+		nextPageToken = page.NextPageToken
 	}
 	return all, nil
 }
