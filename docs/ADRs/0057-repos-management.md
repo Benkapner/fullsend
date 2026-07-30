@@ -125,6 +125,7 @@ and implementation details are in the
 - [ADR 0048](0048-automatic-updates.md) — `--upstream-ref` version pinning
 - [Implementation plan: repos management](../plans/repos-management.md)
 - [Implementation plan: repos init](../plans/repos-init.md)
+- [PR #5713](https://github.com/fullsend-ai/fullsend/pull/5713) — added forge URL fields (`forge.github.url`, `forge.gitlab.url`) to the manifest schema and `--forge-url` flag to `repos init`; `forge.gitlab.url` is required (breaking change)
 
 ## Implementation status
 
