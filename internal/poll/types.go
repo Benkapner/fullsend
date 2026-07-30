@@ -12,6 +12,7 @@ type Options struct {
 	GitLabURL         string
 	PipelineRef       string // git ref for API-triggered pipelines (required; resolved at CLI wiring time)
 	PollJobURL        string // back-link to the poller CI job (optional; from CI_JOB_URL)
+	DispatchSecret    string // HMAC shared secret for signing dispatch variables (optional; from FULLSEND_DISPATCH_SECRET)
 }
 
 // RoutableEvent is an intermediate representation of a detected change,
