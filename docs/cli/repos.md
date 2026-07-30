@@ -26,21 +26,20 @@ These flags are inherited by all `repos` subcommands:
 | `fullsend repos status` | Compare manifest against actual repo state |
 | `fullsend repos diff` | Show configuration drift between manifest and actual state |
 | `fullsend repos sync` | Reconcile configuration drift for installed repos |
-| `fullsend repos upgrade [repos...]` | Verify mint deployment then upgrade scaffold shim ref across repos |
-| `fullsend repos upgrade-mint` | Verify the token mint deployment matches the manifest |
+| `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across repos |
 
 ## `repos init`
 
 Discovers existing fullsend installations (per-repo and per-org) and generates a `repos.yaml` manifest reflecting their current state. Supports greenfield onboarding and migration from existing installations.
 
 ```bash
-fullsend repos init <org> --forge github --all --mint-url <MINT_URL> --mint-project <PROJECT> --inference-project <PROJECT>
+fullsend repos init <org> --forge github --all --mint-url <MINT_URL> --inference-project <PROJECT>
 ```
 
 Single-repo mode:
 
 ```bash
-fullsend repos init <owner/repo> --forge github --mint-project <PROJECT>
+fullsend repos init <owner/repo> --forge github --inference-project <PROJECT>
 ```
 
 ### Flags
@@ -50,8 +49,6 @@ fullsend repos init <owner/repo> --forge github --mint-project <PROJECT>
 | `--output`, `-o` | `repos.yaml` | Output path (use `-` for stdout) |
 | `--repos` | | Comma-separated list of repos to include |
 | `--all` | `false` | Include all eligible repos without prompting |
-| `--mint-project` | | GCP project for the mint |
-| `--mint-region` | `us-central1` | GCP region for the mint |
 | `--mint-url` | | Token mint Cloud Run endpoint URL |
 | `--inference-project` | | Default GCP project for inference |
 | `--inference-region` | | GCP region for inference (default: `us-central1`) |
@@ -84,11 +81,16 @@ For org targets, one of `--all` or `--repos` is required:
 
 Install fullsend on repos defined in a manifest that are not yet installed.
 
-Runs in three phases:
+Runs in two phases:
 
 1. **Parallel discovery** — check which repos are already installed by verifying the guard variable and all installation components (workflow file, variables, and secrets). Repos with a guard variable set but other components missing are flagged for partial-installation repair.
-2. **Sequential WIF** — register each unique org in the token mint (`EnsureOrgInMint`), then provision per-repo WIF infrastructure. These operations modify shared GCP state and are not concurrent-safe.
-3. **Parallel scaffold** — commit scaffold files and write variables/secrets
+2. **Parallel scaffold** — commit scaffold files and write variables/secrets
+
+> **Note:** GCP infrastructure (WIF pools/providers, mint registration) must be
+> provisioned separately via `inference provision` and `mint enroll` before
+> running `repos install`. The `forge.github.inference_project_number` field
+> (numeric GCP project number) is required in the manifest for GitHub repos —
+> it is used to compute WIF provider resource names deterministically.
 
 If a previous install was interrupted (guard variable set but other components missing), the command detects the partial state and repairs it automatically.
 
@@ -107,14 +109,13 @@ When repos are specified as positional arguments, only those repos are installed
 |------|---------|-------------|
 | `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
 | `--dry-run` | `false` | Preview what would be installed without making changes |
-| `--skip-mint-check` | `false` | Skip mint URL discovery and org registration (EnsureOrgInMint). Use when orgs are already registered in the mint. |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
 
 ### Common workflows
 
-Install all repos from a manifest (first run — registers new orgs in the mint):
+Install all repos from a manifest:
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -126,16 +127,11 @@ Preview changes without modifying infrastructure:
 fullsend repos install -f repos.yaml --dry-run
 ```
 
-Install specific repos (orgs already registered):
+Install specific repos:
 
 ```bash
-fullsend repos install acme/api acme/web --skip-mint-check
+fullsend repos install acme/api acme/web
 ```
-
-> **Note:** Without `--skip-mint-check`, `repos install` will register any new
-> orgs found in the manifest into the mint's `ALLOWED_ORGS`. This modifies
-> shared mint infrastructure. Use `--skip-mint-check` when orgs are already
-> registered or when you want to skip this step.
 
 ## `repos status`
 
@@ -288,13 +284,12 @@ Duplicate entries are silently skipped. Glob patterns (e.g. `acme/*`) are allowe
 
 Remove one or more repo entries from the `repos.yaml` manifest file, editing it in place. When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
 
-Use `--uninstall` to tear down fullsend from the repos before removing them from the manifest (deletes workflow, variables, secrets, and WIF).
+Use `--uninstall` to tear down fullsend from the repos before removing them from the manifest (deletes workflow, variables, and secrets). GCP WIF cleanup is handled separately via `inference deprovision`.
 
 ```bash
 fullsend repos remove acme/old-api
 fullsend repos remove "acme/*" --yes
 fullsend repos remove acme/old-api --uninstall
-fullsend repos remove acme/old-api --uninstall --skip-wif-cleanup
 ```
 
 ### Flags
@@ -305,23 +300,19 @@ fullsend repos remove acme/old-api --uninstall --skip-wif-cleanup
 | `--dry-run` | `false` | Preview what would be removed without making changes |
 | `--uninstall` | `false` | Tear down fullsend from repos before removing from manifest |
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
-| `--skip-wif-cleanup` | `false` | Skip GCP WIF provider deletion (only with `--uninstall`) |
 | `--concurrency` | `4` | Max parallel operations (1-32, used with `--uninstall`) |
 
 ## `repos uninstall`
 
-Tear down fullsend from the specified repos by deleting workflow files, variables, secrets, and WIF infrastructure. Does **not** modify `repos.yaml` — use `repos remove` for that.
+Tear down fullsend from the specified repos by deleting workflow files, variables, and secrets. Does **not** modify `repos.yaml` — use `repos remove` for that.
+
+GCP WIF cleanup is handled separately via `inference deprovision`.
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
-
-Runs in two phases:
-1. **Parallel per-repo cleanup** — delete workflow, variables, secrets (concurrent)
-2. **Sequential WIF deregistration** — deregister from mint and delete WIF provider
 
 ```bash
 fullsend repos uninstall acme/old-api
 fullsend repos uninstall "acme/*" --yes
-fullsend repos uninstall acme/old-api --skip-wif-cleanup
 fullsend repos uninstall acme/old-api --dry-run
 ```
 
@@ -332,12 +323,11 @@ fullsend repos uninstall acme/old-api --dry-run
 | `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
 | `--dry-run` | `false` | Preview what would be uninstalled without making changes |
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
-| `--skip-wif-cleanup` | `false` | Skip GCP WIF provider deletion |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 
 ## `repos upgrade`
 
-Upgrades the fullsend scaffold workflow ref for repos defined in a `repos.yaml` manifest. Before upgrading, verifies the mint deployment matches the manifest configuration (unless `--skip-mint-check` is set). Reads each repo's current workflow file, compares against the manifest's `fullsend_ref` (or `--ref` override), and commits the updated workflow.
+Upgrades the fullsend scaffold workflow ref for repos defined in a `repos.yaml` manifest. Reads each repo's current workflow file, compares against the manifest's `fullsend_ref` (or `--ref` override), and commits the updated workflow.
 
 Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are blocked unless `--force` is set.
 
@@ -357,7 +347,6 @@ fullsend repos upgrade --ref v2.4.0
 | `--dry-run` | | `false` | Preview what would be upgraded without making changes |
 | `--force` | | `false` | Upgrade even if current ref is newer than target |
 | `--concurrency` | | `4` | Max parallel operations (1-32) |
-| `--skip-mint-check` | | `false` | Skip mint URL verification before upgrading repos |
 | `--direct` | | `false` | Push scaffold directly to default branch (skip PR) |
 
 ### Positional arguments
@@ -369,22 +358,6 @@ When repos are specified as positional arguments, only those repos are upgraded.
 When a repo's workflow currently uses SHA pinning (e.g. `@abc123 # v1.9.0`), `repos upgrade` resolves the target tag to its commit SHA via the forge API and writes `@<sha> # <tag>`, preserving the SHA-pinning convention. Tag-only repos remain tag-only (`@<tag>`).
 
 If tag-to-SHA resolution fails (e.g. the tag does not exist or the API is unreachable), the upgrade fails for that repo rather than falling back to tag-only format.
-
-## `repos upgrade-mint`
-
-Verifies the token mint Cloud Function matches the manifest configuration. Discovers the current mint deployment and checks that its URL matches the manifest's `forge.github.mint_url`.
-
-`repos upgrade` now runs mint verification automatically as a pre-flight check. This command remains available for standalone verification without triggering an upgrade.
-
-```bash
-fullsend repos upgrade-mint -f repos.yaml
-```
-
-### Flags
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
 
 ## See also
 

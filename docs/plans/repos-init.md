@@ -63,14 +63,13 @@ Flags:
 - `--forge` (string, **required**): forge type (`github` or `gitlab`).
 - `--forge-url` (string): forge instance URL. Required for `gitlab`;
   defaults to `https://github.com` for `github`.
-- `--mint-project` (string): GCP project for the `forge.github.mint_project` field.
-- `--mint-region` (string, default `us-central1`): GCP region for
-  the `forge.github.mint_region` field.
 - `--mint-url` (string): token mint Cloud Run endpoint URL for the
   `forge.github.mint_url` field.
 - `--inference-project` (string): default GCP project for inference.
 - `--inference-region` (string): GCP region for inference (default:
   `us-central1`).
+- `--inference-project-number` (string): GCP project number for the
+  `forge.github.inference_project_number` field.
 - `--fullsend-ref` (string): pin the fullsend workflow ref (e.g.
   `v0.42.0`).
 - `--concurrency` (int, default 8): max parallel API calls.
@@ -83,15 +82,14 @@ uses the same `strings.Contains(arg, "/")` pattern as
 
 ```go
 type InitConfig struct {
-    Target           string   // org name or owner/repo
-    Repos            []string // explicit repo names (nil = interactive/all)
-    All              bool     // include all repos without prompting
-    Forge            string   // forge type ("github" or "gitlab")
-    ForgeURL         string   // forge instance URL
-    MintProject      string
-    MintRegion       string
-    InferenceProject string
-    MaxConcurrency   int
+    Target                 string   // org name or owner/repo
+    Repos                  []string // explicit repo names (nil = interactive/all)
+    All                    bool     // include all repos without prompting
+    Forge                  string   // forge type ("github" or "gitlab")
+    ForgeURL               string   // forge instance URL
+    InferenceProject       string
+    InferenceProjectNumber string
+    MaxConcurrency         int
 }
 
 type DiscoveredRepo struct {
@@ -216,9 +214,6 @@ func buildManifest(repos []DiscoveredRepo,
      URLs, use the most common and add a TODO. For greenfield (no
      discovered URLs), leave as TODO (Cloud Run URLs contain a random
      hash and cannot be derived from the project name alone).
-   - `mint_project`: from `--mint-project` flag. If not provided, add to
-     TODO list.
-   - `mint_region`: from `--mint-region` flag (default `us-central1`).
 
 2. **Compute `forge.github:` infrastructure fields** by finding the
    mode (most common value) across discovered repos. For greenfield
@@ -228,6 +223,7 @@ func buildManifest(repos []DiscoveredRepo,
    - `inference_region`: `--inference-region` flag > mode of discovered
      `FULLSEND_GCP_REGION` values > `us-central1`.
    - `inference_project`: from `--inference-project` flag, or TODO.
+   - `inference_project_number`: from `--inference-project-number` flag, or TODO.
    - `defaults.allowed_remote_resources`: from per-org config if present.
 
 3. **Build repo entries:**
@@ -239,7 +235,7 @@ func buildManifest(repos []DiscoveredRepo,
    - New repos (not yet installed) are included as normal entries.
 
 4. **Return TODO list** for fields that could not be discovered (e.g.,
-   `inference_project` when no flag provided, `forge.github.mint_project` when
+   `inference_project` when no flag provided, `inference_project_number` when
    omitted).
 
 **Secret limitation:** `FULLSEND_GCP_PROJECT_ID` and

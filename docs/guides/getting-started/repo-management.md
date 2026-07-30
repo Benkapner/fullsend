@@ -19,8 +19,7 @@ fullsend across an organization. Individual repo owners should use
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP access** — for WIF provisioning and mint operations (see [Mint administration](../infrastructure/mint-administration.md))
-- **Mint enrollment** — your orgs or repos must be enrolled in a fullsend token mint service (see [Getting Started](README.md))
+- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`) must be completed separately before running `repos install`. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 ## Getting started
 
@@ -31,14 +30,13 @@ Generate a `repos.yaml` manifest by discovering existing installations:
 ```bash
 fullsend repos init <org> --forge github --all \
   --mint-url <MINT_URL> \
-  --mint-project <GCP_PROJECT> \
   --inference-project <GCP_PROJECT>
 ```
 
 For a single repo:
 
 ```bash
-fullsend repos init <owner/repo> --forge github --mint-project <GCP_PROJECT>
+fullsend repos init <owner/repo> --forge github --inference-project <GCP_PROJECT>
 ```
 
 For GitLab, provide the instance URL with `--forge-url` (required for
@@ -53,7 +51,7 @@ Instead of `--all`, specify a subset of repos with `--repos`:
 
 ```bash
 fullsend repos init acme --forge github --repos acme/api,acme/web \
-  --mint-project <GCP_PROJECT>
+  --inference-project <GCP_PROJECT>
 ```
 
 `--repos` and `--all` are mutually exclusive.
@@ -61,7 +59,7 @@ fullsend repos init acme --forge github --repos acme/api,acme/web \
 If a `repos.yaml` file already exists, pass `--force` to overwrite it:
 
 ```bash
-fullsend repos init <org> --forge github --all --force --mint-project <GCP_PROJECT>
+fullsend repos init <org> --forge github --all --force --inference-project <GCP_PROJECT>
 ```
 
 The command discovers per-repo and per-org installations, extracts
@@ -81,9 +79,8 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: my-project
-    mint_region: us-central1
     inference_project: my-project
+    inference_project_number: "123456789"
     inference_region: us-central1
     fullsend_ref: v2.5.0
   gitlab:
@@ -145,19 +142,19 @@ installed:
 fullsend repos install -f repos.yaml
 ```
 
-Install runs in three phases:
+Install runs in two phases:
 
 1. **Parallel discovery** — check which repos are already installed by
    verifying the guard variable and all installation components
    (workflow file, variables, and secrets). Repos with a guard
    variable set but other components missing are flagged for
    partial-installation repair (see below).
-2. **Sequential WIF** — register each unique org in the token mint
-   (`EnsureOrgInMint`), then provision per-repo WIF infrastructure
-   (`ProvisionWIF` + `RegisterPerRepoWIF`). These operations modify
-   shared GCP state and are not concurrent-safe.
-3. **Parallel scaffold** — commit scaffold files and write
+2. **Parallel scaffold** — commit scaffold files and write
    variables/secrets
+
+> **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
+> enrollment) must be provisioned separately before running install.
+> See `fullsend inference provision` and `fullsend mint enroll`.
 
 > **Partial installation repair:** If a previous install was interrupted
 > (guard variable set but workflow, variables, or secrets missing),
@@ -174,12 +171,6 @@ Preview what would be installed without making changes:
 
 ```bash
 fullsend repos install -f repos.yaml --dry-run
-```
-
-Install specific repos (when orgs are already registered in the mint):
-
-```bash
-fullsend repos install acme/api acme/web --skip-mint-check
 ```
 
 Glob patterns are supported:
@@ -317,11 +308,10 @@ fullsend repos remove "acme/*" --yes
 ```
 
 To also tear down fullsend from the repos (delete workflow, variables,
-secrets, and WIF) before removing them from the manifest:
+and secrets) before removing them from the manifest:
 
 ```bash
 fullsend repos remove acme/old-api --uninstall
-fullsend repos remove acme/old-api --uninstall --skip-wif-cleanup
 ```
 
 ### Rolling out a new fullsend version
@@ -334,14 +324,6 @@ To upgrade the scaffold workflow ref across all manifest repos:
 
    ```bash
    fullsend repos upgrade -f repos.yaml
-   ```
-
-   Mint verification runs automatically as a pre-flight step. If the
-   mint deployment URL does not match the manifest, the upgrade fails
-   with a clear error. Pass `--skip-mint-check` to bypass:
-
-   ```bash
-   fullsend repos upgrade -f repos.yaml --skip-mint-check
    ```
 
 3. Review and merge the scaffold PRs in each repo.
@@ -373,18 +355,6 @@ fullsend repos upgrade -f repos.yaml --direct
 Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
 blocked unless `--force` is set.
 
-### Verifying mint configuration
-
-The standalone `repos upgrade-mint` command verifies the token mint
-deployment matches the manifest without triggering an upgrade:
-
-```bash
-fullsend repos upgrade-mint -f repos.yaml
-```
-
-Since `repos upgrade` now runs this verification automatically, this
-command is primarily useful for one-off checks.
-
 ## Migrating from per-org mode to manifest management
 
 Organizations migrating from per-org mode to per-repo manifest management
@@ -395,7 +365,6 @@ can use the following workflow.
 ```bash
 fullsend repos init <org> --forge github --all \
   --mint-url <MINT_URL> \
-  --mint-project <GCP_PROJECT> \
   --inference-project <GCP_PROJECT>
 ```
 
@@ -407,8 +376,7 @@ This discovers all enrolled repos and writes `repos.yaml`.
 fullsend repos install -f repos.yaml
 ```
 
-Each repo gets its own WIF provider, variables, secrets, and scaffold
-workflow.
+Each repo gets its own variables, secrets, and scaffold workflow.
 
 ### Step 3: Verify per-repo installations
 
@@ -475,8 +443,8 @@ infrastructure, coordinate between roles:
 
 | Step | Role | Command |
 |------|------|---------|
-| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` |
-| 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` |
+| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup) |
+| 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
 | 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
