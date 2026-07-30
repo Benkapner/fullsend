@@ -100,7 +100,9 @@ follow-up work on #4718, not decided here.
   older CLI the check fails open (the agent runs) rather than crashing.
 - CEL triggers ([ADR 0061](0061-harness-cel-dispatch.md)) still answer "does
   this event route to this agent?"; the protocol answers "having routed here,
-  is there a reason not to proceed?" — checks that need forge API calls stay
-  in pre-scripts, which CEL cannot express.
+  is there a reason not to proceed?" — a decision that can depend on forge API
+  data, which CEL cannot express. Whether the pre-script performs the forge
+  call itself or `fullsend run` performs it and passes the result in is not
+  fixed by this decision.
 - The scripts' `gh` coupling is unchanged — a pre-existing forge gap tracked
   separately from this decision.
