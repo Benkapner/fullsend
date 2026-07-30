@@ -93,6 +93,20 @@ func isPublicMintAllowedOrgs(allowedOrgs string) bool {
 	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
 }
 
+// perOrgForeignCompatLabel returns "on" or "off" for display from traffic env.
+// Missing/empty/nil trafficEnv is treated as off (compatible with older mints).
+func perOrgForeignCompatLabel(trafficEnv map[string]string) string {
+	if trafficEnv == nil {
+		return "off"
+	}
+	switch strings.ToLower(strings.TrimSpace(trafficEnv["PER_ORG_FOREIGN_COMPAT"])) {
+	case "1", "true", "yes":
+		return "on"
+	default:
+		return "off"
+	}
+}
+
 // mintValidationMessage returns the success message after validating an existing mint.
 func mintValidationMessage(trafficEnv map[string]string, envErr error) string {
 	if envErr == nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
@@ -1503,6 +1517,8 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
+
+	printer.KeyValue("Per-org foreign compat", perOrgForeignCompatLabel(trafficEnv))
 
 	publicMint := trafficEnv != nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
 	if publicMint {

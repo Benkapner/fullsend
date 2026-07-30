@@ -262,7 +262,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `POST /v1/token` with a role in `ROLE_APP_IDS` | Handled locally |
 | `POST /v1/token` with an unknown role | Forwarded to `FALLBACK_MINT_URL` |
 | `GET /health` | Always handled locally |
-| `GET /v1/status` | Always handled locally |
+| `GET /v1/status` | Always handled locally (`per_org_foreign_compat` bool; default `false` when unset) |
 
 The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — your organization must be enrolled on the upstream mint for proxied requests to succeed.
 

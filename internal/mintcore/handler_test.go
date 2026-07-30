@@ -284,6 +284,38 @@ func TestHandler_StatusEndpoint(t *testing.T) {
 	if strings.Contains(body, "orgs") {
 		t.Fatalf("status response should not contain orgs array: %s", body)
 	}
+
+	// TestMain enables PER_ORG_FOREIGN_COMPAT by default.
+	if !resp.PerOrgForeignCompat {
+		t.Fatal("expected per_org_foreign_compat true (TestMain default)")
+	}
+}
+
+func TestHandler_StatusEndpoint_PerOrgForeignCompatOff(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "test-org")
+	t.Setenv("PER_ORG_FOREIGN_COMPAT", "false")
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+env.signToken(t, nil))
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	var resp statusResponse
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.PerOrgForeignCompat {
+		t.Fatal("expected per_org_foreign_compat false")
+	}
+	if !strings.Contains(body, `"per_org_foreign_compat":false`) {
+		t.Fatalf("expected explicit false in JSON body: %s", body)
+	}
 }
 
 func TestHandler_StatusEndpoint_IncludesVersion(t *testing.T) {
