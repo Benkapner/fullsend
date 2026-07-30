@@ -1,16 +1,16 @@
-# Agent-Driven Evaluation Tools
+# Agent Setup Evaluation Tools
 
-How fullsend's own problem areas appear in agent-driven tools that evaluate agent configurations.
+How fullsend's own problem areas appear in tools that evaluate agent configurations.
 
 ## Context
 
-Agent setup evaluation tools (linters, security scanners for skills/commands/agents/hooks) are themselves agent-driven systems. They face a subset of the same challenges fullsend faces, viewed from the tooling side rather than the platform side.
+Agent setup evaluation tools (linters, security scanners for skills/commands/agents/hooks) face a subset of the same challenges fullsend faces, viewed from the tooling side rather than the platform side. Their core mechanism is deterministic static analysis; some optionally offer LLM-based review modes.
 
-An example is [harness-eval](https://github.com/redhat-community-ai-tools/harness-eval), an open-source linter and security scanner for AI agent configurations (not to be confused with agent-eval-harness, the dynamic test-execution framework adopted in ADR-0051; harness-eval performs static analysis and does not execute agents). It runs deterministic rules against skills, commands, agents, hooks, and MCP configs, with optional LLM-based review.
+An example is [harness-eval](https://github.com/redhat-community-ai-tools/harness-eval), an open-source linter and security scanner for AI agent configurations (not to be confused with agent-eval-harness, the dynamic test-execution framework adopted in [ADR 0051](../../../ADRs/0051-agent-eval-harness-for-test-infrastructure.md); harness-eval performs static analysis and does not execute agents). It runs deterministic rules against skills, commands, agents, hooks, and MCP configs, with optional LLM-based review. Notably, harness-eval is itself a fullsend consumer: its repo includes a `.fullsend/config.yaml` installation config, and fullsend's own coding bot authored [PR #8](https://github.com/redhat-community-ai-tools/harness-eval/pull/8) (merged June 2026).
 
 ## Technology landscape
 
-These tools typically operate as CLI utilities or CI integrations (GitHub Actions, pre-commit hooks). They parse agent configuration files (markdown with YAML frontmatter, JSON schemas, shell scripts) and run pattern-based or AST-based analysis without executing the agent. The evaluation happens at the configuration layer, not the runtime layer, which means they complement behavioral testing rather than replacing it.
+These tools typically operate as CLI utilities or CI integrations (GitHub Actions, Tekton tasks). They parse agent configuration files (markdown with YAML frontmatter, JSON schemas, shell scripts) and run pattern-based or AST-based analysis without executing the agent. The evaluation happens at the configuration layer, not the runtime layer, which means they complement behavioral testing rather than replacing it.
 
 ## Relevant problem areas
 
@@ -34,4 +34,4 @@ For an evaluation tool, trustworthiness evidence takes a specific form: false po
 
 - **Recursive evaluation:** the tool must be able to evaluate its own setup without circular dependency issues
 - **Rule accuracy feedback loop:** users who suppress findings or override verdicts generate signal about rule quality
-- **Multi-assistant support:** an evaluation tool aiming for broad adoption may need to support multiple AI coding-agent runtimes (Claude Code, Cursor, Copilot, Gemini, OpenCode) with different configuration formats, unlike fullsend, which defaults production orgs to a single runtime (Claude Code) today despite having a pluggable `runtime.Runtime` interface (docs/runtimes.md), with OpenCode noted as another candidate backend
+- **Multi-assistant support:** an evaluation tool aiming for broad adoption may need to support multiple AI coding-agent runtimes (Claude Code, Cursor, Copilot, Gemini, OpenCode) with different configuration formats, unlike fullsend, which defaults production orgs to a single runtime (Claude Code) today despite having a pluggable `runtime.Runtime` interface ([runtimes.md](../../../runtimes.md)), with OpenCode noted as another candidate backend
