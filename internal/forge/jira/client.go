@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -26,6 +27,74 @@ type Client struct {
 	baseURL    string
 	email      string // for Basic auth (Cloud)
 	token      string
+	oauth2     *oauth2TokenSource
+}
+
+const (
+	defaultTokenURL    = "https://auth.atlassian.com/oauth/token"
+	tokenRefreshMargin = 5 * time.Minute
+)
+
+// oauth2TokenSource handles OAuth 2.0 client credentials token exchange
+// with caching and automatic refresh.
+type oauth2TokenSource struct {
+	clientID     string
+	clientSecret string
+	tokenURL     string
+	httpClient   *http.Client
+
+	mu          sync.Mutex
+	accessToken string
+	expiry      time.Time
+}
+
+func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.accessToken != "" && time.Now().Before(s.expiry.Add(-tokenRefreshMargin)) {
+		return s.accessToken, nil
+	}
+
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {s.clientID},
+		"client_secret": {s.clientSecret},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenURL,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("oauth2 token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("oauth2 token exchange: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("oauth2 token endpoint returned %d: %s", resp.StatusCode, body)
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+		TokenType   string `json:"token_type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("oauth2 token response decode: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return "", fmt.Errorf("oauth2 token response missing access_token")
+	}
+
+	s.accessToken = tokenResp.AccessToken
+	s.expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	return s.accessToken, nil
 }
 
 // Option configures the Jira client.
@@ -52,6 +121,63 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = client
 	}
+}
+
+// WithTokenURL overrides the OAuth 2.0 token endpoint URL.
+// Defaults to https://auth.atlassian.com/oauth/token.
+func WithTokenURL(tokenURL string) Option {
+	return func(c *Client) {
+		if c.oauth2 != nil {
+			c.oauth2.tokenURL = tokenURL
+		}
+	}
+}
+
+// NewOAuth2 creates a Jira client that authenticates using OAuth 2.0 client
+// credentials (two-legged). The client exchanges clientID and clientSecret for
+// a short-lived access token, caching it and refreshing before expiry.
+func NewOAuth2(clientID, clientSecret string, opts ...Option) (*Client, error) {
+	if clientID == "" {
+		return nil, fmt.Errorf("jira: OAuth2 client ID must not be empty")
+	}
+	if clientSecret == "" {
+		return nil, fmt.Errorf("jira: OAuth2 client secret must not be empty")
+	}
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if len(via) > 0 {
+				crossOrigin := req.URL.Host != via[0].URL.Host
+				tlsDowngrade := via[0].URL.Scheme == "https" && req.URL.Scheme != "https"
+				if crossOrigin || tlsDowngrade {
+					req.Header.Del("Authorization")
+				}
+			}
+			return nil
+		},
+	}
+	c := &Client{
+		httpClient: httpClient,
+		oauth2: &oauth2TokenSource{
+			clientID:     clientID,
+			clientSecret: clientSecret,
+			tokenURL:     defaultTokenURL,
+			httpClient:   httpClient,
+		},
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	if c.baseURL == "" {
+		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
+	}
+	if err := validateBaseURL(c.baseURL); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // validateBaseURL checks that the base URL uses https, unless it points to a
@@ -133,13 +259,22 @@ func (c *Client) apiURL(path string) string {
 	return c.baseURL + "/rest/api/3" + path
 }
 
-func (c *Client) setAuth(req *http.Request) {
+func (c *Client) setAuth(req *http.Request) error {
+	if c.oauth2 != nil {
+		tok, err := c.oauth2.token(req.Context())
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+		return nil
+	}
 	if c.email != "" {
 		cred := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.token))
 		req.Header.Set("Authorization", "Basic "+cred)
 	} else {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
+	return nil
 }
 
 // do executes an HTTP request with auth, error handling, and retry with backoff.
@@ -166,7 +301,9 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, re
 			return fmt.Errorf("create request: %w", err)
 		}
 
-		c.setAuth(req)
+		if err := c.setAuth(req); err != nil {
+			return fmt.Errorf("set auth for %s %s: %w", method, path, err)
+		}
 		req.Header.Set("Accept", "application/json")
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")

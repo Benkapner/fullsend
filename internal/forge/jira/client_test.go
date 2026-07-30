@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -586,6 +587,178 @@ func TestGetProjectRoleMembership_Error(t *testing.T) {
 	_, err := client.GetProjectRoleMembership(ctx, "BADPROJ")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "list project roles")
+}
+
+// ---------------------------------------------------------------------------
+// OAuth 2.0 Client Credentials
+// ---------------------------------------------------------------------------
+
+func TestOAuth2_TokenExchange(t *testing.T) {
+	t.Parallel()
+
+	// Mock token endpoint.
+	tokenCalls := 0
+	tokenMux := http.NewServeMux()
+	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, "client_credentials", r.Form.Get("grant_type"))
+		assert.Equal(t, "my-client-id", r.Form.Get("client_id"))
+		assert.Equal(t, "my-client-secret", r.Form.Get("client_secret"))
+		tokenCalls++
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token": fmt.Sprintf("access-token-%d", tokenCalls),
+			"expires_in":   3600,
+			"token_type":   "Bearer",
+		})
+	})
+	tokenSrv := httptest.NewServer(tokenMux)
+	t.Cleanup(tokenSrv.Close)
+
+	// Mock Jira API.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		assert.True(t, strings.HasPrefix(auth, "Bearer access-token-"), "expected Bearer with OAuth2 token, got: %s", auth)
+		writeJSON(t, w, http.StatusOK, User{AccountID: "123", DisplayName: "OAuth Bot"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client, err := NewOAuth2("my-client-id", "my-client-secret",
+		WithBaseURL(srv.URL),
+		WithTokenURL(tokenSrv.URL+"/oauth/token"),
+	)
+	require.NoError(t, err)
+
+	user, err := client.GetMyself(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth Bot", user.DisplayName)
+	assert.Equal(t, 1, tokenCalls, "should have fetched a token")
+}
+
+func TestOAuth2_TokenCaching(t *testing.T) {
+	t.Parallel()
+
+	tokenCalls := 0
+	tokenMux := http.NewServeMux()
+	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token": fmt.Sprintf("token-%d", tokenCalls),
+			"expires_in":   3600,
+			"token_type":   "Bearer",
+		})
+	})
+	tokenSrv := httptest.NewServer(tokenMux)
+	t.Cleanup(tokenSrv.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, User{AccountID: "123"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client, err := NewOAuth2("cid", "csec",
+		WithBaseURL(srv.URL),
+		WithTokenURL(tokenSrv.URL+"/oauth/token"),
+	)
+	require.NoError(t, err)
+
+	// Make two API calls — should reuse the cached token.
+	_, err = client.GetMyself(context.Background())
+	require.NoError(t, err)
+	_, err = client.GetMyself(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, tokenCalls, "second call should reuse cached token")
+}
+
+func TestOAuth2_TokenRefreshBeforeExpiry(t *testing.T) {
+	t.Parallel()
+
+	tokenCalls := 0
+	tokenMux := http.NewServeMux()
+	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token": fmt.Sprintf("token-%d", tokenCalls),
+			"expires_in":   3600,
+			"token_type":   "Bearer",
+		})
+	})
+	tokenSrv := httptest.NewServer(tokenMux)
+	t.Cleanup(tokenSrv.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, User{AccountID: "123"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client, err := NewOAuth2("cid", "csec",
+		WithBaseURL(srv.URL),
+		WithTokenURL(tokenSrv.URL+"/oauth/token"),
+	)
+	require.NoError(t, err)
+
+	// First call — fetches token.
+	_, err = client.GetMyself(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, tokenCalls)
+
+	// Simulate near-expiry by backdating the cached expiry.
+	client.oauth2.mu.Lock()
+	client.oauth2.expiry = time.Now().Add(2 * time.Minute) // within 5-minute refresh window
+	client.oauth2.mu.Unlock()
+
+	// Next call should trigger a refresh.
+	_, err = client.GetMyself(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, tokenCalls, "should have refreshed near-expiry token")
+}
+
+func TestOAuth2_TokenEndpointError(t *testing.T) {
+	t.Parallel()
+
+	tokenMux := http.NewServeMux()
+	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, map[string]any{
+			"error":             "invalid_client",
+			"error_description": "Client authentication failed",
+		})
+	})
+	tokenSrv := httptest.NewServer(tokenMux)
+	t.Cleanup(tokenSrv.Close)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client, err := NewOAuth2("bad-id", "bad-secret",
+		WithBaseURL(srv.URL),
+		WithTokenURL(tokenSrv.URL+"/oauth/token"),
+	)
+	require.NoError(t, err)
+
+	_, err = client.GetMyself(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oauth2 token")
+}
+
+func TestNewOAuth2_MissingCredentials(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewOAuth2("", "secret", WithBaseURL("https://example.atlassian.net"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "client ID")
+
+	_, err = NewOAuth2("id", "", WithBaseURL("https://example.atlassian.net"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "client secret")
 }
 
 func TestSearchIssues_SinglePage(t *testing.T) {

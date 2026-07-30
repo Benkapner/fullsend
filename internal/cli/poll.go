@@ -112,12 +112,6 @@ func newPollCmd() *cobra.Command {
 }
 
 func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
-	jiraToken := os.Getenv("JIRA_TOKEN")
-	if jiraToken == "" {
-		return fmt.Errorf("JIRA_TOKEN environment variable is required")
-	}
-	jiraEmail := os.Getenv("JIRA_USER_EMAIL")
-
 	if jiraURL == "" {
 		jiraURL = os.Getenv("JIRA_BASE_URL")
 	}
@@ -136,13 +130,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 		return fmt.Errorf("--jira-project or --jql is required")
 	}
 
-	var jiraOpts []jira.Option
-	jiraOpts = append(jiraOpts, jira.WithBaseURL(jiraURL))
-	if jiraEmail != "" {
-		jiraOpts = append(jiraOpts, jira.WithEmail(jiraEmail))
-	}
-
-	jiraClient, err := jira.New(jiraToken, jiraOpts...)
+	jiraClient, err := buildJiraClient(jiraURL)
 	if err != nil {
 		return fmt.Errorf("create Jira client: %w", err)
 	}
@@ -162,6 +150,32 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 
 	poller := jirapoll.New(jiraClient, router, opts)
 	return poller.Run(cmd.Context())
+}
+
+// buildJiraClient creates a Jira client using either OAuth 2.0 client credentials
+// or Basic/Bearer auth depending on JIRA_AUTH_METHOD.
+func buildJiraClient(jiraURL string) (*jira.Client, error) {
+	authMethod := os.Getenv("JIRA_AUTH_METHOD")
+
+	if authMethod == "oauth2" {
+		clientID := os.Getenv("JIRA_CLIENT_ID")
+		clientSecret := os.Getenv("JIRA_CLIENT_SECRET")
+		if clientID == "" || clientSecret == "" {
+			return nil, fmt.Errorf("JIRA_CLIENT_ID and JIRA_CLIENT_SECRET are required when JIRA_AUTH_METHOD=oauth2")
+		}
+		return jira.NewOAuth2(clientID, clientSecret, jira.WithBaseURL(jiraURL))
+	}
+
+	jiraToken := os.Getenv("JIRA_TOKEN")
+	if jiraToken == "" {
+		return nil, fmt.Errorf("JIRA_TOKEN environment variable is required (or set JIRA_AUTH_METHOD=oauth2)")
+	}
+	var opts []jira.Option
+	opts = append(opts, jira.WithBaseURL(jiraURL))
+	if email := os.Getenv("JIRA_USER_EMAIL"); email != "" {
+		opts = append(opts, jira.WithEmail(email))
+	}
+	return jira.New(jiraToken, opts...)
 }
 
 // buildRouter constructs a HarnessRouter from config-registered agents
