@@ -383,6 +383,96 @@ func TestLiveGCFClient_SetSecretIAMBinding(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid secret resource path")
 	})
+
+	t.Run("retries on 409 conflict", func(t *testing.T) {
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount <= 2 {
+				if callCount%2 == 1 {
+					w.WriteHeader(http.StatusOK)
+					fmt.Fprintln(w, `{"bindings":[],"etag":"v1"}`)
+					return
+				}
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprintln(w, `{"error":{"message":"conflict"}}`)
+				return
+			}
+			if callCount == 3 {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"bindings":[],"etag":"v2"}`)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).SetSecretIAMBinding(context.Background(),
+			"projects/proj/secrets/s", "member", "role")
+		require.NoError(t, err)
+		assert.Equal(t, 4, callCount)
+	})
+
+	t.Run("retries past old 3-attempt limit on repeated 409", func(t *testing.T) {
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
+		conflictsBeforeSuccess := 4 // more than old maxRetries=3
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount%2 == 1 {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"bindings":[],"etag":"v1"}`)
+				return
+			}
+			attempt := callCount / 2
+			if attempt <= conflictsBeforeSuccess {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprintln(w, `{"error":{"message":"conflict"}}`)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).SetSecretIAMBinding(context.Background(),
+			"projects/proj/secrets/s", "member", "role")
+		require.NoError(t, err)
+		// 4 conflicts + 1 success = 5 attempts × 2 calls each = 10
+		assert.Equal(t, 10, callCount)
+	})
+
+	t.Run("exhausts all retries on persistent 409", func(t *testing.T) {
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount%2 == 1 {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"bindings":[],"etag":"v1"}`)
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprintln(w, `{"error":{"message":"conflict"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).SetSecretIAMBinding(context.Background(),
+			"projects/proj/secrets/s", "member", "role")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "IAM policy conflict")
+		// 7 attempts × 2 calls each = 14
+		assert.Equal(t, 14, callCount)
+	})
 }
 
 // --- iamRetryDelay ---
