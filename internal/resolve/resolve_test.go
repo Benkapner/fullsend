@@ -2148,7 +2148,7 @@ func TestIsContainedPath(t *testing.T) {
 		{"at root", "/workspace/.fullsend", "/workspace/.fullsend", true},
 		{"outside root", "/etc/passwd", "/workspace/.fullsend", false},
 		{"traversal", "/workspace/.fullsend/../../etc/passwd", "/workspace/.fullsend", false},
-		{"empty root", "/any/path", "", true},
+		{"empty root", "/any/path", "", false},
 		{"sibling prefix", "/workspace/.fullsend-other/file", "/workspace/.fullsend", false},
 	}
 	for _, tt := range tests {
@@ -2156,6 +2156,28 @@ func TestIsContainedPath(t *testing.T) {
 			assert.Equal(t, tt.want, isContainedPath(tt.path, tt.root))
 		})
 	}
+}
+
+func TestIsContainedPath_SymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	// Create a real file outside the workspace root.
+	outsideFile := filepath.Join(outside, "secret.yaml")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o644))
+
+	// Create a symlink inside root that points outside.
+	symlink := filepath.Join(root, "escape.yaml")
+	require.NoError(t, os.Symlink(outsideFile, symlink))
+
+	// Syntactically the symlink is under root, but it resolves outside.
+	assert.False(t, isContainedPath(symlink, root),
+		"symlink pointing outside workspace root must be rejected")
+
+	// A real file under root should still pass.
+	realFile := filepath.Join(root, "legit.yaml")
+	require.NoError(t, os.WriteFile(realFile, []byte("ok"), 0o644))
+	assert.True(t, isContainedPath(realFile, root))
 }
 
 func TestResolveHarness_LocalProfile_CachePathGetsYAMLExtension(t *testing.T) {
@@ -2196,6 +2218,35 @@ func TestResolveHarness_LocalProfile_CachePathGetsYAMLExtension(t *testing.T) {
 	assert.Equal(t, profileContent, got)
 }
 
+func TestResolveHarness_LocalProfile_SymlinkEscapeRejected(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	// Create a valid profile outside workspace root.
+	outsideProfile := filepath.Join(outside, "evil.yaml")
+	require.NoError(t, os.WriteFile(outsideProfile,
+		[]byte("id: evil\nnetwork:\n  egress:\n    - host: evil.com\n"), 0o644))
+
+	// Create a symlink inside root pointing to the outside profile.
+	profilesDir := filepath.Join(root, "profiles")
+	require.NoError(t, os.MkdirAll(profilesDir, 0o755))
+	symlink := filepath.Join(profilesDir, "escape.yaml")
+	require.NoError(t, os.Symlink(outsideProfile, symlink))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{symlink},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside workspace root")
+}
+
 func TestResolveHarness_LocalProfile_YAMLExtensionUnchanged(t *testing.T) {
 	root := t.TempDir()
 
@@ -2219,6 +2270,42 @@ func TestResolveHarness_LocalProfile_YAMLExtensionUnchanged(t *testing.T) {
 	require.Len(t, result.Profiles, 1)
 	assert.Equal(t, profilePath, result.Profiles[0].LocalPath,
 		"profile with .yaml extension should keep its original path")
+}
+
+func TestResolveHarness_LocalProfile_ExtensionlessNonCacheNoSideEffect(t *testing.T) {
+	root := t.TempDir()
+
+	// Create a local extensionless profile in the user's "repo" (not cache).
+	profileDir := filepath.Join(root, "profiles")
+	require.NoError(t, os.MkdirAll(profileDir, 0o755))
+	profilePath := filepath.Join(profileDir, "mycustomprofile")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-custom\nnetwork:\n  egress:\n    - host: example.com\n"), 0o644))
+
+	dirBefore, err := os.ReadDir(profileDir)
+	require.NoError(t, err)
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Profiles, 1)
+
+	// The original path should be kept as-is (no symlink rename).
+	assert.Equal(t, profilePath, result.Profiles[0].LocalPath,
+		"non-cache extensionless profile should not be renamed")
+
+	// No new files should appear in the directory.
+	dirAfter, err := os.ReadDir(profileDir)
+	require.NoError(t, err)
+	assert.Equal(t, len(dirBefore), len(dirAfter),
+		"no stray symlink should be created next to a non-cache local profile")
 }
 
 func TestResolveHarness_LocalProfileReadError(t *testing.T) {

@@ -22,9 +22,9 @@ func IsRelPath(s string) bool {
 	return s != "" && !IsURL(s) && !IsAbsPath(s)
 }
 
-// IsProviderPath returns true if s looks like a file path rather than a bare
-// provider name. A provider string is a path if it contains a directory
-// separator or ends with a YAML extension.
+// IsProviderPath returns true if s is a file path rather than a bare provider
+// name. A provider string is a path if it contains a directory separator or
+// ends with a YAML extension.
 func IsProviderPath(s string) bool {
 	return strings.Contains(s, "/") || strings.HasSuffix(s, ".yaml") || strings.HasSuffix(s, ".yml")
 }

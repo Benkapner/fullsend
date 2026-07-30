@@ -3667,6 +3667,8 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	return allDefs, shadowed
 }
 
+// hasLocalProviders reports whether the harness has any provider entries that
+// are local file paths (not URLs and not bare provider names).
 func hasLocalProviders(h *harness.Harness) bool {
 	for _, p := range h.Providers {
 		if !harness.IsURL(p) && harness.IsProviderPath(p) {

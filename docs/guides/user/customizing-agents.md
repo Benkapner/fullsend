@@ -71,8 +71,9 @@ env:
 **Optional fields** (all have secure defaults and can be omitted):
 
 ```yaml
-providers:                       # Inference providers (local names or URLs)
+providers:                       # Inference providers (names, local paths, or URLs)
   - vertex                       # Local name: references providers/vertex.yaml
+  - providers/custom.yaml        # Local path: resolved relative to harness
   - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote URL
 
 openshell:                       # Openshell provider profiles (local paths or URLs)
@@ -125,11 +126,12 @@ security:                        # Security is enabled by default with fail_mode
 
 Providers and openshell profiles can be referenced from remote URLs, enabling fully portable harnesses that bundle everything an agent needs.
 
-**`providers`** accepts both local provider names and HTTPS URLs with integrity hashes:
+**`providers`** accepts local provider names, local file paths, and HTTPS URLs with integrity hashes:
 
 ```yaml
 providers:
-  - vertex                       # Local: loaded from providers/vertex.yaml
+  - vertex                       # Local name: loaded from providers/vertex.yaml
+  - providers/custom.yaml        # Local path: resolved relative to harness
   - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote
 ```
 

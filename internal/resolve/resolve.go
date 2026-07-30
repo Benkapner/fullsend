@@ -113,6 +113,8 @@ func WarnLiteralCredentials(providerName string, creds map[string]string) string
 		providerName, strings.Join(bad, ", "))
 }
 
+// parseProviderDef unmarshals a provider definition from YAML content,
+// validates required fields, and checks for literal credentials.
 func parseProviderDef(content []byte, index int, source string) (harness.ProviderDef, string, error) {
 	var def harness.ProviderDef
 	if err := yaml.Unmarshal(content, &def); err != nil {
@@ -138,13 +140,36 @@ func parseProviderDef(content []byte, index int, source string) (harness.Provide
 // Used as defense-in-depth when reading local profile/provider files —
 // upstream guards (ResolveRelativeTo, validateBaseRelPath) already constrain
 // paths, but this check catches bugs in those guards.
+// When the path exists on disk, resolves symlinks to prevent escape.
 func isContainedPath(p, root string) bool {
 	if root == "" {
-		return true // no containment boundary configured
+		return false
 	}
 	cleaned := filepath.Clean(p)
 	rootCleaned := filepath.Clean(root)
-	return cleaned == rootCleaned || strings.HasPrefix(cleaned, rootCleaned+string(filepath.Separator))
+	if cleaned != rootCleaned && !strings.HasPrefix(cleaned, rootCleaned+string(filepath.Separator)) {
+		return false
+	}
+	realPath, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return true // path doesn't exist yet; syntactic check passed
+	}
+	realRoot, err := filepath.EvalSymlinks(rootCleaned)
+	if err != nil {
+		return true // root doesn't exist; syntactic check passed
+	}
+	return realPath == realRoot || strings.HasPrefix(realPath, realRoot+string(filepath.Separator))
+}
+
+// isCachePath reports whether p is inside the .fullsend-cache directory.
+// Duplicates compose.isFullsendCachePath intentionally to avoid an import cycle.
+func isCachePath(p, workspaceRoot string) bool {
+	if !filepath.IsAbs(p) || workspaceRoot == "" {
+		return false
+	}
+	cacheDir := filepath.Join(workspaceRoot, ".fullsend-cache")
+	rel, err := filepath.Rel(cacheDir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ResolveOpts controls how URL-referenced resources are resolved.
@@ -340,7 +365,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 
 			content, err := os.ReadFile(localPath)
 			if err != nil {
-				return ResolveResult{}, fmt.Errorf("reading profile %s: %w", p, err)
+				return ResolveResult{}, fmt.Errorf("reading resolved profile %s: %w", localPath, err)
 			}
 			id, err := ParseProfileID(content)
 			if err != nil {
@@ -377,7 +402,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			}
 
 			ext := strings.ToLower(filepath.Ext(localPath))
-			if ext != ".yaml" && ext != ".yml" {
+			if ext != ".yaml" && ext != ".yml" && isCachePath(localPath, opts.WorkspaceRoot) {
 				localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
 				if err != nil {
 					return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)

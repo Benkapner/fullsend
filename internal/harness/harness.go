@@ -423,7 +423,7 @@ func (h *Harness) Validate() error {
 	}
 	for i, p := range h.Providers {
 		if IsURL(p) || filepath.IsAbs(p) || IsProviderPath(p) {
-			continue // URL validated by ValidateResourceTypes; paths validated downstream by ResolveHarness/parseProviderDef
+			continue // validated downstream by ResolveHarness/parseProviderDef
 		}
 		if !validProviderName.MatchString(p) {
 			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
@@ -716,18 +716,9 @@ func (h *Harness) ValidateFilesExist() error {
 			return err
 		}
 	}
-	for i, p := range h.OpenShellProfiles() {
-		if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
-			return err
-		}
-	}
-	for i, p := range h.Providers {
-		if IsProviderPath(p) {
-			if err := check(fmt.Sprintf("providers[%d]", i), p); err != nil {
-				return err
-			}
-		}
-	}
+	// Profile and provider paths are not checked here — ResolveHarness
+	// reads them via os.ReadFile before this function runs, surfacing
+	// missing-file errors at that point.
 	if h.ValidationLoop != nil {
 		if err := check("validation_loop.script", h.ValidationLoop.Script); err != nil {
 			return err

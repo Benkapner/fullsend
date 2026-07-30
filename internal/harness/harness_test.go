@@ -1008,36 +1008,6 @@ validation_loop:
 	assert.Empty(t, h.ValidationLoop.PreflightCheck)
 }
 
-func TestValidateFilesExist_MissingProfile(t *testing.T) {
-	dir := t.TempDir()
-	agentFile := filepath.Join(dir, "agent.md")
-	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
-
-	h := &Harness{
-		Agent: agentFile,
-		OpenShell: &OpenShellConfig{
-			Profiles: []string{"/nonexistent/profile.yaml"},
-		},
-	}
-	err := h.ValidateFilesExist()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell.profiles[0]")
-}
-
-func TestValidateFilesExist_MissingProviderPath(t *testing.T) {
-	dir := t.TempDir()
-	agentFile := filepath.Join(dir, "agent.md")
-	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
-
-	h := &Harness{
-		Agent:     agentFile,
-		Providers: []string{"/nonexistent/provider.yaml"},
-	}
-	err := h.ValidateFilesExist()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "providers[0]")
-}
-
 func TestValidateFilesExist_BareProviderNameSkipped(t *testing.T) {
 	dir := t.TempDir()
 	agentFile := filepath.Join(dir, "agent.md")
