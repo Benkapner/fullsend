@@ -3,6 +3,7 @@ package jirapoll
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
@@ -102,11 +104,12 @@ func (m *mockClient) GetEntityProperty(_ context.Context, issueKey, propKey stri
 	}
 	props, ok := m.properties[issueKey]
 	if !ok {
-		return nil, nil
+		// Match real Jira behavior: 404 when property doesn't exist.
+		return nil, fmt.Errorf("property %s not found on %s: %w", propKey, issueKey, forge.ErrNotFound)
 	}
 	val, ok := props[propKey]
 	if !ok {
-		return nil, nil
+		return nil, fmt.Errorf("property %s not found on %s: %w", propKey, issueKey, forge.ErrNotFound)
 	}
 	return val, nil
 }
@@ -898,9 +901,118 @@ func TestParseJiraTimestamp(t *testing.T) {
 // setLastCheck is a test helper to pre-populate lastCheck for an issue.
 func setLastCheck(mc *mockClient, issueKey, owner, repo string, t time.Time) {
 	propKey := lastCheckPropertyKey(owner, repo)
-	ts, _ := json.Marshal(t.UTC().Format(time.RFC3339))
+	ts, _ := json.Marshal(t.UTC().Format(time.RFC3339Nano))
 	if mc.properties[issueKey] == nil {
 		mc.properties[issueKey] = make(map[string]json.RawMessage)
 	}
 	mc.properties[issueKey][propKey] = ts
+}
+
+func TestReadLock_NotFound(t *testing.T) {
+	mc := newMockClient()
+	p := New(mc, nil, Options{TargetRepo: "acme/platform"})
+
+	// No properties set — mock returns forge.ErrNotFound.
+	lock, err := p.readLock(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLock() should return nil error for missing property, got: %v", err)
+	}
+	if lock != nil {
+		t.Errorf("readLock() = %+v, want nil (unlocked)", lock)
+	}
+}
+
+func TestReadLastCheck_NotFound(t *testing.T) {
+	mc := newMockClient()
+	p := New(mc, nil, Options{TargetRepo: "acme/platform"})
+
+	// No properties set — mock returns forge.ErrNotFound.
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() should return zero time for missing property, got error: %v", err)
+	}
+	if !lastCheck.IsZero() {
+		t.Errorf("readLastCheck() = %v, want zero time", lastCheck)
+	}
+}
+
+func TestLastCheck_SubSecondPrecision(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, nil, Options{TargetRepo: "acme/platform"})
+
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 30, 19, 23, 30, 556000000, time.UTC) // .556s
+
+	if err := p.advanceLastCheck(ctx, "PROJ-123", ts); err != nil {
+		t.Fatalf("advanceLastCheck() error: %v", err)
+	}
+
+	got, err := p.readLastCheck(ctx, "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+
+	if !got.Equal(ts) {
+		t.Errorf("readLastCheck() = %v, want %v (sub-second precision lost)", got, ts)
+	}
+
+	// A comment at the exact same timestamp should NOT pass the After check.
+	if ts.After(got) {
+		t.Error("timestamp.After(lastCheck) should be false for equal times")
+	}
+}
+
+func TestRunFirstPoll_NoLockProperty(t *testing.T) {
+	// Verifies the full poll cycle works when no entity properties exist
+	// (first poll on a fresh issue), which is the forge.ErrNotFound path.
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels:   []string{"bug"},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage check this",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []poll.Dispatch
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(dispatches) == 0 {
+		t.Error("expected dispatches on first poll with no prior entity properties")
+	}
 }
