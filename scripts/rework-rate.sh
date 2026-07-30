@@ -55,7 +55,8 @@ echo ""
 TOTAL=0
 CHECKED=0
 REWORKED=0
-SKIPPED=0
+SKIPPED_WINDOW=0
+SKIPPED_ERROR=0
 REWORKED_LINES=()
 
 while IFS= read -r pr_json; do
@@ -73,13 +74,13 @@ while IFS= read -r pr_json; do
 
   if [ -z "$FOLLOWUP_UNTIL" ]; then
     echo "    WARNING: could not compute follow-up window for #${PR_NUM} (merged_at=${MERGED_AT})"
-    SKIPPED=$((SKIPPED + 1))
+    SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
     continue
   fi
 
   if [[ "$FOLLOWUP_UNTIL" > "$NOW" ]]; then
     echo "    follow-up window not elapsed yet, skipping"
-    SKIPPED=$((SKIPPED + 1))
+    SKIPPED_WINDOW=$((SKIPPED_WINDOW + 1))
     continue
   fi
 
@@ -89,7 +90,7 @@ while IFS= read -r pr_json; do
     --jq '.[].filename' 2>"$PR_FILES_ERR"); then
     echo "    WARNING: could not fetch files for #${PR_NUM}: $(cat "$PR_FILES_ERR")"
     rm -f "$PR_FILES_ERR"
-    SKIPPED=$((SKIPPED + 1))
+    SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
     continue
   fi
   rm -f "$PR_FILES_ERR"
@@ -104,7 +105,7 @@ while IFS= read -r pr_json; do
   if ! PR_MERGE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUM}" --jq '.merge_commit_sha' 2>"$MERGE_SHA_ERR"); then
     echo "    WARNING: could not fetch merge SHA for #${PR_NUM}: $(cat "$MERGE_SHA_ERR")"
     rm -f "$MERGE_SHA_ERR"
-    SKIPPED=$((SKIPPED + 1))
+    SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
     continue
   fi
   rm -f "$MERGE_SHA_ERR"
@@ -112,10 +113,10 @@ while IFS= read -r pr_json; do
   # Get commits after merge by non-bot authors (paginated)
   COMMITS_ERR=$(mktemp)
   if ! FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
-    --paginate --jq '.[] | select(.author.type != "Bot") | {sha: .sha, author: .author.login, parents: (.parents | length)}' 2>"$COMMITS_ERR"); then
+    --paginate --jq '.[] | select(.author != null and .author.type != "Bot") | {sha: .sha, author: (.author.login // "unknown"), parents: (.parents | length)}' 2>"$COMMITS_ERR"); then
     echo "    WARNING: could not fetch follow-up commits for #${PR_NUM}: $(cat "$COMMITS_ERR")"
     rm -f "$COMMITS_ERR"
-    SKIPPED=$((SKIPPED + 1))
+    SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
     continue
   fi
   rm -f "$COMMITS_ERR"
@@ -164,7 +165,7 @@ while IFS= read -r pr_json; do
   done <<< "$FOLLOWUP_COMMITS"
 
   if [ -n "$PR_HAD_ERROR" ] && [ -z "$FOUND_REWORK" ]; then
-    SKIPPED=$((SKIPPED + 1))
+    SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
     continue
   fi
 
@@ -186,8 +187,11 @@ else
   RATE=$(awk "BEGIN {printf \"%.1f\", ($REWORKED / $CHECKED) * 100}")
   echo "Rework rate: ${RATE}%"
 fi
-if [ "$SKIPPED" -gt 0 ]; then
-  echo "Skipped (window not elapsed or API errors): ${SKIPPED}"
+if [ "$SKIPPED_WINDOW" -gt 0 ]; then
+  echo "Skipped (follow-up window not elapsed): ${SKIPPED_WINDOW}"
+fi
+if [ "$SKIPPED_ERROR" -gt 0 ]; then
+  echo "Skipped (API errors): ${SKIPPED_ERROR}"
 fi
 
 if [ ${#REWORKED_LINES[@]} -gt 0 ]; then
