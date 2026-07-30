@@ -691,18 +691,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate inputs
-        id: validate
-        env:
-          ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
-          REPO_FULL_NAME: ${{ github.repository }}
-          GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
-          COMMENT_BODY: ${{ fromJSON(needs.route.outputs.event_payload).comment.body }}
-          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-        run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-code.sh"
-
       - name: Setup GCP and prepare credentials
-        if: steps.validate.outputs.skipped != 'true'
         uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -710,7 +699,6 @@ jobs:
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
 
       - name: Resolve bot identity
-        if: steps.validate.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -726,7 +714,6 @@ jobs:
           git config --global user.name "${BOT_LOGIN}"
 
       - name: Setup agent environment
-        if: steps.validate.outputs.skipped != 'true'
         env:
           AGENT_PREFIX: CODE_
           CODE_TARGET_REPO_DIR: target-repo
@@ -736,11 +723,18 @@ jobs:
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent
-        if: steps.validate.outputs.skipped != 'true'
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          # Reaches the harness pre-script inside fullsend run, which reads it
+          # for its --force override of the existing-PR check (pre-script
+          # output protocol, issue #4718). The override is not end-to-end:
+          # the route job's own "Check for existing PRs" step above gates
+          # stage=code first and does not honor --force, so a /fs-code
+          # --force comment is stopped before this value is ever read.
+          # env-quoted, never interpolated into run: blocks.
+          COMMENT_BODY: ${{ fromJSON(needs.route.outputs.event_payload).comment.body }}
           REPO_FULL_NAME: ${{ github.repository }}
           CODE_ALLOWED_TARGET_BRANCHES: ''
           TARGET_BRANCH: main
@@ -1107,16 +1101,6 @@ jobs:
             exit 1
           fi
           echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
-
-      - name: Validate inputs
-        env:
-          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
-          REPO_FULL_NAME: ${{ github.repository }}
-          TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
-          FIX_ITERATION: ${{ steps.context.outputs.iteration }}
-          HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
-          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-        run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fix.sh"
 
       - name: Setup GCP and prepare credentials
         uses: ./.defaults/.github/actions/setup-gcp
