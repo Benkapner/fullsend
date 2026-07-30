@@ -47,8 +47,6 @@ fullsend
 │   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
 │   │   ├── --forge-url <url>                #   Forge instance URL (required for gitlab)
 │   │   ├── --mint-url <url>                 #   Token mint Cloud Run endpoint URL
-│   │   ├── --mint-project <id>              #   GCP project for the mint
-│   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
 │   │   ├── --inference-project <id>         #   Default GCP project for inference
 │   │   ├── --inference-region <region>      #   GCP region for inference (default: us-central1)
 │   │   ├── --fullsend-ref <ref>             #   Pin the fullsend workflow ref (e.g. v0.42.0)
@@ -57,7 +55,6 @@ fullsend
 │   ├── install      [repos...]              # Install fullsend on uninstalled manifest repos
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --skip-mint-check                #   Skip org registration in mint
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   └── --direct                         #   Push scaffold to default branch (skip PR)
@@ -74,13 +71,11 @@ fullsend
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --uninstall                      #   Tear down fullsend before removing
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   ├── status                               # Compare manifest against actual repo state
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
@@ -104,10 +99,7 @@ fullsend
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --force                          #   Upgrade even if current ref is newer
 │   │   ├── --direct                         #   Push directly to default branch (skip PR)
-│   │   ├── --skip-mint-check                #   Skip mint URL verification before upgrading
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   └── upgrade-mint                         # Verify token mint deployment matches manifest
-│       └── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents

@@ -799,98 +799,6 @@ func TestIsFloatingRef(t *testing.T) {
 	}
 }
 
-func TestUpgradeMint_Success(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "https://mint.example.com",
-		},
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestUpgradeMint_URLMismatch(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "https://other-mint.example.com",
-		},
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err == nil {
-		t.Fatal("expected error for URL mismatch")
-	}
-	if indexOf(err.Error(), "does not match") < 0 {
-		t.Errorf("error should mention mismatch, got: %v", err)
-	}
-}
-
-func TestUpgradeMint_DiscoverError(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverErr: fmt.Errorf("network error"),
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err == nil {
-		t.Fatal("expected error for discover failure")
-	}
-}
-
-func TestUpgradeMint_EmptyURL(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "",
-		},
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err == nil {
-		t.Fatal("expected error for empty URL")
-	}
-}
-
-type fakeProvisioner struct {
-	discoverResult *MintDiscovery
-	discoverErr    error
-	provisionWIF   string
-	provisionErr   error
-}
-
-func (f *fakeProvisioner) DiscoverMint(_ context.Context) (*MintDiscovery, error) {
-	return f.discoverResult, f.discoverErr
-}
-
-func (f *fakeProvisioner) ProvisionWIF(_ context.Context) (string, error) {
-	return f.provisionWIF, f.provisionErr
-}
-
-func (f *fakeProvisioner) RegisterPerRepoWIF(_ context.Context, _ string) error {
-	return nil
-}
-
-func (f *fakeProvisioner) EnsureOrgInMint(_ context.Context, _, _ string) error {
-	return nil
-}
-
-func (f *fakeProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error {
-	return nil
-}
-
-func (f *fakeProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	return nil
-}
-
 func TestUpgrade_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1030,29 +938,6 @@ func TestUpgrade_APIErrorOnWorkflowRead(t *testing.T) {
 
 	if results[0].Error == nil {
 		t.Error("expected error for API failure")
-	}
-}
-
-func TestUpgradeMint_ProgressCallback(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "https://mint.example.com",
-		},
-	}
-
-	var phases []string
-	progressFn := func(_, phase, _ string) {
-		phases = append(phases, phase)
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-	err := UpgradeMint(context.Background(), m, prov, progressFn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(phases) == 0 {
-		t.Error("expected progress callbacks")
 	}
 }
 

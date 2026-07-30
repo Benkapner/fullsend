@@ -20,7 +20,6 @@ type UninstallConfig struct {
 	Manifest       *Manifest
 	Repos          []string
 	DryRun         bool
-	SkipWIFCleanup bool
 	MaxConcurrency int
 }
 
@@ -33,22 +32,19 @@ type UninstallResult struct {
 	WorkflowDeleted bool
 	VarsDeleted     int
 	SecretsDeleted  int
-	WIFDeregistered bool
 }
 
 // Uninstall tears down fullsend from the specified repos.
 //
-// It runs in two phases:
-//  1. Parallel per-repo cleanup (bounded by MaxConcurrency): delete workflow
-//     file, then delete variables and secrets. If workflow deletion fails,
-//     variables and secrets are left intact.
-//  2. Sequential WIF cleanup (only for Phase 1 successes): deregister from
-//     mint's PER_REPO_WIF_REPOS and delete WIF provider. Sequential because
-//     mint env var updates are read-modify-write operations.
+// It runs in a single phase: parallel per-repo cleanup (bounded by
+// MaxConcurrency) deletes the workflow file, then deletes variables and
+// secrets.
+//
+// GCP WIF cleanup is handled separately via `inference deprovision`.
 //
 // Does NOT modify repos.yaml — use RemoveFromManifest for that.
 func Uninstall(ctx context.Context, cfg UninstallConfig,
-	clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
+	clients ForgeClientFactory,
 	progress ProgressFunc) ([]UninstallResult, error) {
 
 	if len(cfg.Repos) == 0 {
@@ -84,7 +80,7 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 		return results, nil
 	}
 
-	// Phase 1: Parallel per-repo cleanup.
+	// Parallel per-repo cleanup.
 	results := make([]UninstallResult, len(parsed))
 	sem := make(chan struct{}, cfg.MaxConcurrency)
 	var wg sync.WaitGroup
@@ -120,50 +116,6 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
-
-	// Phase 2: Sequential WIF cleanup (only for Phase 1 successes).
-	if !cfg.SkipWIFCleanup && provisionerFactory != nil && cfg.Manifest != nil {
-		for i := range results {
-			if results[i].Error != nil || !results[i].WorkflowDeleted {
-				continue
-			}
-			if ctx.Err() != nil {
-				for j := i; j < len(results); j++ {
-					if results[j].Error != nil || !results[j].WorkflowDeleted {
-						continue
-					}
-					if _, ok := cfg.Manifest.ResolveConfigWithGlobs(results[j].Owner, results[j].Repo); ok {
-						results[j].Error = fmt.Errorf("WIF cleanup skipped: %w", ctx.Err())
-					}
-				}
-				break
-			}
-
-			fullName := results[i].Owner + "/" + results[i].Repo
-			resolved, ok := cfg.Manifest.ResolveConfigWithGlobs(results[i].Owner, results[i].Repo)
-			if !ok {
-				progress(fullName, "wif", "Not in manifest, skipping WIF cleanup")
-				results[i].Success = true
-				continue
-			}
-
-			if resolved.Forge != ForgeGitHub {
-				progress(fullName, "wif", "Skipping WIF cleanup for non-GitHub forge")
-				results[i].Success = true
-				continue
-			}
-
-			prov := provisionerFactory(resolved)
-			progress(fullName, "wif", "Deregistering from mint and deleting WIF provider")
-			if err := prov.DeletePerRepoWIF(ctx, fullName); err != nil {
-				results[i].Error = fmt.Errorf("WIF cleanup: %w", err)
-				progress(fullName, "wif", fmt.Sprintf("WIF cleanup failed: %v", err))
-				continue
-			}
-			results[i].WIFDeregistered = true
-			progress(fullName, "wif", "WIF cleanup complete")
-		}
-	}
 
 	for i := range results {
 		if results[i].Error == nil {

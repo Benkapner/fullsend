@@ -1,13 +1,12 @@
 // Package repos provides reusable per-repo installation logic for fullsend.
-// It decouples the core install flow (guard check, WIF provisioning, scaffold
-// commit, variable/secret writes) from CLI concerns (prompts, spinners, flag
-// parsing) so that both the interactive CLI and future bulk-install commands
-// can share the same logic.
+// It decouples the core install flow (guard check, scaffold commit,
+// variable/secret writes) from CLI concerns (prompts, spinners, flag parsing)
+// so that both the interactive CLI and future bulk-install commands can share
+// the same logic.
 package repos
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 
@@ -50,8 +49,6 @@ type InstallConfig struct {
 	// that handle specific steps externally (e.g., admin.go handles guard
 	// checks and mint setup before calling Install).
 	SkipAppSetup   bool
-	SkipMintCheck  bool
-	SkipWIF        bool
 	SkipGuardCheck bool
 
 	// SkipScaffoldAndConfig skips scaffold file delivery and variable/secret
@@ -59,9 +56,9 @@ type InstallConfig struct {
 	// commits scaffold and vendor files together atomically).
 	SkipScaffoldAndConfig bool
 
-	// WIFProvider is a pre-provisioned WIF provider resource name. When set
-	// and SkipWIF is true, the install skips WIF provisioning and uses this
-	// value directly.
+	// WIFProvider is the pre-computed WIF provider resource name. The caller
+	// is responsible for computing or provisioning this value before calling
+	// Install. Required unless SkipScaffoldAndConfig is true.
 	WIFProvider string
 
 	VendorBinary bool
@@ -85,51 +82,6 @@ type InstallResult struct {
 	WIFProvider string
 }
 
-// MintDiscovery holds the results of a mint infrastructure discovery call.
-type MintDiscovery struct {
-	URL             string
-	RoleAppIDs      map[string]string
-	PerRepoWIFRepos []string
-}
-
-// WIFProvisioner abstracts Workload Identity Federation and mint discovery
-// operations, decoupling the install logic from the concrete GCF provisioner.
-//
-// All methods return wrapped errors suitable for errors.Is checks.
-// DiscoverMint wraps ErrMintNotFound when the mint function does not exist.
-// Other methods return provider-specific errors (e.g., IAM permission denied).
-type WIFProvisioner interface {
-	// DiscoverMint fetches mint infrastructure info (URL, role-to-app-ID
-	// mappings, per-repo WIF repos). Returns an error wrapping
-	// ErrMintNotFound if the mint function does not exist.
-	DiscoverMint(ctx context.Context) (*MintDiscovery, error)
-
-	// ProvisionWIF creates WIF infrastructure (service account, pool,
-	// provider, principal binding) and returns the full WIF provider
-	// resource name. Must be idempotent: partial-install repair may
-	// call this for repos that already have WIF provisioned.
-	ProvisionWIF(ctx context.Context) (string, error)
-
-	// RegisterPerRepoWIF adds a repo to the mint's PER_REPO_WIF_REPOS
-	// env var so the mint routes OIDC tokens for that repo to a dedicated
-	// WIF provider.
-	RegisterPerRepoWIF(ctx context.Context, repo string) error
-
-	// EnsureOrgInMint validates that a mint function exists at expectedURL
-	// and that the given org is registered in ALLOWED_ORGS.
-	EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error
-
-	// DeletePerRepoWIF removes a repo from per-repo WIF registration.
-	DeletePerRepoWIF(ctx context.Context, repo string) error
-
-	// DeleteWIFProvider deletes the WIF provider for a repo from the
-	// GCP project (used during uninstall to clean up IAM resources).
-	DeleteWIFProvider(ctx context.Context, repo string) error
-}
-
-// ErrMintNotFound indicates the mint function does not exist.
-var ErrMintNotFound = errors.New("mint function not found")
-
 // ScaffoldCommitFunc delivers scaffold files to a repository and returns
 // any error encountered.
 //
@@ -144,23 +96,18 @@ type ScaffoldCommitFunc func(ctx context.Context, owner, repo string,
 //
 // Parameters:
 //   - repo: the "owner/repo" being installed
-//   - phase: a machine-readable phase name (e.g., "guard", "wif", "scaffold", "vars")
+//   - phase: a machine-readable phase name (e.g., "guard", "scaffold", "vars", "secrets")
 //   - message: a human-readable status message
 type ProgressFunc func(repo, phase, message string)
 
 // Install performs a per-repo fullsend installation. It checks for an existing
-// installation, optionally discovers mint infrastructure and provisions WIF,
-// generates and commits scaffold files, and writes repository variables and
-// secrets.
-//
-// The commitScaffold callback handles scaffold file delivery. The CLI layer
-// provides an implementation with retry and fallback semantics; tests provide
-// a simple fake.
-//
-// CLI concerns (prompts, spinners, token resolution, scope checks, dry-run)
-// are handled by the caller. This function contains only the pure install logic.
+// installation, generates and commits scaffold files, and writes repository
+// variables and secrets. The caller is responsible for computing the WIF
+// provider resource name (via InstallConfig.WIFProvider) before calling this
+// function — GCP provisioning is handled separately by `inference provision`
+// and `mint enroll`.
 func Install(ctx context.Context, cfg InstallConfig,
-	client forge.Client, provisioner WIFProvisioner,
+	client forge.Client,
 	commitScaffold ScaffoldCommitFunc,
 	progress ProgressFunc) (*InstallResult, error) {
 
@@ -210,41 +157,9 @@ func Install(ctx context.Context, cfg InstallConfig,
 		}
 	}
 
-	// Step 2: Discover mint infrastructure (unless SkipMintCheck).
 	mintURL := cfg.MintURL
-	if !cfg.SkipMintCheck && mintURL == "" {
-		if provisioner == nil {
-			return result, fmt.Errorf("mint discovery required but no provisioner provided")
-		}
-		progress(repoFullName, "discover", "Discovering mint infrastructure")
-		discovery, err := provisioner.DiscoverMint(ctx)
-		if err != nil {
-			return result, fmt.Errorf("discovering mint infrastructure: %w", err)
-		}
-		mintURL = discovery.URL
-		if mintURL == "" {
-			return result, fmt.Errorf("mint discovery returned empty URL")
-		}
-	}
-
-	// Step 3: WIF provisioning (unless SkipWIF or provider already set).
 	wifProvider := cfg.WIFProvider
-	if !cfg.SkipWIF && wifProvider == "" {
-		if provisioner == nil {
-			return result, fmt.Errorf("WIF provisioning required but no provisioner provided")
-		}
-		progress(repoFullName, "wif", "Provisioning WIF infrastructure")
-		var err error
-		wifProvider, err = provisioner.ProvisionWIF(ctx)
-		if err != nil {
-			result.WIFProvider = wifProvider
-			return result, fmt.Errorf("provisioning WIF: %w", err)
-		}
-		result.WIFProvider = wifProvider
-		progress(repoFullName, "wif", "WIF infrastructure ready")
-	} else if wifProvider != "" {
-		result.WIFProvider = wifProvider
-	}
+	result.WIFProvider = wifProvider
 
 	// When SkipScaffoldAndConfig is set, the caller handles scaffold delivery
 	// and variable/secret writes externally (e.g., vendor mode commits

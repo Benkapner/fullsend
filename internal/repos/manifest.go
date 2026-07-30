@@ -62,11 +62,20 @@ type ForgeSection struct {
 type GitHubForgeInfra struct {
 	URL              string `yaml:"url,omitempty"`
 	MintURL          string `yaml:"mint_url,omitempty"`
-	MintProject      string `yaml:"mint_project,omitempty"`
-	MintRegion       string `yaml:"mint_region,omitempty"`
 	InferenceProject string `yaml:"inference_project,omitempty"`
 	InferenceRegion  string `yaml:"inference_region,omitempty"`
 	FullsendRef      string `yaml:"fullsend_ref,omitempty"`
+
+	// InferenceProjectNumber is the numeric GCP project number for the
+	// inference project. Used to compute the WIF provider resource name
+	// deterministically without GCP API calls.
+	InferenceProjectNumber string `yaml:"inference_project_number,omitempty"`
+
+	// Deprecated: MintProject and MintRegion are accepted for backward
+	// compatibility but ignored. GCP infrastructure is managed via
+	// `mint enroll` and `inference provision` commands.
+	MintProject string `yaml:"mint_project,omitempty"`
+	MintRegion  string `yaml:"mint_region,omitempty"`
 }
 
 // DefaultGitHubURL is the default forge URL for GitHub.com.
@@ -221,10 +230,9 @@ type ResolvedConfig struct {
 	Forge                  string
 	ForgeConfig            ForgeConfig
 	MintURL                string
-	MintProject            string
-	MintRegion             string
 	InferenceProject       string
 	InferenceRegion        string
+	InferenceProjectNumber string
 	FullsendRef            string
 	AllowedRemoteResources []string
 }
@@ -374,8 +382,8 @@ func fetchManifestURL(ctx context.Context, rawURL string, skipIPCheck bool) ([]b
 // Validate checks the manifest for structural correctness:
 //   - version must be 1
 //   - forge.github.url defaults to https://github.com when unset;
-//     mint_url/mint_project/mint_region are required when at least one
-//     repo resolves to forge: github
+//     mint_url is required when at least one repo resolves to
+//     forge: github
 //   - forge.gitlab.url is required when at least one repo resolves to
 //     forge: gitlab
 //   - each repo entry must have a valid owner/repo or owner/glob format
@@ -472,11 +480,13 @@ func (m *Manifest) Validate() error {
 			if err != nil || mu.Scheme != "https" || mu.Host == "" {
 				return fmt.Errorf("forge.github.mint_url must be a valid HTTPS URL, got %q", m.Forge.GitHub.MintURL)
 			}
-			if m.Forge.GitHub.MintProject == "" {
-				return fmt.Errorf("forge.github.mint_project is required when GitHub repos are present")
+			if m.Forge.GitHub.InferenceProjectNumber == "" {
+				return fmt.Errorf("forge.github.inference_project_number is required when GitHub repos are present")
 			}
-			if m.Forge.GitHub.MintRegion == "" {
-				return fmt.Errorf("forge.github.mint_region is required when GitHub repos are present")
+			for _, c := range m.Forge.GitHub.InferenceProjectNumber {
+				if c < '0' || c > '9' {
+					return fmt.Errorf("forge.github.inference_project_number must be a numeric string, got %q", m.Forge.GitHub.InferenceProjectNumber)
+				}
 			}
 			if m.Forge.GitHub.FullsendRef != "" && !IsValidRef(m.Forge.GitHub.FullsendRef) {
 				return fmt.Errorf("forge.github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Forge.GitHub.FullsendRef)
@@ -686,10 +696,9 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 	// GitLab repos do not use mint or inference fields.
 	if cfg.Forge == ForgeGitHub {
 		cfg.MintURL = m.Forge.GitHub.MintURL
-		cfg.MintProject = m.Forge.GitHub.MintProject
-		cfg.MintRegion = m.Forge.GitHub.MintRegion
 		cfg.InferenceProject = m.Forge.GitHub.InferenceProject
 		cfg.InferenceRegion = m.Forge.GitHub.InferenceRegion
+		cfg.InferenceProjectNumber = m.Forge.GitHub.InferenceProjectNumber
 		cfg.FullsendRef = m.Forge.GitHub.FullsendRef
 	}
 	return cfg

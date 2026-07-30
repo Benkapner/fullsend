@@ -74,10 +74,7 @@ to Terraform vs cloud provider CLIs.
 | `repos install` | Provision fullsend on uninstalled manifest repos |
 | `repos sync` / `repos diff` | Reconcile configuration drift |
 | `repos upgrade` | Upgrade scaffold shim ref across repos |
-| `repos upgrade-mint` | Verify token mint deployment against manifest |
 | `repos remove` | Remove fullsend from specific repos |
-
-> **Note:** `repos upgrade` now includes automatic mint verification as a pre-flight step (unless `--skip-mint-check` is set). The standalone `repos upgrade-mint` command remains available for verification without triggering an upgrade.
 
 **Manifest:** a YAML file declaring desired state — mint config, default
 field values, and a list of repos (strings for defaults, objects for
@@ -88,9 +85,8 @@ local path or URL per [ADR 0038](0038-universal-harness-access.md).
 
 **Key design constraints:**
 
-- WIF provisioning and mint registration are serialized
-  (read-modify-write on Cloud Run env vars). Install uses three phases:
-  parallel discovery → sequential WIF → parallel scaffold.
+- Install uses two phases: parallel discovery → parallel scaffold.
+  GCP infrastructure (WIF, mint) is provisioned separately.
 - Version changes (`repos upgrade`) are separated from config
   reconciliation (`repos sync`) to prevent accidental upgrades.
 - Works alongside per-org installations during a migration period;
@@ -135,5 +131,5 @@ Implemented subcommands:
 - `repos install` — PR #3033
 - `repos status` — PR #3031
 - `repos add`, `repos remove`, `repos uninstall` — PR #4081
-- `repos upgrade`, `repos upgrade-mint` — PR #4080
+- `repos upgrade` — PR #4080
 - `repos diff`, `repos sync` — PR #4079

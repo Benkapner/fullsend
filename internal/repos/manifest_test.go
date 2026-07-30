@@ -27,6 +27,7 @@ forge:
     mint_region: us-central1
     inference_project: default-inference
     inference_region: us-east1
+    inference_project_number: "123456789"
     fullsend_ref: main
 defaults:
   forge: github
@@ -326,28 +327,6 @@ func TestValidate_InvalidMintURL_GitHubRepos(t *testing.T) {
 	assert.ErrorContains(t, err, "forge.github.mint_url must be a valid HTTPS URL")
 }
 
-func TestValidate_MissingMintProject_GitHubRepos(t *testing.T) {
-	m := Manifest{
-		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintRegion: "r"}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    []RepoEntry{{Repo: "acme/repo"}},
-	}
-	err := m.Validate()
-	assert.ErrorContains(t, err, "forge.github.mint_project is required")
-}
-
-func TestValidate_MissingMintRegion_GitHubRepos(t *testing.T) {
-	m := Manifest{
-		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p"}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    []RepoEntry{{Repo: "acme/repo"}},
-	}
-	err := m.Validate()
-	assert.ErrorContains(t, err, "forge.github.mint_region is required")
-}
-
 func TestValidate_GitLabOnly_NoMintRequired(t *testing.T) {
 	m := Manifest{
 		Version:  1,
@@ -463,6 +442,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
+    inference_project_number: "123456789"
     mint_project: p
     mint_region: r
 defaults:
@@ -476,10 +456,33 @@ repos:
 	assert.NoError(t, m.Validate())
 }
 
+func TestValidate_InvalidInferenceProjectNumber(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", InferenceProjectNumber: "abc123"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "inference_project_number must be a numeric string")
+}
+
+func TestValidate_ValidInferenceProjectNumber(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", InferenceProjectNumber: "123456789"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("expected valid manifest, got error: %v", err)
+	}
+}
+
 func TestValidate_InvalidForgeFullsendRef(t *testing.T) {
 	m := Manifest{
 		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r", FullsendRef: "v1.0.0; rm -rf /"}},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", InferenceProjectNumber: "123456789", MintProject: "p", MintRegion: "r", FullsendRef: "v1.0.0; rm -rf /"}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
@@ -837,8 +840,6 @@ func TestResolveConfig_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "acme", cfg.Owner)
 	assert.Equal(t, "repo-one", cfg.Repo)
 	assert.Equal(t, "https://mint.example.com", cfg.MintURL)
-	assert.Equal(t, "my-project", cfg.MintProject)
-	assert.Equal(t, "us-central1", cfg.MintRegion)
 	assert.Equal(t, "default-inference", cfg.InferenceProject)
 	assert.Equal(t, "us-east1", cfg.InferenceRegion)
 	assert.Equal(t, "main", cfg.FullsendRef)
@@ -1308,6 +1309,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
+    inference_project_number: "123456789"
     mint_project: p
     mint_region: r
   gitlab:
@@ -1361,9 +1363,10 @@ func TestValidate_GitHubURL_DefaultsToGitHubCom(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL:                "https://mint.example.com",
+			InferenceProjectNumber: "123456789",
+			MintProject:            "p",
+			MintRegion:             "r",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1376,10 +1379,11 @@ func TestValidate_GitHubURL_ExplicitValue(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			URL:         "https://ghes.example.com",
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			URL:                    "https://ghes.example.com",
+			MintURL:                "https://mint.example.com",
+			InferenceProjectNumber: "123456789",
+			MintProject:            "p",
+			MintRegion:             "r",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1440,9 +1444,10 @@ func TestValidate_GitLabURL_NotRequiredWhenNotReferenced(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL:                "https://mint.example.com",
+			InferenceProjectNumber: "123456789",
+			MintProject:            "p",
+			MintRegion:             "r",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1530,10 +1535,11 @@ func TestValidate_GitHubURL_TrailingSlashAccepted(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			URL:         "https://ghes.example.com/",
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			URL:                    "https://ghes.example.com/",
+			MintURL:                "https://mint.example.com",
+			InferenceProjectNumber: "123456789",
+			MintProject:            "p",
+			MintRegion:             "r",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
