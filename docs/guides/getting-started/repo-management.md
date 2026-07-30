@@ -30,6 +30,7 @@ Generate a `repos.yaml` manifest by discovering existing installations:
 
 ```bash
 fullsend repos init <org> --forge github --all \
+  --mint-url <MINT_URL> \
   --mint-project <GCP_PROJECT> \
   --inference-project <GCP_PROJECT>
 ```
@@ -82,6 +83,8 @@ forge:
     mint_url: https://mint.example.com
     mint_project: my-project
     mint_region: us-central1
+    inference_project: my-project
+    inference_region: us-central1
     fullsend_ref: v2.5.0
   gitlab:
     url: https://gitlab.example.com
@@ -391,6 +394,7 @@ can use the following workflow.
 
 ```bash
 fullsend repos init <org> --forge github --all \
+  --mint-url <MINT_URL> \
   --mint-project <GCP_PROJECT> \
   --inference-project <GCP_PROJECT>
 ```

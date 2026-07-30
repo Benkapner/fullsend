@@ -34,7 +34,7 @@ These flags are inherited by all `repos` subcommands:
 Discovers existing fullsend installations (per-repo and per-org) and generates a `repos.yaml` manifest reflecting their current state. Supports greenfield onboarding and migration from existing installations.
 
 ```bash
-fullsend repos init <org> --forge github --all --mint-project <PROJECT> --inference-project <PROJECT>
+fullsend repos init <org> --forge github --all --mint-url <MINT_URL> --mint-project <PROJECT> --inference-project <PROJECT>
 ```
 
 Single-repo mode:
