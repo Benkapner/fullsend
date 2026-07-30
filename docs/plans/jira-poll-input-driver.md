@@ -448,9 +448,9 @@ Environment variables required by `runJiraPoll`:
 
 ### Incremental implementation order
 
-1. Implement the mock Jira server (httptest-based, stateful).
-2. Implement the new step definitions (`jirapoll.go`).
-3. Wire registration into `registry.go`.
+1. ~~Implement the mock Jira server (httptest-based, stateful).~~ Done.
+2. ~~Implement the new step definitions (`jirapoll.go`).~~ Done.
+3. ~~Wire registration into `registry.go`.~~ Done.
 4. Remove the `@requires:jira-mock` skip tag once steps are functional.
 5. Optionally: add a CI job that runs only `@requires:jira-mock` scenarios (fast, no GitHub API needed).
 
