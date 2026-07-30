@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Calculate rework rate for agent-authored PRs.
 #
-# Usage: ./scripts/rework-rate.sh [REPO] [DAYS] [FOLLOWUP_DAYS]
+# Usage: ./scripts/rework-rate.sh [REPO] [DAYS] [FOLLOWUP_DAYS] [BOT_LOGIN]
 #
 #   REPO           - GitHub repo (default: fullsend-ai/fullsend)
 #   DAYS           - Look back window for merged PRs (default: 30)
 #   FOLLOWUP_DAYS  - Window after merge to check for human follow-ups (default: 7)
+#   BOT_LOGIN      - Bot author to search for (default: fullsend-ai-coder[bot])
 #
 # Requires: gh CLI authenticated with repo access, jq
 
@@ -14,8 +15,16 @@ set -euo pipefail
 REPO="${1:-fullsend-ai/fullsend}"
 DAYS="${2:-30}"
 FOLLOWUP_DAYS="${3:-7}"
+BOT_LOGIN="${4:-fullsend-ai-coder[bot]}"
 
-SINCE=$(date -u -d "-${DAYS} days" +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v-"${DAYS}"d +%Y-%m-%dT00:00:00Z)
+SINCE=$(date -u -d "-${DAYS} days" +%Y-%m-%dT00:00:00Z 2>/dev/null \
+  || date -u -v-"${DAYS}"d +%Y-%m-%dT00:00:00Z 2>/dev/null \
+  || echo "")
+if [ -z "$SINCE" ]; then
+  echo "ERROR: could not compute start date. DAYS='${DAYS}' may be invalid."
+  exit 1
+fi
+
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 echo "Rework Rate Report"
@@ -26,16 +35,11 @@ echo ""
 
 # Fetch merged PRs by bot authors (paginated)
 BOT_PRS_ERR=$(mktemp)
-if ! BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:fullsend-ai-coder[bot]+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
+if ! BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:${BOT_LOGIN}+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
   --paginate --jq '.items[] | {number: .number, title: .title, closed_at: .closed_at}' 2>"$BOT_PRS_ERR"); then
-  echo "WARNING: bot PR search failed: $(cat "$BOT_PRS_ERR")"
-  # Fallback: try app/ prefix
-  if ! BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:app/fullsend-ai-coder+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
-    --paginate --jq '.items[] | {number: .number, title: .title, closed_at: .closed_at}' 2>"$BOT_PRS_ERR"); then
-    echo "ERROR: could not fetch bot PRs: $(cat "$BOT_PRS_ERR")"
-    rm -f "$BOT_PRS_ERR"
-    exit 1
-  fi
+  echo "ERROR: could not fetch bot PRs: $(cat "$BOT_PRS_ERR")"
+  rm -f "$BOT_PRS_ERR"
+  exit 1
 fi
 rm -f "$BOT_PRS_ERR"
 
@@ -68,6 +72,7 @@ while IFS= read -r pr_json; do
     || echo "")
 
   if [ -z "$FOLLOWUP_UNTIL" ]; then
+    echo "    WARNING: could not compute follow-up window for #${PR_NUM} (merged_at=${MERGED_AT})"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
@@ -98,7 +103,9 @@ while IFS= read -r pr_json; do
   MERGE_SHA_ERR=$(mktemp)
   if ! PR_MERGE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUM}" --jq '.merge_commit_sha' 2>"$MERGE_SHA_ERR"); then
     echo "    WARNING: could not fetch merge SHA for #${PR_NUM}: $(cat "$MERGE_SHA_ERR")"
-    PR_MERGE_SHA=""
+    rm -f "$MERGE_SHA_ERR"
+    SKIPPED=$((SKIPPED + 1))
+    continue
   fi
   rm -f "$MERGE_SHA_ERR"
 
@@ -137,7 +144,7 @@ while IFS= read -r pr_json; do
     fi
 
     COMMIT_FILES_ERR=$(mktemp)
-    if ! COMMIT_FILES=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" \
+    if ! COMMIT_FILES=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" --paginate \
       --jq '.files[].filename' 2>"$COMMIT_FILES_ERR"); then
       echo "    WARNING: could not fetch files for commit ${COMMIT_SHA:0:7}: $(cat "$COMMIT_FILES_ERR")"
       rm -f "$COMMIT_FILES_ERR"
@@ -167,19 +174,18 @@ while IFS= read -r pr_json; do
   fi
 done < <(echo "$BOT_PRS" | jq -c '.')
 
-if [ "$CHECKED" -eq 0 ]; then
-  RATE="0.0"
-else
-  RATE=$(awk "BEGIN {printf \"%.1f\", ($REWORKED / $CHECKED) * 100}")
-fi
-
 echo ""
 echo "Results"
 echo "-------"
 echo "Agent PRs found: ${TOTAL}"
 echo "Agent PRs checked: ${CHECKED}"
 echo "Reworked by humans: ${REWORKED}"
-echo "Rework rate: ${RATE}%"
+if [ "$CHECKED" -eq 0 ]; then
+  echo "Rework rate: n/a (0 of ${TOTAL} PRs evaluated)"
+else
+  RATE=$(awk "BEGIN {printf \"%.1f\", ($REWORKED / $CHECKED) * 100}")
+  echo "Rework rate: ${RATE}%"
+fi
 if [ "$SKIPPED" -gt 0 ]; then
   echo "Skipped (window not elapsed or API errors): ${SKIPPED}"
 fi

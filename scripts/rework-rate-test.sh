@@ -81,17 +81,30 @@ export GH_FAIL="false"
 run_case() {
   local name="$1"
   local expected_pattern="$2"
+  local expected_exit="${3:-0}"
 
   : >"${GH_LOG}"
 
-  local output
-  output="$("${REWORK_SCRIPT}" "test-org/test-repo" 30 7 2>&1)" || true
+  local output exit_code
+  set +e
+  output="$("${REWORK_SCRIPT}" "test-org/test-repo" 30 7 2>&1)"
+  exit_code=$?
+  set -e
 
-  if echo "${output}" | grep -qE "${expected_pattern}"; then
+  local failed=""
+  if ! echo "${output}" | grep -qE "${expected_pattern}"; then
+    failed="pattern"
+  fi
+  if [ "$exit_code" -ne "$expected_exit" ]; then
+    failed="${failed:+$failed+}exit_code"
+  fi
+
+  if [ -z "$failed" ]; then
     echo "PASS: ${name}"
   else
-    echo "FAIL: ${name}"
+    echo "FAIL: ${name} (${failed})"
     echo "  expected pattern: ${expected_pattern}"
+    echo "  expected exit: ${expected_exit}, got: ${exit_code}"
     echo "  got output:"
     echo "${output}" | sed 's/^/    /'
     FAILURES=$((FAILURES + 1))
@@ -159,13 +172,13 @@ EOF
 
 run_case "handles >100 PRs from paginated response" "Found 101 agent PRs"
 
-# --- Test 5: API failure skips PR with warning ---
+# --- Test 5: API failure on bot-PR search exits non-zero ---
 cat >"${SEARCH_RESULTS}" <<'EOF'
 {"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z"}]}
 EOF
 export GH_FAIL="true"
 
-run_case "API failure exits with error" "ERROR: could not fetch bot PRs"
+run_case "API failure on bot-PR search exits with error" "ERROR: could not fetch bot PRs" 1
 export GH_FAIL="false"
 
 # --- Results ---
