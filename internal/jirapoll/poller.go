@@ -173,7 +173,6 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	if err != nil {
 		return fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
 	}
-
 	// Detect changes.
 	events, err := p.detectChanges(ctx, issue, lastCheck)
 	if err != nil {

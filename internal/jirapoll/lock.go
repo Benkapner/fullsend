@@ -96,9 +96,13 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 		return time.Time{}, fmt.Errorf("unmarshal lastCheck: %w", err)
 	}
 
-	t, err := time.Parse(time.RFC3339, ts)
+	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("parse lastCheck: %w", err)
+		// Fall back to RFC3339 for values stored before the Nano switch.
+		t, err = time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse lastCheck: %w", err)
+		}
 	}
 	return t, nil
 }
@@ -107,7 +111,7 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 func (p *Poller) advanceLastCheck(ctx context.Context, issueKey string, t time.Time) error {
 	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
 	propKey := lastCheckPropertyKey(owner, repo)
-	return p.client.SetEntityProperty(ctx, issueKey, propKey, t.UTC().Format(time.RFC3339))
+	return p.client.SetEntityProperty(ctx, issueKey, propKey, t.UTC().Format(time.RFC3339Nano))
 }
 
 // isLockStale checks if a lock has exceeded the stale threshold.
