@@ -83,6 +83,10 @@ fullsend
 │   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   ├── status                               # Compare manifest against actual repo state
+│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
+│   │   ├── --json                           #   Emit JSON output instead of table
+│   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
+│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
 │   ├── diff                                 # Show configuration drift between manifest and actual state
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
