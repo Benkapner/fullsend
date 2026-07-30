@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -68,10 +69,31 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 	return current.ID == lockID, nil
 }
 
-// releaseLock removes the lock from the issue.
-func (p *Poller) releaseLock(ctx context.Context, issueKey string) error {
+// releaseLock removes the lock from the issue. When expectedID is non-empty,
+// the lock is only deleted if its ID still matches, preventing a slow poller
+// from deleting a lock that a faster concurrent poller has already replaced.
+func (p *Poller) releaseLock(ctx context.Context, issueKey, expectedID string) error {
 	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
 	propKey := lockPropertyKey(owner, repo)
+
+	if expectedID != "" {
+		raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
+		if err != nil {
+			if errors.Is(err, forge.ErrNotFound) {
+				return nil // already gone
+			}
+			return fmt.Errorf("read lock before release: %w", err)
+		}
+		var current LockValue
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return fmt.Errorf("unmarshal lock before release: %w", err)
+		}
+		if current.ID != expectedID {
+			log.Printf("lock on %s owned by %s, not %s; skipping release", issueKey, current.ID, expectedID)
+			return nil
+		}
+	}
+
 	return p.client.DeleteEntityProperty(ctx, issueKey, propKey)
 }
 

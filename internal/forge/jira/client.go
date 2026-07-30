@@ -49,13 +49,17 @@ type oauth2TokenSource struct {
 }
 
 func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
+	// Fast path: return cached token without blocking on HTTP.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.accessToken != "" && time.Now().Before(s.expiry.Add(-tokenRefreshMargin)) {
-		return s.accessToken, nil
+		tok := s.accessToken
+		s.mu.Unlock()
+		return tok, nil
 	}
+	s.mu.Unlock()
 
+	// Slow path: fetch a new token without holding the mutex so
+	// concurrent callers are not blocked by a slow token endpoint.
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {s.clientID},
@@ -92,9 +96,13 @@ func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("oauth2 token response missing access_token")
 	}
 
+	// Re-acquire lock to update the cache.
+	s.mu.Lock()
 	s.accessToken = tokenResp.AccessToken
 	s.expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	return s.accessToken, nil
+	s.mu.Unlock()
+
+	return tokenResp.AccessToken, nil
 }
 
 // Option configures the Jira client.
@@ -116,10 +124,14 @@ func WithEmail(email string) Option {
 	}
 }
 
-// WithHTTPClient sets a custom HTTP client.
+// WithHTTPClient sets a custom HTTP client for both API calls and, when using
+// OAuth 2.0, token exchange requests.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = client
+		if c.oauth2 != nil {
+			c.oauth2.httpClient = client
+		}
 	}
 }
 
@@ -438,13 +450,19 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
+// maxSearchPages limits pagination to prevent unbounded memory growth
+// from overly broad JQL queries.
+const maxSearchPages = 200
+
 // SearchIssues executes a JQL search and exhausts pagination, returning all
 // matching issues. Uses the POST /rest/api/3/search/jql endpoint with
-// cursor-based pagination (nextPageToken + isLast).
+// cursor-based pagination (nextPageToken + isLast). Pagination is capped
+// at maxSearchPages pages (10,000 issues at 50 per page) to prevent
+// unbounded memory growth.
 func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
-	for {
+	for page := 0; page < maxSearchPages; page++ {
 		body := searchRequest{
 			JQL:           jql,
 			MaxResults:    50,
@@ -456,15 +474,15 @@ func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) 
 		if err != nil {
 			return nil, fmt.Errorf("marshal search request: %w", err)
 		}
-		var page SearchResult
-		if err := c.do(ctx, http.MethodPost, "/search/jql", bytes.NewReader(bodyJSON), &page); err != nil {
+		var result SearchResult
+		if err := c.do(ctx, http.MethodPost, "/search/jql", bytes.NewReader(bodyJSON), &result); err != nil {
 			return nil, fmt.Errorf("search issues: %w", err)
 		}
-		all = append(all, page.Issues...)
-		if page.IsLast || len(page.Issues) == 0 || page.NextPageToken == "" {
+		all = append(all, result.Issues...)
+		if result.IsLast || len(result.Issues) == 0 || result.NextPageToken == "" {
 			break
 		}
-		nextPageToken = page.NextPageToken
+		nextPageToken = result.NextPageToken
 	}
 	return all, nil
 }

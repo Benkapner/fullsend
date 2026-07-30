@@ -48,6 +48,7 @@ func New(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
 // Run executes a single poll cycle per ADR 0063.
 func (p *Poller) Run(ctx context.Context) error {
 	cycleID := uuid.New().String()
+	p.dispatches = nil
 
 	// Load project role membership for actor role resolution.
 	if p.opts.JiraProject != "" {
@@ -126,7 +127,7 @@ func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.
 		if lock != nil {
 			if isLockStale(*lock, p.opts.StaleThreshold) {
 				log.Printf("cleaning stale lock on %s (age > %s)", issue.Key, p.opts.StaleThreshold)
-				if err := p.releaseLock(ctx, issue.Key); err != nil {
+				if err := p.releaseLock(ctx, issue.Key, ""); err != nil {
 					log.Printf("WARNING: cleaning stale lock for %s: %v", issue.Key, err)
 					continue
 				}
@@ -163,7 +164,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		return nil
 	}
 	defer func() {
-		if err := p.releaseLock(ctx, issue.Key); err != nil {
+		if err := p.releaseLock(ctx, issue.Key, cycleID); err != nil {
 			log.Printf("WARNING: releasing lock for %s: %v", issue.Key, err)
 		}
 	}()
@@ -189,7 +190,9 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// Filter bot events.
 	events = filterBotEvents(events)
 
-	// Convert, route, dispatch.
+	// Convert, route, dispatch. Only advance maxTime past events that
+	// were successfully routed (or had no matching stages). Events that
+	// fail routing are not counted so they can be retried next cycle.
 	var maxTime time.Time
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
@@ -201,13 +204,6 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 				log.Printf("WARNING: routing event %s: %v", event.Key(), err)
 				continue
 			}
-		}
-
-		if len(stages) == 0 {
-			if event.UpdatedAt.After(maxTime) {
-				maxTime = event.UpdatedAt
-			}
-			continue
 		}
 
 		for _, stage := range stages {

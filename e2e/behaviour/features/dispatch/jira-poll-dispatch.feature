@@ -1,4 +1,3 @@
-@requires:jira-mock
 Feature: Jira poll dispatch
 
   The Jira poll input driver discovers events on Jira issues and produces

@@ -120,7 +120,7 @@ func mapChangelogItem(item jira.ChangeItem, issue jira.Issue, entry jira.Changel
 
 	case "status":
 		evt := base
-		evt.Type = mapStatusTransition(item.ToString, issue.Fields.Status.StatusCategory.Key)
+		evt.Type = mapStatusTransition(item.ToString)
 		if evt.Type != "" {
 			events = append(events, evt)
 		}
@@ -178,20 +178,18 @@ func parseLabels(s string) map[string]bool {
 	return m
 }
 
-// mapStatusTransition maps a Jira status change to a transition kind.
-func mapStatusTransition(toStatus, categoryKey string) string {
-	switch categoryKey {
-	case "new":
-		return "reopened"
-	case "done":
+// mapStatusTransition maps a Jira status name to a transition kind using the
+// destination status name from the changelog entry. We cannot use the issue's
+// current statusCategory because changelog entries are historical — the
+// current category only reflects the latest status, not earlier transitions.
+func mapStatusTransition(toStatus string) string {
+	lower := strings.ToLower(toStatus)
+	switch {
+	case lower == "done" || lower == "closed" || lower == "resolved" ||
+		strings.Contains(lower, "complete"):
 		return "closed"
-	case "indeterminate":
-		// "In Progress" category — could be reopened from done.
-		lower := strings.ToLower(toStatus)
-		if strings.Contains(lower, "reopen") {
-			return "reopened"
-		}
-		return ""
+	case strings.Contains(lower, "reopen"):
+		return "reopened"
 	default:
 		return ""
 	}
