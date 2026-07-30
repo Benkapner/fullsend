@@ -520,6 +520,11 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		sourceDir = gcf.DefaultFunctionSourceDir()
 	}
 
+	deployCommit := resolveMintDeployCommit(commitSHA, sourceDir)
+	if deployCommit != commitSHA && deployCommit != "" && deployCommit != "dev" {
+		printer.StepInfo(fmt.Sprintf("Resolved mint commit from checkout: %s", deployCommit))
+	}
+
 	deployMode := gcf.DeployAuto
 	if skipDeploy {
 		deployMode = gcf.DeploySkip
@@ -531,7 +536,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		FunctionSourceDir: sourceDir,
 		DeployMode:        deployMode,
 		Version:           version,
-		Commit:            commitSHA,
+		Commit:            deployCommit,
 		PublicMint:        public,
 	}
 
@@ -570,6 +575,8 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		fmt.Sprintf("Project: %s", project),
 		fmt.Sprintf("Region: %s", region),
 		fmt.Sprintf("URL: %s", mintURL),
+		fmt.Sprintf("Version: %s", version),
+		fmt.Sprintf("Commit: %s", deployCommit),
 	}
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
@@ -634,13 +641,18 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 		sourceDir = cf.DefaultWorkerSourceDir()
 	}
 
+	deployCommit := resolveMintDeployCommit(commitSHA, sourceDir)
+	if deployCommit != commitSHA && deployCommit != "" && deployCommit != "dev" {
+		printer.StepInfo(fmt.Sprintf("Resolved mint commit from checkout: %s", deployCommit))
+	}
+
 	cfg := cf.Config{
 		AccountID:  accountID,
 		WorkerName: workerName,
 		DeployMode: deployMode,
 		SourceDir:  sourceDir,
 		Version:    version,
-		Commit:     commitSHA,
+		Commit:     deployCommit,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
@@ -669,6 +681,8 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 		fmt.Sprintf("Worker: %s", effectiveName),
 		fmt.Sprintf("URL: %s", mintURL),
 		fmt.Sprintf("Mode: %s", modeLabel),
+		fmt.Sprintf("Version: %s", version),
+		fmt.Sprintf("Commit: %s", deployCommit),
 	}
 	if preview {
 		summaryLines = append(summaryLines, "Teardown: fullsend mint deploy --platform=cloudflare --worker-name="+effectiveName+" --preview (then delete)")
