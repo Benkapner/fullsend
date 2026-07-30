@@ -45,9 +45,13 @@ fullsend
 │   │   ├── --repos <list>                   #   Comma-separated repos to include
 │   │   ├── --all                            #   Include all eligible repos
 │   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
+│   │   ├── --forge-url <url>                #   Forge instance URL (required for gitlab)
+│   │   ├── --mint-url <url>                 #   Token mint Cloud Run endpoint URL
 │   │   ├── --mint-project <id>              #   GCP project for the mint
 │   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
 │   │   ├── --inference-project <id>         #   Default GCP project for inference
+│   │   ├── --inference-region <region>      #   GCP region for inference (default: us-central1)
+│   │   ├── --fullsend-ref <ref>             #   Pin the fullsend workflow ref (e.g. v0.42.0)
 │   │   ├── --force                          #   Overwrite output file if it exists
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
 │   ├── install      [repos...]              # Install fullsend on uninstalled manifest repos

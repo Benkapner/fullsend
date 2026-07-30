@@ -40,6 +40,14 @@ For a single repo:
 fullsend repos init <owner/repo> --forge github --mint-project <GCP_PROJECT>
 ```
 
+For GitLab, provide the instance URL with `--forge-url` (required for
+GitLab since there is no default):
+
+```bash
+fullsend repos init <org> --forge gitlab \
+  --forge-url https://gitlab.example.com
+```
+
 Instead of `--all`, specify a subset of repos with `--repos`:
 
 ```bash
@@ -90,11 +98,19 @@ All repos under the same owner must use the same forge. A GitHub org
 and a GitLab group with the same name are different entities, and
 mixing forges under one owner would route API calls incorrectly.
 
+When initializing a manifest for GitLab repos, pass `--forge-url` to set
+`forge.gitlab.url` (required — GitLab has no default URL, unlike GitHub
+which defaults to `https://github.com`):
+
+```bash
+fullsend repos init acme --forge gitlab \
+  --forge-url https://gitlab.example.com
+```
+
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. Self-hosted GitLab
-instances require `forge.gitlab.url` in the manifest (e.g.
-`https://gitlab.example.com`). The `GITLAB_API_URL` environment variable
-is kept as a fallback for callers without a manifest.
+`--gitlab-token` to `fullsend repos` subcommands. The `GITLAB_API_URL`
+environment variable is kept as a fallback for callers without a
+manifest.
 
 See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
 for all flags.
