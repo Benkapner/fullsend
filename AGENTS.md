@@ -25,6 +25,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 |------|-------------|
 | [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, suite-timeout policy, and preferring `go run` for the CLI |
 | [Behaviour Testing](docs/guides/dev/behaviour-testing.md) | Modifying behaviour test repo provisioning, fork handling, or workflow dispatch — covers forge API constraints (`auto_init`, fork name derivation, Actions readiness, CI timeout budgeting) |
+| [Workflow Contracts](docs/contributing/workflow-contracts.md) | Changing GHA reusable workflows — covers dispatch sync, secret/input threading across installation-mode chains, and review rules |
 | [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls and jq patterns |
 | [Forge Abstraction](docs/contributing/forge-abstraction.md) | Adding forge operations — covers `forge.Client` interface rules |
 | [CEL Triggers](docs/contributing/cel-triggers.md) | Writing or reviewing harness `trigger` CEL expressions or `.feature` CEL filters — covers normalized transition kinds |
