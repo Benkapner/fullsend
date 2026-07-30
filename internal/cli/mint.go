@@ -428,7 +428,7 @@ Cloudflare mode (--platform=cloudflare):
 
 	// Common flags.
 	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
-	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: embedded)")
+	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: checkout path when present, embedded otherwise)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 
 	// GCP-specific flags.
@@ -490,15 +490,15 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	printer.Header("Deploying token mint (GCP)")
 	printer.Blank()
 
+	if sourceDir == "" {
+		sourceDir = gcf.DefaultFunctionSourceDir()
+	}
+
 	if dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		printer.StepInfo(fmt.Sprintf("Would deploy mint to project %s, region %s", project, region))
-		if sourceDir != "" {
-			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
-		} else {
-			printer.StepInfo("Source: embedded mint function")
-		}
+		printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
 		if skipDeploy {
 			printer.StepInfo("Would skip code deployment (--skip-deploy)")
 		}
@@ -515,10 +515,6 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	}
 
 	gcpClient := mintGCFClientFactory(project)
-
-	if sourceDir == "" {
-		sourceDir = gcf.DefaultFunctionSourceDir()
-	}
 
 	deployMode := gcf.DeployAuto
 	if skipDeploy {
@@ -608,6 +604,10 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 		deployMode = cf.DeployPreview
 	}
 
+	if sourceDir == "" {
+		sourceDir = cf.DefaultWorkerSourceDir()
+	}
+
 	if dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
@@ -617,21 +617,13 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 		}
 		printer.StepInfo(fmt.Sprintf("Would deploy Worker %s", effectiveName))
 		printer.StepInfo(fmt.Sprintf("Account: %s", accountID))
-		if sourceDir != "" {
-			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
-		} else {
-			printer.StepInfo("Source: embedded Worker adapter")
-		}
+		printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
 		if preview {
 			printer.StepInfo("Mode: preview (ephemeral, supports teardown)")
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
 		}
 		return nil
-	}
-
-	if sourceDir == "" {
-		sourceDir = cf.DefaultWorkerSourceDir()
 	}
 
 	cfg := cf.Config{
