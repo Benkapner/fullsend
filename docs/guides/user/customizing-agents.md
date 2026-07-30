@@ -147,7 +147,7 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│    Configuration Layering (deprecated — use base: composition) │
+│    Configuration Layering (deprecated; use base: instead)    │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  Priority (highest wins):                                    │
