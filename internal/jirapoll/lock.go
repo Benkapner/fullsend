@@ -3,10 +3,13 @@ package jirapoll
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // lockPropertyKey returns the entity property key for locks.
@@ -79,10 +82,12 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 
 	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
 	if err != nil {
+		if errors.Is(err, forge.ErrNotFound) {
+			return time.Time{}, nil // first poll for this issue
+		}
 		return time.Time{}, fmt.Errorf("get lastCheck property: %w", err)
 	}
 	if len(raw) == 0 {
-		// Property empty means first poll for this issue.
 		return time.Time{}, nil
 	}
 
@@ -122,10 +127,12 @@ func (p *Poller) readLock(ctx context.Context, issueKey string) (*LockValue, err
 
 	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
 	if err != nil {
+		if errors.Is(err, forge.ErrNotFound) {
+			return nil, nil // no lock property yet
+		}
 		return nil, fmt.Errorf("get lock property: %w", err)
 	}
 	if len(raw) == 0 {
-		// Property empty means no lock.
 		return nil, nil
 	}
 
