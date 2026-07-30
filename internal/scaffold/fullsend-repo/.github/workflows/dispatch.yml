@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=575
+# lint-workflow-size: max-lines=580
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -13,6 +13,9 @@ on:
         description: 'The event action (github.event.action) forwarded by the shim'
         required: true
         type: string
+    outputs:
+      dispatched_count:
+        value: ${{ jobs.dispatch.outputs.dispatched_count }}
 
 permissions: {}
 
@@ -24,6 +27,8 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
+    outputs:
+      dispatched_count: ${{ steps.dispatch.outputs.dispatched_count }}
     steps:
       - name: Determine stage
         id: route
@@ -464,6 +469,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Find and trigger agent workflows for stage
+        id: dispatch
         if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}
