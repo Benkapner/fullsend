@@ -20,9 +20,12 @@ type InitConfig struct {
 	All              bool
 	Forge            string
 	ForgeURL         string
+	MintURL          string
 	MintProject      string
 	MintRegion       string
 	InferenceProject string
+	InferenceRegion  string
+	FullsendRef      string
 	MaxConcurrency   int
 	CLIVersion       string
 }
@@ -413,72 +416,80 @@ func discoverRepo(ctx context.Context, client forge.Client,
 func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string) {
 	var todos []string
 
-	// Compute mint block (only relevant for GitHub forge).
-	var mintURL, mintProject, mintRegion string
-	if cfg.Forge == ForgeGitHub {
-		mintURL = computeMode(repos, func(d DiscoveredRepo) string { return d.MintURL })
-		if mintURL == "" {
-			mintURL = "# TODO: set mint URL"
-			todos = append(todos, "forge.github.mint_url: set the Cloud Run endpoint URL")
-		} else if countDistinct(repos, func(d DiscoveredRepo) string { return d.MintURL }) > 1 {
-			todos = append(todos, "forge.github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
-		}
-
-		mintProject = cfg.MintProject
-		if mintProject == "" {
-			mintProject = "# TODO: set GCP project"
-			todos = append(todos, "forge.github.mint_project: provide via --mint-project flag")
-		}
-
-		mintRegion = cfg.MintRegion
-		if mintRegion == "" {
-			mintRegion = "us-central1"
-		}
-	}
-
-	// Compute defaults.
-	defaultRef := computeMode(repos, func(d DiscoveredRepo) string { return d.FullsendRef })
-	if defaultRef == "" {
-		if cfg.CLIVersion != "" && cfg.CLIVersion != "dev" {
-			defaultRef = "v" + strings.TrimPrefix(cfg.CLIVersion, "v")
-		} else {
-			defaultRef = config.DefaultUpstreamRef
-		}
-	}
-
-	defaultRegion := computeMode(repos, func(d DiscoveredRepo) string { return d.InferenceRegion })
-	if defaultRegion == "" {
-		defaultRegion = cfg.MintRegion
-		if defaultRegion == "" {
-			defaultRegion = "us-central1"
-		}
-	}
-
-	inferenceProject := cfg.InferenceProject
-	if inferenceProject == "" {
-		inferenceProject = "# TODO: set inference GCP project"
-		todos = append(todos, "defaults.inference_project: provide via --inference-project flag")
-	}
-
 	forgeName := cfg.Forge
 
 	manifest := &Manifest{
 		Version: 1,
 		Defaults: DefaultsConfig{
-			Forge:            forgeName,
-			InferenceProject: inferenceProject,
-			InferenceRegion:  defaultRegion,
-			FullsendRef:      defaultRef,
+			Forge: forgeName,
 		},
 	}
 
 	// Populate forge section based on the target forge.
 	if forgeName == ForgeGitHub {
+		// Compute mint URL: CLI flag > discovery > TODO.
+		mintURL := cfg.MintURL
+		mintFromFlag := mintURL != ""
+		if mintURL == "" {
+			mintURL = computeMode(repos, func(d DiscoveredRepo) string { return d.MintURL })
+		}
+		if mintURL == "" {
+			mintURL = "# TODO: set mint URL"
+			todos = append(todos, "forge.github.mint_url: set the Cloud Run endpoint URL")
+		} else if !mintFromFlag && countDistinct(repos, func(d DiscoveredRepo) string { return d.MintURL }) > 1 {
+			todos = append(todos, "forge.github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
+		}
+
+		// Compute mint project: CLI flag > TODO.
+		mintProject := cfg.MintProject
+		if mintProject == "" {
+			mintProject = "# TODO: set GCP project"
+			todos = append(todos, "forge.github.mint_project: provide via --mint-project flag")
+		}
+
+		// Compute mint region: CLI flag > default.
+		mintRegion := cfg.MintRegion
+		if mintRegion == "" {
+			mintRegion = "us-central1"
+		}
+
+		// Compute inference project: CLI flag > TODO.
+		inferenceProject := cfg.InferenceProject
+		if inferenceProject == "" {
+			inferenceProject = "# TODO: set inference GCP project"
+			todos = append(todos, "forge.github.inference_project: provide via --inference-project flag")
+		}
+
+		// Compute inference region: CLI flag > discovery > default.
+		inferenceRegion := cfg.InferenceRegion
+		if inferenceRegion == "" {
+			inferenceRegion = computeMode(repos, func(d DiscoveredRepo) string { return d.InferenceRegion })
+		}
+		if inferenceRegion == "" {
+			inferenceRegion = "us-central1"
+		}
+
+		// Compute fullsend ref: CLI flag > discovery > CLI version > DefaultUpstreamRef.
+		fullsendRef := cfg.FullsendRef
+		if fullsendRef == "" {
+			fullsendRef = computeMode(repos, func(d DiscoveredRepo) string { return d.FullsendRef })
+		}
+		if fullsendRef == "" {
+			if cfg.CLIVersion != "" && cfg.CLIVersion != "dev" {
+				fullsendRef = "v" + strings.TrimPrefix(cfg.CLIVersion, "v")
+			} else {
+				fullsendRef = config.DefaultUpstreamRef
+			}
+		}
+
 		manifest.Forge.GitHub = GitHubForgeInfra{
-			URL:         cfg.ForgeURL,
-			MintURL:     mintURL,
-			MintProject: mintProject,
-			MintRegion:  mintRegion,
+			URL:              cfg.ForgeURL,
+			MintURL:          mintURL,
+			MintProject:      mintProject,
+			MintRegion:       mintRegion,
+			InferenceProject: inferenceProject,
+			InferenceRegion:  inferenceRegion,
+			FullsendRef:      fullsendRef,
 		}
 	}
 	if forgeName == ForgeGitLab {
@@ -491,18 +502,10 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 		}
 	}
 
-	// Build repo entries.
+	// Build repo entries — no per-repo overrides; all infrastructure
+	// settings live in the forge section.
 	for _, d := range repos {
 		entry := RepoEntry{Repo: d.Owner + "/" + d.Repo}
-
-		// Add per-repo overrides only for fields that differ from defaults.
-		if d.FullsendRef != "" && d.FullsendRef != defaultRef {
-			entry.FullsendRef = NullableString{Set: true, Value: d.FullsendRef}
-		}
-		if d.InferenceRegion != "" && d.InferenceRegion != defaultRegion {
-			entry.InferenceRegion = NullableString{Set: true, Value: d.InferenceRegion}
-		}
-
 		manifest.Repos = append(manifest.Repos, entry)
 	}
 

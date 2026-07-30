@@ -66,7 +66,13 @@ Flags:
 - `--mint-project` (string): GCP project for the `forge.github.mint_project` field.
 - `--mint-region` (string, default `us-central1`): GCP region for
   the `forge.github.mint_region` field.
+- `--mint-url` (string): token mint Cloud Run endpoint URL for the
+  `forge.github.mint_url` field.
 - `--inference-project` (string): default GCP project for inference.
+- `--inference-region` (string): GCP region for inference (default:
+  `us-central1`).
+- `--fullsend-ref` (string): pin the fullsend workflow ref (e.g.
+  `v0.42.0`).
 - `--concurrency` (int, default 8): max parallel API calls.
 
 Positional argument: `<target>` (org name or `owner/repo`). Detection
@@ -179,7 +185,7 @@ manifest contains one entry.
        `config.DefaultUpstreamRef` — it is `v0`, a major-version
        floating tag for workflow-call resolution, not a concrete
        release version. If no workflow file exists, omit the ref
-       and let it inherit from `defaults.fullsend_ref`.
+       and let it inherit from `forge.github.fullsend_ref`.
      - Mark `source: per-org`.
    - Otherwise:
      - Mark `source: new` (not yet installed).
@@ -214,22 +220,19 @@ func buildManifest(repos []DiscoveredRepo,
      TODO list.
    - `mint_region`: from `--mint-region` flag (default `us-central1`).
 
-2. **Compute `defaults:` block** by finding the mode (most common
-   value) for each field across discovered repos. For greenfield
+2. **Compute `forge.github:` infrastructure fields** by finding the
+   mode (most common value) across discovered repos. For greenfield
    repos (`source: new`) with no discovered values, use the CLI
-   version as `fullsend_ref` and `--inference-project` /
-   `--mint-region` from flags:
-   - `fullsend_ref`: mode of all discovered refs, or CLI version.
-   - `inference_region`: mode of all discovered
-     `FULLSEND_GCP_REGION` values, or `--mint-region`.
+   version as `fullsend_ref` and flags:
+   - `fullsend_ref`: `--fullsend-ref` flag > mode of discovered refs > CLI version.
+   - `inference_region`: `--inference-region` flag > mode of discovered
+     `FULLSEND_GCP_REGION` values > `us-central1`.
    - `inference_project`: from `--inference-project` flag, or TODO.
-   - `allowed_remote_resources`: from per-org config if present.
+   - `defaults.allowed_remote_resources`: from per-org config if present.
 
 3. **Build repo entries:**
-   - Repos matching all defaults → simple string entries
-     (`acme-corp/api-server`).
-   - Repos with overrides (different ref, different region) → object
-     entries with only the differing fields.
+   - All repos use simple string entries (`acme-corp/api-server`)
+     or object entries with a `forge` override.
    - Per-org enrolled repos are included as normal entries. A YAML
      comment group header notes they are currently per-org and will
      be converted to per-repo on `repos install`.
@@ -288,10 +291,8 @@ Add `Marshal()` to the `Manifest` type defined in PR 2. Uses
 - Single repo (per-repo installed) → minimal manifest.
 - Single repo (per-org enrolled) → reads org config for enrollment.
 - Single repo (not installed) → manifest with one new entry.
-- Defaults computation: most common ref becomes default, repos with
-  minority values get object entries.
-- Per-repo overrides: repos with different ref/region generate object
-  entries with only the differing fields.
+- Infrastructure field computation: most common ref and region become
+  `forge.github` values.
 - Interactive selection callback: verify candidates include status
   labels, pre-selected repos match existing installations.
 - Secret limitation: `inference_project` left as TODO when no flag

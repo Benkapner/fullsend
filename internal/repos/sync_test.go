@@ -122,7 +122,7 @@ func TestDiff_MissingGuardVariable(t *testing.T) {
 func TestDiff_SecretMissing(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
+	m.Forge.GitHub.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -149,7 +149,7 @@ func TestDiff_SecretMissing(t *testing.T) {
 func TestDiff_SecretExists_NoChange(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
+	m.Forge.GitHub.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -279,13 +279,13 @@ func TestDiff_GlobExpansion(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "proj",
+			MintRegion:      "us-central1",
+			InferenceRegion: "us-central1",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:           "github",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/*"}},
 	}
@@ -340,8 +340,7 @@ func TestDiff_EmptyDesiredValue_Skips(t *testing.T) {
 			MintRegion:  "us-central1",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:           "github",
-			InferenceRegion: "",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -391,14 +390,14 @@ func TestDiff_SecretCheckError_Warning(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:            "github",
+			MintURL:          "https://mint.example.com",
+			MintProject:      "proj",
+			MintRegion:       "us-central1",
 			InferenceProject: "my-project",
 			InferenceRegion:  "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -426,7 +425,7 @@ func TestDiff_SecretCheckError_Warning(t *testing.T) {
 func TestSync_NoDrift_NoVariableWrites(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = ""
+	m.Forge.GitHub.InferenceProject = ""
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -485,7 +484,7 @@ func TestSync_AppliesVariableChanges(t *testing.T) {
 func TestSync_AppliesSecretChanges(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
+	m.Forge.GitHub.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -537,7 +536,7 @@ func TestSync_VariableWriteError(t *testing.T) {
 func TestSync_SecretWriteError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
+	m.Forge.GitHub.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -566,7 +565,7 @@ func TestSync_NilProgress(t *testing.T) {
 func TestSync_DiffAPIError_SkipsReconciliation(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
+	m.Forge.GitHub.InferenceProject = "my-project"
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
 
@@ -634,18 +633,17 @@ func TestSync_GlobWithPerEntryOverride(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:            "github",
+			MintURL:          "https://mint.example.com",
+			MintProject:      "proj",
+			MintRegion:       "us-central1",
 			InferenceProject: "default-project",
 			InferenceRegion:  "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{
-			Repo:             "acme/*",
-			InferenceProject: NullableString{Value: "override-project", Set: true},
+			Repo: "acme/*",
 		}},
 	}
 
@@ -657,16 +655,16 @@ func TestSync_GlobWithPerEntryOverride(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	foundOverride := false
+	foundProject := false
 	for _, s := range fc.CreatedSecrets {
 		if s.Name == "FULLSEND_GCP_PROJECT_ID" {
-			foundOverride = true
-			if s.Value != "override-project" {
-				t.Errorf("expected override-project, got %q", s.Value)
+			foundProject = true
+			if s.Value != "default-project" {
+				t.Errorf("expected default-project, got %q", s.Value)
 			}
 		}
 	}
-	if !foundOverride {
+	if !foundProject {
 		t.Errorf("expected FULLSEND_GCP_PROJECT_ID to be written; applied=%+v", result.Applied)
 	}
 }
@@ -799,19 +797,16 @@ func TestDiff_PerRepoOverride(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "proj",
+			MintRegion:      "us-central1",
+			InferenceRegion: "eu-west1",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:           "github",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
-			{
-				Repo:            "org/repo",
-				InferenceRegion: NullableString{Value: "eu-west1", Set: true},
-			},
+			{Repo: "org/repo"},
 		},
 	}
 
@@ -825,7 +820,7 @@ func TestDiff_PerRepoOverride(t *testing.T) {
 
 	for _, c := range result.Changes {
 		if c.Field == "FULLSEND_GCP_REGION" && c.Type == "variable" {
-			t.Error("should not report region drift when per-repo override matches actual")
+			t.Error("should not report region drift when forge-level region matches actual")
 		}
 	}
 }
@@ -894,13 +889,13 @@ func TestSync_GlobExpansion(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "proj",
+			MintRegion:      "us-central1",
+			InferenceRegion: "us-central1",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:           "github",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme/*"}},
 	}
@@ -929,13 +924,13 @@ func TestDiff_MultiOrg(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "proj",
+			MintRegion:      "us-central1",
+			InferenceRegion: "us-central1",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:           "github",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "org-a/repo1"},
@@ -978,7 +973,7 @@ func TestValidateConcurrency(t *testing.T) {
 func TestSync_EnsuresSecretsOnNoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
+	m.Forge.GitHub.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")

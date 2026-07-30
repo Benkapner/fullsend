@@ -248,26 +248,29 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 	// Validate resolved config before WIF provisioning — fail fast on
 	// missing inference project/region to avoid orphaned GCP resources.
+	// Only GitHub repos require these fields.
 	var validCandidates []discoveryResult
 	for _, d := range wifCandidates {
 		fullName := d.repo.Owner + "/" + d.repo.Repo
-		if d.resolved.InferenceProject == "" {
-			result.Failed = append(result.Failed, InstallResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("inference_project is required but empty for %s", fullName),
-			})
-			progress(fullName, "validate", "Missing inference_project in manifest")
-			continue
-		}
-		if d.resolved.InferenceRegion == "" {
-			result.Failed = append(result.Failed, InstallResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("inference_region is required but empty for %s", fullName),
-			})
-			progress(fullName, "validate", "Missing inference_region in manifest")
-			continue
+		if d.resolved.Forge == ForgeGitHub {
+			if d.resolved.InferenceProject == "" {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("inference_project is required but empty for %s", fullName),
+				})
+				progress(fullName, "validate", "Missing inference_project in manifest")
+				continue
+			}
+			if d.resolved.InferenceRegion == "" {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("inference_region is required but empty for %s", fullName),
+				})
+				progress(fullName, "validate", "Missing inference_region in manifest")
+				continue
+			}
 		}
 		validCandidates = append(validCandidates, d)
 	}

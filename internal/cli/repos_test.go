@@ -72,8 +72,17 @@ func TestReposInitCmd_Flags(t *testing.T) {
 	require.NotNil(t, mintRegionFlag, "expected --mint-region flag")
 	assert.Equal(t, "us-central1", mintRegionFlag.DefValue)
 
+	mintURLFlag := cmd.Flags().Lookup("mint-url")
+	require.NotNil(t, mintURLFlag, "expected --mint-url flag")
+
 	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
 	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
+
+	inferenceRegionFlag := cmd.Flags().Lookup("inference-region")
+	require.NotNil(t, inferenceRegionFlag, "expected --inference-region flag")
+
+	fullsendRefFlag := cmd.Flags().Lookup("fullsend-ref")
+	require.NotNil(t, fullsendRefFlag, "expected --fullsend-ref flag")
 
 	concurrencyFlag := cmd.Flags().Lookup("concurrency")
 	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
@@ -139,10 +148,10 @@ forge:
     mint_url: https://mint.example.com
     mint_project: p
     mint_region: us-central1
+    inference_project: proj
+    inference_region: us-central1
 defaults:
   forge: github
-  inference_project: proj
-  inference_region: us-central1
 repos: []
 `
 	manifestPath := writeTestManifest(t, manifestYAML)
@@ -162,8 +171,6 @@ forge:
     mint_region: us-central1
 defaults:
   forge: gitlab
-  inference_project: proj
-  inference_region: us-central1
 repos: []
 `
 	// With lazy client creation, status on an empty GitLab manifest
@@ -185,8 +192,6 @@ forge:
     mint_region: us-central1
 defaults:
   forge: gitlab
-  inference_project: proj
-  inference_region: us-central1
 repos: []
 `
 	manifestPath := writeTestManifest(t, manifestYAML)
@@ -684,11 +689,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v1.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v1.0.0
 repos:
   - repo: acme/api
 `
@@ -769,11 +774,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: ""
+    inference_region: us-central1
+    fullsend_ref: v1.0.0
 defaults:
   forge: github
-  inference_project: ""
-  inference_region: us-central1
-  fullsend_ref: v1.0.0
 repos:
   - repo: acme/api
 `
@@ -963,10 +968,10 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
 repos:
   - repo: acme/api
   - repo: acme/web
@@ -1002,10 +1007,10 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
 repos:
   - repo: acme/api
   - repo: acme/web
@@ -1184,11 +1189,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v1.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v1.0.0
 repos:
   - repo: acme/api
   - repo: acme/web
@@ -1218,10 +1223,10 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
 repos:
   - repo: acme/api
   - repo: acme/web
@@ -1254,10 +1259,10 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
 repos:
   - repo: acme/api
   - repo: acme/web
@@ -1492,11 +1497,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v2.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
 repos:
   - repo: acme/api
 `
@@ -1547,11 +1552,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v2.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
 repos:
   - repo: acme/api
   - repo: acme/web
@@ -1607,11 +1612,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v2.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
 repos:
   - repo: acme/api
 `
@@ -1756,11 +1761,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v2.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
 repos:
   - repo: acme/api
 `
@@ -1791,11 +1796,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v2.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
 repos:
   - repo: acme/api
 `
@@ -1828,11 +1833,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v2.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
 repos:
   - repo: acme/api
 `
@@ -1864,11 +1869,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v2.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v2.0.0
 repos:
   - repo: acme/api
 `
@@ -1898,11 +1903,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_project: inf-proj
+    inference_region: us-central1
+    fullsend_ref: v1.0.0
 defaults:
   forge: github
-  inference_project: inf-proj
-  inference_region: us-central1
-  fullsend_ref: v1.0.0
 repos:
   - repo: acme/api
   - repo: acme/web
@@ -1915,10 +1920,10 @@ forge:
     mint_url: https://mint.example.com
     mint_project: mint-proj
     mint_region: us-central1
+    inference_region: us-central1
+    fullsend_ref: v1.0.0
 defaults:
   forge: github
-  inference_region: us-central1
-  fullsend_ref: v1.0.0
 repos:
   - repo: acme/api
 `
@@ -2072,10 +2077,10 @@ forge:
     mint_url: https://mint.example.com
     mint_project: p
     mint_region: us-central1
+    inference_project: proj
+    inference_region: us-central1
 defaults:
   forge: github
-  inference_project: proj
-  inference_region: us-central1
 repos: []
 `
 
@@ -2139,8 +2144,6 @@ forge:
     url: https://gitlab.example.com
 defaults:
   forge: gitlab
-  inference_project: proj
-  inference_region: us-central1
 repos:
   - acme/repo
 `
@@ -2178,8 +2181,6 @@ forge:
     url: https://gitlab.example.com
 defaults:
   forge: gitlab
-  inference_project: proj
-  inference_region: us-central1
 repos:
   - acme/repo
 `

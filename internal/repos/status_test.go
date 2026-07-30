@@ -12,15 +12,15 @@ func newTestManifest() *Manifest {
 	return &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "example-project",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:            "github",
+			MintURL:          "https://mint.example.com",
+			MintProject:      "example-project",
+			MintRegion:       "us-central1",
 			InferenceProject: "example-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v2.3.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
@@ -306,10 +306,10 @@ func TestStatus_WorkflowMissing_NotInstalled(t *testing.T) {
 			MintURL:     "https://mint.example.com",
 			MintProject: "example-project",
 			MintRegion:  "us-central1",
+			FullsendRef: "v2.3.0",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:       "github",
-			FullsendRef: "v2.3.0",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -333,10 +333,10 @@ func TestStatus_WorkflowYAMLExtension(t *testing.T) {
 			MintURL:     "https://mint.example.com",
 			MintProject: "example-project",
 			MintRegion:  "us-central1",
+			FullsendRef: "v2.3.0",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:       "github",
-			FullsendRef: "v2.3.0",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -441,14 +441,14 @@ func TestStatus_GlobExpansion(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "example-project",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:           "github",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "example-project",
+			MintRegion:      "us-central1",
 			FullsendRef:     "v2.3.0",
 			InferenceRegion: "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/*"}},
 	}
@@ -477,27 +477,24 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "example-project",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:           "github",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "example-project",
+			MintRegion:      "us-central1",
 			FullsendRef:     "v2.3.0",
 			InferenceRegion: "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
-			{
-				Repo:        "acme-corp/legacy",
-				FullsendRef: NullableString{Value: "v2.1.0", Set: true},
-			},
+			{Repo: "acme-corp/legacy"},
 		},
 	}
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "legacy", "v2.1.0",
+	populateInstalledRepo(fc, "acme-corp", "legacy", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -506,7 +503,7 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 	}
 
 	if result.Summary.Drifted != 0 {
-		t.Errorf("drifted = %d, want 0 (legacy has v2.1.0 pinned)", result.Summary.Drifted)
+		t.Errorf("drifted = %d, want 0 (both repos match forge-level ref)", result.Summary.Drifted)
 	}
 }
 
@@ -559,10 +556,10 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 			MintURL:     "https://mint.example.com",
 			MintProject: "proj",
 			MintRegion:  "us-central1",
+			FullsendRef: "v2.3.0",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:       "github",
-			FullsendRef: "v2.3.0",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -596,10 +593,10 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 			MintURL:     "https://mint.example.com",
 			MintProject: "proj",
 			MintRegion:  "us-central1",
+			FullsendRef: "v2.3.0",
 		}},
 		Defaults: DefaultsConfig{
-			Forge:       "github",
-			FullsendRef: "v2.3.0",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -859,14 +856,14 @@ func TestStatus_MultiOrg(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:           "github",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "proj",
+			MintRegion:      "us-central1",
 			FullsendRef:     "v2.3.0",
 			InferenceRegion: "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "org-a/repo1"},
@@ -915,14 +912,14 @@ func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:           "github",
+			MintURL:         "",
+			MintProject:     "proj",
+			MintRegion:      "us-central1",
 			FullsendRef:     "v2.3.0",
 			InferenceRegion: "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -970,14 +967,14 @@ func TestStatus_Concurrency(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:           "github",
+			MintURL:         "https://mint.example.com",
+			MintProject:     "proj",
+			MintRegion:      "us-central1",
 			FullsendRef:     "v2.3.0",
 			InferenceRegion: "us-central1",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 	}
 

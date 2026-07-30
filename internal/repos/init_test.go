@@ -91,8 +91,8 @@ func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
 	assert.Equal(t, 1, m.Version)
 	assert.Equal(t, "my-project", m.Forge.GitHub.MintProject)
 	assert.Equal(t, "us-central1", m.Forge.GitHub.MintRegion)
-	assert.Equal(t, "my-inference", m.Defaults.InferenceProject)
-	assert.Equal(t, "v2.3.0", m.Defaults.FullsendRef)
+	assert.Equal(t, "my-inference", m.Forge.GitHub.InferenceProject)
+	assert.Equal(t, "v2.3.0", m.Forge.GitHub.FullsendRef)
 	require.Len(t, m.Repos, 3)
 }
 
@@ -278,7 +278,7 @@ func TestInit_SingleRepo_PerRepoInstalled(t *testing.T) {
 	require.Len(t, result.Manifest.Repos, 1)
 	assert.Equal(t, "acme/api", result.Manifest.Repos[0].Repo)
 	assert.Equal(t, "https://mint.example.com", result.Manifest.Forge.GitHub.MintURL)
-	assert.Equal(t, "v2.3.0", result.Manifest.Defaults.FullsendRef)
+	assert.Equal(t, "v2.3.0", result.Manifest.Forge.GitHub.FullsendRef)
 }
 
 func TestInit_SingleRepo_PerOrgEnrolled(t *testing.T) {
@@ -350,7 +350,7 @@ func TestInit_SingleRepo_NotInstalled(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.NewCount)
-	assert.Equal(t, "v2.5.0", result.Manifest.Defaults.FullsendRef)
+	assert.Equal(t, "v2.5.0", result.Manifest.Forge.GitHub.FullsendRef)
 }
 
 // --- Defaults computation tests ---
@@ -387,23 +387,16 @@ func TestInit_DefaultsComputation_MostCommonRef(t *testing.T) {
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
-	// v2.3.0 is most common, should be the default.
-	assert.Equal(t, "v2.3.0", result.Manifest.Defaults.FullsendRef)
+	// v2.3.0 is most common, should be the forge-level default.
+	assert.Equal(t, "v2.3.0", result.Manifest.Forge.GitHub.FullsendRef)
 
-	// r3 should have an override entry since it differs from default.
-	var r3Entry *RepoEntry
-	for i := range result.Manifest.Repos {
-		if result.Manifest.Repos[i].Repo == "acme/r3" {
-			r3Entry = &result.Manifest.Repos[i]
-			break
-		}
+	// No per-repo overrides — all settings live in forge.github.
+	for _, entry := range result.Manifest.Repos {
+		assert.False(t, entry.Forge.Set, "repo %s should not have per-repo forge override", entry.Repo)
 	}
-	require.NotNil(t, r3Entry)
-	assert.True(t, r3Entry.FullsendRef.Set)
-	assert.Equal(t, "v2.1.0", r3Entry.FullsendRef.Value)
 }
 
-func TestInit_PerRepoOverrides_DifferentRegion(t *testing.T) {
+func TestInit_InferenceRegion_MostCommonDiscovered(t *testing.T) {
 	fc := newFakeWithOrgRepos("acme", []forge.Repository{
 		{Name: "r1", FullName: "acme/r1"},
 		{Name: "r2", FullName: "acme/r2"},
@@ -435,15 +428,9 @@ func TestInit_PerRepoOverrides_DifferentRegion(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// The minority region should appear as an override.
-	hasOverride := false
-	for _, entry := range result.Manifest.Repos {
-		if entry.InferenceRegion.Set {
-			hasOverride = true
-			break
-		}
-	}
-	assert.True(t, hasOverride, "repo with minority region should have an override")
+	// Inference region should be set at forge level (no per-repo overrides).
+	// Discovery picks the mode; both regions appear once so alphabetical wins.
+	assert.NotEmpty(t, result.Manifest.Forge.GitHub.InferenceRegion)
 }
 
 // --- Interactive selection tests ---
@@ -518,7 +505,7 @@ func TestInit_TODOs_NoMintProject(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, result.TODOs, "forge.github.mint_project: provide via --mint-project flag")
-	assert.Contains(t, result.TODOs, "defaults.inference_project: provide via --inference-project flag")
+	assert.Contains(t, result.TODOs, "forge.github.inference_project: provide via --inference-project flag")
 }
 
 func TestInit_TODOs_NoMintURL_Greenfield(t *testing.T) {
@@ -588,16 +575,15 @@ func TestBuildManifest_SimpleEntries(t *testing.T) {
 	require.Len(t, m.Repos, 2)
 	assert.Equal(t, "acme/api", m.Repos[0].Repo)
 	assert.Equal(t, "acme/web", m.Repos[1].Repo)
-	// All new repos, no overrides.
+	// No per-repo overrides; all settings in forge section.
 	for _, entry := range m.Repos {
-		assert.False(t, entry.FullsendRef.Set)
-		assert.False(t, entry.InferenceRegion.Set)
+		assert.False(t, entry.Forge.Set)
 	}
 	// Greenfield: no mint URL discovered → TODO generated.
 	assert.Contains(t, todos, "forge.github.mint_url: set the Cloud Run endpoint URL")
 }
 
-func TestBuildManifest_MixedOverrides(t *testing.T) {
+func TestBuildManifest_MixedDiscovery(t *testing.T) {
 	repos := []DiscoveredRepo{
 		{Owner: "acme", Repo: "r1", Source: "per-repo", FullsendRef: "v2.3.0", InferenceRegion: "us-central1", MintURL: "https://mint.example.com"},
 		{Owner: "acme", Repo: "r2", Source: "per-repo", FullsendRef: "v2.3.0", InferenceRegion: "us-central1", MintURL: "https://mint.example.com"},
@@ -610,20 +596,14 @@ func TestBuildManifest_MixedOverrides(t *testing.T) {
 		InferenceProject: "inf",
 	})
 
-	// Defaults should be the mode values.
-	assert.Equal(t, "v2.3.0", m.Defaults.FullsendRef)
-	assert.Equal(t, "us-central1", m.Defaults.InferenceRegion)
+	// Forge-level fields should use the mode (most common) values.
+	assert.Equal(t, "v2.3.0", m.Forge.GitHub.FullsendRef)
+	assert.Equal(t, "us-central1", m.Forge.GitHub.InferenceRegion)
 
-	// r3 should have overrides.
-	r3 := m.Repos[2]
-	assert.True(t, r3.FullsendRef.Set)
-	assert.Equal(t, "v2.1.0", r3.FullsendRef.Value)
-	assert.True(t, r3.InferenceRegion.Set)
-	assert.Equal(t, "us-east1", r3.InferenceRegion.Value)
-
-	// r1 and r2 should not have overrides.
-	assert.False(t, m.Repos[0].FullsendRef.Set)
-	assert.False(t, m.Repos[1].FullsendRef.Set)
+	// No per-repo overrides — settings live in forge.github.
+	for _, entry := range m.Repos {
+		assert.False(t, entry.Forge.Set)
+	}
 }
 
 // --- computeMode tests ---
@@ -1231,12 +1211,15 @@ func TestInit_SingleRepo_GitLabForge(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.PerRepoCount)
-	assert.Equal(t, "v2.5.0", result.Manifest.Defaults.FullsendRef)
 	assert.Equal(t, ForgeGitLab, result.Manifest.Defaults.Forge)
 	assert.Equal(t, "https://gitlab.example.com", result.Manifest.Forge.GitLab.URL)
+	// GitHub-specific fields should not be set for GitLab manifests.
 	assert.Empty(t, result.Manifest.Forge.GitHub.MintURL)
 	assert.Empty(t, result.Manifest.Forge.GitHub.MintProject)
 	assert.Empty(t, result.Manifest.Forge.GitHub.MintRegion)
+	assert.Empty(t, result.Manifest.Forge.GitHub.FullsendRef)
+	assert.Empty(t, result.Manifest.Forge.GitHub.InferenceProject)
+	assert.Empty(t, result.Manifest.Forge.GitHub.InferenceRegion)
 	require.NoError(t, result.Manifest.Validate())
 }
 
@@ -1315,7 +1298,7 @@ func TestInit_CLIVersionFallback(t *testing.T) {
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
-	assert.Equal(t, "v3.0.0", result.Manifest.Defaults.FullsendRef)
+	assert.Equal(t, "v3.0.0", result.Manifest.Forge.GitHub.FullsendRef)
 }
 
 func TestInit_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
@@ -1331,7 +1314,7 @@ func TestInit_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
-	assert.Equal(t, "v0.32.0-82-gcb2bcd9f", result.Manifest.Defaults.FullsendRef)
+	assert.Equal(t, "v0.32.0-82-gcb2bcd9f", result.Manifest.Forge.GitHub.FullsendRef)
 }
 
 func TestInit_CLIVersionDev_FallsBackToDefault(t *testing.T) {
@@ -1347,7 +1330,7 @@ func TestInit_CLIVersionDev_FallsBackToDefault(t *testing.T) {
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
-	assert.Equal(t, config.DefaultUpstreamRef, result.Manifest.Defaults.FullsendRef)
+	assert.Equal(t, config.DefaultUpstreamRef, result.Manifest.Forge.GitHub.FullsendRef)
 }
 
 // --- Concurrency tests ---

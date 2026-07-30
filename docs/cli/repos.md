@@ -52,7 +52,10 @@ fullsend repos init <owner/repo> --forge github --mint-project <PROJECT>
 | `--all` | `false` | Include all eligible repos without prompting |
 | `--mint-project` | | GCP project for the mint |
 | `--mint-region` | `us-central1` | GCP region for the mint |
+| `--mint-url` | | Token mint Cloud Run endpoint URL |
 | `--inference-project` | | Default GCP project for inference |
+| `--inference-region` | | GCP region for inference (default: `us-central1`) |
+| `--fullsend-ref` | | Pin the fullsend workflow ref (e.g. `v0.42.0`) |
 | `--concurrency` | `8` | Max parallel API calls (capped at 64) |
 | `--forge` | **(required)** | Forge type for discovered repos (`github` or `gitlab`) |
 | `--forge-url` | | Forge instance URL (required for `gitlab`; defaults to `https://github.com` for `github`) |
@@ -68,7 +71,7 @@ The command discovers repos by checking:
 
 ### Defaults computation
 
-Default values for `fullsend_ref` and `inference_region` are computed using the mode (most common value) across discovered repos. Per-repo overrides are generated only for fields that differ from defaults.
+Values for `fullsend_ref` and `inference_region` in the `forge.github` section are computed using the mode (most common value) across discovered repos.
 
 ### Selection modes
 
