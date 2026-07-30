@@ -157,15 +157,15 @@ func newBatchManifest(repos ...string) *Manifest {
 	return &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "test-project",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:            "github",
+			MintURL:          "https://mint.example.com",
+			MintProject:      "test-project",
+			MintRegion:       "us-central1",
 			InferenceProject: "test-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v1.0.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: entries,
 	}
@@ -683,7 +683,7 @@ func TestBatchInstall_MissingInferenceProject(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-	manifest.Defaults.InferenceProject = ""
+	manifest.Forge.GitHub.InferenceProject = ""
 
 	prov := &batchFakeProvisioner{}
 	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
@@ -721,7 +721,7 @@ func TestBatchInstall_MissingInferenceRegion(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-	manifest.Defaults.InferenceRegion = ""
+	manifest.Forge.GitHub.InferenceRegion = ""
 
 	prov := &batchFakeProvisioner{}
 	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
@@ -814,17 +814,17 @@ func TestBatchInstall_MixedForge_SkipsGitLabOrgMint(t *testing.T) {
 		Version: 1,
 		Forge: ForgeSection{
 			GitHub: GitHubForgeInfra{
-				MintURL:     "https://mint.example.com",
-				MintProject: "test-project",
-				MintRegion:  "us-central1",
+				MintURL:          "https://mint.example.com",
+				MintProject:      "test-project",
+				MintRegion:       "us-central1",
+				InferenceProject: "test-inference",
+				InferenceRegion:  "us-central1",
+				FullsendRef:      "v1.0.0",
 			},
 			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
 		},
 		Defaults: DefaultsConfig{
-			Forge:            ForgeGitHub,
-			InferenceProject: "test-inference",
-			InferenceRegion:  "us-central1",
-			FullsendRef:      "v1.0.0",
+			Forge: ForgeGitHub,
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme/api"},

@@ -57,14 +57,15 @@ fullsend repos init <org> --forge github --all --force --mint-project <GCP_PROJE
 
 The command discovers per-repo and per-org installations, extracts
 current configuration (WIF provider, workflow ref, mint URL), and writes
-a manifest. Default values for `fullsend_ref` and `inference_region` are
-computed using the mode (most common value) across discovered repos.
+a manifest. Values for `fullsend_ref` and `inference_region` in the
+`forge.github` section are computed using the mode (most common value)
+across discovered repos.
 
 ### Multi-forge manifests
 
 Every repo entry in the manifest must declare its forge (`github` or
 `gitlab`). Set `defaults.forge` to avoid repeating the forge on every
-entry. Per-repo overrides are supported for mixed-forge manifests:
+entry. Per-entry forge overrides are supported for mixed-forge manifests:
 
 ```yaml
 version: 1
@@ -73,11 +74,11 @@ forge:
     mint_url: https://mint.example.com
     mint_project: my-project
     mint_region: us-central1
+    fullsend_ref: v2.5.0
   gitlab:
     url: https://gitlab.example.com
 defaults:
   forge: github
-  fullsend_ref: v2.5.0
 repos:
   - acme/api-server            # inherits forge: github from defaults
   - acme/web-frontend
@@ -308,7 +309,7 @@ fullsend repos remove acme/old-api --uninstall --skip-wif-cleanup
 
 To upgrade the scaffold workflow ref across all manifest repos:
 
-1. Update the `fullsend_ref` in `repos.yaml` to the new version.
+1. Update `forge.github.fullsend_ref` in `repos.yaml` to the new version.
 
 2. Run the upgrade:
 

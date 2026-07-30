@@ -47,9 +47,12 @@ type reposInitConfig struct {
 	output           string
 	repoNames        string
 	all              bool
+	mintURL          string
 	mintProject      string
 	mintRegion       string
 	inferenceProject string
+	inferenceRegion  string
+	fullsendRef      string
 	concurrency      int
 	force            bool
 	forge            string
@@ -108,9 +111,12 @@ that reflects current reality.`,
 				All:              cfg.all,
 				Forge:            cfg.forge,
 				ForgeURL:         cfg.forgeURL,
+				MintURL:          cfg.mintURL,
 				MintProject:      cfg.mintProject,
 				MintRegion:       cfg.mintRegion,
 				InferenceProject: cfg.inferenceProject,
+				InferenceRegion:  cfg.inferenceRegion,
+				FullsendRef:      cfg.fullsendRef,
 				MaxConcurrency:   cfg.concurrency,
 				CLIVersion:       version,
 			}
@@ -180,9 +186,12 @@ that reflects current reality.`,
 	cmd.Flags().StringVarP(&cfg.output, "output", "o", "repos.yaml", "output path (use - for stdout)")
 	cmd.Flags().StringVar(&cfg.repoNames, "repos", "", "comma-separated list of repos to include")
 	cmd.Flags().BoolVar(&cfg.all, "all", false, "include all eligible repos without prompting")
+	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint Cloud Run endpoint URL")
 	cmd.Flags().StringVar(&cfg.mintProject, "mint-project", "", "GCP project for the mint")
 	cmd.Flags().StringVar(&cfg.mintRegion, "mint-region", "us-central1", "GCP region for the mint")
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "default GCP project for inference")
+	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (default: us-central1)")
+	cmd.Flags().StringVar(&cfg.fullsendRef, "fullsend-ref", "", "pin the fullsend workflow ref (e.g. v0.42.0)")
 	cmd.Flags().IntVar(&cfg.concurrency, "concurrency", 8, "max parallel API calls (capped at 64)")
 	cmd.Flags().BoolVar(&cfg.force, "force", false, "overwrite output file if it already exists")
 	cmd.Flags().StringVar(&cfg.forge, "forge", "", "forge type for discovered repos (github or gitlab)")

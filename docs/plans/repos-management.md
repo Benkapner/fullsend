@@ -37,39 +37,30 @@ forge:
     mint_url: https://fullsend-mint-abc123-uc.a.run.app
     mint_project: acme-fullsend-prod
     mint_region: us-central1
+    # GitHub-specific inference and version settings.
+    inference_project: acme-inference-prod
+    inference_region: us-central1
+    fullsend_ref: v2.3.0
   # gitlab:
   #   url: https://gitlab.example.com  # required, no default
 
-# Default configuration applied to all repos unless overridden.
+# Default configuration applied to all repos.
 defaults:
   forge: github
-  inference_project: acme-inference-prod
-  inference_region: us-central1
-  fullsend_ref: v2.3.0
-  base_harness: https://github.com/acme-corp/harness-library/blob/v1/base.yaml#sha256=a1b2c3...
   allowed_remote_resources:
     - https://raw.githubusercontent.com/fullsend-ai/fullsend/
     - https://github.com/acme-corp/harness-library/
 
 # Repos to manage. Simple strings inherit all defaults;
-# objects override specific fields.
+# objects can override the forge.
 repos:
   # Simple form — inherits all defaults
   - acme-corp/api-server
   - acme-corp/web-frontend
 
-  # Object form — per-repo overrides
-  - repo: acme-corp/ml-pipeline
-    inference_project: acme-ml-prod
-    inference_region: us-east1
-
-  # Pinned to an older version
-  - repo: acme-corp/legacy-service
-    fullsend_ref: v2.1.0
-
-  # Cross-org: different org, different GCP project
+  # Object form — forge override
   - repo: acme-platform/infra-tools
-    inference_project: acme-platform-prod
+    forge: github
 
   # Glob pattern — all non-archived, non-fork repos in the org
   - acme-oss/*
@@ -81,11 +72,10 @@ Manifest fields map to repo-level resources as follows:
 
 | Manifest field | Repo resource | Type |
 |---|---|---|
-| `inference_project` | `FULLSEND_GCP_PROJECT_ID` | Secret |
-| `inference_region` | `FULLSEND_GCP_REGION` | Variable |
-| `fullsend_ref` | `@ref` in scaffold shim `uses:` line | Workflow file |
+| `forge.github.inference_project` | `FULLSEND_GCP_PROJECT_ID` | Secret |
+| `forge.github.inference_region` | `FULLSEND_GCP_REGION` | Variable |
+| `forge.github.fullsend_ref` | `@ref` in scaffold shim `uses:` line | Workflow file |
 | `forge.github.mint_url` | `FULLSEND_MINT_URL` | Variable |
-| `base_harness` | `.fullsend/harness.yaml` `base:` field | Config file |
 | `allowed_remote_resources` | `allowed_remote_resources` in org `config.yaml` | Config file ¹ |
 
 ¹ `allowed_remote_resources` is an org-level field from `config.yaml`,
@@ -93,21 +83,13 @@ not a per-repo resource. It is not managed by `repos sync`.
 
 #### Field resolution
 
-Per-repo overrides take precedence over `defaults`, which take
-precedence over built-in defaults:
+Infrastructure fields (`inference_project`, `inference_region`,
+`fullsend_ref`) live in the forge-specific section (`forge.github`).
+`defaults` holds only `forge` and `allowed_remote_resources`.
+Repo entries may override `forge` but not infrastructure fields.
 
-```
-resolved.field = resolveField(repo.field, defaults.field, builtinDefault)
-
-// resolveField precedence:
-//   1. If repo.field is explicit null → return "" (stop chain)
-//   2. If repo.field is set and non-empty → return repo.field
-//   3. If defaults.field is non-empty → return defaults.field
-//   4. Return builtinDefault
-```
-
-Empty-string and zero-value overrides are treated as unset and fall
-through to defaults. To explicitly clear a field that has a default,
+Empty-string and zero-value fields are treated as unset and fall
+through to built-in defaults. To explicitly clear a field that has a default,
 set it to YAML null (`~` or `null`). A null override stops the fallback
 chain rather than inheriting the default.
 
@@ -115,8 +97,8 @@ chain rather than inheriting the default.
 
 Entries containing `*` are expanded by calling `ListOrgRepos` on the
 org portion and filtering by the glob pattern. Expansion happens at
-command execution time. Glob-expanded repos inherit defaults (no
-per-repo overrides). Explicit entries take precedence over globs.
+command execution time. Glob-expanded repos inherit forge-level
+settings and defaults. Explicit entries take precedence over globs.
 
 > **Note:** `ListOrgRepos` accepts an `includePrivate` parameter.
 > `ExpandGlobs` passes `includePrivate=true` because repos.yaml
@@ -296,8 +278,7 @@ The repos tool's version management builds on
 [ADR 0048](../ADRs/0048-automatic-updates.md)'s `--upstream-ref`.
 
 The manifest's `fullsend_ref` maps to `--upstream-ref`:
-- `defaults.fullsend_ref` — default for all repos
-- Per-repo `fullsend_ref` — override for that repo
+- `forge.github.fullsend_ref` — default for all GitHub repos
 
 Mixed-version repos are a normal operating state. `repos status`
 reports version health. `repos upgrade` changes versions explicitly.
@@ -504,10 +485,13 @@ type ForgeSection struct {
 }
 
 type GitHubForgeInfra struct {
-    URL         string `yaml:"url,omitempty"`
-    MintURL     string `yaml:"mint_url,omitempty"`
-    MintProject string `yaml:"mint_project,omitempty"`
-    MintRegion  string `yaml:"mint_region,omitempty"`
+    URL              string `yaml:"url,omitempty"`
+    MintURL          string `yaml:"mint_url,omitempty"`
+    MintProject      string `yaml:"mint_project,omitempty"`
+    MintRegion       string `yaml:"mint_region,omitempty"`
+    InferenceProject string `yaml:"inference_project,omitempty"`
+    InferenceRegion  string `yaml:"inference_region,omitempty"`
+    FullsendRef      string `yaml:"fullsend_ref,omitempty"`
 }
 
 type GitLabForgeInfra struct {
@@ -516,20 +500,12 @@ type GitLabForgeInfra struct {
 
 type DefaultsConfig struct {
     Forge                  string   `yaml:"forge"`
-    InferenceProject       string   `yaml:"inference_project"`
-    InferenceRegion        string   `yaml:"inference_region"`
-    FullsendRef            string   `yaml:"fullsend_ref"`
-    BaseHarness            string   `yaml:"base_harness"`
-    AllowedRemoteResources []string `yaml:"allowed_remote_resources"`
+    AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
 }
 
 type RepoEntry struct {
-    Repo             string         `yaml:"repo"`
-    Forge            NullableString `yaml:"forge,omitempty"`
-    InferenceProject NullableString `yaml:"inference_project,omitempty"`
-    InferenceRegion  NullableString `yaml:"inference_region,omitempty"`
-    FullsendRef      NullableString `yaml:"fullsend_ref,omitempty"`
-    BaseHarness      NullableString `yaml:"base_harness,omitempty"`
+    Repo  string         `yaml:"repo"`
+    Forge NullableString `yaml:"forge,omitempty"`
 }
 
 // NullableString distinguishes three YAML states:
@@ -658,10 +634,12 @@ the URL fetching logic from the harness resource loader.
   }
   ```
 
-  The `override` parameter is `NullableString` (from `RepoEntry`)
-  because per-repo fields need three-state semantics. The `fallback`
-  parameter is plain `string` (from `DefaultsConfig`) because
-  defaults are either set or empty — no null distinction needed.
+  The `override` parameter is `NullableString` because the forge field
+  on `RepoEntry` uses three-state semantics. The `fallback` parameter
+  is plain `string` because defaults are either set or empty — no null
+  distinction needed. Infrastructure fields (`InferenceProject`,
+  `InferenceRegion`, `FullsendRef`) are sourced from the forge-specific
+  section (`forge.github`) rather than per-repo overrides.
 
 - Return `ResolvedConfig` with all fields resolved.
 
@@ -669,13 +647,14 @@ the URL fetching logic from the harness resource loader.
 type ResolvedConfig struct {
     Owner                  string
     Repo                   string
+    Forge                  string
+    ForgeConfig            ForgeConfig
     MintURL                string
     MintProject            string
     MintRegion             string
     InferenceProject       string
     InferenceRegion        string
     FullsendRef            string
-    BaseHarness            string
     AllowedRemoteResources []string
 }
 ```
@@ -688,7 +667,7 @@ type ResolvedConfig struct {
 - Custom YAML unmarshaling: string form and object form.
 - Validation: missing mint URL, invalid repo format, duplicate repos.
 - Glob expansion with fake forge client.
-- Config resolution: defaults only, per-repo override, multi-org.
+- Config resolution: defaults only, forge-level settings, multi-org.
 - Version validation: reject version != 1.
 - URL loading: `httptest` server serving manifest YAML, verify parsed
   correctly.
@@ -1154,8 +1133,8 @@ Upgrade logic per repo:
 
 1. Read workflow file, extract current `@ref` via
    `extractWorkflowRef()`.
-2. Determine target ref: `--ref` flag > per-repo `fullsend_ref` >
-   `defaults.fullsend_ref`.
+2. Determine target ref: `--ref` flag >
+   `forge.github.fullsend_ref`.
 3. Skip if target is a floating ref (`latest`, `main`, `master`,
    or partial version tags like `v0`, `v1.2`).
 4. Skip if current ref is floating (same criteria as step 3).

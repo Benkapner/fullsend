@@ -66,15 +66,15 @@ func testManifest(repos ...string) *Manifest {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "test-project",
-			MintRegion:  "us-central1",
-		}},
-		Defaults: DefaultsConfig{
-			Forge:            "github",
+			MintURL:          "https://mint.example.com",
+			MintProject:      "test-project",
+			MintRegion:       "us-central1",
 			InferenceProject: "test-inference",
 			InferenceRegion:  "us-central1",
 			FullsendRef:      "v1.0.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 	}
 	for _, r := range repos {

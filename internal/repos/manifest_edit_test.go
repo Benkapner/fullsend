@@ -196,10 +196,6 @@ func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 		`uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0`)
 
 	manifest := testManifest()
-	manifest.Defaults = DefaultsConfig{
-		InferenceRegion: "us-central1",
-		FullsendRef:     "v2.3.0",
-	}
 
 	result, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
@@ -212,11 +208,8 @@ func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 		t.Fatalf("Added = %v, want [acme/api]", result.Added)
 	}
 	entry := updated.Repos[len(updated.Repos)-1]
-	if !entry.InferenceRegion.Set || entry.InferenceRegion.Value != "us-east1" {
-		t.Errorf("InferenceRegion = %+v, want {Set:true Value:us-east1}", entry.InferenceRegion)
-	}
-	if !entry.FullsendRef.Set || entry.FullsendRef.Value != "v2.1.0" {
-		t.Errorf("FullsendRef = %+v, want {Set:true Value:v2.1.0}", entry.FullsendRef)
+	if entry.Repo != "acme/api" {
+		t.Errorf("Repo = %q, want acme/api", entry.Repo)
 	}
 }
 
@@ -229,10 +222,6 @@ func TestAddToManifest_DiscoverInstalledMatchesDefaults(t *testing.T) {
 		`uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0`)
 
 	manifest := testManifest()
-	manifest.Defaults = DefaultsConfig{
-		InferenceRegion: "us-central1",
-		FullsendRef:     "v2.3.0",
-	}
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
@@ -242,11 +231,8 @@ func TestAddToManifest_DiscoverInstalledMatchesDefaults(t *testing.T) {
 		t.Fatalf("AddToManifest() error = %v", err)
 	}
 	entry := updated.Repos[len(updated.Repos)-1]
-	if entry.InferenceRegion.Set {
-		t.Error("InferenceRegion should not be set when matching defaults")
-	}
-	if entry.FullsendRef.Set {
-		t.Error("FullsendRef should not be set when matching defaults")
+	if entry.Repo != "acme/api" {
+		t.Errorf("Repo = %q, want acme/api", entry.Repo)
 	}
 }
 
@@ -254,10 +240,6 @@ func TestAddToManifest_DiscoverNotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	manifest := testManifest()
-	manifest.Defaults = DefaultsConfig{
-		InferenceRegion: "us-central1",
-		FullsendRef:     "v2.3.0",
-	}
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
@@ -267,11 +249,8 @@ func TestAddToManifest_DiscoverNotInstalled(t *testing.T) {
 		t.Fatalf("AddToManifest() error = %v", err)
 	}
 	entry := updated.Repos[len(updated.Repos)-1]
-	if entry.InferenceRegion.Set {
-		t.Error("InferenceRegion should not be set for uninstalled repo")
-	}
-	if entry.FullsendRef.Set {
-		t.Error("FullsendRef should not be set for uninstalled repo")
+	if entry.Repo != "acme/api" {
+		t.Errorf("Repo = %q, want acme/api", entry.Repo)
 	}
 }
 
@@ -296,7 +275,7 @@ func TestAddToManifest_DiscoverProbeError(t *testing.T) {
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("api error")
 
 	manifest := testManifest()
-	manifest.Defaults = DefaultsConfig{FullsendRef: "v2.3.0"}
+	manifest.Forge.GitHub.FullsendRef = "v2.3.0"
 
 	result, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,

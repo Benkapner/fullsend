@@ -78,15 +78,8 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 				progress(entries[i].Repo, "discover", fmt.Sprintf("probe failed: %v", err))
 				continue
 			}
-			if !state.Installed {
-				continue
-			}
-			progress(entries[i].Repo, "discover", "existing installation detected")
-			if state.InferenceRegion != "" && state.InferenceRegion != cfg.Manifest.Defaults.InferenceRegion {
-				entries[i].InferenceRegion = NullableString{Set: true, Value: state.InferenceRegion}
-			}
-			if state.FullsendRef != "" && state.FullsendRef != cfg.Manifest.Defaults.FullsendRef {
-				entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
+			if state.Installed {
+				progress(entries[i].Repo, "discover", "existing installation detected")
 			}
 		}
 	}
