@@ -162,8 +162,9 @@ func NewOAuth2(clientID, clientSecret string, opts ...Option) (*Client, error) {
 				return fmt.Errorf("stopped after 10 redirects")
 			}
 			if len(via) > 0 {
-				crossOrigin := req.URL.Host != via[0].URL.Host
-				tlsDowngrade := via[0].URL.Scheme == "https" && req.URL.Scheme != "https"
+				prev := via[len(via)-1]
+				crossOrigin := req.URL.Host != prev.URL.Host
+				tlsDowngrade := prev.URL.Scheme == "https" && req.URL.Scheme != "https"
 				if crossOrigin || tlsDowngrade {
 					req.Header.Del("Authorization")
 				}
@@ -222,8 +223,9 @@ func New(token string, opts ...Option) (*Client, error) {
 					return fmt.Errorf("stopped after 10 redirects")
 				}
 				if len(via) > 0 {
-					crossOrigin := req.URL.Host != via[0].URL.Host
-					tlsDowngrade := via[0].URL.Scheme == "https" && req.URL.Scheme != "https"
+					prev := via[len(via)-1]
+					crossOrigin := req.URL.Host != prev.URL.Host
+					tlsDowngrade := prev.URL.Scheme == "https" && req.URL.Scheme != "https"
 					if crossOrigin || tlsDowngrade {
 						req.Header.Del("Authorization")
 					}

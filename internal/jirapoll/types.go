@@ -12,6 +12,8 @@ import (
 // JiraClient defines the Jira API surface the poller requires.
 // Implemented by jira.Client; mocked in tests.
 type JiraClient interface {
+	// SearchIssues executes a JQL search and exhausts pagination, returning
+	// all matching issues.
 	SearchIssues(ctx context.Context, jql string) ([]jira.Issue, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
 	ListComments(ctx context.Context, issueIDOrKey string) ([]jira.Comment, error)

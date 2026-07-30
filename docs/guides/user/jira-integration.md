@@ -190,7 +190,7 @@ fullsend poll \
   --fullsend-dir .fullsend
 ```
 
-When `--jql` is provided, `--jira-project` is not required.
+When `--jql` is provided, `--jira-project` is not required. Note that without `--jira-project`, the poller cannot resolve Jira project roles — all actors default to the `external` role. If your routing rules depend on actor roles (e.g., requiring `write` for slash commands), provide `--jira-project` alongside `--jql`.
 
 ## Poll coordination
 

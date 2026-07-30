@@ -1,3 +1,6 @@
+// Package jirapoll implements a polling-based input driver for Jira,
+// converting issue comments, label changes, and status transitions into
+// NormalizedEvents per ADR 0063's write-then-verify coordination protocol.
 package jirapoll
 
 import (
@@ -7,6 +10,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
@@ -15,6 +19,10 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// validProjectKey matches Jira project keys: 2–10 uppercase alphanumeric
+// characters, starting with a letter. Validated before interpolation into JQL.
+var validProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,9}$`)
 
 // Poller discovers Jira events and dispatches agent stages.
 type Poller struct {
@@ -79,10 +87,15 @@ func (p *Poller) Run(ctx context.Context) error {
 	selected := selectRandom(unlocked, p.opts.N)
 
 	// Step 4: Process each selected issue.
+	var processErrors int
 	for _, issue := range selected {
 		if err := p.processIssue(ctx, issue, cycleID); err != nil {
 			log.Printf("WARNING: processing %s: %v", issue.Key, err)
+			processErrors++
 		}
+	}
+	if processErrors > 0 && processErrors == len(selected) {
+		return fmt.Errorf("all %d selected issues failed to process", processErrors)
 	}
 
 	// Step 5: Write dispatch records.
@@ -101,6 +114,9 @@ func (p *Poller) Run(ctx context.Context) error {
 func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 	jql := p.opts.JQL
 	if jql == "" {
+		if !validProjectKey.MatchString(p.opts.JiraProject) {
+			return nil, fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
+		}
 		jql = fmt.Sprintf("project = %s AND status != Done ORDER BY updated DESC", p.opts.JiraProject)
 	}
 
@@ -198,9 +214,12 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// Filter bot events.
 	events = filterBotEvents(events)
 
-	// Convert, route, dispatch. Only advance maxTime past events that
-	// were successfully routed (or had no matching stages). Events that
-	// fail routing are not counted so they can be retried next cycle.
+	// Convert, route, dispatch. maxTime starts at result.maxSeen
+	// (the latest timestamp across all changelog entries) so that
+	// lastCheck always advances past all inspected entries. This
+	// prevents the poller from stalling when a routing error persists
+	// across cycles. The trade-off is that a transiently failing event
+	// is skipped rather than retried.
 	maxTime := result.maxSeen
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
