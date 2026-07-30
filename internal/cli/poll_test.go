@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
-	"github.com/spf13/cobra"
 )
 
 func TestBuildRouter_NoConfigFile(t *testing.T) {
@@ -80,7 +78,7 @@ func TestBuildRouter_WithConfigAgents(t *testing.T) {
 	}
 }
 
-func TestRunJiraPoll_Validation(t *testing.T) {
+func TestValidateJiraPollArgs(t *testing.T) {
 	fullsendDir := t.TempDir()
 
 	tests := []struct {
@@ -91,19 +89,11 @@ func TestRunJiraPoll_Validation(t *testing.T) {
 		jqlOverride    string
 		targetRepo     string
 		wantErrContain string
-		wantNoValErr   bool // if true, expect an error that is NOT a validation error
+		wantOK         bool
 	}{
 		{
-			name:           "missing JIRA_TOKEN",
-			envVars:        map[string]string{},
-			jiraURL:        "https://acme.atlassian.net",
-			targetRepo:     "acme/platform",
-			jiraProject:    "PROJ",
-			wantErrContain: "JIRA_TOKEN",
-		},
-		{
 			name:           "missing jira-url and JIRA_BASE_URL",
-			envVars:        map[string]string{"JIRA_TOKEN": "tok"},
+			envVars:        map[string]string{},
 			jiraURL:        "",
 			targetRepo:     "acme/platform",
 			jiraProject:    "PROJ",
@@ -111,7 +101,7 @@ func TestRunJiraPoll_Validation(t *testing.T) {
 		},
 		{
 			name:           "missing target-repo and GITHUB_REPOSITORY",
-			envVars:        map[string]string{"JIRA_TOKEN": "tok"},
+			envVars:        map[string]string{},
 			jiraURL:        "https://acme.atlassian.net",
 			targetRepo:     "",
 			jiraProject:    "PROJ",
@@ -119,7 +109,7 @@ func TestRunJiraPoll_Validation(t *testing.T) {
 		},
 		{
 			name:           "missing both jira-project and jql",
-			envVars:        map[string]string{"JIRA_TOKEN": "tok"},
+			envVars:        map[string]string{},
 			jiraURL:        "https://acme.atlassian.net",
 			targetRepo:     "acme/platform",
 			jiraProject:    "",
@@ -127,43 +117,54 @@ func TestRunJiraPoll_Validation(t *testing.T) {
 			wantErrContain: "jira-project",
 		},
 		{
-			name:         "valid minimal config passes validation",
-			envVars:      map[string]string{"JIRA_TOKEN": "tok"},
-			jiraURL:      "https://acme.atlassian.net",
-			targetRepo:   "acme/platform",
-			jiraProject:  "PROJ",
-			wantNoValErr: true,
+			name:        "valid minimal config",
+			envVars:     map[string]string{},
+			jiraURL:     "https://acme.atlassian.net",
+			targetRepo:  "acme/platform",
+			jiraProject: "PROJ",
+			wantOK:      true,
+		},
+		{
+			name:        "env var fallback for jira-url",
+			envVars:     map[string]string{"JIRA_BASE_URL": "https://acme.atlassian.net"},
+			jiraURL:     "",
+			targetRepo:  "acme/platform",
+			jiraProject: "PROJ",
+			wantOK:      true,
+		},
+		{
+			name:        "jql without jira-project is valid",
+			envVars:     map[string]string{},
+			jiraURL:     "https://acme.atlassian.net",
+			targetRepo:  "acme/platform",
+			jiraProject: "",
+			jqlOverride: "project = PROJ ORDER BY updated DESC",
+			wantOK:      true,
 		},
 	}
-
-	validationMessages := []string{"JIRA_TOKEN", "jira-url", "target-repo", "jira-project"}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Clear env vars that the function checks as fallbacks.
-			t.Setenv("JIRA_TOKEN", "")
 			t.Setenv("JIRA_BASE_URL", "")
-			t.Setenv("JIRA_USER_EMAIL", "")
 			t.Setenv("GITHUB_REPOSITORY", "")
 
 			for k, v := range tc.envVars {
 				t.Setenv(k, v)
 			}
 
-			cmd := &cobra.Command{}
-			cmd.SetContext(context.Background())
+			args, err := validateJiraPollArgs(tc.jiraURL, tc.jiraProject, tc.jqlOverride, tc.targetRepo, "", fullsendDir)
 
-			err := runJiraPoll(cmd, tc.jiraURL, tc.jiraProject, tc.jqlOverride, tc.targetRepo, "", fullsendDir)
-
-			if tc.wantNoValErr {
-				if err == nil {
-					// Unlikely since we can't connect, but acceptable.
-					return
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
 				}
-				for _, msg := range validationMessages {
-					if strings.Contains(err.Error(), msg) {
-						t.Errorf("expected non-validation error, but got validation error containing %q: %v", msg, err)
-					}
+				// Verify resolved values are populated.
+				if args.jiraURL == "" {
+					t.Error("expected jiraURL to be resolved")
+				}
+				if args.targetRepo == "" {
+					t.Error("expected targetRepo to be resolved")
 				}
 				return
 			}

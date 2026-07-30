@@ -10,9 +10,11 @@ A scheduled GitHub Actions workflow runs `fullsend poll --input-driver jira-poll
 
 1. Queries Jira for recently updated issues in your project.
 2. Detects new comments and label changes since the last poll.
-3. Converts each change to a NormalizedEvent (the same event shape GitHub and GitLab use).
+3. Converts each change to a [NormalizedEvent](../../normative/normalized-event/v1/) — the forge-neutral event struct that all input drivers (GitHub, GitLab, Jira) produce.
 4. Routes through the standard agent routing rules.
 5. Writes dispatch records that trigger agent workflows.
+
+For the architectural details of the polling protocol, see [ADR 0063 — Polling-based work discovery](../../ADRs/0063-polling-based-work-discovery.md).
 
 The same conventions work across forges:
 
@@ -36,7 +38,8 @@ Slash commands follow the `/fs-{agent}` pattern — any registered agent name wo
 
 ## Credential setup
 
-Store the following as GitHub repo secrets (Settings > Secrets and variables > Actions):
+1. Open your GitHub repo's **Settings > Secrets and variables > Actions**.
+2. Add the following secrets and variables:
 
 | Secret / variable | Value |
 |---|---|
@@ -61,13 +64,13 @@ Required scopes: `read:jira-work`, `read:jira-user`, `write:jira-work`.
 
 ## Repo configuration
 
-No special harness or config changes are needed for built-in agents. The Jira poller produces the same NormalizedEvents that GitHub and GitLab do, so the standard triage, code, review, fix, and retro agents work without modification.
+No special harness or config changes are needed for built-in agents. The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so the standard triage, code, review, fix, and retro agents work without modification.
 
 If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, you are ready to go.
 
 ## Scheduled workflow
 
-Create `.github/workflows/fullsend-poll-jira.yml`:
+1. Create `.github/workflows/fullsend-poll-jira.yml` with the following content:
 
 ```yaml
 name: fullsend Jira poll
@@ -168,7 +171,8 @@ jobs:
           echo "::notice::Dispatched ${dispatched} agent workflow(s)"
 ```
 
-Replace `PROJ` with your Jira project key.
+2. Replace `PROJ` with your Jira project key.
+3. Commit and push the workflow file.
 
 **`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other. The poller uses Jira entity properties as distributed locks, so concurrent runs are safe but wasteful.
 
@@ -190,9 +194,9 @@ When `--jql` is provided, `--jira-project` is not required.
 
 ## Poll coordination
 
-The poller stores two entity properties on each Jira issue it processes:
+The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following the write-then-verify protocol defined in [ADR 0063](../../ADRs/0063-polling-based-work-discovery.md). Two properties are stored on each processed issue:
 
-- **Lock** (`fullsend.poll.{owner}.{repo}.lock`) — prevents concurrent pollers from processing the same issue simultaneously. Uses a write-then-verify protocol with jitter.
+- **Lock** (`fullsend.poll.{owner}.{repo}.lock`) — prevents concurrent pollers from processing the same issue simultaneously.
 - **Last check** (`fullsend.poll.{owner}.{repo}.lastCheck`) — tracks the timestamp of the most recent processed change. Only changes newer than this timestamp trigger agent dispatch.
 
 These properties are namespaced per target repo, so multiple repos can poll the same Jira project without interference. The properties are visible in Jira's issue properties API but do not appear in the issue UI.

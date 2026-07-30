@@ -175,17 +175,25 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		return fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
 	}
 	// Detect changes.
-	events, err := p.detectChanges(ctx, issue, lastCheck)
+	result, err := p.detectChanges(ctx, issue, lastCheck)
 	if err != nil {
 		return fmt.Errorf("detect changes for %s: %w", issue.Key, err)
 	}
 
-	if len(events) == 0 {
+	if len(result.events) == 0 {
+		// No routable events, but there may have been changelog entries
+		// with unsupported fields. Advance lastCheck past them so the
+		// poller does not re-scan the same updates every cycle.
+		if !result.maxSeen.IsZero() {
+			if err := p.advanceLastCheck(ctx, issue.Key, result.maxSeen); err != nil {
+				log.Printf("WARNING: advancing lastCheck for %s: %v", issue.Key, err)
+			}
+		}
 		return nil
 	}
 
 	// Deduplicate.
-	events = deduplicate(events)
+	events := deduplicate(result.events)
 
 	// Filter bot events.
 	events = filterBotEvents(events)
@@ -193,7 +201,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// Convert, route, dispatch. Only advance maxTime past events that
 	// were successfully routed (or had no matching stages). Events that
 	// fail routing are not counted so they can be retried next cycle.
-	var maxTime time.Time
+	maxTime := result.maxSeen
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
 

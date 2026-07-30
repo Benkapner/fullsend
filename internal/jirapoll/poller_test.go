@@ -801,13 +801,13 @@ func TestDetectChanges_FirstPoll(t *testing.T) {
 		},
 	}
 
-	events, err := p.detectChanges(context.Background(), issue, time.Time{})
+	result, err := p.detectChanges(context.Background(), issue, time.Time{})
 	if err != nil {
 		t.Fatalf("detectChanges() error: %v", err)
 	}
 
 	found := false
-	for _, e := range events {
+	for _, e := range result.events {
 		if e.Type == "opened" {
 			found = true
 		}
@@ -857,19 +857,76 @@ func TestDetectChanges_StatusChange(t *testing.T) {
 		},
 	}
 
-	events, err := p.detectChanges(context.Background(), issue, lastCheck)
+	result, err := p.detectChanges(context.Background(), issue, lastCheck)
 	if err != nil {
 		t.Fatalf("detectChanges() error: %v", err)
 	}
 
 	found := false
-	for _, e := range events {
+	for _, e := range result.events {
 		if e.Type == "closed" {
 			found = true
 		}
 	}
 	if !found {
 		t.Error("expected 'closed' event from status change to Done category")
+	}
+}
+
+func TestDetectChanges_UnsupportedFieldAdvancesMaxSeen(t *testing.T) {
+	// Regression test: when a changelog entry has only unsupported fields
+	// (e.g., "assignee"), detectChanges should still report the timestamp
+	// in maxSeen so processIssue can advance lastCheck past it, preventing
+	// the poller from stalling on the same updates every cycle.
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-30 * time.Minute)
+	mc := newMockClient()
+
+	assigneeChangeTime := now.Add(-10 * time.Minute)
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "300",
+			Created: assigneeChangeTime.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+			Items: []jira.ChangeItem{
+				{
+					Field:      "assignee",
+					FromString: "Alice",
+					ToString:   "Bob",
+				},
+			},
+		},
+	}
+
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Labels:   []string{"bug"},
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+
+	result, err := p.detectChanges(context.Background(), issue, lastCheck)
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+
+	if len(result.events) != 0 {
+		t.Errorf("expected 0 routable events for unsupported field, got %d", len(result.events))
+	}
+	if result.maxSeen.IsZero() {
+		t.Fatal("maxSeen should be non-zero for unsupported changelog entries")
+	}
+	if !result.maxSeen.Equal(assigneeChangeTime) {
+		t.Errorf("maxSeen = %v, want %v", result.maxSeen, assigneeChangeTime)
 	}
 }
 
@@ -1014,5 +1071,81 @@ func TestRunFirstPoll_NoLockProperty(t *testing.T) {
 
 	if len(dispatches) == 0 {
 		t.Error("expected dispatches on first poll with no prior entity properties")
+	}
+}
+
+func TestRunUnsupportedChangelogField_AdvancesLastCheck(t *testing.T) {
+	// Regression test: when a changelog entry contains only unsupported fields
+	// (e.g., "assignee"), processIssue should still advance lastCheck so the
+	// poller does not re-scan the same updates every cycle.
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels:   []string{"bug"},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+
+	setLastCheck(mc, "PROJ-123", "acme", "platform", now.Add(-30*time.Minute))
+
+	// Only an unsupported changelog field — should produce zero routable events
+	// but still advance lastCheck.
+	assigneeChangeTime := now.Add(-10 * time.Minute)
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "300",
+			Created: assigneeChangeTime.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+			Items: []jira.ChangeItem{
+				{
+					Field:      "assignee",
+					FromString: "Alice",
+					ToString:   "Bob",
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Verify no dispatches were produced (unsupported field).
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(data) != "[]\n" {
+		t.Errorf("expected empty dispatches for unsupported field change, got %q", string(data))
+	}
+
+	// Verify lastCheck was advanced past the changelog entry.
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if lastCheck.IsZero() {
+		t.Fatal("lastCheck should have been advanced, but is zero")
+	}
+	if !lastCheck.Equal(assigneeChangeTime) && !lastCheck.After(now.Add(-30*time.Minute)) {
+		t.Errorf("lastCheck = %v, expected it to be advanced past the original %v", lastCheck, now.Add(-30*time.Minute))
 	}
 }

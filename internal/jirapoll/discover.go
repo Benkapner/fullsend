@@ -27,9 +27,21 @@ func parseJiraTimestamp(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unparseable Jira timestamp: %q", s)
 }
 
+// changeResult bundles the events detected by detectChanges together with the
+// latest observed timestamp across all comments and changelog entries,
+// regardless of whether they produced routable events.
+type changeResult struct {
+	events  []JiraEvent
+	maxSeen time.Time
+}
+
 // detectChanges finds all changes on an issue since lastCheck.
-func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck time.Time) ([]JiraEvent, error) {
+// maxSeen in the returned changeResult tracks the latest timestamp across all
+// inspected entries — including unsupported changelog fields — so the caller
+// can advance the checkpoint even when no routable events are produced.
+func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck time.Time) (changeResult, error) {
 	var events []JiraEvent
+	var maxSeen time.Time
 
 	issueURL := strings.TrimRight(p.opts.JiraBaseURL, "/") + "/browse/" + issue.Key
 
@@ -48,12 +60,15 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 			Labels:    issue.Fields.Labels,
 			Reporter:  issue.Fields.Reporter,
 		})
+		if createdAt.After(maxSeen) {
+			maxSeen = createdAt
+		}
 	}
 
 	// Discover new comments.
 	comments, err := p.client.ListComments(ctx, issue.Key)
 	if err != nil {
-		return nil, fmt.Errorf("list comments for %s: %w", issue.Key, err)
+		return changeResult{}, fmt.Errorf("list comments for %s: %w", issue.Key, err)
 	}
 	for _, comment := range comments {
 		createdAt, err := parseJiraTimestamp(comment.Created)
@@ -62,6 +77,9 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		}
 		if !lastCheck.IsZero() && !createdAt.After(lastCheck) {
 			continue
+		}
+		if createdAt.After(maxSeen) {
+			maxSeen = createdAt
 		}
 		events = append(events, JiraEvent{
 			Type:          "comment_added",
@@ -80,7 +98,7 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 	// Discover changelog entries.
 	changelog, err := p.client.ListChangelog(ctx, issue.Key)
 	if err != nil {
-		return nil, fmt.Errorf("list changelog for %s: %w", issue.Key, err)
+		return changeResult{}, fmt.Errorf("list changelog for %s: %w", issue.Key, err)
 	}
 	for _, entry := range changelog {
 		createdAt, err := parseJiraTimestamp(entry.Created)
@@ -90,13 +108,20 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		if !lastCheck.IsZero() && !createdAt.After(lastCheck) {
 			continue
 		}
+		// Track maxSeen for ALL changelog entries that pass the time filter,
+		// even if the field type is unsupported. This prevents the poller from
+		// stalling when Jira has changes (e.g., assignee) that don't map to
+		// routable events.
+		if createdAt.After(maxSeen) {
+			maxSeen = createdAt
+		}
 		for _, item := range entry.Items {
 			changeEvents := mapChangelogItem(item, issue, entry, issueURL, createdAt)
 			events = append(events, changeEvents...)
 		}
 	}
 
-	return events, nil
+	return changeResult{events: events, maxSeen: maxSeen}, nil
 }
 
 // mapChangelogItem maps a single changelog item to zero or more JiraEvents.

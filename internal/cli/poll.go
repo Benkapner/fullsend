@@ -111,41 +111,70 @@ func newPollCmd() *cobra.Command {
 	return cmd
 }
 
-func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
+// jiraPollArgs holds resolved arguments for runJiraPoll after env-var fallbacks.
+type jiraPollArgs struct {
+	jiraURL     string
+	jiraProject string
+	jqlOverride string
+	targetRepo  string
+	outputPath  string
+	fullsendDir string
+}
+
+// validateJiraPollArgs resolves env-var fallbacks and validates required
+// arguments for the jira-poll input driver. It returns the resolved args
+// or a validation error.
+func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) (jiraPollArgs, error) {
 	if jiraURL == "" {
 		jiraURL = os.Getenv("JIRA_BASE_URL")
 	}
 	if jiraURL == "" {
-		return fmt.Errorf("--jira-url or JIRA_BASE_URL is required")
+		return jiraPollArgs{}, fmt.Errorf("--jira-url or JIRA_BASE_URL is required")
 	}
 
 	if targetRepo == "" {
 		targetRepo = os.Getenv("GITHUB_REPOSITORY")
 	}
 	if targetRepo == "" {
-		return fmt.Errorf("--target-repo or GITHUB_REPOSITORY is required")
+		return jiraPollArgs{}, fmt.Errorf("--target-repo or GITHUB_REPOSITORY is required")
 	}
 
 	if jiraProject == "" && jqlOverride == "" {
-		return fmt.Errorf("--jira-project or --jql is required")
+		return jiraPollArgs{}, fmt.Errorf("--jira-project or --jql is required")
 	}
 
-	jiraClient, err := buildJiraClient(jiraURL)
+	return jiraPollArgs{
+		jiraURL:     jiraURL,
+		jiraProject: jiraProject,
+		jqlOverride: jqlOverride,
+		targetRepo:  targetRepo,
+		outputPath:  outputPath,
+		fullsendDir: fullsendDir,
+	}, nil
+}
+
+func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
+	args, err := validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
+	if err != nil {
+		return err
+	}
+
+	jiraClient, err := buildJiraClient(args.jiraURL)
 	if err != nil {
 		return fmt.Errorf("create Jira client: %w", err)
 	}
 
-	router, err := buildRouter(fullsendDir)
+	router, err := buildRouter(args.fullsendDir)
 	if err != nil {
 		return fmt.Errorf("build event router: %w", err)
 	}
 
 	opts := jirapoll.Options{
-		TargetRepo:  targetRepo,
-		JiraBaseURL: jiraURL,
-		JiraProject: jiraProject,
-		JQL:         jqlOverride,
-		OutputPath:  outputPath,
+		TargetRepo:  args.targetRepo,
+		JiraBaseURL: args.jiraURL,
+		JiraProject: args.jiraProject,
+		JQL:         args.jqlOverride,
+		OutputPath:  args.outputPath,
 	}
 
 	poller := jirapoll.New(jiraClient, router, opts)
