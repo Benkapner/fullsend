@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"golang.org/x/sync/singleflight"
 )
 
 // LiveClient is an HTTP client for the Jira Cloud REST API v3.
@@ -65,9 +66,10 @@ type oauth2TokenSource struct {
 	tokenURL     string
 	httpClient   *http.Client
 
-	mu          sync.Mutex
-	accessToken string
-	expiry      time.Time
+	mu           sync.Mutex
+	accessToken  string
+	expiry       time.Time
+	refreshGroup singleflight.Group
 }
 
 func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
@@ -80,8 +82,21 @@ func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
 	}
 	s.mu.Unlock()
 
-	// Slow path: fetch a new token without holding the mutex so
-	// concurrent callers are not blocked by a slow token endpoint.
+	// Slow path: refresh the token. singleflight collapses concurrent
+	// refresh attempts (e.g. many goroutines hitting the fast-path miss
+	// at once) into a single call to the token endpoint.
+	tok, err, _ := s.refreshGroup.Do("refresh", func() (any, error) {
+		return s.refreshToken(ctx)
+	})
+	if err != nil {
+		return "", err
+	}
+	return tok.(string), nil
+}
+
+// refreshToken exchanges client credentials for a new access token and
+// caches it.
+func (s *oauth2TokenSource) refreshToken(ctx context.Context) (string, error) {
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {s.clientID},
@@ -122,7 +137,6 @@ func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("oauth2 token response missing access_token")
 	}
 
-	// Re-acquire lock to update the cache.
 	s.mu.Lock()
 	s.accessToken = tokenResp.AccessToken
 	s.expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
