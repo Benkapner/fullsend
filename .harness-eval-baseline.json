@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "findings": [
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/scripts/install-openshell.sh",
+      "message_hash": "560a2bc83b5930ff"
+    },
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/workflows/functional-tests.yml",
+      "message_hash": "2b1fb435534abf79"
+    }
+  ]
+}

@@ -159,8 +159,8 @@ jobs:
         run: pip install -q "harness-eval==6.3.0"
 
       - name: Lint repo root
-        run: harness-eval lint . --preset recommended --fail-on-error --exclude ".github/scripts/*" --exclude ".github/workflows/*"
+        run: harness-eval lint . --preset recommended --fail-on-error --baseline .harness-eval-baseline.json
 
       - name: Lint scaffold
         if: always()
-        run: harness-eval lint internal/scaffold/fullsend-repo --preset recommended --fail-on-error --exclude ".github/scripts/*" --exclude ".github/workflows/*"
+        run: harness-eval lint internal/scaffold/fullsend-repo --preset recommended --fail-on-error
