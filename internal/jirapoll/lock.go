@@ -55,6 +55,12 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 	// Re-read and verify our UUID still holds.
 	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
 	if err != nil {
+		// The write succeeded but verification failed. Best-effort release
+		// the lock we just wrote so a transient read error doesn't leak it
+		// until the stale-lock threshold expires.
+		if releaseErr := p.releaseLock(ctx, issueKey, lockID); releaseErr != nil {
+			log.Printf("WARNING: releasing lock on %s after verify failure: %v", issueKey, releaseErr)
+		}
 		return false, fmt.Errorf("verify lock: %w", err)
 	}
 	if len(raw) == 0 {
