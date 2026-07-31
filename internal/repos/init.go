@@ -15,18 +15,16 @@ import (
 
 // InitConfig holds configuration for the repos init command.
 type InitConfig struct {
-	Target                 string
-	Repos                  []string
-	All                    bool
-	Forge                  string
-	ForgeURL               string
-	MintURL                string
-	InferenceProject       string
-	InferenceRegion        string
-	InferenceProjectNumber string
-	FullsendRef            string
-	MaxConcurrency         int
-	CLIVersion             string
+	Target          string
+	Repos           []string
+	All             bool
+	Forge           string
+	ForgeURL        string
+	MintURL         string
+	InferenceRegion string
+	FullsendRef     string
+	MaxConcurrency  int
+	CLIVersion      string
 }
 
 // DiscoveredRepo holds the result of discovering a single repo's
@@ -439,13 +437,6 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 			todos = append(todos, "forge.github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
 		}
 
-		// Compute inference project: CLI flag > TODO.
-		inferenceProject := cfg.InferenceProject
-		if inferenceProject == "" {
-			inferenceProject = "# TODO: set inference GCP project"
-			todos = append(todos, "forge.github.inference_project: provide via --inference-project flag")
-		}
-
 		// Compute inference region: CLI flag > discovery > default.
 		inferenceRegion := cfg.InferenceRegion
 		if inferenceRegion == "" {
@@ -453,13 +444,6 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 		}
 		if inferenceRegion == "" {
 			inferenceRegion = "us-central1"
-		}
-
-		// Compute inference project number: CLI flag > TODO.
-		inferenceProjectNumber := cfg.InferenceProjectNumber
-		if inferenceProjectNumber == "" {
-			inferenceProjectNumber = "# TODO: set inference GCP project number"
-			todos = append(todos, "forge.github.inference_project_number: provide via --inference-project-number flag")
 		}
 
 		// Compute fullsend ref: CLI flag > discovery > CLI version > DefaultUpstreamRef.
@@ -476,12 +460,10 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 		}
 
 		manifest.Forge.GitHub = GitHubForgeInfra{
-			URL:                    cfg.ForgeURL,
-			MintURL:                mintURL,
-			InferenceProject:       inferenceProject,
-			InferenceRegion:        inferenceRegion,
-			InferenceProjectNumber: inferenceProjectNumber,
-			FullsendRef:            fullsendRef,
+			URL:             cfg.ForgeURL,
+			MintURL:         mintURL,
+			InferenceRegion: inferenceRegion,
+			FullsendRef:     fullsendRef,
 		}
 	}
 	if forgeName == ForgeGitLab {
@@ -494,10 +476,23 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 		}
 	}
 
-	// Build repo entries — no per-repo overrides; all infrastructure
-	// settings live in the forge section.
+	// Build repo entries with per-repo overrides where discovered
+	// values differ from the forge-level defaults.
 	for _, d := range repos {
 		entry := RepoEntry{Repo: d.Owner + "/" + d.Repo}
+
+		if forgeName == ForgeGitHub {
+			gh := manifest.Forge.GitHub
+			if d.MintURL != "" && d.MintURL != gh.MintURL {
+				entry.MintURL = NullableString{Set: true, Value: d.MintURL}
+			}
+			if d.InferenceRegion != "" && d.InferenceRegion != gh.InferenceRegion {
+				entry.InferenceRegion = NullableString{Set: true, Value: d.InferenceRegion}
+			}
+			if d.FullsendRef != "" && d.FullsendRef != gh.FullsendRef {
+				entry.FullsendRef = NullableString{Set: true, Value: d.FullsendRef}
+			}
+		}
 		manifest.Repos = append(manifest.Repos, entry)
 	}
 

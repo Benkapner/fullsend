@@ -67,9 +67,6 @@ func TestReposInitCmd_Flags(t *testing.T) {
 	mintURLFlag := cmd.Flags().Lookup("mint-url")
 	require.NotNil(t, mintURLFlag, "expected --mint-url flag")
 
-	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
-	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
-
 	inferenceRegionFlag := cmd.Flags().Lookup("inference-region")
 	require.NotNil(t, inferenceRegionFlag, "expected --inference-region flag")
 
@@ -680,11 +677,13 @@ func TestRunReposInstall_Success(t *testing.T) {
 	fc := newInstallFakeClient("acme/api")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		roles:       []string{"triage"},
-		direct:      true,
-		testClient:  fc,
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 }
@@ -787,6 +786,36 @@ func TestRunReposAdd_Duplicate(t *testing.T) {
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
 	assert.Equal(t, 1, len(m.Repos))
+}
+
+func TestRunReposAdd_InvalidFullsendRef(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := forge.NewFakeClient()
+
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest:    manifestPath,
+		forge:       repos.ForgeGitHub,
+		fullsendRef: "v1.0.0; rm -rf /",
+		testClient:  fc,
+	}, []string{"acme/web"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--fullsend-ref")
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestRunReposAdd_InvalidMintURL(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := forge.NewFakeClient()
+
+	err := runReposAdd(context.Background(), &reposAddConfig{
+		manifest:   manifestPath,
+		forge:      repos.ForgeGitHub,
+		mintURL:    "http://not-secure.example.com",
+		testClient: fc,
+	}, []string{"acme/web"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--mint-url")
+	assert.Contains(t, err.Error(), "HTTPS")
 }
 
 func TestRunReposAdd_DryRun(t *testing.T) {
@@ -1109,12 +1138,14 @@ repos:
 	fc := newInstallFakeClient("acme/api", "acme/web")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		repoFilter:  []string{"acme/api"},
-		roles:       []string{"triage"},
-		direct:      true,
-		testClient:  fc,
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/api"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 }
@@ -1310,12 +1341,14 @@ func TestRunReposAdd_WithInstall(t *testing.T) {
 	fc := newInstallFakeClient("acme/api", "acme/web")
 
 	err := runReposAdd(context.Background(), &reposAddConfig{
-		manifest:    manifestPath,
-		forge:       repos.ForgeGitHub,
-		install:     true,
-		concurrency: 4,
-		direct:      true,
-		testClient:  fc,
+		manifest:               manifestPath,
+		forge:                  repos.ForgeGitHub,
+		install:                true,
+		concurrency:            4,
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		testClient:             fc,
 	}, []string{"acme/web"})
 	require.NoError(t, err)
 

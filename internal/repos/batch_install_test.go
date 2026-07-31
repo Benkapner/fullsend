@@ -46,6 +46,21 @@ func newFakeClientForBatch(repos ...string) *forge.FakeClient {
 	return fc
 }
 
+// batchCfgWithDefaults returns a BatchInstallConfig pre-populated with
+// the install-time-only GCP fields that are now CLI flags (not stored
+// in the manifest). Tests that intentionally omit these values should
+// construct BatchInstallConfig directly.
+func batchCfgWithDefaults(m *Manifest) BatchInstallConfig {
+	return BatchInstallConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+	}
+}
+
 func TestBatchInstall_AllFresh(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
@@ -54,10 +69,12 @@ func TestBatchInstall_AllFresh(t *testing.T) {
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
+		Manifest:               manifest,
+		MaxConcurrency:         2,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -85,12 +102,7 @@ func TestBatchInstall_SomeAlreadyInstalled(t *testing.T) {
 	manifest := newBatchManifest(repos...)
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -118,13 +130,8 @@ func TestBatchInstall_RepoFilter(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		RepoFilter:     []string{"acme/api"},
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.RepoFilter = []string{"acme/api"}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -147,10 +154,12 @@ func TestBatchInstall_DryRun(t *testing.T) {
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		DryRun:         true,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
+		Manifest:               manifest,
+		DryRun:                 true,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -184,10 +193,12 @@ func TestBatchInstall_DryRunSkipsInstalled(t *testing.T) {
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		DryRun:         true,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
+		Manifest:               manifest,
+		DryRun:                 true,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -213,8 +224,10 @@ func TestBatchInstall_EmptyManifest(t *testing.T) {
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 1,
+		Manifest:               manifest,
+		MaxConcurrency:         1,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -234,8 +247,10 @@ func TestBatchInstall_InvalidManifest(t *testing.T) {
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 1,
+		Manifest:               manifest,
+		MaxConcurrency:         1,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
 	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -248,16 +263,13 @@ func TestBatchInstall_MissingInferenceProject(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-	manifest.Forge.GitHub.InferenceProject = ""
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	// Omit InferenceProject from CLI flags — validation should fail.
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProject = ""
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -267,8 +279,8 @@ func TestBatchInstall_MissingInferenceProject(t *testing.T) {
 		t.Errorf("expected 2 failed repos, got %d", len(result.Failed))
 	}
 	for _, r := range result.Failed {
-		if !strings.Contains(r.Error.Error(), "inference_project is required") {
-			t.Errorf("expected inference_project error, got: %v", r.Error)
+		if !strings.Contains(r.Error.Error(), "--inference-project is required") {
+			t.Errorf("expected --inference-project error, got: %v", r.Error)
 		}
 	}
 	if len(result.Installed) != 0 {
@@ -287,12 +299,8 @@ func TestBatchInstall_MissingInferenceRegion(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -313,26 +321,84 @@ func TestBatchInstall_MissingInferenceProjectNumber(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-	manifest.Forge.GitHub.InferenceProjectNumber = ""
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	// Omit InferenceProjectNumber from CLI flags — validation should fail.
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProjectNumber = ""
 
-	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err == nil {
-		t.Fatal("expected error for missing inference_project_number, got nil")
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "inference_project_number is required") {
-		t.Errorf("expected inference_project_number error, got: %v", err)
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	}
+	for _, r := range result.Failed {
+		if !strings.Contains(r.Error.Error(), "--inference-project-number is required") {
+			t.Errorf("expected --inference-project-number error, got: %v", r.Error)
+		}
 	}
 	if sc.called {
 		t.Error("expected no scaffold calls when inference_project_number is empty")
+	}
+}
+
+func TestBatchInstall_NonNumericInferenceProjectNumber(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProjectNumber = "not-a-number"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	}
+	for _, r := range result.Failed {
+		if !strings.Contains(r.Error.Error(), "must be numeric") {
+			t.Errorf("expected numeric validation error, got: %v", r.Error)
+		}
+	}
+	if sc.called {
+		t.Error("expected no scaffold calls when inference_project_number is non-numeric")
+	}
+}
+
+func TestBatchInstall_InvalidInferenceProjectID(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProject = "BAD"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	}
+	for _, r := range result.Failed {
+		if !strings.Contains(r.Error.Error(), "not a valid GCP project ID") {
+			t.Errorf("expected GCP project ID validation error, got: %v", r.Error)
+		}
+	}
+	if sc.called {
+		t.Error("expected no scaffold calls when inference_project is invalid")
 	}
 }
 
@@ -343,12 +409,8 @@ func TestBatchInstall_WIFProviderFormat(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -376,12 +438,8 @@ func TestBatchInstall_WIFProviderCollision(t *testing.T) {
 	manifest := newBatchManifest(repos...)
 
 	sc := &fakeScaffoldCommit{}
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
 	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err == nil {
@@ -407,12 +465,8 @@ func TestBatchInstall_ScaffoldFailure_OneRepo(t *testing.T) {
 		return nil
 	}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 1, // sequential to make the test deterministic
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 1 // sequential to make the test deterministic
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
 	if err != nil {
@@ -439,12 +493,7 @@ func TestBatchInstall_NilProgress(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), nil)
 	if err != nil {
@@ -462,12 +511,7 @@ func TestBatchInstall_DefaultConcurrency(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -504,12 +548,8 @@ func TestBatchInstall_ConcurrencyCap(t *testing.T) {
 		return nil
 	}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
 	go func() {
 		// Let scaffold goroutines accumulate, then release them all.
@@ -552,12 +592,8 @@ func TestBatchInstall_InvalidConcurrency(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := BatchInstallConfig{
-				Manifest:       manifest,
-				MaxConcurrency: tt.concurrency,
-				Roles:          []string{"triage"},
-				Direct:         true,
-			}
+			cfg := batchCfgWithDefaults(manifest)
+			cfg.MaxConcurrency = tt.concurrency
 
 			_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 			if err == nil {
@@ -574,13 +610,8 @@ func TestBatchInstall_RepoFilterCaseInsensitive(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		RepoFilter:     []string{"acme/api"},
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.RepoFilter = []string{"acme/api"}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -599,12 +630,7 @@ func TestBatchInstall_DiscoveryError(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -626,12 +652,8 @@ func TestBatchInstall_ScaffoldErrorCollection(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{err: fmt.Errorf("scaffold failed")}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -669,12 +691,8 @@ func TestBatchInstall_ContextCancellation_Phase1(t *testing.T) {
 
 	client := &contextAwareClient{FakeClient: fc}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
 	result, err := BatchInstall(ctx, cfg, newTestClientFactory(client), sc.fn(), noopProgress)
 	if err != nil {
@@ -703,12 +721,7 @@ func TestBatchInstall_PartialInstall_RepairsWhenComponentsMissing(t *testing.T) 
 	manifest := newBatchManifest(repos...)
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -733,12 +746,7 @@ func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
 	manifest := newBatchManifest(repos...)
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {

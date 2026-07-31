@@ -80,6 +80,21 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 			}
 			if state.Installed {
 				progress(entries[i].Repo, "discover", "existing installation detected")
+
+				// Populate per-repo overrides from discovered state
+				// when values differ from manifest defaults.
+				if entryForge == ForgeGitHub {
+					gh := cfg.Manifest.Forge.GitHub
+					if state.MintURL != "" && state.MintURL != gh.MintURL && !entries[i].MintURL.Set {
+						entries[i].MintURL = NullableString{Set: true, Value: state.MintURL}
+					}
+					if state.InferenceRegion != "" && state.InferenceRegion != gh.InferenceRegion && !entries[i].InferenceRegion.Set {
+						entries[i].InferenceRegion = NullableString{Set: true, Value: state.InferenceRegion}
+					}
+					if state.FullsendRef != "" && state.FullsendRef != gh.FullsendRef && !entries[i].FullsendRef.Set {
+						entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
+					}
+				}
 			}
 		}
 	}

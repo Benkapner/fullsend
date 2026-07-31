@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 
@@ -42,19 +43,17 @@ managing fullsend across many repositories and organizations.`,
 }
 
 type reposInitConfig struct {
-	output                 string
-	repoNames              string
-	all                    bool
-	mintURL                string
-	inferenceProject       string
-	inferenceRegion        string
-	inferenceProjectNumber string
-	fullsendRef            string
-	concurrency            int
-	force                  bool
-	forge                  string
-	forgeURL               string
-	gitlabToken            string
+	output          string
+	repoNames       string
+	all             bool
+	mintURL         string
+	inferenceRegion string
+	fullsendRef     string
+	concurrency     int
+	force           bool
+	forge           string
+	forgeURL        string
+	gitlabToken     string
 }
 
 func newReposInitCmd() *cobra.Command {
@@ -104,17 +103,15 @@ that reflects current reality.`,
 			}
 
 			initCfg := repos.InitConfig{
-				Target:                 target,
-				All:                    cfg.all,
-				Forge:                  cfg.forge,
-				ForgeURL:               cfg.forgeURL,
-				MintURL:                cfg.mintURL,
-				InferenceProject:       cfg.inferenceProject,
-				InferenceRegion:        cfg.inferenceRegion,
-				InferenceProjectNumber: cfg.inferenceProjectNumber,
-				FullsendRef:            cfg.fullsendRef,
-				MaxConcurrency:         cfg.concurrency,
-				CLIVersion:             version,
+				Target:          target,
+				All:             cfg.all,
+				Forge:           cfg.forge,
+				ForgeURL:        cfg.forgeURL,
+				MintURL:         cfg.mintURL,
+				InferenceRegion: cfg.inferenceRegion,
+				FullsendRef:     cfg.fullsendRef,
+				MaxConcurrency:  cfg.concurrency,
+				CLIVersion:      version,
 			}
 
 			if cfg.repoNames != "" {
@@ -183,9 +180,7 @@ that reflects current reality.`,
 	cmd.Flags().StringVar(&cfg.repoNames, "repos", "", "comma-separated list of repos to include")
 	cmd.Flags().BoolVar(&cfg.all, "all", false, "include all eligible repos without prompting")
 	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint Cloud Run endpoint URL")
-	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "default GCP project for inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (default: us-central1)")
-	cmd.Flags().StringVar(&cfg.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number for WIF provider computation")
 	cmd.Flags().StringVar(&cfg.fullsendRef, "fullsend-ref", "", "pin the fullsend workflow ref (e.g. v0.42.0)")
 	cmd.Flags().IntVar(&cfg.concurrency, "concurrency", 8, "max parallel API calls (capped at 64)")
 	cmd.Flags().BoolVar(&cfg.force, "force", false, "overwrite output file if it already exists")
@@ -338,6 +333,12 @@ type reposInstallConfig struct {
 	direct      bool
 	gitlabToken string
 
+	// Install-time-only GCP credentials. These are required for GitHub
+	// repos and are used to write repo secrets, but are NOT stored in
+	// the manifest.
+	inferenceProject       string
+	inferenceProjectNumber string
+
 	// Testing overrides — when non-nil, used instead of resolving from
 	// the environment. Not set by CLI flag parsing.
 	testClient forge.Client
@@ -375,12 +376,24 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install")
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 
+	// Install-time-only GCP credentials. Required for GitHub repos.
+	// These values are written as repo secrets but are NOT stored in
+	// the manifest.
+	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference (written as FULLSEND_GCP_PROJECT_ID secret)")
+	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number for WIF provider computation")
+
 	return cmd
 }
 
 func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if opts.concurrency < 1 || opts.concurrency > 32 {
 		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
+	}
+	if opts.inferenceProject != "" && !repos.IsValidGCPProjectID(opts.inferenceProject) {
+		return fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter, no trailing hyphen)", opts.inferenceProject)
+	}
+	if opts.inferenceProjectNumber != "" && !repos.IsNumeric(opts.inferenceProjectNumber) {
+		return fmt.Errorf("--inference-project-number must be numeric, got %q", opts.inferenceProjectNumber)
 	}
 
 	printer := ui.New(os.Stdout)
@@ -427,14 +440,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	cfg := repos.BatchInstallConfig{
-		Manifest:       manifest,
-		DryRun:         opts.dryRun,
-		RepoFilter:     opts.repoFilter,
-		MaxConcurrency: opts.concurrency,
-		Roles:          opts.roles,
-		UpstreamRef:    upstreamRef,
-		UpstreamTag:    upstreamTag,
-		Direct:         opts.direct,
+		Manifest:               manifest,
+		DryRun:                 opts.dryRun,
+		RepoFilter:             opts.repoFilter,
+		MaxConcurrency:         opts.concurrency,
+		Roles:                  opts.roles,
+		UpstreamRef:            upstreamRef,
+		UpstreamTag:            upstreamTag,
+		Direct:                 opts.direct,
+		InferenceProject:       opts.inferenceProject,
+		InferenceProjectNumber: opts.inferenceProjectNumber,
 	}
 
 	progressFn := func(repo, phase, msg string) {
@@ -483,6 +498,17 @@ type reposAddConfig struct {
 	forge       string
 	gitlabToken string
 
+	// Per-repo override flags. When set, these override the forge-level
+	// defaults for added repos.
+	inferenceRegion        string
+	fullsendRef            string
+	mintURL                string
+	allowedRemoteResources []string
+
+	// Install-time-only flags (used with --install).
+	inferenceProject       string
+	inferenceProjectNumber string
+
 	testClient forge.Client
 }
 
@@ -513,6 +539,17 @@ the manifest.`,
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for added repos (github or gitlab)")
 	_ = cmd.MarkFlagRequired("forge")
 
+	// Per-repo override flags — stored in manifest when they differ
+	// from the forge-level default.
+	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "per-repo GCP inference region override")
+	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
+	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
+	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
+
+	// Install-time-only flags (used with --install).
+	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference (install-time only, not stored in manifest)")
+	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number for WIF (install-time only, not stored in manifest)")
+
 	return cmd
 }
 
@@ -537,6 +574,17 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
 
+	if opts.fullsendRef != "" && !repos.IsValidRef(opts.fullsendRef) {
+		return fmt.Errorf("--fullsend-ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", opts.fullsendRef)
+	}
+
+	if opts.mintURL != "" {
+		mu, muErr := url.Parse(opts.mintURL)
+		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
+			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
+		}
+	}
+
 	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
@@ -551,6 +599,23 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 		// manifest default — keeps the YAML clean.
 		if opts.forge != manifest.Defaults.Forge {
 			entry.Forge = repos.NullableString{Set: true, Value: opts.forge}
+		}
+		// Set per-repo overrides only when they differ from the
+		// forge-level defaults — keeps the YAML clean. These fields
+		// only apply to GitHub repos.
+		if opts.forge == repos.ForgeGitHub {
+			if opts.inferenceRegion != "" && opts.inferenceRegion != manifest.Forge.GitHub.InferenceRegion {
+				entry.InferenceRegion = repos.NullableString{Set: true, Value: opts.inferenceRegion}
+			}
+			if opts.fullsendRef != "" && opts.fullsendRef != manifest.Forge.GitHub.FullsendRef {
+				entry.FullsendRef = repos.NullableString{Set: true, Value: opts.fullsendRef}
+			}
+			if opts.mintURL != "" && opts.mintURL != manifest.Forge.GitHub.MintURL {
+				entry.MintURL = repos.NullableString{Set: true, Value: opts.mintURL}
+			}
+		}
+		if len(opts.allowedRemoteResources) > 0 {
+			entry.AllowedRemoteResources = opts.allowedRemoteResources
 		}
 		entries[i] = entry
 	}
@@ -580,13 +645,15 @@ func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) e
 		printer.Blank()
 		printer.StepStart("Installing fullsend on added repos")
 		installOpts := &reposInstallConfig{
-			manifest:    opts.manifest,
-			repoFilter:  result.Added,
-			concurrency: opts.concurrency,
-			direct:      opts.direct,
-			roles:       opts.roles,
-			gitlabToken: opts.gitlabToken,
-			testClient:  opts.testClient,
+			manifest:               opts.manifest,
+			repoFilter:             result.Added,
+			concurrency:            opts.concurrency,
+			direct:                 opts.direct,
+			roles:                  opts.roles,
+			gitlabToken:            opts.gitlabToken,
+			inferenceProject:       opts.inferenceProject,
+			inferenceProjectNumber: opts.inferenceProjectNumber,
+			testClient:             opts.testClient,
 		}
 		if err := runReposInstall(ctx, installOpts); err != nil {
 			return err
@@ -1040,7 +1107,7 @@ func newReposSyncCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Reconcile configuration drift for installed repos",
-		Long:  "Apply variable and secret changes to reconcile installed repos with the manifest. Use --dry-run to preview changes without applying them.",
+		Long:  "Apply variable changes to reconcile installed repos with the manifest. Use --dry-run to preview changes without applying them.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gitlabToken = getGitLabToken(cmd)
 			return runReposSync(cmd.Context(), opts)

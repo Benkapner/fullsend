@@ -28,6 +28,16 @@ type BatchInstallConfig struct {
 	// Direct controls scaffold delivery: true pushes directly to the default
 	// branch; false creates a PR.
 	Direct bool
+
+	// InferenceProject is the GCP project ID for inference. This is an
+	// install-time-only value passed via CLI flag, not stored in the
+	// manifest. Written as the FULLSEND_GCP_PROJECT_ID repo secret.
+	InferenceProject string
+
+	// InferenceProjectNumber is the numeric GCP project number used
+	// to compute the WIF provider resource name. Install-time-only,
+	// not stored in the manifest.
+	InferenceProjectNumber string
 }
 
 // BatchInstallResult holds the outcome of a multi-repo install operation.
@@ -193,17 +203,28 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 	// Validate resolved config — fail fast on missing fields to avoid
 	// partial installations. Only GitHub repos require these fields.
+	// InferenceProject and InferenceProjectNumber are install-time-only
+	// values from CLI flags, not from the manifest.
 	var validCandidates []discoveryResult
 	for _, d := range toInstall {
 		fullName := d.repo.Owner + "/" + d.repo.Repo
 		if d.resolved.Forge == ForgeGitHub {
-			if d.resolved.InferenceProject == "" {
+			if cfg.InferenceProject == "" {
 				result.Failed = append(result.Failed, InstallResult{
 					Owner: d.repo.Owner,
 					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("inference_project is required but empty for %s", fullName),
+					Error: fmt.Errorf("--inference-project is required but empty for %s", fullName),
 				})
-				progress(fullName, "validate", "Missing inference_project in manifest")
+				progress(fullName, "validate", "Missing --inference-project flag")
+				continue
+			}
+			if !IsValidGCPProjectID(cfg.InferenceProject) {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject),
+				})
+				progress(fullName, "validate", "Invalid --inference-project: must be a valid GCP project ID")
 				continue
 			}
 			if d.resolved.InferenceRegion == "" {
@@ -215,13 +236,22 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				progress(fullName, "validate", "Missing inference_region in manifest")
 				continue
 			}
-			if d.resolved.InferenceProjectNumber == "" {
+			if cfg.InferenceProjectNumber == "" {
 				result.Failed = append(result.Failed, InstallResult{
 					Owner: d.repo.Owner,
 					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("inference_project_number is required but empty for %s", fullName),
+					Error: fmt.Errorf("--inference-project-number is required but empty for %s", fullName),
 				})
-				progress(fullName, "validate", "Missing inference_project_number in manifest")
+				progress(fullName, "validate", "Missing --inference-project-number flag")
+				continue
+			}
+			if !IsNumeric(cfg.InferenceProjectNumber) {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-project-number must be numeric, got %q for %s", cfg.InferenceProjectNumber, fullName),
+				})
+				progress(fullName, "validate", "Invalid --inference-project-number: must be numeric")
 				continue
 			}
 		}
@@ -243,10 +273,10 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	wifSeen := make(map[string]string) // wifProvider → "owner/repo"
 	for i, d := range validCandidates {
 		var wif string
-		if d.resolved.Forge == ForgeGitHub && d.resolved.InferenceProjectNumber != "" {
+		if d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "" {
 			providerID := mintcore.BuildRepoProviderID(d.repo.Owner, d.repo.Repo)
 			wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
-				d.resolved.InferenceProjectNumber, mintcore.DefaultInferencePool, providerID)
+				cfg.InferenceProjectNumber, mintcore.DefaultInferencePool, providerID)
 			fullName := d.repo.Owner + "/" + d.repo.Repo
 			if existing, ok := wifSeen[wif]; ok {
 				return nil, fmt.Errorf("WIF provider collision: repos %s and %s produce the same provider ID %q (truncated to 32 chars)", existing, fullName, providerID)
@@ -295,7 +325,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				Forge:            dr.resolved.Forge,
 				Roles:            roles,
 				MintURL:          dr.resolved.MintURL,
-				InferenceProject: dr.resolved.InferenceProject,
+				InferenceProject: cfg.InferenceProject,
 				InferenceRegion:  dr.resolved.InferenceRegion,
 				UpstreamRef:      ref,
 				UpstreamTag:      tag,
