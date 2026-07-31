@@ -19,7 +19,7 @@ Date: 2026-06-16
 
 Accepted
 
-*Clarified by [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md), which
+*Amended by [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md), which
 decides when a knob should be an `{AGENT}_` env var at all versus a
 `config.yaml` field.*
 
