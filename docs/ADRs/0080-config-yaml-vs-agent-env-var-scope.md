@@ -30,10 +30,12 @@ per-org config surface" — i.e. `.fullsend/config.yaml` — not a harness
 default (see the [review
 discussion](https://github.com/fullsend-ai/agents/pull/567#discussion_r3686020058)).
 `config.yaml` already carries fields like `create_issues.allow_targets`
-that are unrelated to any single agent. ADR 0049 defines how agent config
-env vars are *named* (`{AGENT}_{SETTING_NAME}`) but says nothing about
-*when* a knob should be a `config.yaml` field instead of an env var, so
-there was no rule to check the PR against.
+that are unrelated to any single agent, per the [governance](../problems/governance.md)
+and [agent infrastructure](../problems/agent-infrastructure.md) problem
+docs. [ADR 0049](0049-agent-configuration-env-var-convention.md) defines
+how agent config env vars are *named* (`{AGENT}_{SETTING_NAME}`) but says
+nothing about *when* a knob should be a `config.yaml` field instead of an
+env var, so there was no rule to check the PR against.
 
 ## Decision
 
@@ -52,6 +54,17 @@ whether its behavior is meaningful to more than one agent:
   overriding it per repo or org means overriding the harness (e.g. via
   `base:` composition, per ADR 0045), not adding a parallel field to
   `config.yaml`.
+
+**Override convention:** `env.runner`/`env.sandbox` values are agent
+defaults. A per-repo or per-org override edits the harness (`base:`
+composition, per ADR 0045), not the CI workflow `env:` block — that block
+is reserved for infrastructure plumbing (credentials, project IDs,
+regions), not agent behavior knobs. This also means behavior defaults in
+`env.runner`/`env.sandbox` must be literals (e.g. `TRIAGE_AUTO_CODE:
+"on"`), not shell-style passthrough expressions (e.g.
+`${TRIAGE_AUTO_CODE:-on}`) — those two mechanisms deliver plain key-value
+pairs, not shell-expanded strings, so passthrough syntax would not expand
+and instead be treated as a literal value.
 
 A knob only moves from one surface to the other by a deliberate migration,
 not by adding a second way to set the same value. Applying this rule to
