@@ -21,7 +21,9 @@ Accepted
 
 *Amended by [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md), which
 decides when a knob should be an `{AGENT}_` env var at all versus a
-`config.yaml` field.*
+`config.yaml` field, and [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md),
+which narrows the "CI workflow injection" delivery mechanism to
+infrastructure values.*
 
 ## Context
 
@@ -97,7 +99,10 @@ on the host. A config var needed by both must appear in both places.
 
 3. **For CI workflow injection:** The CI workflow sets the value from org
    secrets, repo variables, or hardcoded defaults. This is the same mechanism
-   used for all other env vars — no change needed.
+   used for all other env vars — no change needed. *Note: [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md)
+   narrows this to infrastructure values and CI-runtime-only computed
+   values; static agent behavior defaults go through harness composition
+   instead.*
 
 ### Defaults
 
