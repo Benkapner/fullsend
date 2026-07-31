@@ -119,6 +119,11 @@ repo baseline and overrides)
   `env.sandbox` in the harness YAML. Each agent documents its config vars in
   `docs/agents/<agent>.md`
   ([ADR 0049](ADRs/0049-agent-configuration-env-var-convention.md)).
+- Config surface boundary: a knob that applies to one agent is an
+  `{AGENT}_`-prefixed harness env var (never a `config.yaml` field); a
+  knob that applies across agents or governs dispatch/policy is a
+  `config.yaml` field (never also an env var)
+  ([ADR 0080](ADRs/0080-config-yaml-vs-agent-env-var-scope.md)).
 - Agent-driven branch targeting: the code agent writes its chosen target
   branch to structured output. The post-script validates the choice against
   an allowlist and falls back to the repo's auto-detected default branch.
