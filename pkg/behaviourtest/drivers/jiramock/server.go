@@ -1,5 +1,5 @@
 // Package jiramock provides a stateful mock Jira REST API server for
-// behaviour tests. The mock implements the endpoints that jira.Client calls,
+// behaviour tests. The mock implements the endpoints that jira.LiveClient calls,
 // backed by in-memory state that step definitions manipulate between requests.
 package jiramock
 

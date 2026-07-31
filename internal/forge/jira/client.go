@@ -21,8 +21,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// Client is an HTTP client for the Jira Cloud REST API v3.
-type Client struct {
+// LiveClient is an HTTP client for the Jira Cloud REST API v3.
+type LiveClient struct {
 	httpClient *http.Client
 	baseURL    string
 	email      string // for Basic auth (Cloud)
@@ -106,11 +106,11 @@ func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
 }
 
 // Option configures the Jira client.
-type Option func(*Client)
+type Option func(*LiveClient)
 
 // WithBaseURL sets a custom base URL for the Jira instance.
 func WithBaseURL(rawURL string) Option {
-	return func(c *Client) {
+	return func(c *LiveClient) {
 		c.baseURL = strings.TrimRight(rawURL, "/")
 	}
 }
@@ -119,7 +119,7 @@ func WithBaseURL(rawURL string) Option {
 // When set, the client uses Authorization: Basic base64(email:token).
 // When empty, the client uses Authorization: Bearer token (Data Center/PAT).
 func WithEmail(email string) Option {
-	return func(c *Client) {
+	return func(c *LiveClient) {
 		c.email = email
 	}
 }
@@ -127,7 +127,7 @@ func WithEmail(email string) Option {
 // WithHTTPClient sets a custom HTTP client for both API calls and, when using
 // OAuth 2.0, token exchange requests.
 func WithHTTPClient(client *http.Client) Option {
-	return func(c *Client) {
+	return func(c *LiveClient) {
 		c.httpClient = client
 		if c.oauth2 != nil {
 			c.oauth2.httpClient = client
@@ -138,7 +138,7 @@ func WithHTTPClient(client *http.Client) Option {
 // WithTokenURL overrides the OAuth 2.0 token endpoint URL.
 // Defaults to https://auth.atlassian.com/oauth/token.
 func WithTokenURL(tokenURL string) Option {
-	return func(c *Client) {
+	return func(c *LiveClient) {
 		if c.oauth2 != nil {
 			c.oauth2.tokenURL = tokenURL
 		}
@@ -148,7 +148,7 @@ func WithTokenURL(tokenURL string) Option {
 // NewOAuth2 creates a Jira client that authenticates using OAuth 2.0 client
 // credentials (two-legged). The client exchanges clientID and clientSecret for
 // a short-lived access token, caching it and refreshing before expiry.
-func NewOAuth2(clientID, clientSecret string, opts ...Option) (*Client, error) {
+func NewOAuth2(clientID, clientSecret string, opts ...Option) (*LiveClient, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("jira: OAuth2 client ID must not be empty")
 	}
@@ -172,7 +172,7 @@ func NewOAuth2(clientID, clientSecret string, opts ...Option) (*Client, error) {
 			return nil
 		},
 	}
-	c := &Client{
+	c := &LiveClient{
 		httpClient: httpClient,
 		oauth2: &oauth2TokenSource{
 			clientID:     clientID,
@@ -211,11 +211,11 @@ func validateBaseURL(rawURL string) error {
 }
 
 // New creates a new Jira client with the given API token.
-func New(token string, opts ...Option) (*Client, error) {
+func New(token string, opts ...Option) (*LiveClient, error) {
 	if token == "" {
 		return nil, fmt.Errorf("jira: token must not be empty")
 	}
-	c := &Client{
+	c := &LiveClient{
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -269,11 +269,11 @@ func (e *APIError) Unwrap() error {
 
 const maxRetries = 5
 
-func (c *Client) apiURL(path string) string {
+func (c *LiveClient) apiURL(path string) string {
 	return c.baseURL + "/rest/api/3" + path
 }
 
-func (c *Client) setAuth(req *http.Request) error {
+func (c *LiveClient) setAuth(req *http.Request) error {
 	if c.oauth2 != nil {
 		tok, err := c.oauth2.token(req.Context())
 		if err != nil {
@@ -292,7 +292,7 @@ func (c *Client) setAuth(req *http.Request) error {
 }
 
 // do executes an HTTP request with auth, error handling, and retry with backoff.
-func (c *Client) do(ctx context.Context, method, path string, body io.Reader, result any) error {
+func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader, result any) error {
 	reqURL := c.apiURL(path)
 
 	var bodyBytes []byte
@@ -461,7 +461,7 @@ const maxSearchPages = 200
 // cursor-based pagination (nextPageToken + isLast). Pagination is capped
 // at maxSearchPages pages (10,000 issues at 50 per page) to prevent
 // unbounded memory growth.
-func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) {
+func (c *LiveClient) SearchIssues(ctx context.Context, jql string) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
 	for page := 0; page < maxSearchPages; page++ {
@@ -490,7 +490,7 @@ func (c *Client) SearchIssues(ctx context.Context, jql string) ([]Issue, error) 
 }
 
 // GetIssue fetches a single issue by ID or key.
-func (c *Client) GetIssue(ctx context.Context, issueIDOrKey string) (*Issue, error) {
+func (c *LiveClient) GetIssue(ctx context.Context, issueIDOrKey string) (*Issue, error) {
 	var issue Issue
 	path := "/issue/" + url.PathEscape(issueIDOrKey)
 	if err := c.do(ctx, http.MethodGet, path, nil, &issue); err != nil {
@@ -500,7 +500,7 @@ func (c *Client) GetIssue(ctx context.Context, issueIDOrKey string) (*Issue, err
 }
 
 // ListComments fetches all comments on an issue, exhausting pagination.
-func (c *Client) ListComments(ctx context.Context, issueIDOrKey string) ([]Comment, error) {
+func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]Comment, error) {
 	var all []Comment
 	startAt := 0
 	for {
@@ -520,7 +520,7 @@ func (c *Client) ListComments(ctx context.Context, issueIDOrKey string) ([]Comme
 }
 
 // ListChangelog fetches all changelog entries for an issue, exhausting pagination.
-func (c *Client) ListChangelog(ctx context.Context, issueIDOrKey string) ([]ChangelogEntry, error) {
+func (c *LiveClient) ListChangelog(ctx context.Context, issueIDOrKey string) ([]ChangelogEntry, error) {
 	var all []ChangelogEntry
 	startAt := 0
 	for {
@@ -541,7 +541,7 @@ func (c *Client) ListChangelog(ctx context.Context, issueIDOrKey string) ([]Chan
 
 // GetEntityProperty retrieves the value of an entity property on an issue.
 // Returns forge.ErrNotFound (wrapped) if the property does not exist.
-func (c *Client) GetEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string) (json.RawMessage, error) {
+func (c *LiveClient) GetEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string) (json.RawMessage, error) {
 	path := fmt.Sprintf("/issue/%s/properties/%s",
 		url.PathEscape(issueIDOrKey), url.PathEscape(propertyKey))
 	var prop EntityPropertyValue
@@ -552,7 +552,7 @@ func (c *Client) GetEntityProperty(ctx context.Context, issueIDOrKey, propertyKe
 }
 
 // SetEntityProperty sets (creates or updates) an entity property on an issue.
-func (c *Client) SetEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string, value any) error {
+func (c *LiveClient) SetEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string, value any) error {
 	path := fmt.Sprintf("/issue/%s/properties/%s",
 		url.PathEscape(issueIDOrKey), url.PathEscape(propertyKey))
 	body, err := json.Marshal(value)
@@ -566,7 +566,7 @@ func (c *Client) SetEntityProperty(ctx context.Context, issueIDOrKey, propertyKe
 }
 
 // DeleteEntityProperty removes an entity property from an issue.
-func (c *Client) DeleteEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string) error {
+func (c *LiveClient) DeleteEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string) error {
 	path := fmt.Sprintf("/issue/%s/properties/%s",
 		url.PathEscape(issueIDOrKey), url.PathEscape(propertyKey))
 	if err := c.do(ctx, http.MethodDelete, path, nil, nil); err != nil {
@@ -580,7 +580,7 @@ func (c *Client) DeleteEntityProperty(ctx context.Context, issueIDOrKey, propert
 // names (e.g. "Administrators", "Developers"). When a user appears in
 // multiple roles, the highest-priority role wins (Administrators > Developers
 // > everything else).
-func (c *Client) GetProjectRoleMembership(ctx context.Context, projectKey string) (map[string]string, error) {
+func (c *LiveClient) GetProjectRoleMembership(ctx context.Context, projectKey string) (map[string]string, error) {
 	path := fmt.Sprintf("/project/%s/role", url.PathEscape(projectKey))
 	var roleList ProjectRoleList
 	if err := c.do(ctx, http.MethodGet, path, nil, &roleList); err != nil {
@@ -631,7 +631,7 @@ func rolePriority(roleName string) int {
 }
 
 // GetMyself returns the currently authenticated user.
-func (c *Client) GetMyself(ctx context.Context) (*User, error) {
+func (c *LiveClient) GetMyself(ctx context.Context) (*User, error) {
 	var user User
 	if err := c.do(ctx, http.MethodGet, "/myself", nil, &user); err != nil {
 		return nil, fmt.Errorf("get myself: %w", err)

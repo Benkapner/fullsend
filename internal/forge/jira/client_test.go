@@ -20,8 +20,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// setupTest creates an httptest server and a Client pointed at it.
-func setupTest(t *testing.T) (*Client, *http.ServeMux) {
+// setupTest creates an httptest server and a LiveClient pointed at it.
+func setupTest(t *testing.T) (*LiveClient, *http.ServeMux) {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)

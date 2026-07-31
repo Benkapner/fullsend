@@ -10,7 +10,7 @@ import (
 )
 
 // JiraClient defines the Jira API surface the poller requires.
-// Implemented by jira.Client; mocked in tests.
+// Implemented by jira.LiveClient; mocked in tests.
 type JiraClient interface {
 	// SearchIssues executes a JQL search and exhausts pagination, returning
 	// all matching issues.
@@ -26,7 +26,7 @@ type JiraClient interface {
 }
 
 // Compile-time interface check.
-var _ JiraClient = (*jira.Client)(nil)
+var _ JiraClient = (*jira.LiveClient)(nil)
 
 // Options configures the Jira poller.
 type Options struct {

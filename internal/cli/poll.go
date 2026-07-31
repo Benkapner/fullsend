@@ -183,7 +183,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 
 // buildJiraClient creates a Jira client using either OAuth 2.0 client credentials
 // or Basic/Bearer auth depending on JIRA_AUTH_METHOD.
-func buildJiraClient(jiraURL string) (*jira.Client, error) {
+func buildJiraClient(jiraURL string) (*jira.LiveClient, error) {
 	authMethod := os.Getenv("JIRA_AUTH_METHOD")
 
 	if authMethod == "oauth2" {
