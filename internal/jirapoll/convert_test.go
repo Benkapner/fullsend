@@ -257,6 +257,36 @@ func TestToNormalizedEvent_BotActor(t *testing.T) {
 	}
 }
 
+func TestActorKind_DisplayNameAutomationSuffix(t *testing.T) {
+	cases := []struct {
+		name        string
+		displayName string
+		want        string
+	}{
+		{"bot suffix with hyphen", "Jira-bot", "bot"},
+		{"bot suffix bracketed", "renovate[bot]", "bot"},
+		{"automation suffix with space", "ACME Automation", "bot"},
+		{"automation suffix with hyphen", "release-automation", "bot"},
+		{"bot substring mid-name, no delimiter", "Marbot Jenkins", "human"},
+		{"bot as literal suffix, no delimiter", "Dependabot", "human"},
+		{"plain human name", "Wayne Sun", "human"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			event := JiraEvent{
+				Type: "comment_added",
+				CommentAuthor: jira.User{
+					AccountID:   "some-id",
+					DisplayName: tc.displayName,
+				},
+			}
+			if got := actorKind(event); got != tc.want {
+				t.Errorf("actorKind(%q) = %q, want %q", tc.displayName, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToNormalizedEvent_IsEntityAuthor(t *testing.T) {
 	p := &Poller{
 		opts: Options{

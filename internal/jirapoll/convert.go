@@ -1,6 +1,7 @@
 package jirapoll
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -101,18 +102,30 @@ func actorID(event JiraEvent) string {
 	}
 }
 
-// actorKind returns "bot" or "human" based on the actor's account type.
+// automationDisplayNamePattern matches display names ending in "bot" or
+// "automation" as a delimited suffix (preceded by whitespace, a hyphen,
+// underscore, or opening bracket, and optionally followed by a closing
+// bracket). This avoids false positives on names that merely contain "bot"
+// or "automation" as a substring (e.g. "Marbot", "Dependabot").
+var automationDisplayNamePattern = regexp.MustCompile(`(?i)[\s\-_\[](bot|automation)\]?$`)
+
+// actorKind returns "bot" or "human" based on the actor's account type or,
+// per the jira-poll-adapter spec, a display name matching an automation
+// naming pattern.
 func actorKind(event JiraEvent) string {
-	var accountType string
+	var accountType, displayName string
 	switch event.Type {
 	case "comment_added":
 		accountType = event.CommentAuthor.AccountType
+		displayName = event.CommentAuthor.DisplayName
 	case "label_changed", "edited", "reopened", "closed":
 		accountType = event.ChangeAuthor.AccountType
+		displayName = event.ChangeAuthor.DisplayName
 	case "opened":
 		accountType = event.Reporter.AccountType
+		displayName = event.Reporter.DisplayName
 	}
-	if accountType == "app" {
+	if accountType == "app" || automationDisplayNamePattern.MatchString(displayName) {
 		return "bot"
 	}
 	return "human"
