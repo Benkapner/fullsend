@@ -69,12 +69,11 @@ func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
 	})
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "my-inference",
-		CLIVersion:       "2.3.0",
-		MaxConcurrency:   2,
+		Target:         "acme",
+		All:            true,
+		Forge:          ForgeGitHub,
+		CLIVersion:     "2.3.0",
+		MaxConcurrency: 2,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -86,7 +85,8 @@ func TestInit_GreenfieldOrg_AllFlag(t *testing.T) {
 
 	m := result.Manifest
 	assert.Equal(t, 1, m.Version)
-	assert.Equal(t, "my-inference", m.Forge.GitHub.InferenceProject)
+	// InferenceProject is no longer stored in manifest — install-time only.
+	assert.Empty(t, m.Forge.GitHub.InferenceProject)
 	assert.Equal(t, "v2.3.0", m.Forge.GitHub.FullsendRef)
 	require.Len(t, m.Repos, 3)
 }
@@ -99,11 +99,10 @@ func TestInit_GreenfieldOrg_ExplicitRepos(t *testing.T) {
 	})
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		Repos:            []string{"acme/api", "acme/web"},
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "1.0.0",
+		Target:     "acme",
+		Repos:      []string{"acme/api", "acme/web"},
+		Forge:      ForgeGitHub,
+		CLIVersion: "1.0.0",
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -163,11 +162,10 @@ repos:
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		MaxConcurrency:   4,
+		Target:         "acme",
+		All:            true,
+		Forge:          ForgeGitHub,
+		MaxConcurrency: 4,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -229,10 +227,9 @@ repos:
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
+		Target: "acme",
+		All:    true,
+		Forge:  ForgeGitHub,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -283,9 +280,8 @@ repos:
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme/api",
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
+		Target: "acme/api",
+		Forge:  ForgeGitHub,
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -323,10 +319,9 @@ func TestInit_SingleRepo_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme/api",
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "2.5.0",
+		Target:     "acme/api",
+		Forge:      ForgeGitHub,
+		CLIVersion: "2.5.0",
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -433,9 +428,8 @@ func TestInit_InteractiveSelection(t *testing.T) {
 	}
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
+		Target: "acme",
+		Forge:  ForgeGitHub,
 	}, newTestClientFactory(fc), selectFn, nopProgress)
 
 	require.NoError(t, err)
@@ -469,6 +463,8 @@ func TestInit_NilCallback_RequiresFlag(t *testing.T) {
 // --- TODO generation tests ---
 
 func TestInit_TODOs_NoInferenceProject(t *testing.T) {
+	// InferenceProject is no longer stored in the manifest (install-time
+	// only), so init should NOT generate a TODO for it.
 	fc := forge.NewFakeClient()
 
 	result, err := Init(context.Background(), InitConfig{
@@ -478,7 +474,9 @@ func TestInit_TODOs_NoInferenceProject(t *testing.T) {
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
-	assert.Contains(t, result.TODOs, "forge.github.inference_project: provide via --inference-project flag")
+	for _, todo := range result.TODOs {
+		assert.NotContains(t, todo, "inference_project")
+	}
 }
 
 func TestInit_TODOs_NoMintURL_Greenfield(t *testing.T) {
@@ -534,9 +532,8 @@ func TestBuildManifest_SimpleEntries(t *testing.T) {
 		{Owner: "acme", Repo: "web", Source: "new"},
 	}
 	m, todos := buildManifest(repos, InitConfig{
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "2.0.0",
+		Forge:      ForgeGitHub,
+		CLIVersion: "2.0.0",
 	})
 
 	require.Len(t, m.Repos, 2)
@@ -557,8 +554,7 @@ func TestBuildManifest_MixedDiscovery(t *testing.T) {
 		{Owner: "acme", Repo: "r3", Source: "per-repo", FullsendRef: "v2.1.0", InferenceRegion: "us-east1", MintURL: "https://mint.example.com"},
 	}
 	m, _ := buildManifest(repos, InitConfig{
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
+		Forge: ForgeGitHub,
 	})
 
 	// Forge-level fields should use the mode (most common) values.
@@ -685,10 +681,9 @@ func TestInit_RoundTrip(t *testing.T) {
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0")
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
+		Target: "acme",
+		All:    true,
+		Forge:  ForgeGitHub,
 	}, newTestClientFactory(fc), nil, nopProgress)
 	require.NoError(t, err)
 
@@ -803,11 +798,10 @@ func TestInit_ConfigRepoExcluded(t *testing.T) {
 	})
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "1.0.0",
+		Target:     "acme",
+		All:        true,
+		Forge:      ForgeGitHub,
+		CLIVersion: "1.0.0",
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -827,11 +821,10 @@ func TestInit_DiscoveryErrors_Tracked(t *testing.T) {
 	fc.Errors["ListRepoVariables"] = assert.AnError
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "1.0.0",
+		Target:     "acme",
+		All:        true,
+		Forge:      ForgeGitHub,
+		CLIVersion: "1.0.0",
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -1239,10 +1232,9 @@ func TestInit_CLIVersionFallback(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme/api",
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "3.0.0",
+		Target:     "acme/api",
+		Forge:      ForgeGitHub,
+		CLIVersion: "3.0.0",
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -1253,10 +1245,9 @@ func TestInit_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme/api",
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "v0.32.0-82-gcb2bcd9f",
+		Target:     "acme/api",
+		Forge:      ForgeGitHub,
+		CLIVersion: "v0.32.0-82-gcb2bcd9f",
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -1267,10 +1258,9 @@ func TestInit_CLIVersionDev_FallsBackToDefault(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme/api",
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "dev",
+		Target:     "acme/api",
+		Forge:      ForgeGitHub,
+		CLIVersion: "dev",
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -1285,12 +1275,11 @@ func TestInit_DefaultConcurrency(t *testing.T) {
 	})
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "1.0.0",
-		MaxConcurrency:   0, // should default to 8
+		Target:         "acme",
+		All:            true,
+		Forge:          ForgeGitHub,
+		CLIVersion:     "1.0.0",
+		MaxConcurrency: 0, // should default to 8
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)
@@ -1303,12 +1292,11 @@ func TestInit_ConcurrencyUpperBound(t *testing.T) {
 	})
 
 	result, err := Init(context.Background(), InitConfig{
-		Target:           "acme",
-		All:              true,
-		Forge:            ForgeGitHub,
-		InferenceProject: "inf",
-		CLIVersion:       "1.0.0",
-		MaxConcurrency:   200, // should clamp to 64
+		Target:         "acme",
+		All:            true,
+		Forge:          ForgeGitHub,
+		CLIVersion:     "1.0.0",
+		MaxConcurrency: 200, // should clamp to 64
 	}, newTestClientFactory(fc), nil, nopProgress)
 
 	require.NoError(t, err)

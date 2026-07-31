@@ -47,7 +47,6 @@ fullsend
 │   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
 │   │   ├── --forge-url <url>                #   Forge instance URL (required for gitlab)
 │   │   ├── --mint-url <url>                 #   Token mint Cloud Run endpoint URL
-│   │   ├── --inference-project <id>         #   Default GCP project for inference
 │   │   ├── --inference-region <region>      #   GCP region for inference (default: us-central1)
 │   │   ├── --fullsend-ref <ref>             #   Pin the fullsend workflow ref (e.g. v0.42.0)
 │   │   ├── --force                          #   Overwrite output file if it exists
@@ -57,7 +56,9 @@ fullsend
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
-│   │   └── --direct                         #   Push scaffold to default branch (skip PR)
+│   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
+│   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
+│   │   └── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
 │   ├── add          <repos...>              # Add repo entries to manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
@@ -65,7 +66,13 @@ fullsend
 │   │   ├── --install                        #   Also install fullsend on the added repos
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   └── --roles <list>                   #   Agent roles to install (used with --install)
+│   │   ├── --roles <list>                   #   Agent roles to install (used with --install)
+│   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
+│   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
+│   │   ├── --mint-url <url>                 #   Per-repo mint URL override
+│   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
+│   │   └── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
 │   ├── remove       <repos...>              # Remove repo entries from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -295,9 +302,11 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 6: Set secrets & variables                           │ │
 │  │                                                            │ │
 │  │  Both modes write the same credential set:                 │ │
-│  │    Secrets:   FULLSEND_GCP_PROJECT_ID                      │ │
+│  │    Secrets (install-time only, not managed by sync):       │ │
+│  │              FULLSEND_GCP_PROJECT_ID                       │ │
 │  │              FULLSEND_GCP_WIF_PROVIDER                     │ │
-│  │    Variables: FULLSEND_GCP_REGION                          │ │
+│  │    Variables (managed by sync):                            │ │
+│  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │

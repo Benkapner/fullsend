@@ -29,14 +29,13 @@ Generate a `repos.yaml` manifest by discovering existing installations:
 
 ```bash
 fullsend repos init <org> --forge github --all \
-  --mint-url <MINT_URL> \
-  --inference-project <GCP_PROJECT>
+  --mint-url <MINT_URL>
 ```
 
 For a single repo:
 
 ```bash
-fullsend repos init <owner/repo> --forge github --inference-project <GCP_PROJECT>
+fullsend repos init <owner/repo> --forge github
 ```
 
 For GitLab, provide the instance URL with `--forge-url` (required for
@@ -50,8 +49,7 @@ fullsend repos init <org> --forge gitlab \
 Instead of `--all`, specify a subset of repos with `--repos`:
 
 ```bash
-fullsend repos init acme --forge github --repos acme/api,acme/web \
-  --inference-project <GCP_PROJECT>
+fullsend repos init acme --forge github --repos acme/api,acme/web
 ```
 
 `--repos` and `--all` are mutually exclusive.
@@ -59,7 +57,7 @@ fullsend repos init acme --forge github --repos acme/api,acme/web \
 If a `repos.yaml` file already exists, pass `--force` to overwrite it:
 
 ```bash
-fullsend repos init <org> --forge github --all --force --inference-project <GCP_PROJECT>
+fullsend repos init <org> --forge github --all --force
 ```
 
 The command discovers per-repo and per-org installations, extracts
@@ -79,8 +77,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project: my-project
-    inference_project_number: "123456789"
     inference_region: us-central1
     fullsend_ref: v2.5.0
   gitlab:
@@ -221,16 +217,13 @@ state:
 fullsend repos diff -f repos.yaml
 ```
 
-The `diff` command checks **variables and managed secrets only** — it
+The `diff` command checks **variables only** — it
 compares `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` variables against
-the manifest and checks that `FULLSEND_GCP_PROJECT_ID` (the only managed
-secret) exists. Because GitHub secrets are not readable, diff can only
-detect missing secrets — it cannot detect value mismatches. The WIF
-provider secret (`FULLSEND_GCP_WIF_PROVIDER`) is write-once at install
-time and is not managed by diff/sync. Diff does not check the scaffold
-workflow ref (`@ref`). To detect ref drift, use `repos status` (which
-includes the ref in its output) or run `repos upgrade --dry-run` to
-preview which repos would be upgraded.
+the manifest. Secrets (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`)
+are write-once at install time and are not managed by diff/sync. Diff does
+not check the scaffold workflow ref (`@ref`). To detect ref drift, use
+`repos status` (which includes the ref in its output) or run
+`repos upgrade --dry-run` to preview which repos would be upgraded.
 
 Use `--json` for machine-readable output:
 
@@ -260,8 +253,9 @@ Use `--json` for machine-readable output:
 fullsend repos sync -f repos.yaml --json
 ```
 
-Sync reconciles variables and secrets. It does **not** touch the scaffold
-shim version (`@ref`) — use `repos upgrade` for that.
+Sync reconciles variables only. Secrets are written once at install time
+and are not managed by sync. Sync does **not** touch the scaffold shim
+version (`@ref`) — use `repos upgrade` for that.
 
 ### Adding repos
 
@@ -364,8 +358,7 @@ can use the following workflow.
 
 ```bash
 fullsend repos init <org> --forge github --all \
-  --mint-url <MINT_URL> \
-  --inference-project <GCP_PROJECT>
+  --mint-url <MINT_URL>
 ```
 
 This discovers all enrolled repos and writes `repos.yaml`.

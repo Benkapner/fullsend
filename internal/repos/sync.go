@@ -48,13 +48,14 @@ var managedVariables = []struct {
 	{"FULLSEND_GCP_REGION", func(cfg ResolvedConfig) string { return cfg.InferenceRegion }},
 }
 
-// managedSecrets lists the repo secrets that sync reconciles.
+// managedSecrets is intentionally empty. Secrets are written once at
+// install time (`repos install`) and are NOT reconciled by sync.
+// GCP project ID and WIF provider are sensitive install-time-only
+// values — sync only reconciles variables.
 var managedSecrets = []struct {
 	name      string
 	resolveFn func(cfg ResolvedConfig) string
-}{
-	{"FULLSEND_GCP_PROJECT_ID", func(cfg ResolvedConfig) string { return cfg.InferenceProject }},
-}
+}{}
 
 func validateConcurrency(n int) error {
 	if n < 1 || n > 32 {
@@ -209,9 +210,9 @@ func diffRepo(ctx context.Context, cfg ResolvedConfig) ([]Change, []string, bool
 }
 
 // Sync reconciles configuration drift for installed repos by applying
-// variable and secret changes to match the manifest's desired state.
-// Variables are only written when drift is detected; secrets are always
-// written for convergence since their values cannot be read back.
+// variable changes to match the manifest's desired state. Variables are
+// only written when drift is detected. Secrets are written once at
+// install time and are not reconciled by sync.
 //
 // Sync does NOT touch scaffold shim version (@ref) or harness files.
 // Version changes are managed by `repos upgrade`.

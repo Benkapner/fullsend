@@ -59,23 +59,25 @@ type ForgeSection struct {
 
 // GitHubForgeInfra holds GitHub-specific infrastructure settings
 // for the token mint service and inference configuration.
+//
+// GCP project ID and project number are sensitive install-time-only
+// values passed via CLI flags to `repos install`. They are NOT stored
+// in the manifest.
 type GitHubForgeInfra struct {
-	URL              string `yaml:"url,omitempty"`
-	MintURL          string `yaml:"mint_url,omitempty"`
-	InferenceProject string `yaml:"inference_project,omitempty"`
-	InferenceRegion  string `yaml:"inference_region,omitempty"`
-	FullsendRef      string `yaml:"fullsend_ref,omitempty"`
+	URL             string `yaml:"url,omitempty"`
+	MintURL         string `yaml:"mint_url,omitempty"`
+	InferenceRegion string `yaml:"inference_region,omitempty"`
+	FullsendRef     string `yaml:"fullsend_ref,omitempty"`
 
-	// InferenceProjectNumber is the numeric GCP project number for the
-	// inference project. Used to compute the WIF provider resource name
-	// deterministically without GCP API calls.
+	// Deprecated: MintProject, MintRegion, InferenceProject, and
+	// InferenceProjectNumber are accepted for backward compatibility
+	// but ignored. GCP infrastructure is managed via `mint enroll`
+	// and `inference provision` commands. Project ID and project number
+	// are now install-time-only CLI flags.
+	MintProject            string `yaml:"mint_project,omitempty"`
+	MintRegion             string `yaml:"mint_region,omitempty"`
+	InferenceProject       string `yaml:"inference_project,omitempty"`
 	InferenceProjectNumber string `yaml:"inference_project_number,omitempty"`
-
-	// Deprecated: MintProject and MintRegion are accepted for backward
-	// compatibility but ignored. GCP infrastructure is managed via
-	// `mint enroll` and `inference provision` commands.
-	MintProject string `yaml:"mint_project,omitempty"`
-	MintRegion  string `yaml:"mint_region,omitempty"`
 }
 
 // DefaultGitHubURL is the default forge URL for GitHub.com.
@@ -108,10 +110,22 @@ type DefaultsConfig struct {
 
 // RepoEntry represents a single repo or glob pattern in the manifest.
 // It supports two YAML forms: a plain string ("acme/repo") or an
-// object with an optional forge override.
+// object with optional per-repo overrides.
 type RepoEntry struct {
 	Repo  string         `yaml:"repo"`
 	Forge NullableString `yaml:"forge,omitempty"`
+
+	// Per-repo override fields. These use the NullableString 3-level
+	// fallback chain: per-repo → forge default → built-in default.
+	// Explicit null stops the chain. Omitted fields inherit the
+	// forge-level default.
+	InferenceRegion NullableString `yaml:"inference_region,omitempty"`
+	FullsendRef     NullableString `yaml:"fullsend_ref,omitempty"`
+	MintURL         NullableString `yaml:"mint_url,omitempty"`
+
+	// AllowedRemoteResources overrides the defaults.allowed_remote_resources
+	// list. A non-nil slice replaces the default; nil (omitted) inherits.
+	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
 }
 
 // UnmarshalYAML handles both string and mapping YAML forms.
@@ -137,14 +151,89 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 			if err := decodeNullable(val, &r.Forge); err != nil {
 				return fmt.Errorf("decoding forge: %w", err)
 			}
-		case "inference_project", "inference_region", "fullsend_ref", "base_harness":
-			// Deprecated per-repo override fields removed in favor of
-			// forge.github section. Silently ignored for backward compat.
+		case "inference_region":
+			if err := decodeNullable(val, &r.InferenceRegion); err != nil {
+				return fmt.Errorf("decoding inference_region: %w", err)
+			}
+		case "fullsend_ref":
+			if err := decodeNullable(val, &r.FullsendRef); err != nil {
+				return fmt.Errorf("decoding fullsend_ref: %w", err)
+			}
+		case "mint_url":
+			if err := decodeNullable(val, &r.MintURL); err != nil {
+				return fmt.Errorf("decoding mint_url: %w", err)
+			}
+		case "allowed_remote_resources":
+			if val.Tag == "!!null" {
+				// Explicit null: treat as empty override (no inheritance).
+				r.AllowedRemoteResources = []string{}
+			} else {
+				if err := val.Decode(&r.AllowedRemoteResources); err != nil {
+					return fmt.Errorf("decoding allowed_remote_resources: %w", err)
+				}
+			}
+		case "inference_project", "base_harness":
+			// Deprecated per-repo fields. Silently ignored for
+			// backward compat.
 		default:
 			return fmt.Errorf("unknown field %q in repo entry", key.Value)
 		}
 	}
 	return nil
+}
+
+// MarshalYAML serializes a RepoEntry back to YAML, preserving both the
+// plain-string form (when no overrides are set) and the explicit-null
+// semantics for AllowedRemoteResources.
+func (r RepoEntry) MarshalYAML() (interface{}, error) {
+	hasOverrides := r.Forge.Set || r.InferenceRegion.Set || r.FullsendRef.Set ||
+		r.MintURL.Set || r.AllowedRemoteResources != nil
+	if !hasOverrides {
+		return r.Repo, nil
+	}
+
+	node := &yaml.Node{Kind: yaml.MappingNode}
+
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: "repo"},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: r.Repo},
+	)
+
+	appendNullable := func(key string, ns NullableString) {
+		if !ns.Set {
+			return
+		}
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
+		var valNode *yaml.Node
+		if ns.Null {
+			valNode = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}
+		} else {
+			valNode = &yaml.Node{Kind: yaml.ScalarNode, Value: ns.Value}
+		}
+		node.Content = append(node.Content, keyNode, valNode)
+	}
+
+	appendNullable("forge", r.Forge)
+	appendNullable("inference_region", r.InferenceRegion)
+	appendNullable("fullsend_ref", r.FullsendRef)
+	appendNullable("mint_url", r.MintURL)
+
+	if r.AllowedRemoteResources != nil {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: "allowed_remote_resources"}
+		if len(r.AllowedRemoteResources) == 0 {
+			node.Content = append(node.Content, keyNode,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"})
+		} else {
+			seq := &yaml.Node{Kind: yaml.SequenceNode}
+			for _, v := range r.AllowedRemoteResources {
+				seq.Content = append(seq.Content,
+					&yaml.Node{Kind: yaml.ScalarNode, Value: v})
+			}
+			node.Content = append(node.Content, keyNode, seq)
+		}
+	}
+
+	return node, nil
 }
 
 // decodeNullable decodes a YAML node into a NullableString, handling
@@ -230,9 +319,7 @@ type ResolvedConfig struct {
 	Forge                  string
 	ForgeConfig            ForgeConfig
 	MintURL                string
-	InferenceProject       string
 	InferenceRegion        string
-	InferenceProjectNumber string
 	FullsendRef            string
 	AllowedRemoteResources []string
 }
@@ -435,6 +522,21 @@ func (m *Manifest) Validate() error {
 			}
 		}
 
+		// Validate per-repo mint_url override.
+		if entry.MintURL.Set && !entry.MintURL.Null && entry.MintURL.Value != "" {
+			mu, muErr := url.Parse(entry.MintURL.Value)
+			if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
+				return fmt.Errorf("repos[%d]: per-repo mint_url must be a valid HTTPS URL, got %q", i, entry.MintURL.Value)
+			}
+		}
+
+		// Validate per-repo fullsend_ref override.
+		if entry.FullsendRef.Set && !entry.FullsendRef.Null && entry.FullsendRef.Value != "" {
+			if !IsValidRef(entry.FullsendRef.Value) {
+				return fmt.Errorf("repos[%d]: per-repo fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", i, entry.FullsendRef.Value)
+			}
+		}
+
 		// Check for duplicates.
 		if seen[entry.Repo] {
 			return fmt.Errorf("repos[%d]: duplicate repo %q", i, entry.Repo)
@@ -479,14 +581,6 @@ func (m *Manifest) Validate() error {
 			mu, err := url.Parse(m.Forge.GitHub.MintURL)
 			if err != nil || mu.Scheme != "https" || mu.Host == "" {
 				return fmt.Errorf("forge.github.mint_url must be a valid HTTPS URL, got %q", m.Forge.GitHub.MintURL)
-			}
-			if m.Forge.GitHub.InferenceProjectNumber == "" {
-				return fmt.Errorf("forge.github.inference_project_number is required when GitHub repos are present")
-			}
-			for _, c := range m.Forge.GitHub.InferenceProjectNumber {
-				if c < '0' || c > '9' {
-					return fmt.Errorf("forge.github.inference_project_number must be a numeric string, got %q", m.Forge.GitHub.InferenceProjectNumber)
-				}
 			}
 			if m.Forge.GitHub.FullsendRef != "" && !IsValidRef(m.Forge.GitHub.FullsendRef) {
 				return fmt.Errorf("forge.github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Forge.GitHub.FullsendRef)
@@ -687,19 +781,29 @@ func (m *Manifest) ResolveConfigForEntry(owner, repo string, entry RepoEntry) Re
 
 func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) ResolvedConfig {
 	cfg := ResolvedConfig{
-		Owner:                  owner,
-		Repo:                   repo,
-		Forge:                  resolveField(entry.Forge, m.Defaults.Forge, ""),
-		AllowedRemoteResources: m.Defaults.AllowedRemoteResources,
+		Owner: owner,
+		Repo:  repo,
+		Forge: resolveField(entry.Forge, m.Defaults.Forge, ""),
 	}
-	// Source infrastructure config from the forge-specific section.
+
+	// AllowedRemoteResources: per-repo overrides defaults when non-nil.
+	if entry.AllowedRemoteResources != nil {
+		cfg.AllowedRemoteResources = entry.AllowedRemoteResources
+	} else {
+		cfg.AllowedRemoteResources = m.Defaults.AllowedRemoteResources
+	}
+
+	// Source infrastructure config from the forge-specific section,
+	// with per-repo overrides via the NullableString fallback chain.
 	// GitLab repos do not use mint or inference fields.
+	//
+	// InferenceProject and InferenceProjectNumber are install-time-only
+	// values provided via CLI flags — they are not stored in the
+	// manifest and are not populated here.
 	if cfg.Forge == ForgeGitHub {
-		cfg.MintURL = m.Forge.GitHub.MintURL
-		cfg.InferenceProject = m.Forge.GitHub.InferenceProject
-		cfg.InferenceRegion = m.Forge.GitHub.InferenceRegion
-		cfg.InferenceProjectNumber = m.Forge.GitHub.InferenceProjectNumber
-		cfg.FullsendRef = m.Forge.GitHub.FullsendRef
+		cfg.MintURL = resolveField(entry.MintURL, m.Forge.GitHub.MintURL, "")
+		cfg.InferenceRegion = resolveField(entry.InferenceRegion, m.Forge.GitHub.InferenceRegion, "")
+		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitHub.FullsendRef, "")
 	}
 	return cfg
 }
@@ -758,6 +862,39 @@ func (m *Manifest) HasForge(name string) bool {
 		}
 	}
 	return false
+}
+
+// IsValidGCPProjectID checks that s matches the GCP project ID format:
+// 6-30 characters, lowercase letters, digits, and hyphens, starting with a letter.
+func IsValidGCPProjectID(s string) bool {
+	if len(s) < 6 || len(s) > 30 {
+		return false
+	}
+	if s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	if s[len(s)-1] == '-' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// IsNumeric reports whether s contains only ASCII digits.
+func IsNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Marshal serializes the manifest back to YAML.

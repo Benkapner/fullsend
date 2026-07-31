@@ -84,7 +84,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos (workflow, variables, secrets) without modifying manifest |
 | Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
 | Fleet Admin | `fullsend repos diff` | Show configuration drift between manifest and actual forge state |
-| Platform Admin | `fullsend repos sync` | Reconcile configuration drift for installed repos (variables and secrets) |
+| Platform Admin | `fullsend repos sync` | Reconcile configuration drift for installed repos (variables only) |
 | Platform Admin | `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across manifest repos |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |

@@ -33,13 +33,13 @@ These flags are inherited by all `repos` subcommands:
 Discovers existing fullsend installations (per-repo and per-org) and generates a `repos.yaml` manifest reflecting their current state. Supports greenfield onboarding and migration from existing installations.
 
 ```bash
-fullsend repos init <org> --forge github --all --mint-url <MINT_URL> --inference-project <PROJECT>
+fullsend repos init <org> --forge github --all --mint-url <MINT_URL>
 ```
 
 Single-repo mode:
 
 ```bash
-fullsend repos init <owner/repo> --forge github --inference-project <PROJECT>
+fullsend repos init <owner/repo> --forge github
 ```
 
 ### Flags
@@ -50,7 +50,6 @@ fullsend repos init <owner/repo> --forge github --inference-project <PROJECT>
 | `--repos` | | Comma-separated list of repos to include |
 | `--all` | `false` | Include all eligible repos without prompting |
 | `--mint-url` | | Token mint Cloud Run endpoint URL |
-| `--inference-project` | | Default GCP project for inference |
 | `--inference-region` | | GCP region for inference (default: `us-central1`) |
 | `--fullsend-ref` | | Pin the fullsend workflow ref (e.g. `v0.42.0`) |
 | `--concurrency` | `8` | Max parallel API calls (capped at 64) |
@@ -88,9 +87,11 @@ Runs in two phases:
 
 > **Note:** GCP infrastructure (WIF pools/providers, mint registration) must be
 > provisioned separately via `inference provision` and `mint enroll` before
-> running `repos install`. The `forge.github.inference_project_number` field
-> (numeric GCP project number) is required in the manifest for GitHub repos —
-> it is used to compute WIF provider resource names deterministically.
+> running `repos install`. The `--inference-project-number` flag (numeric GCP
+> project number) is required for GitHub repos — it is used to compute WIF
+> provider resource names deterministically. The `--inference-project` flag
+> (GCP project ID) is also required for GitHub repos and is written as the
+> `FULLSEND_GCP_PROJECT_ID` repo secret.
 
 If a previous install was interrupted (guard variable set but other components missing), the command detects the partial state and repairs it automatically.
 
@@ -112,6 +113,8 @@ When repos are specified as positional arguments, only those repos are installed
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
+| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub repos) |
+| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub repos) |
 
 ### Common workflows
 
@@ -211,7 +214,7 @@ Returns a non-zero exit code when drift exists (variables differ from manifest o
 
 ## `repos sync`
 
-Reconcile configuration drift for installed repos by writing variables and secrets to match the manifest's desired state. Variables are only written when drift is detected; secrets are always written for convergence since their values cannot be read back.
+Reconcile configuration drift for installed repos by writing variables to match the manifest's desired state. Variables are only written when drift is detected. Secrets are written once at install time and are not managed by sync.
 
 ```bash
 fullsend repos sync
@@ -249,7 +252,7 @@ With `--json`, the output schema depends on mode:
 
 ### Scope
 
-Sync reconciles variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`) and secrets (`FULLSEND_GCP_PROJECT_ID`). It does **not** touch scaffold shim version (`@ref`) or harness files — use `repos upgrade` for those.
+Sync reconciles variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`). Secrets are written once at install time and are not managed by sync. Sync does **not** touch scaffold shim version (`@ref`) or harness files — use `repos upgrade` for those.
 
 ## `repos add`
 
@@ -272,6 +275,12 @@ fullsend repos add acme/new-api --forge github --dry-run
 | `--concurrency` | `4` | Max parallel operations (1-32, used with `--install`) |
 | `--direct` | `false` | Push scaffold directly to default branch (used with `--install`) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install (used with `--install`) |
+| `--inference-region` | | Per-repo GCP inference region override |
+| `--fullsend-ref` | | Per-repo fullsend workflow ref override |
+| `--mint-url` | | Per-repo mint URL override |
+| `--allowed-remote-resources` | | Per-repo allowed remote resources override |
+| `--inference-project` | | GCP project ID for inference (install-time only, used with `--install`) |
+| `--inference-project-number` | | Numeric GCP project number for WIF (install-time only, used with `--install`) |
 
 Duplicate entries are silently skipped. Glob patterns (e.g. `acme/*`) are allowed as manifest entries.
 
