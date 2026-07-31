@@ -947,6 +947,83 @@ func TestDetectChanges_FirstPoll(t *testing.T) {
 	}
 }
 
+func TestDetectChanges_FirstPoll_BackfillWindow(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	recent := now.Add(-1 * time.Hour)   // inside default 24h backfill window
+	ancient := now.Add(-72 * time.Hour) // outside default 24h backfill window
+	mc := newMockClient()
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{ID: "1", Created: recent.Format("2006-01-02T15:04:05.000-0700"), Author: jira.User{AccountID: "human"}},
+		{ID: "2", Created: ancient.Format("2006-01-02T15:04:05.000-0700"), Author: jira.User{AccountID: "human"}},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "200",
+			Created: ancient.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+			Items: []jira.ChangeItem{
+				{Field: "labels", FromString: "", ToString: "bug"},
+			},
+		},
+	}
+
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Labels:   []string{"bug"},
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  ancient.Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+
+	result, err := p.detectChanges(context.Background(), issue, time.Time{})
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+
+	var sawOpened, sawRecentComment, sawAncientComment, sawLabelChange bool
+	for _, e := range result.events {
+		switch {
+		case e.Type == "opened":
+			sawOpened = true
+		case e.Type == "comment_added" && e.CommentID == "1":
+			sawRecentComment = true
+		case e.Type == "comment_added" && e.CommentID == "2":
+			sawAncientComment = true
+		case e.Type == "label_changed":
+			sawLabelChange = true
+		}
+	}
+	if !sawOpened {
+		t.Error("expected 'opened' event on first poll")
+	}
+	if !sawRecentComment {
+		t.Error("expected comment within the backfill window to be included")
+	}
+	if sawAncientComment {
+		t.Error("expected comment outside the backfill window to be excluded")
+	}
+	if sawLabelChange {
+		t.Error("expected changelog entry outside the backfill window to be excluded")
+	}
+
+	// maxSeen must reflect the true latest activity overall (the recent
+	// comment, the newest entry here) regardless of the backfill window,
+	// so the next poll's lastCheck starts past all history and doesn't
+	// re-flood on cycle two.
+	if !result.maxSeen.Equal(recent) {
+		t.Errorf("maxSeen = %v, want %v (latest activity overall, regardless of backfill window)", result.maxSeen, recent)
+	}
+}
+
 func TestDetectChanges_StatusChange(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	lastCheck := now.Add(-30 * time.Minute)

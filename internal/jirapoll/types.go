@@ -36,14 +36,15 @@ var _ JiraClient = (*jira.LiveClient)(nil)
 
 // Options configures the Jira poller.
 type Options struct {
-	TargetRepo     string        // GitHub repo slug where agents run (e.g., "acme/platform")
-	JiraBaseURL    string        // Jira instance base URL
-	JiraProject    string        // Jira project key for default JQL
-	JQL            string        // Custom JQL override
-	OutputPath     string        // Path to write dispatch records JSON
-	M              int           // Max candidate issues per cycle (default: 50)
-	N              int           // Max issues to process per cycle (default: 5)
-	StaleThreshold time.Duration // Lock stale threshold (default: 900s)
+	TargetRepo              string        // GitHub repo slug where agents run (e.g., "acme/platform")
+	JiraBaseURL             string        // Jira instance base URL
+	JiraProject             string        // Jira project key for default JQL
+	JQL                     string        // Custom JQL override
+	OutputPath              string        // Path to write dispatch records JSON
+	M                       int           // Max candidate issues per cycle (default: 50)
+	N                       int           // Max issues to process per cycle (default: 5)
+	StaleThreshold          time.Duration // Lock stale threshold (default: 900s)
+	FirstPollBackfillWindow time.Duration // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
 }
 
 // JiraEvent is the intermediate event representation, analogous to poll.RoutableEvent.

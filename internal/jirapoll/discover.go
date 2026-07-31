@@ -46,8 +46,20 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 
 	issueURL := strings.TrimRight(p.opts.JiraBaseURL, "/") + "/browse/" + issue.Key
 
+	// On an issue's first poll (lastCheck is zero), there's no checkpoint to
+	// filter by, so comments/changelog entries are bounded by a backfill
+	// window instead: only entries within FirstPollBackfillWindow of now
+	// produce events. This lets a poll cycle catch activity that happened
+	// shortly before the poller started watching an issue (e.g., a slash
+	// command left on an issue moments before setup) without flooding
+	// dispatch for issues with a long history. maxSeen still tracks the
+	// true latest activity regardless of the window, so the checkpoint
+	// advances past all history and cycle two doesn't re-flood on it.
+	firstPoll := lastCheck.IsZero()
+	backfillCutoff := time.Now().Add(-p.opts.FirstPollBackfillWindow)
+
 	// If lastCheck is zero, this is the first poll for this issue: emit "opened".
-	if lastCheck.IsZero() {
+	if firstPoll {
 		createdAt, err := parseJiraTimestamp(issue.Fields.Created)
 		if err != nil {
 			createdAt = time.Now()
@@ -76,11 +88,14 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		if err != nil {
 			continue
 		}
-		if !lastCheck.IsZero() && !createdAt.After(lastCheck) {
+		if !firstPoll && !createdAt.After(lastCheck) {
 			continue
 		}
 		if createdAt.After(maxSeen) {
 			maxSeen = createdAt
+		}
+		if firstPoll && !createdAt.After(backfillCutoff) {
+			continue
 		}
 		events = append(events, JiraEvent{
 			Type:          "comment_added",
@@ -106,7 +121,7 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		if err != nil {
 			continue
 		}
-		if !lastCheck.IsZero() && !createdAt.After(lastCheck) {
+		if !firstPoll && !createdAt.After(lastCheck) {
 			continue
 		}
 		// Track maxSeen for ALL changelog entries that pass the time filter,
@@ -115,6 +130,9 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		// routable events.
 		if createdAt.After(maxSeen) {
 			maxSeen = createdAt
+		}
+		if firstPoll && !createdAt.After(backfillCutoff) {
+			continue
 		}
 		for _, item := range entry.Items {
 			changeEvents := p.mapChangelogItem(ctx, item, issue, entry, issueURL, createdAt)

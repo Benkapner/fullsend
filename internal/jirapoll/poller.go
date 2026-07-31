@@ -46,6 +46,9 @@ func New(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
 	if opts.StaleThreshold == 0 {
 		opts.StaleThreshold = 900 * time.Second
 	}
+	if opts.FirstPollBackfillWindow == 0 {
+		opts.FirstPollBackfillWindow = 24 * time.Hour
+	}
 	return &Poller{
 		client:  client,
 		router:  router,
