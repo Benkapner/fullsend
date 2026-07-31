@@ -33,33 +33,43 @@ discussion](https://github.com/fullsend-ai/agents/pull/567#discussion_r368602005
 that are unrelated to any single agent, per the [governance](../problems/governance.md)
 and [agent infrastructure](../problems/agent-infrastructure.md) problem
 docs. [ADR 0049](0049-agent-configuration-env-var-convention.md) defines
-how agent config env vars are *named* (`{AGENT}_{SETTING_NAME}`) but says
-nothing about *when* a knob should be a `config.yaml` field instead of an
-env var, so there was no rule to check the PR against.
+how agent config env vars are *named* (`{AGENT}_{SETTING_NAME}`) and
+requires separate per-agent vars when the same concept is independently
+tunable per agent (e.g. `CODE_MAX_FILE_SIZE` vs `REVIEW_MAX_FILE_SIZE`),
+but it draws no line against `config.yaml` — nothing in it says when a
+knob should live there instead of as an env var, so there was no rule to
+check the PR against.
 
 ## Decision
 
 A config option belongs in exactly one of the two surfaces, based on
-whether its behavior is meaningful to more than one agent:
+whether its behavior is meaningful to more than one agent. This narrows
+ADR 0049's per-agent-vars rule (a setting that applies to multiple agents
+gets separate vars per agent) to the case where each agent needs its own
+independently tunable value; a single value meant to apply the same way
+across every agent is a different case, and belongs in `config.yaml`
+instead:
 
-- **Applies uniformly across agents (or to dispatch/policy behavior, not a
-  specific agent's inference-time logic):** it is a `config.yaml` field.
-  It gets a plain name with no `{AGENT}_` prefix, and it is not also
-  settable via environment variable — `config.yaml` (`internal/config`
-  accessors) is the single source of truth. `roles`, `auto_merge`, and
+- **Pipeline/dispatch policy — governs whether or how agents run, or
+  applies the same way across every agent, rather than tuning one agent's
+  own inference-time logic:** it is a `config.yaml` field. It gets a plain
+  name with no `{AGENT}_` prefix, and it is not also settable via
+  environment variable — `config.yaml` (`internal/config` accessors) is
+  the single source of truth. `roles`, `kill_switch`, and
   `create_issues.allow_targets` are existing examples.
-- **Tunes the behavior of one specific agent:** it is an `{AGENT}_`-prefixed
-  env var per ADR 0049, delivered via that agent's `env.runner`/
-  `env.sandbox`. It is not also settable as a `config.yaml` field —
-  overriding it per repo or org means overriding the harness (e.g. via
-  `base:` composition, per ADR 0045), not adding a parallel field to
-  `config.yaml`.
+- **Single-agent behavior tuning — adjusts how one specific agent does its
+  own job:** it is an `{AGENT}_`-prefixed env var per ADR 0049, delivered
+  via that agent's `env.runner`/`env.sandbox`. It is not also settable as
+  a `config.yaml` field — overriding it per repo or org means overriding
+  the harness (e.g. via `base:` composition, per ADR 0045), not adding a
+  parallel field to `config.yaml`.
 
 **Override convention:** `env.runner`/`env.sandbox` values are agent
 defaults. A per-repo or per-org override edits the harness (`base:`
 composition, per ADR 0045), not the CI workflow `env:` block — that block
 is reserved for infrastructure plumbing (credentials, project IDs,
-regions), not agent behavior knobs. This also means behavior defaults in
+regions), not agent behavior knobs (see [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md)
+for the full rule and its exceptions). This also means behavior defaults in
 `env.runner`/`env.sandbox` must be literals (e.g. `TRIAGE_AUTO_CODE:
 "on"`), not shell-style passthrough expressions (e.g.
 `${TRIAGE_AUTO_CODE:-on}`) — those two mechanisms deliver plain key-value
@@ -67,13 +77,20 @@ pairs, not shell-expanded strings, so passthrough syntax would be
 mis-parsed — `os.Expand` treats the entire `VAR:-default` as the
 variable name, which resolves to an empty string rather than applying
 the intended default (see [ADR 0055](0055-unified-env-var-delivery.md),
-§ Runner-side expansion).
+§ Runner behavior).
 
 A knob only moves from one surface to the other by a deliberate migration,
 not by adding a second way to set the same value. Applying this rule to
-`TRIAGE_AUTO_CODE`: it governs one agent's (triage's) behavior, so it
+`TRIAGE_AUTO_CODE` is a boundary case: it decides whether the code agent
+runs next, which sounds like dispatch policy, but that decision is made
+inside triage's own post-script, as part of triage's inference-time
+behavior — not by a shared dispatch/CLI layer gating multiple agents
+uniformly. That keeps it single-agent behavior tuning today, so it
 correctly belongs in `harness/triage.yaml` `env.runner`, not
-`config.yaml`. fullsend-ai/fullsend#1754's "per-repo/per-org config
+`config.yaml`. If the check is ever lifted out of triage's post-script
+into a shared dispatch layer, it becomes pipeline/dispatch policy and
+should move to `config.yaml` as a deliberate migration, not before.
+fullsend-ai/fullsend#1754's "per-repo/per-org config
 surface" request is satisfied by documenting the existing harness override
 path (`base:` composition or an org/repo harness copy), not by adding a
 `config.yaml` field — the gap the reviewer found is a documentation gap,
