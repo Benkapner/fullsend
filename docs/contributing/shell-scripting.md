@@ -74,7 +74,7 @@ This is a common source of bugs in shell scripts that use helper functions with 
 retry_curl() {
   local attempt=1 max=3 delay=5
   while true; do
-    if curl -fsSL "$@"; then return 0; fi
+    if curl "$@"; then return 0; fi
     if (( attempt >= max )); then
       echo "::error::Request failed after ${max} attempts"
       return 1
@@ -98,7 +98,7 @@ tag=$(echo "${resp}" | jq -r '.tag_name')
 retry_curl() {
   local attempt=1 max=3 delay=5
   while true; do
-    if curl -fsSL "$@"; then return 0; fi
+    if curl "$@"; then return 0; fi
     if (( attempt >= max )); then
       echo "::error::Request failed after ${max} attempts" >&2
       return 1
