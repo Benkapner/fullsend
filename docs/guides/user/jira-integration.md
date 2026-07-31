@@ -149,7 +149,7 @@ jobs:
             WORKFLOW_NAME=""
             for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
               [[ -f "$wf" ]] || continue
-              if grep -qE "^# fullsend-stage: ${STAGE}\$" "$wf"; then
+              if grep -qxF "# fullsend-stage: ${STAGE}" "$wf"; then
                 WORKFLOW_NAME=$(basename "$wf")
                 break
               fi
