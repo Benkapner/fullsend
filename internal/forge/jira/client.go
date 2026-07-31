@@ -28,12 +28,34 @@ type LiveClient struct {
 	email      string // for Basic auth (Cloud)
 	token      string
 	oauth2     *oauth2TokenSource
+
+	groupMemberCacheMu sync.Mutex
+	groupMemberCache   map[string]groupMemberCacheEntry
+}
+
+// groupMemberCacheTTL bounds how long a group's resolved member list is
+// reused across GetProjectRoleMembership calls, so that a poll cycle
+// touching many issues in the same project doesn't re-fetch group
+// membership from the group/member endpoint for every issue.
+const groupMemberCacheTTL = 5 * time.Minute
+
+type groupMemberCacheEntry struct {
+	accountIDs []string
+	fetchedAt  time.Time
 }
 
 const (
 	defaultTokenURL    = "https://auth.atlassian.com/oauth/token"
 	tokenRefreshMargin = 5 * time.Minute
 )
+
+// transientAuthError wraps an OAuth2 token-fetch failure that is safe to
+// retry (rate limiting or a 5xx from the token endpoint), as opposed to a
+// permanent failure like invalid credentials.
+type transientAuthError struct{ err error }
+
+func (e *transientAuthError) Error() string { return e.err.Error() }
+func (e *transientAuthError) Unwrap() error { return e.err }
 
 // oauth2TokenSource handles OAuth 2.0 client credentials token exchange
 // with caching and automatic refresh.
@@ -81,7 +103,11 @@ func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("oauth2 token endpoint returned %d: %s", resp.StatusCode, body)
+		err := fmt.Errorf("oauth2 token endpoint returned %d: %s", resp.StatusCode, body)
+		if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.StatusCode <= 504) {
+			return "", &transientAuthError{err: err}
+		}
+		return "", err
 	}
 
 	var tokenResp struct {
@@ -316,6 +342,20 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 		}
 
 		if err := c.setAuth(req); err != nil {
+			// No request has been sent yet, so a retry here is always safe
+			// regardless of method idempotency. Only retry errors known to
+			// be transient (network blips, rate limiting, or a 5xx from
+			// the OAuth2 token endpoint); a permanent failure like invalid
+			// credentials should fail immediately.
+			if isTransientAuthError(err) && attempt < maxRetries-1 {
+				delay := retryDelay(nil, attempt)
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
 			return fmt.Errorf("set auth for %s %s: %w", method, path, err)
 		}
 		req.Header.Set("Accept", "application/json")
@@ -417,6 +457,17 @@ func isTransientError(err error) bool {
 	return false
 }
 
+// isTransientAuthError reports whether a setAuth failure is safe to retry:
+// a network-level transient error, or a transientAuthError raised for
+// rate limiting / 5xx responses from the OAuth2 token endpoint.
+func isTransientAuthError(err error) bool {
+	if isTransientError(err) {
+		return true
+	}
+	var transient *transientAuthError
+	return errors.As(err, &transient)
+}
+
 func isIdempotent(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead ||
 		method == http.MethodPut || method == http.MethodDelete
@@ -456,12 +507,15 @@ type searchRequest struct {
 // from overly broad JQL queries.
 const maxSearchPages = 200
 
-// SearchIssues executes a JQL search and exhausts pagination, returning all
-// matching issues. Uses the POST /rest/api/3/search/jql endpoint with
-// cursor-based pagination (nextPageToken + isLast). Pagination is capped
-// at maxSearchPages pages (10,000 issues at 50 per page) to prevent
-// unbounded memory growth.
-func (c *LiveClient) SearchIssues(ctx context.Context, jql string) ([]Issue, error) {
+// SearchIssues executes a JQL search and returns up to limit matching
+// issues, using the POST /rest/api/3/search/jql endpoint with cursor-based
+// pagination (nextPageToken + isLast). Pagination stops as soon as limit
+// issues have been collected, so a limit smaller than the full match set
+// bounds API cost rather than fetching everything and truncating
+// afterward. A limit <= 0 fetches all matching issues, capped at
+// maxSearchPages pages (10,000 issues at 50 per page) to prevent unbounded
+// memory growth.
+func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
 	for page := 0; page < maxSearchPages; page++ {
@@ -481,6 +535,10 @@ func (c *LiveClient) SearchIssues(ctx context.Context, jql string) ([]Issue, err
 			return nil, fmt.Errorf("search issues: %w", err)
 		}
 		all = append(all, result.Issues...)
+		if limit > 0 && len(all) >= limit {
+			all = all[:limit]
+			break
+		}
 		if result.IsLast || len(result.Issues) == 0 || result.NextPageToken == "" {
 			break
 		}
@@ -604,17 +662,73 @@ func (c *LiveClient) GetProjectRoleMembership(ctx context.Context, projectKey st
 		}
 
 		for _, actor := range detail.Actors {
-			if actor.ActorUser == nil || actor.ActorUser.AccountID == "" {
+			var aids []string
+			switch {
+			case actor.Type == "atlassian-group-role-actor":
+				if actor.ActorGroup == nil || actor.ActorGroup.GroupID == "" {
+					continue
+				}
+				members, err := c.groupMembers(ctx, actor.ActorGroup.GroupID)
+				if err != nil {
+					return nil, fmt.Errorf("list members of group %s (role %s): %w", actor.ActorGroup.Name, roleName, err)
+				}
+				aids = members
+			case actor.ActorUser != nil && actor.ActorUser.AccountID != "":
+				aids = []string{actor.ActorUser.AccountID}
+			default:
 				continue
 			}
-			aid := actor.ActorUser.AccountID
-			existing, ok := membership[aid]
-			if !ok || rolePriority(roleName) > rolePriority(existing) {
-				membership[aid] = roleName
+			for _, aid := range aids {
+				existing, ok := membership[aid]
+				if !ok || rolePriority(roleName) > rolePriority(existing) {
+					membership[aid] = roleName
+				}
 			}
 		}
 	}
 	return membership, nil
+}
+
+// groupMembers returns the account IDs of all members of the given Jira
+// group, exhausting pagination. Results are cached for groupMemberCacheTTL
+// to avoid repeatedly re-fetching membership for the same group within a
+// single poll cycle (or across issues in the same project).
+func (c *LiveClient) groupMembers(ctx context.Context, groupID string) ([]string, error) {
+	c.groupMemberCacheMu.Lock()
+	entry, ok := c.groupMemberCache[groupID]
+	c.groupMemberCacheMu.Unlock()
+	if ok && time.Since(entry.fetchedAt) < groupMemberCacheTTL {
+		return entry.accountIDs, nil
+	}
+
+	var accountIDs []string
+	startAt := 0
+	for {
+		path := fmt.Sprintf("/group/member?groupId=%s&maxResults=100&startAt=%d",
+			url.QueryEscape(groupID), startAt)
+		var page groupMemberPage
+		if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return nil, fmt.Errorf("list group members for %s (startAt=%d): %w", groupID, startAt, err)
+		}
+		for _, member := range page.Values {
+			if member.AccountID != "" {
+				accountIDs = append(accountIDs, member.AccountID)
+			}
+		}
+		if page.IsLast || len(page.Values) == 0 {
+			break
+		}
+		startAt += len(page.Values)
+	}
+
+	c.groupMemberCacheMu.Lock()
+	if c.groupMemberCache == nil {
+		c.groupMemberCache = make(map[string]groupMemberCacheEntry)
+	}
+	c.groupMemberCache[groupID] = groupMemberCacheEntry{accountIDs: accountIDs, fetchedAt: time.Now()}
+	c.groupMemberCacheMu.Unlock()
+
+	return accountIDs, nil
 }
 
 // rolePriority returns the priority of a Jira project role name.

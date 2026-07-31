@@ -120,15 +120,7 @@ func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 		jql = fmt.Sprintf("project = %q AND status != Done ORDER BY updated DESC", p.opts.JiraProject)
 	}
 
-	all, err := p.client.SearchIssues(ctx, jql)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(all) > p.opts.M {
-		all = all[:p.opts.M]
-	}
-	return all, nil
+	return p.client.SearchIssues(ctx, jql, p.opts.M)
 }
 
 // filterLocked removes locked issues and cleans up stale locks.
@@ -221,6 +213,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// across cycles. The trade-off is that a transiently failing event
 	// is skipped rather than retried.
 	maxTime := result.maxSeen
+	dispatchCountBefore := len(p.dispatches)
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
 
@@ -245,6 +238,18 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		if event.UpdatedAt.After(maxTime) {
 			maxTime = event.UpdatedAt
 		}
+	}
+
+	// KNOWN LIMITATION: lastCheck below advances as soon as routing succeeds,
+	// but the dispatch records written here are only *scheduled* by a
+	// separate downstream CI step (see docs/guides/user/jira-integration.md)
+	// that is not yet confirmed back to the poller. Per ADR 0063, lastCheck
+	// should only advance once the output driver confirms scheduling — until
+	// a real output driver replaces the shell-based dispatch step (tracked
+	// follow-up), a failure in that downstream step will silently drop the
+	// event instead of being retried.
+	if len(p.dispatches) > dispatchCountBefore {
+		log.Printf("WARNING: %s: lastCheck is advancing for %d dispatch(es) that are not yet confirmed as scheduled downstream; see KNOWN LIMITATION note in processIssue", issue.Key, len(p.dispatches)-dispatchCountBefore)
 	}
 
 	// Advance lastCheck.

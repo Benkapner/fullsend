@@ -134,7 +134,7 @@ func TestSearchIssues_Pagination(t *testing.T) {
 		}
 	})
 
-	issues, err := client.SearchIssues(ctx, "project = PROJ")
+	issues, err := client.SearchIssues(ctx, "project = PROJ", 0)
 	require.NoError(t, err)
 	assert.Len(t, issues, 120)
 	assert.Equal(t, 3, callCount)
@@ -578,6 +578,68 @@ func TestGetProjectRoleMembership(t *testing.T) {
 	assert.NotContains(t, membership, "dev-group", "group actors should be skipped")
 }
 
+func TestGetProjectRoleMembership_GroupActor(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/project/PROJ/role", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]string{
+			"Developers": "http://localhost/rest/api/3/project/10001/role/10003",
+		})
+	})
+
+	mux.HandleFunc("/rest/api/3/project/PROJ/role/10003", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, ProjectRoleDetail{
+			Name: "Developers",
+			Actors: []RoleActor{
+				{
+					ID:          5,
+					DisplayName: "dev-group",
+					Type:        "atlassian-group-role-actor",
+					ActorGroup:  &RoleActorGroup{GroupID: "group-1", Name: "dev-group"},
+				},
+			},
+		})
+	})
+
+	var groupMemberCalls int
+	mux.HandleFunc("/rest/api/3/group/member", func(w http.ResponseWriter, r *http.Request) {
+		groupMemberCalls++
+		assert.Equal(t, "group-1", r.URL.Query().Get("groupId"))
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"values": []map[string]string{
+				{"accountId": "carol-id"},
+				{"accountId": "dave-id"},
+			},
+			"isLast": true,
+		})
+	})
+
+	membership, err := client.GetProjectRoleMembership(ctx, "PROJ")
+	require.NoError(t, err)
+	assert.Equal(t, "Developers", membership["carol-id"], "carol should inherit role via group membership")
+	assert.Equal(t, "Developers", membership["dave-id"], "dave should inherit role via group membership")
+	assert.Equal(t, 1, groupMemberCalls)
+
+	// Second call within the cache TTL should reuse the cached members
+	// rather than hitting the group/member endpoint again.
+	_, err = client.GetProjectRoleMembership(ctx, "PROJ")
+	require.NoError(t, err)
+	assert.Equal(t, 1, groupMemberCalls, "group member lookup should be cached within TTL")
+
+	// Force the cache entry to look stale; the next call should refetch.
+	client.groupMemberCacheMu.Lock()
+	entry := client.groupMemberCache["group-1"]
+	entry.fetchedAt = time.Now().Add(-groupMemberCacheTTL - time.Second)
+	client.groupMemberCache["group-1"] = entry
+	client.groupMemberCacheMu.Unlock()
+
+	_, err = client.GetProjectRoleMembership(ctx, "PROJ")
+	require.NoError(t, err)
+	assert.Equal(t, 2, groupMemberCalls, "expired cache entry should trigger a refetch")
+}
+
 func TestGetProjectRoleMembership_Error(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)
@@ -785,10 +847,37 @@ func TestSearchIssues_SinglePage(t *testing.T) {
 		})
 	})
 
-	issues, err := client.SearchIssues(ctx, "project = TEST")
+	issues, err := client.SearchIssues(ctx, "project = TEST", 0)
 	require.NoError(t, err)
 	assert.Len(t, issues, 1)
 	assert.Equal(t, "TEST-1", issues[0].Key)
+}
+
+// TestSearchIssues_LimitStopsPagination checks that a positive limit stops
+// pagination as soon as enough issues have been collected, instead of
+// exhausting the full JQL match set and truncating client-side.
+func TestSearchIssues_LimitStopsPagination(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		issues := make([]Issue, 50)
+		for i := range issues {
+			issues[i] = Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
+		}
+		writeJSON(t, w, http.StatusOK, SearchResult{
+			Issues:        issues,
+			NextPageToken: "next-page", // there would be more, but limit should stop us first
+		})
+	})
+
+	issues, err := client.SearchIssues(ctx, "project = PROJ", 30)
+	require.NoError(t, err)
+	assert.Len(t, issues, 30, "should truncate to the requested limit")
+	assert.Equal(t, 1, callCount, "should stop paginating once the limit is reached")
 }
 
 // ---------------------------------------------------------------------------
@@ -937,6 +1026,94 @@ func (t *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, &net.DNSError{Err: "flaky", IsTimeout: true}
 	}
 	return t.inner.RoundTrip(req)
+}
+
+// flakyTokenTransport fails the first failN OAuth2 token-endpoint requests
+// with a 500 response before delegating to inner. Used to simulate a
+// transient blip from the Atlassian token endpoint.
+type flakyTokenTransport struct {
+	calls int
+	failN int
+	inner http.RoundTripper
+}
+
+func (t *flakyTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.calls++
+	if t.calls <= t.failN {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Body:       io.NopCloser(strings.NewReader("upstream blip")),
+			Header:     make(http.Header),
+		}, nil
+	}
+	return t.inner.RoundTrip(req)
+}
+
+func TestDo_RetriesOnTransientAuthTokenFetchError(t *testing.T) {
+	t.Parallel()
+
+	tokenMux := http.NewServeMux()
+	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token": "tok",
+			"expires_in":   3600,
+		})
+	})
+	tokenSrv := httptest.NewServer(tokenMux)
+	t.Cleanup(tokenSrv.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, User{AccountID: "42"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	tokenTransport := &flakyTokenTransport{failN: 1, inner: http.DefaultTransport}
+	client, err := NewOAuth2("cid", "csec",
+		WithBaseURL(srv.URL),
+		WithTokenURL(tokenSrv.URL+"/oauth/token"),
+		WithHTTPClient(&http.Client{Transport: tokenTransport}),
+	)
+	require.NoError(t, err)
+
+	user, err := client.GetMyself(context.Background())
+	require.NoError(t, err, "a transient token-endpoint blip should be retried, not fail the whole call")
+	assert.Equal(t, "42", user.AccountID)
+	assert.GreaterOrEqual(t, tokenTransport.calls, 2, "should have retried the failed token fetch")
+}
+
+// TestDo_DoesNotRetryPermanentAuthTokenFetchError checks that a permanent
+// auth failure (e.g. invalid client credentials, 401) fails immediately
+// instead of being retried like a transient blip.
+func TestDo_DoesNotRetryPermanentAuthTokenFetchError(t *testing.T) {
+	t.Parallel()
+
+	var tokenCalls int
+	tokenMux := http.NewServeMux()
+	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		writeJSON(t, w, http.StatusUnauthorized, map[string]any{
+			"error":             "invalid_client",
+			"error_description": "Client authentication failed",
+		})
+	})
+	tokenSrv := httptest.NewServer(tokenMux)
+	t.Cleanup(tokenSrv.Close)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client, err := NewOAuth2("bad-id", "bad-secret",
+		WithBaseURL(srv.URL),
+		WithTokenURL(tokenSrv.URL+"/oauth/token"),
+	)
+	require.NoError(t, err)
+
+	_, err = client.GetMyself(context.Background())
+	require.Error(t, err)
+	assert.Equal(t, 1, tokenCalls, "a permanent auth error should not be retried")
 }
 
 func TestDo_RetriesOnTransientNetworkError(t *testing.T) {

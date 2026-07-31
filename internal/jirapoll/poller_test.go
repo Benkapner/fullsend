@@ -30,6 +30,7 @@ type mockClient struct {
 	searchResult []jira.Issue
 	searchErr    error
 	lastQuery    string
+	lastLimit    int
 
 	issues   map[string]*jira.Issue
 	issueErr map[string]error
@@ -70,10 +71,14 @@ func newMockClient() *mockClient {
 	}
 }
 
-func (m *mockClient) SearchIssues(_ context.Context, jql string) ([]jira.Issue, error) {
+func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]jira.Issue, error) {
 	m.lastQuery = jql
+	m.lastLimit = limit
 	if m.searchErr != nil {
 		return nil, m.searchErr
+	}
+	if limit > 0 && len(m.searchResult) > limit {
+		return m.searchResult[:limit], nil
 	}
 	return m.searchResult, nil
 }
@@ -627,6 +632,29 @@ func TestSearchCandidatesQuotesProjectKey(t *testing.T) {
 	want := `project = "PROJ" AND status != Done ORDER BY updated DESC`
 	if mc.lastQuery != want {
 		t.Errorf("JQL = %q, want %q", mc.lastQuery, want)
+	}
+}
+
+// TestSearchCandidatesBoundsBySettingM checks that searchCandidates asks
+// SearchIssues to stop paginating once M results are collected, instead of
+// exhausting the full JQL match set and truncating client-side.
+func TestSearchCandidatesBoundsBySettingM(t *testing.T) {
+	mc := newMockClient()
+	mc.searchResult = make([]jira.Issue, 200)
+	for i := range mc.searchResult {
+		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
+	}
+	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", M: 50})
+
+	candidates, err := p.searchCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("searchCandidates() error: %v", err)
+	}
+	if len(candidates) != 50 {
+		t.Errorf("len(candidates) = %d, want 50", len(candidates))
+	}
+	if mc.lastLimit != 50 {
+		t.Errorf("SearchIssues called with limit %d, want 50 (p.opts.M)", mc.lastLimit)
 	}
 }
 

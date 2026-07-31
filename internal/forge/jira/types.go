@@ -102,15 +102,30 @@ type ProjectRoleDetail struct {
 
 // RoleActor represents a member of a project role.
 type RoleActor struct {
-	ID          int            `json:"id"`
-	DisplayName string         `json:"displayName"`
-	Type        string         `json:"type"` // "atlassian-user-role-actor", "atlassian-group-role-actor"
-	ActorUser   *RoleActorUser `json:"actorUser,omitempty"`
+	ID          int             `json:"id"`
+	DisplayName string          `json:"displayName"`
+	Type        string          `json:"type"` // "atlassian-user-role-actor", "atlassian-group-role-actor"
+	ActorUser   *RoleActorUser  `json:"actorUser,omitempty"`
+	ActorGroup  *RoleActorGroup `json:"actorGroup,omitempty"`
 }
 
 // RoleActorUser contains the account ID of a role actor.
 type RoleActorUser struct {
 	AccountID string `json:"accountId"`
+}
+
+// RoleActorGroup identifies a group granted a project role directly
+// (as opposed to an individual user).
+type RoleActorGroup struct {
+	GroupID string `json:"groupId"`
+	Name    string `json:"name"`
+}
+
+// groupMemberPage is the paginated response from
+// GET /rest/api/3/group/member.
+type groupMemberPage struct {
+	Values []User `json:"values"`
+	IsLast bool   `json:"isLast"`
 }
 
 // changelogPage is the paginated response from the changelog API.

@@ -22,7 +22,7 @@ func TestSearchReturnsAddedIssues(t *testing.T) {
 	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
 	require.NoError(t, err)
 
-	issues, err := client.SearchIssues(context.Background(), "project = PROJ")
+	issues, err := client.SearchIssues(context.Background(), "project = PROJ", 0)
 	require.NoError(t, err)
 	assert.Len(t, issues, 2)
 }
@@ -129,7 +129,7 @@ func TestConcurrentAccess(t *testing.T) {
 			state.AddComment(key, "comment")
 			state.AddLabelChange(key, "new-label")
 
-			_, err := client.SearchIssues(ctx, "project = PROJ")
+			_, err := client.SearchIssues(ctx, "project = PROJ", 0)
 			if err != nil {
 				done <- err
 				return
