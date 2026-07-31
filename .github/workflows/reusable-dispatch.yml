@@ -269,7 +269,7 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
                     STAGE="review"
                   fi
                   ;;
