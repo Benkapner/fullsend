@@ -4890,7 +4890,7 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "providers without profiles warns",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}, FromURL: true},
 			},
 			profiles: nil,
 			wantWarn: true,
@@ -4898,35 +4898,54 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "all providers match profiles",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
-				{ID: "openai"},
+				{ID: "anthropic", FromURL: true},
+				{ID: "openai", FromURL: true},
 			},
 		},
 		{
 			name: "provider references unknown profile",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
 		},
 		{
 			name: "multiple mismatches reported together",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
+		},
+		{
+			name: "local-path providers skipped",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "gateway-resident"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+		},
+		{
+			name: "mixed URL and local providers only checks URL",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "url-p", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "local-p", Type: "gateway-only"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
 		},
 	}
 	for _, tt := range tests {

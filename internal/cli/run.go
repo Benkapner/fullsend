@@ -3745,23 +3745,32 @@ func forceRemoveAll(path string) error {
 }
 
 // checkProviderProfileIntegrity validates that every URL-resolved provider
-// references a profile id that was also URL-resolved. Returns an error
-// describing the first mismatch, or nil if all references are valid.
-// Returns a non-empty warning string (no error) when providers exist but
-// no profiles were resolved.
+// references a profile id that was also URL-resolved. Local-path providers
+// are skipped because their profile types may be gateway-resident.
+// Returns an error describing the first mismatch, or nil if all references
+// are valid. Returns a non-empty warning string (no error) when URL-resolved
+// providers exist but no URL-resolved profiles were resolved.
 func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile) (warning string, err error) {
-	if len(providers) == 0 {
-		return "", nil
+	var urlProviders []resolve.ResolvedProvider
+	for _, rp := range providers {
+		if rp.FromURL {
+			urlProviders = append(urlProviders, rp)
+		}
 	}
-	if len(profiles) == 0 {
-		return "URL-resolved providers present but no URL-resolved profiles — referential integrity not verified", nil
+	if len(urlProviders) == 0 {
+		return "", nil
 	}
 	profileIDs := make(map[string]bool, len(profiles))
 	for _, rp := range profiles {
-		profileIDs[rp.ID] = true
+		if rp.FromURL {
+			profileIDs[rp.ID] = true
+		}
+	}
+	if len(profileIDs) == 0 {
+		return "URL-resolved providers present but no URL-resolved profiles — referential integrity not verified", nil
 	}
 	var mismatches []string
-	for _, rp := range providers {
+	for _, rp := range urlProviders {
 		if !profileIDs[rp.Def.Type] {
 			mismatches = append(mismatches, fmt.Sprintf("%q (type %q)", rp.Def.Name, rp.Def.Type))
 		}

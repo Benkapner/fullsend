@@ -116,26 +116,37 @@ The second `ResolveHarness` pass processes whatever remains, and
 ### Schema validation (`ValidateResourceTypes`)
 
 - `openshell.profiles[]`: if `IsURL()`, require a valid `#sha256=...` integrity
-  hash. Otherwise, accept as a local file path.
+  hash. Otherwise, require a `.yaml` or `.yml` extension and accept as a local
+  file path.
 - `providers[]`: if `IsURL()`, require `#sha256=...` integrity hash. If not URL,
   accept as local provider name or file path (no change to wire format).
 
-### File existence validation (`ValidateFilesExist`)
+### File existence and containment (`ResolveHarness`)
 
-- Local profile paths: validated at harness load time
-- Local provider paths (entries matching `IsProviderPath`): validated at harness
-  load time
-- Bare provider names: not validated (resolved from directory at runtime)
+`ValidateFilesExist` deliberately skips profile and provider paths because
+`ResolveHarness` reads them via `os.ReadFile` before that function runs,
+surfacing missing-file errors at that point. The symlink-aware `isContainedPath`
+check gates all local reads, ensuring paths resolve within the workspace root
+even through symlinks.
+
+- Local profile paths: read and validated by `ResolveHarness`; containment
+  enforced by `isContainedPath` with `filepath.EvalSymlinks`
+- Local provider paths (absolute, from `ResolveRelativeTo`): read and parsed
+  by `ResolveHarness`; containment enforced by `isContainedPath`
+- Bare provider names: not file-read (resolved from directory at runtime)
 
 ### Content and referential integrity
 
-Unchanged from ADR 0070.
+`checkProviderProfileIntegrity` validates that URL-resolved providers reference
+profile types that were also URL-resolved. Local-path providers are excluded
+from this check (via the `FromURL` origin marker on `ResolvedProvider`) because
+their profile types may be gateway-resident.
 
 ## Security
 
-Same controls as ADR 0070 and ADR 0038. Local file paths go through
-`ValidateFilesExist` and are confined to the workspace by upstream guards
-(`ResolveRelativeTo`, `validateBaseRelPath`).
+Same controls as ADR 0070 and ADR 0038. Local file paths are confined to the
+workspace by `isContainedPath` (symlink-aware, fail-closed on empty root) and
+upstream guards (`ResolveRelativeTo`, `validateBaseRelPath`).
 
 ## Backwards compatibility
 

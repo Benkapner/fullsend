@@ -843,7 +843,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			}
 			localPath = namedPath
 			dep.LocalPath = namedPath
-			profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: localPath})
+			profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: localPath, FromURL: true})
 		} else if strings.HasPrefix(lockDep.Field, "providers[") {
 			var def harness.ProviderDef
 			if err := yaml.Unmarshal(cachedContent, &def); err != nil {
@@ -864,7 +864,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			if w := resolve.WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
 				dep.Warning = w
 			}
-			providers = append(providers, resolve.ResolvedProvider{Def: def, LocalPath: localPath})
+			providers = append(providers, resolve.ResolvedProvider{Def: def, LocalPath: localPath, FromURL: true})
 		}
 		deps = append(deps, dep)
 	}

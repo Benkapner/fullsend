@@ -1926,6 +1926,31 @@ func TestValidateResourceTypes_ProfilesValidURL(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateResourceTypes_ProfilesRequireYAMLExtension(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/mycustomprofile"},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must have a .yaml or .yml extension")
+}
+
+func TestValidateResourceTypes_ProfilesYMLExtensionAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/mycustomprofile.yml"},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
 func TestValidateResourceTypes_ProviderURLRequiresHash(t *testing.T) {
 	h := &Harness{
 		Agent:     "agents/test.md",

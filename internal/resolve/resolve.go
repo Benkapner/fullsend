@@ -36,17 +36,19 @@ type Dependency struct {
 	Warning   string // non-fatal warning about this dependency
 }
 
-// ResolvedProfile is a profile definition fetched from a URL and
-// validated to have a non-empty id field.
+// ResolvedProfile is a profile definition resolved from a URL or local path
+// and validated to have a non-empty id field.
 type ResolvedProfile struct {
 	ID        string
 	LocalPath string
+	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
 }
 
-// ResolvedProvider is a provider definition fetched from a URL.
+// ResolvedProvider is a provider definition resolved from a URL or local path.
 type ResolvedProvider struct {
 	Def       harness.ProviderDef
 	LocalPath string
+	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
 }
 
 // ResolveResult contains all outputs from harness resolution.
@@ -385,7 +387,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			state.resolved[dep.URL] = dep
 
 			state.appendDependency(dep)
-			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
+			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath, FromURL: true})
 		} else {
 			localPath = p
 
@@ -457,7 +459,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			dep.Warning = w
 		}
 		state.appendDependency(dep)
-		resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: localPath})
+		resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: localPath, FromURL: true})
 	}
 	h.Providers = remaining
 	if h.OpenShell != nil {

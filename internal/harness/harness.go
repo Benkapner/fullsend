@@ -899,6 +899,11 @@ func (h *Harness) ValidateResourceTypes() error {
 			if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
 				return fmt.Errorf("openshell.profiles[%d] URL must include #sha256=... integrity hash", i)
 			}
+		} else if !filepath.IsAbs(p) {
+			ext := strings.ToLower(filepath.Ext(p))
+			if ext != ".yaml" && ext != ".yml" {
+				return fmt.Errorf("openshell.profiles[%d] %q must have a .yaml or .yml extension", i, p)
+			}
 		}
 	}
 	for i, p := range h.Providers {
