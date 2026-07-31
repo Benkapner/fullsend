@@ -458,9 +458,9 @@ Environment variables required by `runJiraPoll`:
 
 ### Problem
 
-Personal API tokens on managed Atlassian Cloud instances (e.g. `stage-redhat.atlassian.net`) are often restricted by organization-level security policies. The token authenticates successfully (`/myself` returns 200) but cannot access project or issue data. This is an Atlassian org admin setting ("API token access") that blocks personal API tokens from reading project-scoped data while still allowing browser SSO access.
+Personal API tokens on managed Atlassian Cloud instances are often restricted by organization-level security policies. The token authenticates successfully (`/myself` returns 200) but cannot access project or issue data. This is an Atlassian org admin setting ("API token access") that blocks personal API tokens from reading project-scoped data while still allowing browser SSO access.
 
-Service accounts like the one used by `konflux-ci/refinement` work because they have explicit project-level access or use a different auth method. The `release-engineering/sync2jira` project supports both Basic auth (PAT) and OAuth 2.0 client credentials (2LO) for exactly this reason.
+Service accounts work around this because they have explicit project-level access or use a different auth method. Supporting both Basic auth (PAT) and OAuth 2.0 client credentials (2LO) covers both cases.
 
 ### Solution: OAuth 2.0 Client Credentials Grant (2LO)
 
@@ -512,21 +512,16 @@ When `JIRA_AUTH_METHOD=oauth2`, use `jira.WithOAuth2(clientID, clientSecret)` in
 
 #### Credentials for functional test
 
-To test against `stage-redhat.atlassian.net`:
+To test against a managed Atlassian Cloud staging instance:
 1. Register an OAuth 2.0 app in the Atlassian developer console
-2. Request access to the `stage-redhat.atlassian.net` site
+2. Request access to the staging site
 3. Configure the required scopes
 4. Store `JIRA_CLIENT_ID` and `JIRA_CLIENT_SECRET` as repo secrets
 5. Set `JIRA_AUTH_METHOD=oauth2` in the workflow
 
-#### Existing art
-
-- `release-engineering/sync2jira` (`sync2jira/jira_auth.py`) — Python implementation of exactly this pattern: token caching, refresh, fallback. Good reference for the token exchange flow.
-- `konflux-ci/refinement` — production Jira poller using Basic auth with a service account. May benefit from migration to OAuth 2.0 if the org further restricts API tokens.
-
 ### Open questions
 
-- Does the `stage-redhat.atlassian.net` org admin allow OAuth 2.0 app registration, or is that also restricted?
+- Does the target org admin allow OAuth 2.0 app registration, or is that also restricted?
 - Do we need `write:jira-work` scope for entity property writes, or is there a narrower scope?
 - Should the Jira client auto-detect auth method based on which credentials are provided (email → basic, client_id → oauth2)?
 
@@ -536,8 +531,8 @@ To test against `stage-redhat.atlassian.net`:
 
 Add a user-facing guide at `docs/guides/user/jira-integration.md` covering:
 
-- **Prerequisites:** Users must request an OAuth 2.0 service account (OpenID client credentials) from their Atlassian org admin to use the Jira integration. Personal API tokens are typically restricted on managed Atlassian Cloud instances and will not work.
-- **Credential setup:** How to obtain `JIRA_CLIENT_ID` and `JIRA_CLIENT_SECRET`, configure scopes (`read:jira-work`, `read:jira-user`, `write:jira-work`), and store them as repo secrets.
+- **Prerequisites:** A personal API token (Cloud) or PAT (Data Center) is the primary auth path. If an org restricts personal API tokens for project-scoped data, OAuth 2.0 client credentials is available as a fallback — flagged as untested in production until we have real-world coverage.
+- **Credential setup:** How to obtain `JIRA_TOKEN` (or `JIRA_CLIENT_ID`/`JIRA_CLIENT_SECRET` for the OAuth 2.0 fallback), configure scopes (`read:jira-work`, `read:jira-user`, `write:jira-work`), and store them as repo secrets.
 - **Repo configuration:** Minimal `.fullsend/config.yaml` and harness YAML for Jira-triggered agents, including `trigger` CEL expressions that filter on `event.source.system == "jira"`.
 - **Scheduled workflow:** Example `.github/workflows/fullsend-poll.yml` that runs `fullsend poll --input-driver jira-poll` on a cron schedule.
 - **Troubleshooting:** Common failure modes (API token access restricted, wrong auth method, project not visible).
