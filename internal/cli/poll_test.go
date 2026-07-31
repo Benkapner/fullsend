@@ -201,8 +201,8 @@ func TestPollCmd_NoForgeOrDriver(t *testing.T) {
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "poll command supports") {
-		t.Fatalf("expected 'poll command supports' error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "at least one of the flags in the group [forge input-driver] is required") {
+		t.Fatalf("expected flag-group validation error, got: %v", err)
 	}
 }
 

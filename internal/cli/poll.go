@@ -106,6 +106,7 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping")
 	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY)")
+	cmd.MarkFlagsOneRequired("forge", "input-driver")
 
 	cmd.Hidden = true
 	return cmd
