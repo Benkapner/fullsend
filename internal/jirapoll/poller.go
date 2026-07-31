@@ -59,19 +59,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	cycleID := uuid.New().String()
 	p.dispatches = nil
 	p.statusCategoryCache = make(map[string]string)
-
-	// Load project role membership for actor role resolution.
-	if p.opts.JiraProject != "" {
-		membership, err := p.client.GetProjectRoleMembership(ctx, p.opts.JiraProject)
-		if err != nil {
-			log.Printf("WARNING: loading project roles: %v (defaulting to external)", err)
-			membership = make(map[string]string)
-		}
-		p.roleMembership = membership
-	} else {
-		log.Printf("WARNING: no Jira project key set, cannot resolve actor roles (defaulting to external)")
-		p.roleMembership = make(map[string]string)
-	}
+	p.roleMembership = make(map[string]string)
 
 	// Step 1: Execute JQL to get candidate issues.
 	candidates, err := p.searchCandidates(ctx)
@@ -87,6 +75,22 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	// Step 3: Randomly select min(N, len(unlocked)) candidates.
 	selected := selectRandom(unlocked, p.opts.N)
+
+	// Load project role membership for actor role resolution. Deferred
+	// until after selection so a cycle with nothing to process doesn't
+	// spend Jira API calls resolving roles that end up unused.
+	if len(selected) > 0 {
+		if p.opts.JiraProject != "" {
+			membership, err := p.client.GetProjectRoleMembership(ctx, p.opts.JiraProject)
+			if err != nil {
+				log.Printf("WARNING: loading project roles: %v (defaulting to external)", err)
+				membership = make(map[string]string)
+			}
+			p.roleMembership = membership
+		} else {
+			log.Printf("WARNING: no Jira project key set, cannot resolve actor roles (defaulting to external)")
+		}
+	}
 
 	// Step 4: Process each selected issue.
 	var processErrors int
