@@ -291,10 +291,11 @@ security:
 
 > **Naming convention:** Prefix settings that tune one agent's behavior with
 > that agent's role in caps, e.g. `REVIEW_SEVERITY_THRESHOLD` — this avoids
-> collisions when multiple agents share a sandbox or env file. A setting
-> meant to apply the same way across every agent (like `roles` or
-> `create_issues.allow_targets`) belongs in `config.yaml` instead, not as an
-> env var — see [Registering your agent](#registering-your-agent).
+> collisions when multiple agents share a sandbox or env file.
+>
+> A setting meant to apply the same way across every agent (like
+> `roles` or `create_issues.allow_targets`) belongs in `config.yaml`
+> instead, not as an env var.
 
 ### Deprecated fields
 
