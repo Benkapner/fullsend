@@ -26,12 +26,13 @@ var validProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,9}$`)
 
 // Poller discovers Jira events and dispatches agent stages.
 type Poller struct {
-	client         JiraClient
-	router         dispatch.EventRouter
-	opts           Options
-	dispatches     []poll.Dispatch
-	sleepFn        func(time.Duration) // overridable for testing
-	roleMembership map[string]string   // accountID → Jira project role name
+	client              JiraClient
+	router              dispatch.EventRouter
+	opts                Options
+	dispatches          []poll.Dispatch
+	sleepFn             func(time.Duration) // overridable for testing
+	roleMembership      map[string]string   // accountID → Jira project role name
+	statusCategoryCache map[string]string   // status name → statusCategory key, reset each cycle
 }
 
 // New creates a Jira Poller with the given options.
@@ -57,6 +58,7 @@ func New(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
 func (p *Poller) Run(ctx context.Context) error {
 	cycleID := uuid.New().String()
 	p.dispatches = nil
+	p.statusCategoryCache = make(map[string]string)
 
 	// Load project role membership for actor role resolution.
 	if p.opts.JiraProject != "" {

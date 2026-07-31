@@ -557,6 +557,18 @@ func (c *LiveClient) GetIssue(ctx context.Context, issueIDOrKey string) (*Issue,
 	return &issue, nil
 }
 
+// GetStatus fetches a single status by ID or name, including its
+// statusCategory. Used to classify changelog status transitions by category
+// rather than by matching locale/workflow-specific status name substrings.
+func (c *LiveClient) GetStatus(ctx context.Context, idOrName string) (*Status, error) {
+	var status Status
+	path := "/status/" + url.PathEscape(idOrName)
+	if err := c.do(ctx, http.MethodGet, path, nil, &status); err != nil {
+		return nil, fmt.Errorf("get status %s: %w", idOrName, err)
+	}
+	return &status, nil
+}
+
 // ListComments fetches all comments on an issue, exhausting pagination.
 func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]Comment, error) {
 	var all []Comment

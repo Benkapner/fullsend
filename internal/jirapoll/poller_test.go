@@ -48,6 +48,9 @@ type mockClient struct {
 	myselfUser *jira.User
 	myselfErr  error
 
+	statuses  map[string]jira.Status // status name -> status (with category)
+	statusErr map[string]error       // status name -> error
+
 	roleMembership map[string]string // accountID -> role name
 
 	// getPropertyHook, if set, runs after each GetEntityProperty call
@@ -68,6 +71,8 @@ func newMockClient() *mockClient {
 		properties:     make(map[string]map[string]json.RawMessage),
 		propertyGetErr: make(map[string]error),
 		propertySetErr: make(map[string]error),
+		statuses:       make(map[string]jira.Status),
+		statusErr:      make(map[string]error),
 	}
 }
 
@@ -163,6 +168,17 @@ func (m *mockClient) GetMyself(_ context.Context) (*jira.User, error) {
 		return nil, m.myselfErr
 	}
 	return m.myselfUser, nil
+}
+
+func (m *mockClient) GetStatus(_ context.Context, idOrName string) (*jira.Status, error) {
+	if err, ok := m.statusErr[idOrName]; ok && err != nil {
+		return nil, err
+	}
+	status, ok := m.statuses[idOrName]
+	if !ok {
+		return nil, fmt.Errorf("status %s not found: %w", idOrName, forge.ErrNotFound)
+	}
+	return &status, nil
 }
 
 func (m *mockClient) GetProjectRoleMembership(_ context.Context, _ string) (map[string]string, error) {
@@ -950,6 +966,8 @@ func TestDetectChanges_StatusChange(t *testing.T) {
 			},
 		},
 	}
+	mc.statuses["Done"] = jira.Status{Name: "Done", StatusCategory: jira.StatusCategory{Key: "done"}}
+	mc.statuses["Open"] = jira.Status{Name: "Open", StatusCategory: jira.StatusCategory{Key: "new"}}
 
 	p := New(mc, nil, Options{
 		TargetRepo:  "acme/platform",
@@ -984,6 +1002,37 @@ func TestDetectChanges_StatusChange(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected 'closed' event from status change to Done category")
+	}
+}
+
+func TestMapStatusTransition_CustomWorkflowNames(t *testing.T) {
+	// Regression test: status names are fully customizable per project, so
+	// classification must go through statusCategory rather than matching
+	// English substrings like "done"/"closed"/"reopen" against the name.
+	cases := []struct {
+		name       string
+		fromStatus string
+		fromCat    string
+		toStatus   string
+		toCat      string
+		want       string
+	}{
+		{"custom done-category name maps to closed", "In Progress", "indeterminate", "Won't Fix", "done", "closed"},
+		{"non-English name lacking any recognizable substring is not miscategorized", "Open", "new", "Live", "indeterminate", ""},
+		{"transition from a done-category status back to new is reopened", "Won't Fix", "done", "Open", "new", "reopened"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := newMockClient()
+			mc.statuses[tc.fromStatus] = jira.Status{Name: tc.fromStatus, StatusCategory: jira.StatusCategory{Key: tc.fromCat}}
+			mc.statuses[tc.toStatus] = jira.Status{Name: tc.toStatus, StatusCategory: jira.StatusCategory{Key: tc.toCat}}
+
+			p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
+			got := p.mapStatusTransition(context.Background(), tc.fromStatus, tc.toStatus)
+			if got != tc.want {
+				t.Errorf("mapStatusTransition(%q, %q) = %q, want %q", tc.fromStatus, tc.toStatus, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -3,6 +3,7 @@ package jirapoll
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -116,7 +117,7 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 			maxSeen = createdAt
 		}
 		for _, item := range entry.Items {
-			changeEvents := mapChangelogItem(item, issue, entry, issueURL, createdAt)
+			changeEvents := p.mapChangelogItem(ctx, item, issue, entry, issueURL, createdAt)
 			events = append(events, changeEvents...)
 		}
 	}
@@ -125,7 +126,7 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 }
 
 // mapChangelogItem maps a single changelog item to zero or more JiraEvents.
-func mapChangelogItem(item jira.ChangeItem, issue jira.Issue, entry jira.ChangelogEntry, issueURL string, createdAt time.Time) []JiraEvent {
+func (p *Poller) mapChangelogItem(ctx context.Context, item jira.ChangeItem, issue jira.Issue, entry jira.ChangelogEntry, issueURL string, createdAt time.Time) []JiraEvent {
 	var events []JiraEvent
 
 	base := JiraEvent{
@@ -145,7 +146,7 @@ func mapChangelogItem(item jira.ChangeItem, issue jira.Issue, entry jira.Changel
 
 	case "status":
 		evt := base
-		evt.Type = mapStatusTransition(item.ToString)
+		evt.Type = p.mapStatusTransition(ctx, item.FromString, item.ToString)
 		if evt.Type != "" {
 			events = append(events, evt)
 		}
@@ -203,21 +204,59 @@ func parseLabels(s string) map[string]bool {
 	return m
 }
 
-// mapStatusTransition maps a Jira status name to a transition kind using the
-// destination status name from the changelog entry. We cannot use the issue's
-// current statusCategory because changelog entries are historical — the
-// current category only reflects the latest status, not earlier transitions.
-func mapStatusTransition(toStatus string) string {
-	lower := strings.ToLower(toStatus)
-	switch {
-	case lower == "done" || lower == "closed" || lower == "resolved" ||
-		strings.Contains(lower, "complete"):
-		return "closed"
-	case strings.Contains(lower, "reopen"):
-		return "reopened"
-	default:
+// statusCategory resolves and caches the statusCategory key ("new",
+// "indeterminate", "done") for a Jira status name, making at most one
+// GetStatus call per unique status name per poll cycle. The cache is reset
+// at the start of each Run.
+func (p *Poller) statusCategory(ctx context.Context, statusName string) (string, error) {
+	if statusName == "" {
+		return "", nil
+	}
+	if cat, ok := p.statusCategoryCache[statusName]; ok {
+		return cat, nil
+	}
+	status, err := p.client.GetStatus(ctx, statusName)
+	if err != nil {
+		return "", err
+	}
+	cat := status.StatusCategory.Key
+	if p.statusCategoryCache == nil {
+		p.statusCategoryCache = make(map[string]string)
+	}
+	p.statusCategoryCache[statusName] = cat
+	return cat, nil
+}
+
+// mapStatusTransition classifies a status transition as "closed" or
+// "reopened" by resolving the statusCategory of the destination status (and,
+// when needed, the origin status) rather than string-matching status names.
+// Jira status names are fully customizable per project/locale, so matching
+// on name substrings silently misses non-English or custom workflow names;
+// statusCategory is a fixed, Jira-defined enum ("new", "indeterminate",
+// "done") independent of naming. We cannot use the issue's current
+// statusCategory field for this because changelog entries are historical —
+// the current category only reflects the latest status, not earlier
+// transitions — so we resolve the category for the specific from/to status
+// names recorded on the changelog entry.
+func (p *Poller) mapStatusTransition(ctx context.Context, fromStatus, toStatus string) string {
+	toCat, err := p.statusCategory(ctx, toStatus)
+	if err != nil {
+		log.Printf("WARNING: resolving statusCategory for %q: %v", toStatus, err)
 		return ""
 	}
+	if toCat == "done" {
+		return "closed"
+	}
+
+	fromCat, err := p.statusCategory(ctx, fromStatus)
+	if err != nil {
+		log.Printf("WARNING: resolving statusCategory for %q: %v", fromStatus, err)
+		return ""
+	}
+	if fromCat == "done" {
+		return "reopened"
+	}
+	return ""
 }
 
 // extractPlainText extracts plain text from a Jira comment body.

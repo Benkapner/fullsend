@@ -499,6 +499,41 @@ func TestGetIssue_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, forge.ErrNotFound))
 }
 
+func TestGetStatus(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/status/Won%27t%20Fix", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, Status{
+			Name:           "Won't Fix",
+			StatusCategory: StatusCategory{Key: "done"},
+		})
+	})
+
+	status, err := client.GetStatus(ctx, "Won't Fix")
+	require.NoError(t, err)
+	assert.Equal(t, "Won't Fix", status.Name)
+	assert.Equal(t, "done", status.StatusCategory.Key)
+}
+
+func TestGetStatus_NotFound(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/status/Bogus", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"The status does not exist."},
+		})
+	})
+
+	_, err := client.GetStatus(ctx, "Bogus")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, forge.ErrNotFound))
+}
+
 // ---------------------------------------------------------------------------
 // SearchIssues single page
 // ---------------------------------------------------------------------------

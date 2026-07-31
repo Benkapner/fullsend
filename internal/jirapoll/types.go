@@ -18,6 +18,10 @@ type JiraClient interface {
 	// implementation's own pagination cap).
 	SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
+	// GetStatus resolves a status name to its statusCategory, used to
+	// classify status transitions (closed/reopened) without relying on
+	// locale/workflow-specific status name substrings.
+	GetStatus(ctx context.Context, idOrName string) (*jira.Status, error)
 	ListComments(ctx context.Context, issueIDOrKey string) ([]jira.Comment, error)
 	ListChangelog(ctx context.Context, issueIDOrKey string) ([]jira.ChangelogEntry, error)
 	GetEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string) (json.RawMessage, error)
