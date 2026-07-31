@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
 
 // toNormalizedEvent converts a JiraEvent to a dispatch.NormalizedEvent
@@ -88,18 +89,29 @@ func parseIssueID(id string) int {
 	return n
 }
 
-// actorID returns the actor identifier for the event.
+// actorID returns the actor identifier for the event: Jira accountId
+// (preferred, Cloud) or name (fallback, Data Center/Server instances that
+// don't populate accountId).
 func actorID(event JiraEvent) string {
 	switch event.Type {
 	case "comment_added":
-		return event.CommentAuthor.AccountID
+		return userID(event.CommentAuthor)
 	case "label_changed", "edited", "reopened", "closed":
-		return event.ChangeAuthor.AccountID
+		return userID(event.ChangeAuthor)
 	case "opened":
-		return event.Reporter.AccountID
+		return userID(event.Reporter)
 	default:
 		return ""
 	}
+}
+
+// userID returns a Jira user's accountId, falling back to name when
+// accountId is unavailable (Data Center/Server instances).
+func userID(u jira.User) string {
+	if u.AccountID != "" {
+		return u.AccountID
+	}
+	return u.Name
 }
 
 // automationDisplayNamePattern matches display names ending in "bot" or
@@ -137,7 +149,7 @@ func isEntityAuthor(event JiraEvent) bool {
 	if aid == "" {
 		return false
 	}
-	return aid == event.Reporter.AccountID
+	return aid == userID(event.Reporter)
 }
 
 // extractCommand parses a comment body for a slash command.

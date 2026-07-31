@@ -257,6 +257,37 @@ func TestToNormalizedEvent_BotActor(t *testing.T) {
 	}
 }
 
+func TestActorID_DataCenterNameFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		user jira.User
+		want string
+	}{
+		{"cloud accountId preferred", jira.User{AccountID: "acc-1", Name: "jdoe"}, "acc-1"},
+		{"data center name fallback", jira.User{Name: "jdoe"}, "jdoe"},
+		{"neither set", jira.User{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			event := JiraEvent{Type: "comment_added", CommentAuthor: tc.user}
+			if got := actorID(event); got != tc.want {
+				t.Errorf("actorID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsEntityAuthor_DataCenterNameFallback(t *testing.T) {
+	event := JiraEvent{
+		Type:          "comment_added",
+		CommentAuthor: jira.User{Name: "jdoe"},
+		Reporter:      jira.User{Name: "jdoe"},
+	}
+	if !isEntityAuthor(event) {
+		t.Error("isEntityAuthor() = false, want true when accountId is unavailable but names match")
+	}
+}
+
 func TestActorKind_DisplayNameAutomationSuffix(t *testing.T) {
 	cases := []struct {
 		name        string

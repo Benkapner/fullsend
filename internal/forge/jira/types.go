@@ -70,6 +70,7 @@ type ChangeItem struct {
 // User represents a Jira user account.
 type User struct {
 	AccountID   string `json:"accountId"`
+	Name        string `json:"name"` // Data Center/Server username; unset on Cloud
 	DisplayName string `json:"displayName"`
 	AccountType string `json:"accountType"` // "atlassian", "app", "customer"
 	Active      bool   `json:"active"`
