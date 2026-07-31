@@ -63,8 +63,11 @@ regions), not agent behavior knobs. This also means behavior defaults in
 `env.runner`/`env.sandbox` must be literals (e.g. `TRIAGE_AUTO_CODE:
 "on"`), not shell-style passthrough expressions (e.g.
 `${TRIAGE_AUTO_CODE:-on}`) — those two mechanisms deliver plain key-value
-pairs, not shell-expanded strings, so passthrough syntax would not expand
-and instead be treated as a literal value.
+pairs, not shell-expanded strings, so passthrough syntax would be
+mis-parsed — `os.Expand` treats the entire `VAR:-default` as the
+variable name, which resolves to an empty string rather than applying
+the intended default (see [ADR 0055](0055-unified-env-var-delivery.md),
+§ Runner-side expansion).
 
 A knob only moves from one surface to the other by a deliberate migration,
 not by adding a second way to set the same value. Applying this rule to
