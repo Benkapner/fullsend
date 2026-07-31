@@ -143,7 +143,7 @@ func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.
 		if lock != nil {
 			if isLockStale(*lock, p.opts.StaleThreshold) {
 				log.Printf("cleaning stale lock on %s (age > %s)", issue.Key, p.opts.StaleThreshold)
-				if err := p.releaseLock(ctx, issue.Key, ""); err != nil {
+				if err := p.releaseLock(ctx, issue.Key, lock.ID); err != nil {
 					log.Printf("WARNING: cleaning stale lock for %s: %v", issue.Key, err)
 					continue
 				}

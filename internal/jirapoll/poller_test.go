@@ -47,6 +47,12 @@ type mockClient struct {
 	myselfErr  error
 
 	roleMembership map[string]string // accountID -> role name
+
+	// getPropertyHook, if set, runs after each GetEntityProperty call
+	// captures its return value, and before that value is returned. Used
+	// to simulate a concurrent writer changing the stored property
+	// between reads.
+	getPropertyHook func(issueKey, propKey string)
 }
 
 func newMockClient() *mockClient {
@@ -110,6 +116,9 @@ func (m *mockClient) GetEntityProperty(_ context.Context, issueKey, propKey stri
 	val, ok := props[propKey]
 	if !ok {
 		return nil, fmt.Errorf("property %s not found on %s: %w", propKey, issueKey, forge.ErrNotFound)
+	}
+	if m.getPropertyHook != nil {
+		m.getPropertyHook(issueKey, propKey)
 	}
 	return val, nil
 }
@@ -541,6 +550,64 @@ func TestRunStaleLock(t *testing.T) {
 
 	if len(dispatches) == 0 {
 		t.Error("expected dispatches after stale lock cleanup")
+	}
+}
+
+// TestFilterLockedStaleCleanupPreservesConcurrentFreshLock guards against a
+// regression where stale-lock cleanup released the lock property
+// unconditionally (expectedID == "") instead of using the stale lock's own
+// ID, so a fresh lock written by a different poller in the race window
+// between the read and the release got deleted without any ownership check.
+func TestFilterLockedStaleCleanupPreservesConcurrentFreshLock(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, nil, Options{
+		TargetRepo:     "acme/platform",
+		StaleThreshold: 15 * time.Minute,
+	})
+
+	propKey := lockPropertyKey("acme", "platform")
+	staleLock := LockValue{
+		ID:    "stale-poller-uuid",
+		TS:    time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+		Phase: "running",
+	}
+	staleData, err := json.Marshal(staleLock)
+	if err != nil {
+		t.Fatalf("marshal stale lock: %v", err)
+	}
+	mc.properties["PROJ-123"] = map[string]json.RawMessage{propKey: staleData}
+
+	// Simulate a different poller acquiring a fresh lock on the same issue
+	// in the window between this poller's stale-lock read and its release.
+	freshLock := LockValue{
+		ID:    "fresh-poller-uuid",
+		TS:    time.Now().UTC().Format(time.RFC3339),
+		Phase: "pending",
+	}
+	freshData, err := json.Marshal(freshLock)
+	if err != nil {
+		t.Fatalf("marshal fresh lock: %v", err)
+	}
+	mc.getPropertyHook = func(issueKey, key string) {
+		if issueKey == "PROJ-123" && key == propKey {
+			mc.properties["PROJ-123"][propKey] = freshData
+		}
+	}
+
+	if _, err := p.filterLocked(context.Background(), []jira.Issue{{Key: "PROJ-123"}}); err != nil {
+		t.Fatalf("filterLocked() error: %v", err)
+	}
+
+	raw, ok := mc.properties["PROJ-123"][propKey]
+	if !ok {
+		t.Fatal("expected fresh lock to survive stale-lock cleanup, but property was deleted")
+	}
+	var current LockValue
+	if err := json.Unmarshal(raw, &current); err != nil {
+		t.Fatalf("unmarshal current lock: %v", err)
+	}
+	if current.ID != freshLock.ID {
+		t.Errorf("expected surviving lock ID %q, got %q", freshLock.ID, current.ID)
 	}
 }
 
