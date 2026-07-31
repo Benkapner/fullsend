@@ -29,6 +29,7 @@ type mockClient struct {
 
 	searchResult []jira.Issue
 	searchErr    error
+	lastQuery    string
 
 	issues   map[string]*jira.Issue
 	issueErr map[string]error
@@ -69,7 +70,8 @@ func newMockClient() *mockClient {
 	}
 }
 
-func (m *mockClient) SearchIssues(_ context.Context, _ string) ([]jira.Issue, error) {
+func (m *mockClient) SearchIssues(_ context.Context, jql string) ([]jira.Issue, error) {
+	m.lastQuery = jql
 	if m.searchErr != nil {
 		return nil, m.searchErr
 	}
@@ -608,6 +610,23 @@ func TestFilterLockedStaleCleanupPreservesConcurrentFreshLock(t *testing.T) {
 	}
 	if current.ID != freshLock.ID {
 		t.Errorf("expected surviving lock ID %q, got %q", freshLock.ID, current.ID)
+	}
+}
+
+// TestSearchCandidatesQuotesProjectKey checks that the default JQL quotes
+// the project key rather than interpolating it bare, as defense in depth
+// against JQL injection even though the key is already validated upstream.
+func TestSearchCandidatesQuotesProjectKey(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ"})
+
+	if _, err := p.searchCandidates(context.Background()); err != nil {
+		t.Fatalf("searchCandidates() error: %v", err)
+	}
+
+	want := `project = "PROJ" AND status != Done ORDER BY updated DESC`
+	if mc.lastQuery != want {
+		t.Errorf("JQL = %q, want %q", mc.lastQuery, want)
 	}
 }
 

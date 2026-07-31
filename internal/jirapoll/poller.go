@@ -117,7 +117,7 @@ func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 		if !validProjectKey.MatchString(p.opts.JiraProject) {
 			return nil, fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
 		}
-		jql = fmt.Sprintf("project = %s AND status != Done ORDER BY updated DESC", p.opts.JiraProject)
+		jql = fmt.Sprintf("project = %q AND status != Done ORDER BY updated DESC", p.opts.JiraProject)
 	}
 
 	all, err := p.client.SearchIssues(ctx, jql)
