@@ -19,6 +19,10 @@ Date: 2026-06-16
 
 Accepted
 
+*Clarified by [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md), which
+decides when a knob should be an `{AGENT}_` env var at all versus a
+`config.yaml` field.*
+
 ## Context
 
 Agents need behavioral knobs — settings that tune *how* they work without
@@ -40,11 +44,6 @@ This ADR covers only **agent configuration** env vars — behavioral knobs that
 tune agent behavior. It does not retroactively rename existing context vars
 (event data like `GITHUB_PR_URL`, `ISSUE_NUMBER`) or infrastructure vars
 (tokens, paths, credentials). Those remain as they are.
-
-This ADR covers naming and delivery once a knob is known to be
-agent-specific. For the rule on whether a new knob should be an
-`{AGENT}_` env var at all versus a `config.yaml` field, see
-[ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md).
 
 ## Decision
 
