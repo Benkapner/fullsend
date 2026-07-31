@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -786,4 +789,172 @@ func TestSearchIssues_SinglePage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, issues, 1)
 	assert.Equal(t, "TEST-1", issues[0].Key)
+}
+
+// ---------------------------------------------------------------------------
+// NewOAuth2 / New base URL edge cases
+// ---------------------------------------------------------------------------
+
+func TestNewOAuth2_NoBaseURL(t *testing.T) {
+	t.Parallel()
+	_, err := NewOAuth2("id", "secret")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base URL must be set")
+}
+
+func TestNewOAuth2_InsecureBaseURL(t *testing.T) {
+	t.Parallel()
+	_, err := NewOAuth2("id", "secret", WithBaseURL("http://jira.example.com"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "insecure scheme")
+}
+
+func TestBaseURLValidation_ParseError(t *testing.T) {
+	t.Parallel()
+	_, err := New("token", WithBaseURL("http://exa mple.com"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid base URL")
+}
+
+// ---------------------------------------------------------------------------
+// WithHTTPClient
+// ---------------------------------------------------------------------------
+
+func TestWithHTTPClient_UpdatesOAuth2Client(t *testing.T) {
+	t.Parallel()
+	custom := &http.Client{Timeout: 5 * time.Second}
+	c, err := NewOAuth2("id", "secret", WithBaseURL("https://example.atlassian.net"), WithHTTPClient(custom))
+	require.NoError(t, err)
+	assert.Same(t, custom, c.httpClient)
+	assert.Same(t, custom, c.oauth2.httpClient)
+}
+
+func TestWithHTTPClient_NoOAuth2IsNoOp(t *testing.T) {
+	t.Parallel()
+	custom := &http.Client{Timeout: 5 * time.Second}
+	c, err := New("token", WithBaseURL("https://example.atlassian.net"), WithHTTPClient(custom))
+	require.NoError(t, err)
+	assert.Same(t, custom, c.httpClient)
+	assert.Nil(t, c.oauth2)
+}
+
+// ---------------------------------------------------------------------------
+// Retry helpers
+// ---------------------------------------------------------------------------
+
+func TestIsTransientError(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isTransientError(io.EOF))
+	assert.True(t, isTransientError(io.ErrUnexpectedEOF))
+	assert.True(t, isTransientError(&net.DNSError{Err: "timeout", IsTimeout: true}))
+	assert.False(t, isTransientError(errors.New("boom")))
+}
+
+func TestIsIdempotent(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isIdempotent(http.MethodGet))
+	assert.True(t, isIdempotent(http.MethodHead))
+	assert.True(t, isIdempotent(http.MethodPut))
+	assert.True(t, isIdempotent(http.MethodDelete))
+	assert.False(t, isIdempotent(http.MethodPost))
+	assert.False(t, isIdempotent(http.MethodPatch))
+}
+
+func TestIsRetryable(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		status int
+		method string
+		want   bool
+	}{
+		{"429 GET", http.StatusTooManyRequests, http.MethodGet, true},
+		{"429 POST", http.StatusTooManyRequests, http.MethodPost, true},
+		{"500 GET", http.StatusInternalServerError, http.MethodGet, true},
+		{"503 PUT", http.StatusServiceUnavailable, http.MethodPut, true},
+		{"500 POST", http.StatusInternalServerError, http.MethodPost, false},
+		{"404 GET", http.StatusNotFound, http.MethodGet, false},
+		{"505 GET", http.StatusHTTPVersionNotSupported, http.MethodGet, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: tc.status}
+			assert.Equal(t, tc.want, isRetryable(resp, tc.method))
+		})
+	}
+}
+
+func TestRetryDelay_RetryAfterHeader(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{Header: http.Header{"Retry-After": []string{"2"}}}
+	assert.Equal(t, 2*time.Second, retryDelay(resp, 0))
+}
+
+func TestRetryDelay_RetryAfterCapped(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{Header: http.Header{"Retry-After": []string{"9999"}}}
+	assert.Equal(t, 300*time.Second, retryDelay(resp, 0))
+}
+
+func TestRetryDelay_InvalidRetryAfterFallsBackToExponential(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{Header: http.Header{"Retry-After": []string{"not-a-number"}}}
+	d := retryDelay(resp, 0)
+	assert.GreaterOrEqual(t, d, time.Duration(0))
+	assert.Less(t, d, 2*time.Second)
+}
+
+func TestRetryDelay_NoResponseExponentialBackoff(t *testing.T) {
+	t.Parallel()
+	d := retryDelay(nil, 2)
+	assert.GreaterOrEqual(t, d, 2*time.Second)
+	assert.Less(t, d, 4*time.Second)
+}
+
+// ---------------------------------------------------------------------------
+// do() edge cases
+// ---------------------------------------------------------------------------
+
+func TestDo_ReadBodyError(t *testing.T) {
+	t.Parallel()
+	client, _ := setupTest(t)
+	err := client.do(context.Background(), http.MethodPost, "/x", iotest.ErrReader(errors.New("boom")), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read request body")
+}
+
+// flakyTransport fails the first failN round trips with a transient network
+// error before delegating to inner.
+type flakyTransport struct {
+	calls int
+	failN int
+	inner http.RoundTripper
+}
+
+func (t *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.calls++
+	if t.calls <= t.failN {
+		return nil, &net.DNSError{Err: "flaky", IsTimeout: true}
+	}
+	return t.inner.RoundTrip(req)
+}
+
+func TestDo_RetriesOnTransientNetworkError(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, User{AccountID: "42"})
+	})
+
+	transport := &flakyTransport{failN: 1, inner: http.DefaultTransport}
+	client, err := New("test-token", WithBaseURL(srv.URL), WithHTTPClient(&http.Client{Transport: transport}))
+	require.NoError(t, err)
+
+	user, err := client.GetMyself(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "42", user.AccountID)
+	assert.Equal(t, 2, transport.calls)
 }

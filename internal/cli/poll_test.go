@@ -9,6 +9,21 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 )
 
+// clearPollEnv clears every environment variable that newPollCmd/runJiraPoll
+// fall back on, so tests are deterministic regardless of the ambient
+// environment (or leakage from other tests via t.Setenv).
+func clearPollEnv(t *testing.T) {
+	t.Helper()
+	for _, v := range []string{
+		"FULLSEND_FORGE_TOKEN", "CI_PROJECT_PATH", "FULLSEND_POLL_MODE",
+		"CI_COMMIT_REF_NAME", "CI_DEFAULT_BRANCH", "CI_JOB_URL",
+		"JIRA_BASE_URL", "GITHUB_REPOSITORY", "JIRA_AUTH_METHOD",
+		"JIRA_TOKEN", "JIRA_USER_EMAIL", "JIRA_CLIENT_ID", "JIRA_CLIENT_SECRET",
+	} {
+		t.Setenv(v, "")
+	}
+}
+
 func TestBuildRouter_NoConfigFile(t *testing.T) {
 	router, err := buildRouter(t.TempDir())
 	if err != nil {
@@ -176,5 +191,122 @@ func TestValidateJiraPollArgs(t *testing.T) {
 				t.Errorf("expected error containing %q, got: %v", tc.wantErrContain, err)
 			}
 		})
+	}
+}
+
+// --- newPollCmd RunE wiring ---
+
+func TestPollCmd_NoForgeOrDriver(t *testing.T) {
+	clearPollEnv(t)
+	cmd := newPollCmd()
+	cmd.SetArgs([]string{"--fullsend-dir", t.TempDir()})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "poll command supports") {
+		t.Fatalf("expected 'poll command supports' error, got: %v", err)
+	}
+}
+
+func TestPollCmd_GitLabMissingToken(t *testing.T) {
+	clearPollEnv(t)
+	cmd := newPollCmd()
+	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "FULLSEND_FORGE_TOKEN") {
+		t.Fatalf("expected FULLSEND_FORGE_TOKEN error, got: %v", err)
+	}
+}
+
+func TestPollCmd_GitLabMissingProject(t *testing.T) {
+	clearPollEnv(t)
+	t.Setenv("FULLSEND_FORGE_TOKEN", "tok")
+	cmd := newPollCmd()
+	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--project or CI_PROJECT_PATH") {
+		t.Fatalf("expected project-path error, got: %v", err)
+	}
+}
+
+func TestPollCmd_JiraPollInvalidArgs(t *testing.T) {
+	clearPollEnv(t)
+	cmd := newPollCmd()
+	cmd.SetArgs([]string{"--input-driver", "jira-poll", "--fullsend-dir", t.TempDir()})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "jira-url") {
+		t.Fatalf("expected jira-url validation error, got: %v", err)
+	}
+}
+
+func TestPollCmd_JiraPollMissingToken(t *testing.T) {
+	clearPollEnv(t)
+	cmd := newPollCmd()
+	cmd.SetArgs([]string{
+		"--input-driver", "jira-poll",
+		"--jira-url", "https://acme.atlassian.net",
+		"--jira-project", "PROJ",
+		"--target-repo", "acme/widget",
+		"--fullsend-dir", t.TempDir(),
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "create Jira client") {
+		t.Fatalf("expected 'create Jira client' error, got: %v", err)
+	}
+}
+
+// --- buildJiraClient ---
+
+func TestBuildJiraClient_MissingToken(t *testing.T) {
+	clearPollEnv(t)
+	_, err := buildJiraClient("https://acme.atlassian.net")
+	if err == nil || !strings.Contains(err.Error(), "JIRA_TOKEN") {
+		t.Fatalf("expected JIRA_TOKEN error, got: %v", err)
+	}
+}
+
+func TestBuildJiraClient_WithToken(t *testing.T) {
+	clearPollEnv(t)
+	t.Setenv("JIRA_TOKEN", "tok")
+	c, err := buildJiraClient("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestBuildJiraClient_WithTokenAndEmail(t *testing.T) {
+	clearPollEnv(t)
+	t.Setenv("JIRA_TOKEN", "tok")
+	t.Setenv("JIRA_USER_EMAIL", "bot@acme.com")
+	c, err := buildJiraClient("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestBuildJiraClient_OAuth2MissingCredentials(t *testing.T) {
+	clearPollEnv(t)
+	t.Setenv("JIRA_AUTH_METHOD", "oauth2")
+	_, err := buildJiraClient("https://acme.atlassian.net")
+	if err == nil || !strings.Contains(err.Error(), "JIRA_CLIENT_ID and JIRA_CLIENT_SECRET") {
+		t.Fatalf("expected oauth2 credentials error, got: %v", err)
+	}
+}
+
+func TestBuildJiraClient_OAuth2Success(t *testing.T) {
+	clearPollEnv(t)
+	t.Setenv("JIRA_AUTH_METHOD", "oauth2")
+	t.Setenv("JIRA_CLIENT_ID", "id")
+	t.Setenv("JIRA_CLIENT_SECRET", "secret")
+	c, err := buildJiraClient("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil client")
 	}
 }
