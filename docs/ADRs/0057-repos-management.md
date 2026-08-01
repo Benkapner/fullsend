@@ -123,13 +123,23 @@ and implementation details are in the
 - [Implementation plan: repos init](../plans/repos-init.md)
 - [PR #5713](https://github.com/fullsend-ai/fullsend/pull/5713) — added forge URL fields (`forge.github.url`, `forge.gitlab.url`) to the manifest schema and `--forge-url` flag to `repos init`; `forge.gitlab.url` is required (breaking change)
 
+> **Note:** [ADR 0074](0074-repos-command-consolidation.md) consolidates
+> the subcommands defined above into four commands (`init`, `install`,
+> `status`, `uninstall`).
+
 ## Implementation status
 
 Implemented subcommands:
 
 - `repos init` — PR #3033
-- `repos install` — PR #3033
+- `repos install` — PR #3033, consolidated into convergence operator in PR #5807
 - `repos status` — PR #3031
-- `repos add`, `repos remove`, `repos uninstall` — PR #4081
-- `repos upgrade` — PR #4080
-- `repos diff`, `repos sync` — PR #4079
+- `repos uninstall` — PR #4081, expanded with `--manifest-only` and `--uninstall-only` in PR #5807
+
+Consolidated in PR #5807 (absorbed into `repos install` and `repos uninstall`):
+
+- `repos add` (PR #4081) → `repos install` with positional args and `--forge`
+- `repos remove` (PR #4081) → `repos uninstall` with `--manifest-only`
+- `repos diff` (PR #4079) → `repos install --dry-run`
+- `repos sync` (PR #4079) → `repos install` convergence phase
+- `repos upgrade` (PR #4080) → `repos install` convergence phase

@@ -51,62 +51,31 @@ fullsend
 │   │   ├── --fullsend-ref <ref>             #   Pin the fullsend workflow ref (e.g. v0.42.0)
 │   │   ├── --force                          #   Overwrite output file if it exists
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── install      [repos...]              # Install fullsend on uninstalled manifest repos
+│   ├── install      [repos...]              # Converge repos to desired state (provision, sync, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
-│   │   └── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
-│   ├── add          <repos...>              # Add repo entries to manifest
-│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
-│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --install                        #   Also install fullsend on the added repos
-│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   ├── --roles <list>                   #   Agent roles to install (used with --install)
+│   │   ├── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
+│   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
 │   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
-│   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
-│   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
-│   │   └── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
-│   ├── remove       <repos...>              # Remove repo entries from manifest
-│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --uninstall                      #   Tear down fullsend before removing
-│   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   ├── uninstall    <repos...>              # Tear down fullsend from repos
+│   │   └── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --manifest-only                  #   Remove from manifest without tearing down
+│   │   └── --uninstall-only                 #   Tear down without removing from manifest
 │   ├── status                               # Compare manifest against actual repo state
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── diff                                 # Show configuration drift between manifest and actual state
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
-│   │   ├── --json                           #   Emit JSON output instead of table
-│   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
-│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── sync                                 # Reconcile configuration drift for installed repos
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
-│   │   ├── --dry-run                        #   Preview changes without applying them
-│   │   ├── --json                           #   Emit JSON output instead of table
-│   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   ├── upgrade        [repos...]            # Upgrade scaffold shim ref across repos
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
-│   │   ├── --ref <version>                  #   Override manifest fullsend_ref for all repos
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --force                          #   Upgrade even if current ref is newer
-│   │   ├── --direct                         #   Push directly to default branch (skip PR)
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents

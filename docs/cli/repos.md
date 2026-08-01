@@ -19,14 +19,9 @@ These flags are inherited by all `repos` subcommands:
 | Command | Description |
 |---------|-------------|
 | `fullsend repos init <org\|owner/repo>` | Generate a repos.yaml manifest by discovering existing installations |
-| `fullsend repos install [repos...]` | Install fullsend on uninstalled manifest repos |
-| `fullsend repos add <repos...>` | Add repo entries to a repos.yaml manifest |
-| `fullsend repos remove <repos...>` | Remove repo entries from a repos.yaml manifest |
-| `fullsend repos uninstall <repos...>` | Tear down fullsend from specific repos |
+| `fullsend repos install [repos...]` | Converge repos to the desired state defined in a manifest |
+| `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | `fullsend repos status` | Compare manifest against actual repo state |
-| `fullsend repos diff` | Show configuration drift between manifest and actual state |
-| `fullsend repos sync` | Reconcile configuration drift for installed repos |
-| `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across repos |
 
 ## `repos init`
 
@@ -78,12 +73,13 @@ For org targets, one of `--all` or `--repos` is required:
 
 ## `repos install`
 
-Install fullsend on repos defined in a manifest that are not yet installed.
+Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, syncing variable drift, and upgrading scaffold refs.
 
-Runs in two phases:
+Runs in three phases:
 
-1. **Parallel discovery** — check which repos are already installed by verifying the guard variable and all installation components (workflow file, variables, and secrets). Repos with a guard variable set but other components missing are flagged for partial-installation repair.
-2. **Parallel scaffold** — commit scaffold files and write variables/secrets
+1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (requires `--forge`). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`) are written to the manifest entry.
+2. **Provision** — repos in the manifest that are not yet provisioned are installed (scaffold files, variables, secrets). Repos with a guard variable set but other components missing are repaired automatically.
+3. **Convergence** — repos that are already installed are checked for variable drift (synced automatically) and scaffold ref drift (upgraded automatically).
 
 > **Note:** GCP infrastructure (WIF pools/providers, mint registration) must be
 > provisioned separately via `inference provision` and `mint enroll` before
@@ -93,32 +89,36 @@ Runs in two phases:
 > (GCP project ID) is also required for GitHub repos and is written as the
 > `FULLSEND_GCP_PROJECT_ID` repo secret.
 
-If a previous install was interrupted (guard variable set but other components missing), the command detects the partial state and repairs it automatically.
-
 ```bash
 fullsend repos install -f repos.yaml
 fullsend repos install --dry-run
 fullsend repos install acme/api acme/web
 fullsend repos install "acme/*" --direct --concurrency 8
+fullsend repos install acme/new-repo --forge github --direct
 ```
 
-When repos are specified as positional arguments, only those repos are installed. Glob patterns (e.g. `acme/*`) are matched against manifest entries. When no repos are specified, all manifest repos are installed.
+When repos are specified as positional arguments, only those repos are processed. Glob patterns (e.g. `acme/*`) are matched against manifest entries. When no repos are specified, all manifest repos are converged.
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
-| `--dry-run` | `false` | Preview what would be installed without making changes |
+| `--dry-run` | `false` | Preview what would change without making modifications |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
 | `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub repos) |
 | `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub repos) |
+| `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; falls back to `defaults.forge` if set. |
+| `--inference-region` | | Per-repo GCP inference region override |
+| `--fullsend-ref` | | Per-repo fullsend workflow ref override |
+| `--mint-url` | | Per-repo mint URL override |
+| `--allowed-remote-resources` | | Per-repo allowed remote resources override |
 
 ### Common workflows
 
-Install all repos from a manifest:
+Converge all repos from a manifest (provision new, sync drift, upgrade refs):
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -128,6 +128,12 @@ Preview changes without modifying infrastructure:
 
 ```bash
 fullsend repos install -f repos.yaml --dry-run
+```
+
+Add a new repo to the manifest and install it:
+
+```bash
+fullsend repos install acme/new-repo --forge github --direct
 ```
 
 Install specific repos:
@@ -175,145 +181,9 @@ The command returns a non-zero exit code when any repo has drift, is not install
 
 Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass `--gitlab-token` to the `repos` command group.
 
-## `repos diff`
-
-Show configuration drift between the `repos.yaml` manifest and actual forge state. Only examines repos that are already installed (guard variable is `"true"`).
-
-```bash
-fullsend repos diff
-fullsend repos diff -f path/to/repos.yaml
-fullsend repos diff --repo owner/repo1 --repo owner/repo2
-fullsend repos diff --json
-```
-
-### Flags
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
-| `--json` | | `false` | Emit JSON output instead of table |
-| `--repo` | | | Filter to specific repos (repeatable) |
-| `--concurrency` | | `8` | Max parallel API calls |
-
-### JSON output
-
-With `--json`, returns a `DiffResult` object:
-
-```json
-{
-  "changes": [
-    {"owner": "acme", "repo": "api", "field": "FULLSEND_MINT_URL", "type": "variable", "action": "update", "old_value": "...", "new_value": "..."}
-  ],
-  "warnings": ["acme/web: not installed (guard variable missing) — run `repos install`"]
-}
-```
-
-### Exit codes
-
-Returns a non-zero exit code when drift exists (variables differ from manifest or secrets are missing). This makes it suitable for CI drift checks.
-
-## `repos sync`
-
-Reconcile configuration drift for installed repos by writing variables to match the manifest's desired state. Variables are only written when drift is detected. Secrets are written once at install time and are not managed by sync.
-
-```bash
-fullsend repos sync
-fullsend repos sync -f repos.yaml --dry-run
-fullsend repos sync --repo acme/api --repo acme/web
-fullsend repos sync --json
-```
-
-### Flags
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
-| `--dry-run` | | `false` | Preview changes without applying them |
-| `--json` | | `false` | Emit JSON output instead of table |
-| `--repo` | | | Filter to specific repos (repeatable) |
-| `--concurrency` | | `4` | Max parallel operations (1-32) |
-
-### JSON output
-
-With `--json`, the output schema depends on mode:
-
-- **`sync --dry-run --json`** — returns a `DiffResult` (same schema as `repos diff --json`)
-- **`sync --json`** — returns a `SyncResult`:
-
-```json
-{
-  "applied": [
-    {"owner": "acme", "repo": "api", "field": "FULLSEND_MINT_URL", "type": "variable", "action": "update", "old_value": "...", "new_value": "..."}
-  ],
-  "failed": 0,
-  "warnings": []
-}
-```
-
-### Scope
-
-Sync reconciles variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`). Secrets are written once at install time and are not managed by sync. Sync does **not** touch scaffold shim version (`@ref`) or harness files — use `repos upgrade` for those.
-
-## `repos add`
-
-Add one or more repo entries to the `repos.yaml` manifest file, editing it in place. Use `--install` to also install fullsend on the added repos after updating the manifest.
-
-```bash
-fullsend repos add acme/new-api acme/new-web --forge github
-fullsend repos add acme/new-api --forge github --install --direct
-fullsend repos add acme/new-api --forge github --dry-run
-```
-
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml manifest |
-| `--forge` | **(required)** | Forge type for added repos (`github` or `gitlab`). If it matches `defaults.forge`, the per-entry forge field is omitted from the YAML. If it differs, the per-entry override is written. |
-| `--dry-run` | `false` | Preview what would be added without making changes |
-| `--install` | `false` | Also install fullsend on the added repos |
-| `--concurrency` | `4` | Max parallel operations (1-32, used with `--install`) |
-| `--direct` | `false` | Push scaffold directly to default branch (used with `--install`) |
-| `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install (used with `--install`) |
-| `--inference-region` | | Per-repo GCP inference region override |
-| `--fullsend-ref` | | Per-repo fullsend workflow ref override |
-| `--mint-url` | | Per-repo mint URL override |
-| `--allowed-remote-resources` | | Per-repo allowed remote resources override |
-| `--inference-project` | | GCP project ID for inference (install-time only, used with `--install`) |
-| `--inference-project-number` | | Numeric GCP project number for WIF (install-time only, used with `--install`) |
-
-Duplicate entries are silently skipped. Glob patterns (e.g. `acme/*`) are allowed as manifest entries.
-
-> **Note:** With `--install`, the manifest is updated before installation begins.
-> If installation fails for some repos, those entries remain in the manifest as
-> desired state. Run `fullsend repos status` to identify repos that need
-> re-installation, then `fullsend repos install <repo>` to retry.
-
-## `repos remove`
-
-Remove one or more repo entries from the `repos.yaml` manifest file, editing it in place. When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
-
-Use `--uninstall` to tear down fullsend from the repos before removing them from the manifest (deletes workflow, variables, and secrets). GCP WIF cleanup is handled separately via `inference deprovision`.
-
-```bash
-fullsend repos remove acme/old-api
-fullsend repos remove "acme/*" --yes
-fullsend repos remove acme/old-api --uninstall
-```
-
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml manifest |
-| `--dry-run` | `false` | Preview what would be removed without making changes |
-| `--uninstall` | `false` | Tear down fullsend from repos before removing from manifest |
-| `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
-| `--concurrency` | `4` | Max parallel operations (1-32, used with `--uninstall`) |
-
 ## `repos uninstall`
 
-Tear down fullsend from the specified repos by deleting workflow files, variables, and secrets. Does **not** modify `repos.yaml` — use `repos remove` for that.
+Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (deleting workflow files, variables, and secrets), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
 GCP WIF cleanup is handled separately via `inference deprovision`.
 
@@ -323,7 +193,21 @@ When multiple repos are targeted (via globs or explicit bulk lists), the command
 fullsend repos uninstall acme/old-api
 fullsend repos uninstall "acme/*" --yes
 fullsend repos uninstall acme/old-api --dry-run
+fullsend repos uninstall acme/old-api --manifest-only
+fullsend repos uninstall acme/old-api --uninstall-only
 ```
+
+### Modes
+
+| Flag | Teardown | Manifest removal |
+|------|----------|------------------|
+| *(default)* | Yes | Yes (only if teardown succeeds) |
+| `--manifest-only` | No | Yes |
+| `--uninstall-only` | Yes | No |
+
+- **Default:** tear down + remove from manifest. Only repos whose teardown succeeds are removed from the manifest.
+- **`--manifest-only`:** remove the manifest entry without tearing down the installation. Use when the repo is already deleted/transferred or was never successfully installed.
+- **`--uninstall-only`:** tear down the installation but keep the manifest entry. Use for temporary teardown with intent to reinstall later.
 
 ### Flags
 
@@ -333,40 +217,8 @@ fullsend repos uninstall acme/old-api --dry-run
 | `--dry-run` | `false` | Preview what would be uninstalled without making changes |
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
-
-## `repos upgrade`
-
-Upgrades the fullsend scaffold workflow ref for repos defined in a `repos.yaml` manifest. Reads each repo's current workflow file, compares against the manifest's `fullsend_ref` (or `--ref` override), and commits the updated workflow.
-
-Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are blocked unless `--force` is set.
-
-```bash
-fullsend repos upgrade -f repos.yaml
-fullsend repos upgrade --dry-run
-fullsend repos upgrade acme/api acme/web
-fullsend repos upgrade --ref v2.4.0
-```
-
-### Flags
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
-| `--ref` | | | Override manifest `fullsend_ref` for all repos |
-| `--dry-run` | | `false` | Preview what would be upgraded without making changes |
-| `--force` | | `false` | Upgrade even if current ref is newer than target |
-| `--concurrency` | | `4` | Max parallel operations (1-32) |
-| `--direct` | | `false` | Push scaffold directly to default branch (skip PR) |
-
-### Positional arguments
-
-When repos are specified as positional arguments, only those repos are upgraded. Supports exact `owner/repo` names and glob patterns (e.g. `acme/*`), matched via `filepath.Match` against manifest entries. When no repos are specified, all manifest repos are upgraded.
-
-### SHA pinning
-
-When a repo's workflow currently uses SHA pinning (e.g. `@abc123 # v1.9.0`), `repos upgrade` resolves the target tag to its commit SHA via the forge API and writes `@<sha> # <tag>`, preserving the SHA-pinning convention. Tag-only repos remain tag-only (`@<tag>`).
-
-If tag-to-SHA resolution fails (e.g. the tag does not exist or the API is unreachable), the upgrade fails for that repo rather than falling back to tag-only format.
+| `--manifest-only` | `false` | Remove from manifest without tearing down |
+| `--uninstall-only` | `false` | Tear down without removing from manifest |
 
 ## See also
 

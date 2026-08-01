@@ -11,6 +11,12 @@ builds the foundation: extracting reusable install logic, the manifest
 parser, a new forge method, and read-only status. Phase 2 (PRs 5–8)
 adds write operations: bulk install, sync/diff, upgrade, add/remove/uninstall.
 
+> **Consolidation (PR #5807):** The 9-command surface area was
+> consolidated to 4 commands (`init`, `install`, `uninstall`, `status`).
+> `repos install` became a convergence operator (provision + sync + upgrade).
+> `repos uninstall` gained `--manifest-only` and `--uninstall-only` flags.
+> See [repos-command-consolidation.md](repos-command-consolidation.md).
+
 ---
 
 ## Design

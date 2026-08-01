@@ -129,41 +129,35 @@ number of parallel API calls or operations. Defaults vary by command
 (typically 4 for write operations, 8 for read-only operations). See the
 [CLI reference](../../cli/repos.md) for per-command defaults and limits.
 
-### Installing repos
+### Installing and converging repos
 
-Install fullsend on repos defined in the manifest that are not yet
-installed:
+Install and converge repos defined in the manifest:
 
 ```bash
 fullsend repos install -f repos.yaml
 ```
 
-Install runs in two phases:
+Install runs in three phases:
 
-1. **Parallel discovery** — check which repos are already installed by
-   verifying the guard variable and all installation components
-   (workflow file, variables, and secrets). Repos with a guard
-   variable set but other components missing are flagged for
-   partial-installation repair (see below).
-2. **Parallel scaffold** — commit scaffold files and write
-   variables/secrets
+1. **Manifest add** — repos specified as positional arguments that are
+   not already in the manifest are added (requires `--forge`).
+2. **Provision** — repos not yet provisioned get scaffold files,
+   variables, and secrets. Partially-installed repos are repaired
+   automatically.
+3. **Convergence** — repos already installed are checked for variable
+   drift (synced automatically) and scaffold ref drift (upgraded
+   automatically).
 
 > **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
 > enrollment) must be provisioned separately before running install.
 > See `fullsend inference provision` and `fullsend mint enroll`.
-
-> **Partial installation repair:** If a previous install was interrupted
-> (guard variable set but workflow, variables, or secrets missing),
-> `repos install` detects the incomplete state and repairs it
-> automatically. No manual cleanup is needed — re-running install
-> resumes where the previous run left off.
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
 > PR from the fork. To avoid fork-based delivery, ensure you have write
 > (or admin) access to the target repositories before running install.
 
-Preview what would be installed without making changes:
+Preview what would change without making modifications:
 
 ```bash
 fullsend repos install -f repos.yaml --dry-run
@@ -208,104 +202,96 @@ Use `--json` for machine-readable output:
 fullsend repos status -f repos.yaml --json
 ```
 
-### Detecting configuration drift
+### Detecting and reconciling configuration drift
 
-Show configuration differences between the manifest and actual forge
-state:
-
-```bash
-fullsend repos diff -f repos.yaml
-```
-
-The `diff` command checks **variables only** — it
-compares `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` variables against
-the manifest. Secrets (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`)
-are write-once at install time and are not managed by diff/sync. Diff does
-not check the scaffold workflow ref (`@ref`). To detect ref drift, use
-`repos status` (which includes the ref in its output) or run
-`repos upgrade --dry-run` to preview which repos would be upgraded.
-
-Use `--json` for machine-readable output:
+Run `repos install` to detect and fix variable drift and scaffold ref
+drift across all manifest repos:
 
 ```bash
-fullsend repos diff --json
+fullsend repos install -f repos.yaml
 ```
 
-Returns a non-zero exit code when drift exists.
-
-### Reconciling drift
-
-Apply manifest values to repos where drift was detected:
+Preview what would change without modifying anything:
 
 ```bash
-fullsend repos sync -f repos.yaml
+fullsend repos install -f repos.yaml --dry-run
 ```
 
-Preview changes first:
+The convergence phase checks variables (`FULLSEND_MINT_URL`,
+`FULLSEND_GCP_REGION`) and scaffold workflow refs against the manifest.
+Variables are synced automatically; ref updates are committed as PRs
+(or direct pushes with `--direct`). Secrets are write-once at install
+time and are not reconciled.
+
+Use `repos status` for a read-only drift report (no changes applied):
 
 ```bash
-fullsend repos sync --dry-run
+fullsend repos status -f repos.yaml --json
 ```
-
-Use `--json` for machine-readable output:
-
-```bash
-fullsend repos sync -f repos.yaml --json
-```
-
-Sync reconciles variables only. Secrets are written once at install time
-and are not managed by sync. Sync does **not** touch the scaffold shim
-version (`@ref`) — use `repos upgrade` for that.
 
 ### Adding repos
 
-Add repos to the manifest and optionally install them:
+Add a new repo to the manifest and install it in one step:
 
 ```bash
-fullsend repos add acme/new-api acme/new-web --forge github
-fullsend repos add acme/new-api --forge github --install --direct
+fullsend repos install acme/new-api --forge github --direct
+```
+
+Add multiple repos:
+
+```bash
+fullsend repos install acme/new-api acme/new-web --forge github
 ```
 
 Preview what would be added:
 
 ```bash
-fullsend repos add acme/new-api --forge github --dry-run
+fullsend repos install acme/new-api --forge github --dry-run
 ```
 
 Specify which agent roles to install (defaults to
 `triage,coder,review,fix,retro,prioritize`):
 
 ```bash
-fullsend repos add acme/new-api --forge github --install --roles triage,coder,review
+fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
+
+Per-repo overrides can be specified with `--inference-region`,
+`--fullsend-ref`, `--mint-url`, and `--allowed-remote-resources`.
 
 ### Removing repos
 
-Remove repos from the manifest:
+Remove a repo from the manifest and tear down its installation:
 
 ```bash
-fullsend repos remove acme/old-api
+fullsend repos uninstall acme/old-api
 ```
 
 When targeting multiple repos (via globs or bulk lists), the command
 prompts for confirmation:
 
 ```bash
-fullsend repos remove "acme/*"
+fullsend repos uninstall "acme/*"
 ```
 
 In non-interactive environments (CI, piped stdin), pass `--yes` to skip
 the confirmation prompt:
 
 ```bash
-fullsend repos remove "acme/*" --yes
+fullsend repos uninstall "acme/*" --yes
 ```
 
-To also tear down fullsend from the repos (delete workflow, variables,
-and secrets) before removing them from the manifest:
+Remove from manifest only (skip teardown — useful when the repo is
+already deleted):
 
 ```bash
-fullsend repos remove acme/old-api --uninstall
+fullsend repos uninstall acme/old-api --manifest-only
+```
+
+Tear down without removing from manifest (temporary teardown):
+
+```bash
+fullsend repos uninstall acme/old-api --uninstall-only
 ```
 
 ### Rolling out a new fullsend version
@@ -314,10 +300,10 @@ To upgrade the scaffold workflow ref across all manifest repos:
 
 1. Update `forge.github.fullsend_ref` in `repos.yaml` to the new version.
 
-2. Run the upgrade:
+2. Run install to converge:
 
    ```bash
-   fullsend repos upgrade -f repos.yaml
+   fullsend repos install -f repos.yaml
    ```
 
 3. Review and merge the scaffold PRs in each repo.
@@ -325,25 +311,13 @@ To upgrade the scaffold workflow ref across all manifest repos:
 Preview what would change without modifying repos:
 
 ```bash
-fullsend repos upgrade --dry-run
-```
-
-Override the manifest ref for a one-off upgrade:
-
-```bash
-fullsend repos upgrade --ref v2.4.0
-```
-
-Upgrade specific repos:
-
-```bash
-fullsend repos upgrade acme/api acme/web
+fullsend repos install -f repos.yaml --dry-run
 ```
 
 Push the upgrade directly to the default branch instead of creating a PR:
 
 ```bash
-fullsend repos upgrade -f repos.yaml --direct
+fullsend repos install -f repos.yaml --direct
 ```
 
 Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
@@ -413,13 +387,13 @@ fullsend github uninstall "$ORG_NAME" --yolo
 Remove a repo from the manifest and tear down its fullsend installation:
 
 ```bash
-fullsend repos remove acme/old-api --uninstall
+fullsend repos uninstall acme/old-api
 ```
 
-Or tear down without modifying the manifest:
+Tear down without modifying the manifest (temporary teardown):
 
 ```bash
-fullsend repos uninstall acme/old-api
+fullsend repos uninstall acme/old-api --uninstall-only
 ```
 
 When targeting multiple repos, a confirmation prompt appears. In
@@ -436,7 +410,7 @@ infrastructure, coordinate between roles:
 
 | Step | Role | Command |
 |------|------|---------|
-| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup) |
+| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
 | 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
 | 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` |
 
