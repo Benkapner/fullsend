@@ -36,7 +36,7 @@ echo ""
 # Fetch merged PRs by bot authors (paginated)
 BOT_PRS_ERR=$(mktemp)
 if ! BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:${BOT_LOGIN}+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
-  --paginate --jq '.items[] | {number: .number, title: .title, closed_at: .closed_at}' 2>"$BOT_PRS_ERR"); then
+  --paginate --jq '.items[] | {number: .number, title: .title, merged_at: .pull_request.merged_at}' 2>"$BOT_PRS_ERR"); then
   echo "ERROR: could not fetch bot PRs: $(cat "$BOT_PRS_ERR")"
   rm -f "$BOT_PRS_ERR"
   exit 1
@@ -49,6 +49,9 @@ if [ -z "$BOT_PRS" ]; then
 fi
 
 PR_COUNT=$(echo "$BOT_PRS" | jq -s 'length')
+if [ "$PR_COUNT" -ge 1000 ]; then
+  echo "WARNING: GitHub Search API caps results at 1000. Actual count may be higher; consider narrowing the DAYS window."
+fi
 echo "Found ${PR_COUNT} agent PRs to check."
 echo ""
 
@@ -57,12 +60,13 @@ CHECKED=0
 REWORKED=0
 SKIPPED_WINDOW=0
 SKIPPED_ERROR=0
+SKIPPED_NULL_AUTHOR=0
 REWORKED_LINES=()
 
 while IFS= read -r pr_json; do
   PR_NUM=$(echo "$pr_json" | jq -r '.number')
   PR_TITLE=$(echo "$pr_json" | jq -r '.title')
-  MERGED_AT=$(echo "$pr_json" | jq -r '.closed_at')
+  MERGED_AT=$(echo "$pr_json" | jq -r '.merged_at')
   TOTAL=$((TOTAL + 1))
 
   echo "  Checking PR ${TOTAL}/${PR_COUNT} (#${PR_NUM})..."
@@ -113,7 +117,7 @@ while IFS= read -r pr_json; do
   # Get commits after merge by non-bot authors (paginated)
   COMMITS_ERR=$(mktemp)
   if ! FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
-    --paginate --jq '.[] | select(.author != null and .author.type != "Bot") | {sha: .sha, author: (.author.login // "unknown"), parents: (.parents | length)}' 2>"$COMMITS_ERR"); then
+    --paginate --jq '.[] | select(.author == null or .author.type != "Bot") | {sha: .sha, author_login: (if .author != null then (.author.login // "unknown") else null end), parents: (.parents | length)}' 2>"$COMMITS_ERR"); then
     echo "    WARNING: could not fetch follow-up commits for #${PR_NUM}: $(cat "$COMMITS_ERR")"
     rm -f "$COMMITS_ERR"
     SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
@@ -131,8 +135,14 @@ while IFS= read -r pr_json; do
   PR_HAD_ERROR=""
   while IFS= read -r commit_json; do
     COMMIT_SHA=$(echo "$commit_json" | jq -r '.sha')
-    COMMIT_AUTHOR=$(echo "$commit_json" | jq -r '.author')
+    COMMIT_AUTHOR=$(echo "$commit_json" | jq -r '.author_login')
     PARENT_COUNT=$(echo "$commit_json" | jq -r '.parents')
+
+    # Skip commits with no linked GitHub identity
+    if [ "$COMMIT_AUTHOR" = "null" ]; then
+      SKIPPED_NULL_AUTHOR=$((SKIPPED_NULL_AUTHOR + 1))
+      continue
+    fi
 
     # Skip merge commits (2+ parents); their files list reflects the full merge, not incremental work
     if [ "$PARENT_COUNT" -gt 1 ]; then
@@ -192,6 +202,9 @@ if [ "$SKIPPED_WINDOW" -gt 0 ]; then
 fi
 if [ "$SKIPPED_ERROR" -gt 0 ]; then
   echo "Skipped (API errors): ${SKIPPED_ERROR}"
+fi
+if [ "$SKIPPED_NULL_AUTHOR" -gt 0 ]; then
+  echo "Follow-up commits with no linked GitHub identity (excluded): ${SKIPPED_NULL_AUTHOR}"
 fi
 
 if [ ${#REWORKED_LINES[@]} -gt 0 ]; then

@@ -114,7 +114,7 @@ run_case() {
 # --- Test 1: Genuine single-parent rework ---
 # Bot PR #10 merged, human commit abc1234 touches the same file -> rework
 cat >"${SEARCH_RESULTS}" <<'EOF'
-{"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z"}]}
+{"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z","pull_request":{"merged_at":"2026-01-01T10:00:00Z"}}]}
 EOF
 cat >"${PR_FILES}" <<'EOF'
 [{"filename":"src/main.go"}]
@@ -172,9 +172,29 @@ EOF
 
 run_case "handles >100 PRs from paginated response" "Found 101 agent PRs"
 
-# --- Test 5: API failure on bot-PR search exits non-zero ---
+# --- Test 5: Null-author commits excluded with accounting ---
+# Follow-up commit has null author -> must not count as rework, must report in output
 cat >"${SEARCH_RESULTS}" <<'EOF'
-{"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z"}]}
+{"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z","pull_request":{"merged_at":"2026-01-01T10:00:00Z"}}]}
+EOF
+cat >"${PR_FILES}" <<'EOF'
+[{"filename":"src/main.go"}]
+EOF
+cat >"${PR_DETAIL}" <<'EOF'
+{"merge_commit_sha":"merge111"}
+EOF
+cat >"${FOLLOWUP_COMMITS}" <<'EOF'
+[{"sha":"null001","author":null,"parents":[{"sha":"p1"}]}]
+EOF
+cat >"${COMMIT_DETAIL}" <<'EOF'
+{"sha":"null001","files":[{"filename":"src/main.go"}]}
+EOF
+
+run_case "null-author commit excluded with accounting" "no linked GitHub identity"
+
+# --- Test 6: API failure on bot-PR search exits non-zero ---
+cat >"${SEARCH_RESULTS}" <<'EOF'
+{"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z","pull_request":{"merged_at":"2026-01-01T10:00:00Z"}}]}
 EOF
 export GH_FAIL="true"
 
