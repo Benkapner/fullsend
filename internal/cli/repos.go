@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -31,14 +30,9 @@ managing fullsend across many repositories and organizations.`,
 	}
 	cmd.PersistentFlags().String("gitlab-token", "", "GitLab personal or project access token (overrides GITLAB_TOKEN env var)")
 	cmd.AddCommand(newReposInitCmd())
-	cmd.AddCommand(newReposAddCmd())
-	cmd.AddCommand(newReposRemoveCmd())
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
-	cmd.AddCommand(newReposDiffCmd())
-	cmd.AddCommand(newReposSyncCmd())
-	cmd.AddCommand(newReposUpgradeCmd())
 	return cmd
 }
 
@@ -323,24 +317,30 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 	}
 }
 
-// reposInstallConfig holds flag values and testing overrides for repos install.
+// reposInstallConfig holds flags and test overrides for repos install.
 type reposInstallConfig struct {
+	// Core flags
 	manifest    string
 	dryRun      bool
 	repoFilter  []string
 	concurrency int
 	roles       []string
 	direct      bool
+	force       bool
 	gitlabToken string
+	forge       string
 
-	// Install-time-only GCP credentials. These are required for GitHub
-	// repos and are used to write repo secrets, but are NOT stored in
-	// the manifest.
+	// GCP credentials (install-time only)
 	inferenceProject       string
 	inferenceProjectNumber string
 
-	// Testing overrides — when non-nil, used instead of resolving from
-	// the environment. Not set by CLI flag parsing.
+	// Per-repo overrides
+	inferenceRegion        string
+	fullsendRef            string
+	mintURL                string
+	allowedRemoteResources []string
+
+	// Test overrides
 	testClient forge.Client
 }
 
@@ -349,16 +349,17 @@ func newReposInstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install [repos...]",
-		Short: "Install fullsend on repos defined in a manifest",
-		Long: `Install fullsend on repos not yet installed, as defined in a repos.yaml manifest.
+		Short: "Converge repos to the desired state defined in a manifest",
+		Long: `Idempotent convergence operator for repos.yaml manifest entries.
 
-When repos are specified as positional arguments, only those repos are installed.
-Glob patterns (e.g. "acme/*") are matched against manifest entries.
-When no repos are specified, all manifest repos are installed.
+For repos not yet in the manifest, adds them (requires --forge). For repos
+not yet provisioned, scaffolds workflow files and writes variables/secrets.
+For already-installed repos, reconciles variable drift and upgrades scaffold
+refs to match the manifest.
 
-Runs in two phases:
-  1. Parallel discovery: check which repos are already installed
-  2. Parallel scaffold: commit scaffold files and write variables/secrets
+When repos are specified as positional arguments, only those repos are
+processed. Glob patterns (e.g. "acme/*") are matched against manifest
+entries. When no repos are specified, all manifest repos are converged.
 
 GCP infrastructure (WIF, mint) must be provisioned separately via
 'inference provision' and 'mint enroll' before running this command.`,
@@ -371,16 +372,18 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	}
 
 	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or URL to repos.yaml manifest")
-	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be installed without making changes")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would change without applying")
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
 	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install")
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
-
-	// Install-time-only GCP credentials. Required for GitHub repos.
-	// These values are written as repo secrets but are NOT stored in
-	// the manifest.
+	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
+	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference (written as FULLSEND_GCP_PROJECT_ID secret)")
 	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number for WIF provider computation")
+	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "per-repo GCP inference region override")
+	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
+	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
+	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 
 	return cmd
 }
@@ -395,6 +398,18 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if opts.inferenceProjectNumber != "" && !repos.IsNumeric(opts.inferenceProjectNumber) {
 		return fmt.Errorf("--inference-project-number must be numeric, got %q", opts.inferenceProjectNumber)
 	}
+	if opts.forge != "" && !repos.IsValidForge(opts.forge) {
+		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
+	}
+	if opts.fullsendRef != "" && !repos.IsValidRef(opts.fullsendRef) {
+		return fmt.Errorf("--fullsend-ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", opts.fullsendRef)
+	}
+	if opts.mintURL != "" {
+		mu, muErr := url.Parse(opts.mintURL)
+		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
+			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
+		}
+	}
 
 	printer := ui.New(os.Stdout)
 
@@ -403,6 +418,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err != nil {
 		return fmt.Errorf("loading manifest: %w", err)
 	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
 	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
 
 	var clients repos.ForgeClientFactory
@@ -410,6 +428,106 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		clients = newSingleClientFactory(opts.testClient)
 	} else {
 		clients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
+	}
+
+	// Phase 0: add repos not yet in the manifest.
+	var newlyAdded []string
+	if len(opts.repoFilter) > 0 {
+		var notInManifest []string
+		for _, r := range opts.repoFilter {
+			if strings.ContainsAny(r, "*?[") {
+				continue
+			}
+			parts := strings.SplitN(r, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			if _, found := manifest.ResolveConfig(parts[0], parts[1]); !found {
+				notInManifest = append(notInManifest, r)
+			}
+		}
+		if len(notInManifest) > 0 {
+			forgeName := opts.forge
+			if forgeName == "" {
+				forgeName = manifest.Defaults.Forge
+			}
+			if forgeName == "" {
+				return fmt.Errorf("--forge is required when adding repos not yet in the manifest")
+			}
+
+			if forgeName != repos.ForgeGitHub {
+				for _, pair := range []struct{ flag, val string }{
+					{"inference-region", opts.inferenceRegion},
+					{"fullsend-ref", opts.fullsendRef},
+					{"mint-url", opts.mintURL},
+				} {
+					if pair.val != "" {
+						printer.StepWarn(fmt.Sprintf("--%s is only used with GitHub repos; ignored for %s", pair.flag, forgeName))
+					}
+				}
+			}
+
+			entries := make([]repos.RepoEntry, len(notInManifest))
+			for i, r := range notInManifest {
+				entry := repos.RepoEntry{Repo: r}
+				if forgeName != manifest.Defaults.Forge {
+					entry.Forge = repos.NullableString{Set: true, Value: forgeName}
+				}
+				if forgeName == repos.ForgeGitHub {
+					if opts.inferenceRegion != "" && opts.inferenceRegion != manifest.Forge.GitHub.InferenceRegion {
+						entry.InferenceRegion = repos.NullableString{Set: true, Value: opts.inferenceRegion}
+					}
+					if opts.fullsendRef != "" && opts.fullsendRef != manifest.Forge.GitHub.FullsendRef {
+						entry.FullsendRef = repos.NullableString{Set: true, Value: opts.fullsendRef}
+					}
+					if opts.mintURL != "" && opts.mintURL != manifest.Forge.GitHub.MintURL {
+						entry.MintURL = repos.NullableString{Set: true, Value: opts.mintURL}
+					}
+				}
+				if len(opts.allowedRemoteResources) > 0 {
+					entry.AllowedRemoteResources = opts.allowedRemoteResources
+				}
+				entries[i] = entry
+			}
+
+			addProgress := func(repo, phase, msg string) {
+				switch phase {
+				case "done", "manifest":
+					printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+				default:
+					printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+				}
+			}
+			addResult, _, addErr := repos.AddToManifest(ctx, repos.ManifestEditConfig{
+				Manifest:     manifest,
+				ManifestPath: opts.manifest,
+				DryRun:       opts.dryRun,
+			}, entries, clients, addProgress)
+			if addErr != nil {
+				return addErr
+			}
+			newlyAdded = addResult.Added
+
+			if opts.dryRun && len(newlyAdded) > 0 {
+				var filtered []string
+				added := make(map[string]bool)
+				for _, a := range newlyAdded {
+					added[strings.ToLower(a)] = true
+				}
+				for _, r := range opts.repoFilter {
+					if !added[strings.ToLower(r)] {
+						filtered = append(filtered, r)
+					}
+				}
+				opts.repoFilter = filtered
+				if len(filtered) == 0 {
+					printer.Blank()
+					printer.StepDone(fmt.Sprintf("Install complete: %d to add, 0 converged, 0 already current, 0 failed",
+						len(newlyAdded)))
+					return nil
+				}
+			}
+		}
 	}
 
 	if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
@@ -439,6 +557,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return commitErr
 	}
 
+	// Phase 1: provision repos not yet installed.
 	cfg := repos.BatchInstallConfig{
 		Manifest:               manifest,
 		DryRun:                 opts.dryRun,
@@ -463,9 +582,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	printer.Blank()
 	if opts.dryRun {
-		printer.StepStart("Dry-run: previewing installation")
+		printer.StepStart("Dry-run: previewing convergence")
 	} else {
-		printer.StepStart("Installing fullsend on manifest repos")
+		printer.StepStart("Converging repos to desired state")
 	}
 
 	result, err := repos.BatchInstall(ctx, cfg, clients, scaffoldCommitFn, progressFn)
@@ -473,365 +592,155 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return err
 	}
 
+	// Phase 2: converge already-installed repos (variable reconciliation + ref upgrade).
+	var alreadyInstalled []repos.InstallResult
+	for _, r := range result.Skipped {
+		if r.AlreadyInstalled {
+			alreadyInstalled = append(alreadyInstalled, r)
+		}
+	}
+
+	var converged, alreadyCurrent int
+	failedRepos := make(map[string]bool)
+	convergedRepos := make(map[string]bool)
+
+	if len(alreadyInstalled) > 0 {
+		printer.Blank()
+		if opts.dryRun {
+			printer.StepStart("Checking installed repos for drift")
+		} else {
+			printer.StepStart("Reconciling installed repos")
+		}
+
+		repoNames := make([]string, len(alreadyInstalled))
+		for i, r := range alreadyInstalled {
+			repoNames[i] = r.Owner + "/" + r.Repo
+		}
+
+		if opts.dryRun {
+			driftResult, driftErr := repos.Diff(ctx, manifest, clients, opts.concurrency, repoNames)
+			if driftErr != nil {
+				return driftErr
+			}
+			if len(driftResult.Changes) > 0 {
+				for _, c := range driftResult.Changes {
+					convergedRepos[c.Owner+"/"+c.Repo] = true
+				}
+				printer.StepInfo(fmt.Sprintf("  %d repos have %d variable changes", len(convergedRepos), len(driftResult.Changes)))
+				converged = len(convergedRepos)
+			}
+		} else {
+			reconcileResult, reconcileErr := repos.Sync(ctx, manifest, clients, opts.concurrency, repoNames, progressFn)
+			if reconcileErr != nil && reconcileResult == nil {
+				return reconcileErr
+			}
+			if reconcileErr != nil && reconcileResult != nil {
+				printer.StepWarn(fmt.Sprintf("Variable reconciliation had errors: %v", reconcileErr))
+			}
+			if reconcileResult != nil {
+				for _, c := range reconcileResult.Applied {
+					convergedRepos[c.Owner+"/"+c.Repo] = true
+				}
+				converged += len(convergedRepos)
+				for _, fr := range reconcileResult.FailedRepos {
+					repoKey := fr.Owner + "/" + fr.Repo
+					failedRepos[repoKey] = true
+					printer.StepInfo(fmt.Sprintf("  FAILED: %s — variable reconciliation failed", repoKey))
+				}
+			}
+		}
+
+		upgradeCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, isDirect bool) error {
+			rc, ok := manifest.ResolveConfigWithGlobs(owner, repo)
+			if !ok {
+				return fmt.Errorf("repo %s/%s not found in manifest", owner, repo)
+			}
+			fc, fcErr := clients.ConfigFor(rc.Forge)
+			if fcErr != nil {
+				return fcErr
+			}
+			targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
+			if repoErr != nil {
+				return fmt.Errorf("getting repo info: %w", repoErr)
+			}
+			commitMsg := "chore: upgrade fullsend scaffold ref"
+			prTitle := "chore: upgrade fullsend scaffold ref"
+			prBody := "This PR upgrades the fullsend scaffold workflow ref.\n\n" +
+				"Merge this PR to activate the updated workflows."
+			_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
+				targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, isDirect, nil)
+			return commitErr
+		}
+
+		upgradeRepoNames := repoNames
+		if len(failedRepos) > 0 {
+			upgradeRepoNames = make([]string, 0, len(repoNames))
+			for _, name := range repoNames {
+				if !failedRepos[name] {
+					upgradeRepoNames = append(upgradeRepoNames, name)
+				}
+			}
+		}
+
+		if len(upgradeRepoNames) > 0 {
+			upgradeCfg := repos.UpgradeConfig{
+				Manifest:       manifest,
+				RepoFilter:     upgradeRepoNames,
+				DryRun:         opts.dryRun,
+				Force:          opts.force,
+				Direct:         opts.direct,
+				MaxConcurrency: opts.concurrency,
+			}
+
+			upgradeResults, upgradeErr := repos.Upgrade(ctx, upgradeCfg, clients, upgradeCommitFn, progressFn)
+			if upgradeErr != nil {
+				return upgradeErr
+			}
+			for _, r := range upgradeResults {
+				repoKey := r.Owner + "/" + r.Repo
+				switch {
+				case r.Error != nil:
+					failedRepos[repoKey] = true
+					printer.StepInfo(fmt.Sprintf("  FAILED: %s — %v", repoKey, r.Error))
+				case r.Upgraded:
+					if !convergedRepos[repoKey] {
+						converged++
+					}
+					convergedRepos[repoKey] = true
+				case r.Skipped:
+					if !convergedRepos[repoKey] {
+						alreadyCurrent++
+					}
+				}
+			}
+		}
+	}
+
 	printer.Blank()
-	printer.StepDone(fmt.Sprintf("Batch install complete: %d installed, %d skipped, %d failed",
-		len(result.Installed), len(result.Skipped), len(result.Failed)))
+	installed := len(result.Installed)
+	failed := len(result.Failed) + len(failedRepos)
 
 	for _, r := range result.Failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 
-	if len(result.Failed) > 0 {
-		return fmt.Errorf("%d repos failed to install", len(result.Failed))
+	printer.StepDone(fmt.Sprintf("Install complete: %d installed, %d converged, %d already current, %d failed",
+		installed, converged, alreadyCurrent, failed))
+
+	if failed > 0 {
+		return fmt.Errorf("%d repos failed during convergence", failed)
 	}
 	return nil
 }
 
-// reposAddConfig holds flag values for repos add.
-type reposAddConfig struct {
-	manifest    string
-	dryRun      bool
-	install     bool
-	concurrency int
-	direct      bool
-	roles       []string
-	forge       string
-	gitlabToken string
-
-	// Per-repo override flags. When set, these override the forge-level
-	// defaults for added repos.
-	inferenceRegion        string
-	fullsendRef            string
-	mintURL                string
-	allowedRemoteResources []string
-
-	// Install-time-only flags (used with --install).
-	inferenceProject       string
-	inferenceProjectNumber string
-
-	testClient forge.Client
-}
-
-func newReposAddCmd() *cobra.Command {
-	opts := &reposAddConfig{}
-
-	cmd := &cobra.Command{
-		Use:   "add <repos...>",
-		Short: "Add repo entries to a repos.yaml manifest",
-		Long: `Add one or more repo entries to the repos.yaml manifest file, editing it
-in place.
-
-Use --install to also install fullsend on the added repos after updating
-the manifest.`,
-		Args: cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposAdd(cmd.Context(), opts, args)
-		},
-	}
-
-	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path to repos.yaml manifest")
-	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be added without making changes")
-	cmd.Flags().BoolVar(&opts.install, "install", false, "also install fullsend on the added repos")
-	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
-	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
-	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install (used with --install)")
-	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for added repos (github or gitlab)")
-	_ = cmd.MarkFlagRequired("forge")
-
-	// Per-repo override flags — stored in manifest when they differ
-	// from the forge-level default.
-	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "per-repo GCP inference region override")
-	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
-	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
-	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
-
-	// Install-time-only flags (used with --install).
-	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference (install-time only, not stored in manifest)")
-	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number for WIF (install-time only, not stored in manifest)")
-
-	return cmd
-}
-
-func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) error {
-	if opts.install && (opts.concurrency < 1 || opts.concurrency > 32) {
-		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
-	}
-
-	if !repos.IsValidForge(opts.forge) {
-		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
-	}
-
-	printer := ui.New(os.Stdout)
-
-	printer.StepStart("Loading manifest")
-	manifest, err := repos.LoadManifest(ctx, opts.manifest)
-	if err != nil {
-		return fmt.Errorf("loading manifest: %w", err)
-	}
-	if err := manifest.Validate(); err != nil {
-		return fmt.Errorf("manifest validation failed: %w", err)
-	}
-	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
-
-	if opts.fullsendRef != "" && !repos.IsValidRef(opts.fullsendRef) {
-		return fmt.Errorf("--fullsend-ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", opts.fullsendRef)
-	}
-
-	if opts.mintURL != "" {
-		mu, muErr := url.Parse(opts.mintURL)
-		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
-			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
-		}
-	}
-
-	var clients repos.ForgeClientFactory
-	if opts.testClient != nil {
-		clients = newSingleClientFactory(opts.testClient)
-	} else {
-		clients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
-	}
-
-	entries := make([]repos.RepoEntry, len(repoArgs))
-	for i, r := range repoArgs {
-		entry := repos.RepoEntry{Repo: r}
-		// Set per-entry forge override only when it differs from the
-		// manifest default — keeps the YAML clean.
-		if opts.forge != manifest.Defaults.Forge {
-			entry.Forge = repos.NullableString{Set: true, Value: opts.forge}
-		}
-		// Set per-repo overrides only when they differ from the
-		// forge-level defaults — keeps the YAML clean. These fields
-		// only apply to GitHub repos.
-		if opts.forge == repos.ForgeGitHub {
-			if opts.inferenceRegion != "" && opts.inferenceRegion != manifest.Forge.GitHub.InferenceRegion {
-				entry.InferenceRegion = repos.NullableString{Set: true, Value: opts.inferenceRegion}
-			}
-			if opts.fullsendRef != "" && opts.fullsendRef != manifest.Forge.GitHub.FullsendRef {
-				entry.FullsendRef = repos.NullableString{Set: true, Value: opts.fullsendRef}
-			}
-			if opts.mintURL != "" && opts.mintURL != manifest.Forge.GitHub.MintURL {
-				entry.MintURL = repos.NullableString{Set: true, Value: opts.mintURL}
-			}
-		}
-		if len(opts.allowedRemoteResources) > 0 {
-			entry.AllowedRemoteResources = opts.allowedRemoteResources
-		}
-		entries[i] = entry
-	}
-
-	progressFn := func(repo, phase, msg string) {
-		switch phase {
-		case "done", "manifest":
-			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
-		default:
-			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
-		}
-	}
-
-	result, _, err := repos.AddToManifest(ctx, repos.ManifestEditConfig{
-		Manifest:     manifest,
-		ManifestPath: opts.manifest,
-		DryRun:       opts.dryRun,
-	}, entries, clients, progressFn)
-	if err != nil {
-		return err
-	}
-
-	printer.Blank()
-	printer.StepDone(fmt.Sprintf("Add complete: %d added, %d skipped", len(result.Added), len(result.Skipped)))
-
-	if opts.install && len(result.Added) > 0 && !opts.dryRun {
-		printer.Blank()
-		printer.StepStart("Installing fullsend on added repos")
-		installOpts := &reposInstallConfig{
-			manifest:               opts.manifest,
-			repoFilter:             result.Added,
-			concurrency:            opts.concurrency,
-			direct:                 opts.direct,
-			roles:                  opts.roles,
-			gitlabToken:            opts.gitlabToken,
-			inferenceProject:       opts.inferenceProject,
-			inferenceProjectNumber: opts.inferenceProjectNumber,
-			testClient:             opts.testClient,
-		}
-		if err := runReposInstall(ctx, installOpts); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// reposRemoveConfig holds flag values for repos remove.
-type reposRemoveConfig struct {
-	manifest    string
-	dryRun      bool
-	uninstall   bool
-	yes         bool
-	concurrency int
-	gitlabToken string
-
-	testClient forge.Client
-}
-
-func newReposRemoveCmd() *cobra.Command {
-	opts := &reposRemoveConfig{}
-
-	cmd := &cobra.Command{
-		Use:   "remove <repos...>",
-		Short: "Remove repo entries from a repos.yaml manifest",
-		Long: `Remove one or more repo entries from the repos.yaml manifest file,
-editing it in place.
-
-Glob patterns (e.g. "acme/*") are matched against manifest entries and
-prompt for confirmation unless --yes is set.
-
-Use --uninstall to tear down fullsend from the repos before removing them
-from the manifest (deletes workflow, variables, and secrets).`,
-		Args: cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposRemove(cmd.Context(), opts, args)
-		},
-	}
-
-	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path to repos.yaml manifest")
-	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be removed without making changes")
-	cmd.Flags().BoolVar(&opts.uninstall, "uninstall", false, "tear down fullsend from repos before removing from manifest")
-	cmd.Flags().BoolVar(&opts.yes, "yes", false, "skip confirmation prompt when multiple repos are targeted")
-	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
-
-	return cmd
-}
-
-func runReposRemove(ctx context.Context, opts *reposRemoveConfig, repoArgs []string) error {
-	if opts.uninstall && (opts.concurrency < 1 || opts.concurrency > 32) {
-		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
-	}
-
-	printer := ui.New(os.Stdout)
-	var uninstallFailed int
-
-	printer.StepStart("Loading manifest")
-	manifest, err := repos.LoadManifest(ctx, opts.manifest)
-	if err != nil {
-		return fmt.Errorf("loading manifest: %w", err)
-	}
-	if err := manifest.Validate(); err != nil {
-		return fmt.Errorf("manifest validation failed: %w", err)
-	}
-	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
-
-	if !opts.yes && !opts.dryRun {
-		action := "remove"
-		if opts.uninstall {
-			action = "remove and uninstall"
-		}
-		if err := confirmBulkAction(printer, action, repoArgs, manifest, os.Stdin); err != nil {
-			return err
-		}
-	}
-
-	if opts.uninstall {
-		matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
-		if matchErr != nil {
-			return matchErr
-		}
-		var concreteRepos []string
-		for _, r := range matched {
-			if strings.ContainsAny(r, "*?[") {
-				printer.StepInfo(fmt.Sprintf("[%s] Skipping glob manifest entry (use concrete repo names to uninstall)", r))
-				continue
-			}
-			concreteRepos = append(concreteRepos, r)
-		}
-		if len(concreteRepos) > 0 {
-			printer.Blank()
-			if opts.dryRun {
-				printer.StepStart("Previewing uninstall for repos")
-			} else {
-				printer.StepStart("Uninstalling fullsend from repos before removing from manifest")
-			}
-
-			var uninstallClients repos.ForgeClientFactory
-			if opts.testClient != nil {
-				uninstallClients = newSingleClientFactory(opts.testClient)
-			} else {
-				uninstallClients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
-			}
-
-			uninstallCfg := repos.UninstallConfig{
-				Manifest:       manifest,
-				Repos:          concreteRepos,
-				DryRun:         opts.dryRun,
-				MaxConcurrency: opts.concurrency,
-			}
-			progressFn := func(repo, phase, msg string) {
-				switch phase {
-				case "done":
-					printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
-				default:
-					printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
-				}
-			}
-			results, uninstallErr := repos.Uninstall(ctx, uninstallCfg, uninstallClients, progressFn)
-			if uninstallErr != nil {
-				return uninstallErr
-			}
-			var succeededRepos []string
-			for _, r := range results {
-				if r.Success {
-					succeededRepos = append(succeededRepos, r.Owner+"/"+r.Repo)
-				} else {
-					uninstallFailed++
-					printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
-				}
-			}
-			if uninstallFailed > 0 {
-				if len(succeededRepos) > 0 {
-					repoArgs = succeededRepos
-				} else {
-					return fmt.Errorf("%d repos failed to uninstall, manifest unchanged", uninstallFailed)
-				}
-			}
-		}
-	}
-
-	progressFn := func(repo, phase, msg string) {
-		switch phase {
-		case "done", "manifest":
-			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
-		default:
-			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
-		}
-	}
-
-	result, _, err := repos.RemoveFromManifest(repos.ManifestEditConfig{
-		Manifest:     manifest,
-		ManifestPath: opts.manifest,
-		DryRun:       opts.dryRun,
-	}, repoArgs, progressFn)
-	if err != nil {
-		return err
-	}
-
-	printer.Blank()
-	printer.StepDone(fmt.Sprintf("Remove complete: %d removed, %d skipped", len(result.Removed), len(result.Skipped)))
-
-	if opts.uninstall && uninstallFailed > 0 {
-		return fmt.Errorf("%d repos failed to uninstall (successfully uninstalled repos were removed from manifest)", uninstallFailed)
-	}
-	return nil
-}
-
-// reposUninstallConfig holds flag values for repos uninstall.
 type reposUninstallConfig struct {
-	manifest    string
-	dryRun      bool
-	yes         bool
-	concurrency int
-	gitlabToken string
+	manifest      string
+	dryRun        bool
+	yes           bool
+	concurrency   int
+	manifestOnly  bool
+	uninstallOnly bool
+	gitlabToken   string
 
 	testClient forge.Client
 }
@@ -841,11 +750,17 @@ func newReposUninstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "uninstall <repos...>",
-		Short: "Tear down fullsend from specific repos",
-		Long: `Tear down fullsend from the specified repos by deleting workflow files,
-variables, and secrets.
+		Short: "Tear down fullsend from repos and remove from manifest",
+		Long: `Tear down fullsend from the specified repos and remove them from the manifest.
 
-Does NOT modify repos.yaml — use "repos remove" for that.
+By default, tears down (deletes workflow files, variables, secrets) and then
+removes the repo entry from repos.yaml. The manifest entry is only removed
+if teardown succeeds.
+
+Use --manifest-only to remove from the manifest without tearing down (e.g.
+when a repo is already deleted). Use --uninstall-only to tear down without
+modifying the manifest (e.g. for temporary teardown with intent to reinstall).
+
 GCP infrastructure (WIF) must be cleaned up separately via
 'inference deprovision'.
 
@@ -862,6 +777,9 @@ prompt for confirmation unless --yes is set.`,
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be uninstalled without making changes")
 	cmd.Flags().BoolVar(&opts.yes, "yes", false, "skip confirmation prompt when multiple repos are targeted")
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
+	cmd.Flags().BoolVar(&opts.manifestOnly, "manifest-only", false, "remove from manifest without tearing down")
+	cmd.Flags().BoolVar(&opts.uninstallOnly, "uninstall-only", false, "tear down without removing from manifest")
+	cmd.MarkFlagsMutuallyExclusive("manifest-only", "uninstall-only")
 
 	return cmd
 }
@@ -905,71 +823,98 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		return nil
 	}
 
+	action := "uninstall and remove from manifest"
+	if opts.manifestOnly {
+		action = "remove from manifest"
+	} else if opts.uninstallOnly {
+		action = "uninstall"
+	}
 	if !opts.yes && !opts.dryRun {
-		if err := confirmBulkAction(printer, "uninstall", repoArgs, manifest, os.Stdin); err != nil {
+		if err := confirmBulkAction(printer, action, repoArgs, manifest, os.Stdin); err != nil {
 			return err
 		}
 	}
 
-	var uninstallClients repos.ForgeClientFactory
+	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
-		uninstallClients = newSingleClientFactory(opts.testClient)
+		clients = newSingleClientFactory(opts.testClient)
 	} else {
-		uninstallClients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
-	}
-
-	if err := checkAllForgeScopes(ctx, manifest, uninstallClients, printer); err != nil {
-		return err
-	}
-
-	cfg := repos.UninstallConfig{
-		Manifest:       manifest,
-		Repos:          concreteRepos,
-		DryRun:         opts.dryRun,
-		MaxConcurrency: opts.concurrency,
+		clients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
 	}
 
 	progressFn := func(repo, phase, msg string) {
 		switch phase {
-		case "done":
+		case "done", "manifest":
 			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
 		default:
 			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
 		}
 	}
 
-	printer.Blank()
-	if opts.dryRun {
-		printer.StepStart("Dry-run: previewing uninstall")
-	} else {
-		printer.StepStart("Uninstalling fullsend from repos")
-	}
+	// Teardown phase (skipped when --manifest-only).
+	var succeededRepos []string
+	var teardownFailed int
+	if !opts.manifestOnly {
+		if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
+			return err
+		}
 
-	results, err := repos.Uninstall(ctx, cfg, uninstallClients, progressFn)
-	if err != nil {
-		return err
-	}
+		teardownCfg := repos.UninstallConfig{
+			Manifest:       manifest,
+			Repos:          concreteRepos,
+			DryRun:         opts.dryRun,
+			MaxConcurrency: opts.concurrency,
+		}
 
-	var succeeded, failed int
-	for _, r := range results {
-		if r.Success {
-			succeeded++
+		printer.Blank()
+		if opts.dryRun {
+			printer.StepStart("Dry-run: previewing uninstall")
 		} else {
-			failed++
+			printer.StepStart("Uninstalling fullsend from repos")
 		}
+
+		results, teardownErr := repos.Uninstall(ctx, teardownCfg, clients, progressFn)
+		if teardownErr != nil {
+			return teardownErr
+		}
+
+		for _, r := range results {
+			if r.Success {
+				succeededRepos = append(succeededRepos, r.Owner+"/"+r.Repo)
+			} else {
+				teardownFailed++
+				printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+			}
+		}
+	} else {
+		succeededRepos = concreteRepos
+	}
+
+	// Manifest removal phase (skipped when --uninstall-only).
+	if !opts.uninstallOnly && len(succeededRepos) > 0 {
+		removeResult, _, removeErr := repos.RemoveFromManifest(repos.ManifestEditConfig{
+			Manifest:     manifest,
+			ManifestPath: opts.manifest,
+			DryRun:       opts.dryRun,
+		}, succeededRepos, progressFn)
+		if removeErr != nil {
+			return removeErr
+		}
+
+		printer.Blank()
+		printer.StepDone(fmt.Sprintf("Removed %d entries from manifest", len(removeResult.Removed)))
+	}
+
+	if opts.manifestOnly {
+		return nil
 	}
 
 	printer.Blank()
-	printer.StepDone(fmt.Sprintf("Uninstall complete: %d uninstalled, %d failed", succeeded, failed))
+	uninstalled := len(succeededRepos)
+	printer.StepDone(fmt.Sprintf("Uninstall complete: %d uninstalled, %d failed", uninstalled, teardownFailed))
 
-	for _, r := range results {
-		if !r.Success {
-			printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
-		}
-	}
-
-	if failed > 0 {
-		return fmt.Errorf("%d repos failed to uninstall", failed)
+	if teardownFailed > 0 {
+		return fmt.Errorf("%d repos failed to uninstall", teardownFailed)
 	}
 	return nil
 }
@@ -1002,363 +947,6 @@ func confirmBulkAction(printer *ui.Printer, action string, patterns []string, ma
 	}
 	if strings.TrimSpace(strings.ToLower(line)) != "y" {
 		return fmt.Errorf("aborted")
-	}
-	return nil
-}
-
-type reposDiffConfig struct {
-	manifest    string
-	repoFilter  []string
-	jsonOutput  bool
-	concurrency int
-	gitlabToken string
-
-	testClient forge.Client
-	out        io.Writer
-}
-
-func newReposDiffCmd() *cobra.Command {
-	opts := &reposDiffConfig{}
-
-	cmd := &cobra.Command{
-		Use:   "diff",
-		Short: "Show configuration drift between manifest and actual state",
-		Long:  "Compare the repos.yaml manifest against actual forge state and display the changes needed to reconcile. Exit code 1 signals drift exists.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposDiff(cmd.Context(), opts)
-		},
-	}
-
-	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
-	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "filter to specific repos (repeatable)")
-	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit JSON output instead of table")
-	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 8, "max parallel API calls")
-
-	return cmd
-}
-
-func runReposDiff(ctx context.Context, opts *reposDiffConfig) error {
-	out := opts.out
-	if out == nil {
-		out = os.Stdout
-	}
-	printerOut := out
-	if opts.jsonOutput {
-		printerOut = io.Discard
-	}
-	printer := ui.New(printerOut)
-
-	m, err := repos.LoadManifest(ctx, opts.manifest)
-	if err != nil {
-		return err
-	}
-	if err := m.Validate(); err != nil {
-		return fmt.Errorf("manifest validation failed: %w", err)
-	}
-
-	var diffClients repos.ForgeClientFactory
-	if opts.testClient != nil {
-		diffClients = newSingleClientFactory(opts.testClient)
-	} else {
-		diffClients = newForgeClientFactory(opts.gitlabToken, m.Forge)
-	}
-
-	if err := checkAllForgeScopes(ctx, m, diffClients, printer); err != nil {
-		return err
-	}
-
-	result, err := repos.Diff(ctx, m, diffClients, opts.concurrency, opts.repoFilter)
-	if err != nil {
-		return err
-	}
-
-	if opts.jsonOutput {
-		b, marshalErr := json.MarshalIndent(result, "", "  ")
-		if marshalErr != nil {
-			return fmt.Errorf("marshalling JSON: %w", marshalErr)
-		}
-		fmt.Fprintln(out, string(b))
-	} else {
-		fmt.Fprint(out, repos.FormatDiffTable(result))
-	}
-
-	if len(result.Changes) > 0 {
-		return fmt.Errorf("%d changes needed to reconcile manifest", len(result.Changes))
-	}
-	return nil
-}
-
-type reposSyncConfig struct {
-	manifest    string
-	repoFilter  []string
-	dryRun      bool
-	jsonOutput  bool
-	concurrency int
-	gitlabToken string
-
-	testClient forge.Client
-	out        io.Writer
-}
-
-func newReposSyncCmd() *cobra.Command {
-	opts := &reposSyncConfig{}
-
-	cmd := &cobra.Command{
-		Use:   "sync",
-		Short: "Reconcile configuration drift for installed repos",
-		Long:  "Apply variable changes to reconcile installed repos with the manifest. Use --dry-run to preview changes without applying them.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposSync(cmd.Context(), opts)
-		},
-	}
-
-	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
-	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "filter to specific repos (repeatable)")
-	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview changes without applying them")
-	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit JSON output instead of table")
-	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
-
-	return cmd
-}
-
-func runReposSync(ctx context.Context, opts *reposSyncConfig) error {
-	out := opts.out
-	if out == nil {
-		out = os.Stdout
-	}
-	printerOut := out
-	if opts.jsonOutput {
-		printerOut = io.Discard
-	}
-	printer := ui.New(printerOut)
-
-	m, err := repos.LoadManifest(ctx, opts.manifest)
-	if err != nil {
-		return err
-	}
-	if err := m.Validate(); err != nil {
-		return fmt.Errorf("manifest validation failed: %w", err)
-	}
-
-	var syncClients repos.ForgeClientFactory
-	if opts.testClient != nil {
-		syncClients = newSingleClientFactory(opts.testClient)
-	} else {
-		syncClients = newForgeClientFactory(opts.gitlabToken, m.Forge)
-	}
-
-	if err := checkAllForgeScopes(ctx, m, syncClients, printer); err != nil {
-		return err
-	}
-
-	if opts.dryRun {
-		result, diffErr := repos.Diff(ctx, m, syncClients, opts.concurrency, opts.repoFilter)
-		if diffErr != nil {
-			return diffErr
-		}
-
-		if opts.jsonOutput {
-			b, marshalErr := json.MarshalIndent(result, "", "  ")
-			if marshalErr != nil {
-				return fmt.Errorf("marshalling JSON: %w", marshalErr)
-			}
-			fmt.Fprintln(out, string(b))
-		} else {
-			fmt.Fprint(out, repos.FormatDiffTable(result))
-		}
-		if len(result.Changes) > 0 {
-			return fmt.Errorf("%d changes needed to reconcile manifest", len(result.Changes))
-		}
-		return nil
-	}
-
-	var progressFn repos.ProgressFunc
-	if !opts.jsonOutput {
-		progressFn = func(repo, phase, message string) {
-			printer.StepInfo(fmt.Sprintf("[%s] %s: %s", phase, repo, message))
-		}
-	}
-
-	result, err := repos.Sync(ctx, m, syncClients, opts.concurrency, opts.repoFilter, progressFn)
-	if err != nil && result == nil {
-		return err
-	}
-
-	if opts.jsonOutput {
-		b, marshalErr := json.MarshalIndent(result, "", "  ")
-		if marshalErr != nil {
-			return fmt.Errorf("marshalling JSON: %w", marshalErr)
-		}
-		fmt.Fprintln(out, string(b))
-	} else {
-		if result.Failed > 0 {
-			fmt.Fprintf(out, "Applied %d changes, %d repos failed.\n", len(result.Applied), result.Failed)
-		} else {
-			fmt.Fprintf(out, "Applied %d changes.\n", len(result.Applied))
-		}
-		for _, w := range result.Warnings {
-			fmt.Fprintf(out, "WARNING: %s\n", w)
-		}
-	}
-
-	return err
-}
-
-// reposUpgradeConfig holds flag values and testing overrides for repos upgrade.
-type reposUpgradeConfig struct {
-	manifest    string
-	refOverride string
-	dryRun      bool
-	force       bool
-	concurrency int
-	direct      bool
-	gitlabToken string
-
-	// Testing overrides — when non-nil, used instead of resolving from
-	// the environment. Not set by CLI flag parsing.
-	testClient forge.Client
-}
-
-func newReposUpgradeCmd() *cobra.Command {
-	opts := &reposUpgradeConfig{}
-
-	cmd := &cobra.Command{
-		Use:   "upgrade [repos...]",
-		Short: "Upgrade scaffold shim ref across repos",
-		Long: `Upgrades the fullsend scaffold workflow ref for repos defined in a repos.yaml manifest.
-
-When repos are specified as positional arguments (owner/repo format), only those
-repos are upgraded. When no repos are specified, all manifest repos are upgraded.
-
-Reads each repo's current workflow file, compares against the manifest's
-fullsend_ref (or --ref override), and commits the updated workflow.
-
-Floating refs (latest, main, v0) are skipped. Downgrades are blocked
-unless --force is set.`,
-		Args: cobra.ArbitraryArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposUpgrade(cmd.Context(), opts, args)
-		},
-	}
-
-	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
-	cmd.Flags().StringVar(&opts.refOverride, "ref", "", "override manifest fullsend_ref for all repos")
-	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be upgraded without making changes")
-	cmd.Flags().BoolVar(&opts.force, "force", false, "upgrade even if current ref is newer than target")
-	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations")
-	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
-
-	return cmd
-}
-
-func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter []string) error {
-	printer := ui.New(os.Stdout)
-
-	if opts.concurrency < 1 || opts.concurrency > 32 {
-		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
-	}
-
-	if opts.refOverride != "" && !repos.IsValidRef(opts.refOverride) {
-		return fmt.Errorf("--ref value %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", opts.refOverride)
-	}
-
-	printer.StepStart("Loading manifest")
-	m, err := repos.LoadManifest(ctx, opts.manifest)
-	if err != nil {
-		return fmt.Errorf("loading manifest: %w", err)
-	}
-	if err := m.Validate(); err != nil {
-		return fmt.Errorf("manifest validation failed: %w", err)
-	}
-	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(m.Repos)))
-
-	var upgradeClients repos.ForgeClientFactory
-	if opts.testClient != nil {
-		upgradeClients = newSingleClientFactory(opts.testClient)
-	} else {
-		upgradeClients = newForgeClientFactory(opts.gitlabToken, m.Forge)
-	}
-
-	if err := checkAllForgeScopes(ctx, m, upgradeClients, printer); err != nil {
-		return err
-	}
-
-	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, isDirect bool) error {
-		rc, ok := m.ResolveConfigWithGlobs(owner, repo)
-		if !ok {
-			return fmt.Errorf("repo %s/%s not found in manifest", owner, repo)
-		}
-		fc, fcErr := upgradeClients.ConfigFor(rc.Forge)
-		if fcErr != nil {
-			return fcErr
-		}
-		targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
-		if repoErr != nil {
-			return fmt.Errorf("getting repo info: %w", repoErr)
-		}
-		commitMsg := "chore: upgrade fullsend scaffold ref"
-		prTitle := "chore: upgrade fullsend scaffold ref"
-		prBody := "This PR upgrades the fullsend scaffold workflow ref.\n\n" +
-			"Merge this PR to activate the updated workflows."
-		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, isDirect, nil)
-		return commitErr
-	}
-
-	cfg := repos.UpgradeConfig{
-		Manifest:       m,
-		RefOverride:    opts.refOverride,
-		RepoFilter:     repoFilter,
-		DryRun:         opts.dryRun,
-		Force:          opts.force,
-		Direct:         opts.direct,
-		MaxConcurrency: opts.concurrency,
-	}
-
-	progressFn := func(repo, phase, msg string) {
-		switch phase {
-		case "done":
-			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
-		default:
-			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
-		}
-	}
-
-	printer.Blank()
-	if opts.dryRun {
-		printer.StepStart("Dry-run: previewing upgrades")
-	} else {
-		printer.StepStart("Upgrading repos")
-	}
-
-	results, err := repos.Upgrade(ctx, cfg, upgradeClients, commitFn, progressFn)
-	if err != nil {
-		return err
-	}
-
-	var upgraded, skipped, failed int
-	for _, r := range results {
-		switch {
-		case r.Error != nil:
-			failed++
-			printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
-		case r.Upgraded:
-			upgraded++
-		case r.Skipped:
-			skipped++
-			printer.StepInfo(fmt.Sprintf("[%s/%s] Skipped: %s", r.Owner, r.Repo, r.SkipReason))
-		}
-	}
-
-	printer.Blank()
-	printer.StepDone(fmt.Sprintf("Upgrade complete: %d upgraded, %d skipped, %d failed",
-		upgraded, skipped, failed))
-
-	if failed > 0 {
-		return fmt.Errorf("%d repos failed to upgrade", failed)
 	}
 	return nil
 }
