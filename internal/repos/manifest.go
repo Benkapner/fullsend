@@ -85,7 +85,7 @@ const DefaultGitHubURL = "https://github.com"
 
 // ForgeSectionFromURL constructs a ForgeSection with only the URL field
 // populated for the named forge. Used when no full manifest is available
-// (e.g. repos init).
+// (e.g. repos migrate).
 func ForgeSectionFromURL(forgeName, forgeURL string) ForgeSection {
 	var s ForgeSection
 	switch forgeName {

@@ -40,17 +40,13 @@ fullsend
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
-│   ├── init         <org|owner/repo>        # Generate repos.yaml from discovered installs
-│   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
-│   │   ├── --repos <list>                   #   Comma-separated repos to include
-│   │   ├── --all                            #   Include all eligible repos
-│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
-│   │   ├── --forge-url <url>                #   Forge instance URL (required for gitlab)
-│   │   ├── --mint-url <url>                 #   Token mint Cloud Run endpoint URL
-│   │   ├── --inference-region <region>      #   GCP region for inference (default: us-central1)
-│   │   ├── --fullsend-ref <ref>             #   Pin the fullsend workflow ref (e.g. v0.42.0)
-│   │   ├── --force                          #   Overwrite output file if it exists
-│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
+│   ├── migrate      <org>                   # Migrate org from per-org to per-repo install
+│   │   ├── --project <id>                   #   GCP project ID for inference (required)
+│   │   ├── --repo <name>                    #   Filter to specific repos (repeatable, supports globs)
+│   │   ├── --dry-run                        #   Preview only
+│   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
+│   │   ├── --concurrency <int>              #   Parallel limit (1-32, default: 4)
+│   │   └── -f, --manifest <path>            #   Output path for repos.yaml (default: repos.yaml)
 │   ├── install      [repos...]              # Converge repos to desired state (provision, sync, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes

@@ -77,7 +77,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
-| Fleet Admin | `fullsend repos init --forge <type> <org\|owner/repo>` | Generate a `repos.yaml` manifest by discovering existing installations |
+| Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, sync variables, upgrade refs |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
