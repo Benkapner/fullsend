@@ -27,7 +27,8 @@ func TestReposCommand_HasSubcommands(t *testing.T) {
 	assert.True(t, names["install"], "expected install subcommand")
 	assert.True(t, names["uninstall"], "expected uninstall subcommand")
 	assert.True(t, names["status"], "expected status subcommand")
-	assert.Equal(t, 4, len(names), "expected exactly 4 subcommands")
+	assert.True(t, names["set-default"], "expected set-default subcommand")
+	assert.Equal(t, 5, len(names), "expected exactly 5 subcommands")
 }
 
 func TestReposCommand_RegisteredInRoot(t *testing.T) {
@@ -267,10 +268,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: p
-    mint_region: us-central1
-    inference_project: proj
-    inference_region: us-central1
 defaults:
   forge: github
 repos: []
@@ -289,8 +286,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: p
-    mint_region: us-central1
 defaults:
   forge: gitlab
 repos: []
@@ -311,8 +306,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: p
-    mint_region: us-central1
 defaults:
   forge: gitlab
 repos: []
@@ -737,10 +730,6 @@ const testManifestYAML = `version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: mint-proj
-    mint_region: us-central1
-    inference_project: inf-proj
-    inference_region: us-central1
     inference_project_number: "123456789"
     fullsend_ref: v1.0.0
 defaults:
@@ -799,6 +788,7 @@ func TestRunReposInstall_Success(t *testing.T) {
 		direct:                 true,
 		inferenceProject:       "inf-proj",
 		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
 		testClient:             fc,
 	})
 	require.NoError(t, err)
@@ -822,10 +812,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: mint-proj
-    mint_region: us-central1
-    inference_project: ""
-    inference_region: us-central1
     fullsend_ref: v1.0.0
 defaults:
   forge: github
@@ -969,10 +955,6 @@ func TestRunReposInstall_WithFilter(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: mint-proj
-    mint_region: us-central1
-    inference_project: inf-proj
-    inference_region: us-central1
     inference_project_number: "123456789"
     fullsend_ref: v1.0.0
 defaults:
@@ -992,6 +974,7 @@ repos:
 		direct:                 true,
 		inferenceProject:       "inf-proj",
 		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
 		testClient:             fc,
 	})
 	require.NoError(t, err)
@@ -1109,6 +1092,7 @@ func TestRunReposInstall_AddsNewReposToManifest(t *testing.T) {
 		direct:                 true,
 		inferenceProject:       "inf-proj",
 		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
 		testClient:             fc,
 	})
 	require.NoError(t, err)
@@ -1142,10 +1126,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: mint-proj
-    mint_region: us-central1
-    inference_project: inf-proj
-    inference_region: us-central1
     fullsend_ref: v1.0.0
 defaults:
   forge: github
@@ -1202,10 +1182,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: mint-proj
-    mint_region: us-central1
-    inference_project: inf-proj
-    inference_region: us-central1
     fullsend_ref: v1.0.0
 defaults: {}
 repos: []
@@ -1296,8 +1272,6 @@ func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {
 	require.Equal(t, 2, len(m.Repos))
 	newEntry := m.Repos[1]
 	assert.Equal(t, "acme/web", newEntry.Repo)
-	assert.True(t, newEntry.InferenceRegion.Set)
-	assert.Equal(t, "europe-west1", newEntry.InferenceRegion.Value)
 	assert.True(t, newEntry.FullsendRef.Set)
 	assert.Equal(t, "v2.0.0", newEntry.FullsendRef.Value)
 	assert.True(t, newEntry.MintURL.Set)
@@ -1403,10 +1377,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: mint-proj
-    mint_region: us-central1
-    inference_project: inf-proj
-    inference_region: us-central1
     fullsend_ref: v1.0.0
   gitlab:
     url: https://gitlab.example.com
@@ -1444,6 +1414,7 @@ func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
 		direct:                 true,
 		inferenceProject:       "inf-proj",
 		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
 		testClient:             fc,
 	})
 	require.NoError(t, err)
@@ -1602,10 +1573,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: p
-    mint_region: us-central1
-    inference_project: proj
-    inference_region: us-central1
 defaults:
   forge: github
 repos: []
@@ -1630,8 +1597,6 @@ forge:
   github:
     mint_url: https://mint.example.com
     inference_project_number: "123456789"
-    mint_project: p
-    mint_region: us-central1
   gitlab:
     url: https://gitlab.example.com
 defaults:

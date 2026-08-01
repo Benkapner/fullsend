@@ -11,7 +11,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables)
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{"FULLSEND_GCP_REGION"})
 
 var uninstallSecrets = requiredSecrets
 

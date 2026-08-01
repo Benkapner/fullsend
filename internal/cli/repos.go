@@ -34,6 +34,7 @@ managing fullsend across many repositories and organizations.`,
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
+	cmd.AddCommand(newReposSetDefaultCmd())
 	return cmd
 }
 
@@ -213,6 +214,29 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 	return nil
 }
 
+func newReposSetDefaultCmd() *cobra.Command {
+	var manifest string
+
+	cmd := &cobra.Command{
+		Use:   "set-default <key> <value>",
+		Short: "Set a forge-level default in the manifest",
+		Long: fmt.Sprintf(`Set or remove a forge-level default in repos.yaml.
+
+An empty value removes the key. Creates the manifest with version: 1 if it does not exist.
+
+Valid keys:
+  %s`, strings.Join(repos.ValidDefaultKeys, "\n  ")),
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return repos.SetDefault(manifest, args[0], args[1])
+		},
+	}
+
+	cmd.Flags().StringVarP(&manifest, "manifest", "f", "repos.yaml", "path to repos.yaml")
+
+	return cmd
+}
+
 func newReposStatusCmd() *cobra.Command {
 	var (
 		manifest    string
@@ -360,9 +384,9 @@ type reposInstallConfig struct {
 	// GCP credentials (install-time only)
 	inferenceProject       string
 	inferenceProjectNumber string
+	inferenceRegion        string
 
 	// Per-repo overrides
-	inferenceRegion        string
 	fullsendRef            string
 	mintURL                string
 	allowedRemoteResources []string
@@ -407,7 +431,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference (written as FULLSEND_GCP_PROJECT_ID secret)")
 	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number for WIF provider computation")
-	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "per-repo GCP inference region override")
+	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (install-time only, not stored in manifest)")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
@@ -501,9 +525,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					entry.Forge = repos.NullableString{Set: true, Value: forgeName}
 				}
 				if forgeName == repos.ForgeGitHub {
-					if opts.inferenceRegion != "" && opts.inferenceRegion != manifest.Forge.GitHub.InferenceRegion {
-						entry.InferenceRegion = repos.NullableString{Set: true, Value: opts.inferenceRegion}
-					}
 					if opts.fullsendRef != "" && opts.fullsendRef != manifest.Forge.GitHub.FullsendRef {
 						entry.FullsendRef = repos.NullableString{Set: true, Value: opts.fullsendRef}
 					}
@@ -596,6 +617,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		Direct:                 opts.direct,
 		InferenceProject:       opts.inferenceProject,
 		InferenceProjectNumber: opts.inferenceProjectNumber,
+		InferenceRegion:        opts.inferenceRegion,
 	}
 
 	progressFn := func(repo, phase, msg string) {

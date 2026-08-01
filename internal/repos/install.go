@@ -66,6 +66,12 @@ type InstallConfig struct {
 	// Direct controls scaffold delivery: true pushes directly to the default
 	// branch; false creates a PR.
 	Direct bool
+
+	// ReuseSecrets indicates that GCP secrets (FULLSEND_GCP_PROJECT_ID and
+	// FULLSEND_GCP_WIF_PROVIDER) already exist on the repo and should not
+	// be overwritten. When true, InferenceProject and WIFProvider may be
+	// empty and secret writes are skipped.
+	ReuseSecrets bool
 }
 
 // InstallResult holds the outcome of a per-repo installation.
@@ -170,11 +176,13 @@ func Install(ctx context.Context, cfg InstallConfig,
 		return result, nil
 	}
 
-	if wifProvider == "" {
-		return result, fmt.Errorf("WIF provider required for repository secret configuration; set WIFProvider or enable WIF provisioning")
-	}
-	if !WIFProviderPattern.MatchString(wifProvider) {
-		return result, fmt.Errorf("invalid WIF provider format %q: expected projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}", wifProvider)
+	if !cfg.ReuseSecrets {
+		if wifProvider == "" {
+			return result, fmt.Errorf("WIF provider required for repository secret configuration; set WIFProvider or enable WIF provisioning")
+		}
+		if !WIFProviderPattern.MatchString(wifProvider) {
+			return result, fmt.Errorf("invalid WIF provider format %q: expected projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}", wifProvider)
+		}
 	}
 
 	// Step 4: Generate scaffold files.
@@ -195,8 +203,10 @@ func Install(ctx context.Context, cfg InstallConfig,
 	progress(repoFullName, "vars", "Configuring repository variables")
 	repoVars := map[string]string{
 		"FULLSEND_MINT_URL":   mintURL,
-		"FULLSEND_GCP_REGION": cfg.InferenceRegion,
 		forge.PerRepoGuardVar: "true",
+	}
+	if cfg.InferenceRegion != "" {
+		repoVars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
 	}
 	for _, name := range maputil.SortedKeys(repoVars) {
 		if err := client.CreateOrUpdateRepoVariable(ctx, cfg.Owner, cfg.Repo, name, repoVars[name]); err != nil {
@@ -205,18 +215,22 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 	progress(repoFullName, "vars", fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
-	// Step 7: Write repository secrets.
-	progress(repoFullName, "secrets", "Configuring repository secrets")
-	repoSecrets := map[string]string{
-		"FULLSEND_GCP_PROJECT_ID":   cfg.InferenceProject,
-		"FULLSEND_GCP_WIF_PROVIDER": wifProvider,
-	}
-	for _, name := range maputil.SortedKeys(repoSecrets) {
-		if err := client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, name, repoSecrets[name]); err != nil {
-			return result, fmt.Errorf("setting repo secret %s: %w", name, err)
+	// Step 7: Write repository secrets (skipped when reusing existing secrets).
+	if cfg.ReuseSecrets {
+		progress(repoFullName, "secrets", "Reusing existing repository secrets")
+	} else {
+		progress(repoFullName, "secrets", "Configuring repository secrets")
+		repoSecrets := map[string]string{
+			"FULLSEND_GCP_PROJECT_ID":   cfg.InferenceProject,
+			"FULLSEND_GCP_WIF_PROVIDER": wifProvider,
 		}
+		for _, name := range maputil.SortedKeys(repoSecrets) {
+			if err := client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, name, repoSecrets[name]); err != nil {
+				return result, fmt.Errorf("setting repo secret %s: %w", name, err)
+			}
+		}
+		progress(repoFullName, "secrets", fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
 	}
-	progress(repoFullName, "secrets", fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
 
 	result.Success = true
 	progress(repoFullName, "done", "Installation complete")
@@ -259,9 +273,10 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 }
 
 // requiredVariables lists the per-repo variables (excluding the guard)
-// that must exist for a complete installation. Shared by install,
-// checkInstallComponents, and uninstall.
-var requiredVariables = []string{"FULLSEND_MINT_URL", "FULLSEND_GCP_REGION"}
+// that must exist for a complete installation. FULLSEND_GCP_REGION is
+// excluded because it is install-time-only and may not be present when
+// secrets are reused. Shared by install and checkInstallComponents.
+var requiredVariables = []string{"FULLSEND_MINT_URL"}
 
 // requiredSecrets lists the per-repo secrets that must exist for a
 // complete installation. Shared by install, checkInstallComponents,

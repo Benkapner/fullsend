@@ -52,7 +52,6 @@ var managedVariables = []struct {
 	resolveFn func(cfg ResolvedConfig) string
 }{
 	{"FULLSEND_MINT_URL", func(cfg ResolvedConfig) string { return cfg.MintURL }},
-	{"FULLSEND_GCP_REGION", func(cfg ResolvedConfig) string { return cfg.InferenceRegion }},
 }
 
 // managedSecrets is intentionally empty. Secrets are written once at

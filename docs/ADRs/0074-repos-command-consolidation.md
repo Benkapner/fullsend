@@ -32,7 +32,7 @@ complexity without providing meaningful safety benefits.
 
 ## Decision
 
-Consolidate the seven subcommands into four:
+Consolidate the seven subcommands into four, plus a utility command:
 
 | Command | Purpose | Absorbs |
 |---------|---------|---------|
@@ -40,6 +40,7 @@ Consolidate the seven subcommands into four:
 | `repos install` | Converge repos to desired state: manifest add, provision, sync drift, upgrade refs | `repos add`, `repos diff`, `repos sync`, `repos upgrade` |
 | `repos status` | Read-only comparison of manifest vs actual state | _(unchanged)_ |
 | `repos uninstall` | Tear down fullsend from repos and/or remove from manifest | `repos remove` |
+| `repos set-default` | Set or remove a forge-level default in repos.yaml | _(new)_ |
 
 **`repos install`** becomes an idempotent convergence operator with three
 phases: manifest add (for new repos passed as positional args), parallel
