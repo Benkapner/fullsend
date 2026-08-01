@@ -13,12 +13,11 @@ import (
 
 // manifestConfig holds configuration used by buildManifest and discovery helpers.
 type manifestConfig struct {
-	Forge           string
-	ForgeURL        string
-	MintURL         string
-	InferenceRegion string
-	FullsendRef     string
-	CLIVersion      string
+	Forge       string
+	ForgeURL    string
+	MintURL     string
+	FullsendRef string
+	CLIVersion  string
 }
 
 // DiscoveredRepo holds the result of discovering a single repo's
@@ -138,15 +137,6 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 			todos = append(todos, "forge.github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
 		}
 
-		// Compute inference region: CLI flag > discovery > default.
-		inferenceRegion := cfg.InferenceRegion
-		if inferenceRegion == "" {
-			inferenceRegion = computeMode(repos, func(d DiscoveredRepo) string { return d.InferenceRegion })
-		}
-		if inferenceRegion == "" {
-			inferenceRegion = "us-central1"
-		}
-
 		// Compute fullsend ref: CLI flag > discovery > CLI version > DefaultUpstreamRef.
 		fullsendRef := cfg.FullsendRef
 		if fullsendRef == "" {
@@ -161,10 +151,9 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 		}
 
 		manifest.Forge.GitHub = GitHubForgeInfra{
-			URL:             cfg.ForgeURL,
-			MintURL:         mintURL,
-			InferenceRegion: inferenceRegion,
-			FullsendRef:     fullsendRef,
+			URL:         cfg.ForgeURL,
+			MintURL:     mintURL,
+			FullsendRef: fullsendRef,
 		}
 	}
 	if forgeName == ForgeGitLab {
@@ -186,9 +175,6 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 			gh := manifest.Forge.GitHub
 			if d.MintURL != "" && d.MintURL != gh.MintURL {
 				entry.MintURL = NullableString{Set: true, Value: d.MintURL}
-			}
-			if d.InferenceRegion != "" && d.InferenceRegion != gh.InferenceRegion {
-				entry.InferenceRegion = NullableString{Set: true, Value: d.InferenceRegion}
 			}
 			if d.FullsendRef != "" && d.FullsendRef != gh.FullsendRef {
 				entry.FullsendRef = NullableString{Set: true, Value: d.FullsendRef}

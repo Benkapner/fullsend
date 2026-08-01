@@ -45,7 +45,6 @@ forge:
     mint_region: us-central1
     # GitHub-specific inference and version settings.
     inference_project: acme-inference-prod
-    inference_region: us-central1
     fullsend_ref: v2.3.0
   # gitlab:
   #   url: https://gitlab.example.com  # required, no default
@@ -79,7 +78,6 @@ Manifest fields map to repo-level resources as follows:
 | Manifest field | Repo resource | Type |
 |---|---|---|
 | `forge.github.inference_project` | `FULLSEND_GCP_PROJECT_ID` | Secret |
-| `forge.github.inference_region` | `FULLSEND_GCP_REGION` | Variable |
 | `forge.github.fullsend_ref` | `@ref` in scaffold shim `uses:` line | Workflow file |
 | `forge.github.mint_url` | `FULLSEND_MINT_URL` | Variable |
 | `allowed_remote_resources` | `allowed_remote_resources` in org `config.yaml` | Config file ¹ |
@@ -89,7 +87,7 @@ not a per-repo resource. It is not managed by `repos sync`.
 
 #### Field resolution
 
-Infrastructure fields (`inference_project`, `inference_region`,
+Infrastructure fields (`inference_project`,
 `fullsend_ref`) live in the forge-specific section (`forge.github`).
 `defaults` holds only `forge` and `allowed_remote_resources`.
 Repo entries may override `forge` but not infrastructure fields.
@@ -140,7 +138,7 @@ per-org installations. Covered by the
 Read-only discovery. Compares manifest against actual forge state.
 
 For each repo: reads variables (`FULLSEND_MINT_URL`,
-`FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`) in a single API
+`FULLSEND_PER_REPO_INSTALL`) in a single API
 call, reads the workflow file and extracts `@ref`, compares against
 manifest-resolved config, reports drift.
 
@@ -188,7 +186,6 @@ $ fullsend repos diff
 
 REPO                     FIELD               CURRENT              DESIRED
 acme-corp/web-frontend   FULLSEND_MINT_URL   https://old-mint...  https://fullsend-mint-abc123...
-acme-corp/web-frontend   FULLSEND_GCP_REGION us-west1             us-central1
 ```
 
 #### `fullsend repos sync`
@@ -198,7 +195,6 @@ Reconciles configuration drift for installed repos.
 | Resource | Action |
 |----------|--------|
 | `FULLSEND_MINT_URL` variable | Upsert to match manifest `forge.github.mint_url` |
-| `FULLSEND_GCP_REGION` variable | Upsert to match resolved `inference_region` |
 | `FULLSEND_GCP_PROJECT_ID` secret | Upsert to match resolved `inference_project` |
 
 Sync does **not** touch scaffold shim version (managed by `upgrade`),
@@ -468,7 +464,6 @@ type GitHubForgeInfra struct {
     MintProject      string `yaml:"mint_project,omitempty"`
     MintRegion       string `yaml:"mint_region,omitempty"`
     InferenceProject string `yaml:"inference_project,omitempty"`
-    InferenceRegion  string `yaml:"inference_region,omitempty"`
     FullsendRef      string `yaml:"fullsend_ref,omitempty"`
 }
 
@@ -985,7 +980,6 @@ What sync reconciles:
 | Resource | Action |
 |----------|--------|
 | `FULLSEND_MINT_URL` | Upsert to match `forge.github.mint_url` |
-| `FULLSEND_GCP_REGION` | Upsert to match resolved `inference_region` |
 | `FULLSEND_PER_REPO_INSTALL` | Ensure `"true"` |
 | `FULLSEND_GCP_PROJECT_ID` | Upsert to match resolved `inference_project` |
 

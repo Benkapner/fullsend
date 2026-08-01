@@ -63,7 +63,9 @@ func TestDiff_VariableDrift_MintURL(t *testing.T) {
 	}
 }
 
-func TestDiff_VariableDrift_Region(t *testing.T) {
+func TestDiff_VariableDrift_Region_NoLongerManaged(t *testing.T) {
+	// FULLSEND_GCP_REGION is no longer managed by sync — it is an
+	// install-time-only value. Diff should not report region changes.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
@@ -75,20 +77,10 @@ func TestDiff_VariableDrift_Region(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	found := false
 	for _, c := range result.Changes {
-		if c.Field == "FULLSEND_GCP_REGION" && c.Action == "update" {
-			found = true
-			if c.OldValue != "us-west1" {
-				t.Errorf("old = %q, want us-west1", c.OldValue)
-			}
-			if c.NewValue != "us-central1" {
-				t.Errorf("new = %q, want us-central1", c.NewValue)
-			}
+		if c.Field == "FULLSEND_GCP_REGION" {
+			t.Errorf("diff should not report FULLSEND_GCP_REGION changes: %+v", c)
 		}
-	}
-	if !found {
-		t.Error("expected FULLSEND_GCP_REGION change")
 	}
 }
 
@@ -190,9 +182,7 @@ func TestDiff_APIError_Warning(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -219,7 +209,7 @@ func TestDiff_MultipleRepos(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
-		"https://mint.example.com", "us-west1")
+		"https://old-mint.example.com", "us-central1")
 
 	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -273,10 +263,7 @@ func TestDiff_GlobExpansion(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:         "https://mint.example.com",
-			MintProject:     "proj",
-			MintRegion:      "us-central1",
-			InferenceRegion: "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",
@@ -308,9 +295,7 @@ func TestDiff_EmptyManifest(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 	}
 
@@ -329,9 +314,7 @@ func TestDiff_EmptyDesiredValue_Skips(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL: "",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",
@@ -386,10 +369,7 @@ func TestDiff_SecretCheckError_NoLongerManaged(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:         "https://mint.example.com",
-			MintProject:     "proj",
-			MintRegion:      "us-central1",
-			InferenceRegion: "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",
@@ -416,7 +396,6 @@ func TestDiff_SecretCheckError_NoLongerManaged(t *testing.T) {
 func TestSync_NoDrift_NoVariableWrites(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Forge.GitHub.InferenceProject = ""
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -548,7 +527,6 @@ func TestSync_NilProgress(t *testing.T) {
 func TestSync_DiffAPIError_SkipsReconciliation(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Forge.GitHub.InferenceProject = "my-project"
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
 
@@ -618,10 +596,7 @@ func TestSync_GlobWithPerEntryOverride(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:         "https://mint.example.com",
-			MintProject:     "proj",
-			MintRegion:      "us-central1",
-			InferenceRegion: "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",
@@ -755,9 +730,7 @@ func TestDiff_GlobExpandError(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Repos: []RepoEntry{{Repo: "bad-org/*"}},
 	}
@@ -773,10 +746,7 @@ func TestDiff_PerRepoOverride(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:         "https://mint.example.com",
-			MintProject:     "proj",
-			MintRegion:      "us-central1",
-			InferenceRegion: "eu-west1",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",
@@ -827,9 +797,7 @@ func TestDiff_GuardVarFalse_Warning(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "proj",
-			MintRegion:  "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -865,10 +833,7 @@ func TestSync_GlobExpansion(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:         "https://mint.example.com",
-			MintProject:     "proj",
-			MintRegion:      "us-central1",
-			InferenceRegion: "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",
@@ -900,10 +865,7 @@ func TestDiff_MultiOrg(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:         "https://mint.example.com",
-			MintProject:     "proj",
-			MintRegion:      "us-central1",
-			InferenceRegion: "us-central1",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",

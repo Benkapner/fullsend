@@ -18,13 +18,8 @@ func newBatchManifest(repos ...string) *Manifest {
 	return &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:                "https://mint.example.com",
-			InferenceProject:       "test-inference",
-			InferenceRegion:        "us-central1",
-			FullsendRef:            "v1.0.0",
-			InferenceProjectNumber: "123456789",
-			MintProject:            "test-project",
-			MintRegion:             "us-central1",
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v1.0.0",
 		}},
 		Defaults: DefaultsConfig{
 			Forge: "github",
@@ -58,6 +53,7 @@ func batchCfgWithDefaults(m *Manifest) BatchInstallConfig {
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
 	}
 }
 
@@ -75,6 +71,7 @@ func TestBatchInstall_AllFresh(t *testing.T) {
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
 	}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -295,12 +292,12 @@ func TestBatchInstall_MissingInferenceRegion(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-	manifest.Forge.GitHub.InferenceRegion = ""
 
 	sc := &fakeScaffoldCommit{}
 
 	cfg := batchCfgWithDefaults(manifest)
 	cfg.MaxConcurrency = 2
+	cfg.InferenceRegion = "" // CLI flag missing
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -309,8 +306,8 @@ func TestBatchInstall_MissingInferenceRegion(t *testing.T) {
 	if len(result.Failed) != 1 {
 		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
 	}
-	if result.Failed[0].Error == nil || !strings.Contains(result.Failed[0].Error.Error(), "inference_region is required") {
-		t.Errorf("expected inference_region error, got: %v", result.Failed[0].Error)
+	if result.Failed[0].Error == nil || !strings.Contains(result.Failed[0].Error.Error(), "--inference-region is required") {
+		t.Errorf("expected --inference-region error, got: %v", result.Failed[0].Error)
 	}
 	if sc.called {
 		t.Error("expected no scaffold calls when inference_region is empty")
@@ -734,6 +731,70 @@ func TestBatchInstall_PartialInstall_RepairsWhenComponentsMissing(t *testing.T) 
 	}
 	if len(result.Skipped) != 0 {
 		t.Errorf("expected 0 skipped (partial install should be repaired), got %d", len(result.Skipped))
+	}
+}
+
+func TestBatchInstall_SecretReuse_SkipsValidationAndSecretWrites(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	// Set secrets on the repo so discovery detects them.
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "us-central1"
+	manifest := newBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	// Omit InferenceProject, InferenceProjectNumber, and InferenceRegion
+	// — these should not be required when secrets already exist.
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 2,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Failed) != 0 {
+		t.Errorf("expected 0 failed, got %d: %v", len(result.Failed), result.Failed[0].Error)
+	}
+	if len(result.Installed) != 1 {
+		t.Errorf("expected 1 installed, got %d", len(result.Installed))
+	}
+	// Verify no new secrets were written.
+	if len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no secret writes with ReuseSecrets, got %d", len(fc.CreatedSecrets))
+	}
+}
+
+func TestBatchInstall_SecretReuse_MissingRegionVariable(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+	manifest := newBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 2,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Failed) != 1 {
+		t.Fatalf("expected 1 failed, got %d", len(result.Failed))
+	}
+	if !strings.Contains(result.Failed[0].Error.Error(), "FULLSEND_GCP_REGION variable is missing") {
+		t.Errorf("expected region variable missing error, got: %v", result.Failed[0].Error)
 	}
 }
 

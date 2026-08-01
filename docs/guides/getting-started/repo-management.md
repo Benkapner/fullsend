@@ -60,7 +60,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_region: us-central1
     fullsend_ref: v2.5.0
   gitlab:
     url: https://gitlab.example.com
@@ -190,8 +189,8 @@ Preview what would change without modifying anything:
 fullsend repos install -f repos.yaml --dry-run
 ```
 
-The convergence phase checks variables (`FULLSEND_MINT_URL`,
-`FULLSEND_GCP_REGION`) and scaffold workflow refs against the manifest.
+The convergence phase checks variables (`FULLSEND_MINT_URL`)
+and scaffold workflow refs against the manifest.
 Variables are synced automatically; ref updates are committed as PRs
 (or direct pushes with `--direct`). Secrets are write-once at install
 time and are not reconciled.
@@ -229,8 +228,9 @@ Specify which agent roles to install (defaults to
 fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
 
-Per-repo overrides can be specified with `--inference-region`,
-`--fullsend-ref`, `--mint-url`, and `--allowed-remote-resources`.
+Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
+and `--allowed-remote-resources`. The `--inference-region` flag is
+install-time only and is not stored in the manifest.
 
 ### Removing repos
 

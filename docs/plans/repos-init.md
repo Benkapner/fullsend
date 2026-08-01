@@ -220,8 +220,6 @@ func buildManifest(repos []DiscoveredRepo,
    repos (`source: new`) with no discovered values, use the CLI
    version as `fullsend_ref` and flags:
    - `fullsend_ref`: `--fullsend-ref` flag > mode of discovered refs > CLI version.
-   - `inference_region`: `--inference-region` flag > mode of discovered
-     `FULLSEND_GCP_REGION` values > `us-central1`.
    - `inference_project`: from `--inference-project` flag, or TODO.
    - `inference_project_number`: from `--inference-project-number` flag, or TODO.
    - `defaults.allowed_remote_resources`: from per-org config if present.

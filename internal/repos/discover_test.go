@@ -65,7 +65,6 @@ func TestBuildManifest_MixedDiscovery(t *testing.T) {
 
 	// Forge-level fields should use the mode (most common) values.
 	assert.Equal(t, "v2.3.0", m.Forge.GitHub.FullsendRef)
-	assert.Equal(t, "us-central1", m.Forge.GitHub.InferenceRegion)
 
 	// No per-repo overrides — settings live in forge.github.
 	for _, entry := range m.Repos {

@@ -38,6 +38,10 @@ type BatchInstallConfig struct {
 	// to compute the WIF provider resource name. Install-time-only,
 	// not stored in the manifest.
 	InferenceProjectNumber string
+
+	// InferenceRegion is the GCP region for inference. Install-time-only,
+	// not stored in the manifest.
+	InferenceRegion string
 }
 
 // BatchInstallResult holds the outcome of a multi-repo install operation.
@@ -102,10 +106,12 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 	// Phase 1: Parallel discovery — check guard variables.
 	type discoveryResult struct {
-		repo      ResolvedRepo
-		resolved  ResolvedConfig
-		installed bool
-		err       error
+		repo            ResolvedRepo
+		resolved        ResolvedConfig
+		installed       bool
+		secretsExist    bool
+		regionVarExists bool
+		err             error
 	}
 
 	concurrency := cfg.MaxConcurrency
@@ -152,10 +158,59 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				}
 				installed = fullyInstalled
 			}
+
+			// When repo is NOT fully installed, check whether GCP
+			// secrets already exist so we can reuse them instead of
+			// requiring --inference-project / --inference-project-number.
+			var secretsExist bool
+			if !installed && resolved.Forge == ForgeGitHub {
+				projExists, projErr := fc.Client.RepoSecretExists(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_PROJECT_ID")
+				if projErr != nil {
+					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: projErr}
+					return
+				}
+				wifExists, wifErr := fc.Client.RepoSecretExists(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_WIF_PROVIDER")
+				if wifErr != nil {
+					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: wifErr}
+					return
+				}
+				if projExists && wifExists {
+					secretsExist = true
+					_, regionExists, regionErr := fc.Client.GetRepoVariable(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_REGION")
+					if regionErr != nil {
+						discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: regionErr}
+						return
+					}
+					discoveries[idx] = discoveryResult{
+						repo:            rr,
+						resolved:        resolved,
+						secretsExist:    true,
+						regionVarExists: regionExists,
+					}
+					return
+				} else if projExists != wifExists {
+					var exists, missing string
+					if projExists {
+						exists = "FULLSEND_GCP_PROJECT_ID"
+						missing = "FULLSEND_GCP_WIF_PROVIDER"
+					} else {
+						exists = "FULLSEND_GCP_WIF_PROVIDER"
+						missing = "FULLSEND_GCP_PROJECT_ID"
+					}
+					discoveries[idx] = discoveryResult{
+						repo:     rr,
+						resolved: resolved,
+						err:      fmt.Errorf("partial secret state: %s exists but %s is missing", exists, missing),
+					}
+					return
+				}
+			}
+
 			discoveries[idx] = discoveryResult{
-				repo:      rr,
-				resolved:  resolved,
-				installed: installed,
+				repo:         rr,
+				resolved:     resolved,
+				installed:    installed,
+				secretsExist: secretsExist,
 			}
 		}(i, r)
 	}
@@ -203,12 +258,14 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 	// Validate resolved config — fail fast on missing fields to avoid
 	// partial installations. Only GitHub repos require these fields.
-	// InferenceProject and InferenceProjectNumber are install-time-only
-	// values from CLI flags, not from the manifest.
+	// InferenceProject, InferenceProjectNumber, and InferenceRegion are
+	// install-time-only values from CLI flags, not from the manifest.
+	// When secrets already exist on the repo, these flags are not
+	// required — the existing secrets are reused.
 	var validCandidates []discoveryResult
 	for _, d := range toInstall {
 		fullName := d.repo.Owner + "/" + d.repo.Repo
-		if d.resolved.Forge == ForgeGitHub {
+		if d.resolved.Forge == ForgeGitHub && !d.secretsExist {
 			if cfg.InferenceProject == "" {
 				result.Failed = append(result.Failed, InstallResult{
 					Owner: d.repo.Owner,
@@ -227,13 +284,22 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				progress(fullName, "validate", "Invalid --inference-project: must be a valid GCP project ID")
 				continue
 			}
-			if d.resolved.InferenceRegion == "" {
+			if cfg.InferenceRegion == "" {
 				result.Failed = append(result.Failed, InstallResult{
 					Owner: d.repo.Owner,
 					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("inference_region is required but empty for %s", fullName),
+					Error: fmt.Errorf("--inference-region is required but empty for %s", fullName),
 				})
-				progress(fullName, "validate", "Missing inference_region in manifest")
+				progress(fullName, "validate", "Missing --inference-region flag")
+				continue
+			}
+			if !IsValidGCPRegion(cfg.InferenceRegion) {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion),
+				})
+				progress(fullName, "validate", "Invalid --inference-region: must be a valid GCP region")
 				continue
 			}
 			if cfg.InferenceProjectNumber == "" {
@@ -255,6 +321,24 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				continue
 			}
 		}
+		if d.secretsExist && !d.regionVarExists && cfg.InferenceRegion == "" {
+			result.Failed = append(result.Failed, InstallResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("--inference-region is required for %s: secrets exist but FULLSEND_GCP_REGION variable is missing", fullName),
+			})
+			progress(fullName, "validate", "Missing --inference-region flag (FULLSEND_GCP_REGION variable not found)")
+			continue
+		}
+		if cfg.InferenceRegion != "" && !IsValidGCPRegion(cfg.InferenceRegion) {
+			result.Failed = append(result.Failed, InstallResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion),
+			})
+			progress(fullName, "validate", "Invalid --inference-region: must be a valid GCP region")
+			continue
+		}
 		validCandidates = append(validCandidates, d)
 	}
 
@@ -273,7 +357,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	wifSeen := make(map[string]string) // wifProvider → "owner/repo"
 	for i, d := range validCandidates {
 		var wif string
-		if d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "" {
+		if d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "" && !d.secretsExist {
 			providerID := mintcore.BuildRepoProviderID(d.repo.Owner, d.repo.Repo)
 			wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
 				cfg.InferenceProjectNumber, mintcore.DefaultInferencePool, providerID)
@@ -326,12 +410,13 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				Roles:            roles,
 				MintURL:          dr.resolved.MintURL,
 				InferenceProject: cfg.InferenceProject,
-				InferenceRegion:  dr.resolved.InferenceRegion,
+				InferenceRegion:  cfg.InferenceRegion,
 				UpstreamRef:      ref,
 				UpstreamTag:      tag,
 				SkipGuardCheck:   true,
 				WIFProvider:      wifProvider,
 				Direct:           cfg.Direct,
+				ReuseSecrets:     dr.secretsExist,
 			}
 
 			installResult, installErr := Install(ctx, installCfg, dr.resolved.ForgeConfig.Client, commitScaffold, progress)

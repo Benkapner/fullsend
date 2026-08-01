@@ -55,7 +55,7 @@ User provides `--forge`, `--mint-url`, and inference parameters.
 Add it to the manifest (inheriting forge-level defaults or using
 per-repo overrides), then provision: scaffold workflow files (PR or
 direct push with `--direct`), set variables (`FULLSEND_MINT_URL`,
-`FULLSEND_GCP_REGION`, guard var), write secrets
+`FULLSEND_GCP_REGION` (install-time only), guard var), write secrets
 (`FULLSEND_GCP_PROJECT_ID`, WIF provider).
 
 ### Scenario 3: Repo in manifest, not provisioned

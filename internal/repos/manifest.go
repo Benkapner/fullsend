@@ -64,20 +64,9 @@ type ForgeSection struct {
 // values passed via CLI flags to `repos install`. They are NOT stored
 // in the manifest.
 type GitHubForgeInfra struct {
-	URL             string `yaml:"url,omitempty"`
-	MintURL         string `yaml:"mint_url,omitempty"`
-	InferenceRegion string `yaml:"inference_region,omitempty"`
-	FullsendRef     string `yaml:"fullsend_ref,omitempty"`
-
-	// Deprecated: MintProject, MintRegion, InferenceProject, and
-	// InferenceProjectNumber are accepted for backward compatibility
-	// but ignored. GCP infrastructure is managed via `mint enroll`
-	// and `inference provision` commands. Project ID and project number
-	// are now install-time-only CLI flags.
-	MintProject            string `yaml:"mint_project,omitempty"`
-	MintRegion             string `yaml:"mint_region,omitempty"`
-	InferenceProject       string `yaml:"inference_project,omitempty"`
-	InferenceProjectNumber string `yaml:"inference_project_number,omitempty"`
+	URL         string `yaml:"url,omitempty"`
+	MintURL     string `yaml:"mint_url,omitempty"`
+	FullsendRef string `yaml:"fullsend_ref,omitempty"`
 }
 
 // DefaultGitHubURL is the default forge URL for GitHub.com.
@@ -119,9 +108,8 @@ type RepoEntry struct {
 	// fallback chain: per-repo → forge default → built-in default.
 	// Explicit null stops the chain. Omitted fields inherit the
 	// forge-level default.
-	InferenceRegion NullableString `yaml:"inference_region,omitempty"`
-	FullsendRef     NullableString `yaml:"fullsend_ref,omitempty"`
-	MintURL         NullableString `yaml:"mint_url,omitempty"`
+	FullsendRef NullableString `yaml:"fullsend_ref,omitempty"`
+	MintURL     NullableString `yaml:"mint_url,omitempty"`
 
 	// AllowedRemoteResources overrides the defaults.allowed_remote_resources
 	// list. A non-nil slice replaces the default; nil (omitted) inherits.
@@ -151,10 +139,6 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 			if err := decodeNullable(val, &r.Forge); err != nil {
 				return fmt.Errorf("decoding forge: %w", err)
 			}
-		case "inference_region":
-			if err := decodeNullable(val, &r.InferenceRegion); err != nil {
-				return fmt.Errorf("decoding inference_region: %w", err)
-			}
 		case "fullsend_ref":
 			if err := decodeNullable(val, &r.FullsendRef); err != nil {
 				return fmt.Errorf("decoding fullsend_ref: %w", err)
@@ -172,9 +156,6 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 					return fmt.Errorf("decoding allowed_remote_resources: %w", err)
 				}
 			}
-		case "inference_project", "base_harness":
-			// Deprecated per-repo fields. Silently ignored for
-			// backward compat.
 		default:
 			return fmt.Errorf("unknown field %q in repo entry", key.Value)
 		}
@@ -186,7 +167,7 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 // plain-string form (when no overrides are set) and the explicit-null
 // semantics for AllowedRemoteResources.
 func (r RepoEntry) MarshalYAML() (interface{}, error) {
-	hasOverrides := r.Forge.Set || r.InferenceRegion.Set || r.FullsendRef.Set ||
+	hasOverrides := r.Forge.Set || r.FullsendRef.Set ||
 		r.MintURL.Set || r.AllowedRemoteResources != nil
 	if !hasOverrides {
 		return r.Repo, nil
@@ -214,7 +195,6 @@ func (r RepoEntry) MarshalYAML() (interface{}, error) {
 	}
 
 	appendNullable("forge", r.Forge)
-	appendNullable("inference_region", r.InferenceRegion)
 	appendNullable("fullsend_ref", r.FullsendRef)
 	appendNullable("mint_url", r.MintURL)
 
@@ -319,9 +299,12 @@ type ResolvedConfig struct {
 	Forge                  string
 	ForgeConfig            ForgeConfig
 	MintURL                string
-	InferenceRegion        string
 	FullsendRef            string
 	AllowedRemoteResources []string
+}
+
+func parseManifestBytes(data []byte, m *Manifest) error {
+	return yaml.Unmarshal(data, m)
 }
 
 // LoadManifest reads and parses a repos.yaml manifest from a local
@@ -357,17 +340,8 @@ func LoadManifest(ctx context.Context, pathOrURL string) (*Manifest, error) {
 	}
 
 	var m Manifest
-	if err := yaml.Unmarshal(data, &m); err != nil {
+	if err := parseManifestBytes(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing manifest YAML: %w", err)
-	}
-
-	// Detect the old top-level mint: key and provide a clear migration error.
-	var raw map[string]interface{}
-	if err := yaml.Unmarshal(data, &raw); err == nil {
-		if _, hasMint := raw["mint"]; hasMint {
-			return nil, fmt.Errorf("manifest uses the deprecated top-level 'mint:' key; " +
-				"migrate to the per-forge section: forge: { github: { mint_url, mint_project, mint_region } }")
-		}
 	}
 
 	return &m, nil
@@ -797,12 +771,11 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 	// with per-repo overrides via the NullableString fallback chain.
 	// GitLab repos do not use mint or inference fields.
 	//
-	// InferenceProject and InferenceProjectNumber are install-time-only
-	// values provided via CLI flags — they are not stored in the
-	// manifest and are not populated here.
+	// InferenceProject, InferenceProjectNumber, and InferenceRegion
+	// are install-time-only values provided via CLI flags — they are
+	// not stored in the manifest and are not populated here.
 	if cfg.Forge == ForgeGitHub {
 		cfg.MintURL = resolveField(entry.MintURL, m.Forge.GitHub.MintURL, "")
-		cfg.InferenceRegion = resolveField(entry.InferenceRegion, m.Forge.GitHub.InferenceRegion, "")
 		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitHub.FullsendRef, "")
 	}
 	return cfg
@@ -882,6 +855,23 @@ func IsValidGCPProjectID(s string) bool {
 		}
 	}
 	return true
+}
+
+// IsValidGCPRegion checks that s looks like a GCP region: lowercase
+// letters, digits, and hyphens (e.g. "us-central1", "europe-west4").
+func IsValidGCPRegion(s string) bool {
+	if len(s) < 3 || len(s) > 40 {
+		return false
+	}
+	if s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return s[len(s)-1] != '-'
 }
 
 // IsNumeric reports whether s contains only ASCII digits.
