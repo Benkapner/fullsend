@@ -23,48 +23,31 @@ fullsend across an organization. Individual repo owners should use
 
 ## Getting started
 
-### Creating a manifest
+### Creating a manifest via migration
 
-Generate a `repos.yaml` manifest by discovering existing installations:
-
-```bash
-fullsend repos init <org> --forge github --all \
-  --mint-url <MINT_URL>
-```
-
-For a single repo:
+Migrate an org from per-org to per-repo install and generate a
+`repos.yaml` manifest:
 
 ```bash
-fullsend repos init <owner/repo> --forge github
+fullsend repos migrate <org> --project <gcp-project>
 ```
 
-For GitLab, provide the instance URL with `--forge-url` (required for
-GitLab since there is no default):
+Migrate only specific repos:
 
 ```bash
-fullsend repos init <org> --forge gitlab \
-  --forge-url https://gitlab.example.com
+fullsend repos migrate <org> --project <gcp-project> --repo api --repo web
 ```
 
-Instead of `--all`, specify a subset of repos with `--repos`:
+Preview what would be migrated without making changes:
 
 ```bash
-fullsend repos init acme --forge github --repos acme/api,acme/web
+fullsend repos migrate <org> --project <gcp-project> --dry-run
 ```
 
-`--repos` and `--all` are mutually exclusive.
-
-If a `repos.yaml` file already exists, pass `--force` to overwrite it:
-
-```bash
-fullsend repos init <org> --forge github --all --force
-```
-
-The command discovers per-repo and per-org installations, extracts
-current configuration (WIF provider, workflow ref, mint URL), and writes
-a manifest. Values for `fullsend_ref` and `inference_region` in the
-`forge.github` section are computed using the mode (most common value)
-across discovered repos.
+The command discovers enrolled repos from the per-org config, provisions
+WIF infrastructure per repo, installs per-repo (scaffold, variables,
+secrets), unenrolls migrated repos from per-org config, and generates
+a `repos.yaml` manifest.
 
 ### Multi-forge manifests
 
@@ -94,22 +77,12 @@ All repos under the same owner must use the same forge. A GitHub org
 and a GitLab group with the same name are different entities, and
 mixing forges under one owner would route API calls incorrectly.
 
-When initializing a manifest for GitLab repos, pass `--forge-url` to set
-`forge.gitlab.url` (required — GitLab has no default URL, unlike GitHub
-which defaults to `https://github.com`):
-
-```bash
-fullsend repos init acme --forge gitlab \
-  --forge-url https://gitlab.example.com
-```
-
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 `--gitlab-token` to `fullsend repos` subcommands. The `GITLAB_API_URL`
 environment variable is kept as a fallback for callers without a
 manifest.
 
-See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
-for all flags.
+See the [CLI reference](../../cli/repos.md) for all flags.
 
 ### Manifest paths and URLs
 
@@ -326,26 +299,25 @@ blocked unless `--force` is set.
 ## Migrating from per-org mode to manifest management
 
 Organizations migrating from per-org mode to per-repo manifest management
-can use the following workflow.
+can use `repos migrate` — a single command that handles the full migration.
 
-### Step 1: Generate a manifest from existing installations
-
-```bash
-fullsend repos init <org> --forge github --all \
-  --mint-url <MINT_URL>
-```
-
-This discovers all enrolled repos and writes `repos.yaml`.
-
-### Step 2: Install per-repo infrastructure
+### Step 1: Migrate from per-org to per-repo
 
 ```bash
-fullsend repos install -f repos.yaml
+fullsend repos migrate <org> --project <gcp-project>
 ```
 
-Each repo gets its own variables, secrets, and scaffold workflow.
+This discovers enrolled repos from the per-org config, provisions WIF
+infrastructure, installs per-repo (scaffold, variables, secrets),
+unenrolls migrated repos, and writes `repos.yaml`.
 
-### Step 3: Verify per-repo installations
+Preview first with `--dry-run`:
+
+```bash
+fullsend repos migrate <org> --project <gcp-project> --dry-run
+```
+
+### Step 2: Verify per-repo installations
 
 ```bash
 fullsend repos status -f repos.yaml
@@ -353,7 +325,7 @@ fullsend repos status -f repos.yaml
 
 Confirm all repos show `installed` status with no drift.
 
-### Step 4: Uninstall the per-org configuration
+### Step 3: Uninstall the per-org configuration
 
 ```bash
 fullsend github uninstall "$ORG_NAME"

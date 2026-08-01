@@ -12,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ func TestReposCommand_HasSubcommands(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		names[sub.Name()] = true
 	}
-	assert.True(t, names["init"], "expected init subcommand")
+	assert.True(t, names["migrate"], "expected migrate subcommand")
 	assert.True(t, names["install"], "expected install subcommand")
 	assert.True(t, names["uninstall"], "expected uninstall subcommand")
 	assert.True(t, names["status"], "expected status subcommand")
@@ -38,69 +39,218 @@ func TestReposCommand_RegisteredInRoot(t *testing.T) {
 	assert.True(t, names["repos"], "expected repos subcommand on root")
 }
 
-func TestReposInitCmd_RequiresArg(t *testing.T) {
+func TestReposMigrateCmd_RequiresArg(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init"})
+	cmd.SetArgs([]string{"repos", "migrate"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
 }
 
-func TestReposInitCmd_Flags(t *testing.T) {
-	cmd := newReposInitCmd()
+func TestReposMigrateCmd_Flags(t *testing.T) {
+	cmd := newReposMigrateCmd()
 
-	outputFlag := cmd.Flags().Lookup("output")
-	require.NotNil(t, outputFlag, "expected --output flag")
-	assert.Equal(t, "repos.yaml", outputFlag.DefValue)
+	projectFlag := cmd.Flags().Lookup("project")
+	require.NotNil(t, projectFlag, "expected --project flag")
 
-	reposFlag := cmd.Flags().Lookup("repos")
-	require.NotNil(t, reposFlag, "expected --repos flag")
+	repoFlag := cmd.Flags().Lookup("repo")
+	require.NotNil(t, repoFlag, "expected --repo flag")
 
-	allFlag := cmd.Flags().Lookup("all")
-	require.NotNil(t, allFlag, "expected --all flag")
-	assert.Equal(t, "false", allFlag.DefValue)
+	dryRunFlag := cmd.Flags().Lookup("dry-run")
+	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
+	assert.Equal(t, "false", dryRunFlag.DefValue)
 
-	mintURLFlag := cmd.Flags().Lookup("mint-url")
-	require.NotNil(t, mintURLFlag, "expected --mint-url flag")
-
-	inferenceRegionFlag := cmd.Flags().Lookup("inference-region")
-	require.NotNil(t, inferenceRegionFlag, "expected --inference-region flag")
-
-	fullsendRefFlag := cmd.Flags().Lookup("fullsend-ref")
-	require.NotNil(t, fullsendRefFlag, "expected --fullsend-ref flag")
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
 
 	concurrencyFlag := cmd.Flags().Lookup("concurrency")
 	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
-	assert.Equal(t, "8", concurrencyFlag.DefValue)
+	assert.Equal(t, "4", concurrencyFlag.DefValue)
 
-	forceFlag := cmd.Flags().Lookup("force")
-	require.NotNil(t, forceFlag, "expected --force flag")
-	assert.Equal(t, "false", forceFlag.DefValue)
+	manifestFlag := cmd.Flags().Lookup("manifest")
+	require.NotNil(t, manifestFlag, "expected --manifest flag")
+	assert.Equal(t, "repos.yaml", manifestFlag.DefValue)
+
+	shorthand := cmd.Flags().ShorthandLookup("f")
+	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
 }
 
-func TestReposInitCmd_ForgeFlag(t *testing.T) {
-	cmd := newReposInitCmd()
-	forgeFlag := cmd.Flags().Lookup("forge")
-	require.NotNil(t, forgeFlag, "expected --forge flag")
-	assert.Equal(t, "", forgeFlag.DefValue, "--forge should have no default (required)")
-}
-
-func TestReposInitCmd_InvalidForge(t *testing.T) {
+func TestReposMigrateCmd_ProjectRequired(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--forge", "unknown", "test-org", "--all"})
+	cmd.SetArgs([]string{"repos", "migrate", "test-org"})
 	t.Setenv("GH_TOKEN", "test-token")
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not a valid forge platform")
+	assert.Contains(t, err.Error(), "required flag(s) \"project\" not set")
 }
 
-func TestReposInitCmd_ForgeFlagRequired(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "test-org", "--all"})
-	t.Setenv("GH_TOKEN", "test-token")
-	err := cmd.Execute()
+func TestReposMigrateCmd_ConcurrencyValidation(t *testing.T) {
+	err := runReposMigrate(nil, "acme", &reposMigrateConfig{
+		project:     "my-project-id",
+		concurrency: 0,
+	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "required flag(s) \"forge\" not set")
+	assert.Contains(t, err.Error(), "--concurrency must be between 1 and 32")
+}
+
+func TestReposMigrateCmd_InvalidProject(t *testing.T) {
+	err := runReposMigrate(nil, "acme", &reposMigrateConfig{
+		project:     "INVALID-CAPS",
+		concurrency: 4,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project")
+}
+
+// fakeCLIProvisioner implements repos.InferenceProvisioner for CLI tests.
+type fakeCLIProvisioner struct {
+	statusResults    map[string]string
+	provisionResults map[string]string
+}
+
+func (p *fakeCLIProvisioner) Status(_ context.Context, owner, repo string) (string, error) {
+	return p.statusResults[owner+"/"+repo], nil
+}
+
+func (p *fakeCLIProvisioner) Provision(_ context.Context, owner, repo string) (string, error) {
+	key := owner + "/" + repo
+	if r, ok := p.provisionResults[key]; ok {
+		return r, nil
+	}
+	return "projects/123/locations/global/workloadIdentityPools/inference/providers/prov", nil
+}
+
+func newMigrateFakeClient(org string, repoNames ...string) *forge.FakeClient {
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+
+	configYAML := "version: \"1\"\ndispatch:\n  platform: github-actions\n  mode: oidc-mint\n  mint_url: https://mint.example.com\nrepos:\n"
+	for _, name := range repoNames {
+		configYAML += "  " + name + ":\n    enabled: true\n"
+		fullName := org + "/" + name
+		fc.FileContents[fullName+"/.github/workflows/fullsend.yml"] = []byte(
+			"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+		fc.Repos = append(fc.Repos, forge.Repository{
+			FullName:      fullName,
+			Name:          name,
+			DefaultBranch: "main",
+		})
+	}
+	fc.FileContents[org+"/.fullsend/config.yaml"] = []byte(configYAML)
+
+	return fc
+}
+
+func newMigrateCmd(t *testing.T) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "test"}
+	cmd.SetContext(context.Background())
+	return cmd
+}
+
+func TestRunReposMigrate_DryRun(t *testing.T) {
+	fc := newMigrateFakeClient("acme", "api", "web")
+	prov := &fakeCLIProvisioner{
+		statusResults:    make(map[string]string),
+		provisionResults: make(map[string]string),
+	}
+
+	cmd := newMigrateCmd(t)
+
+	err := runReposMigrate(cmd, "acme", &reposMigrateConfig{
+		project:         "my-project-id",
+		dryRun:          true,
+		concurrency:     4,
+		manifest:        filepath.Join(t.TempDir(), "repos.yaml"),
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposMigrate_Success(t *testing.T) {
+	fc := newMigrateFakeClient("acme", "api")
+	prov := &fakeCLIProvisioner{
+		statusResults:    make(map[string]string),
+		provisionResults: make(map[string]string),
+	}
+
+	manifestPath := filepath.Join(t.TempDir(), "repos.yaml")
+
+	cmd := newMigrateCmd(t)
+	err := runReposMigrate(cmd, "acme", &reposMigrateConfig{
+		project:         "my-project-id",
+		concurrency:     4,
+		direct:          true,
+		manifest:        manifestPath,
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(manifestPath)
+	assert.NoError(t, statErr, "manifest file should be written")
+}
+
+func TestRunReposMigrate_NoConfigRepo(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	prov := &fakeCLIProvisioner{
+		statusResults:    make(map[string]string),
+		provisionResults: make(map[string]string),
+	}
+
+	cmd := newMigrateCmd(t)
+	err := runReposMigrate(cmd, "acme", &reposMigrateConfig{
+		project:         "my-project-id",
+		concurrency:     4,
+		manifest:        filepath.Join(t.TempDir(), "repos.yaml"),
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nothing to migrate")
+}
+
+func TestRunReposMigrate_WithRepoFilter(t *testing.T) {
+	fc := newMigrateFakeClient("acme", "api", "web")
+	prov := &fakeCLIProvisioner{
+		statusResults:    make(map[string]string),
+		provisionResults: make(map[string]string),
+	}
+
+	cmd := newMigrateCmd(t)
+	err := runReposMigrate(cmd, "acme", &reposMigrateConfig{
+		project:         "my-project-id",
+		concurrency:     4,
+		direct:          true,
+		repoFilter:      []string{"api"},
+		manifest:        filepath.Join(t.TempDir(), "repos.yaml"),
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposMigrate_UnenrollError(t *testing.T) {
+	fc := newMigrateFakeClient("acme", "api")
+	fc.Errors["CreateOrUpdateFile"] = errors.New("write fail")
+	prov := &fakeCLIProvisioner{
+		statusResults:    make(map[string]string),
+		provisionResults: make(map[string]string),
+	}
+
+	cmd := newMigrateCmd(t)
+	err := runReposMigrate(cmd, "acme", &reposMigrateConfig{
+		project:         "my-project-id",
+		concurrency:     4,
+		direct:          true,
+		manifest:        filepath.Join(t.TempDir(), "repos.yaml"),
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unenroll failed")
 }
 
 func TestReposCmd_GitLabTokenFlag(t *testing.T) {
@@ -174,28 +324,13 @@ repos: []
 	assert.NoError(t, err)
 }
 
-func TestReposInitCmd_OutputShorthand(t *testing.T) {
-	cmd := newReposInitCmd()
-	outputFlag := cmd.Flags().ShorthandLookup("o")
-	require.NotNil(t, outputFlag, "expected -o shorthand for --output")
-}
-
-func TestReposInitCmd_ValidatesOrgName(t *testing.T) {
+func TestReposMigrateCmd_ValidatesOrgName(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--forge", "github", "--", "-invalid"})
+	cmd.SetArgs([]string{"repos", "migrate", "--project", "my-project-id", "--", "-invalid"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot start or end with a hyphen")
-}
-
-func TestReposInitCmd_ReposAllMutuallyExclusive(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "test-org", "--forge", "github", "--all", "--repos", "foo/bar"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "if any flags in the group [repos all] are set none of the others can be")
 }
 
 func TestReposStatusCmd_Flags(t *testing.T) {
@@ -1510,13 +1645,4 @@ repos:
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to uninstall")
-}
-
-func TestReposInitCmd_GitLabNoToken(t *testing.T) {
-	t.Setenv("GITLAB_TOKEN", "")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"repos", "init", "--forge", "gitlab", "--all", "test-org"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GitLab token found")
 }

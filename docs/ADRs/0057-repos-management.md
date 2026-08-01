@@ -131,7 +131,7 @@ and implementation details are in the
 
 Implemented subcommands:
 
-- `repos init` — PR #3033
+- `repos migrate` — PR #5816 (replaced `repos init`; one-command migration from per-org to per-repo)
 - `repos install` — PR #3033, consolidated into convergence operator in PR #5807
 - `repos status` — PR #3031
 - `repos uninstall` — PR #4081, expanded with `--manifest-only` and `--uninstall-only` in PR #5807
@@ -143,3 +143,7 @@ Consolidated in PR #5807 (absorbed into `repos install` and `repos uninstall`):
 - `repos diff` (PR #4079) → `repos install --dry-run`
 - `repos sync` (PR #4079) → `repos install` convergence phase
 - `repos upgrade` (PR #4080) → `repos install` convergence phase
+
+Removed:
+
+- `repos init` (PR #3033) → replaced by `repos migrate` in PR #5816

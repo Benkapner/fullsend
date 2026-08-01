@@ -18,58 +18,40 @@ These flags are inherited by all `repos` subcommands:
 
 | Command | Description |
 |---------|-------------|
-| `fullsend repos init <org\|owner/repo>` | Generate a repos.yaml manifest by discovering existing installations |
+| `fullsend repos migrate <org>` | Migrate an org from per-org to per-repo install |
 | `fullsend repos install [repos...]` | Converge repos to the desired state defined in a manifest |
 | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | `fullsend repos status` | Compare manifest against actual repo state |
 
-## `repos init`
+## `repos migrate`
 
-Discovers existing fullsend installations (per-repo and per-org) and generates a `repos.yaml` manifest reflecting their current state. Supports greenfield onboarding and migration from existing installations.
+One-command migration from per-org to per-repo fullsend installation. For each repo enrolled in the org's per-org config:
+
+1. Check inference WIF status; provision if needed
+2. Install per-repo (scaffold workflows, variables, secrets)
+3. Unenroll from per-org config
+
+Generates a `repos.yaml` manifest reflecting the migrated state. Re-running after a partial migration picks up where it left off.
 
 ```bash
-fullsend repos init <org> --forge github --all --mint-url <MINT_URL>
-```
-
-Single-repo mode:
-
-```bash
-fullsend repos init <owner/repo> --forge github
+fullsend repos migrate <org> --project <gcp-project>
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--output`, `-o` | `repos.yaml` | Output path (use `-` for stdout) |
-| `--repos` | | Comma-separated list of repos to include |
-| `--all` | `false` | Include all eligible repos without prompting |
-| `--mint-url` | | Token mint Cloud Run endpoint URL |
-| `--inference-region` | | GCP region for inference (default: `us-central1`) |
-| `--fullsend-ref` | | Pin the fullsend workflow ref (e.g. `v0.42.0`) |
-| `--concurrency` | `8` | Max parallel API calls (capped at 64) |
-| `--forge` | **(required)** | Forge type for discovered repos (`github` or `gitlab`) |
-| `--forge-url` | | Forge instance URL (required for `gitlab`; defaults to `https://github.com` for `github`) |
-| `--force` | `false` | Overwrite output file if it already exists |
+| `--project` | **(required)** | GCP project ID for inference |
+| `--repo` | | Filter to specific repos (repeatable, supports globs) |
+| `--dry-run` | `false` | Preview only |
+| `--direct` | `false` | Push scaffold to default branch instead of PR |
+| `--concurrency` | `4` | Parallel limit (1-32) |
+| `-f`, `--manifest` | `repos.yaml` | Output path for generated repos.yaml |
 
-### Discovery
+### Required GCP permissions
 
-The command discovers repos by checking:
-
-1. **Per-repo guard variable** (`FULLSEND_PER_REPO_INSTALL`) — identifies per-repo installations
-2. **Per-org config enrollment** (`config.yaml` in `.fullsend` repo) — identifies per-org installations; if no mint URL is set in the org config, falls back to the `FULLSEND_MINT_URL` org-level Actions variable
-3. **Workflow ref** — extracts the `@ref` from scaffold shim workflow files
-
-### Defaults computation
-
-Values for `fullsend_ref` and `inference_region` in the `forge.github` section are computed using the mode (most common value) across discovered repos.
-
-### Selection modes
-
-For org targets, one of `--all` or `--repos` is required:
-
-- `--all`: include all discovered repos
-- `--repos`: include only the specified repos (comma-separated `owner/repo` names)
+- `roles/iam.workloadIdentityPoolAdmin`
+- `roles/resourcemanager.projectIamAdmin`
 
 ## `repos install`
 

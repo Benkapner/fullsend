@@ -4,15 +4,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
@@ -29,161 +30,187 @@ The repos subcommand group provides bulk operations for platform administrators
 managing fullsend across many repositories and organizations.`,
 	}
 	cmd.PersistentFlags().String("gitlab-token", "", "GitLab personal or project access token (overrides GITLAB_TOKEN env var)")
-	cmd.AddCommand(newReposInitCmd())
+	cmd.AddCommand(newReposMigrateCmd())
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
 	return cmd
 }
 
-type reposInitConfig struct {
-	output          string
-	repoNames       string
-	all             bool
-	mintURL         string
-	inferenceRegion string
-	fullsendRef     string
-	concurrency     int
-	force           bool
-	forge           string
-	forgeURL        string
-	gitlabToken     string
+type reposMigrateConfig struct {
+	project     string
+	repoFilter  []string
+	dryRun      bool
+	direct      bool
+	concurrency int
+	manifest    string
+
+	// Test overrides
+	testClient      forge.Client
+	testProvisioner repos.InferenceProvisioner
 }
 
-func newReposInitCmd() *cobra.Command {
-	var cfg reposInitConfig
+func newReposMigrateCmd() *cobra.Command {
+	var cfg reposMigrateConfig
 
 	cmd := &cobra.Command{
-		Use:   "init <org|owner/repo>",
-		Short: "Generate a repos.yaml manifest by discovering existing installations",
-		Long: `Discovers existing fullsend installations (per-repo and per-org) and
-generates a repos.yaml manifest reflecting their current state.
+		Use:   "migrate <org>",
+		Short: "Migrate an org from per-org to per-repo install",
+		Long: `One-command migration from per-org to per-repo fullsend installation.
 
-For greenfield onboarding, select which repos to include and the command
-generates a manifest with default config. For migration from existing
-installations, the command discovers their state and generates a manifest
-that reflects current reality.`,
+For each repo enrolled in the org's per-org config (.fullsend config repo):
+  1. Check inference WIF status; provision if needed
+  2. Install per-repo (scaffold workflows, variables, secrets)
+  3. Unenroll from per-org config
+
+Generates a repos.yaml manifest reflecting the migrated state.
+
+Re-running after a partial migration picks up where it left off:
+  - Already per-repo installed → skipped
+  - Inference already provisioned → reuse existing WIF provider
+  - Already unenrolled → no-op
+
+Individual repo failures do not abort the batch.
+
+Required GCP permissions:
+  - roles/iam.workloadIdentityPoolAdmin
+  - roles/resourcemanager.projectIamAdmin`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target := args[0]
-			cfg.gitlabToken = getGitLabToken(cmd)
-
-			if !repos.IsValidForge(cfg.forge) {
-				return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", cfg.forge, repos.ForgeGitHub, repos.ForgeGitLab)
-			}
-
-			forgeSection := repos.ForgeSectionFromURL(cfg.forge, cfg.forgeURL)
-			clients := newForgeClientFactory(cfg.gitlabToken, forgeSection)
-			// Eagerly validate that a client can be created for the forge.
-			if _, err := clients.ConfigFor(cfg.forge); err != nil {
+			org := args[0]
+			if err := validateOrgName(org); err != nil {
 				return err
 			}
-			printerOut := os.Stdout
-			if cfg.output == "-" {
-				printerOut = os.Stderr
-			}
-			printer := ui.New(printerOut)
-			printer.Banner(Version())
-			ctx := cmd.Context()
-
-			owner := target
-			if idx := strings.IndexByte(target, '/'); idx >= 0 {
-				owner = target[:idx]
-			}
-			if cfg.forge != repos.ForgeGitLab {
-				if err := validateOrgName(owner); err != nil {
-					return err
-				}
-			}
-
-			initCfg := repos.InitConfig{
-				Target:          target,
-				All:             cfg.all,
-				Forge:           cfg.forge,
-				ForgeURL:        cfg.forgeURL,
-				MintURL:         cfg.mintURL,
-				InferenceRegion: cfg.inferenceRegion,
-				FullsendRef:     cfg.fullsendRef,
-				MaxConcurrency:  cfg.concurrency,
-				CLIVersion:      version,
-			}
-
-			if cfg.repoNames != "" {
-				parts := strings.Split(cfg.repoNames, ",")
-				for i, p := range parts {
-					parts[i] = strings.TrimSpace(p)
-				}
-				initCfg.Repos = parts
-			}
-
-			progress := func(repo, phase, message string) {
-				printer.StepInfo(fmt.Sprintf("[%s] %s: %s", phase, repo, message))
-			}
-
-			result, err := repos.Init(ctx, initCfg, clients, nil, progress)
-			if err != nil {
-				return err
-			}
-
-			data, err := repos.MarshalWithHeader(result.Manifest)
-			if err != nil {
-				return err
-			}
-
-			if cfg.output == "-" {
-				fmt.Print(string(data))
-			} else {
-				if !cfg.force {
-					if _, statErr := os.Stat(cfg.output); statErr == nil {
-						return fmt.Errorf("output file %s already exists (use --force to overwrite)", cfg.output)
-					} else if !errors.Is(statErr, os.ErrNotExist) {
-						return fmt.Errorf("checking output file: %w", statErr)
-					}
-				}
-				if writeErr := os.WriteFile(cfg.output, data, 0o644); writeErr != nil {
-					return fmt.Errorf("writing manifest: %w", writeErr)
-				}
-				printer.StepDone(fmt.Sprintf("Manifest written to %s", cfg.output))
-			}
-
-			printer.Blank()
-			printer.StepInfo(fmt.Sprintf("Discovered: %d per-repo, %d per-org, %d new",
-				result.PerRepoCount, result.PerOrgCount, result.NewCount))
-
-			if len(result.Errors) > 0 {
-				printer.Blank()
-				printer.StepWarn(fmt.Sprintf("Discovery failed for %d repos (excluded from manifest):", len(result.Errors)))
-				for _, e := range result.Errors {
-					printer.StepWarn("- " + e)
-				}
-			}
-
-			if len(result.TODOs) > 0 {
-				printer.Blank()
-				printer.StepInfo("TODOs (fields requiring manual attention):")
-				for _, todo := range result.TODOs {
-					printer.StepInfo("- " + todo)
-				}
-			}
-
-			return nil
+			return runReposMigrate(cmd, org, &cfg)
 		},
 	}
 
-	cmd.Flags().StringVarP(&cfg.output, "output", "o", "repos.yaml", "output path (use - for stdout)")
-	cmd.Flags().StringVar(&cfg.repoNames, "repos", "", "comma-separated list of repos to include")
-	cmd.Flags().BoolVar(&cfg.all, "all", false, "include all eligible repos without prompting")
-	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint Cloud Run endpoint URL")
-	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (default: us-central1)")
-	cmd.Flags().StringVar(&cfg.fullsendRef, "fullsend-ref", "", "pin the fullsend workflow ref (e.g. v0.42.0)")
-	cmd.Flags().IntVar(&cfg.concurrency, "concurrency", 8, "max parallel API calls (capped at 64)")
-	cmd.Flags().BoolVar(&cfg.force, "force", false, "overwrite output file if it already exists")
-	cmd.Flags().StringVar(&cfg.forge, "forge", "", "forge type for discovered repos (github or gitlab)")
-	_ = cmd.MarkFlagRequired("forge")
-	cmd.Flags().StringVar(&cfg.forgeURL, "forge-url", "", "forge instance URL (required for gitlab; defaults to https://github.com for github)")
-	cmd.MarkFlagsMutuallyExclusive("repos", "all")
+	cmd.Flags().StringVar(&cfg.project, "project", "", "GCP project ID for inference (required)")
+	_ = cmd.MarkFlagRequired("project")
+	cmd.Flags().StringSliceVar(&cfg.repoFilter, "repo", nil, "filter to specific repos (repeatable, supports globs)")
+	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "preview only")
+	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold to default branch instead of PR")
+	cmd.Flags().IntVar(&cfg.concurrency, "concurrency", 4, "parallel limit (1-32)")
+	cmd.Flags().StringVarP(&cfg.manifest, "manifest", "f", "repos.yaml", "output path for generated repos.yaml")
 
 	return cmd
+}
+
+func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) error {
+	if cfg.concurrency < 1 || cfg.concurrency > 32 {
+		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", cfg.concurrency)
+	}
+	if !repos.IsValidGCPProjectID(cfg.project) {
+		return fmt.Errorf("--project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter, no trailing hyphen)", cfg.project)
+	}
+
+	printer := ui.New(os.Stdout)
+	printer.Banner(Version())
+	ctx := cmd.Context()
+
+	var clients repos.ForgeClientFactory
+	if cfg.testClient != nil {
+		clients = newSingleClientFactory(cfg.testClient)
+	} else {
+		clients = newForgeClientFactory("", repos.ForgeSection{})
+	}
+
+	var provisioner repos.InferenceProvisioner
+	if cfg.testProvisioner != nil {
+		provisioner = cfg.testProvisioner
+	} else {
+		provisioner = newGCPInferenceProvisioner(cfg.project)
+	}
+
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+
+	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
+		fc, fcErr := clients.ConfigFor(repos.ForgeGitHub)
+		if fcErr != nil {
+			return fcErr
+		}
+		targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
+		if repoErr != nil {
+			return fmt.Errorf("getting repo info: %w", repoErr)
+		}
+		commitMsg := "chore: initialize fullsend per-repo installation"
+		prTitle := "chore: initialize fullsend per-repo installation"
+		prBody := defaultScaffoldPRBody
+		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
+			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
+		return commitErr
+	}
+
+	progressFn := func(repo, phase, msg string) {
+		switch phase {
+		case "done":
+			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		default:
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	printer.Blank()
+	if cfg.dryRun {
+		printer.StepStart("Dry-run: previewing migration")
+	} else {
+		printer.StepStart(fmt.Sprintf("Migrating %s from per-org to per-repo install", org))
+	}
+
+	migrateCfg := repos.MigrateConfig{
+		Org:            org,
+		Project:        cfg.project,
+		RepoFilter:     cfg.repoFilter,
+		DryRun:         cfg.dryRun,
+		Direct:         cfg.direct,
+		MaxConcurrency: cfg.concurrency,
+		ManifestPath:   cfg.manifest,
+		UpstreamRef:    upstreamRef,
+		UpstreamTag:    upstreamTag,
+		CLIVersion:     version,
+	}
+
+	result, err := repos.Migrate(ctx, migrateCfg, clients, provisioner, scaffoldCommitFn, progressFn)
+	if err != nil {
+		return err
+	}
+
+	// Write manifest if generated (skip in dry-run mode).
+	if !cfg.dryRun && result.Manifest != nil {
+		data, marshalErr := repos.MarshalWithHeader(result.Manifest)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if writeErr := os.WriteFile(cfg.manifest, data, 0o644); writeErr != nil {
+			return fmt.Errorf("writing manifest: %w", writeErr)
+		}
+		printer.StepDone(fmt.Sprintf("Manifest written to %s", cfg.manifest))
+	}
+
+	// Print summary.
+	printer.Blank()
+	migrated := len(result.Migrated)
+	skipped := len(result.Skipped)
+	failed := len(result.Failed)
+
+	for _, r := range result.Failed {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+
+	if result.UnenrollError != nil {
+		printer.StepInfo(fmt.Sprintf("  WARNING: unenroll failed — %v", result.UnenrollError))
+	}
+
+	printer.StepDone(fmt.Sprintf("Migration complete: %d migrated, %d skipped, %d failed, %d unenrolled",
+		migrated, skipped, failed, result.Unenrolled))
+
+	if failed > 0 {
+		return fmt.Errorf("%d repos failed during migration", failed)
+	}
+	if result.UnenrollError != nil {
+		return fmt.Errorf("migration succeeded but unenroll failed: %w", result.UnenrollError)
+	}
+	return nil
 }
 
 func newReposStatusCmd() *cobra.Command {
@@ -968,4 +995,53 @@ func checkAllForgeScopes(ctx context.Context, m *repos.Manifest, clients repos.F
 		}
 	}
 	return nil
+}
+
+// gcpInferenceProvisioner implements repos.InferenceProvisioner using live
+// GCP API calls. It provisions per-repo WIF infrastructure in the specified
+// GCP project.
+type gcpInferenceProvisioner struct {
+	project string
+}
+
+func newGCPInferenceProvisioner(project string) *gcpInferenceProvisioner {
+	return &gcpInferenceProvisioner{project: project}
+}
+
+func (p *gcpInferenceProvisioner) Status(ctx context.Context, owner, repo string) (string, error) {
+	gcpClient := gcf.NewLiveGCFClient(p.project)
+	providerID := mintcore.BuildRepoProviderID(owner, repo)
+
+	projectNumber, err := gcpClient.GetProjectNumber(ctx, p.project)
+	if err != nil {
+		return "", fmt.Errorf("getting project number: %w", err)
+	}
+
+	providerInfo, err := gcpClient.GetWIFProvider(ctx, projectNumber, gcf.DefaultInferencePool, providerID)
+	if err != nil {
+		return "", fmt.Errorf("checking WIF provider: %w", err)
+	}
+	if providerInfo == nil {
+		return "", nil
+	}
+
+	wifProvider := fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
+		projectNumber, gcf.DefaultInferencePool, providerID)
+	return wifProvider, nil
+}
+
+func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo string) (string, error) {
+	gcpClient := gcf.NewLiveGCFClient(p.project)
+	provisioner := gcf.NewProvisioner(gcf.Config{
+		ProjectID:   p.project,
+		GitHubOrgs:  []string{owner},
+		Repo:        owner + "/" + repo,
+		WIFPoolName: gcf.DefaultInferencePool,
+	}, gcpClient)
+
+	wifProvider, err := provisioner.ProvisionWIF(ctx)
+	if err != nil {
+		return "", fmt.Errorf("provisioning WIF: %w", err)
+	}
+	return wifProvider, nil
 }
