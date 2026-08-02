@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -482,12 +483,24 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	printer.StepStart("Loading manifest")
 	manifest, err := repos.LoadManifest(ctx, opts.manifest)
 	if err != nil {
-		return fmt.Errorf("loading manifest: %w", err)
+		// Bootstrap an empty manifest when the file does not exist and
+		// positional repos are provided. The --forge requirement is
+		// enforced later when repos are added to the manifest.
+		if len(opts.repoFilter) > 0 &&
+			!strings.HasPrefix(opts.manifest, "https://") &&
+			!strings.HasPrefix(opts.manifest, "http://") &&
+			errors.Is(err, os.ErrNotExist) {
+			manifest = &repos.Manifest{Version: 1}
+			printer.StepDone("No manifest found; bootstrapping new manifest")
+		} else {
+			return fmt.Errorf("loading manifest: %w", err)
+		}
+	} else {
+		if err := manifest.Validate(); err != nil {
+			return fmt.Errorf("manifest validation failed: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
 	}
-	if err := manifest.Validate(); err != nil {
-		return fmt.Errorf("manifest validation failed: %w", err)
-	}
-	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
 
 	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
