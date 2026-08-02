@@ -12,7 +12,7 @@ parser, a new forge method, and read-only status. Phase 2 (PRs 5–8)
 adds write operations: bulk install, sync/diff, upgrade, add/remove/uninstall.
 
 > **Consolidation (PR #5807):** The 9-command surface area was
-> consolidated to 4 commands (`init`, `install`, `uninstall`, `status`).
+> consolidated to 5 commands (`migrate`, `install`, `uninstall`, `status`, `set-default`).
 > `repos install` became a convergence operator (provision + sync + upgrade).
 > `repos uninstall` gained `--manifest-only` and `--uninstall-only` flags.
 > See [repos-command-consolidation.md](repos-command-consolidation.md).
@@ -39,12 +39,8 @@ forge:
     # url: https://github.example.com
     # Shared mint infrastructure — one mint serves all repos.
     # mint_url: Cloud Run endpoint (contains a random hash, not derivable from project/region).
-    # mint_project + mint_region: needed for WIF provisioning (IAM bindings).
     mint_url: https://fullsend-mint-abc123-uc.a.run.app
-    mint_project: acme-fullsend-prod
-    mint_region: us-central1
-    # GitHub-specific inference and version settings.
-    inference_project: acme-inference-prod
+    # GitHub-specific version settings.
     fullsend_ref: v2.3.0
   # gitlab:
   #   url: https://gitlab.example.com  # required, no default
@@ -77,7 +73,6 @@ Manifest fields map to repo-level resources as follows:
 
 | Manifest field | Repo resource | Type |
 |---|---|---|
-| `forge.github.inference_project` | `FULLSEND_GCP_PROJECT_ID` | Secret |
 | `forge.github.fullsend_ref` | `@ref` in scaffold shim `uses:` line | Workflow file |
 | `forge.github.mint_url` | `FULLSEND_MINT_URL` | Variable |
 | `allowed_remote_resources` | `allowed_remote_resources` in org `config.yaml` | Config file ¹ |
@@ -87,8 +82,8 @@ not a per-repo resource. It is not managed by `repos sync`.
 
 #### Field resolution
 
-Infrastructure fields (`inference_project`,
-`fullsend_ref`) live in the forge-specific section (`forge.github`).
+Infrastructure fields (`fullsend_ref`) live in the forge-specific
+section (`forge.github`).
 `defaults` holds only `forge` and `allowed_remote_resources`.
 Repo entries may override `forge` but not infrastructure fields.
 
@@ -127,11 +122,11 @@ Cross-org sharing works because:
 
 ### Subcommand specifications
 
-#### `fullsend repos init`
+#### `fullsend repos migrate`
 
 Generates a `repos.yaml` manifest. Discovers existing per-repo and
 per-org installations. Covered by the
-[repos init plan](repos-init.md).
+[repos migrate plan](repos-init.md).
 
 #### `fullsend repos status`
 
@@ -195,7 +190,7 @@ Reconciles configuration drift for installed repos.
 | Resource | Action |
 |----------|--------|
 | `FULLSEND_MINT_URL` variable | Upsert to match manifest `forge.github.mint_url` |
-| `FULLSEND_GCP_PROJECT_ID` secret | Upsert to match resolved `inference_project` |
+| `FULLSEND_GCP_PROJECT_ID` secret | Upsert (value passed via `--inference-project` CLI flag) |
 
 Sync does **not** touch scaffold shim version (managed by `upgrade`),
 harness files (managed via ADR 0045's `base` composition), or the
@@ -336,7 +331,7 @@ PR 8 depends on PRs 1 and 3 (reuses install types +
 parallel with PRs 4–7. Implements three commands: `repos add`,
 `repos remove`, and `repos uninstall`.
 
-The `repos init` command is covered by a
+The `repos migrate` command is covered by a
 [separate implementation plan](repos-init.md) and can be developed
 in parallel with PRs 4–8.
 
@@ -367,7 +362,6 @@ type InstallConfig struct {
     MintURL                 string
     InferenceProject        string
     InferenceRegion         string
-    InferenceProjectNumber  string
     UpstreamRef             string
     SkipAppSetup            bool
     SkipMintCheck           bool
@@ -459,12 +453,9 @@ type ForgeSection struct {
 }
 
 type GitHubForgeInfra struct {
-    URL              string `yaml:"url,omitempty"`
-    MintURL          string `yaml:"mint_url,omitempty"`
-    MintProject      string `yaml:"mint_project,omitempty"`
-    MintRegion       string `yaml:"mint_region,omitempty"`
-    InferenceProject string `yaml:"inference_project,omitempty"`
-    FullsendRef      string `yaml:"fullsend_ref,omitempty"`
+    URL         string `yaml:"url,omitempty"`
+    MintURL     string `yaml:"mint_url,omitempty"`
+    FullsendRef string `yaml:"fullsend_ref,omitempty"`
 }
 
 type GitLabForgeInfra struct {
@@ -556,7 +547,6 @@ the URL fetching logic from the harness resource loader.
 - `version` is 1 (only supported version).
 - `forge.github.url` defaults to `https://github.com` when unset; must be a valid HTTPS URL with no path.
 - `forge.github.mint_url` is a valid HTTPS URL (when GitHub repos are present).
-- `forge.github.mint_project` and `forge.github.mint_region` are non-empty (when GitHub repos are present).
 - `forge.gitlab.url` is required and must be a valid HTTPS URL with no path (when GitLab repos are present).
 - Each repo entry has a valid `owner/repo` format.
 - No duplicate repos (after glob expansion).
@@ -610,8 +600,8 @@ the URL fetching logic from the harness resource loader.
   The `override` parameter is `NullableString` because the forge field
   on `RepoEntry` uses three-state semantics. The `fallback` parameter
   is plain `string` because defaults are either set or empty — no null
-  distinction needed. Infrastructure fields (`InferenceProject`,
-  `InferenceRegion`, `FullsendRef`) are sourced from the forge-specific
+  distinction needed. Infrastructure fields (`FullsendRef`) are
+  sourced from the forge-specific
   section (`forge.github`) rather than per-repo overrides.
 
 - Return `ResolvedConfig` with all fields resolved.
@@ -623,10 +613,6 @@ type ResolvedConfig struct {
     Forge                  string
     ForgeConfig            ForgeConfig
     MintURL                string
-    MintProject            string
-    MintRegion             string
-    InferenceProject       string
-    InferenceRegion        string
     FullsendRef            string
     AllowedRemoteResources []string
 }
@@ -981,7 +967,7 @@ What sync reconciles:
 |----------|--------|
 | `FULLSEND_MINT_URL` | Upsert to match `forge.github.mint_url` |
 | `FULLSEND_PER_REPO_INSTALL` | Ensure `"true"` |
-| `FULLSEND_GCP_PROJECT_ID` | Upsert to match resolved `inference_project` |
+| `FULLSEND_GCP_PROJECT_ID` | Upsert (value passed via `--inference-project` CLI flag) |
 
 What sync does NOT touch:
 

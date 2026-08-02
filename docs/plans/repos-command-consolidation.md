@@ -1,4 +1,4 @@
-# Plan: Repos Command Consolidation (9 → 4)
+# Plan: Repos Command Consolidation (9 → 5)
 
 ## Context
 
@@ -28,10 +28,11 @@ adds.
 
 | Command | What it does |
 |---------|-------------|
-| `repos init` | Org discovery and migration import (unchanged) |
+| `repos migrate` | Org discovery and migration import (unchanged) |
 | `repos install` | Full convergence — provision, verify, repair, sync variables/secrets, update scaffold refs. Idempotent. |
 | `repos uninstall` | Tear down and remove from manifest |
 | `repos status` | Dashboard — current state vs desired state |
+| `repos set-default` | Set or remove a forge-level default in `repos.yaml` |
 
 ### What gets dropped
 

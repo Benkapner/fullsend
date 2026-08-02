@@ -36,7 +36,7 @@ Consolidate the seven subcommands into four, plus a utility command:
 
 | Command | Purpose | Absorbs |
 |---------|---------|---------|
-| `repos init` | Discover existing installations, generate manifest | Replaced by `repos migrate` in PR #5816 |
+| `repos migrate` | Migrate an org from per-org to per-repo install | Replaced `repos init` (PR #5816) |
 | `repos install` | Converge repos to desired state: manifest add, provision, sync drift, upgrade refs | `repos add`, `repos diff`, `repos sync`, `repos upgrade` |
 | `repos status` | Read-only comparison of manifest vs actual state | _(unchanged)_ |
 | `repos uninstall` | Tear down fullsend from repos and/or remove from manifest | `repos remove` |
