@@ -87,7 +87,6 @@ orgs control over their own policy.
 ## Later note (repos scope hardening)
 
 Same-org installation-wide tokens and unrestricted `repos` lists are no longer the default.
-Cross-org (foreign) requests still require empty `repos` (or the `["*"]` alias for empty).
-Same-org requests must list exactly the requesting repository unless `PER_ORG_FOREIGN_COMPAT`
-is enabled: then `.fullsend` callers may pass any non-empty validated list, and enrolled
-callers may mint exactly `[.fullsend]` or `{self,.fullsend}` for org-mode dispatch.
+`repos` authorization is decided in
+[ADR 0077](0077-mint-repos-scope-hardening.md). FOREIGN allowlists and `target_org`
+from this ADR are unchanged.
