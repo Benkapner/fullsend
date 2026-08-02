@@ -18,7 +18,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
-	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -2143,11 +2142,11 @@ func TestRunPerRepoInstall_ValidationErrors(t *testing.T) {
 type testWIFProvisioner struct {
 	wifProvider    string
 	wifErr         error
-	discoverResult *repos.MintDiscovery
+	discoverResult *adminMintDiscovery
 	discoverErr    error
 }
 
-func (p *testWIFProvisioner) DiscoverMint(_ context.Context) (*repos.MintDiscovery, error) {
+func (p *testWIFProvisioner) DiscoverMint(_ context.Context) (*adminMintDiscovery, error) {
 	return p.discoverResult, p.discoverErr
 }
 
@@ -3171,7 +3170,7 @@ func TestGCFWIFAdapter_DiscoverMint_NilProvisioner(t *testing.T) {
 	adapter := &gcfProvisionerAdapter{provisioner: nil}
 	_, err := adapter.DiscoverMint(context.Background())
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, repos.ErrMintNotFound))
+	assert.True(t, errors.Is(err, errMintNotFound))
 }
 
 func TestGCFWIFAdapter_DiscoverMint_FunctionNotFound(t *testing.T) {
@@ -3187,8 +3186,8 @@ func TestGCFWIFAdapter_DiscoverMint_FunctionNotFound(t *testing.T) {
 
 	_, err := adapter.DiscoverMint(context.Background())
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, repos.ErrMintNotFound),
-		"expected ErrMintNotFound, got: %v", err)
+	assert.True(t, errors.Is(err, errMintNotFound),
+		"expected errMintNotFound, got: %v", err)
 	assert.True(t, errors.Is(err, gcf.ErrFunctionNotFound),
 		"original gcf error should be preserved in chain, got: %v", err)
 }
@@ -3206,7 +3205,7 @@ func TestGCFWIFAdapter_DiscoverMint_OtherError(t *testing.T) {
 
 	_, err := adapter.DiscoverMint(context.Background())
 	require.Error(t, err)
-	assert.False(t, errors.Is(err, repos.ErrMintNotFound),
+	assert.False(t, errors.Is(err, errMintNotFound),
 		"non-function-not-found errors should not be translated")
 }
 

@@ -439,33 +439,3 @@ func parseUint(s string) uint64 {
 	}
 	return n
 }
-
-// UpgradeMint verifies the token mint deployment matches the manifest configuration.
-func UpgradeMint(ctx context.Context, manifest *Manifest,
-	provisioner WIFProvisioner,
-	progress ProgressFunc) error {
-
-	if progress == nil {
-		progress = func(_, _, _ string) {}
-	}
-
-	progress("mint", "discover", "Checking current mint deployment")
-
-	discovery, err := provisioner.DiscoverMint(ctx)
-	if err != nil {
-		return fmt.Errorf("discovering mint: %w", err)
-	}
-
-	if discovery.URL == "" {
-		return fmt.Errorf("mint discovery returned empty URL")
-	}
-
-	progress("mint", "discover", fmt.Sprintf("Found mint at %s", discovery.URL))
-
-	if discovery.URL != manifest.Mint.URL {
-		return fmt.Errorf("discovered mint URL %q does not match manifest mint URL %q", discovery.URL, manifest.Mint.URL)
-	}
-
-	progress("mint", "done", "Mint verified successfully")
-	return nil
-}

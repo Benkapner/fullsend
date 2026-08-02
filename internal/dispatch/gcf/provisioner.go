@@ -100,7 +100,7 @@ const (
 	// DefaultInferencePool is the WIF pool used by inference commands.
 	// Separate from the mint pool (defaultPool) so that mint and inference
 	// lifecycle operations don't interfere with each other.
-	DefaultInferencePool = "fullsend-inference"
+	DefaultInferencePool = mintcore.DefaultInferencePool
 )
 
 // Config holds the inputs for GCF mint provisioning.

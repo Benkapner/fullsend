@@ -2561,6 +2561,545 @@ func TestResolveBaseScripts_ClearsAgentInput(t *testing.T) {
 	assert.Empty(t, deps)
 }
 
+// TestFetchBaseScriptOrDir_DirectoryFetch verifies that fetchBaseScriptOrDir
+// fetches the entire script directory (via TreeFetcher) when the URL is a
+// raw.githubusercontent.com URL, ensuring companion files are co-located.
+func TestFetchBaseScriptOrDir_DirectoryFetch(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"pre-code.sh":                []byte("#!/bin/bash\necho pre"),
+		"post-code.sh":               []byte("#!/bin/bash\necho post"),
+		"process-fix-result.py":      []byte("#!/usr/bin/env python3\nprint('fix')"),
+		"resolve-precommit-tools.py": []byte("#!/usr/bin/env python3\nprint('resolve')"),
+		"install-precommit-tools.sh": []byte("#!/bin/bash\necho install"),
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+
+	// Script content is correct
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("#!/bin/bash\necho pre"), content)
+
+	// Dependency reports directory type
+	assert.Equal(t, "directory", dep.Type)
+	assert.Equal(t, "pre_script", dep.Field)
+	assert.False(t, dep.CacheHit)
+
+	// Companion files are co-located in the same directory
+	scriptDir := filepath.Dir(contentPath)
+	for _, companion := range []string{"post-code.sh", "process-fix-result.py", "resolve-precommit-tools.py", "install-precommit-tools.sh"} {
+		companionPath := filepath.Join(scriptDir, companion)
+		_, statErr := os.Stat(companionPath)
+		assert.NoError(t, statErr, "companion file %s should exist", companion)
+	}
+}
+
+// TestFetchBaseScriptOrDir_SiblingCacheHit verifies that a second call for a
+// sibling script in the same directory hits the cache populated by the first.
+func TestFetchBaseScriptOrDir_SiblingCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	callCount := 0
+	fetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		callCount++
+		return map[string][]byte{
+			"pre-code.sh":  []byte("#!/bin/bash\necho pre"),
+			"post-code.sh": []byte("#!/bin/bash\necho post"),
+		}, nil
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+	opts := ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		TreeFetcher:   fetcher,
+	}
+
+	// First call fetches the tree
+	dep1, path1, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, opts)
+	require.NoError(t, err)
+	assert.False(t, dep1.CacheHit)
+	assert.Equal(t, 1, callCount, "TreeFetcher should be called once")
+
+	// Second call for sibling script hits cache
+	dep2, path2, err := fetchBaseScriptOrDir(
+		context.Background(), "post_script", baseURLDir,
+		"scripts/post-code.sh", allowlist, opts)
+	require.NoError(t, err)
+	assert.True(t, dep2.CacheHit, "sibling script should be a cache hit")
+	assert.Equal(t, 1, callCount, "TreeFetcher should NOT be called again")
+
+	// Both scripts resolve to valid content
+	c1, _ := os.ReadFile(path1)
+	assert.Equal(t, []byte("#!/bin/bash\necho pre"), c1)
+	c2, _ := os.ReadFile(path2)
+	assert.Equal(t, []byte("#!/bin/bash\necho post"), c2)
+
+	// Both scripts are in the same directory
+	assert.Equal(t, filepath.Dir(path1), filepath.Dir(path2))
+}
+
+// TestFetchBaseScriptOrDir_FallbackToSingleFile verifies that scripts fetched
+// from non-raw.githubusercontent.com URLs fall back to single-file fetching.
+func TestFetchBaseScriptOrDir_FallbackToSingleFile(t *testing.T) {
+	preScript := []byte("#!/bin/bash\necho pre")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/scripts/pre.sh" {
+			w.WriteHeader(http.StatusOK)
+			w.Write(preScript)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", server.URL+"/",
+		"scripts/pre.sh", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		})
+	require.NoError(t, err)
+
+	// Falls back to single-file fetch (not directory)
+	assert.Equal(t, "script", dep.Type)
+
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, content)
+}
+
+// TestFetchBaseScriptOrDir_NoDirComponent verifies that scripts without a
+// directory component (e.g., "pre.sh" not "scripts/pre.sh") always use
+// single-file fetch.
+func TestFetchBaseScriptOrDir_NoDirComponent(t *testing.T) {
+	preScript := []byte("#!/bin/bash\necho pre")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/pre.sh" {
+			w.WriteHeader(http.StatusOK)
+			w.Write(preScript)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", server.URL+"/",
+		"pre.sh", []string{server.URL + "/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		})
+	require.NoError(t, err)
+
+	// Single-file fetch because no directory component
+	assert.Equal(t, "script", dep.Type)
+
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, content)
+}
+
+// TestFetchBaseScriptOrDir_OnlyTargetExecutable verifies that only the target
+// script is made executable, not companion files in the directory.
+func TestFetchBaseScriptOrDir_OnlyTargetExecutable(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"pre-code.sh":          []byte("#!/bin/bash"),
+		"install-precommit.sh": []byte("#!/bin/bash"),
+		"resolve-precommit.py": []byte("#!/usr/bin/env python3"),
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+
+	// Target script is executable.
+	info, err := os.Stat(contentPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o111 != 0, "target script should be executable")
+
+	// Companion files are NOT executable.
+	scriptDir := filepath.Dir(contentPath)
+	for _, name := range []string{"install-precommit.sh", "resolve-precommit.py"} {
+		info, err := os.Stat(filepath.Join(scriptDir, name))
+		require.NoError(t, err)
+		assert.True(t, info.Mode()&0o111 == 0, "%s should NOT be executable", name)
+	}
+}
+
+// TestFetchBaseScriptOrDir_TransientErrorFallback verifies that a transient
+// tree-fetch error falls back to single-file fetching instead of failing.
+func TestFetchBaseScriptOrDir_TransientErrorFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	fileURL := baseURLDir + "scripts/pre-code.sh"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// Pre-populate the single-file cache so the fallback to fetchBaseFile
+	// returns from cache without making an HTTP request.
+	preScript := []byte("#!/bin/bash\necho pre")
+	require.NoError(t, fetch.CachePut(cacheDir, fileURL, preScript))
+	hash := fetch.ComputeSHA256(preScript)
+	require.NoError(t, urlIndexPut(cacheDir, fileURL, hash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}
+	}
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.NoError(t, err)
+
+	// Falls back to single-file fetch from cache.
+	assert.Equal(t, "script", dep.Type)
+	assert.True(t, dep.CacheHit)
+
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, content)
+}
+
+// TestFetchBaseScriptOrDir_NonTransientErrorPropagates verifies that
+// non-transient tree-fetch errors are propagated, not silently swallowed.
+func TestFetchBaseScriptOrDir_NonTransientErrorPropagates(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("authentication failed: 401 Unauthorized")
+	}
+
+	_, _, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+}
+
+// TestFetchBaseScriptOrDir_CacheHitAllowlistEnforced verifies that the
+// cache-hit path rejects requests when the URL is no longer in the allowlist.
+func TestFetchBaseScriptOrDir_CacheHitAllowlistEnforced(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"pre-code.sh": []byte("#!/bin/bash\necho pre"),
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// First call populates the cache.
+	_, _, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+
+	// Second call with an empty allowlist should be rejected, even though
+	// the content is cached.
+	_, _, err = fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", nil, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+// TestFetchBaseScriptOrDir_OfflineFileURLFallback verifies that in offline
+// mode, when the scriptdir: cache key misses, the per-file URL index entry
+// (stored by fetchBaseScriptDirTree) is used to find directory-cached content.
+func TestFetchBaseScriptOrDir_OfflineFileURLFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	fileURL := baseURLDir + "scripts/pre-code.sh"
+	scriptDirURL := baseURLDir + "scripts"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// Simulate a previous directory-fetch by populating the directory cache
+	// and the per-file URL index entry, but NOT the scriptdir: key.
+	files := map[string][]byte{
+		"pre-code.sh": []byte("#!/bin/bash\necho pre"),
+	}
+	treeHash, err := fetch.CachePutDir(cacheDir, fileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, fileURL, treeHash))
+	// Intentionally skip: urlIndexPut(cacheDir, "scriptdir:"+scriptDirURL, treeHash)
+	_ = scriptDirURL
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.NoError(t, err)
+
+	assert.Equal(t, "directory", dep.Type)
+	assert.True(t, dep.CacheHit)
+
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("#!/bin/bash\necho pre"), content)
+}
+
+// TestFetchBaseScriptOrDir_CacheHitMissingScript verifies that when the
+// directory cache hit finds the tree but the target script is not in it,
+// the cache loop continues to the next key and eventually falls through.
+func TestFetchBaseScriptOrDir_CacheHitMissingScript(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	scriptDirURL := baseURLDir + "scripts"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// Populate directory cache with files that do NOT include the target script.
+	files := map[string][]byte{
+		"other.sh": []byte("#!/bin/bash\necho other"),
+	}
+	treeHash, err := fetch.CachePutDir(cacheDir, scriptDirURL+"/other.sh", files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "scriptdir:"+scriptDirURL, treeHash))
+
+	// The cache-hit path finds the directory but os.Stat fails for the
+	// target script → continue. Falls through to fetchBaseFile which
+	// fails in offline mode.
+	_, _, err = fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/missing.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in cache and offline mode")
+}
+
+// TestFetchBaseScriptDirTree_DirPrefixNotAllowed verifies that
+// fetchBaseScriptDirTree rejects when the directory prefix is not in the
+// allowlist, even if the individual file URL is allowed.
+func TestFetchBaseScriptDirTree_DirPrefixNotAllowed(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	scriptDirURL := "https://raw.githubusercontent.com/org/repo/abc123/scripts"
+	scriptFileURL := scriptDirURL + "/pre-code.sh"
+	// Allowlist covers only the file, not the directory prefix.
+	allowlist := []string{scriptFileURL}
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script", scriptDirURL, scriptFileURL,
+		"pre-code.sh", "matched-by-file", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fakeTreeFetcher(map[string][]byte{"pre-code.sh": []byte("#!/bin/bash")}),
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+// TestFetchBaseScriptDirTree_FetchErrorWithToken verifies that tree-fetch
+// errors omit the GH_TOKEN hint when a token is already provided.
+func TestFetchBaseScriptDirTree_FetchErrorWithToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	scriptDirURL := "https://raw.githubusercontent.com/org/repo/abc123/scripts"
+	scriptFileURL := scriptDirURL + "/pre-code.sh"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("permission denied")
+	}
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script", scriptDirURL, scriptFileURL,
+		"pre-code.sh", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+			GitToken:      "ghp_test",
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.NotContains(t, err.Error(), "hint:")
+}
+
+// TestFetchBaseScriptDirTree_ScriptNotFound verifies the error when the target
+// script is missing from the fetched directory tree.
+func TestFetchBaseScriptDirTree_ScriptNotFound(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	scriptDirURL := "https://raw.githubusercontent.com/org/repo/abc123/scripts"
+	scriptFileURL := scriptDirURL + "/missing.sh"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"other.sh": []byte("#!/bin/bash\necho other"),
+	})
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script", scriptDirURL, scriptFileURL,
+		"missing.sh", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing.sh not found in directory")
+}
+
+// TestFetchBaseScriptOrDir_AllowlistRejectionOnFetchPath verifies that the
+// fetch path (not just the cache-hit path) enforces the allowlist.
+func TestFetchBaseScriptOrDir_AllowlistRejectionOnFetchPath(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Use a raw.githubusercontent.com URL so ParseRawContentURL succeeds,
+	// but use an allowlist that does NOT match the file URL.
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/other-org/"}
+
+	_, _, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir,
+		"scripts/pre-code.sh", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+// TestFetchBaseScriptDirTree_FetchErrorWithoutToken verifies that tree-fetch
+// errors include the GH_TOKEN hint when no token is provided.
+func TestFetchBaseScriptDirTree_FetchErrorWithoutToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	scriptDirURL := "https://raw.githubusercontent.com/org/repo/abc123/scripts"
+	scriptFileURL := scriptDirURL + "/pre-code.sh"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("connection refused")
+	}
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script", scriptDirURL, scriptFileURL,
+		"pre-code.sh", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hint:")
+	assert.Contains(t, err.Error(), "scripts")
+}
+
+// TestFetchBaseScriptDirTree_ParseRawURLError verifies the error path when
+// ParseRawContentURL fails inside fetchBaseScriptDirTree (defensive check).
+func TestFetchBaseScriptDirTree_ParseRawURLError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	scriptDirURL := "https://example.com/not-a-raw-url/scripts"
+	scriptFileURL := scriptDirURL + "/pre-code.sh"
+	allowlist := []string{"https://example.com/"}
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script", scriptDirURL, scriptFileURL,
+		"pre-code.sh", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing raw URL")
+}
+
+// TestFetchBaseScriptDirTree_ErrorMessagesIncludePath verifies that error
+// messages from fetchBaseScriptDirTree include the directory path.
+func TestFetchBaseScriptDirTree_ErrorMessagesIncludePath(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	scriptDirURL := "https://raw.githubusercontent.com/org/repo/abc123/my-scripts"
+	scriptFileURL := scriptDirURL + "/run.sh"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	// Test with token to verify the non-hint error path also includes path.
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("server error")
+	}
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script", scriptDirURL, scriptFileURL,
+		"run.sh", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+			GitToken:      "ghp_token",
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "my-scripts")
+}
+
 func TestValidateBaseRelPath_AllowsDotsInFilename(t *testing.T) {
 	err := validateBaseRelPath("pre_script", "scripts/foo..bar.sh")
 	assert.NoError(t, err)

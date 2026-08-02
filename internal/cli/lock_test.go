@@ -747,6 +747,57 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 	assert.True(t, strings.HasSuffix(h.Skills[0], "/tree"))
 }
 
+func TestResolveFromLock_DirectoryTypeScript(t *testing.T) {
+	scriptContent := []byte("#!/bin/bash\necho running")
+	helperContent := []byte("#!/bin/bash\necho helper")
+	files := map[string][]byte{
+		"pre-code.sh": scriptContent,
+		"helper.sh":   helperContent,
+	}
+	treeHash := fetch.ComputeTreeHash(files)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://raw.githubusercontent.com/org/repo/main/scripts", files)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "pre_script",
+				URL:    "https://raw.githubusercontent.com/org/repo/main/scripts/pre-code.sh",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "pre-code.sh", SHA256: fetch.ComputeSHA256(scriptContent)},
+					{Path: "helper.sh", SHA256: fetch.ComputeSHA256(helperContent)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Equal(t, "directory", lockResult.Deps[0].Type)
+	assert.Equal(t, treeHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
+
+	// The harness field must point to the specific script file, not the tree root.
+	assert.True(t, strings.HasSuffix(h.PreScript, "/pre-code.sh"),
+		"expected PreScript to end with /pre-code.sh, got %s", h.PreScript)
+
+	// The script file must be executable.
+	info, err := os.Stat(h.PreScript)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o111 != 0, "script should be executable")
+}
+
 func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 	content := []byte("skill content")
 	hash := fetch.ComputeSHA256(content)

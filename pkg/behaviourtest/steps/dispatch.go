@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
+	"gopkg.in/yaml.v3"
+
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -47,6 +49,10 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
 	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
 		return fmt.Errorf("committing harness: %w", err)
+	}
+
+	if err := commitLocalHarnessResources(context.Background(), w, name, doc); err != nil {
+		return err
 	}
 
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
@@ -96,6 +102,10 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 		return fmt.Errorf("committing harness: %w", err)
 	}
 
+	if err := commitLocalHarnessResources(context.Background(), w, name, doc); err != nil {
+		return err
+	}
+
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
 	if err != nil {
@@ -126,6 +136,48 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, fmt.Sprintf("behaviour: register harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
+	return nil
+}
+
+// commitLocalHarnessResources parses the harness YAML doc and commits
+// any relative resource files (agent, policy) under .fullsend/ on the
+// config repo. This ensures local custom harnesses can reference agent
+// and policy files that exist on disk when the harness is validated.
+//
+// This mirrors commitRelativeResources in url_dispatch.go but commits
+// to the config repo with the .fullsend/ prefix instead of to a hosting
+// repo at the repo root.
+func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessName, doc string) error {
+	var h struct {
+		Agent  string `yaml:"agent"`
+		Policy string `yaml:"policy"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &h); err != nil {
+		return fmt.Errorf("parsing harness YAML for resource paths: %w", err)
+	}
+
+	owner := w.Install.ConfigOwner()
+	repo := w.Install.ConfigRepo()
+
+	if h.Agent != "" && !strings.HasPrefix(h.Agent, "/") && !strings.HasPrefix(h.Agent, "https://") {
+		agentPath := filepath.Join(".fullsend", h.Agent)
+		if err := w.SCM.CommitFile(ctx, owner, repo, agentPath,
+			fmt.Sprintf("behaviour: add agent resource for %s", harnessName),
+			[]byte(minimalAgentContent)); err != nil {
+			return fmt.Errorf("committing agent resource %s: %w", agentPath, err)
+		}
+	}
+
+	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
+		policyPath := filepath.Join(".fullsend", h.Policy)
+		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		if err := w.SCM.CommitFile(ctx, owner, repo, policyPath,
+			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
+			[]byte(minimalPolicy)); err != nil {
+			return fmt.Errorf("committing policy resource %s: %w", policyPath, err)
+		}
+	}
+
 	return nil
 }
 

@@ -150,10 +150,10 @@ func (e *testOIDCEnv) signToken(t *testing.T, claimsOverrides map[string]interfa
 	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": e.kid})
 	now := time.Now()
 	claims := map[string]interface{}{
-		"iss":              e.issuerURL,
-		"aud":              "fullsend-mint",
-		"iat":              now.Unix(),
-		"exp":              now.Add(10 * time.Minute).Unix(),
+		"iss": e.issuerURL,
+		"aud": "fullsend-mint",
+		"iat": now.Unix(),
+		"exp": now.Add(10 * time.Minute).Unix(),
 		// Default claim matches common ["test-repo"] mint bodies so tests
 		// exercise requesting-repo-only scope (compat off) unless overridden.
 		// job_workflow_ref stays on .fullsend so OIDC enrollment checks pass.

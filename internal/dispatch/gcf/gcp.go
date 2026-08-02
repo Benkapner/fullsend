@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -712,7 +713,7 @@ func (c *LiveGCFClient) SetSecretIAMBinding(ctx context.Context, resource, membe
 	if !secretResourcePattern.MatchString(resource) {
 		return fmt.Errorf("invalid secret resource path %q", resource)
 	}
-	const maxRetries = 3
+	const maxRetries = 7
 	getURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:getIamPolicy", resource)
 	setURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:setIamPolicy", resource)
 
@@ -727,7 +728,7 @@ func (c *LiveGCFClient) SetSecretIAMBinding(ctx context.Context, resource, membe
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(200*(attempt+1)) * time.Millisecond):
+		case <-time.After(iamRetryDelay(attempt)):
 		}
 	}
 	return fmt.Errorf("IAM policy update failed after %d retries", maxRetries)
@@ -744,10 +745,33 @@ func isConflict(err error) bool {
 	return errors.As(err, &ce)
 }
 
+// iamRetryDelay returns the backoff duration for an IAM read-modify-write
+// retry. Uses exponential backoff with jitter: 500ms base, doubling each
+// attempt, capped at 10s. Jitter randomises 50-100% of the computed delay
+// to desynchronise concurrent callers (e.g. parallel behaviour test pool
+// repos all updating the same project IAM policy).
+//
+// Package-level var so tests can override (see secondaryRateLimitBackoff
+// in internal/forge/github for the same pattern).
+var iamRetryDelay = func(attempt int) time.Duration {
+	const (
+		baseDelay = 500 * time.Millisecond
+		maxDelay  = 10 * time.Second
+	)
+	delay := min(baseDelay<<uint(attempt), maxDelay) // 500ms, 1s, 2s, 4s, 8s, 10s, …
+	// Jitter: randomise between 50-100% of the delay.
+	half := delay / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
+}
+
 // SetProjectIAMBinding sets an IAM binding on a GCP project.
 // Uses read-modify-write with retry on 409 Conflict (etag mismatch).
+// Retries up to 7 times with exponential backoff and jitter (500ms base,
+// capped at 10s) to handle concurrent read-modify-write contention when
+// multiple callers (e.g. parallel behaviour test pool repos) update the
+// same project-level IAM policy simultaneously.
 func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, member, role string) error {
-	const maxRetries = 3
+	const maxRetries = 7
 	getURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s:getIamPolicy",
 		url.PathEscape(projectID))
 	setURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s:setIamPolicy",
@@ -764,7 +788,7 @@ func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, mem
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(200*(attempt+1)) * time.Millisecond):
+		case <-time.After(iamRetryDelay(attempt)):
 		}
 	}
 	return fmt.Errorf("project IAM policy update failed after %d retries", maxRetries)

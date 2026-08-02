@@ -49,7 +49,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 - Installer scaffold: the `WorkflowsLayer` deploys content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants.
 - Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **`--vendor`** ([ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
-- Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — bulk install, status, sync, upgrade, and removal across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md)).
+- Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — install, convergence (provision, sync, upgrade), status, and uninstall across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md), [ADR 0074](ADRs/0074-repos-command-consolidation.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
 - Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
 - GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT via OIDC/WIF from Secret Manager or protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
@@ -563,6 +563,7 @@ event ──► DISPATCHER
           ║                                                       ║
           ║ Runs pre-script on host:                              ║
           ║   validate inputs, prefetch data                      ║
+          ║   may request skip, exiting before sandbox creation   ║
           ║                                                       ║
           ║ ┌───────────────────────────────────────────────────┐ ║
           ║ │ SANDBOX (ephemeral, per-run)                      │ ║
@@ -630,14 +631,14 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ╔═══════════════════════════════════════════════════════════════╗
                  ║ DISPATCH WORKFLOW (.fullsend repo, dispatch.yml)              ║
                  ║                                                               ║
-                 ║ Mints OIDC token → Cloud Function (token mint) → scoped      ║
-                 ║ GitHub App installation token per agent role.                  ║
+                 ║ Mints OIDC token → Cloud Function (token mint) → scoped       ║
+                 ║ GitHub App installation token per agent role.                 ║
                  ║ Dispatches per-role agent workflows (code.yml, triage.yml).   ║
                  ╚═══════════════════════════════════════════════════════════════╝
                        │
                        ▼
                  ╔═══════════════════════════════════════════════════════════════╗
-                 ║ AGENT WORKFLOW (.fullsend repo, e.g. code.yml)               ║
+                 ║ AGENT WORKFLOW (.fullsend repo, e.g. code.yml)                ║
                  ║                                                               ║
                  ║ Validates source repo is enrolled in config.yaml.             ║
                  ║ Uses scoped GitHub App tokens:                                ║
