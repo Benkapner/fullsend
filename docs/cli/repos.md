@@ -28,10 +28,32 @@ These flags are inherited by all `repos` subcommands:
 One-command migration from per-org to per-repo fullsend installation. For each repo enrolled in the org's per-org config:
 
 1. Check inference WIF status; provision if needed
-2. Install per-repo (scaffold workflows, variables, secrets)
-3. Unenroll from per-org config
+2. Install per-repo (scaffold workflows, variables, secrets) with config carried over from the org config
+3. Register per-repo WIF in the mint's `PER_REPO_WIF_REPOS`
+4. Unenroll from per-org config
 
 Generates a `repos.yaml` manifest reflecting the migrated state. Re-running after a partial migration picks up where it left off.
+
+### Config carry-over
+
+The migrate command maps portable fields from the org-level `config.yaml` into each repo's per-repo `.fullsend/config.yaml`:
+
+| Org config field | Per-repo config field | Notes |
+|---|---|---|
+| `agents` | `agents` | Full deep copy including enabled state |
+| `allowed_remote_resources` | `allowed_remote_resources` | Default resources are merged in |
+| `create_issues` | `create_issues` | Deep copy of allow targets |
+| `defaults.roles` | `roles` | Per-repo overrides from `repos.<name>.roles` take precedence |
+| `defaults.runtime` | `runtime` | Only when explicitly set |
+| `kill_switch` | `kill_switch` | Only when active |
+
+The following org config fields have no per-repo equivalent and are **not** carried over. A warning is emitted for each:
+
+- `defaults.max_implementation_retries`
+- `defaults.auto_merge`
+- `defaults.status_notifications`
+
+**Note:** Any automated process that keeps the org-level `config.yaml` up to date (e.g., agent source pinning) needs to be replicated for each migrated repo's `.fullsend/config.yaml`.
 
 ```bash
 fullsend repos migrate <org> --project <gcp-project>
