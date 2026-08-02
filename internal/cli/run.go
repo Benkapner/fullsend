@@ -528,6 +528,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return absFullsendDir, true
 		}
 		// Refuse OIDC credential vars (#5832).
+		// Unlike expander (which silently returns "" to produce an empty
+		// expansion), lookup returns false so ValidateRunnerEnvWith treats
+		// the reference as an unresolvable variable and fails validation.
 		if oidcDenyKeys[key] {
 			return "", false
 		}
@@ -1623,8 +1626,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// failure sets it to false and continues (skipping step 9e),
 		// while success sets it to true immediately above. Pass the
 		// repo dir directly.
-		// Scrub OIDC credential vars from the validation script env (#5832).
-		valCmd.Env = append(scrubOIDCEnv(os.Environ()), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1892,7 +1896,7 @@ var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // oidcDenyKeys lists OIDC credential env vars that must not leak into
 // user-controlled or sandbox-visible contexts. The parent harness process
-// retains these for mintAgentToken and OIDC token refresh; scrubbing them
+// retains these for mintAgentToken and OIDC token refresh; stripping them
 // from child scripts, expanders, and sandbox injection prevents user code
 // and LLM sessions from minting additional tokens. See #5832, ADR 0073.
 var oidcDenyKeys = map[string]bool{
@@ -1906,8 +1910,8 @@ var oidcDenyKeys = map[string]bool{
 // shadow. These are set by the runner in bootstrapEnv and overriding them
 // from harness YAML could break sandbox operation, or are security-sensitive
 // vars that could influence sandbox execution (e.g. shared library injection,
-// auto-sourced shell startup files). OIDC credential vars are included to
-// prevent re-injection into the sandbox (#5832).
+// auto-sourced shell startup files). OIDC credential vars from oidcDenyKeys
+// are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
 	"PATH":                     true,
@@ -1923,11 +1927,14 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_OUTPUT_SCHEMA":   true,
 	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
-	// OIDC credential vars — prevent sandbox re-injection (#5832).
-	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
-	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
-	"FULLSEND_GCP_OIDC_URL":          true,
-	"FULLSEND_GCP_OIDC_AUTH_FILE":    true,
+}
+
+func init() {
+	// Merge OIDC credential vars into reservedSandboxKeys so a future
+	// addition to oidcDenyKeys automatically blocks sandbox injection.
+	for k := range oidcDenyKeys {
+		reservedSandboxKeys[k] = true
+	}
 }
 
 // buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
@@ -2189,8 +2196,9 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		// Scrub OIDC credential vars from the validation script env (#5832).
-		valCmd.Env = append(scrubOIDCEnv(os.Environ()), validationEnv(h, "", runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, "", runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -2206,11 +2214,11 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
 
-// scrubOIDCEnv returns a copy of env with OIDC credential entries removed.
+// stripOIDCEnv returns a copy of env with OIDC credential entries removed.
 // Use this to filter os.Environ() slices in contexts where childScriptEnv is
 // not applicable (e.g., validation scripts that compose their env differently).
 // See #5832.
-func scrubOIDCEnv(env []string) []string {
+func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
 		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {

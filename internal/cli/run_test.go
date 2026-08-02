@@ -1897,9 +1897,9 @@ func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
 	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
 }
 
-// TestScrubOIDCEnv verifies that scrubOIDCEnv removes OIDC credential entries
+// TestStripOIDCEnv verifies that stripOIDCEnv removes OIDC credential entries
 // from an env slice while preserving all other entries (#5832).
-func TestScrubOIDCEnv(t *testing.T) {
+func TestStripOIDCEnv(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin",
 		"ACTIONS_ID_TOKEN_REQUEST_URL=https://oidc.example.com",
@@ -1910,7 +1910,7 @@ func TestScrubOIDCEnv(t *testing.T) {
 		"SAFE_VAR=value",
 	}
 
-	result := scrubOIDCEnv(env)
+	result := stripOIDCEnv(env)
 
 	assert.Equal(t, []string{
 		"PATH=/usr/bin",
