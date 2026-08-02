@@ -6,7 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
+
+// revParse runs git rev-parse. Overridden in tests.
+var revParse = gitRevParse
 
 // resolveMintDeployCommit returns the commit to stamp into a mint deploy.
 // When commit is already set to something other than "dev"/empty, it is
@@ -27,7 +32,7 @@ func resolveMintDeployCommit(commit, sourceDir string) (string, error) {
 	if err != nil || !info.IsDir() {
 		return commit, nil
 	}
-	sha, err := gitRevParse(sourceDir, "HEAD")
+	sha, err := revParse(sourceDir, "HEAD")
 	if err != nil {
 		return commit, fmt.Errorf("git rev-parse HEAD in %s: %w", sourceDir, err)
 	}
@@ -35,6 +40,19 @@ func resolveMintDeployCommit(commit, sourceDir string) (string, error) {
 		return commit, fmt.Errorf("git rev-parse HEAD in %s returned empty", sourceDir)
 	}
 	return sha, nil
+}
+
+// resolveAndReportMintDeployCommit resolves the deploy commit and prints
+// warn/info messages for the operator. Always returns a stamp value
+// (possibly still "dev"/empty on failure).
+func resolveAndReportMintDeployCommit(printer *ui.Printer, commit, sourceDir string) string {
+	deployCommit, resolveErr := resolveMintDeployCommit(commit, sourceDir)
+	if resolveErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not resolve mint commit from checkout: %v", resolveErr))
+	} else if deployCommit != commit && deployCommit != "" && deployCommit != "dev" {
+		printer.StepInfo(fmt.Sprintf("Resolved mint commit from checkout: %s", deployCommit))
+	}
+	return deployCommit
 }
 
 func gitRevParse(dir string, args ...string) (string, error) {
