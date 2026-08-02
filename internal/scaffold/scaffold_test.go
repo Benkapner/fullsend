@@ -532,7 +532,7 @@ func TestWalkFullsendRepo(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, len(paths) >= 15, "expected at least 15 installed files, got %d", len(paths))
+	assert.True(t, len(paths) >= 10, "expected at least 10 installed files, got %d", len(paths))
 }
 
 func TestLayeredDirsNotInstalled(t *testing.T) {
@@ -561,29 +561,13 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestCustomizedDirsInstalled(t *testing.T) {
-	expected := map[string]bool{
-		"customized/agents/.gitkeep":    false,
-		"customized/skills/.gitkeep":    false,
-		"customized/schemas/.gitkeep":   false,
-		"customized/harness/.gitkeep":   false,
-		"customized/plugins/.gitkeep":   false,
-		"customized/policies/.gitkeep":  false,
-		"customized/profiles/.gitkeep":  false,
-		"customized/providers/.gitkeep": false,
-		"customized/scripts/.gitkeep":   false,
-		"customized/env/.gitkeep":       false,
-	}
+func TestNoCustomizedDirsInstalled(t *testing.T) {
 	err := WalkFullsendRepo(func(path string, _ []byte) error {
-		if _, ok := expected[path]; ok {
-			expected[path] = true
-		}
+		assert.False(t, strings.HasPrefix(path, "customized/"),
+			"WalkFullsendRepo should not include deprecated customized/ paths, got: %s", path)
 		return nil
 	})
 	require.NoError(t, err)
-	for path, found := range expected {
-		assert.True(t, found, "WalkFullsendRepo should include %s", path)
-	}
 }
 
 func TestWalkFullsendRepoAllIncludesEverything(t *testing.T) {
@@ -958,8 +942,6 @@ func TestManagedHeader(t *testing.T) {
 		},
 		// Markdown files are skipped (user-readable docs)
 		{path: "AGENTS.md", expect: ""},
-		// .gitkeep files are skipped
-		{path: "customized/agents/.gitkeep", expect: ""},
 		// JSON files are skipped (no comment syntax)
 		{path: "data/example.json", expect: ""},
 		// Shell scripts get a header
