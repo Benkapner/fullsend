@@ -56,6 +56,27 @@ func (p *fakeProvisioner) Provision(_ context.Context, owner, repo string) (stri
 	return p.provisionResults[key], nil
 }
 
+// fakeMintRegistrar implements MintRegistrar for tests.
+type fakeMintRegistrar struct {
+	mu    sync.Mutex
+	calls []string
+	errs  map[string]error
+}
+
+func newFakeMintRegistrar() *fakeMintRegistrar {
+	return &fakeMintRegistrar{errs: make(map[string]error)}
+}
+
+func (m *fakeMintRegistrar) RegisterPerRepoWIF(_ context.Context, repo string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, repo)
+	if err, ok := m.errs[repo]; ok {
+		return err
+	}
+	return nil
+}
+
 func nopScaffoldCommit(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
 	return nil
 }
@@ -65,7 +86,7 @@ func nopScaffoldCommit(_ context.Context, _, _ string, _ []forge.TreeFile, _ boo
 func TestMigrate_EmptyOrg_ReturnsError(t *testing.T) {
 	_, err := Migrate(context.Background(), MigrateConfig{
 		Project: "my-project",
-	}, newTestClientFactory(forge.NewFakeClient()), newFakeProvisioner(), nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(forge.NewFakeClient()), newFakeProvisioner(), nil, nopScaffoldCommit, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "org is required")
@@ -74,7 +95,7 @@ func TestMigrate_EmptyOrg_ReturnsError(t *testing.T) {
 func TestMigrate_EmptyProject_ReturnsError(t *testing.T) {
 	_, err := Migrate(context.Background(), MigrateConfig{
 		Org: "acme",
-	}, newTestClientFactory(forge.NewFakeClient()), newFakeProvisioner(), nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(forge.NewFakeClient()), newFakeProvisioner(), nil, nopScaffoldCommit, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "project is required")
@@ -86,7 +107,7 @@ func TestMigrate_NoConfigRepo_ReturnsError(t *testing.T) {
 	_, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), newFakeProvisioner(), nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), newFakeProvisioner(), nil, nopScaffoldCommit, nopProgress)
 
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "nothing to migrate")
@@ -106,7 +127,7 @@ repos:
 	result, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), newFakeProvisioner(), nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), newFakeProvisioner(), nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Empty(t, result.Migrated)
@@ -148,7 +169,7 @@ repos:
 		Project:        "my-project",
 		MaxConcurrency: 2,
 		CLIVersion:     "2.0.0",
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 3)
@@ -191,7 +212,7 @@ repos:
 	result, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Skipped, 1, "api should be skipped")
@@ -223,7 +244,7 @@ repos:
 	result, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
@@ -259,7 +280,7 @@ repos:
 		Org:            "acme",
 		Project:        "my-project",
 		MaxConcurrency: 1,
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Failed, 1, "api should have failed")
@@ -290,7 +311,7 @@ repos:
 		Org:     "acme",
 		Project: "my-project",
 		DryRun:  true,
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
@@ -329,7 +350,7 @@ repos:
 		Org:        "acme",
 		Project:    "my-project",
 		RepoFilter: []string{"api"},
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
@@ -362,7 +383,7 @@ repos:
 		Org:        "acme",
 		Project:    "my-project",
 		RepoFilter: []string{"acme/web"},
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
@@ -399,7 +420,7 @@ repos:
 		Org:        "acme",
 		Project:    "my-project",
 		RepoFilter: []string{"api-*"},
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 2)
@@ -429,7 +450,7 @@ repos:
 		Org:        "acme",
 		Project:    "my-project",
 		CLIVersion: "2.0.0",
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	require.NotNil(t, result.Manifest)
@@ -540,7 +561,7 @@ repos:
 	result, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
@@ -573,7 +594,7 @@ repos:
 	result, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
@@ -643,7 +664,7 @@ repos:
 		Org:            "acme",
 		Project:        "my-project",
 		MaxConcurrency: 100,
-	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
@@ -663,7 +684,7 @@ repos:
 	result, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), newFakeProvisioner(), nopScaffoldCommit, nil)
+	}, newTestClientFactory(fc), newFakeProvisioner(), nil, nopScaffoldCommit, nil)
 
 	require.NoError(t, err)
 	assert.Empty(t, result.Migrated)
@@ -684,7 +705,7 @@ repos:
 		Org:        "acme",
 		Project:    "my-project",
 		RepoFilter: []string{"nonexistent"},
-	}, newTestClientFactory(fc), newFakeProvisioner(), nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), newFakeProvisioner(), nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Empty(t, result.Migrated)
@@ -713,11 +734,328 @@ repos:
 	result, err := Migrate(context.Background(), MigrateConfig{
 		Org:     "acme",
 		Project: "my-project",
-	}, newTestClientFactory(fc), newFakeProvisioner(), nopScaffoldCommit, nopProgress)
+	}, newTestClientFactory(fc), newFakeProvisioner(), nil, nopScaffoldCommit, nopProgress)
 
 	require.NoError(t, err)
 	assert.Len(t, result.Skipped, 1)
 	assert.Empty(t, result.Migrated)
 	assert.NotNil(t, result.Manifest, "should generate manifest even when nothing to migrate")
 	assert.Equal(t, 1, result.Unenrolled, "should unenroll skipped repos still enabled in org config")
+}
+
+// --- Migrate: org config carry-over ---
+
+// capturingScaffoldCommit returns a scaffold commit function that records
+// the last set of files committed for each repo.
+func capturingScaffoldCommit(captured *map[string][]forge.TreeFile) ScaffoldCommitFunc {
+	var mu sync.Mutex
+	return func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		(*captured)[owner+"/"+repo] = files
+		return nil
+	}
+}
+
+func findConfigYAML(files []forge.TreeFile) string {
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			return string(f.Content)
+		}
+	}
+	return ""
+}
+
+func TestMigrate_CarriesOverOrgConfig(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+defaults:
+  roles:
+    - triage
+    - coder
+    - review
+  runtime: claude
+kill_switch: true
+agents:
+  - source: "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/triage.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/fullsend/"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+  - "https://raw.githubusercontent.com/acme-corp/agents/"
+create_issues:
+  allow_targets:
+    orgs:
+      - acme
+    repos:
+      - fullsend-ai/fullsend
+repos:
+  api:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	captured := make(map[string][]forge.TreeFile)
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, nil, capturingScaffoldCommit(&captured), nopProgress)
+
+	require.NoError(t, err)
+	require.Len(t, result.Migrated, 1)
+
+	cfgYAML := findConfigYAML(captured["acme/api"])
+	require.NotEmpty(t, cfgYAML, "should have generated config.yaml")
+
+	// Verify portable fields are present.
+	assert.Contains(t, cfgYAML, "kill_switch: true", "kill_switch should be carried over")
+	assert.Contains(t, cfgYAML, "runtime: claude", "runtime should be carried over")
+	assert.Contains(t, cfgYAML, "triage", "roles should be carried over")
+	assert.Contains(t, cfgYAML, "coder", "roles should be carried over")
+	assert.Contains(t, cfgYAML, "review", "roles should be carried over")
+	assert.Contains(t, cfgYAML, "agents:", "agents should be carried over")
+	assert.Contains(t, cfgYAML, "fullsend-ai/agents", "agent source should be present")
+	assert.Contains(t, cfgYAML, "acme-corp/agents", "custom allowed_remote_resources should be carried over")
+	assert.Contains(t, cfgYAML, "create_issues:", "create_issues should be carried over")
+	assert.Contains(t, cfgYAML, "acme", "create_issues org should be carried over")
+}
+
+func TestMigrate_PerRepoRoleOverrides(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+defaults:
+  roles:
+    - triage
+    - coder
+    - review
+repos:
+  api:
+    enabled: true
+    roles:
+      - triage
+      - review
+  web:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	setWorkflowFile(fc, "acme", "web",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	for _, repo := range []string{"acme/api", "acme/web"} {
+		prov.provisionResults[repo] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+	}
+
+	captured := make(map[string][]forge.TreeFile)
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, nil, capturingScaffoldCommit(&captured), nopProgress)
+
+	require.NoError(t, err)
+	require.Len(t, result.Migrated, 2)
+
+	// api has per-repo role overrides: only triage and review.
+	apiCfg := findConfigYAML(captured["acme/api"])
+	require.NotEmpty(t, apiCfg)
+	assert.Contains(t, apiCfg, "triage")
+	assert.Contains(t, apiCfg, "review")
+	assert.NotContains(t, apiCfg, "coder", "api should use per-repo overrides, not defaults")
+
+	// web has no per-repo role overrides: uses defaults.
+	webCfg := findConfigYAML(captured["acme/web"])
+	require.NotEmpty(t, webCfg)
+	assert.Contains(t, webCfg, "triage")
+	assert.Contains(t, webCfg, "coder", "web should use default roles")
+	assert.Contains(t, webCfg, "review")
+}
+
+func TestMigrate_RegistersInMint(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+  web:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	setWorkflowFile(fc, "acme", "web",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	for _, repo := range []string{"acme/api", "acme/web"} {
+		prov.provisionResults[repo] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+	}
+
+	mintReg := newFakeMintRegistrar()
+
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, mintReg, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	assert.Len(t, result.Migrated, 2)
+
+	// Verify both repos were registered in mint.
+	assert.Len(t, mintReg.calls, 2, "should have registered both repos in mint")
+	assert.Contains(t, mintReg.calls, "acme/api")
+	assert.Contains(t, mintReg.calls, "acme/web")
+}
+
+func TestMigrate_MintRegistrationFailure_StillMigrated(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+  web:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	setWorkflowFile(fc, "acme", "web",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	for _, repo := range []string{"acme/api", "acme/web"} {
+		prov.provisionResults[repo] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+	}
+
+	mintReg := newFakeMintRegistrar()
+	mintReg.errs["acme/api"] = fmt.Errorf("mint registration failed")
+
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:            "acme",
+		Project:        "my-project",
+		MaxConcurrency: 1,
+	}, newTestClientFactory(fc), prov, mintReg, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	assert.Empty(t, result.Failed, "mint failure should not move repo to failed")
+	assert.Len(t, result.Migrated, 2, "both repos should be migrated")
+	assert.Equal(t, 2, result.Unenrolled, "both repos should be unenrolled")
+
+	// The repo with mint failure should have an error attached.
+	for _, mr := range result.Migrated {
+		if mr.Repo == "api" {
+			require.NotNil(t, mr.Error, "api should have mint error attached")
+			assert.Contains(t, mr.Error.Error(), "mint registration failed")
+		}
+		if mr.Repo == "web" {
+			assert.Nil(t, mr.Error, "web should have no error")
+		}
+	}
+}
+
+func TestMigrate_WarnsOnNonPortableFields(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - triage
+    - coder
+  max_implementation_retries: 3
+  auto_merge: true
+  status_notifications:
+    comment:
+      start: enabled
+      completion: enabled
+repos:
+  api:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	var warnings []string
+	progressFn := func(_, phase, msg string) {
+		if phase == "warning" {
+			warnings = append(warnings, msg)
+		}
+	}
+
+	_, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, progressFn)
+
+	require.NoError(t, err)
+	assert.Len(t, warnings, 3, "should warn about all 3 non-portable fields")
+
+	var foundRetries, foundAutoMerge, foundNotifications bool
+	for _, w := range warnings {
+		if assert.ObjectsAreEqual("defaults.max_implementation_retries=3 has no per-repo equivalent and will not be carried over", w) {
+			foundRetries = true
+		}
+		if assert.ObjectsAreEqual("defaults.auto_merge=true has no per-repo equivalent and will not be carried over", w) {
+			foundAutoMerge = true
+		}
+		if assert.ObjectsAreEqual("defaults.status_notifications has no per-repo equivalent and will not be carried over", w) {
+			foundNotifications = true
+		}
+	}
+	assert.True(t, foundRetries, "should warn about max_implementation_retries")
+	assert.True(t, foundAutoMerge, "should warn about auto_merge")
+	assert.True(t, foundNotifications, "should warn about status_notifications")
+}
+
+func TestMigrate_NilMintRegistrar_SkipsRegistration(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	// Pass nil MintRegistrar — should not panic or fail.
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	assert.Len(t, result.Migrated, 1)
 }

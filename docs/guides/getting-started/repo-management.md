@@ -308,8 +308,9 @@ fullsend repos migrate <org> --project <gcp-project>
 ```
 
 This discovers enrolled repos from the per-org config, provisions WIF
-infrastructure, installs per-repo (scaffold, variables, secrets),
-unenrolls migrated repos, and writes `repos.yaml`.
+infrastructure, installs per-repo (scaffold, variables, secrets) with
+config carried over from the org config, registers per-repo WIF in the
+mint, unenrolls migrated repos, and writes `repos.yaml`.
 
 Preview first with `--dry-run`:
 

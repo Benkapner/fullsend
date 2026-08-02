@@ -47,8 +47,9 @@ type reposMigrateConfig struct {
 	manifest    string
 
 	// Test overrides
-	testClient      forge.Client
-	testProvisioner repos.InferenceProvisioner
+	testClient        forge.Client
+	testProvisioner   repos.InferenceProvisioner
+	testMintRegistrar repos.MintRegistrar
 }
 
 func newReposMigrateCmd() *cobra.Command {
@@ -61,8 +62,9 @@ func newReposMigrateCmd() *cobra.Command {
 
 For each repo enrolled in the org's per-org config (.fullsend config repo):
   1. Check inference WIF status; provision if needed
-  2. Install per-repo (scaffold workflows, variables, secrets)
-  3. Unenroll from per-org config
+  2. Install per-repo (scaffold, variables, secrets) with config carried over
+  3. Register per-repo WIF in the mint's PER_REPO_WIF_REPOS
+  4. Unenroll from per-org config
 
 Generates a repos.yaml manifest reflecting the migrated state.
 
@@ -123,6 +125,13 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		provisioner = newGCPInferenceProvisioner(cfg.project)
 	}
 
+	var mintReg repos.MintRegistrar
+	if cfg.testMintRegistrar != nil {
+		mintReg = cfg.testMintRegistrar
+	} else {
+		mintReg = newGCPMintRegistrar(cfg.project)
+	}
+
 	upstreamRef, upstreamTag := resolveUpstreamRef()
 
 	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
@@ -171,7 +180,7 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		CLIVersion:     version,
 	}
 
-	result, err := repos.Migrate(ctx, migrateCfg, clients, provisioner, scaffoldCommitFn, progressFn)
+	result, err := repos.Migrate(ctx, migrateCfg, clients, provisioner, mintReg, scaffoldCommitFn, progressFn)
 	if err != nil {
 		return err
 	}
@@ -196,6 +205,12 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 
 	for _, r := range result.Failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+
+	for _, r := range result.Migrated {
+		if r.Error != nil {
+			printer.StepInfo(fmt.Sprintf("  WARNING: %s/%s — %v", r.Owner, r.Repo, r.Error))
+		}
 	}
 
 	if result.UnenrollError != nil {
@@ -1066,4 +1081,23 @@ func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo str
 		return "", fmt.Errorf("provisioning WIF: %w", err)
 	}
 	return wifProvider, nil
+}
+
+// gcpMintRegistrar implements repos.MintRegistrar by calling
+// the GCF provisioner's RegisterPerRepoWIF.
+type gcpMintRegistrar struct {
+	provisioner *gcf.Provisioner
+}
+
+func newGCPMintRegistrar(project string) *gcpMintRegistrar {
+	gcpClient := gcf.NewLiveGCFClient(project)
+	return &gcpMintRegistrar{
+		provisioner: gcf.NewProvisioner(gcf.Config{
+			ProjectID: project,
+		}, gcpClient),
+	}
+}
+
+func (m *gcpMintRegistrar) RegisterPerRepoWIF(ctx context.Context, repo string) error {
+	return m.provisioner.RegisterPerRepoWIF(ctx, repo)
 }

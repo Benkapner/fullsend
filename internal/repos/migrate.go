@@ -71,6 +71,15 @@ type InferenceProvisioner interface {
 	Provision(ctx context.Context, owner, repo string) (wifProvider string, err error)
 }
 
+// MintRegistrar abstracts mint enrollment for per-repo WIF. CLI
+// implementations call real GCP APIs to add repos to PER_REPO_WIF_REPOS;
+// tests provide stubs.
+type MintRegistrar interface {
+	// RegisterPerRepoWIF adds a repo to the mint's PER_REPO_WIF_REPOS
+	// environment variable. The repo must be in "owner/repo" format.
+	RegisterPerRepoWIF(ctx context.Context, repo string) error
+}
+
 // Migrate orchestrates the full migration of an org from per-org to
 // per-repo install. For each enrolled repo it:
 //  1. Checks if already per-repo installed (skips if so)
@@ -81,7 +90,8 @@ type InferenceProvisioner interface {
 // At the end, it generates a repos.yaml manifest from the discovered state.
 // Individual repo failures do not abort the batch.
 func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
-	provisioner InferenceProvisioner, commitScaffold ScaffoldCommitFunc,
+	provisioner InferenceProvisioner, mintReg MintRegistrar,
+	commitScaffold ScaffoldCommitFunc,
 	progress ProgressFunc) (*MigrateResult, error) {
 
 	if cfg.Org == "" {
@@ -123,6 +133,10 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 	if err != nil {
 		return nil, fmt.Errorf("parsing org config for %s: %w", cfg.Org, err)
 	}
+
+	// Warn about non-portable fields that cannot be carried over to
+	// per-repo config.
+	warnNonPortableFields(orgCfg, cfg.Org, progress)
 
 	// Build list of enabled repos from org config.
 	repoMap := orgCfg.RepoMap()
@@ -236,7 +250,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 				}
 				defer func() { <-sem }()
 
-				rr := migrateRepo(ctx, cfg, dr, fc, provisioner, commitScaffold, progress)
+				rr := migrateRepo(ctx, cfg, dr, fc, provisioner, orgCfg, commitScaffold, progress)
 
 				mu.Lock()
 				defer mu.Unlock()
@@ -249,6 +263,24 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 			}(d)
 		}
 		wg.Wait()
+	}
+
+	// Step 3.5: Register per-repo WIF in mint (serialized to avoid
+	// read-modify-write race on PER_REPO_WIF_REPOS env var).
+	// Mint registration failure is non-fatal: the repo is already
+	// installed and should be unenrolled. The operator can retry
+	// mint enrollment separately via `mint enroll`.
+	if mintReg != nil && len(result.Migrated) > 0 {
+		for i, mr := range result.Migrated {
+			fullName := mr.Owner + "/" + mr.Repo
+			progress(fullName, "mint", "registering per-repo WIF in mint")
+			if regErr := mintReg.RegisterPerRepoWIF(ctx, fullName); regErr != nil {
+				progress(fullName, "mint", fmt.Sprintf("warning: mint registration failed (%v) — run 'mint enroll' to retry", regErr))
+				result.Migrated[i].Error = fmt.Errorf("mint registration failed (repo installed, enroll separately): %w", regErr)
+			} else {
+				progress(fullName, "mint", "registered in mint")
+			}
+		}
 	}
 
 	// Step 4: Unenroll successfully migrated repos from per-org config.
@@ -298,9 +330,12 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 	return result, nil
 }
 
-// migrateRepo handles the per-repo migration: provision WIF → install → return result.
+// migrateRepo handles the per-repo migration: provision WIF → install →
+// return result. Mint registration is handled separately after the
+// concurrent phase to avoid read-modify-write races.
 func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	fc ForgeConfig, provisioner InferenceProvisioner,
+	orgCfg config.OrgConfigReader,
 	commitScaffold ScaffoldCommitFunc, progress ProgressFunc) MigrateRepoResult {
 
 	fullName := dr.Owner + "/" + dr.Repo
@@ -351,6 +386,14 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 		inferenceRegion = "us-central1"
 	}
 
+	// Build per-repo config from org config to carry over portable
+	// fields (agents, allowed_remote_resources, create_issues,
+	// kill_switch, runtime, roles with per-repo overrides).
+	var perRepoCfg config.PerRepoConfigWriter
+	if orgCfg != nil {
+		perRepoCfg = config.NewPerRepoConfigFromOrg(orgCfg, dr.Repo, fullName)
+	}
+
 	installCfg := InstallConfig{
 		Owner:            dr.Owner,
 		Repo:             dr.Repo,
@@ -364,6 +407,7 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 		SkipGuardCheck:   true,
 		WIFProvider:      wifProvider,
 		Direct:           cfg.Direct,
+		PerRepoConfig:    perRepoCfg,
 	}
 
 	installResult, installErr := Install(ctx, installCfg, fc.Client, commitScaffold, progress)
@@ -379,6 +423,26 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	rr.Status = "migrated"
 	progress(fullName, "done", "migrated successfully")
 	return rr
+}
+
+// warnNonPortableFields emits progress warnings for org config fields
+// that have no per-repo equivalent and will be lost during migration.
+func warnNonPortableFields(orgCfg config.OrgConfigReader, org string, progress ProgressFunc) {
+	defaults := orgCfg.OrgRepoDefaults()
+
+	if defaults.MaxImplementationRetries != 0 {
+		progress(org, "warning",
+			fmt.Sprintf("defaults.max_implementation_retries=%d has no per-repo equivalent and will not be carried over",
+				defaults.MaxImplementationRetries))
+	}
+	if defaults.AutoMerge {
+		progress(org, "warning",
+			"defaults.auto_merge=true has no per-repo equivalent and will not be carried over")
+	}
+	if defaults.StatusNotifications != nil {
+		progress(org, "warning",
+			"defaults.status_notifications has no per-repo equivalent and will not be carried over")
+	}
 }
 
 // discoverReposForMigrate checks the installation status of enrolled repos
