@@ -296,6 +296,38 @@ fullsend repos install -f repos.yaml --direct
 Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
 blocked unless `--force` is set.
 
+## Troubleshooting
+
+### Partial secret state
+
+When only one of the two required repo secrets (`FULLSEND_GCP_PROJECT_ID`
+or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo but not both, `repos
+install` reports an error:
+
+```
+partial secret state: FULLSEND_GCP_PROJECT_ID exists but FULLSEND_GCP_WIF_PROVIDER is missing
+```
+
+This typically occurs when a previous install was interrupted or when
+secrets were manually modified. To resolve, either:
+
+- Delete the existing secret and re-run `repos install` to re-provision
+  both secrets together.
+- Manually create the missing secret with the correct value.
+
+### GitLab scaffold limitation
+
+`repos install` only supports GitHub repos for scaffold generation.
+GitLab repos in the manifest will fail during the provision phase with:
+
+```
+GitLab scaffold generation is not yet implemented; install is only supported for GitHub repos
+```
+
+GitLab repos can still use `repos status` (read-only drift detection)
+and `repos uninstall` (teardown). Scaffold provisioning for GitLab repos
+must be performed manually until GitLab support is implemented.
+
 ## Migrating from per-org mode to manifest management
 
 Organizations migrating from per-org mode to per-repo manifest management

@@ -1,5 +1,10 @@
 # Implementation Plan: `fullsend repos init`
 
+> **Superseded:** The `repos init` command has been replaced by
+> `repos migrate` (PR #5816). See
+> [ADR 0074](../ADRs/0074-repos-command-consolidation.md) for the
+> consolidation decision. This plan is retained for historical context.
+
 ## Context
 
 [ADR 0057](../ADRs/0057-repos-management.md) defines a declarative

@@ -22,6 +22,7 @@ These flags are inherited by all `repos` subcommands:
 | `fullsend repos install [repos...]` | Converge repos to the desired state defined in a manifest |
 | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | `fullsend repos status` | Compare manifest against actual repo state |
+| `fullsend repos set-default <key> <value>` | Set or remove a forge-level default in repos.yaml |
 
 ## `repos migrate`
 
@@ -115,7 +116,8 @@ When repos are specified as positional arguments, only those repos are processed
 | `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub repos) |
 | `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub repos) |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; falls back to `defaults.forge` if set. |
-| `--inference-region` | | Per-repo GCP inference region override |
+| `--force` | `false` | Allow scaffold ref downgrades |
+| `--inference-region` | | Per-repo GCP inference region override (install-time only, not stored in the manifest) |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |
@@ -145,6 +147,10 @@ Install specific repos:
 ```bash
 fullsend repos install acme/api acme/web
 ```
+
+### Limitations
+
+- **GitLab scaffold generation is not yet implemented.** `repos install` only supports GitHub repos. GitLab repos in the manifest will fail with an error during the provision phase. GitLab support for `repos status` and `repos uninstall` (teardown) works normally.
 
 ## `repos status`
 
@@ -223,6 +229,32 @@ fullsend repos uninstall acme/old-api --uninstall-only
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--manifest-only` | `false` | Remove from manifest without tearing down |
 | `--uninstall-only` | `false` | Tear down without removing from manifest |
+
+## `repos set-default`
+
+Set or remove a forge-level default in `repos.yaml`. An empty value removes the key. Creates the manifest with `version: 1` if the file does not exist.
+
+```bash
+fullsend repos set-default <key> <value>
+fullsend repos set-default forge.github.fullsend_ref v2.5.0
+fullsend repos set-default forge.github.mint_url ""   # removes the key
+```
+
+### Valid keys
+
+| Key | Description |
+|-----|-------------|
+| `defaults.allowed_remote_resources` | Default allowed remote resources for all repos |
+| `forge.github.url` | GitHub instance URL (defaults to `https://github.com`) |
+| `forge.github.mint_url` | Token mint Cloud Run endpoint URL |
+| `forge.github.fullsend_ref` | Default fullsend workflow ref for GitHub repos |
+| `forge.gitlab.url` | GitLab instance URL |
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml |
 
 ## See also
 
