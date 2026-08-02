@@ -48,7 +48,7 @@ func validateReposScope(foreign bool, requestingRepo string, repos []string, com
 	}
 
 	if len(repos) == 0 {
-		return fmt.Errorf("repos scope not allowed for requesting repository")
+		return fmt.Errorf("same-org mint requires non-empty repos")
 	}
 
 	bare := repositoryBareName(requestingRepo)
@@ -57,7 +57,7 @@ func validateReposScope(foreign bool, requestingRepo string, repos []string, com
 	}
 
 	if !compat {
-		return fmt.Errorf("repos scope not allowed for requesting repository")
+		return fmt.Errorf("same-org mint requires repos to be exactly the requesting repository")
 	}
 
 	if strings.EqualFold(bare, ".fullsend") {
@@ -75,5 +75,5 @@ func validateReposScope(foreign bool, requestingRepo string, repos []string, com
 		}
 	}
 
-	return fmt.Errorf("repos scope not allowed for requesting repository")
+	return fmt.Errorf("repos scope not allowed under PER_ORG_FOREIGN_COMPAT for requesting repository")
 }

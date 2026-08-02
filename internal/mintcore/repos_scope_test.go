@@ -50,7 +50,9 @@ func TestEnvTruthy(t *testing.T) {
 
 func TestValidateReposScope(t *testing.T) {
 	t.Parallel()
-	const deny = "repos scope not allowed"
+	const emptyDeny = "same-org mint requires non-empty repos"
+	const selfDeny = "same-org mint requires repos to be exactly the requesting repository"
+	const compatDeny = "repos scope not allowed under PER_ORG_FOREIGN_COMPAT"
 	const foreignDeny = "foreign mint requires empty repos"
 
 	tests := []struct {
@@ -64,8 +66,8 @@ func TestValidateReposScope(t *testing.T) {
 		{"foreign empty", true, "fullsend-ai/fullsend", nil, false, ""},
 		{"foreign non-empty", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, foreignDeny},
 		{"same self", false, "acme/api", []string{"api"}, false, ""},
-		{"same empty", false, "acme/api", nil, true, deny},
-		{"same other flag off", false, "acme/.fullsend", []string{"api"}, false, deny},
+		{"same empty", false, "acme/api", nil, true, emptyDeny},
+		{"same other flag off", false, "acme/.fullsend", []string{"api"}, false, selfDeny},
 		{"fullsend other flag on", false, "acme/.fullsend", []string{"api"}, true, ""},
 		{"fullsend multi flag on", false, "acme/.fullsend", []string{"a", "b", "c"}, true, ""},
 		{"fullsend pair flag on", false, "acme/.fullsend", []string{"api", ".fullsend"}, true, ""},
@@ -73,9 +75,9 @@ func TestValidateReposScope(t *testing.T) {
 		{"enrolled fullsend flag on", false, "acme/api", []string{".fullsend"}, true, ""},
 		{"enrolled pair flag on", false, "acme/api", []string{"api", ".fullsend"}, true, ""},
 		{"enrolled pair reverse", false, "acme/api", []string{".fullsend", "api"}, true, ""},
-		{"enrolled other flag on", false, "acme/api", []string{"other"}, true, deny},
-		{"enrolled multi flag on", false, "acme/api", []string{"api", ".fullsend", "x"}, true, deny},
-		{"enrolled pair flag off", false, "acme/api", []string{"api", ".fullsend"}, false, deny},
+		{"enrolled other flag on", false, "acme/api", []string{"other"}, true, compatDeny},
+		{"enrolled multi flag on", false, "acme/api", []string{"api", ".fullsend", "x"}, true, compatDeny},
+		{"enrolled pair flag off", false, "acme/api", []string{"api", ".fullsend"}, false, selfDeny},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

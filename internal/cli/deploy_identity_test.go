@@ -11,7 +11,10 @@ import (
 
 func TestResolveMintDeployCommit_PreservesNonDev(t *testing.T) {
 	t.Parallel()
-	got := resolveMintDeployCommit("abc123def", "/nonexistent")
+	got, err := resolveMintDeployCommit("abc123def", "/nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if got != "abc123def" {
 		t.Fatalf("got %q, want preserved commit", got)
 	}
@@ -20,11 +23,17 @@ func TestResolveMintDeployCommit_PreservesNonDev(t *testing.T) {
 func TestResolveMintDeployCommit_MissingSourceDir(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "no-such-dir")
-	got := resolveMintDeployCommit("dev", dir)
+	got, err := resolveMintDeployCommit("dev", dir)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if got != "dev" {
 		t.Fatalf("got %q, want dev when source missing", got)
 	}
-	got = resolveMintDeployCommit("", "")
+	got, err = resolveMintDeployCommit("", "")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if got != "" {
 		t.Fatalf("got %q, want empty when sourceDir empty", got)
 	}
@@ -33,7 +42,10 @@ func TestResolveMintDeployCommit_MissingSourceDir(t *testing.T) {
 func TestResolveMintDeployCommit_NotAGitRepo(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	got := resolveMintDeployCommit("dev", dir)
+	got, err := resolveMintDeployCommit("dev", dir)
+	if err == nil {
+		t.Fatal("expected error when sourceDir is not a git work tree")
+	}
 	if got != "dev" {
 		t.Fatalf("got %q, want dev when not a git work tree", got)
 	}
@@ -71,7 +83,10 @@ func TestResolveMintDeployCommit_FromCheckout(t *testing.T) {
 	}
 	want := strings.TrimSpace(string(wantOut))
 
-	got := resolveMintDeployCommit("dev", dir)
+	got, err := resolveMintDeployCommit("dev", dir)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -80,7 +95,10 @@ func TestResolveMintDeployCommit_FromCheckout(t *testing.T) {
 	}
 
 	// Empty commit also resolves.
-	got = resolveMintDeployCommit("", dir)
+	got, err = resolveMintDeployCommit("", dir)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if got != want {
 		t.Fatalf("empty commit: got %q, want %q", got, want)
 	}

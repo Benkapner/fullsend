@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,22 +13,28 @@ import (
 // returned unchanged. When deploying from on-disk source (sourceDir exists)
 // and commit is unset, it tries git -C sourceDir rev-parse HEAD. Embedded
 // deploys (missing sourceDir) never invoke git.
-func resolveMintDeployCommit(commit, sourceDir string) string {
+//
+// If sourceDir exists but git resolution fails, the original commit is
+// returned with a non-nil error so callers can warn without failing deploy.
+func resolveMintDeployCommit(commit, sourceDir string) (string, error) {
 	if commit != "" && commit != "dev" {
-		return commit
+		return commit, nil
 	}
 	if sourceDir == "" {
-		return commit
+		return commit, nil
 	}
 	info, err := os.Stat(sourceDir)
 	if err != nil || !info.IsDir() {
-		return commit
+		return commit, nil
 	}
 	sha, err := gitRevParse(sourceDir, "HEAD")
-	if err != nil || sha == "" {
-		return commit
+	if err != nil {
+		return commit, fmt.Errorf("git rev-parse HEAD in %s: %w", sourceDir, err)
 	}
-	return sha
+	if sha == "" {
+		return commit, fmt.Errorf("git rev-parse HEAD in %s returned empty", sourceDir)
+	}
+	return sha, nil
 }
 
 func gitRevParse(dir string, args ...string) (string, error) {
@@ -37,6 +44,10 @@ func gitRevParse(dir string, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
 		return "", err
 	}
 	return strings.TrimSpace(stdout.String()), nil

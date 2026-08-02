@@ -534,8 +534,10 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		sourceDir = gcf.DefaultFunctionSourceDir()
 	}
 
-	deployCommit := resolveMintDeployCommit(commitSHA, sourceDir)
-	if deployCommit != commitSHA && deployCommit != "" && deployCommit != "dev" {
+	deployCommit, resolveErr := resolveMintDeployCommit(commitSHA, sourceDir)
+	if resolveErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not resolve mint commit from checkout: %v", resolveErr))
+	} else if deployCommit != commitSHA && deployCommit != "" && deployCommit != "dev" {
 		printer.StepInfo(fmt.Sprintf("Resolved mint commit from checkout: %s", deployCommit))
 	}
 
@@ -655,8 +657,10 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 		sourceDir = cf.DefaultWorkerSourceDir()
 	}
 
-	deployCommit := resolveMintDeployCommit(commitSHA, sourceDir)
-	if deployCommit != commitSHA && deployCommit != "" && deployCommit != "dev" {
+	deployCommit, resolveErr := resolveMintDeployCommit(commitSHA, sourceDir)
+	if resolveErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not resolve mint commit from checkout: %v", resolveErr))
+	} else if deployCommit != commitSHA && deployCommit != "" && deployCommit != "dev" {
 		printer.StepInfo(fmt.Sprintf("Resolved mint commit from checkout: %s", deployCommit))
 	}
 

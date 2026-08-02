@@ -154,7 +154,10 @@ func (e *testOIDCEnv) signToken(t *testing.T, claimsOverrides map[string]interfa
 		"aud":              "fullsend-mint",
 		"iat":              now.Unix(),
 		"exp":              now.Add(10 * time.Minute).Unix(),
-		"repository":       "test-org/.fullsend",
+		// Default claim matches common ["test-repo"] mint bodies so tests
+		// exercise requesting-repo-only scope (compat off) unless overridden.
+		// job_workflow_ref stays on .fullsend so OIDC enrollment checks pass.
+		"repository":       "test-org/test-repo",
 		"repository_owner": "test-org",
 		"job_workflow_ref": "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
 	}
@@ -285,9 +288,32 @@ func TestHandler_StatusEndpoint(t *testing.T) {
 		t.Fatalf("status response should not contain orgs array: %s", body)
 	}
 
-	// TestMain enables PER_ORG_FOREIGN_COMPAT by default.
+	// Default (unset) is off — dedicated tests opt into compat explicitly.
+	if resp.PerOrgForeignCompat {
+		t.Fatal("expected per_org_foreign_compat false by default")
+	}
+}
+
+func TestHandler_StatusEndpoint_PerOrgForeignCompatOn(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "test-org")
+	t.Setenv("PER_ORG_FOREIGN_COMPAT", "true")
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+env.signToken(t, nil))
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp statusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if !resp.PerOrgForeignCompat {
-		t.Fatal("expected per_org_foreign_compat true (TestMain default)")
+		t.Fatal("expected per_org_foreign_compat true when env is truthy")
 	}
 }
 
@@ -685,7 +711,7 @@ func TestHandler_EmptyRepos_FullOrgToken(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.Contains(resp["error"], "repos scope not allowed") {
+	if !strings.Contains(resp["error"], "same-org mint requires non-empty repos") {
 		t.Fatalf("unexpected error: %s", resp["error"])
 	}
 }
@@ -1229,6 +1255,7 @@ func TestHandler_FullFlowGrantedScopeAll(t *testing.T) {
 
 func TestHandler_FullFlowWithRepos(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("PER_ORG_FOREIGN_COMPAT", "true")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -1238,7 +1265,12 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
 		pems: map[string][]byte{"coder": pemData},
 	})
-	token := env.signToken(t, nil)
+	// .fullsend caller + compat may mint a multi-repo list.
+	token := env.signToken(t, map[string]interface{}{
+		"repository":       "test-org/.fullsend",
+		"repository_owner": "test-org",
+		"job_workflow_ref": "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+	})
 
 	var capturedTokenReq map[string]interface{}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1307,7 +1339,7 @@ func TestHandler_FullFlowWithRepos_Retro(t *testing.T) {
 	var capturedTokenReq map[string]interface{}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/test-org/my-repo/installation":
+		case r.URL.Path == "/repos/test-org/test-repo/installation":
 			json.NewEncoder(w).Encode(installationResponse{
 				ID: 1, Account: struct {
 					Login string `json:"login"`
@@ -1328,7 +1360,7 @@ func TestHandler_FullFlowWithRepos_Retro(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"retro","repos":["my-repo"]}`
+	body := `{"role":"retro","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1378,7 +1410,7 @@ func TestHandler_FullFlowWithRepos_Prioritize(t *testing.T) {
 	var capturedTokenReq map[string]interface{}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/test-org/my-repo/installation":
+		case r.URL.Path == "/repos/test-org/test-repo/installation":
 			json.NewEncoder(w).Encode(installationResponse{
 				ID: 1, Account: struct {
 					Login string `json:"login"`
@@ -1399,7 +1431,7 @@ func TestHandler_FullFlowWithRepos_Prioritize(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"prioritize","repos":["my-repo"]}`
+	body := `{"role":"prioritize","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1585,7 +1617,7 @@ func TestHandler_MultiOrg_FullFlow(t *testing.T) {
 		pems: map[string][]byte{"coder": pemData},
 	})
 	token := env.signToken(t, map[string]interface{}{
-		"repository":       "other-org/.fullsend",
+		"repository":       "other-org/test-repo",
 		"repository_owner": "other-org",
 		"job_workflow_ref": "other-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
 	})
@@ -1651,7 +1683,7 @@ func TestHandler_CrossOrgInstallationMismatch(t *testing.T) {
 		pems: map[string][]byte{"retro": pemData},
 	})
 	token := env.signToken(t, map[string]interface{}{
-		"repository":       "org-a/.fullsend",
+		"repository":       "org-a/seshi",
 		"repository_owner": "org-a",
 		"job_workflow_ref": "org-a/.fullsend/.github/workflows/retro.yml@refs/heads/main",
 	})
@@ -1743,7 +1775,7 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 		"aud":              "fullsend-mint",
 		"iat":              now.Unix(),
 		"exp":              now.Add(10 * time.Minute).Unix(),
-		"repository":       "test-org/.fullsend",
+		"repository":       "test-org/my-repo",
 		"repository_owner": "test-org",
 		"job_workflow_ref": "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
 	}
@@ -1837,7 +1869,7 @@ func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 			"aud":              "fullsend-mint",
 			"iat":              now.Unix(),
 			"exp":              now.Add(10 * time.Minute).Unix(),
-			"repository":       "test-org/.fullsend",
+			"repository":       "test-org/my-repo",
 			"repository_owner": "test-org",
 			"job_workflow_ref": workflowRef,
 		}
@@ -1909,7 +1941,7 @@ func TestHandler_CrossOrgInstallation_SameOrgPasses(t *testing.T) {
 		pems: map[string][]byte{"retro": pemData},
 	})
 	token := env.signToken(t, map[string]interface{}{
-		"repository":       "org-a/.fullsend",
+		"repository":       "org-a/seshi",
 		"repository_owner": "org-a",
 		"job_workflow_ref": "org-a/.fullsend/.github/workflows/retro.yml@refs/heads/main",
 	})
