@@ -71,7 +71,7 @@ Required environment variables:
 | `--region` | `us-central1` | Cloud region for the function (GCP only) |
 | `--pem-dir` | | Directory containing role PEM files (GCP only, first-time bootstrap) |
 | `--public` | `false` | Deploy public mint (GCP only) |
-| `--source-dir` | | Path to local mint source (default: embedded) |
+| `--source-dir` | | Path to local mint source (default: checkout path when present, embedded otherwise) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
 | `--preview` | `false` | Deploy as ephemeral preview Worker (Cloudflare only) |
