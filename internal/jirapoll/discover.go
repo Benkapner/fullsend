@@ -290,15 +290,27 @@ func extractPlainText(body any) string {
 	}
 }
 
+// maxADFDepth caps how deep walkADFNode will recurse into a comment body.
+// Real Jira-UI-authored ADF documents are shallow (a handful of levels for
+// nested lists at most); a comment body is attacker-controlled by any Jira
+// user who can comment on a polled issue, so without a cap, deeply nested
+// JSON can exhaust the goroutine stack and crash the poller mid-cycle.
+const maxADFDepth = 50
+
 // extractADFText walks an ADF document and concatenates text content.
 func extractADFText(node map[string]any) string {
 	var sb strings.Builder
-	walkADFNode(node, &sb)
+	walkADFNode(node, &sb, 0)
 	return sb.String()
 }
 
-// walkADFNode recursively walks ADF nodes, extracting text.
-func walkADFNode(node map[string]any, sb *strings.Builder) {
+// walkADFNode recursively walks ADF nodes, extracting text, up to
+// maxADFDepth levels deep.
+func walkADFNode(node map[string]any, sb *strings.Builder, depth int) {
+	if depth > maxADFDepth {
+		return
+	}
+
 	if text, ok := node["text"].(string); ok {
 		sb.WriteString(text)
 	}
@@ -316,7 +328,7 @@ func walkADFNode(node map[string]any, sb *strings.Builder) {
 		if !ok {
 			continue
 		}
-		walkADFNode(childMap, sb)
+		walkADFNode(childMap, sb, depth+1)
 
 		// Add newline after paragraph/heading blocks (except the last one).
 		childType, _ := childMap["type"].(string)

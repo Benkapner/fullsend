@@ -2,8 +2,10 @@ package jirapoll
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -371,6 +373,36 @@ func TestExtractPlainText_ADF(t *testing.T) {
 	want := "/fs-triage check acceptance criteria"
 	if got != want {
 		t.Errorf("extractPlainText(ADF) = %q, want %q", got, want)
+	}
+}
+
+func TestExtractPlainText_DeepNestingIsBounded(t *testing.T) {
+	// Build an ADF document nested far deeper than any real Jira-UI-authored
+	// comment would be, with a text node at every level. A malicious actor
+	// with comment access could send something like this to try to exhaust
+	// the poller's goroutine stack (see PR #5778 review).
+	const depth = 10000
+	root := map[string]any{
+		"type": "paragraph",
+		"text": "level-0",
+	}
+	leaf := root
+	for i := 1; i < depth; i++ {
+		child := map[string]any{
+			"type": "paragraph",
+			"text": fmt.Sprintf("level-%d", i),
+		}
+		leaf["content"] = []any{child}
+		leaf = child
+	}
+
+	// This must return promptly instead of recursing 10000 levels deep.
+	got := extractPlainText(root)
+	if !strings.HasPrefix(got, "level-0") {
+		t.Errorf("extractPlainText(deeply nested ADF) = %q, want it to start with %q", got, "level-0")
+	}
+	if strings.Contains(got, fmt.Sprintf("level-%d", depth-1)) {
+		t.Errorf("extractPlainText(deeply nested ADF) walked all %d levels; want it capped well below that", depth)
 	}
 }
 
