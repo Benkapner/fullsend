@@ -63,21 +63,10 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	allowedOrgs := mintcore.SplitCSV(cfg.AllowedOrgs)
-	allowedWorkflows := mintcore.SplitCSV(cfg.AllowedWorkflowFiles)
-
-	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range mintcore.SplitCSV(cfg.PerRepoWIFRepos) {
-		perRepoWIFRepos[strings.ToLower(entry)] = true
-	}
-
 	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:            "https://token.actions.githubusercontent.com",
-		Audience:             cfg.OIDCAudience,
-		HTTPClient:           fetchDoer,
-		AllowedOrgs:          allowedOrgs,
-		AllowedWorkflowFiles: allowedWorkflows,
-		PerRepoWIFRepos:      perRepoWIFRepos,
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		Audience:   cfg.OIDCAudience,
+		HTTPClient: fetchDoer,
 	})
 
 	h, err := mintcore.ParseWorkerConfig(cfg, pemAccessor, verifier, fetchDoer)
