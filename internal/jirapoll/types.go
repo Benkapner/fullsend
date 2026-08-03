@@ -60,6 +60,7 @@ type JiraEvent struct {
 	CommentID     string
 	CommentBody   string // Plain text extracted from ADF or raw string
 	CommentAuthor jira.User
+	CommentEdited bool // Detected via updated > created rather than a new comment
 
 	// Changelog fields (when Type == "label_changed")
 	ChangedLabel string

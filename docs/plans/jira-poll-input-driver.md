@@ -197,12 +197,12 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 ```
 
 For each issue since `lastCheck`:
-- **Comments:** List comments, filter by `created > lastCheck`, emit `comment_added` events
+- **Comments:** List comments, filter by `max(created, updated) > lastCheck` (so comment edits are detected), emit `comment_added` events
 - **Changelog:** List changelog entries, filter by `created > lastCheck`:
   - `labels` field change → `label_changed` event (one per label added/removed)
   - `status` field change → `opened`/`reopened`/`closed` as appropriate
   - `summary`/`description` change → `edited`
-- **New issue:** If `lastCheck` is zero (first poll), emit `opened`
+- **New issue:** If `lastCheck` is zero (first poll), emit `opened` — but only when the issue was created within the first-poll backfill window, so first enabling the driver on an existing backlog doesn't dispatch for every open issue. On first poll, comments and changelog entries are bounded by the same window.
 
 ### NormalizedEvent conversion
 

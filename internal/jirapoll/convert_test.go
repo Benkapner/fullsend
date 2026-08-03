@@ -146,6 +146,39 @@ func TestToNormalizedEvent_CommentWithSlashCommand(t *testing.T) {
 	}
 }
 
+func TestToNormalizedEvent_EditedCommentRawAction(t *testing.T) {
+	p := &Poller{
+		opts: Options{
+			TargetRepo:  "acme/platform",
+			JiraBaseURL: "https://acme.atlassian.net",
+		},
+	}
+
+	event := JiraEvent{
+		Type:          "comment_added",
+		IssueID:       "10042",
+		IssueKey:      "PROJ-123",
+		IssueURL:      "https://acme.atlassian.net/browse/PROJ-123",
+		CommentBody:   "/fs-triage now with a command",
+		CommentEdited: true,
+		CommentAuthor: jira.User{
+			AccountID:   "user1",
+			AccountType: "atlassian",
+		},
+	}
+
+	ne := p.toNormalizedEvent(event)
+	if ne.Source.RawAction != "updated" {
+		t.Errorf("source.raw_action = %q, want %q for an edit-detected comment", ne.Source.RawAction, "updated")
+	}
+
+	event.CommentEdited = false
+	ne = p.toNormalizedEvent(event)
+	if ne.Source.RawAction != "created" {
+		t.Errorf("source.raw_action = %q, want %q for a new comment", ne.Source.RawAction, "created")
+	}
+}
+
 func TestToNormalizedEvent_CommentWithoutSlashCommand(t *testing.T) {
 	p := &Poller{
 		opts: Options{

@@ -74,7 +74,14 @@ func mapRawType(event JiraEvent) string {
 // mapRawAction maps event type to the Jira source.raw_action.
 func mapRawAction(event JiraEvent) string {
 	switch event.Type {
-	case "comment_added", "opened":
+	case "comment_added":
+		// A comment that surfaced because its updated timestamp crossed
+		// the checkpoint was updated, not newly created.
+		if event.CommentEdited {
+			return "updated"
+		}
+		return "created"
+	case "opened":
 		return "created"
 	case "label_changed", "edited", "reopened", "closed":
 		return "updated"

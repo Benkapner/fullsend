@@ -1043,8 +1043,8 @@ func TestDetectChanges_FirstPoll_BackfillWindow(t *testing.T) {
 			sawLabelChange = true
 		}
 	}
-	if !sawOpened {
-		t.Error("expected 'opened' event on first poll")
+	if sawOpened {
+		t.Error("expected no 'opened' event for an issue created outside the backfill window")
 	}
 	if !sawRecentComment {
 		t.Error("expected comment within the backfill window to be included")
@@ -1062,6 +1062,188 @@ func TestDetectChanges_FirstPoll_BackfillWindow(t *testing.T) {
 	// re-flood on cycle two.
 	if !result.maxSeen.Equal(recent) {
 		t.Errorf("maxSeen = %v, want %v (latest activity overall, regardless of backfill window)", result.maxSeen, recent)
+	}
+}
+
+func TestDetectChanges_EditedComment(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	created := now.Add(-48 * time.Hour) // before lastCheck: already seen when posted
+	updated := now.Add(-10 * time.Minute)
+	mc := newMockClient()
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Created: created.Format("2006-01-02T15:04:05.000-0700"),
+			Updated: updated.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "human"},
+		},
+		{
+			ID:      "2",
+			Created: created.Format("2006-01-02T15:04:05.000-0700"),
+			Updated: created.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "human"},
+		},
+	}
+
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  created.Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+
+	result, err := p.detectChanges(context.Background(), issue, lastCheck)
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+
+	var sawEdited, sawUnedited bool
+	for _, e := range result.events {
+		switch {
+		case e.Type == "comment_added" && e.CommentID == "1":
+			sawEdited = true
+			if !e.UpdatedAt.Equal(updated) {
+				t.Errorf("edited comment UpdatedAt = %v, want %v (the edit time)", e.UpdatedAt, updated)
+			}
+			if !e.CommentEdited {
+				t.Error("expected CommentEdited to be set on an edit-detected comment")
+			}
+		case e.Type == "comment_added" && e.CommentID == "2":
+			sawUnedited = true
+		}
+	}
+	if !sawEdited {
+		t.Error("expected a comment edited after lastCheck to be detected even though it was created before lastCheck")
+	}
+	if sawUnedited {
+		t.Error("expected an unedited comment created before lastCheck to stay filtered out")
+	}
+	if !result.maxSeen.Equal(updated) {
+		t.Errorf("maxSeen = %v, want %v (the edit time)", result.maxSeen, updated)
+	}
+}
+
+func TestDetectChanges_FirstPoll_UnparseableCreated(t *testing.T) {
+	mc := newMockClient()
+
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  "not-a-timestamp",
+		},
+	}
+
+	result, err := p.detectChanges(context.Background(), issue, time.Time{})
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+
+	for _, e := range result.events {
+		if e.Type == "opened" {
+			t.Error("expected no 'opened' event when the issue created timestamp is unparseable (fail closed)")
+		}
+	}
+	if !result.maxSeen.IsZero() {
+		t.Errorf("maxSeen = %v, want zero (no wall-clock fallback in the checkpoint)", result.maxSeen)
+	}
+}
+
+func TestDetectChanges_CommentTimestampFallbacks(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	recent := now.Add(-10 * time.Minute)
+	old := now.Add(-48 * time.Hour)
+	mc := newMockClient()
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		// Unparseable Created but valid recent Updated: still considered.
+		{
+			ID:      "1",
+			Created: "not-a-timestamp",
+			Updated: recent.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "human"},
+		},
+		// Updated before Created (inconsistent data): Created wins.
+		{
+			ID:      "2",
+			Created: recent.Format("2006-01-02T15:04:05.000-0700"),
+			Updated: old.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "human"},
+		},
+		// Neither timestamp parseable: skipped.
+		{
+			ID:      "3",
+			Created: "not-a-timestamp",
+			Updated: "also-not-a-timestamp",
+			Author:  jira.User{AccountID: "human"},
+		},
+	}
+
+	p := New(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  old.Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+
+	result, err := p.detectChanges(context.Background(), issue, lastCheck)
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+
+	got := make(map[string]JiraEvent)
+	for _, e := range result.events {
+		if e.Type == "comment_added" {
+			got[e.CommentID] = e
+		}
+	}
+
+	if e, ok := got["1"]; !ok {
+		t.Error("expected comment with unparseable Created but valid recent Updated to be considered")
+	} else if !e.UpdatedAt.Equal(recent) {
+		t.Errorf("comment 1 UpdatedAt = %v, want %v (the Updated time)", e.UpdatedAt, recent)
+	}
+	if e, ok := got["2"]; !ok {
+		t.Error("expected comment with Updated before Created to be filtered on Created")
+	} else {
+		if !e.UpdatedAt.Equal(recent) {
+			t.Errorf("comment 2 UpdatedAt = %v, want %v (the Created time)", e.UpdatedAt, recent)
+		}
+		if e.CommentEdited {
+			t.Error("expected CommentEdited unset when Updated is not after Created")
+		}
+	}
+	if _, ok := got["3"]; ok {
+		t.Error("expected comment with neither timestamp parseable to be skipped")
+	}
+	if !result.maxSeen.Equal(recent) {
+		t.Errorf("maxSeen = %v, want %v", result.maxSeen, recent)
 	}
 }
 

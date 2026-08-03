@@ -58,23 +58,38 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 	firstPoll := lastCheck.IsZero()
 	backfillCutoff := time.Now().Add(-p.opts.FirstPollBackfillWindow)
 
-	// If lastCheck is zero, this is the first poll for this issue: emit "opened".
+	// If lastCheck is zero, this is the first poll for this issue: emit
+	// "opened", but only when the issue itself was created within the
+	// backfill window. Every issue in a project starts with an unset
+	// lastCheck, so when the poller is first enabled against a project
+	// with an existing backlog, emitting "opened" unconditionally would
+	// treat every open backlog issue as newly opened and slow-drip
+	// dispatch for tickets nobody actually just opened.
 	if firstPoll {
 		createdAt, err := parseJiraTimestamp(issue.Fields.Created)
 		if err != nil {
-			createdAt = time.Now()
-		}
-		events = append(events, JiraEvent{
-			Type:      "opened",
-			IssueID:   issue.ID,
-			IssueKey:  issue.Key,
-			IssueURL:  issueURL,
-			UpdatedAt: createdAt,
-			Labels:    issue.Fields.Labels,
-			Reporter:  issue.Fields.Reporter,
-		})
-		if createdAt.After(maxSeen) {
-			maxSeen = createdAt
+			// Fail closed: without a trustworthy creation time we can't
+			// tell a genuinely new issue from ancient backlog, and
+			// emitting "opened" anyway would re-create the backlog
+			// dispatch flood the backfill window exists to prevent. The
+			// issue still surfaces through any in-window comments or
+			// changelog entries below.
+			log.Printf("WARNING: skipping opened event for %s: %v", issue.Key, err)
+		} else {
+			if createdAt.After(maxSeen) {
+				maxSeen = createdAt
+			}
+			if createdAt.After(backfillCutoff) {
+				events = append(events, JiraEvent{
+					Type:      "opened",
+					IssueID:   issue.ID,
+					IssueKey:  issue.Key,
+					IssueURL:  issueURL,
+					UpdatedAt: createdAt,
+					Labels:    issue.Fields.Labels,
+					Reporter:  issue.Fields.Reporter,
+				})
+			}
 		}
 	}
 
@@ -84,17 +99,45 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		return changeResult{}, fmt.Errorf("list comments for %s: %w", issue.Key, err)
 	}
 	for _, comment := range comments {
-		createdAt, err := parseJiraTimestamp(comment.Created)
-		if err != nil {
+		// Filter on the comment's latest activity: the later of its
+		// created and updated timestamps. Jira bumps updated when a
+		// comment is modified — observed Cloud behavior rather than a
+		// documented contract, and modifications other than body edits
+		// (e.g. visibility changes) may also bump it — so an edit to an
+		// already-seen comment (e.g. adding a slash command to an old
+		// comment) is still detected after lastCheck has moved past its
+		// creation time. Either timestamp alone is enough to consider
+		// the comment; skip only when neither parses.
+		activityAt, createdErr := parseJiraTimestamp(comment.Created)
+		edited := false
+		if comment.Updated != "" {
+			updatedAt, err := parseJiraTimestamp(comment.Updated)
+			switch {
+			case err != nil:
+				log.Printf("WARNING: unparseable updated timestamp on comment %s of %s (edit detection degraded): %v", comment.ID, issue.Key, err)
+			case createdErr != nil:
+				// No usable creation baseline, so edit detection is
+				// degraded: the comment is treated as new (CommentEdited
+				// stays false) even if it was actually edited.
+				log.Printf("WARNING: unparseable created timestamp on comment %s of %s (edit detection degraded): %v", comment.ID, issue.Key, createdErr)
+				activityAt = updatedAt
+				createdErr = nil
+			case updatedAt.After(activityAt):
+				activityAt = updatedAt
+				edited = true
+			}
+		}
+		if createdErr != nil {
+			log.Printf("WARNING: skipping comment %s of %s: %v", comment.ID, issue.Key, createdErr)
 			continue
 		}
-		if !firstPoll && !createdAt.After(lastCheck) {
+		if !firstPoll && !activityAt.After(lastCheck) {
 			continue
 		}
-		if createdAt.After(maxSeen) {
-			maxSeen = createdAt
+		if activityAt.After(maxSeen) {
+			maxSeen = activityAt
 		}
-		if firstPoll && !createdAt.After(backfillCutoff) {
+		if firstPoll && !activityAt.After(backfillCutoff) {
 			continue
 		}
 		events = append(events, JiraEvent{
@@ -102,7 +145,8 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 			IssueID:       issue.ID,
 			IssueKey:      issue.Key,
 			IssueURL:      issueURL,
-			UpdatedAt:     createdAt,
+			UpdatedAt:     activityAt,
+			CommentEdited: edited,
 			Labels:        issue.Fields.Labels,
 			CommentID:     comment.ID,
 			CommentBody:   extractPlainText(comment.Body),
