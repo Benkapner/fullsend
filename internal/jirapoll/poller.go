@@ -5,6 +5,7 @@ package jirapoll
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -244,13 +245,23 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 			}
 		}
 
-		for _, stage := range stages {
-			p.dispatches = append(p.dispatches, poll.Dispatch{
-				Stage:       stage,
-				EventType:   event.Type,
-				ResourceKey: fmt.Sprintf("issue-%s", event.IssueKey),
-				IID:         parseIssueID(event.IssueID),
-			})
+		if len(stages) > 0 {
+			neJSON, err := json.Marshal(ne)
+			if err != nil {
+				log.Printf("WARNING: marshaling event payload for %s: %v", event.Key(), err)
+				continue
+			}
+			payloadB64 := base64.StdEncoding.EncodeToString(neJSON)
+
+			for _, stage := range stages {
+				p.dispatches = append(p.dispatches, poll.Dispatch{
+					Stage:           stage,
+					EventType:       event.Type,
+					ResourceKey:     fmt.Sprintf("issue-%s", event.IssueKey),
+					IID:             parseIssueID(event.IssueID),
+					EventPayloadB64: payloadB64,
+				})
+			}
 		}
 
 		if event.UpdatedAt.After(maxTime) {

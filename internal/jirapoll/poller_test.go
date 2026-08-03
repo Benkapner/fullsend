@@ -2,6 +2,7 @@ package jirapoll
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -308,8 +309,26 @@ func TestRunHappyPath_CommentWithSlashCommand(t *testing.T) {
 
 	found := false
 	for _, d := range dispatches {
-		if d.Stage == "triage" {
+		if d.Stage == "triage" && d.EventType == "comment_added" {
 			found = true
+
+			if d.EventPayloadB64 == "" {
+				t.Fatal("expected EventPayloadB64 to be populated, got empty string")
+			}
+			payload, err := base64.StdEncoding.DecodeString(d.EventPayloadB64)
+			if err != nil {
+				t.Fatalf("EventPayloadB64 is not valid base64: %v", err)
+			}
+			var ne dispatch.NormalizedEvent
+			if err := json.Unmarshal(payload, &ne); err != nil {
+				t.Fatalf("EventPayloadB64 does not decode to a NormalizedEvent: %v", err)
+			}
+			if ne.Entity.Key != "PROJ-123" {
+				t.Errorf("expected entity key PROJ-123, got %q", ne.Entity.Key)
+			}
+			if ne.Transition.Comment == nil || ne.Transition.Comment.Instruction != "check acceptance criteria" {
+				t.Errorf("expected slash command instruction to survive in EventPayloadB64, got: %+v", ne.Transition.Comment)
+			}
 		}
 	}
 	if !found {
