@@ -292,7 +292,7 @@ New flags:
 - `--input-driver` — poll input driver type (`jira-poll`); when set, `--forge` is not required
 - `--jira-url` — Jira instance base URL (default: `$JIRA_BASE_URL`)
 - `--jira-project` — Jira project key for JQL scoping
-- `--jql` — optional override JQL (default: `project = {project} AND status != Done ORDER BY updated DESC`)
+- `--jql` — optional override JQL (default: `project = {project} AND statusCategory != Done ORDER BY updated DESC`)
 - `--target-repo` — GitHub repo slug where agents run (default: `$GITHUB_REPOSITORY`)
 
 Env vars:

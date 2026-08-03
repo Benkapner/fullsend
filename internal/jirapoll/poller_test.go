@@ -667,7 +667,7 @@ func TestSearchCandidatesQuotesProjectKey(t *testing.T) {
 		t.Fatalf("searchCandidates() error: %v", err)
 	}
 
-	want := `project = "PROJ" AND status != Done ORDER BY updated DESC`
+	want := `project = "PROJ" AND statusCategory != Done ORDER BY updated DESC`
 	if mc.lastQuery != want {
 		t.Errorf("JQL = %q, want %q", mc.lastQuery, want)
 	}

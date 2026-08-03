@@ -184,7 +184,7 @@ By default the poller searches for all non-done issues in the project, ordered b
 fullsend poll \
   --input-driver jira-poll \
   --jira-url "${JIRA_BASE_URL}" \
-  --jql 'project = PROJ AND labels = "fullsend" AND status != Done ORDER BY updated DESC' \
+  --jql 'project = PROJ AND labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC' \
   --target-repo "${{ github.repository }}" \
   --output dispatches.json \
   --fullsend-dir .fullsend
