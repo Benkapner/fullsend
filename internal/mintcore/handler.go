@@ -68,6 +68,12 @@ type Handler struct {
 	// perRepoWIFRepos is the set of repositories with per-repo WIF treatment.
 	// The handler uses this to decide repos scope policy (per-repo vs per-org).
 	perRepoWIFRepos map[string]bool
+
+	// allowedOrgs lists the orgs permitted to use the mint (per-org callers).
+	allowedOrgs []string
+
+	// allowedWorkflowFiles lists the workflow basenames permitted to call the mint.
+	allowedWorkflowFiles []string
 }
 
 type foreignInflight struct {
@@ -77,11 +83,12 @@ type foreignInflight struct {
 }
 
 // NewHandler creates a Handler with the given dependencies.
-// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES)
-// are read once at construction time. The OIDCVerifier is injected by the caller
-// so different verification strategies can be used (STSVerifier for the Cloud
-// Function, JWKSVerifier for devmint). Org validation is the OIDCVerifier's
-// responsibility.
+// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES,
+// ALLOWED_ORGS, ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS) are read once at
+// construction time. The OIDCVerifier is injected by the caller so different
+// verification strategies can be used (STSVerifier for the Cloud Function,
+// JWKSVerifier for devmint). The handler performs authorization (org-allowed,
+// workflow-ref) after the verifier authenticates the token.
 func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
@@ -91,14 +98,16 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	}
 
 	h := &Handler{
-		httpClient:      httpClient,
-		pemAccessor:     pemAccessor,
-		oidcVerifier:    oidcVerifier,
-		githubBaseURL:   "https://api.github.com",
-		foreignCache:    make(map[string]foreignCacheEntry),
-		foreignInflight: make(map[string]*foreignInflight),
-		foreignCacheTTL: defaultForeignCacheTTL,
-		perRepoWIFRepos: perRepoWIFRepos,
+		httpClient:           httpClient,
+		pemAccessor:          pemAccessor,
+		oidcVerifier:         oidcVerifier,
+		githubBaseURL:        "https://api.github.com",
+		foreignCache:         make(map[string]foreignCacheEntry),
+		foreignInflight:      make(map[string]*foreignInflight),
+		foreignCacheTTL:      defaultForeignCacheTTL,
+		perRepoWIFRepos:      perRepoWIFRepos,
+		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
+		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -178,6 +187,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
+		if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
+			log.Printf("token authorization failed for /v1/status: %v", err)
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
+		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.allowedOrgs, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
+			log.Printf("workflow ref validation failed for /v1/status: %v", err)
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
 		h.handleStatus(w, claims)
 		return
 	}
@@ -235,6 +254,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	claims, err := h.oidcVerifier.Verify(ctx, oidcToken)
 	if err != nil {
 		log.Printf("OIDC verification failed: %v", err)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+
+	if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
+		log.Printf("token authorization failed: %v", err)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.allowedOrgs, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
+		log.Printf("workflow ref validation failed: %v", err)
 		writeError(w, http.StatusUnauthorized, "authentication failed")
 		return
 	}

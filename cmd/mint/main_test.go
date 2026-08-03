@@ -527,11 +527,9 @@ func TestStandaloneWiring(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
 	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:            "https://token.actions.githubusercontent.com",
-		Audience:             "fullsend-mint",
-		HTTPClient:           &http.Client{Timeout: 5 * time.Second},
-		AllowedOrgs:          []string{"test-org"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		Audience:   "fullsend-mint",
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(pemDir)

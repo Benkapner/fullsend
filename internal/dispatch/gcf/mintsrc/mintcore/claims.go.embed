@@ -72,10 +72,10 @@ func ParseAllowedOrgs(allowedOrgs string) []string {
 	return orgs
 }
 
-// IsPublicMint reports whether PER_REPO_WIF_REPOS contains *, enabling
-// public mint mode where every caller gets per-repo treatment.
-// Deprecated callers passing allowedOrgs should migrate to
-// IsPublicMintRepos.
+// IsPublicMint reports whether the given list contains the wildcard entry "*".
+// It is used by provisioner and CLI code that checks ALLOWED_ORGS for legacy
+// public-mode detection. New code should use IsPublicMintRepos instead, which
+// checks PER_REPO_WIF_REPOS — the canonical source for public mint mode.
 func IsPublicMint(allowedOrgs []string) bool {
 	for _, entry := range allowedOrgs {
 		if entry == "*" {
@@ -102,9 +102,10 @@ func IsPerRepoMode(repository string, perRepoWIFRepos map[string]bool) bool {
 	return perRepoWIFRepos[strings.ToLower(repository)]
 }
 
-// AuthorizeToken performs the common authorization policy shared by all
-// verifier backends. It determines whether a caller gets per-repo or per-org
-// treatment and validates accordingly:
+// AuthorizeToken performs the common authorization policy called by the
+// handler after a verifier backend authenticates the token. It determines
+// whether a caller gets per-repo or per-org treatment and validates
+// accordingly:
 //
 //   - If the caller's repository is in PER_REPO_WIF_REPOS (or PER_REPO_WIF_REPOS
 //     contains "*"), the caller gets per-repo treatment — authorized without

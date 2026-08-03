@@ -62,8 +62,6 @@ func newTestSTSVerifier(t *testing.T, stsURL string) *STSVerifier {
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "fullsend-provider",
-		AllowedOrgs:        []string{"myorg"},
-		AllowedWorkflows:   []string{"*"},
 		OIDCAudience:       "fullsend-mint",
 	})
 }
@@ -122,35 +120,8 @@ func TestSTSVerifier_ExpiredToken(t *testing.T) {
 	assert.ErrorContains(t, err, "token expired")
 }
 
-func TestSTSVerifier_BadOrg(t *testing.T) {
-	sts := newTestSTSServer(t)
-	v := newTestSTSVerifier(t, sts.URL)
-
-	c := validClaims()
-	c["repository_owner"] = "evilorg"
-	token := makeUnsignedJWT(t, c)
-	_, err := v.Verify(t.Context(), token)
-	assert.ErrorContains(t, err, "not in allowed orgs")
-}
-
-func TestSTSVerifier_BadWorkflowRef(t *testing.T) {
-	sts := newTestSTSServer(t)
-	v := NewSTSVerifier(STSVerifierConfig{
-		STSURL:             sts.URL,
-		GCPProjectNum:      "123456",
-		WIFPoolName:        "fullsend-pool",
-		DefaultWIFProvider: "fullsend-provider",
-		AllowedOrgs:        []string{"myorg"},
-		AllowedWorkflows:   []string{"dispatch.yml"},
-		OIDCAudience:       "fullsend-mint",
-	})
-
-	c := validClaims()
-	c["job_workflow_ref"] = "myorg/.fullsend/.github/workflows/evil.yml@refs/heads/main"
-	token := makeUnsignedJWT(t, c)
-	_, err := v.Verify(t.Context(), token)
-	assert.ErrorContains(t, err, "not in allowed list")
-}
+// NOTE: BadOrg, BadWorkflowRef tests moved to handler level —
+// authorization is now the handler's responsibility.
 
 func TestSTSVerifier_STSFailure(t *testing.T) {
 	failSTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,42 +147,8 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 	assert.ErrorContains(t, err, "STS returned empty access token")
 }
 
-func TestSTSVerifier_PerRepoBypassesOrgCheck(t *testing.T) {
-	sts := newTestSTSServer(t)
-	// "external-org" is NOT in AllowedOrgs, but external-org/repo is in PerRepoWIFRepos.
-	// The per-repo caller should be authorized without ALLOWED_ORGS membership.
-	v := NewSTSVerifier(STSVerifierConfig{
-		STSURL:             sts.URL,
-		GCPProjectNum:      "123456",
-		WIFPoolName:        "fullsend-pool",
-		DefaultWIFProvider: "fullsend-provider",
-		AllowedOrgs:        []string{"myorg"},
-		AllowedWorkflows:   []string{"*"},
-		PerRepoWIFRepos:    map[string]bool{"external-org/repo": true},
-		OIDCAudience:       "fullsend-mint",
-	})
-
-	c := validClaims()
-	c["repository"] = "external-org/repo"
-	c["repository_owner"] = "external-org"
-	c["job_workflow_ref"] = "external-org/repo/.github/workflows/dispatch.yml@refs/heads/main"
-	token := makeUnsignedJWT(t, c)
-	claims, err := v.Verify(t.Context(), token)
-	require.NoError(t, err)
-	assert.Equal(t, "external-org/repo", claims.Repository)
-}
-
-func TestSTSVerifier_NonPerRepoStillRequiresOrg(t *testing.T) {
-	sts := newTestSTSServer(t)
-	v := newTestSTSVerifier(t, sts.URL)
-
-	c := validClaims()
-	c["repository"] = "external-org/repo"
-	c["repository_owner"] = "external-org"
-	token := makeUnsignedJWT(t, c)
-	_, err := v.Verify(t.Context(), token)
-	assert.ErrorContains(t, err, "not in allowed orgs")
-}
+// NOTE: PerRepoBypassesOrgCheck, NonPerRepoStillRequiresOrg tests moved to
+// handler level — authorization is now the handler's responsibility.
 
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
 	v := NewSTSVerifier(STSVerifierConfig{

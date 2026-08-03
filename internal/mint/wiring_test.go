@@ -19,13 +19,13 @@ func TestInitWiring(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+
 	verifier := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
 		HTTPClient:         &http.Client{Timeout: 5 * time.Second},
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "test-pool",
 		DefaultWIFProvider: "test-provider",
-		AllowedOrgs:        []string{"test-org"},
-		AllowedWorkflows:   []string{"*"},
 		OIDCAudience:       "fullsend-mint",
 	})
 

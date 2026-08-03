@@ -80,7 +80,7 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 		}
 	}
 
-	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, pemAccessor, oidcVerifier, httpClient)
+	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, pemAccessor, oidcVerifier, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -107,27 +107,29 @@ func SplitCSV(s string) []string {
 // instead of reading from environment variables. The roleAppIDsJSON parameter
 // is the JSON-encoded ROLE_APP_IDS mapping; allowedRolesCSV is the
 // comma-separated ALLOWED_ROLES list (empty means all roles from roleAppIDs);
-// perRepoWIFReposCSV is the comma-separated PER_REPO_WIF_REPOS list.
+// perRepoWIFReposCSV is the comma-separated PER_REPO_WIF_REPOS list;
+// allowedOrgsCSV is the comma-separated ALLOWED_ORGS list;
+// allowedWorkflowFilesCSV is the comma-separated ALLOWED_WORKFLOW_FILES list.
 //
-// The caller is responsible for configuring the OIDCVerifier with the
-// appropriate AllowedOrgs, AllowedWorkflowFiles, and PerRepoWIFRepos
-// before passing it here. ParseWorkerConfig handles this automatically;
-// direct callers must do it themselves.
-func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+// The handler performs authorization (org-allowed, workflow-ref) after the
+// OIDCVerifier authenticates the token.
+func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
 	perRepoWIFRepos := make(map[string]bool)
 	for _, entry := range SplitCSV(perRepoWIFReposCSV) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
 	h := &Handler{
-		httpClient:      httpClient,
-		pemAccessor:     pemAccessor,
-		oidcVerifier:    oidcVerifier,
-		githubBaseURL:   "https://api.github.com",
-		foreignCache:    make(map[string]foreignCacheEntry),
-		foreignInflight: make(map[string]*foreignInflight),
-		foreignCacheTTL: defaultForeignCacheTTL,
-		perRepoWIFRepos: perRepoWIFRepos,
+		httpClient:           httpClient,
+		pemAccessor:          pemAccessor,
+		oidcVerifier:         oidcVerifier,
+		githubBaseURL:        "https://api.github.com",
+		foreignCache:         make(map[string]foreignCacheEntry),
+		foreignInflight:      make(map[string]*foreignInflight),
+		foreignCacheTTL:      defaultForeignCacheTTL,
+		perRepoWIFRepos:      perRepoWIFRepos,
+		allowedOrgs:          SplitCSV(allowedOrgsCSV),
+		allowedWorkflowFiles: SplitCSV(allowedWorkflowFilesCSV),
 	}
 
 	if roleAppIDsJSON != "" {
