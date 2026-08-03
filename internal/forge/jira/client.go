@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"golang.org/x/sync/singleflight"
 )
 
 // LiveClient is an HTTP client for the Jira Cloud REST API v3.
@@ -28,7 +27,6 @@ type LiveClient struct {
 	baseURL    string
 	email      string // for Basic auth (Cloud)
 	token      string
-	oauth2     *oauth2TokenSource
 
 	groupMemberCacheMu sync.Mutex
 	groupMemberCache   map[string]groupMemberCacheEntry
@@ -43,106 +41,6 @@ const groupMemberCacheTTL = 5 * time.Minute
 type groupMemberCacheEntry struct {
 	accountIDs []string
 	fetchedAt  time.Time
-}
-
-const (
-	defaultTokenURL    = "https://auth.atlassian.com/oauth/token"
-	tokenRefreshMargin = 5 * time.Minute
-)
-
-// transientAuthError wraps an OAuth2 token-fetch failure that is safe to
-// retry (rate limiting or a 5xx from the token endpoint), as opposed to a
-// permanent failure like invalid credentials.
-type transientAuthError struct{ err error }
-
-func (e *transientAuthError) Error() string { return e.err.Error() }
-func (e *transientAuthError) Unwrap() error { return e.err }
-
-// oauth2TokenSource handles OAuth 2.0 client credentials token exchange
-// with caching and automatic refresh.
-type oauth2TokenSource struct {
-	clientID     string
-	clientSecret string
-	tokenURL     string
-	httpClient   *http.Client
-
-	mu           sync.Mutex
-	accessToken  string
-	expiry       time.Time
-	refreshGroup singleflight.Group
-}
-
-func (s *oauth2TokenSource) token(ctx context.Context) (string, error) {
-	// Fast path: return cached token without blocking on HTTP.
-	s.mu.Lock()
-	if s.accessToken != "" && time.Now().Before(s.expiry.Add(-tokenRefreshMargin)) {
-		tok := s.accessToken
-		s.mu.Unlock()
-		return tok, nil
-	}
-	s.mu.Unlock()
-
-	// Slow path: refresh the token. singleflight collapses concurrent
-	// refresh attempts (e.g. many goroutines hitting the fast-path miss
-	// at once) into a single call to the token endpoint.
-	tok, err, _ := s.refreshGroup.Do("refresh", func() (any, error) {
-		return s.refreshToken(ctx)
-	})
-	if err != nil {
-		return "", err
-	}
-	return tok.(string), nil
-}
-
-// refreshToken exchanges client credentials for a new access token and
-// caches it.
-func (s *oauth2TokenSource) refreshToken(ctx context.Context) (string, error) {
-	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {s.clientID},
-		"client_secret": {s.clientSecret},
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenURL,
-		strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("oauth2 token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("oauth2 token exchange: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		err := fmt.Errorf("oauth2 token endpoint returned %d: %s", resp.StatusCode, body)
-		if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.StatusCode <= 504) {
-			return "", &transientAuthError{err: err}
-		}
-		return "", err
-	}
-
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-		TokenType   string `json:"token_type"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("oauth2 token response decode: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return "", fmt.Errorf("oauth2 token response missing access_token")
-	}
-
-	s.mu.Lock()
-	s.accessToken = tokenResp.AccessToken
-	s.expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	s.mu.Unlock()
-
-	return tokenResp.AccessToken, nil
 }
 
 // Option configures the Jira client.
@@ -164,73 +62,11 @@ func WithEmail(email string) Option {
 	}
 }
 
-// WithHTTPClient sets a custom HTTP client for both API calls and, when using
-// OAuth 2.0, token exchange requests.
+// WithHTTPClient sets a custom HTTP client for API calls.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *LiveClient) {
 		c.httpClient = client
-		if c.oauth2 != nil {
-			c.oauth2.httpClient = client
-		}
 	}
-}
-
-// WithTokenURL overrides the OAuth 2.0 token endpoint URL.
-// Defaults to https://auth.atlassian.com/oauth/token.
-func WithTokenURL(tokenURL string) Option {
-	return func(c *LiveClient) {
-		if c.oauth2 != nil {
-			c.oauth2.tokenURL = tokenURL
-		}
-	}
-}
-
-// NewOAuth2 creates a Jira client that authenticates using OAuth 2.0 client
-// credentials (two-legged). The client exchanges clientID and clientSecret for
-// a short-lived access token, caching it and refreshing before expiry.
-func NewOAuth2(clientID, clientSecret string, opts ...Option) (*LiveClient, error) {
-	if clientID == "" {
-		return nil, fmt.Errorf("jira: OAuth2 client ID must not be empty")
-	}
-	if clientSecret == "" {
-		return nil, fmt.Errorf("jira: OAuth2 client secret must not be empty")
-	}
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
-			}
-			if len(via) > 0 {
-				prev := via[len(via)-1]
-				crossOrigin := req.URL.Host != prev.URL.Host
-				tlsDowngrade := prev.URL.Scheme == "https" && req.URL.Scheme != "https"
-				if crossOrigin || tlsDowngrade {
-					req.Header.Del("Authorization")
-				}
-			}
-			return nil
-		},
-	}
-	c := &LiveClient{
-		httpClient: httpClient,
-		oauth2: &oauth2TokenSource{
-			clientID:     clientID,
-			clientSecret: clientSecret,
-			tokenURL:     defaultTokenURL,
-			httpClient:   httpClient,
-		},
-	}
-	for _, o := range opts {
-		o(c)
-	}
-	if c.baseURL == "" {
-		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
-	}
-	if err := validateBaseURL(c.baseURL); err != nil {
-		return nil, err
-	}
-	return c, nil
 }
 
 // validateBaseURL checks that the base URL uses https, unless it points to a
@@ -313,22 +149,13 @@ func (c *LiveClient) apiURL(path string) string {
 	return c.baseURL + "/rest/api/3" + path
 }
 
-func (c *LiveClient) setAuth(req *http.Request) error {
-	if c.oauth2 != nil {
-		tok, err := c.oauth2.token(req.Context())
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+tok)
-		return nil
-	}
+func (c *LiveClient) setAuth(req *http.Request) {
 	if c.email != "" {
 		cred := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.token))
 		req.Header.Set("Authorization", "Basic "+cred)
 	} else {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	return nil
 }
 
 // do executes an HTTP request with auth, error handling, and retry with backoff.
@@ -355,23 +182,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 			return fmt.Errorf("create request: %w", err)
 		}
 
-		if err := c.setAuth(req); err != nil {
-			// No request has been sent yet, so a retry here is always safe
-			// regardless of method idempotency. Only retry errors known to
-			// be transient (network blips, rate limiting, or a 5xx from
-			// the OAuth2 token endpoint); a permanent failure like invalid
-			// credentials should fail immediately.
-			if isTransientAuthError(err) && attempt < maxRetries-1 {
-				delay := retryDelay(nil, attempt)
-				select {
-				case <-time.After(delay):
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-				continue
-			}
-			return fmt.Errorf("set auth for %s %s: %w", method, path, err)
-		}
+		c.setAuth(req)
 		req.Header.Set("Accept", "application/json")
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -469,17 +280,6 @@ func isTransientError(err error) bool {
 		return true
 	}
 	return false
-}
-
-// isTransientAuthError reports whether a setAuth failure is safe to retry:
-// a network-level transient error, or a transientAuthError raised for
-// rate limiting / 5xx responses from the OAuth2 token endpoint.
-func isTransientAuthError(err error) bool {
-	if isTransientError(err) {
-		return true
-	}
-	var transient *transientAuthError
-	return errors.As(err, &transient)
 }
 
 func isIdempotent(method, path string) bool {
@@ -764,6 +564,10 @@ func (c *LiveClient) groupMembers(ctx context.Context, groupID string) ([]string
 
 // rolePriority returns the priority of a Jira project role name.
 // Higher values take precedence when a user appears in multiple roles.
+//
+// KNOWN LIMITATION (intentional for the MVP): matches by role name, not by
+// the project's permission scheme. See mapJiraRole in internal/jirapoll and
+// docs/guides/user/jira-integration.md#actor-role-resolution.
 func rolePriority(roleName string) int {
 	switch strings.ToLower(roleName) {
 	case "administrators":

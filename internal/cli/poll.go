@@ -182,23 +182,12 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 	return poller.Run(cmd.Context())
 }
 
-// buildJiraClient creates a Jira client using either OAuth 2.0 client credentials
-// or Basic/Bearer auth depending on JIRA_AUTH_METHOD.
+// buildJiraClient creates a Jira client using Basic (email+token) or Bearer
+// (token only) auth, based on whether JIRA_USER_EMAIL is set.
 func buildJiraClient(jiraURL string) (*jira.LiveClient, error) {
-	authMethod := os.Getenv("JIRA_AUTH_METHOD")
-
-	if authMethod == "oauth2" {
-		clientID := os.Getenv("JIRA_CLIENT_ID")
-		clientSecret := os.Getenv("JIRA_CLIENT_SECRET")
-		if clientID == "" || clientSecret == "" {
-			return nil, fmt.Errorf("JIRA_CLIENT_ID and JIRA_CLIENT_SECRET are required when JIRA_AUTH_METHOD=oauth2")
-		}
-		return jira.NewOAuth2(clientID, clientSecret, jira.WithBaseURL(jiraURL))
-	}
-
 	jiraToken := os.Getenv("JIRA_TOKEN")
 	if jiraToken == "" {
-		return nil, fmt.Errorf("JIRA_TOKEN environment variable is required (or set JIRA_AUTH_METHOD=oauth2)")
+		return nil, fmt.Errorf("JIRA_TOKEN environment variable is required")
 	}
 	var opts []jira.Option
 	opts = append(opts, jira.WithBaseURL(jiraURL))

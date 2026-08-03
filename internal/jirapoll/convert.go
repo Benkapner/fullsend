@@ -192,6 +192,12 @@ func (p *Poller) resolveRole(event JiraEvent) string {
 }
 
 // mapJiraRole maps a Jira project role name to an ADR 0054 role.
+//
+// KNOWN LIMITATION (intentional for the MVP): this matches on the role's
+// *name*, not on the project's permission scheme. An org with a custom role
+// literally named "Developers" without edit permissions is over-privileged;
+// an org using differently-named roles for editors is downgraded to "read".
+// See docs/guides/user/jira-integration.md#actor-role-resolution.
 func mapJiraRole(roleName string) string {
 	switch strings.ToLower(roleName) {
 	case "administrators":

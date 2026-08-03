@@ -691,178 +691,6 @@ func TestGetProjectRoleMembership_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "list project roles")
 }
 
-// ---------------------------------------------------------------------------
-// OAuth 2.0 Client Credentials
-// ---------------------------------------------------------------------------
-
-func TestOAuth2_TokenExchange(t *testing.T) {
-	t.Parallel()
-
-	// Mock token endpoint.
-	tokenCalls := 0
-	tokenMux := http.NewServeMux()
-	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
-		require.NoError(t, r.ParseForm())
-		assert.Equal(t, "client_credentials", r.Form.Get("grant_type"))
-		assert.Equal(t, "my-client-id", r.Form.Get("client_id"))
-		assert.Equal(t, "my-client-secret", r.Form.Get("client_secret"))
-		tokenCalls++
-		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": fmt.Sprintf("access-token-%d", tokenCalls),
-			"expires_in":   3600,
-			"token_type":   "Bearer",
-		})
-	})
-	tokenSrv := httptest.NewServer(tokenMux)
-	t.Cleanup(tokenSrv.Close)
-
-	// Mock Jira API.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		assert.True(t, strings.HasPrefix(auth, "Bearer access-token-"), "expected Bearer with OAuth2 token, got: %s", auth)
-		writeJSON(t, w, http.StatusOK, User{AccountID: "123", DisplayName: "OAuth Bot"})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	client, err := NewOAuth2("my-client-id", "my-client-secret",
-		WithBaseURL(srv.URL),
-		WithTokenURL(tokenSrv.URL+"/oauth/token"),
-	)
-	require.NoError(t, err)
-
-	user, err := client.GetMyself(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "OAuth Bot", user.DisplayName)
-	assert.Equal(t, 1, tokenCalls, "should have fetched a token")
-}
-
-func TestOAuth2_TokenCaching(t *testing.T) {
-	t.Parallel()
-
-	tokenCalls := 0
-	tokenMux := http.NewServeMux()
-	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		tokenCalls++
-		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": fmt.Sprintf("token-%d", tokenCalls),
-			"expires_in":   3600,
-			"token_type":   "Bearer",
-		})
-	})
-	tokenSrv := httptest.NewServer(tokenMux)
-	t.Cleanup(tokenSrv.Close)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, User{AccountID: "123"})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	client, err := NewOAuth2("cid", "csec",
-		WithBaseURL(srv.URL),
-		WithTokenURL(tokenSrv.URL+"/oauth/token"),
-	)
-	require.NoError(t, err)
-
-	// Make two API calls — should reuse the cached token.
-	_, err = client.GetMyself(context.Background())
-	require.NoError(t, err)
-	_, err = client.GetMyself(context.Background())
-	require.NoError(t, err)
-
-	assert.Equal(t, 1, tokenCalls, "second call should reuse cached token")
-}
-
-func TestOAuth2_TokenRefreshBeforeExpiry(t *testing.T) {
-	t.Parallel()
-
-	tokenCalls := 0
-	tokenMux := http.NewServeMux()
-	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		tokenCalls++
-		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": fmt.Sprintf("token-%d", tokenCalls),
-			"expires_in":   3600,
-			"token_type":   "Bearer",
-		})
-	})
-	tokenSrv := httptest.NewServer(tokenMux)
-	t.Cleanup(tokenSrv.Close)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, User{AccountID: "123"})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	client, err := NewOAuth2("cid", "csec",
-		WithBaseURL(srv.URL),
-		WithTokenURL(tokenSrv.URL+"/oauth/token"),
-	)
-	require.NoError(t, err)
-
-	// First call — fetches token.
-	_, err = client.GetMyself(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 1, tokenCalls)
-
-	// Simulate near-expiry by backdating the cached expiry.
-	client.oauth2.mu.Lock()
-	client.oauth2.expiry = time.Now().Add(2 * time.Minute) // within 5-minute refresh window
-	client.oauth2.mu.Unlock()
-
-	// Next call should trigger a refresh.
-	_, err = client.GetMyself(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 2, tokenCalls, "should have refreshed near-expiry token")
-}
-
-func TestOAuth2_TokenEndpointError(t *testing.T) {
-	t.Parallel()
-
-	tokenMux := http.NewServeMux()
-	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusUnauthorized, map[string]any{
-			"error":             "invalid_client",
-			"error_description": "Client authentication failed",
-		})
-	})
-	tokenSrv := httptest.NewServer(tokenMux)
-	t.Cleanup(tokenSrv.Close)
-
-	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	client, err := NewOAuth2("bad-id", "bad-secret",
-		WithBaseURL(srv.URL),
-		WithTokenURL(tokenSrv.URL+"/oauth/token"),
-	)
-	require.NoError(t, err)
-
-	_, err = client.GetMyself(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "oauth2 token")
-}
-
-func TestNewOAuth2_MissingCredentials(t *testing.T) {
-	t.Parallel()
-
-	_, err := NewOAuth2("", "secret", WithBaseURL("https://example.atlassian.net"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "client ID")
-
-	_, err = NewOAuth2("id", "", WithBaseURL("https://example.atlassian.net"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "client secret")
-}
-
 func TestSearchIssues_SinglePage(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)
@@ -943,22 +771,8 @@ func TestSearchIssues_RetriesOn5xx(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NewOAuth2 / New base URL edge cases
+// New base URL edge cases
 // ---------------------------------------------------------------------------
-
-func TestNewOAuth2_NoBaseURL(t *testing.T) {
-	t.Parallel()
-	_, err := NewOAuth2("id", "secret")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "base URL must be set")
-}
-
-func TestNewOAuth2_InsecureBaseURL(t *testing.T) {
-	t.Parallel()
-	_, err := NewOAuth2("id", "secret", WithBaseURL("http://jira.example.com"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "insecure scheme")
-}
 
 func TestBaseURLValidation_ParseError(t *testing.T) {
 	t.Parallel()
@@ -971,22 +785,12 @@ func TestBaseURLValidation_ParseError(t *testing.T) {
 // WithHTTPClient
 // ---------------------------------------------------------------------------
 
-func TestWithHTTPClient_UpdatesOAuth2Client(t *testing.T) {
-	t.Parallel()
-	custom := &http.Client{Timeout: 5 * time.Second}
-	c, err := NewOAuth2("id", "secret", WithBaseURL("https://example.atlassian.net"), WithHTTPClient(custom))
-	require.NoError(t, err)
-	assert.Same(t, custom, c.httpClient)
-	assert.Same(t, custom, c.oauth2.httpClient)
-}
-
-func TestWithHTTPClient_NoOAuth2IsNoOp(t *testing.T) {
+func TestWithHTTPClient(t *testing.T) {
 	t.Parallel()
 	custom := &http.Client{Timeout: 5 * time.Second}
 	c, err := New("token", WithBaseURL("https://example.atlassian.net"), WithHTTPClient(custom))
 	require.NoError(t, err)
 	assert.Same(t, custom, c.httpClient)
-	assert.Nil(t, c.oauth2)
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,94 +897,6 @@ func (t *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, &net.DNSError{Err: "flaky", IsTimeout: true}
 	}
 	return t.inner.RoundTrip(req)
-}
-
-// flakyTokenTransport fails the first failN OAuth2 token-endpoint requests
-// with a 500 response before delegating to inner. Used to simulate a
-// transient blip from the Atlassian token endpoint.
-type flakyTokenTransport struct {
-	calls int
-	failN int
-	inner http.RoundTripper
-}
-
-func (t *flakyTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	t.calls++
-	if t.calls <= t.failN {
-		return &http.Response{
-			StatusCode: http.StatusInternalServerError,
-			Body:       io.NopCloser(strings.NewReader("upstream blip")),
-			Header:     make(http.Header),
-		}, nil
-	}
-	return t.inner.RoundTrip(req)
-}
-
-func TestDo_RetriesOnTransientAuthTokenFetchError(t *testing.T) {
-	t.Parallel()
-
-	tokenMux := http.NewServeMux()
-	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "tok",
-			"expires_in":   3600,
-		})
-	})
-	tokenSrv := httptest.NewServer(tokenMux)
-	t.Cleanup(tokenSrv.Close)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, User{AccountID: "42"})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	tokenTransport := &flakyTokenTransport{failN: 1, inner: http.DefaultTransport}
-	client, err := NewOAuth2("cid", "csec",
-		WithBaseURL(srv.URL),
-		WithTokenURL(tokenSrv.URL+"/oauth/token"),
-		WithHTTPClient(&http.Client{Transport: tokenTransport}),
-	)
-	require.NoError(t, err)
-
-	user, err := client.GetMyself(context.Background())
-	require.NoError(t, err, "a transient token-endpoint blip should be retried, not fail the whole call")
-	assert.Equal(t, "42", user.AccountID)
-	assert.GreaterOrEqual(t, tokenTransport.calls, 2, "should have retried the failed token fetch")
-}
-
-// TestDo_DoesNotRetryPermanentAuthTokenFetchError checks that a permanent
-// auth failure (e.g. invalid client credentials, 401) fails immediately
-// instead of being retried like a transient blip.
-func TestDo_DoesNotRetryPermanentAuthTokenFetchError(t *testing.T) {
-	t.Parallel()
-
-	var tokenCalls int
-	tokenMux := http.NewServeMux()
-	tokenMux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		tokenCalls++
-		writeJSON(t, w, http.StatusUnauthorized, map[string]any{
-			"error":             "invalid_client",
-			"error_description": "Client authentication failed",
-		})
-	})
-	tokenSrv := httptest.NewServer(tokenMux)
-	t.Cleanup(tokenSrv.Close)
-
-	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	client, err := NewOAuth2("bad-id", "bad-secret",
-		WithBaseURL(srv.URL),
-		WithTokenURL(tokenSrv.URL+"/oauth/token"),
-	)
-	require.NoError(t, err)
-
-	_, err = client.GetMyself(context.Background())
-	require.Error(t, err)
-	assert.Equal(t, 1, tokenCalls, "a permanent auth error should not be retried")
 }
 
 func TestDo_RetriesOnTransientNetworkError(t *testing.T) {

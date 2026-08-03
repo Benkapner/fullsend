@@ -17,8 +17,8 @@ func clearPollEnv(t *testing.T) {
 	for _, v := range []string{
 		"FULLSEND_FORGE_TOKEN", "CI_PROJECT_PATH", "FULLSEND_POLL_MODE",
 		"CI_COMMIT_REF_NAME", "CI_DEFAULT_BRANCH", "CI_JOB_URL",
-		"JIRA_BASE_URL", "GITHUB_REPOSITORY", "JIRA_AUTH_METHOD",
-		"JIRA_TOKEN", "JIRA_USER_EMAIL", "JIRA_CLIENT_ID", "JIRA_CLIENT_SECRET",
+		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
+		"JIRA_TOKEN", "JIRA_USER_EMAIL",
 	} {
 		t.Setenv(v, "")
 	}
@@ -279,29 +279,6 @@ func TestBuildJiraClient_WithTokenAndEmail(t *testing.T) {
 	clearPollEnv(t)
 	t.Setenv("JIRA_TOKEN", "tok")
 	t.Setenv("JIRA_USER_EMAIL", "bot@acme.com")
-	c, err := buildJiraClient("https://acme.atlassian.net")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if c == nil {
-		t.Fatal("expected non-nil client")
-	}
-}
-
-func TestBuildJiraClient_OAuth2MissingCredentials(t *testing.T) {
-	clearPollEnv(t)
-	t.Setenv("JIRA_AUTH_METHOD", "oauth2")
-	_, err := buildJiraClient("https://acme.atlassian.net")
-	if err == nil || !strings.Contains(err.Error(), "JIRA_CLIENT_ID and JIRA_CLIENT_SECRET") {
-		t.Fatalf("expected oauth2 credentials error, got: %v", err)
-	}
-}
-
-func TestBuildJiraClient_OAuth2Success(t *testing.T) {
-	clearPollEnv(t)
-	t.Setenv("JIRA_AUTH_METHOD", "oauth2")
-	t.Setenv("JIRA_CLIENT_ID", "id")
-	t.Setenv("JIRA_CLIENT_SECRET", "secret")
 	c, err := buildJiraClient("https://acme.atlassian.net")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

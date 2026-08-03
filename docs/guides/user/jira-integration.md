@@ -47,21 +47,6 @@ Slash commands follow the `/fs-{agent}` pattern — any registered agent name wo
 | `JIRA_USER_EMAIL` | Email associated with the token (required for Jira Cloud; omit for Data Center) |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
 
-### OAuth 2.0 (alternative)
-
-If your Atlassian org restricts personal API tokens, fullsend also supports OAuth 2.0 client credentials auth. This path is **untested in production** — use it only if token-based auth does not work for your instance.
-
-Set these secrets instead of `JIRA_TOKEN` and `JIRA_USER_EMAIL`:
-
-| Secret / variable | Value |
-|---|---|
-| `JIRA_AUTH_METHOD` | `oauth2` |
-| `JIRA_CLIENT_ID` | OAuth 2.0 client ID from your [Atlassian developer app](https://developer.atlassian.com/console/myapps/) |
-| `JIRA_CLIENT_SECRET` | OAuth 2.0 client secret |
-| `JIRA_BASE_URL` | Jira instance URL |
-
-Required scopes: `read:jira-work`, `read:jira-user`, `write:jira-work` (the `write:jira-work` scope is used for entity-property writes; a narrower scope may also work but hasn't been verified).
-
 ## Repo configuration
 
 No special harness or config changes are needed for built-in agents. The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so the standard triage, code, review, fix, and retro agents work without modification.
@@ -192,6 +177,25 @@ fullsend poll \
 
 When `--jql` is provided, `--jira-project` is not required. Note that without `--jira-project`, the poller cannot resolve Jira project roles — all actors default to the `external` role. If your routing rules depend on actor roles (e.g., requiring `write` for slash commands), provide `--jira-project` alongside `--jql`.
 
+## Actor role resolution
+
+> **Known limitation.** Roles are resolved by Jira project **role name**, not by actual granted permissions. This is intentional for the MVP — see below.
+
+The poller maps each event actor to an [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md) role (`read`, `write`, `admin`) by looking up their Jira project role membership and matching on the role's **name**:
+
+| Jira project role name (case-insensitive) | ADR 0054 role |
+|---|---|
+| `Administrators` | `admin` |
+| `Developers` | `write` |
+| anything else (including custom role names) | `read` |
+
+This does **not** check the project's permission scheme, so it can be wrong in both directions:
+
+- An org with a custom role literally named `Developers` that has *not* been granted edit permissions will be over-privileged for write-gated dispatch (e.g. `/fs-code`).
+- An org using differently-named roles (e.g. `Contributors`, `Engineering`) for people who *do* have edit access will be silently downgraded to `read`, and their slash commands will be ignored.
+
+If your project uses Jira's default role names ("Administrators"/"Developers") with their default permissions, this works as expected. If you use custom role names, expect actors to resolve to `read` regardless of their real permissions until real permission-scheme resolution is implemented (tracked as future work, not planned for the MVP).
+
 ## Poll coordination
 
 The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following the write-then-verify protocol defined in [ADR 0063](../../ADRs/0063-polling-based-work-discovery.md). Two properties are stored on each processed issue:
@@ -206,9 +210,9 @@ These properties are namespaced per target repo, so multiple repos can poll the 
 | Symptom | Cause | Fix |
 |---|---|---|
 | 401 on all Jira API calls | Invalid token | Regenerate the API token and update the `JIRA_TOKEN` secret |
-| 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Try OAuth 2.0 auth (see [OAuth 2.0](#oauth-20-alternative)), or ask your Atlassian org admin to allow API token access |
+| 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
-| Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role that maps to `write` (typically "Developers") |
+| Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Actor role resolution](#actor-role-resolution) if you use custom role names |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | `JIRA_USER_EMAIL` error on Data Center | Data Center uses Bearer auth, not Basic | Remove `JIRA_USER_EMAIL` — it is only needed for Jira Cloud |
 | Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |

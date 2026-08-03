@@ -454,88 +454,19 @@ Environment variables required by `runJiraPoll`:
 4. Remove the `@requires:jira-mock` skip tag once steps are functional.
 5. Optionally: add a CI job that runs only `@requires:jira-mock` scenarios (fast, no GitHub API needed).
 
-## OAuth 2.0 Client Credentials for Jira Cloud
-
-### Problem
-
-Personal API tokens on managed Atlassian Cloud instances are often restricted by organization-level security policies. The token authenticates successfully (`/myself` returns 200) but cannot access project or issue data. This is an Atlassian org admin setting ("API token access") that blocks personal API tokens from reading project-scoped data while still allowing browser SSO access.
-
-Service accounts work around this because they have explicit project-level access or use a different auth method. Supporting both Basic auth (PAT) and OAuth 2.0 client credentials (2LO) covers both cases.
-
-### Solution: OAuth 2.0 Client Credentials Grant (2LO)
-
-Add support for OAuth 2.0 two-legged (client credentials) auth as an alternative to Basic auth with API tokens. This is the standard Atlassian Cloud app auth mechanism.
-
-#### How it works
-
-1. Register an OAuth 2.0 app at https://developer.atlassian.com/console/myapps/
-2. Configure scopes: `read:jira-work`, `read:jira-user` (and `write:jira-work` for entity properties)
-3. Get `client_id` and `client_secret` from the app settings
-4. At runtime, POST to `https://auth.atlassian.com/oauth/token`:
-   ```
-   grant_type=client_credentials
-   client_id=<client_id>
-   client_secret=<client_secret>
-   ```
-5. Receive an access token (typically 1-hour TTL)
-6. Use `Authorization: Bearer <access_token>` on all Jira API calls
-7. Cache the token and refresh ~5 minutes before expiry
-
-#### Implementation plan
-
-**Phase 1: Client auth layer** (`internal/forge/jira/`)
-
-- Add `AuthMethod` type: `"basic"` (default, current behavior) or `"oauth2"`
-- Add options: `WithOAuth2(clientID, clientSecret string)`, optionally `WithTokenURL(url string)` (default `https://auth.atlassian.com/oauth/token`)
-- Add `oauth2TokenSource` that:
-  - Holds `clientID`, `clientSecret`, `tokenURL`
-  - Caches the token with a `sync.Mutex`
-  - Refreshes when token is within 5 minutes of expiry
-  - Returns cached token otherwise
-- Modify `setAuth(req)` to use Bearer token when auth method is oauth2
-- Token refresh errors should be surfaced clearly (not silently retried)
-
-**Phase 2: CLI wiring** (`internal/cli/poll.go`)
-
-New env vars / flags:
-- `JIRA_AUTH_METHOD` — `basic` (default) or `oauth2`
-- `JIRA_CLIENT_ID` — OAuth 2.0 client ID
-- `JIRA_CLIENT_SECRET` — OAuth 2.0 client secret
-
-When `JIRA_AUTH_METHOD=oauth2`, use `jira.WithOAuth2(clientID, clientSecret)` instead of `jira.WithEmail(email)`.
-
-**Phase 3: Tests**
-
-- Unit test for `oauth2TokenSource`: mock token endpoint, verify caching, verify refresh before expiry
-- Unit test for `setAuth`: verify Bearer header when oauth2
-- Integration test: httptest server acting as both token endpoint and Jira API
-
-#### Credentials for functional test
-
-To test against a managed Atlassian Cloud staging instance:
-1. Register an OAuth 2.0 app in the Atlassian developer console
-2. Request access to the staging site
-3. Configure the required scopes
-4. Store `JIRA_CLIENT_ID` and `JIRA_CLIENT_SECRET` as repo secrets
-5. Set `JIRA_AUTH_METHOD=oauth2` in the workflow
-
-### Open questions
-
-- Does the target org admin allow OAuth 2.0 app registration, or is that also restricted?
-- Do we need `write:jira-work` scope for entity property writes, or is there a narrower scope?
-- Should the Jira client auto-detect auth method based on which credentials are provided (email → basic, client_id → oauth2)?
-
 ## Getting-started documentation
 
 **Status:** Required before merge.
 
 Add a user-facing guide at `docs/guides/user/jira-integration.md` covering:
 
-- **Prerequisites:** A personal API token (Cloud) or PAT (Data Center) is the primary auth path. If an org restricts personal API tokens for project-scoped data, OAuth 2.0 client credentials is available as a fallback — flagged as untested in production until we have real-world coverage.
-- **Credential setup:** How to obtain `JIRA_TOKEN` (or `JIRA_CLIENT_ID`/`JIRA_CLIENT_SECRET` for the OAuth 2.0 fallback), configure scopes (`read:jira-work`, `read:jira-user`, `write:jira-work`), and store them as repo secrets.
+- **Prerequisites:** A personal API token (Cloud) or PAT (Data Center) is the auth path.
+- **Credential setup:** How to obtain `JIRA_TOKEN`, and store it as a repo secret.
 - **Repo configuration:** Minimal `.fullsend/config.yaml` and harness YAML for Jira-triggered agents, including `trigger` CEL expressions that filter on `event.source.system == "jira"`.
 - **Scheduled workflow:** Example `.github/workflows/fullsend-poll.yml` that runs `fullsend poll --input-driver jira-poll` on a cron schedule.
-- **Troubleshooting:** Common failure modes (API token access restricted, wrong auth method, project not visible).
+- **Troubleshooting:** Common failure modes (API token access restricted, project not visible).
+
+**Not pursuing:** OAuth 2.0 client-credentials auth was considered as a fallback for orgs that restrict personal API tokens, but the target Jira instance doesn't support it yet (expected Q4). Rather than ship unused/untested auth code, this was dropped from scope — see the PR discussion for the review finding that prompted this.
 
 ## References
 
