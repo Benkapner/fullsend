@@ -112,6 +112,34 @@ func newPollCmd() *cobra.Command {
 	return cmd
 }
 
+func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
+	args, err := validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
+	if err != nil {
+		return err
+	}
+
+	jiraClient, err := buildJiraClient(args.jiraURL)
+	if err != nil {
+		return fmt.Errorf("create Jira client: %w", err)
+	}
+
+	router, err := buildRouter(args.fullsendDir)
+	if err != nil {
+		return fmt.Errorf("build event router: %w", err)
+	}
+
+	opts := jirapoll.Options{
+		TargetRepo:  args.targetRepo,
+		JiraBaseURL: args.jiraURL,
+		JiraProject: args.jiraProject,
+		JQL:         args.jqlOverride,
+		OutputPath:  args.outputPath,
+	}
+
+	poller := jirapoll.New(jiraClient, router, opts)
+	return poller.Run(cmd.Context())
+}
+
 // jiraPollArgs holds resolved arguments for runJiraPoll after env-var fallbacks.
 type jiraPollArgs struct {
 	jiraURL     string
@@ -152,34 +180,6 @@ func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputP
 		outputPath:  outputPath,
 		fullsendDir: fullsendDir,
 	}, nil
-}
-
-func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
-	args, err := validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
-	if err != nil {
-		return err
-	}
-
-	jiraClient, err := buildJiraClient(args.jiraURL)
-	if err != nil {
-		return fmt.Errorf("create Jira client: %w", err)
-	}
-
-	router, err := buildRouter(args.fullsendDir)
-	if err != nil {
-		return fmt.Errorf("build event router: %w", err)
-	}
-
-	opts := jirapoll.Options{
-		TargetRepo:  args.targetRepo,
-		JiraBaseURL: args.jiraURL,
-		JiraProject: args.jiraProject,
-		JQL:         args.jqlOverride,
-		OutputPath:  args.outputPath,
-	}
-
-	poller := jirapoll.New(jiraClient, router, opts)
-	return poller.Run(cmd.Context())
 }
 
 // buildJiraClient creates a Jira client using Basic (email+token) or Bearer
