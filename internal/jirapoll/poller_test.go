@@ -1664,6 +1664,28 @@ func TestDetectChanges_StatusResolutionFailure(t *testing.T) {
 			t.Errorf("maxSeen = %v, want %v", result.maxSeen, changeTime)
 		}
 	})
+
+	t.Run("forbidden status drops the event without failing the issue", func(t *testing.T) {
+		// A 403 can never resolve by retrying under the same credentials,
+		// so it must drop the transition (like a 404) rather than
+		// propagate — propagating would perpetually block dispatch of the
+		// issue's other events.
+		mc := newMockClient()
+		mc.changelog["PROJ-123"] = changelog
+		mc.statuses["Open"] = jira.Status{Name: "Open", StatusCategory: jira.StatusCategory{Key: "new"}}
+		mc.statusErr["Done"] = fmt.Errorf("get status Done: %w", forge.ErrForbidden)
+
+		p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
+		result, err := p.detectChanges(context.Background(), newIssue(), lastCheck)
+		if err != nil {
+			t.Fatalf("detectChanges() error: %v (403 must drop, not propagate)", err)
+		}
+		for _, e := range result.events {
+			if e.Type == "closed" || e.Type == "reopened" {
+				t.Errorf("expected no transition event for a forbidden status, got %q", e.Type)
+			}
+		}
+	})
 }
 
 func TestDetectChanges_UnsupportedFieldAdvancesMaxSeen(t *testing.T) {

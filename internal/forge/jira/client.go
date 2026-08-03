@@ -417,7 +417,9 @@ func (c *LiveClient) GetStatus(ctx context.Context, idOrName string) (*Status, e
 // maxListPages limits per-issue and per-group pagination (comments,
 // changelog, group members) to prevent unbounded memory growth from
 // issues or groups with very large histories, mirroring maxSearchPages.
-// At 100 items per page this caps each listing at 10,000 entries.
+// Comments and changelog fetch 100 items per page (10,000-entry cap);
+// group members fetch 50 per page — that endpoint's documented maximum —
+// for a 5,000-member cap.
 //
 // These endpoints paginate oldest-first, so hitting the cap hides the
 // NEWEST items — the ones the poller cares about — which is why the cap
