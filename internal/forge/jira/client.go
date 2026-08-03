@@ -73,11 +73,20 @@ func WithHTTPClient(client *http.Client) Option {
 }
 
 // validateBaseURL checks that the base URL uses https, unless it points to a
-// loopback address (for httptest servers).
+// loopback address (for httptest servers), and rejects embedded credentials.
 func validateBaseURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid base URL: %w", err)
+	}
+	// Credentials in the URL (https://user:token@host) would be stored
+	// verbatim, propagated into the issue browse URL that lands in every
+	// dispatched NormalizedEvent (and the Actions UI via the guide's
+	// script), and echoed into the error below. Require them via
+	// JIRA_USER_EMAIL/JIRA_TOKEN instead. u.Redacted() masks any password
+	// in error text.
+	if u.User != nil {
+		return fmt.Errorf("base URL %q must not embed credentials; use JIRA_USER_EMAIL and JIRA_TOKEN", u.Redacted())
 	}
 	if u.Scheme == "https" {
 		return nil
@@ -86,7 +95,30 @@ func validateBaseURL(rawURL string) error {
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 		return nil
 	}
-	return fmt.Errorf("base URL %q uses insecure scheme %q; only https is allowed for non-loopback hosts", rawURL, u.Scheme)
+	return fmt.Errorf("base URL %q uses insecure scheme %q; only https is allowed for non-loopback hosts", u.Redacted(), u.Scheme)
+}
+
+// checkRedirect refuses any redirect that leaves the original request's
+// origin (scheme+host). This client only talks to a single Jira Cloud
+// instance, which never legitimately redirects its REST API off-origin, so
+// refusing outright is safe — and it is strictly stronger than stripping
+// the Authorization header per hop. Go's client re-copies the *initial*
+// request's headers onto every redirect hop and only strips them when the
+// hop leaves the initial domain-or-subdomain (host only, ignoring scheme),
+// so a per-hop Del relative to the previous hop leaves a gap: a same-host
+// https→http downgrade chain, or a subdomain chain, re-attaches the
+// Authorization header (Basic email:token) on a later hop. Comparing
+// against via[0] and refusing also removes the SSRF surface of following
+// redirects to arbitrary internal hosts.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	orig := via[0].URL
+	if req.URL.Scheme != orig.Scheme || req.URL.Host != orig.Host {
+		return fmt.Errorf("refusing redirect off the Jira origin %q to %q://%q", orig.Host, req.URL.Scheme, req.URL.Host)
+	}
+	return nil
 }
 
 // New creates a new Jira client with the given API token.
@@ -96,21 +128,8 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	}
 	c := &LiveClient{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return fmt.Errorf("stopped after 10 redirects")
-				}
-				if len(via) > 0 {
-					prev := via[len(via)-1]
-					crossOrigin := req.URL.Host != prev.URL.Host
-					tlsDowngrade := prev.URL.Scheme == "https" && req.URL.Scheme != "https"
-					if crossOrigin || tlsDowngrade {
-						req.Header.Del("Authorization")
-					}
-				}
-				return nil
-			},
+			Timeout:       30 * time.Second,
+			CheckRedirect: checkRedirect,
 		},
 		token: token,
 	}

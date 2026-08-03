@@ -43,12 +43,15 @@ func writeJSON(t *testing.T, w http.ResponseWriter, status int, v any) {
 // CheckRedirect Authorization stripping
 // ---------------------------------------------------------------------------
 
-// TestCheckRedirect_AuthorizationHandling is a regression test for the
-// credential-stripping logic in the CheckRedirect handler: an earlier
-// revision compared the redirect target against via[0] instead of the
-// immediately preceding request, and shipped without any redirect test.
-// Same-origin redirects must keep the Authorization header; cross-origin
-// redirects must strip it.
+// TestCheckRedirect_AuthorizationHandling verifies the redirect policy: a
+// same-origin redirect is followed with the Authorization header intact,
+// but any redirect leaving the origin is REFUSED outright rather than
+// followed-with-stripped-header. Refusing is stronger than stripping
+// because Go's client re-copies the initial request's headers onto every
+// hop and only strips them when leaving the initial domain-or-subdomain
+// (host only), so a multi-hop same-host TLS-downgrade or subdomain chain
+// would otherwise re-attach the credential — the "3-hop re-attach" subtest
+// pins exactly that, and would leak under a per-previous-hop strip.
 func TestCheckRedirect_AuthorizationHandling(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -82,11 +85,11 @@ func TestCheckRedirect_AuthorizationHandling(t *testing.T) {
 			"Authorization must be preserved across a same-origin, same-scheme redirect")
 	})
 
-	t.Run("cross-origin redirect strips Authorization", func(t *testing.T) {
+	t.Run("cross-origin redirect is refused", func(t *testing.T) {
 		t.Parallel()
 		other, _ := newEchoServer(t)
 		srv, mux := newEchoServer(t)
-		// Different httptest server = different host:port = cross-origin.
+		// Different httptest server = different host:port = off-origin.
 		mux.HandleFunc("/rest/api/3/redirected", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, other.URL+"/rest/api/3/myself", http.StatusFound)
 		})
@@ -94,10 +97,41 @@ func TestCheckRedirect_AuthorizationHandling(t *testing.T) {
 		require.NoError(t, err)
 
 		var user User
-		require.NoError(t, client.do(ctx, http.MethodGet, "/redirected", nil, &user))
-		assert.Equal(t, "auth=", user.DisplayName,
-			"Authorization must be stripped on a cross-origin redirect")
+		err = client.do(ctx, http.MethodGet, "/redirected", nil, &user)
+		require.Error(t, err, "a redirect off the Jira origin must be refused")
+		assert.Contains(t, err.Error(), "refusing redirect")
+		assert.Empty(t, user.DisplayName, "the off-origin target must never be reached")
 	})
+
+	t.Run("multi-hop same-host chain cannot re-attach the credential", func(t *testing.T) {
+		t.Parallel()
+		// base -> base/hop2 -> foreign/myself. The middle hop stays on the
+		// origin (followed), the third leaves it and must be refused before
+		// the credential can be re-copied onto it.
+		foreign, _ := newEchoServer(t)
+		srv, mux := newEchoServer(t)
+		mux.HandleFunc("/rest/api/3/redirected", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, srv.URL+"/rest/api/3/hop2", http.StatusFound)
+		})
+		mux.HandleFunc("/rest/api/3/hop2", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, foreign.URL+"/rest/api/3/myself", http.StatusFound)
+		})
+		client, err := New("test-token", WithBaseURL(srv.URL))
+		require.NoError(t, err)
+
+		var user User
+		err = client.do(ctx, http.MethodGet, "/redirected", nil, &user)
+		require.Error(t, err, "the off-origin third hop must be refused")
+		assert.Empty(t, user.DisplayName, "the foreign host must never be reached, so the token cannot re-attach")
+	})
+}
+
+func TestValidateBaseURL_RejectsEmbeddedCredentials(t *testing.T) {
+	t.Parallel()
+	_, err := New("test-token", WithBaseURL("https://user:secret@jira.example.com"))
+	require.Error(t, err, "a base URL with embedded credentials must be rejected")
+	assert.Contains(t, err.Error(), "must not embed credentials")
+	assert.NotContains(t, err.Error(), "secret", "the password must be redacted in the error")
 }
 
 // ---------------------------------------------------------------------------

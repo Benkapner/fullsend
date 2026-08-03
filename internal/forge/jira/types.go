@@ -37,11 +37,18 @@ type StatusCategory struct {
 
 // Comment represents a single comment on a Jira issue.
 type Comment struct {
-	ID      string `json:"id"`
-	Body    any    `json:"body"` // ADF object or string
-	Author  User   `json:"author"`
-	Created string `json:"created"`
-	Updated string `json:"updated"`
+	ID   string `json:"id"`
+	Body any    `json:"body"` // ADF object or string
+	// Author is the account that originally created the comment;
+	// UpdateAuthor is the account that last modified it (set by Jira on
+	// edit). They differ when someone with Edit-All-Comments edits another
+	// user's comment — the poller must attribute an edit-detected event to
+	// the editor, not the author, to avoid running attacker-authored text
+	// under the original author's role.
+	Author       User   `json:"author"`
+	UpdateAuthor User   `json:"updateAuthor"`
+	Created      string `json:"created"`
+	Updated      string `json:"updated"`
 }
 
 // CommentPage is a paginated list of comments.
