@@ -12,11 +12,12 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
 
-// jiraTimestampFormats lists the timestamp formats used by Jira Cloud and Server/DC.
+// jiraTimestampFormats lists the timestamp formats accepted from Jira
+// Cloud. The first layout covers Cloud's standard millisecond+offset form
+// (the -0700 zone token matches both signs); RFC3339 covers Z-suffixed and
+// colon-offset forms as a defensive fallback.
 var jiraTimestampFormats = []string{
 	"2006-01-02T15:04:05.000-0700",
-	"2006-01-02T15:04:05.000+0000",
-	"2006-01-02T15:04:05.000Z",
 	time.RFC3339,
 }
 
@@ -180,6 +181,7 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 	for _, entry := range changelog {
 		createdAt, err := parseJiraTimestamp(entry.Created)
 		if err != nil {
+			log.Printf("WARNING: skipping changelog entry %s of %s: %v", entry.ID, issue.Key, err)
 			continue
 		}
 		if !firstPoll && !createdAt.After(lastCheck) {
@@ -240,8 +242,16 @@ func (p *Poller) mapChangelogItem(ctx context.Context, item jira.ChangeItem, iss
 	case "status":
 		kind, err := p.mapStatusTransition(ctx, item)
 		if err != nil {
-			if errors.Is(err, forge.ErrNotFound) {
-				log.Printf("WARNING: status for transition on %s no longer exists, dropping event: %v", issue.Key, err)
+			// 404 (status deleted) and 403 (credentials cannot read the
+			// status endpoint) can never resolve by retrying, so drop the
+			// transition rather than propagating: a propagated error fails
+			// the whole issue every cycle, which would perpetually block
+			// dispatch of the issue's OTHER events (e.g. slash-command
+			// comments) to protect a transition kind no router consumes
+			// yet. Genuinely transient errors still propagate for a
+			// next-cycle retry.
+			if errors.Is(err, forge.ErrNotFound) || errors.Is(err, forge.ErrForbidden) {
+				log.Printf("WARNING: cannot resolve status for transition on %s, dropping event: %v", issue.Key, err)
 				break
 			}
 			return nil, err
@@ -358,18 +368,22 @@ func (p *Poller) mapStatusTransition(ctx context.Context, item jira.ChangeItem) 
 	if err != nil {
 		return "", fmt.Errorf("resolving statusCategory for %q: %w", item.ToString, err)
 	}
-	if toCat == "done" {
-		return "closed", nil
-	}
-
 	fromCat, err := p.statusCategory(ctx, statusRef(item.From, item.FromString))
 	if err != nil {
 		return "", fmt.Errorf("resolving statusCategory for %q: %w", item.FromString, err)
 	}
-	if fromCat == "done" {
+
+	switch {
+	case toCat == "done" && fromCat != "done":
+		return "closed", nil
+	case fromCat == "done" && toCat != "done":
 		return "reopened", nil
+	default:
+		// Includes done→done (e.g. "Done" → "Won't Do" workflow hygiene):
+		// the issue was already closed, so emitting a second "closed"
+		// would double-fire once a router consumes these kinds.
+		return "", nil
 	}
-	return "", nil
 }
 
 // extractPlainText extracts plain text from a Jira comment body.
@@ -403,6 +417,14 @@ func extractADFText(node map[string]any) string {
 // maxADFDepth levels deep.
 func walkADFNode(node map[string]any, sb *strings.Builder, depth int) {
 	if depth > maxADFDepth {
+		return
+	}
+
+	// A hardBreak (Shift+Enter in the Jira editor) carries no text or
+	// content; without emitting a newline here, words the author placed on
+	// separate visual lines within one paragraph would fuse together.
+	if nodeType, _ := node["type"].(string); nodeType == "hardBreak" {
+		sb.WriteString("\n")
 		return
 	}
 

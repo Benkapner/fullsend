@@ -410,6 +410,38 @@ func TestExtractPlainText_ADF(t *testing.T) {
 	}
 }
 
+func TestExtractPlainText_HardBreak(t *testing.T) {
+	// Shift+Enter in the Jira editor produces a hardBreak node inside a
+	// paragraph; without emitting a newline for it, words the author
+	// placed on separate visual lines fuse together — and text visually
+	// on line 2 would be parsed as part of the slash command's first line.
+	adf := map[string]any{
+		"type":    "doc",
+		"version": 1,
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{"type": "text", "text": "/fs-code fix"},
+					map[string]any{"type": "hardBreak"},
+					map[string]any{"type": "text", "text": "this too"},
+				},
+			},
+		},
+	}
+
+	got := extractPlainText(adf)
+	want := "/fs-code fix\nthis too"
+	if got != want {
+		t.Errorf("extractPlainText(hardBreak ADF) = %q, want %q", got, want)
+	}
+
+	cmd, instruction := extractCommand(got)
+	if cmd != "/fs-code" || instruction != "fix" {
+		t.Errorf("extractCommand = (%q, %q), want (%q, %q) — soft-broken second line must not join the instruction", cmd, instruction, "/fs-code", "fix")
+	}
+}
+
 func TestExtractPlainText_DeepNestingIsBounded(t *testing.T) {
 	// Build an ADF document nested far deeper than any real Jira-UI-authored
 	// comment would be, with a text node at every level. A malicious actor

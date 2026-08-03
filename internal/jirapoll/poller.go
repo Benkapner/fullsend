@@ -34,9 +34,20 @@ type Poller struct {
 	router              dispatch.EventRouter
 	opts                Options
 	dispatches          []poll.Dispatch
-	sleepFn             func(time.Duration) // overridable for testing
-	roleMembership      map[string]string   // accountID → Jira project role name
-	statusCategoryCache map[string]string   // status name → statusCategory key, reset each cycle
+	sleepFn             func(context.Context, time.Duration) // overridable for testing
+	roleMembership      map[string]string                    // accountID → Jira project role name
+	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
+}
+
+// ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
+// so a cancelled poll (e.g. a killed CI job) doesn't block on lock jitter.
+func ctxSleep(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
 }
 
 // New creates a Jira Poller with the given options.
@@ -57,7 +68,7 @@ func New(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
 		client:  client,
 		router:  router,
 		opts:    opts,
-		sleepFn: time.Sleep,
+		sleepFn: ctxSleep,
 	}
 }
 
@@ -85,13 +96,20 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	// Load project role membership for actor role resolution. Deferred
 	// until after selection so a cycle with nothing to process doesn't
-	// spend Jira API calls resolving roles that end up unused.
+	// spend Jira API calls resolving roles that end up unused. A load
+	// FAILURE fails the whole cycle rather than degrading to an empty map:
+	// with no membership every actor resolves to "external", write-gated
+	// events (slash commands, ready-to-code labels) route to nothing, and
+	// the checkpoint would still advance past them — permanently dropping
+	// real events over a transient roles-API error. Failing the cycle
+	// leaves checkpoints untouched so the next cron run retries. (A
+	// missing project key is different: JQL-only mode is documented as
+	// always-external, so that path proceeds.)
 	if len(selected) > 0 {
 		if p.opts.JiraProject != "" {
 			membership, err := p.client.GetProjectRoleMembership(ctx, p.opts.JiraProject)
 			if err != nil {
-				log.Printf("WARNING: loading project roles: %v (defaulting to external)", err)
-				membership = make(map[string]string)
+				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, err)
 			}
 			p.roleMembership = membership
 		} else {
@@ -144,15 +162,24 @@ func (p *Poller) Run(ctx context.Context) error {
 	}
 
 	// Step 6: Commit checkpoints now that the dispatch file is durably
-	// written (or there was nothing to write).
+	// written (or there was nothing to write). All advances are attempted;
+	// any failure then fails the cycle so the operator sees it — the
+	// dispatches are already persisted, so an uncommitted checkpoint means
+	// the next cycle re-detects the same activity and emits duplicates,
+	// which should not masquerade as a clean run.
+	var advanceErrors int
 	for _, pc := range pending {
 		if err := p.advanceLastCheck(ctx, pc.issueKey, pc.t); err != nil {
 			log.Printf("WARNING: advancing lastCheck for %s: %v", pc.issueKey, err)
+			advanceErrors++
 		}
 	}
 
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
+	if advanceErrors > 0 {
+		return fmt.Errorf("failed to commit lastCheck for %d of %d issues; their activity will be re-detected (and re-dispatched) next cycle", advanceErrors, len(pending))
+	}
 	return nil
 }
 
@@ -263,12 +290,28 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		return time.Time{}, fmt.Errorf("detect changes for %s: %w", issue.Key, err)
 	}
 
+	// The checkpoint is result.maxSeen and nothing else. maxSeen already
+	// covers every inspected entry's timestamp (events are derived from
+	// the same filtered entries), and detectChanges clamps it to
+	// fetch-start minus a safety margin to close the cross-fetch race —
+	// lifting it back up per dispatched event here would exclusively
+	// un-clamp it (the pre-clamp value is >= every event timestamp),
+	// re-opening permanent loss of an entry created between the two
+	// fetches. When the clamp pushes maxSeen at or below the stored
+	// lastCheck, skip the advance entirely (return zero) rather than
+	// regressing the checkpoint; the next cycle re-detects the same
+	// in-margin activity — a harmless, self-correcting duplicate.
+	checkpoint := result.maxSeen
+	if !checkpoint.After(lastCheck) {
+		checkpoint = time.Time{}
+	}
+
 	if len(result.events) == 0 {
 		// No routable events, but there may have been changelog entries
-		// with unsupported fields; result.maxSeen (zero if nothing was
-		// seen at all) still needs to advance the checkpoint past them so
-		// the poller does not re-scan the same updates every cycle.
-		return result.maxSeen, nil
+		// with unsupported fields; the checkpoint (zero if nothing was
+		// seen at all) still needs to advance past them so the poller
+		// does not re-scan the same updates every cycle.
+		return checkpoint, nil
 	}
 
 	// Deduplicate.
@@ -277,13 +320,10 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// Filter bot events.
 	events = filterBotEvents(events)
 
-	// Convert, route, dispatch. maxTime starts at result.maxSeen
-	// (the latest timestamp across all changelog entries) so that
-	// lastCheck always advances past all inspected entries. This
-	// prevents the poller from stalling when a routing error persists
-	// across cycles. The trade-off is that a transiently failing event
-	// is skipped rather than retried.
-	maxTime := result.maxSeen
+	// Convert, route, dispatch. A transiently failing event is skipped
+	// rather than retried: the checkpoint advances past all inspected
+	// entries regardless, which prevents the poller from stalling when a
+	// routing error persists across cycles.
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
 
@@ -314,13 +354,9 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 				})
 			}
 		}
-
-		if event.UpdatedAt.After(maxTime) {
-			maxTime = event.UpdatedAt
-		}
 	}
 
-	return maxTime, nil
+	return checkpoint, nil
 }
 
 // deduplicate removes duplicate events based on their Key().

@@ -68,7 +68,7 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 
 	// Jitter sleep: 500-1500ms to allow concurrent pollers to write.
 	jitter := time.Duration(500+rand.IntN(1000)) * time.Millisecond
-	p.sleepFn(jitter)
+	p.sleepFn(ctx, jitter)
 
 	// Re-read and verify our UUID still holds.
 	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
@@ -149,13 +149,11 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 		return time.Time{}, fmt.Errorf("unmarshal lastCheck: %w", err)
 	}
 
+	// RFC3339Nano also accepts fraction-less RFC3339 strings, so this
+	// single parse covers values stored before the Nano switch too.
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		// Fall back to RFC3339 for values stored before the Nano switch.
-		t, err = time.Parse(time.RFC3339, ts)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("parse lastCheck: %w", err)
-		}
+		return time.Time{}, fmt.Errorf("parse lastCheck: %w", err)
 	}
 	return t, nil
 }

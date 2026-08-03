@@ -20,7 +20,7 @@ import (
 // newTestPoller creates a Poller with a no-op sleep for fast tests.
 func newTestPoller(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
 	p := New(client, router, opts)
-	p.sleepFn = func(_ time.Duration) {} // skip jitter in tests
+	p.sleepFn = func(_ context.Context, _ time.Duration) {} // skip jitter in tests
 	return p
 }
 
@@ -53,6 +53,7 @@ type mockClient struct {
 	statusErr map[string]error       // status name -> error
 
 	roleMembership map[string]string // accountID -> role name
+	roleErr        error
 
 	// getPropertyHook, if set, runs after each GetEntityProperty call
 	// captures its return value, and before that value is returned. Used
@@ -183,6 +184,9 @@ func (m *mockClient) GetStatus(_ context.Context, idOrName string) (*jira.Status
 }
 
 func (m *mockClient) GetProjectRoleMembership(_ context.Context, _ string) (map[string]string, error) {
+	if m.roleErr != nil {
+		return nil, m.roleErr
+	}
 	if m.roleMembership != nil {
 		return m.roleMembership, nil
 	}
@@ -386,6 +390,156 @@ func TestRunDispatchWriteFailure_NoCheckpointCommitted(t *testing.T) {
 	}
 	if !lastCheck.IsZero() {
 		t.Errorf("expected lastCheck to remain unset after a failed dispatch write, got %v", lastCheck)
+	}
+}
+
+// TestRunCheckpointRespectsSafetyMargin is a regression test: processIssue
+// previously lifted the checkpoint to each dispatched event's timestamp,
+// which could only ever fire when detectChanges' cross-fetch clamp had
+// lowered maxSeen — silently undoing the clamp and re-opening permanent
+// loss of an entry created between the comment and changelog fetches. The
+// committed checkpoint must stay at or below fetch-start minus the margin
+// even when an in-margin event dispatches.
+func TestRunCheckpointRespectsSafetyMargin(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	commentTime := now.Add(-2 * time.Second) // inside the 10s safety margin
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"u1": "Developers"}
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-triage recent",
+			Created: commentTime.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(p.dispatches) == 0 {
+		t.Fatal("expected the in-margin comment to dispatch")
+	}
+
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if !lastCheck.IsZero() && !lastCheck.Before(commentTime) {
+		t.Errorf("committed lastCheck %v must stay below the in-margin comment time %v (safety margin defeated)", lastCheck, commentTime)
+	}
+}
+
+// TestProcessIssue_CheckpointNeverRegresses: when the safety-margin clamp
+// pushes the candidate checkpoint at or below the stored lastCheck (two
+// cycles within the margin of each other), the advance must be skipped
+// entirely rather than moving lastCheck backwards.
+func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	storedLastCheck := now.Add(-5 * time.Second)
+	commentTime := now.Add(-2 * time.Second) // after lastCheck, inside margin
+	mc := newMockClient()
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-triage again",
+			Created: commentTime.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+	if err := p.advanceLastCheck(context.Background(), "PROJ-123", storedLastCheck); err != nil {
+		t.Fatalf("seed lastCheck: %v", err)
+	}
+
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+	checkpoint, err := p.processIssue(context.Background(), issue, "cycle-1")
+	if err != nil {
+		t.Fatalf("processIssue() error: %v", err)
+	}
+	// The clamp puts maxSeen ~10s before now, which is before the stored
+	// lastCheck — the returned checkpoint must be zero (skip advance), not
+	// an earlier-than-stored value.
+	if !checkpoint.IsZero() && checkpoint.Before(storedLastCheck) {
+		t.Errorf("checkpoint %v regresses behind stored lastCheck %v; expected zero (skip)", checkpoint, storedLastCheck)
+	}
+	if len(p.dispatches) == 0 {
+		t.Error("expected the comment after lastCheck to still dispatch")
+	}
+}
+
+// TestRunRoleLoadFailure_FailsCycle: a role-membership load failure must
+// fail the cycle instead of degrading to an empty map. With an empty map
+// every actor resolves to external, write-gated events route to nothing,
+// and the checkpoint would advance past them — permanently dropping real
+// events over a transient roles-API error.
+func TestRunRoleLoadFailure_FailsCycle(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleErr = fmt.Errorf("jira api: 503 service unavailable")
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-code fix it",
+			Created: now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"code"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	if err := p.Run(context.Background()); err == nil {
+		t.Fatal("expected Run() to fail when role membership cannot be loaded")
+	}
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if !lastCheck.IsZero() {
+		t.Errorf("expected lastCheck to remain unset after a failed role load, got %v", lastCheck)
 	}
 }
 
@@ -1410,6 +1564,7 @@ func TestMapStatusTransition_CustomWorkflowNames(t *testing.T) {
 		{"custom done-category name maps to closed", "In Progress", "indeterminate", "Won't Fix", "done", "closed"},
 		{"non-English name lacking any recognizable substring is not miscategorized", "Open", "new", "Live", "indeterminate", ""},
 		{"transition from a done-category status back to new is reopened", "Won't Fix", "done", "Open", "new", "reopened"},
+		{"done-to-done workflow hygiene move is not a second closed", "Done", "done", "Won't Do", "done", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
