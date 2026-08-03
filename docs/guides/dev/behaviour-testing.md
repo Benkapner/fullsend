@@ -183,7 +183,7 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 
 **Consolidation pattern:** To conserve parallel execution slots, add negative-path harnesses (kill switch, CEL exclusion) alongside the positive-path harness in a single scenario rather than creating separate scenarios. The positive harness wait acts as the settle window for negative assertions (piggyback pattern — see `negativeSettleDuration` in `dispatch.go`).
 
-**Unauthorized-actor denial** (ADR 54) for fork PRs is tracked separately in [#5613](https://github.com/fullsend-ai/fullsend/issues/5613) and is not part of this contract.
+**Unauthorized-actor denial** ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) for fork PRs is tracked separately in [#5613](https://github.com/fullsend-ai/fullsend/issues/5613) and is not part of this contract.
 
 ## Forge operational constraints
 
