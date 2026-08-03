@@ -2465,7 +2465,7 @@ func TestResolveAddRoleFromSlugPEM_StoreFails(t *testing.T) {
 		}),
 	))
 	printer := ui.New(&strings.Builder{})
-	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, mintGCFClientFactory("p"))
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-test-proj1"}, mintGCFClientFactory("my-test-proj1"))
 	_, err := resolveAddRoleFromSlugPEM(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
 		role:    "review",
 		slug:    "fullsend-ai-review",
