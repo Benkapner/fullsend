@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -167,6 +168,44 @@ func TestMintDeployCmd_DryRun(t *testing.T) {
 	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:   "https://fullsend-mint-abc123-uc.a.run.app",
+			State: "ACTIVE",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "existing-org",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+			"ALLOWED_ORGS": "existing-org",
+		}),
+		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+			AttributeCondition: "assertion.repository_owner in ['existing-org']",
+		}),
+	))
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	oldStdout := os.Stdout
+	os.Stdout = w
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", false)
+	require.NoError(t, w.Close())
+	os.Stdout = oldStdout
+	require.NoError(t, deployErr)
+
+	var buf bytes.Buffer
+	_, copyErr := io.Copy(&buf, r)
+	require.NoError(t, copyErr)
+	out := buf.String()
+	assert.Contains(t, out, "Could not resolve mint commit from checkout")
+	assert.Contains(t, out, "Version:")
+	assert.Contains(t, out, "Commit:")
+	assert.Contains(t, out, "Deployment complete")
 }
 
 func TestMintDeployCmd_DryRunShowsResolvedSource(t *testing.T) {
@@ -1182,6 +1221,16 @@ func TestIsPublicMintAllowedOrgs(t *testing.T) {
 	assert.False(t, isPublicMintAllowedOrgs(""))
 }
 
+func TestPerOrgForeignCompatLabel(t *testing.T) {
+	assert.Equal(t, "off", perOrgForeignCompatLabel(nil))
+	assert.Equal(t, "off", perOrgForeignCompatLabel(map[string]string{}))
+	assert.Equal(t, "off", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": ""}))
+	assert.Equal(t, "off", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "false"}))
+	assert.Equal(t, "on", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "true"}))
+	assert.Equal(t, "on", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "1"}))
+	assert.Equal(t, "on", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "YES"}))
+}
+
 func TestMintValidationMessage(t *testing.T) {
 	assert.Equal(t, "Mint validated (public mode — org registration not required)",
 		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "*"}, nil))
@@ -1466,6 +1515,55 @@ func TestRunMintStatus_Healthy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "coder = 100")
 	assert.Contains(t, out.String(), "existing-org")
+	// Older mints omit PER_ORG_FOREIGN_COMPAT; status treats missing as off.
+	assert.Contains(t, out.String(), "Per-org foreign compat")
+	assert.Contains(t, out.String(), "off")
+}
+
+func TestRunMintStatus_PerOrgForeignCompatOn(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS":           `{"coder":"100"}`,
+				"ALLOWED_ORGS":           "test-org",
+				"PER_ORG_FOREIGN_COMPAT": "true",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":           `{"coder":"100"}`,
+			"ALLOWED_ORGS":           "test-org",
+			"PER_ORG_FOREIGN_COMPAT": "true",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:   "fullsend-mint-00001",
+			TrafficPercent:         100,
+			TemplateMatchesTraffic: true,
+			TrafficEnvVars: map[string]string{
+				"ROLE_APP_IDS":           `{"coder":"100"}`,
+				"ALLOWED_ORGS":           "test-org",
+				"PER_ORG_FOREIGN_COMPAT": "true",
+			},
+			RecentRevisions: []gcf.RevisionSummary{{
+				Name:       "fullsend-mint-00001",
+				CreateTime: "2026-06-16T12:00:00Z",
+				Active:     true,
+			}},
+		}),
+		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+			AttributeCondition: "assertion.repository_owner in ['test-org']",
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-coder-pem": true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "test-org")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Per-org foreign compat")
+	assert.Contains(t, out.String(), "on")
 }
 
 func TestRunMintStatus_WithHealthVersion(t *testing.T) {

@@ -83,3 +83,10 @@ orgs control over their own policy.
 - Same-org mint for enrolled orgs adds zero FOREIGN API calls; optional `repos` omission uses
   org-level installation lookup when callers need installation-wide scope.
 - Pool org provisioning must install the e2e App and set `FULLSEND_FOREIGN_E2E_REPOS` for CI callers.
+
+## Later note (repos scope hardening)
+
+Same-org installation-wide tokens and unrestricted `repos` lists are no longer the default.
+`repos` authorization is decided in
+[ADR 0077](0077-mint-repos-scope-hardening.md). FOREIGN allowlists and `target_org`
+from this ADR are unchanged.
