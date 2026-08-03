@@ -235,7 +235,7 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 | Fork PR matches CEL trigger; authorized actor | Agent runs via `harness-dispatch`; workflow completes | Positive dispatch + artifact assertion |
 | Kill switch active (`kill_switch: true`) on fork event | Empty matrix, exit 0 | Separate scenario; `the kill switch is active` step + assert agent did not run |
 | Disabled harness (`enabled: false`) on fork event | Empty matrix, exit 0 | Disabled harness in positive scenario; assert agent did not run |
-| Fork PR `synchronize` re-triggers | Agent runs again per concurrency rules | Separate scenario with sync + label |
+| Fork PR `synchronize` + label dispatches harness | Harness dispatched exactly 1 time; workflow completes | Separate scenario with sync commit + label |
 | CEL `is_fork` exclusion (`!event.state.change_proposal.is_fork`) | Empty matrix, exit 0 | Harness with `is_fork` guard in positive scenario; assert agent did not run |
 
 **Kill switch vs disabled harness:** These are distinct mechanisms. The **kill switch** (`kill_switch: true` in `config.yaml`) is a global emergency stop that blocks *all* harness dispatch for the repo — tested in its own scenario because no positive harness can run alongside it. A **disabled harness** (`enabled: false` per agent entry) only prevents that single agent from running — tested as a piggyback negative assertion in the positive-path scenario.
