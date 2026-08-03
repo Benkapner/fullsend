@@ -152,8 +152,9 @@ func isEntityAuthor(event JiraEvent) bool {
 	return aid == userID(event.Reporter)
 }
 
-// extractCommand parses a comment body for a slash command.
-// Returns the command token and the remaining instruction text.
+// extractCommand parses a comment body for a /fs- slash command. It returns
+// the command token and the remaining instruction text. If no slash command
+// is found, both return values are empty strings.
 func extractCommand(body string) (command, instruction string) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
@@ -166,15 +167,15 @@ func extractCommand(body string) (command, instruction string) {
 		return "", ""
 	}
 
-	if !strings.HasPrefix(tokens[0], "/") {
+	if !strings.HasPrefix(tokens[0], "/fs-") {
 		return "", ""
 	}
 
 	command = tokens[0]
-	if len(tokens) > 1 {
-		return command, strings.Join(tokens[1:], " ")
-	}
-	return command, ""
+
+	// Instruction is everything after the command token in the full body.
+	instruction = strings.TrimSpace(trimmed[len(command):])
+	return command, instruction
 }
 
 // resolveRole maps the event actor's Jira project role to an ADR 0054 role.

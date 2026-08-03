@@ -455,7 +455,13 @@ func TestExtractCommand(t *testing.T) {
 			name:            "slash command with multi-line body",
 			body:            "/fs-triage fix the bug\nMore context on the next line",
 			wantCommand:     "/fs-triage",
-			wantInstruction: "fix the bug",
+			wantInstruction: "fix the bug\nMore context on the next line",
+		},
+		{
+			name:            "non-fullsend slash command",
+			body:            "/other-tool do something",
+			wantCommand:     "",
+			wantInstruction: "",
 		},
 	}
 
