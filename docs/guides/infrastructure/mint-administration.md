@@ -125,7 +125,7 @@ Redeploying or upgrading an existing mint must use the same mode: `--public` for
 | `--region` | `us-central1` | Cloud region for the mint function |
 | `--pem-dir` | | Path to directory containing `{role}.pem` files (first-time bootstrap only); uses the default app set (`fullsend-ai`) |
 | `--public` | `false` | Deploy public mint (`ALLOWED_ORGS=*`, permissive WIF); required to redeploy an existing public mint |
-| `--source-dir` | (checkout path) | Path to local mint source directory (default: checkout path when present, embedded otherwise) |
+| `--source-dir` | | Path to local mint source directory (default: checkout path when present, embedded otherwise) |
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (only update WIF/config) |
 | `--dry-run` | `false` | Preview changes without making them |
 

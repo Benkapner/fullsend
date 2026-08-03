@@ -242,8 +242,9 @@ func TestGitLabAgentTemplateForkProtection(t *testing.T) {
 	// Fork check applies only to code/fix stages
 	assert.Contains(t, s, `"code"`)
 	assert.Contains(t, s, `"fix"`)
-	// Fork check uses IS_FORK variable, not jq on event payload
-	assert.NotContains(t, s, "EVENT_PAYLOAD")
+	// Fork check uses IS_FORK variable, not jq-parsing the event payload.
+	// EVENT_PAYLOAD_B64 is referenced in the HMAC signed message (not for fork detection).
+	assert.NotRegexp(t, `jq.*EVENT_PAYLOAD`, s)
 	// Fork detection exits with error (visible failure), not silent skip
 	assert.Contains(t, s, "exit 1")
 }

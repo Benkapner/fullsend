@@ -40,70 +40,38 @@ fullsend
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
-│   ├── init         <org|owner/repo>        # Generate repos.yaml from discovered installs
-│   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
-│   │   ├── --repos <list>                   #   Comma-separated repos to include
-│   │   ├── --all                            #   Include all eligible repos
-│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
-│   │   ├── --forge-url <url>                #   Forge instance URL (required for gitlab)
-│   │   ├── --mint-url <url>                 #   Token mint Cloud Run endpoint URL
-│   │   ├── --mint-project <id>              #   GCP project for the mint
-│   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
-│   │   ├── --inference-project <id>         #   Default GCP project for inference
-│   │   ├── --inference-region <region>      #   GCP region for inference (default: us-central1)
-│   │   ├── --fullsend-ref <ref>             #   Pin the fullsend workflow ref (e.g. v0.42.0)
-│   │   ├── --force                          #   Overwrite output file if it exists
-│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── install      [repos...]              # Install fullsend on uninstalled manifest repos
+│   ├── migrate      <org>                   # Migrate org from per-org to per-repo install
+│   │   ├── --project <id>                   #   GCP project ID for inference (required)
+│   │   ├── --repo <name>                    #   Filter to specific repos (repeatable, supports globs)
+│   │   ├── --dry-run                        #   Preview only
+│   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
+│   │   ├── --concurrency <int>              #   Parallel limit (1-32, default: 4)
+│   │   └── -f, --manifest <path>            #   Output path for repos.yaml (default: repos.yaml)
+│   ├── install      [repos...]              # Converge repos to desired state (provision, sync, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --skip-mint-check                #   Skip org registration in mint
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
-│   │   └── --direct                         #   Push scaffold to default branch (skip PR)
-│   ├── add          <repos...>              # Add repo entries to manifest
-│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
-│   │   ├── --forge <type>                   #   Forge type: github or gitlab (required)
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --install                        #   Also install fullsend on the added repos
-│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   └── --roles <list>                   #   Agent roles to install (used with --install)
-│   ├── remove       <repos...>              # Remove repo entries from manifest
+│   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
+│   │   ├── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
+│   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
+│   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
+│   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
+│   │   ├── --mint-url <url>                 #   Per-repo mint URL override
+│   │   └── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --uninstall                      #   Tear down fullsend before removing
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   ├── uninstall    <repos...>              # Tear down fullsend from repos
-│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --manifest-only                  #   Remove from manifest without tearing down
+│   │   └── --uninstall-only                 #   Tear down without removing from manifest
 │   ├── status                               # Compare manifest against actual repo state
-│   ├── diff                                 # Show configuration drift between manifest and actual state
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── sync                                 # Reconcile configuration drift for installed repos
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
-│   │   ├── --dry-run                        #   Preview changes without applying them
-│   │   ├── --json                           #   Emit JSON output instead of table
-│   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   ├── upgrade        [repos...]            # Upgrade scaffold shim ref across repos
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
-│   │   ├── --ref <version>                  #   Override manifest fullsend_ref for all repos
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --force                          #   Upgrade even if current ref is newer
-│   │   ├── --direct                         #   Push directly to default branch (skip PR)
-│   │   ├── --skip-mint-check                #   Skip mint URL verification before upgrading
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   └── upgrade-mint                         # Verify token mint deployment matches manifest
-│       └── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
@@ -299,9 +267,11 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 6: Set secrets & variables                           │ │
 │  │                                                            │ │
 │  │  Both modes write the same credential set:                 │ │
-│  │    Secrets:   FULLSEND_GCP_PROJECT_ID                      │ │
+│  │    Secrets (install-time only, not managed by sync):       │ │
+│  │              FULLSEND_GCP_PROJECT_ID                       │ │
 │  │              FULLSEND_GCP_WIF_PROVIDER                     │ │
-│  │    Variables: FULLSEND_GCP_REGION                          │ │
+│  │    Variables (managed by sync):                            │ │
+│  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
@@ -618,7 +588,6 @@ Since `embed.FS` doesn't preserve Unix permissions, executable files are tracked
 var executableFiles = map[string]struct{}{
     "scripts/fullsend-check-output":          {},
     "scripts/install-precommit-tools.sh":     {},
-    "scripts/pre-code.sh":                    {},
     "scripts/prepare-sandbox-credentials.sh": {},
     "scripts/reconcile-repos.sh":             {},
     "scripts/resolve-precommit-tools.py":     {},

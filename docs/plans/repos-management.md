@@ -11,6 +11,12 @@ builds the foundation: extracting reusable install logic, the manifest
 parser, a new forge method, and read-only status. Phase 2 (PRs 5–8)
 adds write operations: bulk install, sync/diff, upgrade, add/remove/uninstall.
 
+> **Consolidation (PR #5807):** The 9-command surface area was
+> consolidated to 5 commands (`migrate`, `install`, `uninstall`, `status`, `set-default`).
+> `repos install` became a convergence operator (provision + sync + upgrade).
+> `repos uninstall` gained `--manifest-only` and `--uninstall-only` flags.
+> See [repos-command-consolidation.md](repos-command-consolidation.md).
+
 ---
 
 ## Design
@@ -33,13 +39,8 @@ forge:
     # url: https://github.example.com
     # Shared mint infrastructure — one mint serves all repos.
     # mint_url: Cloud Run endpoint (contains a random hash, not derivable from project/region).
-    # mint_project + mint_region: needed for WIF provisioning (IAM bindings).
     mint_url: https://fullsend-mint-abc123-uc.a.run.app
-    mint_project: acme-fullsend-prod
-    mint_region: us-central1
-    # GitHub-specific inference and version settings.
-    inference_project: acme-inference-prod
-    inference_region: us-central1
+    # GitHub-specific version settings.
     fullsend_ref: v2.3.0
   # gitlab:
   #   url: https://gitlab.example.com  # required, no default
@@ -72,8 +73,6 @@ Manifest fields map to repo-level resources as follows:
 
 | Manifest field | Repo resource | Type |
 |---|---|---|
-| `forge.github.inference_project` | `FULLSEND_GCP_PROJECT_ID` | Secret |
-| `forge.github.inference_region` | `FULLSEND_GCP_REGION` | Variable |
 | `forge.github.fullsend_ref` | `@ref` in scaffold shim `uses:` line | Workflow file |
 | `forge.github.mint_url` | `FULLSEND_MINT_URL` | Variable |
 | `allowed_remote_resources` | `allowed_remote_resources` in org `config.yaml` | Config file ¹ |
@@ -83,8 +82,8 @@ not a per-repo resource. It is not managed by `repos sync`.
 
 #### Field resolution
 
-Infrastructure fields (`inference_project`, `inference_region`,
-`fullsend_ref`) live in the forge-specific section (`forge.github`).
+Infrastructure fields (`fullsend_ref`) live in the forge-specific
+section (`forge.github`).
 `defaults` holds only `forge` and `allowed_remote_resources`.
 Repo entries may override `forge` but not infrastructure fields.
 
@@ -123,18 +122,18 @@ Cross-org sharing works because:
 
 ### Subcommand specifications
 
-#### `fullsend repos init`
+#### `fullsend repos migrate`
 
 Generates a `repos.yaml` manifest. Discovers existing per-repo and
 per-org installations. Covered by the
-[repos init plan](repos-init.md).
+[repos migrate plan](repos-init.md).
 
 #### `fullsend repos status`
 
 Read-only discovery. Compares manifest against actual forge state.
 
 For each repo: reads variables (`FULLSEND_MINT_URL`,
-`FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`) in a single API
+`FULLSEND_PER_REPO_INSTALL`) in a single API
 call, reads the workflow file and extracts `@ref`, compares against
 manifest-resolved config, reports drift.
 
@@ -182,7 +181,6 @@ $ fullsend repos diff
 
 REPO                     FIELD               CURRENT              DESIRED
 acme-corp/web-frontend   FULLSEND_MINT_URL   https://old-mint...  https://fullsend-mint-abc123...
-acme-corp/web-frontend   FULLSEND_GCP_REGION us-west1             us-central1
 ```
 
 #### `fullsend repos sync`
@@ -192,8 +190,7 @@ Reconciles configuration drift for installed repos.
 | Resource | Action |
 |----------|--------|
 | `FULLSEND_MINT_URL` variable | Upsert to match manifest `forge.github.mint_url` |
-| `FULLSEND_GCP_REGION` variable | Upsert to match resolved `inference_region` |
-| `FULLSEND_GCP_PROJECT_ID` secret | Upsert to match resolved `inference_project` |
+| `FULLSEND_GCP_PROJECT_ID` secret | Upsert (value passed via `--inference-project` CLI flag) |
 
 Sync does **not** touch scaffold shim version (managed by `upgrade`),
 harness files (managed via ADR 0045's `base` composition), or the
@@ -229,14 +226,6 @@ Tag-only repos remain tag-only. If tag-to-SHA resolution fails
 (tag does not exist, API error), the upgrade fails for that repo
 rather than falling back to tag-only format.
 
-#### `fullsend repos upgrade-mint`
-
-Verifies the token mint deployment matches the manifest configuration.
-Discovers the current mint via `DiscoverMint` and checks that its URL
-matches `forge.github.mint_url`. `repos upgrade` now runs this check automatically
-as a pre-flight step (unless `--skip-mint-check` is set); this command
-remains available for standalone verification.
-
 #### `fullsend repos add`
 
 Adds repo entries to the `repos.yaml` manifest. Supports glob patterns
@@ -252,25 +241,26 @@ matched against manifest entries and prompt for confirmation unless
 `--yes` is set.
 
 With `--uninstall`, tears down fullsend from the matched repos before
-removing them from the manifest (deletes workflow, variables, secrets,
-and WIF infrastructure).
+removing them from the manifest (deletes workflow, variables, and secrets).
+GCP infrastructure is managed separately via `inference provision`,
+`mint deploy`, and `mint enroll`.
 
-Supports `--dry-run`, `--uninstall`, `--yes`, `--skip-wif-cleanup`,
-`--concurrency`.
+Supports `--dry-run`, `--uninstall`, `--yes`, `--concurrency`.
 
 #### `fullsend repos uninstall`
 
 Tears down fullsend from specific repos without modifying the manifest.
 Glob patterns are matched against manifest entries.
 
-For each repo: deletes workflow file, variables, secrets, deregisters
-from mint's `PER_REPO_WIF_REPOS` (sequential), deletes WIF provider.
+For each repo: deletes workflow file, variables, and secrets. GCP
+infrastructure is managed separately via `inference provision`,
+`mint deploy`, and `mint enroll`.
 
 Does **not** remove repos from the manifest — use `repos remove` for
 that. Does **not** remove `.fullsend/` — it contains user-authored
 config that may be version-controlled independently.
 
-Supports `--dry-run`, `--yes`, `--skip-wif-cleanup`, `--concurrency`.
+Supports `--dry-run`, `--yes`, `--concurrency`.
 
 ### Version management
 
@@ -319,7 +309,6 @@ should be proposed in its own ADR when pursued.
 | Repos logic | `internal/repos/` (new package) | Manifest parser, install, status, sync, upgrade, remove |
 | CLI admin | `internal/cli/admin.go` | Delegates to extracted install logic |
 | Forge interface | `internal/forge/forge.go`, `github/github.go`, `fake.go` | `ListRepoVariables`, `DeleteRepoVariable`, `DeleteRepoSecret` |
-| Provisioner | `internal/dispatch/gcf/provisioner.go` | `DeletePerRepoWIF` wraps existing `RemoveRepoFromMint` + `DeleteWIFProvider` |
 
 ## PR Dependency Graph
 
@@ -342,7 +331,7 @@ PR 8 depends on PRs 1 and 3 (reuses install types +
 parallel with PRs 4–7. Implements three commands: `repos add`,
 `repos remove`, and `repos uninstall`.
 
-The `repos init` command is covered by a
+The `repos migrate` command is covered by a
 [separate implementation plan](repos-init.md) and can be developed
 in parallel with PRs 4–8.
 
@@ -368,20 +357,16 @@ Define the install interface as a pure function taking a config struct:
 
 ```go
 type InstallConfig struct {
-    Owner            string
-    Repo             string
-    MintURL          string
-    MintProject      string
-    MintRegion       string
-    InferenceProject string
-    InferenceRegion  string
-    UpstreamRef      string
-    SkipAppSetup     bool
-    SkipMintCheck    bool
-    SkipMintDeploy   bool
-    SkipWIF          bool   // skip WIF provisioning (already done externally)
-    WIFProvider      string // pre-provisioned WIF provider name
-    VendorBinary     bool
+    Owner                   string
+    Repo                    string
+    MintURL                 string
+    InferenceProject        string
+    InferenceRegion         string
+    UpstreamRef             string
+    SkipAppSetup            bool
+    SkipMintCheck           bool
+    SkipMintDeploy          bool
+    VendorBinary            bool
 }
 
 type InstallResult struct {
@@ -390,12 +375,11 @@ type InstallResult struct {
     Success         bool
     Error           error
     AlreadyInstalled bool
-    WIFProvider     string
     ScaffoldPR      string
 }
 
 func Install(ctx context.Context, cfg InstallConfig,
-    client forge.Client, provisioner WIFProvisioner,
+    client forge.Client,
     progress ProgressFunc) (*InstallResult, error)
 ```
 
@@ -403,8 +387,7 @@ Extract from `runPerRepoInstall()`:
 
 - Infrastructure discovery (mint check, app discovery)
 - App creation (delegate to `appsetup.Run()`)
-- Mint provisioning (delegate to provisioner)
-- WIF provisioning (delegate to provisioner)
+- Mint enrollment (delegate to mint client)
 - Scaffold generation and commit
 - Variable/secret writes
 
@@ -414,19 +397,6 @@ Keep in `admin.go`:
 - Interactive prompts (app name confirmation, etc.)
 - Progress spinner rendering
 - Error message formatting
-
-Define the `WIFProvisioner` interface to decouple from the concrete
-GCF provisioner:
-
-```go
-type WIFProvisioner interface {
-    DiscoverMint(ctx context.Context) (*MintDiscovery, error)
-    ProvisionWIF(ctx context.Context) (string, error)
-    RegisterPerRepoWIF(ctx context.Context, repo string) error
-    EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error
-    DeletePerRepoWIF(ctx context.Context, repo string) error
-}
-```
 
 Define `ProgressFunc` for progress reporting:
 
@@ -451,10 +421,8 @@ Test `Install()` with a fake forge client and fake WIF provisioner:
 - Partial install (guard variable present but other components
   missing): proceeds with repair.
 - Skip app setup: verify `appsetup.Run()` not called.
-- Skip mint check: verify `DiscoverMint()` not called.
-- WIF provisioning failure: returns error, no scaffold committed.
-- Scaffold commit failure: returns error with WIF provider set
-  (partial state).
+- Skip mint check: verify mint discovery not called.
+- Scaffold commit failure: returns error.
 
 #### Test strategy
 
@@ -485,13 +453,9 @@ type ForgeSection struct {
 }
 
 type GitHubForgeInfra struct {
-    URL              string `yaml:"url,omitempty"`
-    MintURL          string `yaml:"mint_url,omitempty"`
-    MintProject      string `yaml:"mint_project,omitempty"`
-    MintRegion       string `yaml:"mint_region,omitempty"`
-    InferenceProject string `yaml:"inference_project,omitempty"`
-    InferenceRegion  string `yaml:"inference_region,omitempty"`
-    FullsendRef      string `yaml:"fullsend_ref,omitempty"`
+    URL         string `yaml:"url,omitempty"`
+    MintURL     string `yaml:"mint_url,omitempty"`
+    FullsendRef string `yaml:"fullsend_ref,omitempty"`
 }
 
 type GitLabForgeInfra struct {
@@ -583,7 +547,6 @@ the URL fetching logic from the harness resource loader.
 - `version` is 1 (only supported version).
 - `forge.github.url` defaults to `https://github.com` when unset; must be a valid HTTPS URL with no path.
 - `forge.github.mint_url` is a valid HTTPS URL (when GitHub repos are present).
-- `forge.github.mint_project` and `forge.github.mint_region` are non-empty (when GitHub repos are present).
 - `forge.gitlab.url` is required and must be a valid HTTPS URL with no path (when GitLab repos are present).
 - Each repo entry has a valid `owner/repo` format.
 - No duplicate repos (after glob expansion).
@@ -637,8 +600,8 @@ the URL fetching logic from the harness resource loader.
   The `override` parameter is `NullableString` because the forge field
   on `RepoEntry` uses three-state semantics. The `fallback` parameter
   is plain `string` because defaults are either set or empty — no null
-  distinction needed. Infrastructure fields (`InferenceProject`,
-  `InferenceRegion`, `FullsendRef`) are sourced from the forge-specific
+  distinction needed. Infrastructure fields (`FullsendRef`) are
+  sourced from the forge-specific
   section (`forge.github`) rather than per-repo overrides.
 
 - Return `ResolvedConfig` with all fields resolved.
@@ -650,10 +613,6 @@ type ResolvedConfig struct {
     Forge                  string
     ForgeConfig            ForgeConfig
     MintURL                string
-    MintProject            string
-    MintRegion             string
-    InferenceProject       string
-    InferenceRegion        string
     FullsendRef            string
     AllowedRemoteResources []string
 }
@@ -879,7 +838,6 @@ Flags:
 - `--dry-run` (bool).
 - Positional args: install specific repos only (supports globs).
 - `--skip-app-setup` (bool).
-- `--skip-mint-check` (bool).
 - `--concurrency` (int, default 4): max parallel scaffold writes.
 
 #### `internal/repos/batch_install.go` (new)
@@ -890,7 +848,6 @@ type BatchInstallConfig struct {
     DryRun         bool
     RepoFilter     []string
     MaxConcurrency int
-    SkipMintCheck  bool
     Roles          []string
     UpstreamRef    string
     UpstreamTag    string
@@ -904,11 +861,11 @@ type BatchInstallResult struct {
 }
 
 func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
-    clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
+    clients ForgeClientFactory,
     progress ProgressFunc) (*BatchInstallResult, error)
 ```
 
-Three-phase execution:
+Two-phase execution:
 
 **Phase 1 (parallel):** For each repo (or filtered subset), check the
 guard variable. When the guard is set, verify all installation
@@ -927,7 +884,7 @@ calling it per repo would be redundant and add unnecessary latency
 from repeated read-modify-write cycles on Cloud Run env vars. If
 `EnsureOrgInMint` fails for an org, all repos in `toInstall`
 belonging to that org are moved to `BatchInstallResult.Failed` with
-the error and excluded from per-repo WIF provisioning and Phase 3.
+the error and excluded from scaffold writes.
 
 Then, for each remaining repo in `toInstall`:
 
@@ -935,45 +892,20 @@ Then, for each remaining repo in `toInstall`:
   `checkInstallComponents`. If the guard is now `"true"` and all
   components are present (another process fully installed between
   Phase 1 and Phase 2), move the repo to `alreadyInstalled` and skip
-  provisioning. If the guard is set but components are missing, proceed
+  installation. If the guard is set but components are missing, proceed
   with repair. This narrows the TOCTOU window documented in the ADR.
-- Call `ProvisionWIF(ctx)` — creates WIF provider for this repo.
-  Store the returned provider name in a `map[string]string` keyed by
-  `owner/repo` (e.g., `wifProviders["acme-corp/api"] = providerName`).
 - Call `RegisterPerRepoWIF(ctx, repo)` — adds repo to mint's
   `PER_REPO_WIF_REPOS`.
-
-These operations modify shared GCP state and must be sequential.
-If `ProvisionWIF` or `RegisterPerRepoWIF` fails for a repo, that
-repo is moved to `BatchInstallResult.Failed` and excluded from
-Phase 3. Only repos with a populated `wifProviders[repo]` entry
-proceed.
-
-**Phase 3 (parallel, bounded by `MaxConcurrency`):** For each repo
-where Phase 2 succeeded (i.e., `wifProviders[repo]` is non-empty):
-
-- Look up `wifProviders[repo]` to retrieve the provider name
-  provisioned in Phase 2.
-- Call `Install()` (from PR 1) with `SkipWIF: true` and `WIFProvider`
-  set to the looked-up provider name. This skips WIF provisioning
-  inside `Install()` and uses the pre-provisioned value for the
-  `FULLSEND_GCP_WIF_PROVIDER` secret.
-- Commits scaffold, writes variables/secrets.
+- Call `Install()` (from PR 1). Commits scaffold, writes variables/secrets.
 
 Errors on individual repos do not abort the batch. Failed repos are
 collected in `BatchInstallResult.Failed`.
-
-`ProvisionerFactory` creates a provisioner scoped to a specific repo:
-
-```go
-type ProvisionerFactory func(cfg ResolvedConfig) WIFProvisioner
-```
 
 #### `internal/repos/batch_install_test.go` (new)
 
 - Fresh repos: all repos uninstalled → all installed.
 - Partial repos: some already installed → only new repos installed.
-- WIF serialization: verify `RegisterPerRepoWIF` calls are sequential
+- Mint enrollment serialization: verify `RegisterPerRepoWIF` calls are sequential
   (mutex-checking fake).
 - Repo filter: only filtered repos installed.
 - Error on one repo: others still installed, failed in `Failed` list.
@@ -981,8 +913,8 @@ type ProvisionerFactory func(cfg ResolvedConfig) WIFProvisioner
 
 #### Test strategy
 
-Unit tests with `forge.FakeClient` and fake `WIFProvisioner`. Verify
-call ordering via recorded method calls.
+Unit tests with `forge.FakeClient`. Verify call ordering via recorded
+method calls.
 
 ---
 
@@ -1034,9 +966,8 @@ What sync reconciles:
 | Resource | Action |
 |----------|--------|
 | `FULLSEND_MINT_URL` | Upsert to match `forge.github.mint_url` |
-| `FULLSEND_GCP_REGION` | Upsert to match resolved `inference_region` |
 | `FULLSEND_PER_REPO_INSTALL` | Ensure `"true"` |
-| `FULLSEND_GCP_PROJECT_ID` | Upsert to match resolved `inference_project` |
+| `FULLSEND_GCP_PROJECT_ID` | Upsert (value passed via `--inference-project` CLI flag) |
 
 What sync does NOT touch:
 
@@ -1069,19 +1000,18 @@ Unit tests with `forge.FakeClient`.
 
 ---
 
-### PR 7: `fullsend repos upgrade` + `fullsend repos upgrade-mint` ✓
+### PR 7: `fullsend repos upgrade` ✓
 
 **Status:** Implemented in [#4080](https://github.com/fullsend-ai/fullsend/pull/4080).
 
-**Scope:** New CLI commands. Writes workflow files, verifies mint
-deployment.
+**Scope:** New CLI command. Writes workflow files.
 
 **Depends on:** PR 4 (reuses `extractWorkflowRef()` for reading
 current refs from workflow files).
 
 #### `internal/cli/repos.go` (modify)
 
-Add `newReposUpgradeCmd()` and `newReposUpgradeMintCmd()`.
+Add `newReposUpgradeCmd()`.
 
 `upgrade` flags:
 
@@ -1092,10 +1022,6 @@ Add `newReposUpgradeCmd()` and `newReposUpgradeMintCmd()`.
 - `--force`: upgrade even if current ref is newer.
 - `--concurrency` (int, default 4).
 - `--direct`: push scaffold directly to default branch (skip PR).
-
-`upgrade-mint` flags:
-
-- `--manifest` / `-f`.
 
 #### `internal/repos/upgrade.go` (new)
 
@@ -1123,10 +1049,6 @@ type UpgradeResult struct {
 func Upgrade(ctx context.Context, cfg UpgradeConfig,
     clients ForgeClientFactory,
     progress ProgressFunc) ([]UpgradeResult, error)
-
-func UpgradeMint(ctx context.Context, manifest *Manifest,
-    provisioner WIFProvisioner,
-    progress ProgressFunc) error
 ```
 
 Upgrade logic per repo:
@@ -1168,13 +1090,6 @@ produce `@<sha> # <tag>`. Tag-only repos keep tag-only format.
 If `GetRef` fails, the upgrade returns an error for that repo
 rather than falling back to tag-only format.
 
-`UpgradeMint` (verification only — full redeploy deferred until
-`/health` version endpoint is available):
-
-- Create provisioner from manifest's mint config.
-- Discover the current mint deployment via `DiscoverMint`.
-- Verify discovered mint URL matches the manifest's `forge.github.mint_url`.
-
 #### `internal/repos/upgrade_test.go` (new)
 
 - All repos at target → all skipped.
@@ -1188,12 +1103,10 @@ rather than falling back to tag-only format.
 - Floating ref detection (partial versions, branch names).
 - Standalone comment preservation across newlines.
 - `--direct` flag passed through to commit function.
-- Mint URL verification (match, mismatch, discover error, empty URL).
 
 #### Test strategy
 
-Unit tests with `forge.FakeClient` and fake `WIFProvisioner`.
-Semver comparison as table-driven tests.
+Unit tests with `forge.FakeClient`. Semver comparison as table-driven tests.
 
 ---
 
@@ -1226,15 +1139,13 @@ Add `newReposAddCmd()`, `newReposRemoveCmd()`, `newReposUninstallCmd()`.
 - `--dry-run`.
 - `--uninstall`: tear down fullsend before removing from manifest.
 - `--yes`: skip confirmation for glob patterns.
-- `--skip-wif-cleanup`, `--concurrency` (used with `--uninstall`).
+- `--concurrency` (used with `--uninstall`).
 
 `repos uninstall` — tears down fullsend without modifying manifest:
 - Positional args: repos to uninstall (supports globs).
-- `--manifest` / `-f`: used to resolve mint config for WIF cleanup.
+- `--manifest` / `-f`: used to resolve mint config.
 - `--dry-run`.
 - `--yes`: skip confirmation for glob patterns.
-- `--skip-wif-cleanup`: skip GCP WIF provider deletion and mint
-  deregistration.
 - `--concurrency` (int, default 4): max parallel Phase 1 cleanup
   operations.
 
@@ -1245,7 +1156,6 @@ type RemoveConfig struct {
     Manifest       *Manifest
     Repos          []string
     DryRun         bool
-    SkipWIFCleanup bool
     MaxConcurrency int
 }
 
@@ -1257,20 +1167,15 @@ type RemoveResult struct {
     WorkflowDeleted bool
     VarsDeleted     int
     SecretsDeleted  int
-    WIFDeregistered bool
-    WIFDeleted      bool
 }
 
 func Remove(ctx context.Context, cfg RemoveConfig,
-    clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
+    clients ForgeClientFactory,
     progress ProgressFunc) ([]RemoveResult, error)
 ```
 
-Removal runs in two phases, mirroring install's parallel/sequential
-structure:
-
-**Phase 1 — per-repo cleanup (parallel across repos, bounded by
-`MaxConcurrency`):**
+Removal is a single-phase operation (parallel across repos, bounded by
+`MaxConcurrency`):
 
 For each repo:
 
@@ -1294,44 +1199,19 @@ variables/secrets are left intact — this avoids leaving the repo in a
 broken state where the workflow exists but its required variables are
 gone.
 
-**Phase 2 — WIF cleanup (sequential, only for Phase 1 successes):**
-
-4. For each repo where Phase 1 succeeded (check
-   `RemoveResult.WorkflowDeleted`), unless `--skip-wif-cleanup`:
-   a. Deregister from mint's `PER_REPO_WIF_REPOS` (sequential — same
-      read-modify-write constraint as install Phase 2).
-   b. Delete WIF provider from GCP.
-
-Repos whose Phase 1 failed are skipped in Phase 2 — deleting the WIF
-provider while the workflow still exists would leave it referencing a
-non-existent provider.
-
 Does NOT remove repos from the manifest — operator edits `repos.yaml`
 manually.
 
-#### `internal/dispatch/gcf/provisioner.go` (existing)
-
-`DeletePerRepoWIF` on the `WIFProvisioner` interface wraps two
-existing provisioner operations:
-
-1. `RemoveRepoFromMint` — filters the repo out of
-   `PER_REPO_WIF_REPOS` via a read-modify-write on the Cloud Function
-   environment variable. Idempotent.
-2. `DeleteWIFProvider` — deletes the WIF provider from GCP IAM.
+GCP infrastructure (WIF providers, mint enrollment) is managed
+separately via `inference provision`, `mint deploy`, and `mint enroll`.
 
 #### `internal/repos/remove_test.go` (new)
 
 - Remove installed repo → all resources deleted.
 - Remove non-installed repo → no errors (delete calls return 404).
-- Skip WIF cleanup → no provisioner calls.
 - Dry-run → no writes.
-- Multiple repos → all removed, WIF deregistration sequential.
+- Multiple repos → all removed.
 - Partial failure → one repo errors, others still removed.
-
-#### `internal/dispatch/gcf/provisioner_test.go` (existing)
-
-`RemoveRepoFromMint` and `DeleteWIFProvider` are already tested.
-`DeletePerRepoWIF` is a thin wrapper — test via `remove_test.go`.
 
 #### Test strategy
 
@@ -1367,6 +1247,4 @@ Unit tests with `forge.FakeClient` and fake GCF client.
 | `internal/cli/repos.go` | 7 | Modify |
 | `internal/repos/remove.go` | 8 | Create |
 | `internal/repos/remove_test.go` | 8 | Create |
-| `internal/dispatch/gcf/provisioner.go` | 8 | Modify |
-| `internal/dispatch/gcf/provisioner_test.go` | 8 | Modify |
 | `internal/cli/repos.go` | 8 | Modify |

@@ -2,11 +2,20 @@ package poll
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // --- dispatch method tests ---
@@ -577,6 +586,269 @@ func TestDispatch_MREventOneZeroProjectIDIsFork(t *testing.T) {
 
 	if !p.dispatches[0].IsFork {
 		t.Error("IsFork: got false, want true (one zero project ID should fail-closed)")
+	}
+}
+
+// --- HMAC signing tests ---
+
+func TestComputeDispatchHMAC_Deterministic(t *testing.T) {
+	vars := map[string]string{
+		"STAGE":             "triage",
+		"EVENT_TYPE":        "issue_note",
+		"EVENT_PAYLOAD_B64": "eyJ0eXBlIjoiaXNzdWVfbm90ZSJ9",
+		"RESOURCE_KEY":      "issue-42",
+		"IS_FORK":           "false",
+		"ACTOR_ID":          "88",
+	}
+
+	h1 := computeDispatchHMAC("test-secret", vars)
+	h2 := computeDispatchHMAC("test-secret", vars)
+	if h1 != h2 {
+		t.Errorf("HMAC not deterministic: %q != %q", h1, h2)
+	}
+	if len(h1) != 64 {
+		t.Errorf("HMAC hex length: got %d, want 64", len(h1))
+	}
+}
+
+func TestComputeDispatchHMAC_DifferentSecretProducesDifferentMAC(t *testing.T) {
+	vars := map[string]string{
+		"STAGE":      "triage",
+		"EVENT_TYPE": "issue_note",
+	}
+
+	h1 := computeDispatchHMAC("secret-a", vars)
+	h2 := computeDispatchHMAC("secret-b", vars)
+	if h1 == h2 {
+		t.Error("different secrets should produce different HMACs")
+	}
+}
+
+func TestComputeDispatchHMAC_MissingKeysUseEmptyValue(t *testing.T) {
+	// Only set STAGE — all other signed keys should use empty string.
+	vars := map[string]string{
+		"STAGE": "triage",
+	}
+
+	// Manually compute expected HMAC with the same canonical format.
+	parts := make([]string, len(signedDispatchKeys))
+	for i, k := range signedDispatchKeys {
+		parts[i] = k + "=" + vars[k]
+	}
+	message := strings.Join(parts, "\n")
+	mac := hmac.New(sha256.New, []byte("test-secret"))
+	mac.Write([]byte(message))
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	got := computeDispatchHMAC("test-secret", vars)
+	if got != expected {
+		t.Errorf("HMAC mismatch: got %q, want %q", got, expected)
+	}
+}
+
+func TestComputeDispatchHMAC_TamperedVariableChangesMAC(t *testing.T) {
+	vars := map[string]string{
+		"STAGE":             "triage",
+		"EVENT_TYPE":        "issue_note",
+		"EVENT_PAYLOAD_B64": "eyJ0eXBlIjoiaXNzdWVfbm90ZSJ9",
+		"RESOURCE_KEY":      "issue-42",
+		"IS_FORK":           "false",
+		"ACTOR_ID":          "88",
+	}
+
+	original := computeDispatchHMAC("test-secret", vars)
+
+	// Tamper with IS_FORK.
+	tampered := maps.Clone(vars)
+	tampered["IS_FORK"] = "true"
+
+	forged := computeDispatchHMAC("test-secret", tampered)
+	if original == forged {
+		t.Error("tampering IS_FORK should change the HMAC")
+	}
+}
+
+func TestDispatch_IncludesHMACWhenSecretSet(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{DispatchSecret: "test-secret"})
+
+	event := RoutableEvent{
+		Type:         "issue_note",
+		IID:          42,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     "/fs-triage",
+		NoteID:       100,
+		NoteAuthorID: 88,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vars := mc.pipelineCalls[0].Variables
+	hmacVal, ok := vars["FULLSEND_DISPATCH_HMAC"]
+	if !ok {
+		t.Fatal("FULLSEND_DISPATCH_HMAC should be set when DispatchSecret is configured")
+	}
+	if len(hmacVal) != 64 {
+		t.Errorf("HMAC hex length: got %d, want 64", len(hmacVal))
+	}
+
+	// Verify the HMAC is correct by recomputing.
+	expected := computeDispatchHMAC("test-secret", vars)
+	if hmacVal != expected {
+		t.Errorf("HMAC mismatch: got %q, want %q", hmacVal, expected)
+	}
+}
+
+func TestDispatch_HMACCoversAllSignedKeysForMREvent(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{
+		DispatchSecret: "test-secret",
+		PollJobURL:     "https://gitlab.example.com/-/jobs/99999",
+	})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRAuthorID:   42,
+		NoteAuthorID: 99,
+		NoteBody:     "/fs-review",
+		NoteID:       500,
+		MRSource:     100,
+		MRTarget:     100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vars := mc.pipelineCalls[0].Variables
+
+	// All signed keys should be present and non-empty.
+	for _, key := range signedDispatchKeys {
+		val, ok := vars[key]
+		if !ok {
+			t.Errorf("signed key %q missing from pipeline variables", key)
+		} else if val == "" {
+			t.Errorf("signed key %q is empty", key)
+		}
+	}
+
+	hmacVal := vars["FULLSEND_DISPATCH_HMAC"]
+	expected := computeDispatchHMAC("test-secret", vars)
+	if hmacVal != expected {
+		t.Errorf("HMAC mismatch: got %q, want %q", hmacVal, expected)
+	}
+}
+
+func TestDispatch_NoHMACWhenSecretEmpty(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "issue_note",
+		IID:          42,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     "/fs-triage",
+		NoteID:       100,
+		NoteAuthorID: 88,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vars := mc.pipelineCalls[0].Variables
+	if _, ok := vars["FULLSEND_DISPATCH_HMAC"]; ok {
+		t.Error("FULLSEND_DISPATCH_HMAC should not be set when DispatchSecret is empty")
+	}
+}
+
+func TestSignedDispatchKeys_MatchShellTemplate(t *testing.T) {
+	content, err := scaffold.GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	if err != nil {
+		t.Fatalf("read agent template: %v", err)
+	}
+	s := string(content)
+
+	// Extract the printf format string from the HMAC_MESSAGE line.
+	// Format: printf 'ACTOR_ID=%s\nEVENT_PAYLOAD_B64=%s\n...'
+	const marker = "HMAC_MESSAGE=$(printf '"
+	idx := strings.Index(s, marker)
+	if idx < 0 {
+		t.Fatal("HMAC_MESSAGE printf not found in template")
+	}
+	fmtStart := idx + len(marker)
+	fmtEnd := strings.Index(s[fmtStart:], "'")
+	if fmtEnd < 0 {
+		t.Fatal("closing quote for printf format not found")
+	}
+	fmtStr := s[fmtStart : fmtStart+fmtEnd]
+
+	// Parse KEY=%s pairs separated by \n.
+	pairs := strings.Split(fmtStr, `\n`)
+	var shellKeys []string
+	for _, pair := range pairs {
+		eqIdx := strings.Index(pair, "=")
+		if eqIdx < 0 {
+			t.Fatalf("malformed pair in printf format: %q", pair)
+		}
+		shellKeys = append(shellKeys, pair[:eqIdx])
+	}
+
+	// Verify the shell keys match signedDispatchKeys exactly.
+	if len(shellKeys) != len(signedDispatchKeys) {
+		t.Fatalf("key count mismatch: shell has %d, Go has %d\nshell: %v\nGo:    %v",
+			len(shellKeys), len(signedDispatchKeys), shellKeys, signedDispatchKeys)
+	}
+	for i, key := range signedDispatchKeys {
+		if shellKeys[i] != key {
+			t.Errorf("key %d: shell has %q, Go has %q", i, shellKeys[i], key)
+		}
+	}
+}
+
+func TestComputeDispatchHMAC_MatchesPython3(t *testing.T) {
+	vars := map[string]string{
+		"ACTOR_ID":              "99",
+		"EVENT_PAYLOAD_B64":     "eyJ0eXBlIjoibXJfbm90ZSJ9",
+		"EVENT_TYPE":            "mr_note",
+		"FULLSEND_POLL_JOB_URL": "https://gitlab.example.com/-/jobs/12345",
+		"IS_FORK":               "false",
+		"MR_AUTHOR_ID":          "42",
+		"RESOURCE_KEY":          "mr-10",
+		"STAGE":                 "review",
+		"STATUS_IID":            "10",
+	}
+	secret := "test-secret-for-cross-lang"
+
+	goHMAC := computeDispatchHMAC(secret, vars)
+
+	// Build the same canonical message the shell printf produces.
+	parts := make([]string, len(signedDispatchKeys))
+	for i, k := range signedDispatchKeys {
+		parts[i] = k + "=" + vars[k]
+	}
+	message := strings.Join(parts, "\n")
+
+	// Compute HMAC using python3 (same as the shell verifier).
+	cmd := exec.Command("python3", "-c",
+		"import hmac,hashlib,os,sys; print(hmac.new(os.environ['HMAC_SECRET'].encode(),sys.stdin.read().encode(),hashlib.sha256).hexdigest())")
+	cmd.Stdin = strings.NewReader(message)
+	cmd.Env = append(os.Environ(), "HMAC_SECRET="+secret)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("python3 hmac: %v", err)
+	}
+	pythonHMAC := strings.TrimSpace(string(out))
+
+	if goHMAC != pythonHMAC {
+		t.Errorf("HMAC mismatch:\n  Go:     %s\n  python: %s", goHMAC, pythonHMAC)
 	}
 }
 

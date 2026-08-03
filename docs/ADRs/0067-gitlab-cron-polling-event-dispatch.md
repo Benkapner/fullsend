@@ -61,8 +61,16 @@ Accepted
 > be overridden by pipeline variables, unlike the `CI_PIPELINE_SOURCE` env
 > var. Residual risk: `CI_API_V4_URL` and `CI_PIPELINE_ID` are still
 > overridable, so a sophisticated attacker can redirect the API calls.
-> Full mitigation requires OIDC JWT verification (`FULLSEND_ID_TOKEN`),
-> tracked in #5572.
+> Mitigation #2 (HMAC signing, #5572) reduces this residual risk: the
+> poller signs dispatch variables with `FULLSEND_DISPATCH_SECRET` using
+> HMAC-SHA256 and the agent job verifies the signature before trusting
+> any dispatch variable. The HMAC computation itself uses no CI-provided
+> URLs, but the verification is gated on PIPELINE_SOURCE (derived from
+> CI_API_V4_URL), so the risk is reduced rather than fully closed. `FULLSEND_DISPATCH_SECRET`
+> MUST be configured as a protected, masked CI/CD variable — pipeline
+> variables can be overridden by API-triggered pipelines, so protection
+> is required to prevent a Developer+ user from supplying their own
+> secret and computing a valid HMAC over forged variables.
 >
 > **New permission requirement:** The bot PAT must have merge or push access
 > to the protected branch to create pipelines via the API endpoint. The

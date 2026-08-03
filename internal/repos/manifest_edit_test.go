@@ -489,3 +489,190 @@ func TestMatchManifestRepos_BadPattern(t *testing.T) {
 		t.Error("expected error for malformed glob pattern")
 	}
 }
+
+func TestSetDefault_AllowedRemoteResources_ValidatesURLs(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "not-a-url")
+	if err == nil {
+		t.Fatal("expected error for non-URL value")
+	}
+	if !strings.Contains(err.Error(), "must be a valid HTTPS URL") {
+		t.Errorf("expected URL validation error, got: %v", err)
+	}
+
+	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "http://insecure.example.com")
+	if err == nil {
+		t.Fatal("expected error for non-HTTPS URL")
+	}
+
+	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com,https://b.example.com")
+	if err != nil {
+		t.Fatalf("expected no error for valid HTTPS URLs, got: %v", err)
+	}
+}
+
+func TestSetDefault_CreatesManifestIfMissing(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "forge.github.mint_url", "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("SetDefault() error: %v", err)
+	}
+
+	data, readErr := os.ReadFile(manifestPath)
+	if readErr != nil {
+		t.Fatalf("reading created manifest: %v", readErr)
+	}
+	if !strings.Contains(string(data), "mint_url: https://mint.example.com") {
+		t.Errorf("expected manifest to contain mint_url, got:\n%s", data)
+	}
+}
+
+func TestSetDefault_ForgeURL_RejectsExtraneousParts(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{"forge.github.url", "https://ghes.example.com/prefix"},
+		{"forge.github.url", "https://user@ghes.example.com"},
+		{"forge.github.url", "https://ghes.example.com?q=1"},
+		{"forge.github.url", "https://ghes.example.com#frag"},
+		{"forge.gitlab.url", "https://gitlab.example.com/prefix"},
+	}
+	for _, tt := range tests {
+		err := SetDefault(manifestPath, tt.key, tt.value)
+		if err == nil {
+			t.Errorf("SetDefault(%s, %s) should reject URL with extraneous parts", tt.key, tt.value)
+		}
+	}
+
+	err := SetDefault(manifestPath, "forge.github.url", "https://ghes.example.com")
+	if err != nil {
+		t.Errorf("SetDefault(forge.github.url, clean URL) should succeed: %v", err)
+	}
+}
+
+func TestSetDefault_AllKeys(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	tests := []struct {
+		key   string
+		value string
+		check string
+	}{
+		{"forge.github.url", "https://ghes.example.com", "url: https://ghes.example.com"},
+		{"forge.github.fullsend_ref", "v3.0.0", "fullsend_ref: v3.0.0"},
+		{"forge.gitlab.url", "https://gitlab.example.com", "url: https://gitlab.example.com"},
+	}
+	for _, tt := range tests {
+		err := SetDefault(manifestPath, tt.key, tt.value)
+		if err != nil {
+			t.Fatalf("SetDefault(%s, %s) error: %v", tt.key, tt.value, err)
+		}
+		data, _ := os.ReadFile(manifestPath)
+		if !strings.Contains(string(data), tt.check) {
+			t.Errorf("expected manifest to contain %s, got:\n%s", tt.check, data)
+		}
+	}
+}
+
+func TestSetDefault_RemoveKey(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "forge.github.mint_url", "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("SetDefault() set error: %v", err)
+	}
+
+	err = SetDefault(manifestPath, "forge.github.mint_url", "")
+	if err != nil {
+		t.Fatalf("SetDefault() remove error: %v", err)
+	}
+	data, _ := os.ReadFile(manifestPath)
+	if strings.Contains(string(data), "mint_url") {
+		t.Errorf("expected mint_url removed, got:\n%s", data)
+	}
+}
+
+func TestSetDefault_RemoveAllowedRemoteResources(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com")
+	if err != nil {
+		t.Fatalf("SetDefault() set error: %v", err)
+	}
+
+	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "")
+	if err != nil {
+		t.Fatalf("SetDefault() remove error: %v", err)
+	}
+	data, _ := os.ReadFile(manifestPath)
+	if strings.Contains(string(data), "allowed_remote_resources") {
+		t.Errorf("expected allowed_remote_resources removed, got:\n%s", data)
+	}
+}
+
+func TestSetDefault_ExistingManifest(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	m := testManifest("acme/api")
+	data, err := MarshalWithHeader(m)
+	if err != nil {
+		t.Fatalf("MarshalWithHeader() error: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	err = SetDefault(manifestPath, "forge.github.mint_url", "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("SetDefault() error: %v", err)
+	}
+
+	reloaded, loadErr := LoadManifest(context.Background(), manifestPath)
+	if loadErr != nil {
+		t.Fatalf("LoadManifest() error: %v", loadErr)
+	}
+	if reloaded.Forge.GitHub.MintURL != "https://mint.example.com" {
+		t.Errorf("mint_url = %q, want https://mint.example.com", reloaded.Forge.GitHub.MintURL)
+	}
+	if len(reloaded.Repos) != 1 {
+		t.Errorf("repos count = %d, want 1 (existing repos preserved)", len(reloaded.Repos))
+	}
+}
+
+func TestSetDefault_InvalidRef(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "forge.github.fullsend_ref", "v1.0.0; rm -rf /")
+	if err == nil {
+		t.Fatal("expected error for invalid ref characters")
+	}
+	if !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected invalid characters error, got: %v", err)
+	}
+}
+
+func TestSetDefault_InvalidKey(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "forge.github.nonexistent", "value")
+	if err == nil {
+		t.Fatal("expected error for invalid key")
+	}
+	if !strings.Contains(err.Error(), "invalid key") {
+		t.Errorf("expected invalid key error, got: %v", err)
+	}
+}

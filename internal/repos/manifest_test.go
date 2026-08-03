@@ -23,10 +23,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: my-project
-    mint_region: us-central1
-    inference_project: default-inference
-    inference_region: us-east1
     fullsend_ref: main
 defaults:
   forge: github
@@ -45,10 +41,6 @@ func TestParseSimpleManifest(t *testing.T) {
 
 	assert.Equal(t, 1, m.Version)
 	assert.Equal(t, "https://mint.example.com", m.Forge.GitHub.MintURL)
-	assert.Equal(t, "my-project", m.Forge.GitHub.MintProject)
-	assert.Equal(t, "us-central1", m.Forge.GitHub.MintRegion)
-	assert.Equal(t, "default-inference", m.Forge.GitHub.InferenceProject)
-	assert.Equal(t, "us-east1", m.Forge.GitHub.InferenceRegion)
 	assert.Equal(t, "main", m.Forge.GitHub.FullsendRef)
 	assert.Equal(t, []string{"resource-a", "resource-b"}, m.Defaults.AllowedRemoteResources)
 	require.Len(t, m.Repos, 2)
@@ -62,8 +54,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
 repos:
   - acme/simple
   - repo: acme/custom
@@ -92,8 +82,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 repos:
   - acme/*
   - repo: other-org/service-*
@@ -293,8 +282,7 @@ version: 2
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 repos:
   - acme/repo
 `
@@ -307,7 +295,7 @@ repos:
 func TestValidate_MissingMintURL_GitHubRepos(t *testing.T) {
 	m := Manifest{
 		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintProject: "p", MintRegion: "r"}},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
@@ -318,34 +306,12 @@ func TestValidate_MissingMintURL_GitHubRepos(t *testing.T) {
 func TestValidate_InvalidMintURL_GitHubRepos(t *testing.T) {
 	m := Manifest{
 		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "http://not-https.example.com", MintProject: "p", MintRegion: "r"}},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "http://not-https.example.com"}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
 	err := m.Validate()
 	assert.ErrorContains(t, err, "forge.github.mint_url must be a valid HTTPS URL")
-}
-
-func TestValidate_MissingMintProject_GitHubRepos(t *testing.T) {
-	m := Manifest{
-		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintRegion: "r"}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    []RepoEntry{{Repo: "acme/repo"}},
-	}
-	err := m.Validate()
-	assert.ErrorContains(t, err, "forge.github.mint_project is required")
-}
-
-func TestValidate_MissingMintRegion_GitHubRepos(t *testing.T) {
-	m := Manifest{
-		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p"}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    []RepoEntry{{Repo: "acme/repo"}},
-	}
-	err := m.Validate()
-	assert.ErrorContains(t, err, "forge.github.mint_region is required")
 }
 
 func TestValidate_GitLabOnly_NoMintRequired(t *testing.T) {
@@ -388,8 +354,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 defaults:
   forge: github
 repos:
@@ -407,9 +372,7 @@ func TestValidate_EmptyRepoField(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: ""}},
@@ -424,8 +387,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 defaults:
   forge: github
 repos:
@@ -444,8 +406,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 defaults:
   forge: github
 repos:
@@ -463,8 +424,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 defaults:
   forge: github
 repos:
@@ -476,10 +436,45 @@ repos:
 	assert.NoError(t, m.Validate())
 }
 
+func TestValidate_InferenceProjectNumberNoLongerRequired(t *testing.T) {
+	// InferenceProjectNumber is now an install-time-only CLI flag,
+	// not stored in the manifest. Validate should not reject it.
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.NoError(t, err)
+}
+
+func TestValidate_DeprecatedFieldsNowError(t *testing.T) {
+	// Removed fields (inference_project, base_harness) are rejected
+	// as unknown by the custom UnmarshalYAML.
+	input := `
+version: 1
+forge:
+  github:
+    mint_url: https://mint.example.com
+defaults:
+  forge: github
+repos:
+  - repo: acme/repo
+    inference_project: old-proj
+`
+	dir := t.TempDir()
+	p := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(input), 0o644))
+	_, err := LoadManifest(context.Background(), p)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown field")
+}
+
 func TestValidate_InvalidForgeFullsendRef(t *testing.T) {
 	m := Manifest{
 		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r", FullsendRef: "v1.0.0; rm -rf /"}},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v1.0.0; rm -rf /"}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
@@ -501,7 +496,7 @@ func TestValidate_OwnerWildcard(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := Manifest{
 				Version:  1,
-				Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
+				Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
 				Defaults: DefaultsConfig{Forge: "github"},
 				Repos:    []RepoEntry{{Repo: tt.repo}},
 			}
@@ -515,9 +510,7 @@ func TestValidate_ForgeRequired(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL: "https://mint.example.com",
 		}},
 		Repos: []RepoEntry{{Repo: "acme/repo"}},
 	}
@@ -529,9 +522,7 @@ func TestValidate_InvalidDefaultForge(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "bitbucket"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -544,9 +535,7 @@ func TestValidate_InvalidPerRepoForge(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos: []RepoEntry{{
@@ -563,9 +552,7 @@ func TestValidate_GitLabForge(t *testing.T) {
 		Version: 1,
 		Forge: ForgeSection{
 			GitHub: GitHubForgeInfra{
-				MintURL:     "https://mint.example.com",
-				MintProject: "p",
-				MintRegion:  "r",
+				MintURL: "https://mint.example.com",
 			},
 			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
 		},
@@ -580,9 +567,7 @@ func TestValidate_PerRepoForgeOverride(t *testing.T) {
 		Version: 1,
 		Forge: ForgeSection{
 			GitHub: GitHubForgeInfra{
-				MintURL:     "https://mint.example.com",
-				MintProject: "p",
-				MintRegion:  "r",
+				MintURL: "https://mint.example.com",
 			},
 			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
 		},
@@ -608,18 +593,37 @@ forge: gitlab
 	assert.Equal(t, "gitlab", entry.Forge.Value)
 }
 
-func TestRepoEntryUnmarshalYAML_DeprecatedFieldsIgnored(t *testing.T) {
-	input := `
-repo: acme/my-repo
-inference_project: old-proj
-inference_region: us-east1
-fullsend_ref: v1.0.0
-base_harness: https://example.com/harness.yaml
-`
-	var entry RepoEntry
-	err := yaml.Unmarshal([]byte(input), &entry)
-	require.NoError(t, err)
-	assert.Equal(t, "acme/my-repo", entry.Repo)
+func TestRepoEntryUnmarshalYAML_DeprecatedFieldsRejected(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		field string
+	}{
+		{
+			name:  "inference_project",
+			input: "repo: acme/my-repo\ninference_project: old-proj\n",
+			field: "inference_project",
+		},
+		{
+			name:  "base_harness",
+			input: "repo: acme/my-repo\nbase_harness: https://example.com/harness.yaml\n",
+			field: "base_harness",
+		},
+		{
+			name:  "inference_region",
+			input: "repo: acme/my-repo\ninference_region: us-east1\n",
+			field: "inference_region",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var entry RepoEntry
+			err := yaml.Unmarshal([]byte(tt.input), &entry)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unknown field")
+			assert.Contains(t, err.Error(), tt.field)
+		})
+	}
 }
 
 func TestRepoEntryUnmarshalYAML_UnknownFieldRejected(t *testing.T) {
@@ -649,9 +653,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
-    inference_project: default-proj
 defaults:
   forge: github
 repos:
@@ -704,8 +705,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 repos:
   - acme/*
 `
@@ -744,8 +744,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 defaults:
   forge: github
 repos:
@@ -783,8 +782,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 repos:
   - acme/*
 `
@@ -809,8 +807,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 repos:
   - acme/repo-a
   - acme/repo-b
@@ -837,10 +834,6 @@ func TestResolveConfig_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "acme", cfg.Owner)
 	assert.Equal(t, "repo-one", cfg.Repo)
 	assert.Equal(t, "https://mint.example.com", cfg.MintURL)
-	assert.Equal(t, "my-project", cfg.MintProject)
-	assert.Equal(t, "us-central1", cfg.MintRegion)
-	assert.Equal(t, "default-inference", cfg.InferenceProject)
-	assert.Equal(t, "us-east1", cfg.InferenceRegion)
 	assert.Equal(t, "main", cfg.FullsendRef)
 	assert.Equal(t, []string{"resource-a", "resource-b"}, cfg.AllowedRemoteResources)
 }
@@ -851,10 +844,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
-    inference_project: default-proj
-    inference_region: default-region
     fullsend_ref: main
 defaults:
   forge: github
@@ -868,13 +857,10 @@ repos:
 	// All repos get the same forge-level config.
 	cfg, found := m.ResolveConfig("acme", "special")
 	assert.True(t, found)
-	assert.Equal(t, "default-proj", cfg.InferenceProject)
-	assert.Equal(t, "default-region", cfg.InferenceRegion)
 	assert.Equal(t, "main", cfg.FullsendRef)
 
 	cfg2, found2 := m.ResolveConfig("acme", "normal")
 	assert.True(t, found2)
-	assert.Equal(t, "default-proj", cfg2.InferenceProject)
 	assert.Equal(t, "main", cfg2.FullsendRef)
 }
 
@@ -884,9 +870,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
-    inference_project: default-proj
     fullsend_ref: main
 defaults:
   forge: github
@@ -912,7 +895,6 @@ func TestResolveConfig_UnknownRepo(t *testing.T) {
 	assert.False(t, found)
 	assert.Equal(t, "acme", cfg.Owner)
 	assert.Equal(t, "unknown", cfg.Repo)
-	assert.Equal(t, "default-inference", cfg.InferenceProject)
 }
 
 func TestResolveConfig_MultiOrg(t *testing.T) {
@@ -921,9 +903,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
-    inference_project: shared-proj
 defaults:
   forge: github
 repos:
@@ -933,13 +912,11 @@ repos:
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
 
-	cfgA, foundA := m.ResolveConfig("org-a", "repo")
+	_, foundA := m.ResolveConfig("org-a", "repo")
 	assert.True(t, foundA)
-	assert.Equal(t, "shared-proj", cfgA.InferenceProject)
 
-	cfgB, foundB := m.ResolveConfig("org-b", "repo")
+	_, foundB := m.ResolveConfig("org-b", "repo")
 	assert.True(t, foundB)
-	assert.Equal(t, "shared-proj", cfgB.InferenceProject)
 }
 
 func TestResolveConfigForEntry_GlobExpanded(t *testing.T) {
@@ -948,9 +925,6 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
-    inference_project: default-proj
     fullsend_ref: main
 defaults:
   forge: github
@@ -973,7 +947,6 @@ repos:
 
 	for _, rr := range resolved {
 		cfg := m.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
-		assert.Equal(t, "default-proj", cfg.InferenceProject, "forge-level config must apply for %s", rr.Repo)
 		assert.Equal(t, "main", cfg.FullsendRef, "forge-level config must apply for %s", rr.Repo)
 		assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 	}
@@ -1042,7 +1015,10 @@ func TestLoadManifest_InvalidYAML(t *testing.T) {
 	assert.ErrorContains(t, err, "parsing manifest YAML")
 }
 
-func TestLoadManifest_LegacyMintKey(t *testing.T) {
+func TestLoadManifest_LegacyMintKey_Ignored(t *testing.T) {
+	// The legacy top-level 'mint:' key was never released externally.
+	// yaml.v3 struct decoding silently ignores unknown top-level keys,
+	// so the manifest loads successfully but the mint values are dropped.
 	manifest := `
 version: 1
 mint:
@@ -1059,10 +1035,12 @@ repos:
 	path := filepath.Join(dir, "repos.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
 
-	_, err := LoadManifest(context.Background(), path)
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "deprecated top-level 'mint:' key")
-	assert.ErrorContains(t, err, "forge: { github:")
+	m, err := LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, m.Version)
+	assert.Len(t, m.Repos, 1)
+	// The mint values should not appear in the forge section.
+	assert.Empty(t, m.Forge.GitHub.MintURL)
 }
 
 func TestLoadManifest_HTTPRejected(t *testing.T) {
@@ -1130,8 +1108,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 repos:
   - repo: acme/with-override
     forge: gitlab
@@ -1239,8 +1216,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 repos:
   - org-a/*
   - org-b/service-*
@@ -1284,8 +1260,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 defaults:
   forge: github
 repos:
@@ -1308,8 +1283,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
   gitlab:
     url: https://gitlab.example.com
 defaults:
@@ -1332,8 +1306,7 @@ version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
 defaults:
   forge: github
 repos:
@@ -1361,9 +1334,7 @@ func TestValidate_GitHubURL_DefaultsToGitHubCom(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1376,10 +1347,8 @@ func TestValidate_GitHubURL_ExplicitValue(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			URL:         "https://ghes.example.com",
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			URL:     "https://ghes.example.com",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1392,10 +1361,8 @@ func TestValidate_GitHubURL_InvalidURL(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			URL:         "http://insecure.example.com",
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			URL:     "http://insecure.example.com",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1440,9 +1407,7 @@ func TestValidate_GitLabURL_NotRequiredWhenNotReferenced(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1457,8 +1422,7 @@ forge:
   github:
     url: https://ghes.example.com
     mint_url: https://mint.example.com
-    mint_project: p
-    mint_region: r
+
   gitlab:
     url: https://gitlab.cee.redhat.com
 defaults:
@@ -1478,10 +1442,8 @@ func TestMarshalRoundTrip_URLFields(t *testing.T) {
 		Version: 1,
 		Forge: ForgeSection{
 			GitHub: GitHubForgeInfra{
-				URL:         "https://ghes.example.com",
-				MintURL:     "https://mint.example.com",
-				MintProject: "p",
-				MintRegion:  "r",
+				URL:     "https://ghes.example.com",
+				MintURL: "https://mint.example.com",
 			},
 			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
 		},
@@ -1501,10 +1463,8 @@ func TestValidate_GitHubURL_RejectsPathComponent(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			URL:         "https://ghes.example.com/prefix",
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			URL:     "https://ghes.example.com/prefix",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1530,10 +1490,8 @@ func TestValidate_GitHubURL_TrailingSlashAccepted(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			URL:         "https://ghes.example.com/",
-			MintURL:     "https://mint.example.com",
-			MintProject: "p",
-			MintRegion:  "r",
+			URL:     "https://ghes.example.com/",
+			MintURL: "https://mint.example.com",
 		}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
@@ -1544,7 +1502,7 @@ func TestValidate_GitHubURL_TrailingSlashAccepted(t *testing.T) {
 func TestValidate_ForgeURL_RejectsUserinfo(t *testing.T) {
 	m := Manifest{
 		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{URL: "https://user@ghes.example.com", MintURL: "https://mint.example.com", MintProject: "p", MintRegion: "r"}},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{URL: "https://user@ghes.example.com", MintURL: "https://mint.example.com"}},
 		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme/repo"}},
 	}
@@ -1593,4 +1551,237 @@ func TestForgeSectionFromURL_Empty(t *testing.T) {
 	s := ForgeSectionFromURL(ForgeGitHub, "")
 	assert.Empty(t, s.GitHub.URL)
 	assert.Empty(t, s.GitLab.URL)
+}
+
+func TestResolveConfig_PerRepoOverrides(t *testing.T) {
+	input := `
+version: 1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    fullsend_ref: v1.0.0
+defaults:
+  forge: github
+  allowed_remote_resources:
+    - https://default.example.com/
+repos:
+  - acme/inherits
+  - repo: acme/overrides
+    fullsend_ref: v2.0.0
+    mint_url: https://eu-mint.example.com
+    allowed_remote_resources:
+      - https://special.example.com/
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	t.Run("inherits_forge_defaults", func(t *testing.T) {
+		cfg, found := m.ResolveConfig("acme", "inherits")
+		require.True(t, found)
+		assert.Equal(t, "https://mint.example.com", cfg.MintURL)
+		assert.Equal(t, "v1.0.0", cfg.FullsendRef)
+		assert.Equal(t, []string{"https://default.example.com/"}, cfg.AllowedRemoteResources)
+	})
+
+	t.Run("per_repo_override_takes_precedence", func(t *testing.T) {
+		cfg, found := m.ResolveConfig("acme", "overrides")
+		require.True(t, found)
+		assert.Equal(t, "https://eu-mint.example.com", cfg.MintURL)
+		assert.Equal(t, "v2.0.0", cfg.FullsendRef)
+		assert.Equal(t, []string{"https://special.example.com/"}, cfg.AllowedRemoteResources)
+	})
+}
+
+func TestRepoEntryUnmarshalYAML_PerRepoOverrideFields(t *testing.T) {
+	input := `
+repo: acme/my-repo
+fullsend_ref: v2.0.0
+mint_url: https://eu-mint.example.com
+allowed_remote_resources:
+  - https://special.example.com/
+`
+	var entry RepoEntry
+	err := yaml.Unmarshal([]byte(input), &entry)
+	require.NoError(t, err)
+	assert.Equal(t, "acme/my-repo", entry.Repo)
+	assert.True(t, entry.FullsendRef.Set)
+	assert.Equal(t, "v2.0.0", entry.FullsendRef.Value)
+	assert.True(t, entry.MintURL.Set)
+	assert.Equal(t, "https://eu-mint.example.com", entry.MintURL.Value)
+	assert.Equal(t, []string{"https://special.example.com/"}, entry.AllowedRemoteResources)
+}
+
+func TestRepoEntryUnmarshalYAML_NullAllowedRemoteResources(t *testing.T) {
+	input := `
+repo: acme/my-repo
+allowed_remote_resources: null
+`
+	var entry RepoEntry
+	err := yaml.Unmarshal([]byte(input), &entry)
+	require.NoError(t, err)
+	assert.Equal(t, "acme/my-repo", entry.Repo)
+	// Explicit null sets an empty (non-nil) slice to stop inheritance.
+	assert.NotNil(t, entry.AllowedRemoteResources)
+	assert.Empty(t, entry.AllowedRemoteResources)
+}
+
+func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v1.0.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge:                  "github",
+			AllowedRemoteResources: []string{"https://default.example.com/"},
+		},
+		Repos: []RepoEntry{
+			{Repo: "acme/inherits"},
+			{
+				Repo:                   "acme/overrides",
+				FullsendRef:            NullableString{Set: true, Value: "v2.0.0"},
+				MintURL:                NullableString{Set: true, Value: "https://eu-mint.example.com"},
+				AllowedRemoteResources: []string{"https://special.example.com/"},
+			},
+		},
+	}
+	data, err := m.Marshal()
+	require.NoError(t, err)
+
+	var roundTripped Manifest
+	require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+
+	require.Len(t, roundTripped.Repos, 2)
+	assert.Equal(t, "acme/inherits", roundTripped.Repos[0].Repo)
+
+	assert.Equal(t, "acme/overrides", roundTripped.Repos[1].Repo)
+	assert.True(t, roundTripped.Repos[1].FullsendRef.Set)
+	assert.Equal(t, "v2.0.0", roundTripped.Repos[1].FullsendRef.Value)
+	assert.True(t, roundTripped.Repos[1].MintURL.Set)
+	assert.Equal(t, "https://eu-mint.example.com", roundTripped.Repos[1].MintURL.Value)
+	assert.Equal(t, []string{"https://special.example.com/"}, roundTripped.Repos[1].AllowedRemoteResources)
+}
+
+func TestMarshalRoundTrip_AllowedRemoteResourcesNull(t *testing.T) {
+	input := `
+version: 1
+forge:
+  github:
+    mint_url: https://mint.example.com
+defaults:
+  forge: github
+  allowed_remote_resources:
+    - https://default.example.com/
+repos:
+  - repo: acme/deny-all
+    allowed_remote_resources: null
+  - acme/inherits
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	require.Len(t, m.Repos, 2)
+	assert.NotNil(t, m.Repos[0].AllowedRemoteResources)
+	assert.Empty(t, m.Repos[0].AllowedRemoteResources)
+	assert.Nil(t, m.Repos[1].AllowedRemoteResources)
+
+	data, err := m.Marshal()
+	require.NoError(t, err)
+
+	var roundTripped Manifest
+	require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+
+	require.Len(t, roundTripped.Repos, 2)
+	assert.NotNil(t, roundTripped.Repos[0].AllowedRemoteResources,
+		"explicit null should round-trip as non-nil empty slice")
+	assert.Empty(t, roundTripped.Repos[0].AllowedRemoteResources)
+	assert.Nil(t, roundTripped.Repos[1].AllowedRemoteResources,
+		"omitted field should round-trip as nil")
+}
+
+func TestValidate_PerRepoMintURLMustBeHTTPS(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos: []RepoEntry{
+			{
+				Repo:    "acme/api",
+				MintURL: NullableString{Set: true, Value: "http://insecure.example.com"},
+			},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-repo mint_url must be a valid HTTPS URL")
+}
+
+func TestValidate_PerRepoFullsendRefInvalid(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos: []RepoEntry{
+			{
+				Repo:        "acme/api",
+				FullsendRef: NullableString{Set: true, Value: "v1.0.0; rm -rf /"},
+			},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-repo fullsend_ref")
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestValidate_PerRepoFullsendRefValid(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos: []RepoEntry{
+			{
+				Repo:        "acme/api",
+				FullsendRef: NullableString{Set: true, Value: "v2.1.0-beta.1"},
+			},
+		},
+	}
+	err := m.Validate()
+	require.NoError(t, err)
+}
+
+func TestIsNumeric(t *testing.T) {
+	assert.True(t, IsNumeric("123456789"))
+	assert.True(t, IsNumeric("0"))
+	assert.False(t, IsNumeric(""))
+	assert.False(t, IsNumeric("abc"))
+	assert.False(t, IsNumeric("123abc"))
+	assert.False(t, IsNumeric("12.34"))
+}
+
+func TestIsValidGCPRegion(t *testing.T) {
+	assert.True(t, IsValidGCPRegion("us-central1"))
+	assert.True(t, IsValidGCPRegion("europe-west4"))
+	assert.True(t, IsValidGCPRegion("asia-southeast1"))
+	assert.False(t, IsValidGCPRegion(""))
+	assert.False(t, IsValidGCPRegion("ab"))
+	assert.False(t, IsValidGCPRegion("1us-central"))
+	assert.False(t, IsValidGCPRegion("US-CENTRAL1"))
+	assert.False(t, IsValidGCPRegion("us central1"))
+	assert.False(t, IsValidGCPRegion("us-central-"))
+}
+
+func TestIsValidGCPProjectID(t *testing.T) {
+	assert.True(t, IsValidGCPProjectID("my-project-123"))
+	assert.True(t, IsValidGCPProjectID("abcdef"))
+	assert.True(t, IsValidGCPProjectID("a-long-project-name-with-30ch"))
+	assert.False(t, IsValidGCPProjectID("short"))
+	assert.False(t, IsValidGCPProjectID(""))
+	assert.False(t, IsValidGCPProjectID("1starts-with-digit"))
+	assert.False(t, IsValidGCPProjectID("HAS-UPPERCASE"))
+	assert.False(t, IsValidGCPProjectID("has_underscore"))
+	assert.False(t, IsValidGCPProjectID("has spaces"))
+	assert.False(t, IsValidGCPProjectID("a-project-id-that-is-way-too-long-for-gcp"))
+	assert.False(t, IsValidGCPProjectID("my-project-"))
 }

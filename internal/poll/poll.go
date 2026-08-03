@@ -12,15 +12,16 @@ import (
 
 // Poller discovers GitLab events and dispatches agent stages.
 type Poller struct {
-	client      GitLabClient
-	router      dispatch.EventRouter
-	projectPath string
-	owner       string
-	repo        string
-	botUserID   int
-	gitlabURL   string
-	opts        Options
-	dispatches  []Dispatch
+	client       GitLabClient
+	router       dispatch.EventRouter
+	projectPath  string
+	owner        string
+	repo         string
+	botUserID    int
+	gitlabURL    string
+	opts         Options
+	dispatches   []Dispatch
+	warnedNoHMAC bool
 }
 
 // New creates a Poller for the given project.

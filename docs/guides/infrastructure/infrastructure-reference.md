@@ -224,7 +224,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name
 
 **.fullsend repo variables (inference):**
-- `FULLSEND_GCP_REGION` — GCP region for inference (default: `global`)
+- `FULLSEND_GCP_REGION` — GCP region for inference (install-time only, not managed by sync)
 
 **.fullsend repo variable (dot-repo fix):**
 - `FULLSEND_MINT_URL` — Duplicate of org variable (dot-prefixed repos can't read org-level variables)
@@ -237,7 +237,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
-- `FULLSEND_GCP_REGION`
+- `FULLSEND_GCP_REGION` (install-time only, not managed by sync)
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to "true")
 
 ### Secrets Layer Behavior

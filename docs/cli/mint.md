@@ -56,7 +56,9 @@ fullsend mint deploy \
   --platform cloudflare
 ```
 
-Use `--preview` for ephemeral test deploys (supports teardown). Use `--worker-name` to target a specific Worker script name.
+Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown abandons the alias without deleting the Worker script.
+
+Use `--worker-name` to target a specific Worker script name.
 
 Required environment variables:
 - `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account identifier
@@ -74,7 +76,7 @@ Required environment variables:
 | `--source-dir` | | Path to local mint source (default: checkout path when present, embedded otherwise) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
-| `--preview` | `false` | Deploy as ephemeral preview Worker (Cloudflare only) |
+| `--preview` | `""` | Preview alias for `wrangler versions upload` (Cloudflare only). Example: `--preview=bt-run-42` |
 
 ### Required IAM roles (GCP)
 

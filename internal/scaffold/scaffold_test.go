@@ -112,6 +112,49 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "FULLSEND_DISPATCH_TOKEN")
 	assert.NotContains(t, s, "FULLSEND_DISPATCH_URL")
 	assert.NotContains(t, s, "curl")
+
+	// Permissions assertions (YAML-parsed, not string-contains) — #5785
+	var wc struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        struct {
+			Dispatch struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"dispatch"`
+			StopFix struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"stop-fix"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &wc))
+
+	// Workflow-level: least-privilege default must be empty permissions
+	require.NotNil(t, wc.Permissions,
+		"workflow-level permissions must be present (permissions: {})")
+	assert.Empty(t, wc.Permissions,
+		"workflow-level permissions must be empty (least-privilege default)")
+
+	// Dispatch job: intentionally narrower than per-repo mode
+	assert.Equal(t, map[string]string{
+		"actions":       "write",
+		"id-token":      "write",
+		"contents":      "read",
+		"pull-requests": "read",
+	}, wc.Jobs.Dispatch.Permissions, "dispatch job permissions")
+
+	// Negative assertions: workflow-call dispatch must NOT have write
+	// access to contents or pull-requests (intentionally narrower than
+	// per-repo mode).
+	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["contents"],
+		"workflow-call dispatch must not have contents: write")
+	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["pull-requests"],
+		"workflow-call dispatch must not have pull-requests: write")
+
+	// Stop-fix job permissions
+	assert.Equal(t, map[string]string{
+		"contents":      "read",
+		"issues":        "write",
+		"pull-requests": "write",
+	}, wc.Jobs.StopFix.Permissions, "stop-fix job permissions")
 }
 
 func TestShimPerRepoTemplateContent(t *testing.T) {
@@ -127,6 +170,44 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "fullsend-dispatch-${{")
 	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
 	assert.Contains(t, s, "per-role cancel-in-progress groups live in reusable-dispatch.yml")
+
+	// Permissions assertions (YAML-parsed, not string-contains) — #5785
+	var pr struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        struct {
+			Dispatch struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"dispatch"`
+			StopFix struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"stop-fix"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &pr))
+
+	// Workflow-level: least-privilege default must be empty permissions
+	require.NotNil(t, pr.Permissions,
+		"workflow-level permissions must be present (permissions: {})")
+	assert.Empty(t, pr.Permissions,
+		"workflow-level permissions must be empty (least-privilege default)")
+
+	// Dispatch job: per-repo mode needs broader permissions than
+	// workflow-call because the agent runs in this repo's context.
+	assert.Equal(t, map[string]string{
+		"actions":       "write",
+		"id-token":      "write",
+		"contents":      "write",
+		"issues":        "write",
+		"packages":      "read",
+		"pull-requests": "write",
+	}, pr.Jobs.Dispatch.Permissions, "dispatch job permissions")
+
+	// Stop-fix job permissions
+	assert.Equal(t, map[string]string{
+		"contents":      "read",
+		"issues":        "write",
+		"pull-requests": "write",
+	}, pr.Jobs.StopFix.Permissions, "stop-fix job permissions")
 }
 
 // TestShimStopFixAuthorization verifies the stop-fix job authorizes the
