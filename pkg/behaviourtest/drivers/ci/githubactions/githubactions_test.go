@@ -398,7 +398,7 @@ func TestWaitForHarnessAgent_SiblingRunFailureIgnored(t *testing.T) {
 	}
 	// Also seed WorkflowRuns for GetWorkflowRun (ID-based lookup).
 	client.WorkflowRuns = map[string]*forge.WorkflowRun{
-		"org/repo/run200": {
+		"org/repo/success": {
 			ID: 200, Status: "completed", Conclusion: "success",
 			CreatedAt: "2026-01-02T00:01:00Z",
 			HTMLURL:   "https://github.com/org/repo/actions/runs/200",
@@ -663,6 +663,44 @@ func TestAssertNoHarnessAgentArtifact_DetectsAgentJob(t *testing.T) {
 	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `expected harness "triage" not to run`)
+}
+
+func TestCountHarnessDispatches_JobsAPIError(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 10, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+	client.Errors["ListWorkflowRunJobs"] = fmt.Errorf("jobs API error")
+
+	d := &Driver{Client: client}
+	_, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jobs API error")
+}
+
+func TestAssertNoHarnessAgentArtifact_JobsAPIError(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 10, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+	client.Errors["ListWorkflowRunJobs"] = fmt.Errorf("jobs API error")
+
+	d := &Driver{Client: client}
+	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jobs API error")
 }
 
 func TestHarnessJobSuffix(t *testing.T) {

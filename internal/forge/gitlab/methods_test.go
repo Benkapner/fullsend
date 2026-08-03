@@ -1510,6 +1510,11 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
+	t.Run("ListWorkflowRunJobs", func(t *testing.T) {
+		_, err := client.ListWorkflowRunJobs(ctx, "o", "r", 1)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
 	t.Run("ListWorkflowRunArtifacts", func(t *testing.T) {
 		_, err := client.ListWorkflowRunArtifacts(ctx, "o", "r", 1)
 		require.ErrorIs(t, err, forge.ErrNotSupported)

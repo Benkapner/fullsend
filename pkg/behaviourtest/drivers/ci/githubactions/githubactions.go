@@ -493,19 +493,19 @@ func harnessJobSuffix(agent string) string {
 
 // runHasAgentJob reports whether the given workflow run contains a job
 // whose name matches the harness job for agent. It also returns the job's
-// conclusion when found.
-func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID int, agent string) (found bool, conclusion string) {
+// conclusion when found, and any error from the API call.
+func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID int, agent string) (found bool, conclusion string, err error) {
 	jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, runID)
 	if err != nil {
-		return false, ""
+		return false, "", fmt.Errorf("list jobs for run %d: %w", runID, err)
 	}
 	suffix := harnessJobSuffix(agent)
 	for _, j := range jobs {
 		if strings.HasSuffix(j.Name, suffix) {
-			return true, j.Conclusion
+			return true, j.Conclusion, nil
 		}
 	}
-	return false, ""
+	return false, "", nil
 }
 
 // WaitForHarnessAgent waits for a successful harness-run workflow job for
@@ -548,7 +548,7 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 			if r.Status != "completed" || !isTerminalFailure(r.Conclusion) {
 				continue
 			}
-			hasJob, _ := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+			hasJob, _, _ := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
 			if hasJob {
 				return nil, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
 					agent, r.ID, r.Conclusion, r.HTMLURL)
@@ -575,7 +575,10 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		hasJob, _ := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		if err != nil {
+			return 0, err
+		}
 		if hasJob {
 			count++
 		}
@@ -597,7 +600,10 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		hasJob, _ := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		if err != nil {
+			return err
+		}
 		if hasJob {
 			return fmt.Errorf("expected harness %q not to run, but job %q found in workflow run %d",
 				agent, harnessJobSuffix(agent), r.ID)
