@@ -241,9 +241,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
-	if err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, h.perOrgForeignCompat); err != nil {
+	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, h.perOrgForeignCompat)
+	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
+	}
+	if shape != "" {
+		log.Printf("PER_ORG_FOREIGN_COMPAT allowed repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
+			shape, req.Repos, claims.Repository, targetOrg, req.Role)
 	}
 
 	if len(req.Repos) == 0 {

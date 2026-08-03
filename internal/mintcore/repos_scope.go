@@ -5,6 +5,15 @@ import (
 	"strings"
 )
 
+// Compat shape labels returned by validateReposScope when PER_ORG_FOREIGN_COMPAT
+// allows a broader-than-self same-org repos list. Empty means the default path
+// (foreign empty repos, or same-org requesting-repo-only).
+const (
+	reposScopeShapeFullsendAny      = "fullsend-any"
+	reposScopeShapeEnrolledFullsend = "enrolled-fullsend"
+	reposScopeShapeEnrolledPair     = "enrolled-pair"
+)
+
 // normalizeMintRepos treats a single "*" entry as an alias for an empty
 // repos list (installation-wide scope on the foreign path).
 func normalizeMintRepos(repos []string) []string {
@@ -37,42 +46,44 @@ func repositoryBareName(repository string) string {
 // PER_ORG_FOREIGN_COMPAT is on:
 //   - caller .fullsend: any non-empty validated list
 //   - other callers: exactly [.fullsend] or {requestingBare, .fullsend}
-func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, compat bool) error {
+//
+// On success, shape is non-empty only when a compat exception matched.
+func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, compat bool) (shape string, err error) {
 	if isTargetForeign {
 		if len(repos) != 0 {
-			return fmt.Errorf("foreign mint requires empty repos")
+			return "", fmt.Errorf("foreign mint requires empty repos")
 		}
-		return nil
+		return "", nil
 	}
 
 	if len(repos) == 0 {
-		return fmt.Errorf("same-org mint requires non-empty repos")
+		return "", fmt.Errorf("same-org mint requires non-empty repos")
 	}
 
 	bare := repositoryBareName(requestingRepo)
 	if len(repos) == 1 && strings.EqualFold(repos[0], bare) {
-		return nil
+		return "", nil
 	}
 
 	if !compat {
-		return fmt.Errorf("same-org mint requires repos to be exactly the requesting repository")
+		return "", fmt.Errorf("same-org mint requires repos to be exactly the requesting repository")
 	}
 
 	if strings.EqualFold(bare, ".fullsend") {
-		return nil
+		return reposScopeShapeFullsendAny, nil
 	}
 
 	if len(repos) == 1 && strings.EqualFold(repos[0], ".fullsend") {
-		return nil
+		return reposScopeShapeEnrolledFullsend, nil
 	}
 
 	if len(repos) == 2 {
 		a, b := repos[0], repos[1]
 		if (strings.EqualFold(a, bare) && strings.EqualFold(b, ".fullsend")) ||
 			(strings.EqualFold(b, bare) && strings.EqualFold(a, ".fullsend")) {
-			return nil
+			return reposScopeShapeEnrolledPair, nil
 		}
 	}
 
-	return fmt.Errorf("repos scope not allowed under PER_ORG_FOREIGN_COMPAT for requesting repository")
+	return "", fmt.Errorf("repos scope not allowed under PER_ORG_FOREIGN_COMPAT for requesting repository")
 }
