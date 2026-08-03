@@ -387,7 +387,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	assert.Nil(t, cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
@@ -2147,6 +2147,44 @@ func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
 		RunnerEnv: map[string]string{"FOO": "bar"},
 	}
 	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
+func TestPostScriptEnv_IncludesOutputSchema(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/path/to/schema.json",
+		},
+	}
+	env := postScriptEnv(h, "")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/path/to/schema.json")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := postScriptEnv(h, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := postScriptEnv(h, "")
 	for _, e := range env {
 		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
 			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")

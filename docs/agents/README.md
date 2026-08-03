@@ -1,8 +1,9 @@
 # Agents
 
 Reference documentation for the agents shipped by fullsend.
-The default agents below are defined by the YAML files in
-[`internal/scaffold/fullsend-repo/harness/`](../../internal/scaffold/fullsend-repo/harness/).
+The default agents are defined in the
+[`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository
+and resolved at runtime via config entries or agents-repo fallback.
 Custom agents can be registered via the `agents:` field in org or per-repo
 config (see [ADR 0058](../ADRs/0058-agent-registration.md)).
 
@@ -20,8 +21,8 @@ config (see [ADR 0058](../ADRs/0058-agent-registration.md)).
 All agents can be configured by adding instructions and skills to your
 repository. Changes to `AGENTS.md` affect every agent; skills let you tune how
 a specific agent performs a specific task. See
-[Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+[Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 At some point, enough configuration turns a configured default agent into a
 derived agent. See [Default, derived, and custom agents](topics/default-vs-custom.md)

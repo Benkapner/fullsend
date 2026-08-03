@@ -91,10 +91,10 @@ One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `t
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 12); do
-  fullsend mint enroll "halfsend-${i}/test-repo" \
+  go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
   for j in $(seq -w 1 12); do
-    fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
+    go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
       --project="$GCP_PROJECT" --region=us-central1
   done
 done
@@ -121,14 +121,14 @@ MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
 Verify foreign authorization:
 
 ```bash
-fullsend admin foreign list --org halfsend-01
+go run ./cmd/fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
 Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
-fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
+go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
 ```
 
 ## CI authorization

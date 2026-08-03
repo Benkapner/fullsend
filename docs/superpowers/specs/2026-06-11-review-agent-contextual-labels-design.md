@@ -18,7 +18,9 @@ post-script. No new skill is created; the same skill serves both agents.
 
 ## Changes
 
-### 1. `internal/scaffold/fullsend-repo/skills/issue-labels/SKILL.md`
+> **Note:** Agent files referenced below as `internal/scaffold/fullsend-repo/` have moved to the `fullsend-ai/agents` repository.
+
+### 1. `skills/issue-labels/SKILL.md`
 
 Generalize to be agent-agnostic:
 
@@ -35,7 +37,7 @@ Generalize to be agent-agnostic:
 - Step 3 (research conventions) stays unchanged — querying recent issues is
   sufficient since label taxonomies are repo-wide.
 
-### 2. `internal/scaffold/fullsend-repo/harness/review.yaml`
+### 2. `harness/review.yaml`
 
 Add `issue-labels` to the `skills:` list:
 
@@ -47,7 +49,7 @@ skills:
   - skills/issue-labels
 ```
 
-### 3. `internal/scaffold/fullsend-repo/agents/review.md`
+### 3. `agents/review.md`
 
 Add `issue-labels` to the frontmatter `skills:` list. Add a short section after
 "Skill routing" explaining when to invoke it:
@@ -59,7 +61,7 @@ Add `issue-labels` to the frontmatter `skills:` list. Add a short section after
   domain.
 - If no labels clearly apply, omit `label_actions` entirely.
 
-### 4. `internal/scaffold/fullsend-repo/schemas/review-result.schema.json`
+### 4. `schemas/review-result.schema.json`
 
 Add an optional `label_actions` property. Reuse the same `$defs/label_actions`
 shape from `triage-result.schema.json`:
@@ -96,7 +98,7 @@ shape from `triage-result.schema.json`:
 The field is optional — not listed in any `required` array or conditional
 `then` clause. When omitted, the post-script skips label processing.
 
-### 5. `internal/scaffold/fullsend-repo/scripts/post-review.sh`
+### 5. `scripts/post-review.sh`
 
 Add a `label_actions` processing block after the outcome-labels section
 (after line 218). This mirrors the triage post-script's implementation:

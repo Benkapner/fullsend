@@ -53,7 +53,7 @@
         "OPENSHELL_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\nOPENSHELL_SHA=(?<currentDigest>[0-9a-f]{40})"
       ],
       "depNameTemplate": "NVIDIA/OpenShell",
-      "datasourceTemplate": "github-tags",
+      "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {

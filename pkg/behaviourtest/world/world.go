@@ -49,6 +49,10 @@ type World struct {
 	ForkPRNumber int
 	ForkPRBranch string
 
+	// URL harness hosting repo — set by URL dispatch step definitions.
+	URLHarnessRepoOwner string
+	URLHarnessRepoName  string
+
 	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
 	// for this scenario's duration. Empty when no pool is configured.
 	LeasedRepoName string

@@ -551,6 +551,83 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 	return cfg
 }
 
+// NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
+// fields from an org config. Per-repo role overrides (repos.<name>.roles)
+// take precedence over defaults.roles. Non-portable fields
+// (max_implementation_retries, auto_merge, status_notifications) are not
+// carried over — callers should warn separately.
+func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string) PerRepoConfigWriter {
+	// Determine roles: per-repo overrides take precedence over defaults.
+	roles := orgCfg.OrgRepoDefaults().Roles
+	if repoMap := orgCfg.RepoMap(); repoMap != nil {
+		if rc, ok := repoMap[repoName]; ok && len(rc.Roles) > 0 {
+			roles = rc.Roles
+		}
+	}
+	if roles == nil {
+		roles = PerRepoDefaultRoles()
+	} else {
+		rolesCopy := make([]string, len(roles))
+		copy(rolesCopy, roles)
+		roles = rolesCopy
+	}
+
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   roles,
+		parent:  &perRepoDefaults{},
+	}
+
+	// Agents: deep-copy org agent entries (AgentEntry.Enabled is *bool).
+	if agents := orgCfg.AgentEntries(); len(agents) > 0 {
+		copied := make([]AgentEntry, len(agents))
+		copy(copied, agents)
+		for i, a := range copied {
+			if a.Enabled != nil {
+				e := *a.Enabled
+				copied[i].Enabled = &e
+			}
+		}
+		cfg.Agents = copied
+	}
+
+	// AllowedRemoteResources: copy from org config with defaults ensured.
+	if arr := orgCfg.AllowedResources(); len(arr) > 0 {
+		cfg.AllowedRemoteResources = EnsureDefaultAllowedRemoteResources(arr)
+	} else {
+		cfg.AllowedRemoteResources = DefaultAllowedRemoteResources()
+	}
+
+	// CreateIssues: deep-copy from org config to avoid pointer aliasing.
+	if ci := orgCfg.IssueCreationConfig(); ci != nil {
+		ciCopy := *ci
+		ciCopy.AllowTargets = AllowTargets{
+			Orgs:  append([]string(nil), ci.AllowTargets.Orgs...),
+			Repos: append([]string(nil), ci.AllowTargets.Repos...),
+		}
+		cfg.CreateIssues = &ciCopy
+	} else if targetRepo != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
+			},
+		}
+	}
+
+	// KillSwitch: only set when active (false is the default).
+	if orgCfg.IsKillSwitchActive() {
+		ks := true
+		cfg.KillSwitch = &ks
+	}
+
+	// Runtime: copy when explicitly set.
+	if rt := orgCfg.OrgRepoDefaults().Runtime; rt != "" {
+		cfg.Runtime = rt
+	}
+
+	return cfg
+}
+
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
 func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 	var cfg perRepoConfig
@@ -582,33 +659,40 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 }
 
 // perRepoConfigMarshal is a shadow struct used by MarshalYAML to
-// preserve the nil-vs-empty distinction for AllowedRemoteResources.
+// preserve the nil-vs-empty distinction for slice fields where nil
+// (unset, inherit parent) and empty (explicitly no values) carry
+// different semantics.
+//
 // With the plain []string + omitempty tag, yaml.v3 omits both nil
-// and empty slices. Using *[]string here means a nil pointer (unset)
-// is omitted while a non-nil pointer to an empty slice (deny-all)
-// is marshaled as `allowed_remote_resources: []`.
+// and empty slices. Using *[]string means a nil pointer (unset)
+// is omitted while a non-nil pointer to an empty slice is marshaled
+// as an empty YAML sequence (e.g. `roles: []`,
+// `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
 	Version                string              `yaml:"version,omitempty"`
 	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
 	Runtime                string              `yaml:"runtime,omitempty"`
-	Roles                  []string            `yaml:"roles,omitempty"`
+	Roles                  *[]string           `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
-// distinction for AllowedRemoteResources through YAML roundtrips.
-// nil (unset) is omitted; an explicit empty slice (deny-all) is
-// marshaled as `allowed_remote_resources: []`.
+// distinction for Roles and AllowedRemoteResources through YAML
+// roundtrips. nil (unset) is omitted so the field inherits from
+// parent; an explicit empty slice is marshaled as an empty YAML
+// sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:      c.Version,
 		KillSwitch:   c.KillSwitch,
 		Runtime:      c.Runtime,
-		Roles:        c.Roles,
 		Agents:       c.Agents,
 		CreateIssues: c.CreateIssues,
+	}
+	if c.Roles != nil {
+		h.Roles = &c.Roles
 	}
 	if c.AllowedRemoteResources != nil {
 		h.AllowedRemoteResources = &c.AllowedRemoteResources

@@ -21,12 +21,12 @@ Accepted
 
 ## Context
 
-Which agents fullsend knows about is currently compiled into the binary.
-Scaffold-embedded harnesses (`internal/scaffold/fullsend-repo/harness/`)
-define the complete agent set, and `HarnessNames()` enumerates them
-from the embed. There is no mechanism for registering agents that live
-outside the scaffold — adding or extracting an agent requires a code
-change to the fullsend binary.
+Which agents fullsend knows about was originally compiled into the binary.
+Scaffold-embedded harnesses (formerly `internal/scaffold/fullsend-repo/harness/`,
+now in `fullsend-ai/agents`) defined the complete agent set, and
+`HarnessNames()` enumerated them from the embed. There was no mechanism
+for registering agents that lived outside the scaffold — adding or
+extracting an agent required a code change to the fullsend binary.
 
 The triage agent extraction to `fullsend-ai/agents`
 ([ADR 0045](0045-forge-portable-harness-schema.md) Phase 4) is the

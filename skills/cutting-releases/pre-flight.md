@@ -76,13 +76,8 @@ Scaffold files are deployed at `github setup` time, not consumed live
 via `@v0`. Changes here affect **new installs and re-scaffolds only**.
 Review for:
 
-- **Agent definitions** (`agents/`): Changed models, tools, or
-  instructions alter agent behavior on next scaffold.
-- **Harness configs** (`harness/`): Changed resource limits, allowed
-  tools, or validation rules.
-- **Hook scripts** (`scripts/`): Changed pre/post hooks run inside
-  agent sandboxes.
-- **Skill files** (`skills/`): New or changed agent skills.
+- **Infrastructure scripts** (`scripts/`): Changed scripts that run
+  inside agent sandboxes or during setup.
 - **Workflow templates** (`.github/workflows/`): Templates that get
   copied into target repos at scaffold time.
 

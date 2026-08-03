@@ -558,7 +558,7 @@ progress.
   but each new repo requires its own install invocation.
 - **Redundant org-level credentials.** Per-repo install creates
   repo-level copies of shared credentials (`FULLSEND_MINT_URL`,
-  `FULLSEND_GCP_REGION`, etc.) that are identical across repos in
+  `FULLSEND_GCP_REGION` (install-time only), etc.) that are identical across repos in
   an org. GitHub natively supports org-level secret/variable
   inheritance, but the current per-repo install flow does not
   leverage it. A future `fullsend admin setup-org-credentials`

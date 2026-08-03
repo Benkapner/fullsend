@@ -40,6 +40,26 @@ import (
 // the --mint-url flag.
 const DefaultMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
 
+// adminMintDiscovery holds the results of a mint infrastructure discovery call.
+type adminMintDiscovery struct {
+	URL             string
+	RoleAppIDs      map[string]string
+	PerRepoWIFRepos []string
+}
+
+// adminWIFProvisioner abstracts WIF and mint discovery for admin install.
+type adminWIFProvisioner interface {
+	DiscoverMint(ctx context.Context) (*adminMintDiscovery, error)
+	ProvisionWIF(ctx context.Context) (string, error)
+	RegisterPerRepoWIF(ctx context.Context, repo string) error
+	EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error
+	DeletePerRepoWIF(ctx context.Context, repo string) error
+	DeleteWIFProvider(ctx context.Context, repo string) error
+}
+
+// errMintNotFound indicates the mint function does not exist.
+var errMintNotFound = errors.New("mint function not found")
+
 const defaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
 	"Merge this PR to activate fullsend workflows."
 
@@ -166,7 +186,7 @@ type perRepoInstallConfig struct {
 	// the environment. Not set by CLI flag parsing.
 	testClient         forge.Client
 	testPrinter        *ui.Printer
-	testWIFProvisioner repos.WIFProvisioner
+	testWIFProvisioner adminWIFProvisioner
 }
 
 func validateWIFProvider(raw string) error {
@@ -989,21 +1009,33 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		printer.StepDone(mintValidationMessage(trafficEnv, envErr))
 	}
 
-	// Delegate WIF provisioning, scaffold commit, and variable/secret
-	// writes to the reusable repos.Install function. This enables the
-	// future `fullsend repos install` command to share the same logic.
-	var wifProvisioner repos.WIFProvisioner
-	if c.testWIFProvisioner != nil {
-		wifProvisioner = c.testWIFProvisioner
-	} else if needsWIFProvision {
-		wifProvisioner = &gcfProvisionerAdapter{
-			provisioner: gcf.NewProvisioner(gcf.Config{
-				ProjectID:   inferenceProject,
-				GitHubOrgs:  []string{owner},
-				Repo:        owner + "/" + repo,
-				WIFPoolName: gcf.DefaultInferencePool,
-			}, gcf.NewLiveGCFClient(inferenceProject)),
+	// WIF provisioning — admin.go handles GCP operations directly before
+	// delegating forge-side work to repos.Install.
+	if needsWIFProvision && inferenceWIFProvider == "" {
+		var wifProvisioner adminWIFProvisioner
+		if c.testWIFProvisioner != nil {
+			wifProvisioner = c.testWIFProvisioner
+		} else {
+			wifProvisioner = &gcfProvisionerAdapter{
+				provisioner: gcf.NewProvisioner(gcf.Config{
+					ProjectID:   inferenceProject,
+					GitHubOrgs:  []string{owner},
+					Repo:        owner + "/" + repo,
+					WIFPoolName: gcf.DefaultInferencePool,
+				}, gcf.NewLiveGCFClient(inferenceProject)),
+			}
 		}
+
+		printer.StepStart("Provisioning WIF infrastructure")
+		var err error
+		inferenceWIFProvider, err = wifProvisioner.ProvisionWIF(ctx)
+		if err != nil {
+			printer.StepFail("WIF provisioning failed")
+			return fmt.Errorf("provisioning WIF: %w", err)
+		}
+		printer.StepDone("WIF infrastructure ready")
+		printer.StepInfo("IAM policy changes may take up to 7 minutes to propagate")
+		printer.StepInfo("Agent workflows that authenticate via WIF may fail until propagation completes")
 	}
 
 	// Scaffold commit function wrapping layers.CommitScaffoldFiles, which
@@ -1042,26 +1074,16 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		InferenceRegion:       inferenceRegion,
 		UpstreamRef:           upstreamRef,
 		UpstreamTag:           upstreamTag,
-		SkipMintCheck:         true, // already handled above
-		SkipAppSetup:          true, // already handled above
-		SkipGuardCheck:        true, // admin.go handles guard check itself
-		SkipWIF:               !needsWIFProvision,
+		SkipAppSetup:          true,
+		SkipGuardCheck:        true,
 		WIFProvider:           inferenceWIFProvider,
 		VendorBinary:          vendor,
 		Direct:                c.Direct,
-		SkipScaffoldAndConfig: vendor, // vendor path commits scaffold+vendor atomically below
+		SkipScaffoldAndConfig: vendor,
 	}
 
 	progressFn := func(_ string, phase, msg string) {
 		switch phase {
-		case "wif":
-			if strings.Contains(msg, "Provisioning") {
-				printer.StepStart(msg)
-			} else if strings.Contains(msg, "ready") {
-				printer.StepDone(msg)
-				printer.StepInfo("IAM policy changes may take up to 7 minutes to propagate")
-				printer.StepInfo("Agent workflows that authenticate via WIF may fail until propagation completes")
-			}
 		case "scaffold":
 			if strings.Contains(msg, "Committing") || strings.Contains(msg, "Generating") {
 				printer.StepStart(msg)
@@ -1083,7 +1105,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		}
 	}
 
-	installResult, installErr := repos.Install(ctx, installCfg, client, wifProvisioner, scaffoldCommitFn, progressFn)
+	installResult, installErr := repos.Install(ctx, installCfg, client, scaffoldCommitFn, progressFn)
 	if installErr != nil {
 		return installErr
 	}
@@ -1126,24 +1148,24 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	return nil
 }
 
-// gcfProvisionerAdapter wraps a gcf.Provisioner to implement repos.WIFProvisioner,
+// gcfProvisionerAdapter wraps a gcf.Provisioner to implement adminWIFProvisioner,
 // bridging the GCF-specific provisioner to the package-agnostic interface.
 type gcfProvisionerAdapter struct {
 	provisioner *gcf.Provisioner
 }
 
-func (a *gcfProvisionerAdapter) DiscoverMint(ctx context.Context) (*repos.MintDiscovery, error) {
+func (a *gcfProvisionerAdapter) DiscoverMint(ctx context.Context) (*adminMintDiscovery, error) {
 	if a.provisioner == nil {
-		return nil, repos.ErrMintNotFound
+		return nil, errMintNotFound
 	}
 	d, err := a.provisioner.DiscoverMint(ctx)
 	if err != nil {
 		if errors.Is(err, gcf.ErrFunctionNotFound) {
-			return nil, fmt.Errorf("%w: %w", repos.ErrMintNotFound, err)
+			return nil, fmt.Errorf("%w: %w", errMintNotFound, err)
 		}
 		return nil, err
 	}
-	return &repos.MintDiscovery{
+	return &adminMintDiscovery{
 		URL:             d.URL,
 		RoleAppIDs:      d.RoleAppIDs,
 		PerRepoWIFRepos: d.PerRepoWIFRepos,

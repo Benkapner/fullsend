@@ -58,6 +58,12 @@ type VariableRecord struct {
 	Protected                bool
 }
 
+// PipelineCallRecord records a CreatePipeline invocation.
+type PipelineCallRecord struct {
+	Owner, Repo, Ref string
+	Variables        map[string]string
+}
+
 // UpdatedCommentRecord records an issue comment update call.
 type UpdatedCommentRecord struct {
 	Owner, Repo string
@@ -259,6 +265,8 @@ type FakeClient struct {
 	CreatedForks           []string // "owner/repo"
 	ClosedProposals        []int    // PR numbers
 	DeletedComments        []int    // comment IDs
+	CreatedPipelines       []Pipeline
+	PipelineCalls          []PipelineCallRecord
 	CreatedSchedules       []PipelineSchedule
 	DeletedScheduleIDs     []int64
 	UpdatedVariables       []VariableRecord
@@ -316,13 +324,13 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 	// Check for duplicates in pre-populated repos.
 	for _, r := range f.Repos {
 		if r.FullName == fullName {
-			return nil, fmt.Errorf("repository already exists: %s", fullName)
+			return nil, fmt.Errorf("%w: %s", ErrAlreadyExists, fullName)
 		}
 	}
 	// Check for duplicates in previously created repos.
 	for _, r := range f.CreatedRepos {
 		if r.FullName == fullName {
-			return nil, fmt.Errorf("repository already exists: %s", fullName)
+			return nil, fmt.Errorf("%w: %s", ErrAlreadyExists, fullName)
 		}
 	}
 
@@ -357,6 +365,30 @@ func (f *FakeClient) GetRepo(_ context.Context, owner, repo string) (*Repository
 		}
 	}
 	return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
+}
+
+func (f *FakeClient) UpdateRepoVisibility(_ context.Context, owner, repo string, private bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateRepoVisibility"); e != nil {
+		return e
+	}
+
+	fullName := owner + "/" + repo
+	for i := range f.Repos {
+		if f.Repos[i].FullName == fullName {
+			f.Repos[i].Private = private
+			return nil
+		}
+	}
+	for i := range f.CreatedRepos {
+		if f.CreatedRepos[i].FullName == fullName {
+			f.CreatedRepos[i].Private = private
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
 }
 
 func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
@@ -1847,6 +1879,33 @@ func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch st
 
 	key := owner + "/" + repo + "/" + branch
 	return f.ProtectedBranches[key], nil
+}
+
+func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	vars := make(map[string]string, len(variables))
+	for k, v := range variables {
+		vars[k] = v
+	}
+	f.PipelineCalls = append(f.PipelineCalls, PipelineCallRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+	})
+
+	if e := f.err("CreatePipeline"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
 }
 
 func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {

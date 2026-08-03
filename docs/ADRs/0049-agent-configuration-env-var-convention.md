@@ -121,8 +121,8 @@ section:
 ```markdown
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 
