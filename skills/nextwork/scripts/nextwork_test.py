@@ -16,7 +16,9 @@ from nextwork import (  # noqa: E402
     ASSIGN_SELF,
     DECISION_STATUSES,
     REMOVE_BLOCKED_LABEL,
+    GhFetcher,
     RefError,
+    agent_terminal_succeeded,
     apply_trivial_actions,
     build_pr_links_by_issue,
     build_queue,
@@ -29,6 +31,8 @@ from nextwork import (  # noqa: E402
     graphql_var_flags,
     hours_since,
     is_stale,
+    latest_agent_status,
+    latest_completed_triage,
     link_blocker,
     maybe_check_merge_queue,
     normalize_item,
@@ -148,63 +152,76 @@ def make_pr(**overrides):
     return item
 
 
+def agent_comment(body, created_at, *, author=None):
+    """Build a comment dict with a trusted fullsend bot author for marker tests."""
+    if author is None:
+        lower = body.lower()
+        if "triage" in lower or "fullsend:triage-agent" in lower:
+            author = "fullsend-ai-triage[bot]"
+        elif "fix" in lower or "code" in lower:
+            author = "fullsend-ai-coder[bot]"
+        else:
+            author = "fullsend-ai-review[bot]"
+    return {"author": author, "body": body, "created_at": created_at}
+
+
 class TestParseInflightAgent(unittest.TestCase):
     def test_no_comments(self):
         self.assertIsNone(parse_inflight_agent([]))
 
     def test_started_only_is_inflight(self):
         comments = [
-            {
-                "body": "<!-- fullsend:agent-status:run-1 -->\n🤖 Review · Started 1:00 PM UTC",
-                "created_at": "2024-01-09T13:00:00Z",
-            }
+            agent_comment(
+                "<!-- fullsend:agent-status:run-1 -->\n🤖 Review · Started 1:00 PM UTC",
+                "2024-01-09T13:00:00Z",
+            )
         ]
         self.assertEqual(parse_inflight_agent(comments), "waiting_review")
 
     def test_terminal_is_not_inflight(self):
         comments = [
-            {
-                "body": (
+            agent_comment(
+                (
                     "<!-- fullsend:agent-status:run-1 -->\n"
                     "<!-- fullsend:status:terminal -->\n"
                     "🤖 Finished Review · ✅ Success · Started 1:00 PM UTC · Completed 1:10 PM UTC"
                 ),
-                "created_at": "2024-01-09T13:10:00Z",
-            }
+                "2024-01-09T13:10:00Z",
+                )
         ]
         self.assertIsNone(parse_inflight_agent(comments))
 
     def test_latest_terminal_wins_over_older_started(self):
         comments = [
-            {
-                "body": "<!-- fullsend:agent-status:run-1 -->\n🤖 Review · Started 1:00 PM UTC",
-                "created_at": "2024-01-09T13:00:00Z",
-            },
-            {
-                "body": (
+            agent_comment(
+                "<!-- fullsend:agent-status:run-1 -->\n🤖 Review · Started 1:00 PM UTC",
+                "2024-01-09T13:00:00Z",
+            ),
+            agent_comment(
+                (
                     "<!-- fullsend:agent-status:run-1 -->\n"
                     "<!-- fullsend:status:terminal -->\n"
                     "🤖 Finished Review · ✅ Success"
                 ),
-                "created_at": "2024-01-09T13:10:00Z",
-            },
+                "2024-01-09T13:10:00Z",
+                ),
         ]
         self.assertIsNone(parse_inflight_agent(comments))
 
     def test_latest_started_wins_over_older_terminal(self):
         comments = [
-            {
-                "body": (
+            agent_comment(
+                (
                     "<!-- fullsend:agent-status:run-1 -->\n"
                     "<!-- fullsend:status:terminal -->\n"
                     "🤖 Finished Fix · ✅ Success"
                 ),
-                "created_at": "2024-01-09T12:00:00Z",
-            },
-            {
-                "body": "<!-- fullsend:agent-status:run-2 -->\n🤖 Review · Started 1:00 PM UTC",
-                "created_at": "2024-01-09T13:00:00Z",
-            },
+                "2024-01-09T12:00:00Z",
+                ),
+            agent_comment(
+                "<!-- fullsend:agent-status:run-2 -->\n🤖 Review · Started 1:00 PM UTC",
+                "2024-01-09T13:00:00Z",
+            ),
         ]
         self.assertEqual(parse_inflight_agent(comments), "waiting_review")
 
@@ -218,10 +235,10 @@ class TestParseInflightAgent(unittest.TestCase):
         for body_role, expected in cases:
             with self.subTest(body_role=body_role):
                 comments = [
-                    {
-                        "body": f"<!-- fullsend:agent-status:x -->\n{body_role}",
-                        "created_at": "2024-01-09T13:00:00Z",
-                    }
+                    agent_comment(
+                        f"<!-- fullsend:agent-status:x -->\n{body_role}",
+                        "2024-01-09T13:00:00Z",
+                    )
                 ]
                 self.assertEqual(parse_inflight_agent(comments), expected)
 
@@ -231,10 +248,10 @@ class TestParseInflightAgent(unittest.TestCase):
             assignees=["alice"],
             updated_at="2024-01-09T23:00:00Z",
             comments=[
-                {
-                    "body": "<!-- fullsend:agent-status:r1 -->\n🤖 Code · Started 1:00 PM UTC",
-                    "created_at": "2024-01-09T23:00:00Z",
-                }
+                agent_comment(
+                    "<!-- fullsend:agent-status:r1 -->\n🤖 Code · Started 1:00 PM UTC",
+                    "2024-01-09T23:00:00Z",
+                )
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -498,7 +515,7 @@ class TestClassifyIssue(unittest.TestCase):
                     "created_at": "2024-01-09T22:00:00Z",
                 },
                 {
-                    "author": "fullsend-ai-triage",
+                    "author": "fullsend-ai-triage[bot]",
                     "body": (
                         "<!-- fullsend:agent-status:run-1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
@@ -516,14 +533,14 @@ class TestClassifyIssue(unittest.TestCase):
         item = make_issue(
             labels=["triaged"],
             comments=[
-                {
-                    "body": (
+                agent_comment(
+                    (
                         "<!-- fullsend:agent-status:run-1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
                         "🤖 Finished Triage · ✅ Success"
                     ),
-                    "created_at": "2024-01-09T21:00:00Z",
-                },
+                    "2024-01-09T21:00:00Z",
+                ),
                 {
                     "body": "/fs-triage",
                     "created_at": "2024-01-09T23:00:00Z",
@@ -542,14 +559,14 @@ class TestClassifyIssue(unittest.TestCase):
                     "body": "/fs-code",
                     "created_at": "2024-01-09T22:00:00Z",
                 },
-                {
-                    "body": (
+                agent_comment(
+                    (
                         "<!-- fullsend:agent-status:run-1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
                         "🤖 Finished Code · ✅ Success"
                     ),
-                    "created_at": "2024-01-09T22:30:00Z",
-                },
+                    "2024-01-09T22:30:00Z",
+                ),
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -650,14 +667,14 @@ class TestClassifyIssue(unittest.TestCase):
         item = make_issue(
             labels=["triaged"],
             comments=[
-                {
-                    "body": (
+                agent_comment(
+                    (
                         "<!-- fullsend:agent-status:t1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
                         "🤖 Finished Triage · ✅ Success"
                     ),
-                    "created_at": "2024-01-01T00:00:00Z",
-                },
+                    "2024-01-01T00:00:00Z",
+                ),
                 {
                     "body": "Please reconsider scope",
                     "created_at": "2024-01-05T00:00:00Z",
@@ -672,18 +689,18 @@ class TestClassifyIssue(unittest.TestCase):
             labels=["ready-to-code"],
             updated_at="2024-01-09T23:00:00Z",
             comments=[
-                {
-                    "body": (
+                agent_comment(
+                    (
                         "<!-- fullsend:agent-status:t1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
                         "🤖 Finished Triage · ✅ Success"
                     ),
-                    "created_at": "2023-12-01T00:00:00Z",
-                },
-                {
-                    "body": "<!-- fullsend:agent-status:c1 -->\n🤖 Code · Started",
-                    "created_at": "2024-01-09T23:30:00Z",
-                },
+                    "2023-12-01T00:00:00Z",
+                ),
+                agent_comment(
+                    "<!-- fullsend:agent-status:c1 -->\n🤖 Code · Started",
+                    "2024-01-09T23:30:00Z",
+                ),
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -694,14 +711,14 @@ class TestClassifyIssue(unittest.TestCase):
             labels=["triaged"],
             updated_at="2024-01-09T23:00:00Z",
             comments=[
-                {
-                    "body": (
+                agent_comment(
+                    (
                         "<!-- fullsend:agent-status:t1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
                         "🤖 Finished Triage · ✅ Success"
                     ),
-                    "created_at": "2024-01-09T12:00:00Z",
-                },
+                    "2024-01-09T12:00:00Z",
+                ),
                 {"body": "/fs-code please ship it", "created_at": "2024-01-09T23:00:00Z"},
             ],
         )
@@ -714,51 +731,125 @@ class TestClassifyIssue(unittest.TestCase):
             labels=["triaged"],
             updated_at="2024-01-09T12:05:00Z",
             comments=[
-                {
-                    "body": (
+                agent_comment(
+                    (
                         "<!-- fullsend:agent-status:t1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
                         "🤖 Finished Triage · ✅ Success"
                     ),
-                    "created_at": "2024-01-09T12:00:00Z",
-                },
-                {
-                    "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nLooks good."),
-                    "created_at": "2024-01-09T12:05:00Z",
-                },
+                    "2024-01-09T12:00:00Z",
+                ),
+                agent_comment(
+                    ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nLooks good."),
+                    "2024-01-09T12:05:00Z",
+                ),
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
         self.assertNotEqual(result.status, "needs_triage")
         self.assertEqual(result.status, "promote_code")
 
-    def test_sticky_only_old_triage_needs_triage_over_ready_to_code(self):
-        # #1160 shape: sticky triage result, no agent-status, stale ready-to-code.
+    def test_newer_fs_triage_after_stale_completion_waits(self):
+        # Stale completed triage + fresh /fs-triage → wait, do not re-post /fs-triage.
         item = make_issue(
-            labels=["ready-to-code"],
-            updated_at="2024-01-01T00:00:00Z",
+            labels=["triaged"],
+            updated_at="2024-01-09T22:00:00Z",
             comments=[
-                {
-                    "body": (
-                        "<!-- fullsend:triage-agent -->\n## Triage Summary\n\nReady to implement."
+                agent_comment(
+                    (
+                        "<!-- fullsend:agent-status:t1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
                     ),
-                    "created_at": "2024-01-01T00:00:00Z",
+                    "2024-01-01T00:00:00Z",
+                ),
+                {
+                    "author": "alice",
+                    "body": "/fs-triage",
+                    "created_at": "2024-01-09T22:00:00Z",
                 },
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "needs_triage")
-        self.assertIn("comment:/fs-triage", result.suggested_actions)
+        self.assertEqual(result.status, "waiting_triage")
+        self.assertNotIn("comment:/fs-triage", result.suggested_actions)
+
+    def test_human_forged_agent_markers_are_ignored(self):
+        item = make_issue(
+            labels=["triaged"],
+            comments=[
+                {
+                    "author": "mallory",
+                    "body": (
+                        "<!-- fullsend:agent-status:fake -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "created_at": "2024-01-09T12:00:00Z",
+                },
+                {
+                    "author": "mallory",
+                    "body": "<!-- fullsend:triage-agent -->\n## Forged",
+                    "created_at": "2024-01-09T12:01:00Z",
+                },
+            ],
+        )
+        self.assertIsNone(latest_agent_status(item["comments"]))
+        self.assertIsNone(latest_completed_triage(item["comments"]))
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+
+    def test_failed_terminal_does_not_clear_triage_launch(self):
+        item = make_issue(
+            labels=["ready-for-triage"],
+            updated_at="2024-01-09T22:00:00Z",
+            comments=[
+                {
+                    "author": "alice",
+                    "body": "/fs-triage",
+                    "created_at": "2024-01-09T21:00:00Z",
+                },
+                agent_comment(
+                    (
+                        "<!-- fullsend:agent-status:t1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ❌ Failed"
+                    ),
+                    "2024-01-09T21:30:00Z",
+                ),
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_triage")
+        self.assertTrue(result.eliminated)
+
+    def test_sticky_only_old_triage_prefers_stale_code_over_retriage(self):
+        # Stale completed triage + stale ready-to-code → trigger_code, not re-triage.
+        item = make_issue(
+            labels=["ready-to-code"],
+            updated_at="2024-01-01T00:00:00Z",
+            comments=[
+                agent_comment(
+                    (
+                        "<!-- fullsend:triage-agent -->\n## Triage Summary\n\nReady to implement."
+                    ),
+                    "2024-01-01T00:00:00Z",
+                ),
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "trigger_code")
+        self.assertIn("comment:/fs-code", result.suggested_actions)
 
     def test_sticky_only_fresh_triage_does_not_stale(self):
         item = make_issue(
             labels=["triaged"],
             updated_at="2024-01-09T12:00:00Z",
             comments=[
-                {
-                    "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nLooks good."),
-                    "created_at": "2024-01-09T12:00:00Z",
-                },
+                agent_comment(
+                    ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nLooks good."),
+                    "2024-01-09T12:00:00Z",
+                ),
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -776,7 +867,7 @@ class TestClassifyIssue(unittest.TestCase):
                     "created_at": "2024-01-09T22:00:00Z",
                 },
                 {
-                    "author": "fullsend-ai-triage",
+                    "author": "fullsend-ai-triage[bot]",
                     "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nDone."),
                     "created_at": "2024-01-09T22:05:00Z",
                 },
@@ -790,10 +881,10 @@ class TestClassifyIssue(unittest.TestCase):
         item = make_issue(
             labels=["ready-for-triage"],
             comments=[
-                {
-                    "body": "<!-- fullsend:agent-status:t1 -->\n🤖 Triage · Started",
-                    "created_at": "2024-01-01T00:00:00Z",
-                }
+                agent_comment(
+                    "<!-- fullsend:agent-status:t1 -->\n🤖 Triage · Started",
+                    "2024-01-01T00:00:00Z",
+                )
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -1017,14 +1108,14 @@ class TestClassifyPr(unittest.TestCase):
             updated_at="2024-01-09T23:00:00Z",
             head_committed_at="2024-01-09T22:00:00Z",
             comments=[
-                {
-                    "body": (
+                agent_comment(
+                    (
                         "<!-- fullsend:agent-status:r1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
                         "🤖 Finished Review · ✅ Success"
                     ),
-                    "created_at": "2024-01-09T12:00:00Z",
-                }
+                    "2024-01-09T12:00:00Z",
+                )
             ],
         )
         result = classify_pr(item, "alice", 6, NOW)
@@ -1385,12 +1476,26 @@ class TestApplyTrivialActions(unittest.TestCase):
         )
 
 
+class TestAgentTerminalSucceeded(unittest.TestCase):
+    def test_success_and_failure_markers(self):
+        self.assertTrue(agent_terminal_succeeded("🤖 Finished · ✅ Success"))
+        self.assertFalse(agent_terminal_succeeded("🤖 Finished · ❌ Failed"))
+        self.assertFalse(agent_terminal_succeeded("Terminated by user"))
+        self.assertFalse(agent_terminal_succeeded("run cancelled"))
+
+
 class TestTakeOver(unittest.TestCase):
     @patch("nextwork.run_gh_soft", return_value="")
     @patch("nextwork.gh_graphql_or_none")
     def test_assigns_issue(self, mock_gql, mock_run_gh_soft):
         mock_gql.return_value = {
-            "repository": {"issueOrPullRequest": {"__typename": "Issue", "id": "I_1"}}
+            "repository": {
+                "issueOrPullRequest": {
+                    "__typename": "Issue",
+                    "id": "I_1",
+                    "assignees": {"nodes": []},
+                }
+            }
         }
         result = take_over("acme/widget", 1, "alice")
         self.assertEqual(result["action"], "assigned")
@@ -1403,7 +1508,13 @@ class TestTakeOver(unittest.TestCase):
     @patch("nextwork.gh_graphql_or_none")
     def test_assigns_pull_request(self, mock_gql, mock_run_gh_soft):
         mock_gql.return_value = {
-            "repository": {"issueOrPullRequest": {"__typename": "PullRequest", "id": "PR_1"}}
+            "repository": {
+                "issueOrPullRequest": {
+                    "__typename": "PullRequest",
+                    "id": "PR_1",
+                    "assignees": {"nodes": []},
+                }
+            }
         }
         result = take_over("acme/widget", 99, "alice")
         self.assertEqual(result["action"], "assigned")
@@ -1412,10 +1523,110 @@ class TestTakeOver(unittest.TestCase):
             quiet=False,
         )
 
+    @patch("nextwork.run_gh_soft", return_value="")
+    @patch("nextwork.gh_graphql_or_none")
+    def test_removes_prior_assignees(self, mock_gql, mock_run_gh_soft):
+        mock_gql.return_value = {
+            "repository": {
+                "issueOrPullRequest": {
+                    "__typename": "Issue",
+                    "id": "I_1",
+                    "assignees": {"nodes": [{"login": "bob"}, {"login": "carol"}]},
+                }
+            }
+        }
+        result = take_over("acme/widget", 1, "alice")
+        self.assertEqual(result["action"], "assigned")
+        self.assertIn("removed bob, carol", result["detail"])
+        calls = [c.args[0] for c in mock_run_gh_soft.call_args_list]
+        self.assertEqual(
+            calls,
+            [
+                ["issue", "edit", "1", "--repo", "acme/widget", "--add-assignee", "alice"],
+                ["issue", "edit", "1", "--repo", "acme/widget", "--remove-assignee", "bob"],
+                ["issue", "edit", "1", "--repo", "acme/widget", "--remove-assignee", "carol"],
+            ],
+        )
+
     @patch("nextwork.gh_graphql_or_none", return_value=None)
     def test_ref_not_found(self, _mock_gql):
         result = take_over("acme/widget", 404, "alice")
         self.assertEqual(result["action"], "error")
+
+
+class TestGhFetcher(unittest.TestCase):
+    @patch("nextwork.gh_graphql_or_none")
+    def test_fetch_item_normalizes_issue(self, mock_gql):
+        mock_gql.return_value = {
+            "repository": {
+                "issueOrPullRequest": {
+                    "__typename": "Issue",
+                    "number": 7,
+                    "title": "Ship it",
+                    "url": "https://github.com/acme/widget/issues/7",
+                    "state": "OPEN",
+                    "author": {"login": "alice"},
+                    "assignees": {"nodes": []},
+                    "labels": {"nodes": [{"name": "triaged"}]},
+                    "createdAt": "2024-01-01T00:00:00Z",
+                    "updatedAt": "2024-01-09T00:00:00Z",
+                    "body": "hello",
+                    "comments": {"nodes": []},
+                    "blockedBy": {"nodes": []},
+                    "subIssuesSummary": {"total": 0, "completed": 0},
+                    "subIssues": {"nodes": []},
+                }
+            }
+        }
+        item = GhFetcher(quiet=True).fetch_item("acme/widget", 7)
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item["kind"], "issue")
+        self.assertEqual(item["number"], 7)
+        self.assertEqual(item["labels"], ["triaged"])
+
+    @patch("nextwork.gh_graphql_or_none", return_value=None)
+    def test_fetch_item_none_on_gh_failure(self, _mock_gql):
+        self.assertIsNone(GhFetcher(quiet=True).fetch_item("acme/widget", 1))
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_get_linked_prs_caches_pull_pages(self, mock_gql):
+        mock_gql.return_value = {
+            "repository": {
+                "pullRequests": {
+                    "nodes": [
+                        {
+                            "number": 10,
+                            "body": "Fixes #7",
+                            "closingIssuesReferences": {"nodes": []},
+                        }
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+        fetcher = GhFetcher(quiet=True)
+        self.assertEqual(fetcher.get_linked_prs("acme/widget", 7), [10])
+        self.assertEqual(fetcher.get_linked_prs("acme/widget", 7), [10])
+        self.assertEqual(mock_gql.call_count, 1)
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_is_in_merge_queue(self, mock_gql):
+        merge_queue = {
+            "repository": {
+                "mergeQueue": {"entries": {"nodes": [{"pullRequest": {"number": 42}}]}}
+            }
+        }
+        mock_gql.side_effect = [
+            {"repository": {"defaultBranchRef": {"name": "main"}}},
+            merge_queue,
+            merge_queue,
+        ]
+        fetcher = GhFetcher(quiet=True)
+        self.assertTrue(fetcher.is_in_merge_queue("acme/widget", 42))
+        self.assertFalse(fetcher.is_in_merge_queue("acme/widget", 99))
+        # default branch cached; second call only hits merge-queue query
+        self.assertEqual(mock_gql.call_count, 3)
 
 
 class TestLinkBlocker(unittest.TestCase):

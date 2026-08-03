@@ -237,8 +237,23 @@ _LAUNCH_SPEC: dict[str, dict[str, str]] = {
 }
 
 REVIEW_BOT_LOGIN = "fullsend-ai-review[bot]"
+CODER_BOT_LOGIN = "fullsend-ai-coder[bot]"
+TRIAGE_BOT_LOGIN = "fullsend-ai-triage[bot]"
+RETRO_BOT_LOGIN = "fullsend-ai-retro[bot]"
+PRIORITIZE_BOT_LOGIN = "fullsend-ai-prioritize[bot]"
+# Only trust agent-status / sticky result markers from these bot logins.
+FULLSEND_AGENT_BOTS = frozenset(
+    {
+        REVIEW_BOT_LOGIN,
+        CODER_BOT_LOGIN,
+        TRIAGE_BOT_LOGIN,
+        RETRO_BOT_LOGIN,
+        PRIORITIZE_BOT_LOGIN,
+    }
+)
 TRIAGE_STALE_HOURS = 3 * 24
-CHECKS_PENDING = frozenset({"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED"})
+# GitHub StatusState for statusCheckRollup.state (no IN_PROGRESS/QUEUED on this enum).
+CHECKS_PENDING = frozenset({"PENDING", "EXPECTED"})
 CHECKS_FAILED = frozenset({"FAILURE", "ERROR"})
 
 
@@ -250,6 +265,27 @@ def comment_command(body: str | None) -> str:
     if not first_line:
         return ""
     return first_line.split(None, 1)[0]
+
+
+def _is_agent_bot_comment(comment: dict[str, Any]) -> bool:
+    return (comment.get("author") or "") in FULLSEND_AGENT_BOTS
+
+
+def agent_terminal_succeeded(body: str) -> bool:
+    """True when a terminal agent-status body reports success.
+
+    Failed/cancelled/terminated runs must not clear launch waits. Sticky triage
+    results without an explicit outcome are treated as success (legacy runs).
+    """
+    lower = body.lower()
+    if "❌" in body or "terminated" in lower or "cancelled" in lower or "canceled" in lower:
+        return False
+    if re.search(r"\b(?:failure|failed)\b", lower):
+        return False
+    if "✅" in body or re.search(r"\bsuccess\b", lower):
+        return True
+    # Sticky triage / marker-only posts with no outcome line.
+    return True
 
 
 def parse_inflight_agent(comments: list[dict[str, Any]]) -> str | None:
@@ -271,8 +307,12 @@ def _role_waiting_status(body: str) -> str:
 
 
 def latest_agent_status(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Chronologically latest agent-status comment, with waiting_status + terminal flag."""
-    agent_comments = [c for c in comments if AGENT_STATUS_MARKER in (c.get("body") or "")]
+    """Chronologically latest bot-authored agent-status comment."""
+    agent_comments = [
+        c
+        for c in comments
+        if _is_agent_bot_comment(c) and AGENT_STATUS_MARKER in (c.get("body") or "")
+    ]
     if not agent_comments:
         return None
     latest = max(agent_comments, key=lambda c: c.get("created_at") or "")
@@ -281,18 +321,24 @@ def latest_agent_status(comments: list[dict[str, Any]]) -> dict[str, Any] | None
         "created_at": latest.get("created_at") or "",
         "body": body,
         "terminal": AGENT_TERMINAL_MARKER in body,
+        "succeeded": agent_terminal_succeeded(body) if AGENT_TERMINAL_MARKER in body else False,
         "waiting_status": _role_waiting_status(body),
+        "author": latest.get("author"),
     }
 
 
 def latest_terminal_agent(
     comments: list[dict[str, Any]], waiting_status: str
 ) -> dict[str, Any] | None:
-    """Latest terminal agent-status comment whose role maps to waiting_status."""
+    """Latest successful terminal agent-status for waiting_status (bot-authored only)."""
     matches = []
     for c in comments:
+        if not _is_agent_bot_comment(c):
+            continue
         body = c.get("body") or ""
         if AGENT_STATUS_MARKER not in body or AGENT_TERMINAL_MARKER not in body:
+            continue
+        if not agent_terminal_succeeded(body):
             continue
         if _role_waiting_status(body) == waiting_status:
             matches.append(c)
@@ -303,21 +349,27 @@ def latest_terminal_agent(
         "created_at": latest.get("created_at") or "",
         "body": latest.get("body") or "",
         "terminal": True,
+        "succeeded": True,
         "waiting_status": waiting_status,
+        "author": latest.get("author"),
     }
 
 
 def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """When triage finished: prefer terminal agent-status, else sticky triage result.
+    """When triage finished successfully: prefer terminal agent-status, else sticky.
 
     Sticky ``<!-- fullsend:triage-agent -->`` posts are a completion signal for
     older runs that never left a terminal agent-status comment. They are not
-    used for in-flight detection.
+    used for in-flight detection. Only bot-authored comments count.
     """
     terminal = latest_terminal_agent(comments, "waiting_triage")
     if terminal is not None and terminal.get("created_at"):
         return terminal
-    matches = [c for c in comments if TRIAGE_RESULT_MARKER in (c.get("body") or "")]
+    matches = [
+        c
+        for c in comments
+        if _is_agent_bot_comment(c) and TRIAGE_RESULT_MARKER in (c.get("body") or "")
+    ]
     if not matches:
         return None
     latest = max(matches, key=lambda c: c.get("created_at") or "")
@@ -325,7 +377,9 @@ def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | 
         "created_at": latest.get("created_at") or "",
         "body": latest.get("body") or "",
         "terminal": True,
+        "succeeded": True,
         "waiting_status": "waiting_triage",
+        "author": latest.get("author"),
     }
 
 
@@ -607,6 +661,26 @@ def classify_issue(
         )
 
     if is_completed_triage_stale(comments, now, triage_stale_hours=triage_stale_hours):
+        completed = latest_completed_triage(comments)
+        triage_launch = launch_signal_at(item, "triage", comments)
+        # A newer /fs-triage (or triage label signal) after completion means a
+        # re-launch is already in flight — do not flip back to needs_triage.
+        if (
+            triage_launch
+            and completed
+            and completed.get("created_at")
+            and triage_launch > completed["created_at"]
+        ):
+            launch = classify_launch_wait(
+                item, "triage", comments, stale_hours, now, signal_at=triage_launch
+            )
+            if launch:
+                return launch
+        # Stale ready-to-code / /fs-code should surface as trigger_code, not
+        # re-triage — code launch wait wins over the age-only triage flip.
+        code_launch = classify_launch_wait(item, "code", comments, stale_hours, now)
+        if code_launch:
+            return code_launch
         return Classification(
             status="needs_triage",
             reason="Stale completed triage; re-trigger",
@@ -1180,8 +1254,14 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
       __typename
-      ... on Issue { id }
-      ... on PullRequest { id }
+      ... on Issue {
+        id
+        assignees(first: 20) { nodes { login } }
+      }
+      ... on PullRequest {
+        id
+        assignees(first: 20) { nodes { login } }
+      }
     }
   }
 }
@@ -1660,7 +1740,30 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
             "action": "error",
             "detail": f"failed to assign {user}",
         }
-    return {"ref": format_ref(repo, number), "action": "assigned", "detail": f"assigned to {user}"}
+    prior = [
+        n.get("login")
+        for n in (node.get("assignees") or {}).get("nodes") or []
+        if n.get("login") and n.get("login") != user
+    ]
+    removed: list[str] = []
+    for login in prior:
+        if (
+            run_gh_soft(
+                [sub, "edit", str(number), "--repo", repo, "--remove-assignee", login],
+                quiet=quiet,
+            )
+            is None
+        ):
+            return {
+                "ref": format_ref(repo, number),
+                "action": "error",
+                "detail": f"assigned {user} but failed to remove {login}",
+            }
+        removed.append(login)
+    detail = f"assigned to {user}"
+    if removed:
+        detail += f"; removed {', '.join(removed)}"
+    return {"ref": format_ref(repo, number), "action": "assigned", "detail": detail}
 
 
 def link_blocker(

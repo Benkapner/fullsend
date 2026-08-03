@@ -8,7 +8,7 @@ Follow skill **nextwork**.
 
 From the repository root, run:
 
-    python3 skills/nextwork/scripts/nextwork.py --format json --include-text $ARGUMENTS
+    python3 skills/nextwork/scripts/nextwork.py $ARGUMENTS --format json --include-text
 
 Then follow the skill loop in [skills/nextwork/SKILL.md](../skills/nextwork/SKILL.md):
 mine prose-only dependencies from `body`/`comments`, persist confident ones
