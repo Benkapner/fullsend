@@ -77,6 +77,7 @@ the overlay → base → code defaults chain.
 | `roles` | `[]string` | Replace if set | `PerRepoDefaultRoles()` |
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
+| `forge` | `string` | Scalar override | `""` (GitHub) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 
 ### Scalar override fields
@@ -230,6 +231,7 @@ compiled-in defaults apply:
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
+| `forge` | `""` (GitHub) |
 | `create_issues` | `nil` |
 
 ## Related
