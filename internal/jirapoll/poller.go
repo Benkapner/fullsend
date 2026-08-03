@@ -132,13 +132,19 @@ func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 	return p.client.SearchIssues(ctx, jql, p.opts.M)
 }
 
-// filterLocked removes locked issues and cleans up stale locks.
+// filterLocked removes locked issues and cleans up stale locks. If every
+// candidate's lock-property read fails (e.g. broken auth/config), it
+// returns an error instead of silently reporting zero unlocked issues,
+// which would otherwise be indistinguishable from a genuinely quiet
+// Jira project.
 func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.Issue, error) {
 	var unlocked []jira.Issue
+	var readErrors int
 	for _, issue := range issues {
 		lock, err := p.readLock(ctx, issue.Key)
 		if err != nil {
 			log.Printf("WARNING: reading lock for %s: %v (skipping)", issue.Key, err)
+			readErrors++
 			continue
 		}
 		if lock != nil {
@@ -153,6 +159,9 @@ func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.
 			}
 		}
 		unlocked = append(unlocked, issue)
+	}
+	if len(issues) > 0 && readErrors == len(issues) {
+		return nil, fmt.Errorf("reading lock property failed for all %d candidates", readErrors)
 	}
 	return unlocked, nil
 }

@@ -634,6 +634,28 @@ func TestFilterLockedStaleCleanupPreservesConcurrentFreshLock(t *testing.T) {
 	}
 }
 
+// TestFilterLockedErrorsWhenAllLockReadsFail guards against a regression
+// where a lock-property read error was treated the same as "locked" and
+// silently skipped, so a persistent auth/config problem that makes every
+// read fail produced an empty (rather than error) result — indistinguishable
+// from a genuinely quiet Jira project.
+func TestFilterLockedErrorsWhenAllLockReadsFail(t *testing.T) {
+	mc := newMockClient()
+	propKey := lockPropertyKey("acme", "platform")
+	mc.propertyGetErr[propKey] = fmt.Errorf("403 forbidden")
+
+	p := newTestPoller(mc, nil, Options{TargetRepo: "acme/platform"})
+
+	issues := []jira.Issue{{Key: "PROJ-1"}, {Key: "PROJ-2"}}
+	unlocked, err := p.filterLocked(context.Background(), issues)
+	if err == nil {
+		t.Fatal("filterLocked() error = nil, want error when every lock read fails")
+	}
+	if len(unlocked) != 0 {
+		t.Errorf("unlocked = %v, want empty", unlocked)
+	}
+}
+
 // TestSearchCandidatesQuotesProjectKey checks that the default JQL quotes
 // the project key rather than interpolating it bare, as defense in depth
 // against JQL injection even though the key is already validated upstream.
