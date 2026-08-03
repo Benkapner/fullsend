@@ -43,6 +43,11 @@ type WorkerConfig struct {
 
 	// Commit is the git SHA stamped on the deployed Worker.
 	Commit string
+
+	// PerOrgForeignCompat enables org-mode repos scope exceptions.
+	// Same format as the PER_ORG_FOREIGN_COMPAT environment variable
+	// (truthy: "1", "true", "yes").
+	PerOrgForeignCompat string
 }
 
 // ParseWorkerConfig parses a WorkerConfig and returns a Handler.
@@ -80,7 +85,12 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 		}
 	}
 
-	return NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, pemAccessor, oidcVerifier, httpClient)
+	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, pemAccessor, oidcVerifier, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	h.perOrgForeignCompat = EnvTruthy(cfg.PerOrgForeignCompat)
+	return h, nil
 }
 
 // SplitCSV splits a comma-separated string into trimmed, non-empty entries.

@@ -289,6 +289,14 @@ security:
   fail_mode: closed                  # "closed" (default) or "open"
 ```
 
+> **Naming convention:** Prefix settings that tune one agent's behavior with
+> that agent's role in caps, e.g. `REVIEW_SEVERITY_THRESHOLD` — this avoids
+> collisions when multiple agents share a sandbox or env file.
+>
+> A setting meant to apply the same way across every agent (like
+> `roles` or `create_issues.allow_targets`) belongs in `config.yaml`
+> instead, not as an env var.
+
 ### Deprecated fields
 
 > **Deprecated:** `runner_env` is deprecated. Use `env.runner`
@@ -300,7 +308,7 @@ security:
 
 | Field type | Behavior |
 |-----------|----------|
-| Scalars (`model`, `pre_script`, `image`, etc.) | Child wins if non-empty |
+| Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
 | `skills` | Merged with deduplication by basename (child overrides base) |
 | `plugins`, `providers`, `api_servers`, `openshell.profiles` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |

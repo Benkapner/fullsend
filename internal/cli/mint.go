@@ -93,6 +93,18 @@ func isPublicMintAllowedOrgs(allowedOrgs string) bool {
 	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
 }
 
+// perOrgForeignCompatLabel returns "on" or "off" for display from traffic env.
+// Missing/empty/nil trafficEnv is treated as off (compatible with older mints).
+func perOrgForeignCompatLabel(trafficEnv map[string]string) string {
+	if trafficEnv == nil {
+		return "off"
+	}
+	if mintcore.EnvTruthy(trafficEnv["PER_ORG_FOREIGN_COMPAT"]) {
+		return "on"
+	}
+	return "off"
+}
+
 // mintValidationMessage returns the success message after validating an existing mint.
 func mintValidationMessage(trafficEnv map[string]string, envErr error) string {
 	if envErr == nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
@@ -533,6 +545,8 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 
 	gcpClient := mintGCFClientFactory(project)
 
+	deployCommit := resolveAndReportMintDeployCommit(printer, commitSHA, sourceDir)
+
 	deployMode := gcf.DeployAuto
 	if skipDeploy {
 		deployMode = gcf.DeploySkip
@@ -544,7 +558,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		FunctionSourceDir: sourceDir,
 		DeployMode:        deployMode,
 		Version:           version,
-		Commit:            commitSHA,
+		Commit:            deployCommit,
 		PublicMint:        public,
 	}
 
@@ -583,6 +597,8 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		fmt.Sprintf("Project: %s", project),
 		fmt.Sprintf("Region: %s", region),
 		fmt.Sprintf("URL: %s", mintURL),
+		fmt.Sprintf("Version: %s", version),
+		fmt.Sprintf("Commit: %s", deployCommit),
 	}
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
@@ -661,6 +677,8 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		return nil
 	}
 
+	deployCommit := resolveAndReportMintDeployCommit(printer, commitSHA, sourceDir)
+
 	cfg := cf.Config{
 		AccountID:    accountID,
 		WorkerName:   workerName,
@@ -668,7 +686,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		PreviewAlias: previewAlias,
 		SourceDir:    sourceDir,
 		Version:      version,
-		Commit:       commitSHA,
+		Commit:       deployCommit,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
@@ -700,6 +718,10 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	} else {
 		summaryLines = append(summaryLines, "Mode: durable")
 	}
+	summaryLines = append(summaryLines,
+		fmt.Sprintf("Version: %s", version),
+		fmt.Sprintf("Commit: %s", deployCommit),
+	)
 	printer.Summary("Deployment complete", summaryLines)
 
 	return nil
@@ -1516,6 +1538,8 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
+
+	printer.KeyValue("Per-org foreign compat", perOrgForeignCompatLabel(trafficEnv))
 
 	publicMint := trafficEnv != nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
 	if publicMint {

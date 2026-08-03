@@ -27,6 +27,7 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 	assert.Equal(t, DefaultAllowedRemoteResources(), d.AllowedResources())
 	assert.Nil(t, d.IssueCreationConfig())
 	assert.False(t, d.IsOrgMode())
+	assert.Equal(t, "", d.ConfigForge())
 }
 
 // --- Unset fields resolve through parent to code defaults ---

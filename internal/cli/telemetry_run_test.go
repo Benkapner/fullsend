@@ -215,6 +215,77 @@ func TestChildScriptEnv_PreservesTracestate(t *testing.T) {
 	assert.True(t, found, "TRACESTATE must pass through to child scripts")
 }
 
+// TestChildScriptEnv_StripsOIDCVars verifies that OIDC credential vars
+// are stripped from the child script environment so user-authored
+// pre/post scripts cannot mint their own tokens (#5832).
+func TestChildScriptEnv_StripsOIDCVars(t *testing.T) {
+	// Set OIDC vars in the process environment.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "should-survive")
+
+	env := childScriptEnv(map[string]string{"RUNNER_VAR": "present"}, "")
+
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key = e[:i]
+		}
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_URL", "OIDC var must be stripped")
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OIDC var must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_URL", "OIDC var must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_AUTH_FILE", "OIDC var must be stripped")
+	}
+
+	// Non-OIDC vars must survive.
+	hasSafe, hasRunner := false, false
+	for _, e := range env {
+		if e == "SAFE_VAR=should-survive" {
+			hasSafe = true
+		}
+		if e == "RUNNER_VAR=present" {
+			hasRunner = true
+		}
+	}
+	assert.True(t, hasSafe, "non-OIDC process env var must survive")
+	assert.True(t, hasRunner, "RunnerEnv var must survive")
+}
+
+// TestChildScriptEnv_StripsOIDCFromRunnerEnv verifies that OIDC credential
+// vars injected via RunnerEnv are also stripped (#5832).
+func TestChildScriptEnv_StripsOIDCFromRunnerEnv(t *testing.T) {
+	runnerEnv := map[string]string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://injected.example.com",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "injected-token",
+		"FULLSEND_GCP_OIDC_URL":          "https://injected-gcp.example.com",
+		"FULLSEND_GCP_OIDC_AUTH_FILE":    "/tmp/injected-auth.json",
+		"LEGIT_VAR":                      "allowed",
+	}
+
+	env := childScriptEnv(runnerEnv, "")
+
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key = e[:i]
+		}
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_URL", "OIDC var from RunnerEnv must be stripped")
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OIDC var from RunnerEnv must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_URL", "OIDC var from RunnerEnv must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_AUTH_FILE", "OIDC var from RunnerEnv must be stripped")
+	}
+
+	hasLegit := false
+	for _, e := range env {
+		if e == "LEGIT_VAR=allowed" {
+			hasLegit = true
+		}
+	}
+	assert.True(t, hasLegit, "non-OIDC RunnerEnv var must survive")
+}
+
 func TestAgentSpanStartAttrs(t *testing.T) {
 	attrs := agentSpanStartAttrs(3, "code")
 	require.Len(t, attrs, 3)

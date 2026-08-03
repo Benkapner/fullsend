@@ -3080,6 +3080,35 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	return runs, nil
 }
 
+// ListWorkflowRunJobs returns the jobs within a workflow run.
+func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID))
+	if err != nil {
+		return nil, fmt.Errorf("list workflow run jobs: %w", err)
+	}
+	var result struct {
+		Jobs []struct {
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"jobs"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode workflow run jobs: %w", err)
+	}
+	jobs := make([]forge.WorkflowJob, len(result.Jobs))
+	for i, j := range result.Jobs {
+		jobs[i] = forge.WorkflowJob{
+			ID:         j.ID,
+			Name:       j.Name,
+			Status:     j.Status,
+			Conclusion: j.Conclusion,
+		}
+	}
+	return jobs, nil
+}
+
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID))

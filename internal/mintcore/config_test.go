@@ -292,6 +292,7 @@ func TestNewHandlerFromConfig_FullMintFlow(t *testing.T) {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
 	h.githubBaseURL = github.URL
+	h.perOrgForeignCompat = true
 
 	body := `{"role":"coder","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()

@@ -83,9 +83,14 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
-Set this in the CI workflow `env:` block. The env file passes it to the
-sandbox automatically, and the post-script reads it from the runner
-environment directly — no separate configuration is needed.
+Set this in the harness's `env.sandbox` (the upstream default lives in
+`harness/review.yaml`). To override per repo or org, use `base:`
+composition ([ADR 0045](../ADRs/0045-forge-portable-harness-schema.md))
+rather than the CI workflow `env:` block — workflow `env:` is reserved
+for infrastructure plumbing per
+[ADR 0081](../ADRs/0081-reserve-workflow-env-for-infra-plumbing.md).
+The post-script reads the value from the runner environment directly —
+no separate configuration is needed.
 
 The review agent omits findings below the threshold from its output. The
 post-script also filters the structured `findings` array as

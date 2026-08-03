@@ -516,11 +516,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir
 		}
+		// Refuse OIDC credential vars so ${VAR} expansion in harness
+		// YAML cannot leak mint-usable credentials (#5832).
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return os.Getenv(key)
 	}
 	lookup := func(key string) (string, bool) {
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir, true
+		}
+		// Refuse OIDC credential vars (#5832).
+		// Unlike expander (which silently returns "" to produce an empty
+		// expansion), lookup returns false so ValidateRunnerEnvWith treats
+		// the reference as an unresolvable variable and fails validation.
+		if oidcDenyKeys[key] {
+			return "", false
 		}
 		return os.LookupEnv(key)
 	}
@@ -698,7 +710,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
 		defer preflightCancel()
 		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
-		preflightCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+		// Use childScriptEnv to strip OIDC credential vars (#5832).
+		preflightCmd.Env = childScriptEnv(h.RunnerEnv, "")
 		preflightOut, preflightErr := preflightCmd.CombinedOutput()
 		if preflightErr != nil {
 			printer.StepFail("Preflight dependency check failed")
@@ -1613,7 +1626,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// failure sets it to false and continues (skipping step 9e),
 		// while success sets it to true immediately above. Pass the
 		// repo dir directly.
-		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1879,11 +1894,30 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// oidcDenyKeys lists OIDC credential env vars that must not leak into
+// user-controlled or sandbox-visible contexts. The parent harness process
+// retains these for mintAgentToken and OIDC token refresh; stripping them
+// from child scripts, expanders, and sandbox injection prevents user code
+// and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+//
+// MAINTENANCE: when new OIDC-related credential env vars are introduced
+// (e.g. by mint infrastructure changes), add them here. By convention the
+// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
+// expansion site in this file consults this map, so a single addition
+// propagates to all deny checks.
+var oidcDenyKeys = map[string]bool{
+	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
+	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
+	"FULLSEND_GCP_OIDC_URL":          true,
+	"FULLSEND_GCP_OIDC_AUTH_FILE":    true,
+}
+
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
 // shadow. These are set by the runner in bootstrapEnv and overriding them
 // from harness YAML could break sandbox operation, or are security-sensitive
 // vars that could influence sandbox execution (e.g. shared library injection,
-// auto-sourced shell startup files).
+// auto-sourced shell startup files). OIDC credential vars from oidcDenyKeys
+// are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
 	"PATH":                     true,
@@ -1899,6 +1933,14 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_OUTPUT_SCHEMA":   true,
 	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
+}
+
+func init() {
+	// Merge OIDC credential vars into reservedSandboxKeys so a future
+	// addition to oidcDenyKeys automatically blocks sandbox injection.
+	for k := range oidcDenyKeys {
+		reservedSandboxKeys[k] = true
+	}
 }
 
 // buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
@@ -2018,7 +2060,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
-		hostPath := os.ExpandEnv(hf.Src)
+		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
+		// credential vars in host_files src path expansion (#5832).
+		hostPath := safeExpandEnv(hf.Src)
 		if hostPath == "" {
 			if hf.Optional {
 				continue
@@ -2080,14 +2124,32 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	return nil
 }
 
+// safeExpandEnv expands ${VAR} references like os.ExpandEnv but refuses
+// OIDC credential vars (oidcDenyKeys), expanding them to empty. Use this
+// instead of os.ExpandEnv at any site where the expanded value may reach
+// user-controlled or sandbox-visible contexts. See #5832.
+func safeExpandEnv(s string) string {
+	return os.Expand(s, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
+		return os.Getenv(key)
+	})
+}
+
 // shellSafeExpandEnv expands ${VAR} references in text using the host
 // environment, escaping characters that are special inside double quotes
 // (", $, `, \) so the result is safe to source as a shell script.
 // Templates use the standard export FOO="${FOO}" pattern; this function
 // ensures substituted values cannot break out of the double-quote context.
+// OIDC credential vars are refused (expand to empty) to prevent leaking
+// mint-usable credentials into sandbox-bound files (#5832).
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return escapeForDoubleQuotes(os.Getenv(key))
 	})
 }
@@ -2155,7 +2217,9 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(), validationEnv(h, "", runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, "", runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -2169,6 +2233,21 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, validationFailMessage(valOut, valErr)))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
+}
+
+// stripOIDCEnv returns a copy of env with OIDC credential entries removed.
+// Use this to filter os.Environ() slices in contexts where childScriptEnv is
+// not applicable (e.g., validation scripts that compose their env differently).
+// See #5832.
+func stripOIDCEnv(env []string) []string {
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
@@ -2349,13 +2428,22 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 // match, so a stale value would shadow fullsend's own, and fullsend's trace
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
+//
+// OIDC credential vars (oidcDenyKeys) are stripped so user-authored pre/post
+// scripts and validation/preflight commands cannot mint their own tokens.
+// The parent harness process retains them for mintAgentToken. See #5832.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := append(os.Environ(), envToList(runnerEnv)...)
 	env := make([]string, 0, len(merged)+1)
 	for _, e := range merged {
-		if !strings.HasPrefix(e, "TRACEPARENT=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			continue
 		}
+		// Strip OIDC credential vars from child script env (#5832).
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		env = append(env, e)
 	}
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)

@@ -42,10 +42,11 @@ type mintResponse struct {
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 type statusResponse struct {
-	Org     string   `json:"org"`
-	Roles   []string `json:"roles"`
-	Version string   `json:"version,omitempty"`
-	Commit  string   `json:"commit,omitempty"`
+	Org                 string   `json:"org"`
+	Roles               []string `json:"roles"`
+	Version             string   `json:"version,omitempty"`
+	Commit              string   `json:"commit,omitempty"`
+	PerOrgForeignCompat bool     `json:"per_org_foreign_compat"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
@@ -64,6 +65,9 @@ type Handler struct {
 	foreignInflight map[string]*foreignInflight
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
+
+	// perOrgForeignCompat enables org-mode repos shapes under PER_ORG_FOREIGN_COMPAT.
+	perOrgForeignCompat bool
 }
 
 type foreignInflight struct {
@@ -82,13 +86,14 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	h := &Handler{
-		httpClient:      httpClient,
-		pemAccessor:     pemAccessor,
-		oidcVerifier:    oidcVerifier,
-		githubBaseURL:   "https://api.github.com",
-		foreignCache:    make(map[string]foreignCacheEntry),
-		foreignInflight: make(map[string]*foreignInflight),
-		foreignCacheTTL: defaultForeignCacheTTL,
+		httpClient:          httpClient,
+		pemAccessor:         pemAccessor,
+		oidcVerifier:        oidcVerifier,
+		githubBaseURL:       "https://api.github.com",
+		foreignCache:        make(map[string]foreignCacheEntry),
+		foreignInflight:     make(map[string]*foreignInflight),
+		foreignCacheTTL:     defaultForeignCacheTTL,
+		perOrgForeignCompat: EnvTruthy(os.Getenv("PER_ORG_FOREIGN_COMPAT")),
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -200,6 +205,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Repos = normalizeMintRepos(req.Repos)
+
 	if len(req.Repos) > maxRepos {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many repos (max %d)", maxRepos))
 		return
@@ -233,6 +240,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetOrg = callerOrg
 	}
 
+	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
+	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, h.perOrgForeignCompat)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if shape != "" {
+		log.Printf("PER_ORG_FOREIGN_COMPAT allowed repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
+			shape, req.Repos, claims.Repository, targetOrg, req.Role)
+	}
+
 	if len(req.Repos) == 0 {
 		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
 			targetOrg, req.Role, callerOrg, claims.Repository)
@@ -241,7 +259,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var token, expiresAt string
 	var granted *GrantedScope
 
-	if strings.EqualFold(targetOrg, callerOrg) {
+	if !isTargetForeign {
 		token, expiresAt, granted, err = h.mintToken(ctx, callerOrg, req.Role, req.Repos)
 	} else {
 		token, expiresAt, granted, err = h.mintTokenCrossOrg(ctx, claims, targetOrg, req.Role, req.Repos)
@@ -328,10 +346,11 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:     org,
-		Roles:   roles,
-		Version: Version,
-		Commit:  Commit,
+		Org:                 org,
+		Roles:               roles,
+		Version:             Version,
+		Commit:              Commit,
+		PerOrgForeignCompat: h.perOrgForeignCompat,
 	}); err != nil {
 		log.Printf("encoding status response: %v", err)
 	}

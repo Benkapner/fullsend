@@ -329,19 +329,6 @@ secrets were manually modified. To resolve, either:
   both secrets together.
 - Manually create the missing secret with the correct value.
 
-### GitLab scaffold limitation
-
-`repos install` only supports GitHub repos for scaffold generation.
-GitLab repos in the manifest will fail during the provision phase with:
-
-```
-GitLab scaffold generation is not yet implemented; install is only supported for GitHub repos
-```
-
-GitLab repos can still use `repos status` (read-only drift detection)
-and `repos uninstall` (teardown). Scaffold provisioning for GitLab repos
-must be performed manually until GitLab support is implemented.
-
 ## Migrating from per-org mode to manifest management
 
 Organizations migrating from per-org mode to per-repo manifest management

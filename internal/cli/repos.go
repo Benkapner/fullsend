@@ -13,6 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -402,6 +403,9 @@ type reposInstallConfig struct {
 	inferenceProjectNumber string
 	inferenceRegion        string
 
+	// GitLab-specific
+	gitlabBotToken string
+
 	// Per-repo overrides
 	fullsendRef            string
 	mintURL                string
@@ -434,6 +438,9 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
 			opts.gitlabToken = getGitLabToken(cmd)
+			if opts.gitlabBotToken == "" {
+				opts.gitlabBotToken = os.Getenv("FULLSEND_GITLAB_BOT_TOKEN")
+			}
 			return runReposInstall(cmd.Context(), opts)
 		},
 	}
@@ -451,6 +458,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
+	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
 
 	return cmd
 }
@@ -626,6 +634,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
 		commitMsg := "chore: initialize fullsend per-repo installation"
+		if rc.Forge == repos.ForgeGitLab {
+			commitMsg += " [skip ci]"
+		}
 		prTitle := "chore: initialize fullsend per-repo installation"
 		prBody := defaultScaffoldPRBody
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
@@ -667,6 +678,53 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	result, err := repos.BatchInstall(ctx, cfg, clients, scaffoldCommitFn, progressFn)
 	if err != nil {
 		return err
+	}
+
+	// GitLab post-install: set up bot token and pipeline schedules for
+	// newly installed GitLab repos. Bot token failures are treated as install
+	// failures because the repo is non-functional without FULLSEND_FORGE_TOKEN.
+	var postInstallFailed int
+	if !opts.dryRun && len(result.Installed) > 0 {
+		for _, r := range result.Installed {
+			rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+			if !ok || rc.Forge != repos.ForgeGitLab {
+				continue
+			}
+			repoFullName := r.Owner + "/" + r.Repo
+			printer.Blank()
+			printer.StepStart(fmt.Sprintf("[%s] GitLab post-install setup", repoFullName))
+
+			fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+			if fcErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client: %v", repoFullName, fcErr))
+				postInstallFailed++
+				continue
+			}
+			glClient, ok := fc.Client.(*gl.LiveClient)
+			if !ok {
+				printer.StepWarn(fmt.Sprintf("[%s] GitLab client type assertion failed — bot token setup skipped", repoFullName))
+				postInstallFailed++
+				continue
+			}
+
+			_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken)
+			if botErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Bot token setup failed: %v", repoFullName, botErr))
+				postInstallFailed++
+				continue
+			}
+
+			targetRepo, repoErr := fc.Client.GetRepo(ctx, r.Owner, r.Repo)
+			if repoErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Could not get repo info for schedule setup: %v", repoFullName, repoErr))
+				continue
+			}
+
+			_, schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
+			if schedErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
+			}
+		}
 	}
 
 	// Phase 2: converge already-installed repos (variable reconciliation + ref upgrade).
@@ -794,8 +852,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	printer.Blank()
-	installed := len(result.Installed)
-	failed := len(result.Failed) + len(failedRepos)
+	installed := len(result.Installed) - postInstallFailed
+	failed := len(result.Failed) + len(failedRepos) + postInstallFailed
 
 	for _, r := range result.Failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
@@ -805,7 +863,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		installed, converged, alreadyCurrent, failed))
 
 	if failed > 0 {
-		return fmt.Errorf("%d repos failed during convergence", failed)
+		return fmt.Errorf("%d repos failed", failed)
 	}
 	return nil
 }
@@ -961,6 +1019,40 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			} else {
 				teardownFailed++
 				printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+			}
+		}
+
+		// GitLab post-uninstall: clean up pipeline schedules and bot tokens.
+		// Note: if the CLI's --gitlab-token lacks permission to list/revoke
+		// project access tokens, the bot token will be orphaned. The user
+		// must manually revoke it via Settings → Access Tokens.
+		if !opts.dryRun {
+			for _, r := range results {
+				if !r.Success {
+					continue
+				}
+				rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+				if !ok || rc.Forge != repos.ForgeGitLab {
+					continue
+				}
+				repoFullName := r.Owner + "/" + r.Repo
+				printer.Blank()
+				printer.StepStart(fmt.Sprintf("[%s] GitLab cleanup", repoFullName))
+
+				fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+				if fcErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client: %v", repoFullName, fcErr))
+					continue
+				}
+				glClient, ok := fc.Client.(*gl.LiveClient)
+				if !ok {
+					printer.StepWarn(fmt.Sprintf("[%s] GitLab client type assertion failed — bot token cleanup skipped", repoFullName))
+					_ = cleanupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo)
+					continue
+				}
+
+				_ = cleanupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo)
+				_ = cleanupGitLabBotToken(ctx, glClient, printer, r.Owner, r.Repo)
 			}
 		}
 	} else {

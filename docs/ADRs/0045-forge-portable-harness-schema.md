@@ -249,6 +249,7 @@ compatibility.
 | `skills`           | Some skills wrap forge-specific APIs               |
 | `runner_env`       | Token names and event URLs differ per forge        |
 | `validation_loop`  | Validation scripts may call forge-specific tools   |
+| `policy`           | Sandbox policies may need forge-specific filesystem or process rules; network access is managed via providers (ADR-0065) but non-network policy sections can still differ per forge |
 
 #### Fields that stay at top level only (platform-neutral)
 
@@ -257,7 +258,6 @@ compatibility.
 | `agent`            | Agent definitions are forge-agnostic               |
 | `model`            | Model selection is independent of forge             |
 | `image`            | Container images are platform-neutral              |
-| `policy`           | Sandbox policies describe capabilities, not forges |
 | `host_files`       | File delivery is a runner concern, not forge        |
 | `providers`        | OpenShell providers are forge-agnostic             |
 | `api_servers`      | REST proxies abstract forge details                |
@@ -471,6 +471,7 @@ operational config file.
 type ForgeConfig struct {
     PreScript      string            `yaml:"pre_script,omitempty"`
     PostScript     string            `yaml:"post_script,omitempty"`
+    Policy         string            `yaml:"policy,omitempty"`
     Skills         []string          `yaml:"skills,omitempty"`
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
