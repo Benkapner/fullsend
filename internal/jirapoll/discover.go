@@ -158,6 +158,18 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 		if firstPoll && !activityAt.After(backfillCutoff) {
 			continue
 		}
+		// Attribute the event to whoever's action surfaced it. For an
+		// edit-detected comment that is the editor (updateAuthor), NOT the
+		// original author: a user with Edit-All-Comments can rewrite
+		// someone else's comment to inject a slash command, and running
+		// that attacker-authored text under the original author's role
+		// would bypass the ADR 0054 authorization gate. Fall back to the
+		// author when updateAuthor is unset (Jira omits it on unedited
+		// comments) or when the edit baseline was unusable.
+		author := comment.Author
+		if edited && comment.UpdateAuthor.AccountID != "" {
+			author = comment.UpdateAuthor
+		}
 		events = append(events, JiraEvent{
 			Type:          "comment_added",
 			IssueID:       issue.ID,
@@ -168,7 +180,7 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 			Labels:        issue.Fields.Labels,
 			CommentID:     comment.ID,
 			CommentBody:   extractPlainText(comment.Body),
-			CommentAuthor: comment.Author,
+			CommentAuthor: author,
 			Reporter:      issue.Fields.Reporter,
 		})
 	}
@@ -387,7 +399,9 @@ func (p *Poller) mapStatusTransition(ctx context.Context, item jira.ChangeItem) 
 }
 
 // extractPlainText extracts plain text from a Jira comment body.
-// Handles both ADF (map[string]any) and plain string formats.
+// Handles both ADF (map[string]any) and plain string formats; an absent
+// or unexpected body yields "" rather than a Go-formatted dump like
+// "<nil>", which would otherwise show up as comment text downstream.
 func extractPlainText(body any) string {
 	switch v := body.(type) {
 	case string:
@@ -395,7 +409,7 @@ func extractPlainText(body any) string {
 	case map[string]any:
 		return extractADFText(v)
 	default:
-		return fmt.Sprintf("%v", body)
+		return ""
 	}
 }
 

@@ -543,6 +543,158 @@ func TestRunRoleLoadFailure_FailsCycle(t *testing.T) {
 	}
 }
 
+// TestDetectChanges_EditedCommentAttributedToEditor: a comment edited by
+// someone other than its author must be attributed to the EDITOR, not the
+// original author — otherwise attacker-injected slash-command text runs
+// under the author's (possibly privileged) role.
+func TestDetectChanges_EditedCommentAttributedToEditor(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	created := now.Add(-48 * time.Hour)
+	updated := now.Add(-10 * time.Minute)
+	mc := newMockClient()
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:           "1",
+			Body:         "/fs-code injected instruction",
+			Created:      created.Format("2006-01-02T15:04:05.000-0700"),
+			Updated:      updated.Format("2006-01-02T15:04:05.000-0700"),
+			Author:       jira.User{AccountID: "admin-victim", AccountType: "atlassian"},
+			UpdateAuthor: jira.User{AccountID: "attacker-editor", AccountType: "atlassian"},
+		},
+	}
+
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  created.Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}
+	result, err := p.detectChanges(context.Background(), issue, lastCheck)
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+	var found bool
+	for _, e := range result.events {
+		if e.Type == "comment_added" && e.CommentID == "1" {
+			found = true
+			if e.CommentAuthor.AccountID != "attacker-editor" {
+				t.Errorf("edited comment attributed to %q, want the editor %q", e.CommentAuthor.AccountID, "attacker-editor")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected the edited comment to surface")
+	}
+}
+
+// TestReadLastCheck_ClampsUntrustedValues: lastCheck is attacker-writable,
+// so a future value is treated as unset (bounded first-poll path) and a
+// value older than the backfill window is floored.
+func TestReadLastCheck_ClampsUntrustedValues(t *testing.T) {
+	now := time.Now()
+	mc := newMockClient()
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
+
+	// Future value → treated as unset (zero).
+	if err := p.advanceLastCheck(context.Background(), "PROJ-1", now.Add(48*time.Hour)); err != nil {
+		t.Fatalf("seed future lastCheck: %v", err)
+	}
+	got, err := p.readLastCheck(context.Background(), "PROJ-1")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if !got.IsZero() {
+		t.Errorf("future lastCheck = %v, want zero (treated as unset)", got)
+	}
+
+	// Ancient rewind → floored at now - backfill window (default 24h).
+	if err := p.advanceLastCheck(context.Background(), "PROJ-2", time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("seed ancient lastCheck: %v", err)
+	}
+	got, err = p.readLastCheck(context.Background(), "PROJ-2")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	floor := now.Add(-24 * time.Hour)
+	if got.Before(floor.Add(-time.Minute)) {
+		t.Errorf("ancient lastCheck = %v, want clamped to ~%v (backfill floor)", got, floor)
+	}
+}
+
+// TestIsLockStale_FutureTimestampIsStale: a future-dated lock (clock skew
+// beyond tolerance or a tampered value) must be reclaimable, not treated
+// as forever-fresh.
+func TestIsLockStale_FutureTimestampIsStale(t *testing.T) {
+	threshold := 900 * time.Second
+	future := LockValue{ID: "x", TS: time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)}
+	if !isLockStale(future, threshold) {
+		t.Error("a far-future lock timestamp must be treated as stale/reclaimable")
+	}
+	// A small future skew (within threshold) is not stale.
+	skew := LockValue{ID: "x", TS: time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339)}
+	if isLockStale(skew, threshold) {
+		t.Error("a small clock-skew-sized future offset must not be treated as stale")
+	}
+}
+
+// TestPropertyKey_DottedSlugsDoNotCollide: distinct target repos with dots
+// must not collapse to the same lock/lastCheck property key.
+func TestPropertyKey_DottedSlugsDoNotCollide(t *testing.T) {
+	o1, r1 := splitOwnerRepo("a.b/c")
+	o2, r2 := splitOwnerRepo("a/b.c")
+	if lockPropertyKey(o1, r1) == lockPropertyKey(o2, r2) {
+		t.Errorf("dotted slugs a.b/c and a/b.c collide on lock key %q", lockPropertyKey(o1, r1))
+	}
+	// Common dot-free slug keeps the readable, documented format.
+	if got := lockPropertyKey(splitOwnerRepo("acme/platform")); got != "fullsend.poll.acme.platform.lock" {
+		t.Errorf("dot-free key = %q, want the documented fullsend.poll.acme.platform.lock", got)
+	}
+}
+
+// TestProcessIssue_CapsEventsPerIssue: a single issue producing more than
+// maxEventsPerIssue routable events truncates dispatch to the cap.
+func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	mc := newMockClient()
+	var comments []jira.Comment
+	for i := 0; i < maxEventsPerIssue+25; i++ {
+		comments = append(comments, jira.Comment{
+			ID:      fmt.Sprintf("%d", i),
+			Body:    "/fs-triage go",
+			Created: now.Add(-time.Duration(i) * time.Second).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+		})
+	}
+	mc.comments["PROJ-123"] = comments
+	mc.roleMembership = map[string]string{"u1": "Developers"}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+	if _, err := p.processIssue(context.Background(), jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-id"},
+			Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+		},
+	}, "cycle-1"); err != nil {
+		// seed a lastCheck so it's not a first poll
+		_ = lastCheck
+		t.Fatalf("processIssue() error: %v", err)
+	}
+	if len(p.dispatches) > maxEventsPerIssue {
+		t.Errorf("dispatched %d records, want capped at %d", len(p.dispatches), maxEventsPerIssue)
+	}
+}
+
 func TestRunLabelChange(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
@@ -975,7 +1127,10 @@ func TestRunNoChangesSinceLastCheck(t *testing.T) {
 		},
 	}
 
-	setLastCheck(mc, "PROJ-123", "acme", "platform", now.Add(1*time.Hour))
+	// lastCheck at "now" (present, not future): all activity below is
+	// older, so nothing dispatches. A future value would be treated as an
+	// untrusted suppression attempt and reset (see readLastCheck clamp).
+	setLastCheck(mc, "PROJ-123", "acme", "platform", now)
 
 	mc.comments["PROJ-123"] = []jira.Comment{
 		{
@@ -1813,7 +1968,10 @@ func TestLastCheck_SubSecondPrecision(t *testing.T) {
 	p := newTestPoller(mc, nil, Options{TargetRepo: "acme/platform"})
 
 	ctx := context.Background()
-	ts := time.Date(2026, 7, 30, 19, 23, 30, 556000000, time.UTC) // .556s
+	// A recent value (within the backfill window) with sub-second nanos:
+	// recent so the untrusted-value clamp in readLastCheck leaves it
+	// intact, letting this pin the RFC3339Nano round-trip precision.
+	ts := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Millisecond)
 
 	if err := p.advanceLastCheck(ctx, "PROJ-123", ts); err != nil {
 		t.Fatalf("advanceLastCheck() error: %v", err)

@@ -21,6 +21,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// maxEventsPerIssue bounds how many routable events one issue can dispatch
+// in a single cycle (see the cap in processIssue). Set well above any
+// normal per-cycle volume so it only trips on a flood.
+const maxEventsPerIssue = 100
+
 // validProjectKey matches Jira Cloud project keys: 2–10 uppercase
 // alphanumeric characters, starting with a letter. Jira Cloud only allows
 // uppercase letters and digits in project keys (the driver is Cloud-only;
@@ -319,6 +324,21 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 
 	// Filter bot events.
 	events = filterBotEvents(events)
+
+	// Cap events dispatched per issue per cycle. A single issue should
+	// never legitimately produce this many routable events in one 5-minute
+	// cycle; a flood means either a rewound lastCheck replaying history
+	// (bounded to one backfill window by readLastCheck, but a busy issue
+	// can still hold many comments in that window) or a genuine bulk
+	// import. Truncating with a loud WARNING bounds the blast radius —
+	// number of agent workflow runs, and thus Actions minutes / model
+	// spend / actions:write rate-limit pressure — an attacker or accident
+	// can trigger from one issue. The checkpoint still advances past all
+	// inspected entries, so overflow is not re-processed next cycle.
+	if len(events) > maxEventsPerIssue {
+		log.Printf("WARNING: %s produced %d routable events this cycle; capping dispatch at %d (possible lastCheck rewind or bulk change)", issue.Key, len(events), maxEventsPerIssue)
+		events = events[:maxEventsPerIssue]
+	}
 
 	// Convert, route, dispatch. A transiently failing event is skipped
 	// rather than retried: the checkpoint advances past all inspected

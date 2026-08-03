@@ -13,14 +13,24 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+// escapeKeySegment escapes dots in an owner/repo segment so the
+// dot-delimited property key can't be forged by two different target
+// repos. Without it, "a.b/c" and "a/b.c" both collapse to
+// fullsend.poll.a.b.c.*, silently sharing a lock and checkpoint namespace
+// (a cross-repo event-loss bug). Dot-free segments (the common case,
+// including every GitHub owner) are unchanged.
+func escapeKeySegment(s string) string {
+	return strings.ReplaceAll(s, ".", "%2E")
+}
+
 // lockPropertyKey returns the entity property key for locks.
 func lockPropertyKey(owner, repo string) string {
-	return fmt.Sprintf("fullsend.poll.%s.%s.lock", owner, repo)
+	return fmt.Sprintf("fullsend.poll.%s.%s.lock", escapeKeySegment(owner), escapeKeySegment(repo))
 }
 
 // lastCheckPropertyKey returns the entity property key for lastCheck.
 func lastCheckPropertyKey(owner, repo string) string {
-	return fmt.Sprintf("fullsend.poll.%s.%s.lastCheck", owner, repo)
+	return fmt.Sprintf("fullsend.poll.%s.%s.lastCheck", escapeKeySegment(owner), escapeKeySegment(repo))
 }
 
 // splitOwnerRepo splits "owner/repo" into owner and repo.
@@ -120,7 +130,10 @@ func (p *Poller) releaseLock(ctx context.Context, issueKey, expectedID string) e
 			return fmt.Errorf("unmarshal lock before release: %w", err)
 		}
 		if current.ID != expectedID {
-			log.Printf("lock on %s owned by %s, not %s; skipping release", issueKey, current.ID, expectedID)
+			// current.ID comes from an attacker-writable entity property;
+			// log it quoted so a crafted id with newlines can't forge
+			// audit-log lines.
+			log.Printf("lock on %s owned by %q, not %q; skipping release", issueKey, current.ID, expectedID)
 			return nil
 		}
 	}
@@ -155,6 +168,30 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse lastCheck: %w", err)
 	}
+
+	// lastCheck lives in an issue entity property writable by anyone with
+	// Jira's Edit-Issues permission — broader than the role this driver
+	// maps to "write". Treat the stored value as untrusted and clamp it:
+	//   - A future value (beyond small clock skew) is corrupt or a
+	//     suppression attempt (it would filter out all real activity).
+	//     Treat it as unset so the bounded first-poll backfill path runs
+	//     and the next checkpoint advance overwrites the poisoned value.
+	//   - A value older than the backfill window is a rewind: left as-is
+	//     it bypasses the window (firstPoll is false for any non-zero
+	//     value) and replays the issue's entire history — re-dispatching
+	//     old privileged slash commands under their authors' roles. Floor
+	//     it at now-window so a rewind can replay at most one window, the
+	//     same bound a genuine first poll already permits.
+	now := time.Now()
+	const clockSkew = 2 * time.Minute
+	if t.After(now.Add(clockSkew)) {
+		log.Printf("WARNING: lastCheck for %s is in the future (%q); treating as unset", issueKey, ts)
+		return time.Time{}, nil
+	}
+	if floor := now.Add(-p.opts.FirstPollBackfillWindow); t.Before(floor) {
+		log.Printf("WARNING: lastCheck for %s (%q) predates the backfill window; clamping to %s", issueKey, ts, floor.UTC().Format(time.RFC3339))
+		return floor, nil
+	}
 	return t, nil
 }
 
@@ -165,14 +202,25 @@ func (p *Poller) advanceLastCheck(ctx context.Context, issueKey string, t time.T
 	return p.client.SetEntityProperty(ctx, issueKey, propKey, t.UTC().Format(time.RFC3339Nano))
 }
 
-// isLockStale checks if a lock has exceeded the stale threshold.
+// isLockStale checks if a lock has exceeded the stale threshold. The lock
+// timestamp is attacker-writable (issue entity property), so both a
+// corrupt/unparseable value and one dated in the future are treated as
+// stale (reclaimable): otherwise a future-dated ts gives time.Since a
+// negative value that never exceeds the threshold, permanently wedging the
+// issue with no way to recover but manual deletion.
 func isLockStale(lock LockValue, threshold time.Duration) bool {
 	t, err := time.Parse(time.RFC3339, lock.TS)
 	if err != nil {
-		// Unparseable timestamp is treated as stale.
 		return true
 	}
-	return time.Since(t) > threshold
+	age := time.Since(t)
+	// A small negative age is normal clock skew from a peer that just
+	// wrote the lock; only a ts more than one threshold ahead of now is
+	// treated as corrupt/tampered and reclaimable.
+	if age < -threshold {
+		return true
+	}
+	return age > threshold
 }
 
 // readLock reads the lock value for an issue. Returns nil if no lock exists.
