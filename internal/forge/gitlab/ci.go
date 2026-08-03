@@ -450,6 +450,11 @@ func (c *LiveClient) ListRecentWorkflowRuns(_ context.Context, _, _ string, _ in
 	return nil, forge.ErrNotSupported
 }
 
+// ListWorkflowRunJobs is not supported on GitLab (GitHub Actions concept).
+func (c *LiveClient) ListWorkflowRunJobs(_ context.Context, _, _ string, _ int) ([]forge.WorkflowJob, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // ListWorkflowRunArtifacts is not supported on GitLab (GitHub Actions concept).
 func (c *LiveClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, _ int) ([]forge.WorkflowArtifact, error) {
 	return nil, forge.ErrNotSupported
