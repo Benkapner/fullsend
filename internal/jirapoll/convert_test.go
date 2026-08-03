@@ -333,6 +333,7 @@ func TestActorKind_DisplayNameAutomationSuffix(t *testing.T) {
 		{"bot suffix bracketed", "renovate[bot]", "bot"},
 		{"automation suffix with space", "ACME Automation", "bot"},
 		{"automation suffix with hyphen", "release-automation", "bot"},
+		{"Atlassian's built-in automation actor", "Automation for Jira", "bot"},
 		{"bot substring mid-name, no delimiter", "Marbot Jenkins", "human"},
 		{"bot as literal suffix, no delimiter", "Dependabot", "human"},
 		{"plain human name", "Wayne Sun", "human"},

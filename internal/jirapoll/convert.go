@@ -1,6 +1,7 @@
 package jirapoll
 
 import (
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -90,9 +91,15 @@ func mapRawAction(event JiraEvent) string {
 	}
 }
 
-// parseIssueID converts a Jira issue ID string to int.
+// parseIssueID converts a Jira issue ID string to int. Jira always returns
+// numeric ID strings for issues; a parse failure would mean entity.id is
+// silently written as 0 (schema-invalid), so it's logged rather than
+// swallowed even though it isn't expected to happen in practice.
 func parseIssueID(id string) int {
-	n, _ := strconv.Atoi(id)
+	n, err := strconv.Atoi(id)
+	if err != nil {
+		log.Printf("WARNING: unparseable Jira issue id %q, using 0: %v", id, err)
+	}
 	return n
 }
 
@@ -124,9 +131,12 @@ func userID(u jira.User) string {
 // automationDisplayNamePattern matches display names ending in "bot" or
 // "automation" as a delimited suffix (preceded by whitespace, a hyphen,
 // underscore, or opening bracket, and optionally followed by a closing
-// bracket). This avoids false positives on names that merely contain "bot"
-// or "automation" as a substring (e.g. "Marbot", "Dependabot").
-var automationDisplayNamePattern = regexp.MustCompile(`(?i)[\s\-_\[](bot|automation)\]?$`)
+// bracket), or starting with "Automation for" — Atlassian's own built-in
+// rule-engine actor is named "Automation for Jira", which the suffix-only
+// pattern misses since "automation" isn't the last word. Delimiting the
+// suffix avoids false positives on names that merely contain "bot" or
+// "automation" as a substring (e.g. "Marbot", "Dependabot").
+var automationDisplayNamePattern = regexp.MustCompile(`(?i)(^automation for |[\s\-_\[](bot|automation)\]?$)`)
 
 // actorKind returns "bot" or "human" based on the actor's account type or,
 // per the jira-poll-adapter spec, a display name matching an automation
