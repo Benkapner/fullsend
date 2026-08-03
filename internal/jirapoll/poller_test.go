@@ -336,6 +336,59 @@ func TestRunHappyPath_CommentWithSlashCommand(t *testing.T) {
 	}
 }
 
+// TestRunDispatchWriteFailure_NoCheckpointCommitted is a regression test:
+// checkpoints must not advance in Jira until the dispatch file has been
+// durably written. Previously each issue's lastCheck advanced inline
+// during processing, before the dispatch file write in Step 5 — a local
+// write failure after that point meant every event this cycle found was
+// checkpointed past with no record of it ever written anywhere.
+func TestRunDispatchWriteFailure_NoCheckpointCommitted(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{
+		"557058:abc123def456": "Developers",
+	}
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage check acceptance criteria",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "557058:abc123def456", AccountType: "atlassian"},
+		},
+	}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		// A path under a nonexistent directory: os.WriteFile fails.
+		OutputPath: filepath.Join(t.TempDir(), "no-such-dir", "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err == nil {
+		t.Fatal("expected Run() to return an error when the dispatch file write fails")
+	}
+
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if !lastCheck.IsZero() {
+		t.Errorf("expected lastCheck to remain unset after a failed dispatch write, got %v", lastCheck)
+	}
+}
+
 func TestRunLabelChange(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
@@ -469,6 +522,43 @@ func TestRunBotFiltering(t *testing.T) {
 	}
 	if len(dispatches) != 0 {
 		t.Errorf("expected 0 dispatches (bot filtered), got %d", len(dispatches))
+	}
+}
+
+// TestAttemptLock_LiveLockRejectedWithoutWriting is a regression test:
+// attemptLock previously wrote its own lock unconditionally before ever
+// checking for an existing one, so a poller reaching attemptLock well after
+// filterLocked's read (e.g. behind other candidates in the same cycle)
+// could overwrite an active holder's lock outright and both would proceed
+// to dispatch. attemptLock must now check for a live lock first and bail
+// out without writing.
+func TestAttemptLock_LiveLockRejectedWithoutWriting(t *testing.T) {
+	mc := newMockClient()
+	holder := LockValue{ID: "holder-cycle", TS: time.Now().UTC().Format(time.RFC3339), Phase: "pending"}
+	holderJSON, _ := json.Marshal(holder)
+	mc.properties["PROJ-123"] = map[string]json.RawMessage{
+		"fullsend.poll.acme.platform.lock": holderJSON,
+	}
+
+	p := newTestPoller(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
+
+	acquired, err := p.attemptLock(context.Background(), "PROJ-123", "late-arriver-cycle")
+	if err != nil {
+		t.Fatalf("attemptLock() error: %v", err)
+	}
+	if acquired {
+		t.Error("expected attemptLock to reject a live lock held by another cycle")
+	}
+
+	// The holder's lock must be untouched — attemptLock must not have
+	// written over it before checking.
+	raw := mc.properties["PROJ-123"]["fullsend.poll.acme.platform.lock"]
+	var current LockValue
+	if err := json.Unmarshal(raw, &current); err != nil {
+		t.Fatalf("unmarshal stored lock: %v", err)
+	}
+	if current.ID != "holder-cycle" {
+		t.Errorf("expected the original holder's lock (ID %q) to remain, got ID %q", "holder-cycle", current.ID)
 	}
 }
 

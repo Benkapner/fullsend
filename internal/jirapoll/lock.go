@@ -38,6 +38,24 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
 	propKey := lockPropertyKey(owner, repo)
 
+	// Re-check for a live lock immediately before writing. filterLocked's
+	// read of this issue can be tens of seconds stale by the time we reach
+	// here (earlier candidates in the same cycle still being processed,
+	// role-membership fetches), so without this check a late arriver would
+	// overwrite an active holder's lock outright and both pollers would
+	// proceed to dispatch. This is not a compare-and-swap — Jira entity
+	// properties don't support one — so a lock written in the gap between
+	// this read and our SetEntityProperty below can still be clobbered;
+	// that narrower race is the one write-then-verify below is meant to
+	// catch via the jitter/re-read.
+	existing, err := p.readLock(ctx, issueKey)
+	if err != nil {
+		return false, fmt.Errorf("check existing lock: %w", err)
+	}
+	if existing != nil && !isLockStale(*existing, p.opts.StaleThreshold) {
+		return false, nil
+	}
+
 	lock := LockValue{
 		ID:    lockID,
 		TS:    time.Now().UTC().Format(time.RFC3339),

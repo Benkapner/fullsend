@@ -60,6 +60,21 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 	firstPoll := lastCheck.IsZero()
 	backfillCutoff := time.Now().Add(-p.opts.FirstPollBackfillWindow)
 
+	// Comments and changelog are fetched via two independent, sequential
+	// API calls below, not an atomic snapshot. An entry created between the
+	// two calls can end up with a timestamp earlier than one fetched by the
+	// second call, so maxSeen (computed from both) could otherwise advance
+	// the checkpoint past that entry's timestamp before it was ever
+	// fetched — permanently skipping it. fetchStart marks the start of this
+	// fetch sequence; maxSeen is clamped to fetchStart minus a safety
+	// margin below so the checkpoint never advances into the window where
+	// such a gap could exist. The trade-off is that activity landing inside
+	// the margin can be re-detected (and re-dispatched) on the very next
+	// cycle — an accepted, already-self-correcting case, same as any other
+	// duplicate dispatch.
+	const changeDetectionSafetyMargin = 10 * time.Second
+	fetchStart := time.Now()
+
 	// If lastCheck is zero, this is the first poll for this issue: emit
 	// "opened", but only when the issue itself was created within the
 	// backfill window. Every issue in a project starts with an unset
@@ -191,6 +206,10 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 			}
 			events = append(events, changeEvents...)
 		}
+	}
+
+	if safeCeiling := fetchStart.Add(-changeDetectionSafetyMargin); maxSeen.After(safeCeiling) {
+		maxSeen = safeCeiling
 	}
 
 	return changeResult{events: events, maxSeen: maxSeen}, nil

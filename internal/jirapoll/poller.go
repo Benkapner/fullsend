@@ -99,12 +99,25 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Step 4: Process each selected issue.
+	// Step 4: Process each selected issue. Checkpoint advances are not
+	// committed to Jira here — detectChanges/routing only compute the
+	// candidate checkpoint per issue; processIssue returns it (zero if
+	// there's nothing to advance) and Step 6 below commits it only after
+	// Step 5's dispatch-file write has durably succeeded. Committing here
+	// instead would mean a local write failure permanently loses every
+	// event this cycle found: the checkpoint would already be past them in
+	// Jira with no record of them ever written anywhere.
+	var pending []pendingCheckpoint
 	var processErrors int
 	for _, issue := range selected {
-		if err := p.processIssue(ctx, issue, cycleID); err != nil {
+		checkpoint, err := p.processIssue(ctx, issue, cycleID)
+		if err != nil {
 			log.Printf("WARNING: processing %s: %v", issue.Key, err)
 			processErrors++
+			continue
+		}
+		if !checkpoint.IsZero() {
+			pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint})
 		}
 	}
 	if processErrors > 0 && processErrors == len(selected) {
@@ -118,9 +131,36 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
+	// KNOWN LIMITATION: dispatch records are only *scheduled* by a separate
+	// downstream CI step (see docs/guides/user/jira-integration.md) that is
+	// not yet confirmed back to the poller. Per ADR 0063, lastCheck should
+	// only advance once the output driver confirms scheduling — until a
+	// real output driver replaces the shell-based dispatch step (tracked
+	// follow-up), a failure in that downstream step will silently drop the
+	// event instead of being retried. Local persistence of dispatches.json
+	// itself is durable before Step 6 below commits any checkpoint.
+	if len(p.dispatches) > 0 {
+		log.Printf("WARNING: committing checkpoints for %d dispatch(es) not yet confirmed as scheduled downstream; see KNOWN LIMITATION note in Run", len(p.dispatches))
+	}
+
+	// Step 6: Commit checkpoints now that the dispatch file is durably
+	// written (or there was nothing to write).
+	for _, pc := range pending {
+		if err := p.advanceLastCheck(ctx, pc.issueKey, pc.t); err != nil {
+			log.Printf("WARNING: advancing lastCheck for %s: %v", pc.issueKey, err)
+		}
+	}
+
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
 	return nil
+}
+
+// pendingCheckpoint holds a computed lastCheck value for an issue, deferred
+// until the dispatch file write succeeds (see Run).
+type pendingCheckpoint struct {
+	issueKey string
+	t        time.Time
 }
 
 // searchCandidates executes JQL and collects up to M results.
@@ -183,17 +223,19 @@ func selectRandom(items []jira.Issue, n int) []jira.Issue {
 	return items[:n]
 }
 
-// processIssue acquires the lock, detects changes, converts, routes,
-// dispatches, and advances lastCheck.
-func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID string) error {
+// processIssue acquires the lock, detects changes, converts, routes, and
+// dispatches. It returns the checkpoint value the caller should advance
+// lastCheck to once the dispatch file has been durably written (zero if
+// there is nothing to advance) — it does not commit the checkpoint itself.
+func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID string) (time.Time, error) {
 	// Attempt lock.
 	acquired, err := p.attemptLock(ctx, issue.Key, cycleID)
 	if err != nil {
-		return fmt.Errorf("lock %s: %w", issue.Key, err)
+		return time.Time{}, fmt.Errorf("lock %s: %w", issue.Key, err)
 	}
 	if !acquired {
 		log.Printf("lock contention on %s, skipping", issue.Key)
-		return nil
+		return time.Time{}, nil
 	}
 	// KNOWN LIMITATION: the lock covers the change-detection window only.
 	// It is released here at the end of processIssue — before writeDispatches
@@ -213,24 +255,20 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// Read lastCheck.
 	lastCheck, err := p.readLastCheck(ctx, issue.Key)
 	if err != nil {
-		return fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
+		return time.Time{}, fmt.Errorf("read lastCheck for %s: %w", issue.Key, err)
 	}
 	// Detect changes.
 	result, err := p.detectChanges(ctx, issue, lastCheck)
 	if err != nil {
-		return fmt.Errorf("detect changes for %s: %w", issue.Key, err)
+		return time.Time{}, fmt.Errorf("detect changes for %s: %w", issue.Key, err)
 	}
 
 	if len(result.events) == 0 {
 		// No routable events, but there may have been changelog entries
-		// with unsupported fields. Advance lastCheck past them so the
-		// poller does not re-scan the same updates every cycle.
-		if !result.maxSeen.IsZero() {
-			if err := p.advanceLastCheck(ctx, issue.Key, result.maxSeen); err != nil {
-				log.Printf("WARNING: advancing lastCheck for %s: %v", issue.Key, err)
-			}
-		}
-		return nil
+		// with unsupported fields; result.maxSeen (zero if nothing was
+		// seen at all) still needs to advance the checkpoint past them so
+		// the poller does not re-scan the same updates every cycle.
+		return result.maxSeen, nil
 	}
 
 	// Deduplicate.
@@ -246,7 +284,6 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// across cycles. The trade-off is that a transiently failing event
 	// is skipped rather than retried.
 	maxTime := result.maxSeen
-	dispatchCountBefore := len(p.dispatches)
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
 
@@ -283,26 +320,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		}
 	}
 
-	// KNOWN LIMITATION: lastCheck below advances as soon as routing succeeds,
-	// but the dispatch records written here are only *scheduled* by a
-	// separate downstream CI step (see docs/guides/user/jira-integration.md)
-	// that is not yet confirmed back to the poller. Per ADR 0063, lastCheck
-	// should only advance once the output driver confirms scheduling — until
-	// a real output driver replaces the shell-based dispatch step (tracked
-	// follow-up), a failure in that downstream step will silently drop the
-	// event instead of being retried.
-	if len(p.dispatches) > dispatchCountBefore {
-		log.Printf("WARNING: %s: lastCheck is advancing for %d dispatch(es) that are not yet confirmed as scheduled downstream; see KNOWN LIMITATION note in processIssue", issue.Key, len(p.dispatches)-dispatchCountBefore)
-	}
-
-	// Advance lastCheck.
-	if !maxTime.IsZero() {
-		if err := p.advanceLastCheck(ctx, issue.Key, maxTime); err != nil {
-			log.Printf("WARNING: advancing lastCheck for %s: %v", issue.Key, err)
-		}
-	}
-
-	return nil
+	return maxTime, nil
 }
 
 // deduplicate removes duplicate events based on their Key().
