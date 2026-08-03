@@ -692,13 +692,35 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 }
 
 // ---------------------------------------------------------------------------
+// Instance metadata
+// ---------------------------------------------------------------------------
+
+// IsEnterprise checks the /metadata endpoint to determine if the GitLab
+// instance is running Enterprise Edition. Self-hosted EE instances always
+// have this set to true. Returns false on error or CE instances.
+func (c *LiveClient) IsEnterprise(ctx context.Context) bool {
+	resp, err := c.get(ctx, "/metadata")
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		Enterprise bool `json:"enterprise"`
+	}
+	if err := decodeJSON(resp, &meta); err != nil {
+		return false
+	}
+	return meta.Enterprise
+}
+
+// ---------------------------------------------------------------------------
 // Organization plan
 // ---------------------------------------------------------------------------
 
 // GetOrgPlan returns the billing plan name for a GitLab namespace.
 // Uses the Namespaces API where the plan field is documented, rather
 // than the Groups API where it is undocumented and may be absent.
-// Returns "free" if the plan field is empty.
+// Self-hosted instances typically return "default"; gitlab.com returns
+// the SaaS tier name ("free", "premium", "ultimate", etc.).
 func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/namespaces/%s", url.PathEscape(org)))
 	if err != nil {
@@ -714,4 +736,58 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 		return "free", nil
 	}
 	return ns.Plan, nil
+}
+
+// ---------------------------------------------------------------------------
+// Project Access Tokens
+// ---------------------------------------------------------------------------
+
+// ProjectAccessToken represents a GitLab project access token.
+type ProjectAccessToken struct {
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+	Token  string `json:"token"`
+}
+
+// CreateProjectAccessToken creates a project access token with the given name,
+// scopes, and access level. Returns the token (only available at creation time)
+// and the token ID. accessLevel 40 = Maintainer.
+func (c *LiveClient) CreateProjectAccessToken(ctx context.Context, owner, repo, name string, scopes []string, accessLevel int, expiresAt string) (*ProjectAccessToken, error) {
+	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
+	body := map[string]any{
+		"name":         name,
+		"scopes":       scopes,
+		"access_level": accessLevel,
+		"expires_at":   expiresAt,
+	}
+	resp, err := c.post(ctx, basePath, body)
+	if err != nil {
+		return nil, fmt.Errorf("create project access token: %w", err)
+	}
+	var token ProjectAccessToken
+	if err := decodeJSON(resp, &token); err != nil {
+		return nil, fmt.Errorf("decode project access token: %w", err)
+	}
+	return &token, nil
+}
+
+// ListProjectAccessTokens lists all project access tokens.
+func (c *LiveClient) ListProjectAccessTokens(ctx context.Context, owner, repo string) ([]ProjectAccessToken, error) {
+	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
+	resp, err := c.get(ctx, basePath)
+	if err != nil {
+		return nil, fmt.Errorf("list project access tokens: %w", err)
+	}
+	var tokens []ProjectAccessToken
+	if err := decodeJSON(resp, &tokens); err != nil {
+		return nil, fmt.Errorf("decode project access tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+// RevokeProjectAccessToken revokes (deletes) a project access token by ID.
+func (c *LiveClient) RevokeProjectAccessToken(ctx context.Context, owner, repo string, tokenID int) error {
+	path := fmt.Sprintf("/projects/%s/access_tokens/%d", projectPath(owner, repo), tokenID)
+	return c.delete_(ctx, path)
 }

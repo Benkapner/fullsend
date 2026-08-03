@@ -232,6 +232,8 @@ Secrets and variables are deployed at different scopes depending on the installa
 
 ### Per-Repo Mode Secrets/Variables
 
+#### GitHub
+
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
@@ -240,6 +242,17 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_MINT_URL`
 - `FULLSEND_GCP_REGION` (install-time only, not managed by sync)
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to "true")
+
+#### GitLab
+
+**Target repo CI/CD variables (protected):**
+- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity
+- `FULLSEND_CREDENTIAL_MODE` — Set to `"variable"`
+- `FULLSEND_FORGE` — Set to `"gitlab"`
+- `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to `"true"`)
+- `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last fast poll run
+- `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last full poll run
+- `FULLSEND_LABEL_STATE` — JSON object tracking label sync state
 
 ### Secrets Layer Behavior
 

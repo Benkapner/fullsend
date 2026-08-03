@@ -48,11 +48,20 @@ This is idempotent — it provisions new repos, syncs variable drift, and upgrad
 
 To remove fullsend from a single repository:
 
+**GitHub repos:**
+
 1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
 3. Contact the fullsend team to unenroll the repo from the hosted mint
 
-If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of step 3. See the [standalone commands](#standalone-commands) table for details.
+**GitLab repos:**
+
+1. Delete `.gitlab/ci/fullsend-*.yml`, `.gitlab-ci.yml` (if fullsend-managed), and `.fullsend/config.yaml`
+2. Delete all CI/CD variables prefixed with `FULLSEND_`
+3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
+4. Delete fullsend pipeline schedules
+
+If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of GitHub step 3. See the [standalone commands](#standalone-commands) table for details.
 
 ## Standalone commands
 
