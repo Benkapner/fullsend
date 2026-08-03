@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -98,7 +99,7 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll)")
 	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH)")
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
-	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON")
+	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; ignored by --forge gitlab)")
 	cmd.Flags().StringVar(&pollModeFlag, "poll-mode", "", "Poll mode: fast (slash commands only) or full")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
@@ -150,6 +151,12 @@ type jiraPollArgs struct {
 	fullsendDir string
 }
 
+// validTargetRepo matches "owner/repo" slugs (subgroup segments allowed,
+// matching splitOwnerRepo). Validated up front because a slash-less value
+// would otherwise flow into a silently malformed Jira entity-property lock
+// namespace and into NormalizedEvent.Repo.
+var validTargetRepo = regexp.MustCompile(`^[^/\s]+(/[^/\s]+)+$`)
+
 // validateJiraPollArgs resolves env-var fallbacks and validates required
 // arguments for the jira-poll input driver. It returns the resolved args
 // or a validation error.
@@ -166,6 +173,9 @@ func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputP
 	}
 	if targetRepo == "" {
 		return jiraPollArgs{}, fmt.Errorf("--target-repo or GITHUB_REPOSITORY is required")
+	}
+	if !validTargetRepo.MatchString(targetRepo) {
+		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must be an owner/repo slug", targetRepo)
 	}
 
 	if jiraProject == "" && jqlOverride == "" {
