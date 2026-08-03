@@ -89,7 +89,7 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 	if err != nil {
 		return nil, err
 	}
-	h.perOrgForeignCompat = envTruthy(cfg.PerOrgForeignCompat)
+	h.perOrgForeignCompat = EnvTruthy(cfg.PerOrgForeignCompat)
 	return h, nil
 }
 

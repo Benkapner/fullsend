@@ -93,7 +93,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		foreignCache:        make(map[string]foreignCacheEntry),
 		foreignInflight:     make(map[string]*foreignInflight),
 		foreignCacheTTL:     defaultForeignCacheTTL,
-		perOrgForeignCompat: envTruthy(os.Getenv("PER_ORG_FOREIGN_COMPAT")),
+		perOrgForeignCompat: EnvTruthy(os.Getenv("PER_ORG_FOREIGN_COMPAT")),
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {

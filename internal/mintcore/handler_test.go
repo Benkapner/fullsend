@@ -963,7 +963,7 @@ func TestHandler_ReposScope_CompatOff(t *testing.T) {
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
 		pems: map[string][]byte{"coder": pemData},
 	})
-	token := env.signToken(t, nil) // test-org/.fullsend
+	token := env.signToken(t, nil) // test-org/test-repo (default from signToken)
 
 	body := `{"role":"coder","repos":["api"]}`
 	rec := httptest.NewRecorder()

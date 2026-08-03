@@ -37,12 +37,12 @@ func TestNormalizeMintRepos(t *testing.T) {
 func TestEnvTruthy(t *testing.T) {
 	t.Parallel()
 	for _, v := range []string{"1", "true", "TRUE", "Yes", " yes "} {
-		if !envTruthy(v) {
+		if !EnvTruthy(v) {
 			t.Fatalf("%q should be truthy", v)
 		}
 	}
 	for _, v := range []string{"", "0", "false", "no", "on"} {
-		if envTruthy(v) {
+		if EnvTruthy(v) {
 			t.Fatalf("%q should not be truthy", v)
 		}
 	}

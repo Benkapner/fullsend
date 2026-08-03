@@ -14,8 +14,8 @@ func normalizeMintRepos(repos []string) []string {
 	return repos
 }
 
-// envTruthy reports whether v is a truthy feature-flag value.
-func envTruthy(v string) bool {
+// EnvTruthy reports whether v is a truthy feature-flag value.
+func EnvTruthy(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "yes":
 		return true

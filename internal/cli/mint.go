@@ -99,12 +99,10 @@ func perOrgForeignCompatLabel(trafficEnv map[string]string) string {
 	if trafficEnv == nil {
 		return "off"
 	}
-	switch strings.ToLower(strings.TrimSpace(trafficEnv["PER_ORG_FOREIGN_COMPAT"])) {
-	case "1", "true", "yes":
+	if mintcore.EnvTruthy(trafficEnv["PER_ORG_FOREIGN_COMPAT"]) {
 		return "on"
-	default:
-		return "off"
 	}
+	return "off"
 }
 
 // mintValidationMessage returns the success message after validating an existing mint.
