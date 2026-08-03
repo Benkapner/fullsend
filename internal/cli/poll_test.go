@@ -103,6 +103,7 @@ func TestValidateJiraPollArgs(t *testing.T) {
 		jiraProject    string
 		jqlOverride    string
 		targetRepo     string
+		outputPath     string
 		wantErrContain string
 		wantOK         bool
 	}{
@@ -172,6 +173,18 @@ func TestValidateJiraPollArgs(t *testing.T) {
 			jqlOverride: "project = PROJ ORDER BY updated DESC",
 			wantOK:      true,
 		},
+		{
+			// Without --output, a full poll cycle runs and checkpoints
+			// advance in Jira, but every dispatch is silently discarded
+			// (Run only writes when OutputPath is non-empty).
+			name:           "missing --output",
+			envVars:        map[string]string{},
+			jiraURL:        "https://acme.atlassian.net",
+			targetRepo:     "acme/platform",
+			jiraProject:    "PROJ",
+			outputPath:     "",
+			wantErrContain: "--output is required",
+		},
 	}
 
 	for _, tc := range tests {
@@ -184,7 +197,11 @@ func TestValidateJiraPollArgs(t *testing.T) {
 				t.Setenv(k, v)
 			}
 
-			args, err := validateJiraPollArgs(tc.jiraURL, tc.jiraProject, tc.jqlOverride, tc.targetRepo, "", fullsendDir)
+			outputPath := tc.outputPath
+			if outputPath == "" && tc.wantOK {
+				outputPath = "dispatches.json"
+			}
+			args, err := validateJiraPollArgs(tc.jiraURL, tc.jiraProject, tc.jqlOverride, tc.targetRepo, outputPath, fullsendDir)
 
 			if tc.wantOK {
 				if err != nil {
@@ -261,6 +278,7 @@ func TestPollCmd_JiraPollMissingToken(t *testing.T) {
 		"--jira-url", "https://acme.atlassian.net",
 		"--jira-project", "PROJ",
 		"--target-repo", "acme/widget",
+		"--output", filepath.Join(t.TempDir(), "dispatches.json"),
 		"--fullsend-dir", t.TempDir(),
 	})
 	err := cmd.Execute()
@@ -279,15 +297,12 @@ func TestBuildJiraClient_MissingToken(t *testing.T) {
 	}
 }
 
-func TestBuildJiraClient_WithToken(t *testing.T) {
+func TestBuildJiraClient_MissingEmail(t *testing.T) {
 	clearPollEnv(t)
 	t.Setenv("JIRA_TOKEN", "tok")
-	c, err := buildJiraClient("https://acme.atlassian.net")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if c == nil {
-		t.Fatal("expected non-nil client")
+	_, err := buildJiraClient("https://acme.atlassian.net")
+	if err == nil || !strings.Contains(err.Error(), "JIRA_USER_EMAIL") {
+		t.Fatalf("expected JIRA_USER_EMAIL error, got: %v", err)
 	}
 }
 

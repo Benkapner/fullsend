@@ -101,7 +101,7 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
 	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; ignored by --forge gitlab)")
 	cmd.Flags().StringVar(&pollModeFlag, "poll-mode", "", "Poll mode: fast (slash commands only) or full")
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL)")
 	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping")
@@ -182,6 +182,10 @@ func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputP
 		return jiraPollArgs{}, fmt.Errorf("--jira-project or --jql is required")
 	}
 
+	if outputPath == "" {
+		return jiraPollArgs{}, fmt.Errorf("--output is required: without it, a full poll cycle runs and checkpoints advance in Jira, but every dispatch is silently discarded")
+	}
+
 	return jiraPollArgs{
 		jiraURL:     jiraURL,
 		jiraProject: jiraProject,
@@ -192,19 +196,22 @@ func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputP
 	}, nil
 }
 
-// buildJiraClient creates a Jira client using Basic (email+token) or Bearer
-// (token only) auth, based on whether JIRA_USER_EMAIL is set.
+// buildJiraClient creates a Jira client using Basic (email+token) auth.
+// JIRA_USER_EMAIL is required: this driver only targets Jira Cloud, and
+// Cloud does not accept a bare API token via Bearer auth the way Data
+// Center/Server PATs do — omitting the email would silently send a scheme
+// Cloud rejects, surfacing as a generic 401 rather than a clear
+// configuration error.
 func buildJiraClient(jiraURL string) (*jira.LiveClient, error) {
 	jiraToken := os.Getenv("JIRA_TOKEN")
 	if jiraToken == "" {
 		return nil, fmt.Errorf("JIRA_TOKEN environment variable is required")
 	}
-	var opts []jira.Option
-	opts = append(opts, jira.WithBaseURL(jiraURL))
-	if email := os.Getenv("JIRA_USER_EMAIL"); email != "" {
-		opts = append(opts, jira.WithEmail(email))
+	email := os.Getenv("JIRA_USER_EMAIL")
+	if email == "" {
+		return nil, fmt.Errorf("JIRA_USER_EMAIL environment variable is required (Jira Cloud auth is email+token, not a bare token)")
 	}
-	return jira.New(jiraToken, opts...)
+	return jira.New(jiraToken, jira.WithBaseURL(jiraURL), jira.WithEmail(email))
 }
 
 // buildRouter constructs a HarnessRouter from config-registered agents
