@@ -72,6 +72,62 @@ And the agent will output issues.out with:
 
 Use tags only for **exceptions** when a backend cannot run a scenario yet: `@skip:gitlab`, `@skip:per-org`, `@requires:per-repo`. Untagged scenarios run everywhere applicable.
 
+## Fixture authoring
+
+Every scenario that dispatches an agent stage must include a `write_fixture` row emitting `output/agent-result.json` with content that conforms to the stage's result schema. The harness post-script validates this file before performing any post-processing (labelling, commenting, PR creation). If the fixture is missing or invalid, the harness fails with `Validation failed: FAIL: output/agent-result.json not found`.
+
+### Checklist for new scenarios
+
+Before merging a scenario that dispatches an agent stage:
+
+1. Identify the agent **role** (triage, code, review, fix, retro, prioritize). The role determines which result schema applies.
+2. Create a fixture JSON file under `e2e/behaviour/fixtures/<stage>/` that satisfies the corresponding schema at `schemas/<stage>-result.schema.json` (scaffolded into target repos under `internal/scaffold/fullsend-repo/schemas/`).
+3. Add a `write_fixture` row to the dummy agent table:
+   ```
+   | Emit <stage> JSON | write_fixture | output/agent-result.json, fixtures/<stage>/<name>.json |
+   ```
+4. Add an assertion step to verify the fixture was written:
+   ```gherkin
+   And the agent will succeed to Emit <stage> JSON
+   ```
+5. Verify that fixture field values satisfy downstream CLI validation, not just the JSON schema. For example, `head_sha` in `review-result` must be a full-length 40-character hex SHA (`abcdef0123456789abcdef0123456789abcdef01`), not a short prefix.
+
+### Fixture inventory
+
+Existing fixtures under `e2e/behaviour/fixtures/`:
+
+| Fixture | Target schema | Purpose |
+|---------|---------------|---------|
+| `triage/sufficient.json` | `triage-result.schema.json` | Triage stage result with `action: "sufficient"` |
+| `dispatch/ok.json` | _(none — dispatch proof)_ | Lightweight proof-of-execution marker for dispatch scenarios |
+| `review/comment.json` | `review-result.schema.json` | Review stage result with `action: "comment"` |
+
+The `dispatch/ok.json` fixture is not emitted as `output/agent-result.json` — it is used for auxiliary proof-of-execution files (e.g., `output/bash-routing-ok.json`). Scenarios that dispatch a **real agent stage** (triage, review, code, fix) must emit a schema-valid fixture to `output/agent-result.json`.
+
+### Adding a fixture for a new stage
+
+To add a fixture for a stage that does not yet have one (e.g., code or fix):
+
+1. Read the stage's result schema under `internal/scaffold/fullsend-repo/schemas/<stage>-result.schema.json`.
+2. Copy the closest existing fixture and adapt it to satisfy the new schema's `required` fields and `additionalProperties: false` constraint.
+3. Populate field values with plausible test data. Pay attention to:
+   - **String patterns** — schemas may enforce regex patterns (e.g., `repo` must match `^[^/]+/[^/]+$`).
+   - **Conditional requirements** — some schemas use `allOf`/`if`/`then` to require extra fields depending on the `action` value (e.g., `review-result` requires `head_sha` and `body` when `action` is `"comment"`).
+   - **Downstream validation** — the harness post-script may apply stricter checks than the schema. For example, SHAs must be full-length hex, not truncated.
+4. Place the fixture in `e2e/behaviour/fixtures/<stage>/<name>.json`.
+5. Reference it in your scenario's dummy agent table with a `write_fixture` row targeting `output/agent-result.json`.
+
+**Example:** The fork-bash-routing scenario dispatches a review agent, so it emits `review/comment.json` as the agent result:
+
+```gherkin
+Given a dummy agent that would:
+  | description          | op            | args                                                       |
+  | Prove bash routing   | write_fixture | output/bash-routing-ok.json, fixtures/dispatch/ok.json     |
+  | Emit review JSON     | write_fixture | output/agent-result.json, fixtures/review/comment.json     |
+```
+
+The first row proves execution via an auxiliary file; the second row emits the schema-valid `agent-result.json` that the harness post-script requires.
+
 ## Running locally
 
 ```bash
@@ -229,6 +285,49 @@ Each lazily provisioned repo adds approximately 3–5 minutes of overhead (creat
 Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos, verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
+
+## URL-sourced harness scenarios
+
+URL dispatch scenarios test `FetchAgentHarness` URL resolution for agents whose harness YAML lives in a separate hosting repository rather than the local config directory.
+
+### Harness-hosting repository
+
+The `Given a harness-hosting repository "<name>"` step creates a public repository in the pool org to host harness YAML files. The repo is:
+
+- **Ephemeral / per-scenario** — created per-scenario and deleted by `CleanupScenario` (same lifecycle as fork repos). When a leased repo is in use, the logical name is remapped via `resolveHostRepoName` (e.g. `"url-harness-host"` + leased `"test-repo-07"` → `"test-repo-07-url-harness-host"`) so parallel scenarios each get their own isolated hosting repo.
+- **Public** — required for unauthenticated `raw.githubusercontent.com` access. The step calls `EnsureRepoPublic` to detect and fix org policies that force repos private.
+
+### URL-sourced custom harness
+
+The `Given a URL-sourced custom harness "<name>" with:` step:
+
+1. Commits the harness YAML to the hosting repo at `harness/<name>.yaml`
+2. Commits any relative resources (agent, policy files) referenced in the YAML (ADR-0045)
+3. Verifies accessibility via the Contents API and unauthenticated raw URL
+4. Registers the agent in `config.yaml` with the raw URL (including `#sha256=` integrity hash)
+5. Adds the hosting repo URL prefix to `allowed_remote_resources`
+
+Variants:
+- `with bad integrity hash:` — injects a wrong SHA256 to test integrity failure
+- `not in allowlist with:` — omits the URL prefix from the allowlist to test validation
+
+### Background step usage
+
+URL dispatch scenarios share a common `Background:` block:
+
+```gherkin
+Background:
+  Given the enrolled test repository
+  And a harness-hosting repository "url-harness-host"
+```
+
+### FetchPolicy and binary freshness
+
+URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`-aware harness dispatch. Production dispatch uses `fetch.DefaultPolicy` (allows `github.com` and `raw.githubusercontent.com`) when `Options.FetchPolicy` is nil — this is what enables URL-sourced agents to resolve `raw.githubusercontent.com` URLs.
+
+The `RepoEnsurer` always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
+
+The settle step (polling for GitHub Actions workflow readiness) is skipped on re-vendors since the workflow file already existed — only fresh installs incur the settle wait.
 
 ## Version pinning for `fullsend-ai/agents`
 

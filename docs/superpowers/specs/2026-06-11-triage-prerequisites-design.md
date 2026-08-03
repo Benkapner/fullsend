@@ -129,13 +129,15 @@ When a prerequisite issue is resolved and the original issue is re-triaged, the 
 
 ## Changes required
 
+> **Note:** Agent files referenced below as `internal/scaffold/fullsend-repo/` have moved to the `fullsend-ai/agents` repository.
+
 | Component | File | Change |
 |---|---|---|
 | Config structs | `internal/config/config.go` | Add `CreateIssues` struct with `AllowTargets` (Orgs `[]string`, Repos `[]string`) to both `OrgConfig` and `PerRepoConfig`. Update constructors with install-time defaults. Add validation. |
-| Triage result schema | `internal/scaffold/fullsend-repo/schemas/triage-result.schema.json` | Replace `blocked` with `prerequisites` in action enum. Add `prerequisites` object schema. Remove `blocked_by`. |
-| Agent prompt | `internal/scaffold/fullsend-repo/agents/triage.md` | Replace `blocked` action with `prerequisites`. Add hard constraint. Add guidance for `create` entry content. |
-| Post-script | `internal/scaffold/fullsend-repo/scripts/post-triage.sh` | Replace `blocked` handler with `prerequisites` handler. Add allowlist validation, issue creation, degraded path with collapsed draft. |
-| Pre-script | `internal/scaffold/fullsend-repo/scripts/pre-triage.sh` | No change. `blocked` label stripping stays the same. |
+| Triage result schema | `fullsend-ai/agents` `schemas/triage-result.schema.json` | Replace `blocked` with `prerequisites` in action enum. Add `prerequisites` object schema. Remove `blocked_by`. |
+| Agent prompt | `fullsend-ai/agents` `agents/triage.md` | Replace `blocked` action with `prerequisites`. Add hard constraint. Add guidance for `create` entry content. |
+| Post-script | `fullsend-ai/agents` `scripts/post-triage.sh` | Replace `blocked` handler with `prerequisites` handler. Add allowlist validation, issue creation, degraded path with collapsed draft. |
+| Pre-script | `fullsend-ai/agents` `scripts/pre-triage.sh` | No change. `blocked` label stripping stays the same. |
 | User docs | `docs/agents/triage.md` | New section documenting `create_issues` config surface: what it does, defaults, when to expand or restrict. |
 | Config constructors | `internal/config/config.go` | `NewOrgConfig` and `NewPerRepoConfig` populate `create_issues.allow_targets` defaults. Callers in `internal/cli/admin.go` and `internal/cli/github.go` pass the org/repo context. |
 

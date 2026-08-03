@@ -63,4 +63,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/prioritize.yaml`](../../internal/scaffold/fullsend-repo/harness/prioritize.yaml)
+[`fullsend-ai/agents` — `harness/prioritize.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/prioritize.yaml)

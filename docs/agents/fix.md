@@ -143,8 +143,8 @@ Remove the label or use `/fs-fix` to re-engage.
 
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 
@@ -152,4 +152,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/fix.yaml`](../../internal/scaffold/fullsend-repo/harness/fix.yaml)
+[`fullsend-ai/agents` — `harness/fix.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/fix.yaml)

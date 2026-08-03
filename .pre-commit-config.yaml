@@ -34,10 +34,9 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uvx ty check . --ignore unresolved-import --ignore unresolved-attribute
+        entry: uvx ty check --ignore unresolved-import --ignore unresolved-attribute
         language: system
         types: [python]
-        pass_filenames: false
 
   - repo: https://github.com/PyCQA/bandit
     rev: "1.9.4"
@@ -175,12 +174,6 @@ repos:
         files: ^internal/scaffold/fullsend-repo/(\.github/workflows/|templates/)
         pass_filenames: false
 
-      - id: lint-agent-docs
-        name: lint agent doc references
-        entry: ./hack/lint-agent-docs
-        language: script
-        files: ^(internal/scaffold/fullsend-repo/harness/|docs/agents/)
-        pass_filenames: false
 
       - id: lint-staged
         name: lint-staged (web)

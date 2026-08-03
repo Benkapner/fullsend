@@ -24,55 +24,62 @@ func TestResolveGitLabToken_Missing(t *testing.T) {
 }
 
 func TestNewForgeClient_GitLab_WithToken(t *testing.T) {
-	client, err := newForgeClient(repos.ForgeGitLab, "glpat-direct-token")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-direct-token", "")
 	require.NoError(t, err)
 	assert.NotNil(t, client)
 }
 
 func TestNewForgeClient_GitLab_FromEnv(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "glpat-env-token")
-	client, err := newForgeClient(repos.ForgeGitLab, "")
+	client, err := newForgeClient(repos.ForgeGitLab, "", "")
 	require.NoError(t, err)
 	assert.NotNil(t, client)
 }
 
 func TestNewForgeClient_GitLab_NoToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
-	_, err := newForgeClient(repos.ForgeGitLab, "")
+	_, err := newForgeClient(repos.ForgeGitLab, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no GitLab token found")
 }
 
 func TestNewForgeClient_GitLab_WithBaseURL(t *testing.T) {
 	t.Setenv("GITLAB_API_URL", "https://gitlab.example.com/api/v4")
-	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test", "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestNewForgeClient_GitLab_ManifestURLTakesPrecedence(t *testing.T) {
+	t.Setenv("GITLAB_API_URL", "https://should-not-use.example.com")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test", "https://gitlab.self-hosted.example.com")
 	require.NoError(t, err)
 	assert.NotNil(t, client)
 }
 
 func TestNewForgeClient_GitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	client, err := newForgeClient(repos.ForgeGitHub, "")
+	client, err := newForgeClient(repos.ForgeGitHub, "", "")
 	require.NoError(t, err)
 	assert.NotNil(t, client)
 }
 
 func TestNewForgeClient_EmptyDefaultsToGitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	client, err := newForgeClient("", "")
+	client, err := newForgeClient("", "", "")
 	require.NoError(t, err)
 	assert.NotNil(t, client)
 }
 
 func TestNewForgeClient_Unsupported(t *testing.T) {
-	_, err := newForgeClient("bitbucket", "")
+	_, err := newForgeClient("bitbucket", "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported forge")
 }
 
 func TestNewForgeClientFactory_GitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("")
+	factory := newForgeClientFactory("", repos.ForgeSection{})
 	cfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
@@ -80,17 +87,34 @@ func TestNewForgeClientFactory_GitHub(t *testing.T) {
 
 func TestNewForgeClientFactory_EmptyForgeDefaultsToGitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("")
+	factory := newForgeClientFactory("", repos.ForgeSection{})
 	cfg, err := factory.ConfigFor("")
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
 }
 
 func TestNewForgeClientFactory_GitLab(t *testing.T) {
-	factory := newForgeClientFactory("glpat-direct")
+	factory := newForgeClientFactory("glpat-direct", repos.ForgeSection{})
 	cfg, err := factory.ConfigFor(repos.ForgeGitLab)
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
+}
+
+func TestNewForgeClientFactory_WithManifestURLs(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	forgeSection := repos.ForgeSection{
+		GitHub: repos.GitHubForgeInfra{URL: "https://github.com"},
+		GitLab: repos.GitLabForgeInfra{URL: "https://gitlab.self-hosted.example.com"},
+	}
+	factory := newForgeClientFactory("glpat-test", forgeSection)
+
+	ghCfg, err := factory.ConfigFor(repos.ForgeGitHub)
+	require.NoError(t, err)
+	assert.NotNil(t, ghCfg.Client)
+
+	glCfg, err := factory.ConfigFor(repos.ForgeGitLab)
+	require.NoError(t, err)
+	assert.NotNil(t, glCfg.Client)
 }
 
 func TestGetGitLabToken_FromFlag(t *testing.T) {
@@ -118,7 +142,7 @@ func TestGetGitLabToken_Empty(t *testing.T) {
 
 func TestNewForgeClientFactory_Caching(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("")
+	factory := newForgeClientFactory("", repos.ForgeSection{})
 
 	cfg1, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
@@ -131,7 +155,7 @@ func TestNewForgeClientFactory_Caching(t *testing.T) {
 
 func TestNewForgeClientFactory_MixedForge(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("glpat-test-token")
+	factory := newForgeClientFactory("glpat-test-token", repos.ForgeSection{})
 
 	ghCfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
@@ -142,4 +166,24 @@ func TestNewForgeClientFactory_MixedForge(t *testing.T) {
 	assert.NotSame(t, ghCfg.Client, glCfg.Client, "different forges should return different clients")
 	assert.NotNil(t, ghCfg.Client)
 	assert.NotNil(t, glCfg.Client)
+}
+
+func TestGitHubAPIURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		instanceURL string
+		want        string
+	}{
+		{"empty returns empty", "", ""},
+		{"github.com returns empty (use default)", "https://github.com", ""},
+		{"github.com trailing slash returns empty", "https://github.com/", ""},
+		{"GHES derives API URL", "https://ghes.example.com", "https://ghes.example.com/api/v3"},
+		{"trailing slash stripped", "https://ghes.example.com/", "https://ghes.example.com/api/v3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := githubAPIURL(tt.instanceURL)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

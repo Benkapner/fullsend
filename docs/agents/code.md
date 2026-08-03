@@ -43,8 +43,8 @@ on issues (not PRs). The code agent is also triggered automatically when the
 
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 
@@ -52,4 +52,4 @@ None.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/code.yaml`](../../internal/scaffold/fullsend-repo/harness/code.yaml)
+[`fullsend-ai/agents` — `harness/code.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/code.yaml)

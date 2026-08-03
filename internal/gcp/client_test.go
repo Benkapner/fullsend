@@ -6,10 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 func TestExtractErrorMessage(t *testing.T) {
@@ -149,3 +155,178 @@ func TestAccessToken_ErrorPropagation(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "finding GCP credentials")
 }
+
+func TestAdcToken_CachesTokenSource(t *testing.T) {
+	t.Parallel()
+
+	// Verify that credential discovery runs exactly once even when
+	// multiple goroutines call AccessToken concurrently.
+	var discoveryCount atomic.Int32
+	var tokenCount atomic.Int32
+
+	c := NewClient()
+	c.tokenFunc = c.adcToken
+	// Pre-populate the cached TokenSource via sync.Once to simulate
+	// a successful FindDefaultCredentials without hitting real GCP.
+	c.adcOnce.Do(func() {
+		discoveryCount.Add(1)
+		c.adcTS = oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: "cached-token",
+			Expiry:      time.Now().Add(time.Hour),
+		})
+	})
+
+	// Wrap the cached token source to count Token() calls.
+	inner := c.adcTS
+	c.adcTS = tokenSourceFunc(func() (*oauth2.Token, error) {
+		tokenCount.Add(1)
+		return inner.Token()
+	})
+
+	const goroutines = 12
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tok, err := c.AccessToken(context.Background())
+			assert.NoError(t, err)
+			assert.Equal(t, "cached-token", tok)
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(1), discoveryCount.Load(),
+		"credential discovery should happen exactly once")
+	assert.Equal(t, int32(goroutines), tokenCount.Load(),
+		"Token() should be called on every AccessToken invocation")
+}
+
+func TestAdcToken_DiscoveryErrorSurfaces(t *testing.T) {
+	c := NewClient()
+	// Force a discovery error through the lazy init path.
+	c.adcOnce.Do(func() {
+		c.adcErr = fmt.Errorf("finding GCP credentials: %w",
+			fmt.Errorf("no credentials found"))
+	})
+	c.tokenFunc = c.adcToken
+
+	_, err := c.AccessToken(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finding GCP credentials")
+
+	// Second call should return the same cached error.
+	_, err = c.AccessToken(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finding GCP credentials")
+}
+
+func TestAdcToken_TokenFetchError(t *testing.T) {
+	c := NewClient()
+	c.tokenFunc = c.adcToken
+	// Pre-populate a TokenSource that always returns an error on Token().
+	c.adcOnce.Do(func() {
+		c.adcTS = tokenSourceFunc(func() (*oauth2.Token, error) {
+			return nil, fmt.Errorf("token refresh failed")
+		})
+	})
+
+	_, err := c.AccessToken(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "obtaining GCP access token")
+}
+
+func TestAdcToken_EmptyAccessToken(t *testing.T) {
+	c := NewClient()
+	c.tokenFunc = c.adcToken
+	// Pre-populate a TokenSource that returns an empty access token.
+	c.adcOnce.Do(func() {
+		c.adcTS = oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: "",
+			Expiry:      time.Now().Add(time.Hour),
+		})
+	})
+
+	_, err := c.AccessToken(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GCP credentials returned empty access token")
+}
+
+func TestNewClientWithHTTP(t *testing.T) {
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	c := NewClientWithHTTP(httpClient)
+	assert.NotNil(t, c)
+
+	token, err := c.AccessToken(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "test-token", token)
+}
+
+func TestDoRequest_TokenError(t *testing.T) {
+	c := NewClient()
+	c.tokenFunc = func(_ context.Context) (string, error) {
+		return "", fmt.Errorf("auth failure")
+	}
+
+	_, err := c.DoRequest(context.Background(), http.MethodGet, "http://example.com", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auth failure")
+}
+
+func TestAdcToken_RealDiscoverySuccess(t *testing.T) {
+	// Exercise the real FindDefaultCredentials code path inside the
+	// sync.Once closure by providing a fake authorized_user credential
+	// file.  FindDefaultCredentials will parse it successfully (covering
+	// the closure's happy path), but Token() will fail because the
+	// refresh token is bogus — that error is already a covered path.
+	credsJSON := `{
+		"type": "authorized_user",
+		"client_id": "fake-client-id.apps.googleusercontent.com",
+		"client_secret": "fake-secret",
+		"refresh_token": "fake-refresh-token"
+	}`
+	tmpFile := filepath.Join(t.TempDir(), "creds.json")
+	require.NoError(t, os.WriteFile(tmpFile, []byte(credsJSON), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmpFile)
+
+	c := NewClient() // tokenFunc defaults to adcToken; adcOnce is fresh
+	_, err := c.AccessToken(context.Background())
+	require.Error(t, err)
+	// Discovery succeeded, but the bogus refresh token causes Token() to fail.
+	assert.Contains(t, err.Error(), "obtaining GCP access token")
+	// Verify the TokenSource was cached and no discovery error was recorded.
+	assert.NotNil(t, c.adcTS, "TokenSource should be cached after successful discovery")
+	assert.NoError(t, c.adcErr, "discovery error should be nil on success")
+}
+
+func TestAdcToken_RealDiscoveryFailure(t *testing.T) {
+	// Exercise the error branch inside the sync.Once closure by
+	// pointing GOOGLE_APPLICATION_CREDENTIALS at a file containing
+	// invalid credential JSON.
+	tmpFile := filepath.Join(t.TempDir(), "bad-creds.json")
+	require.NoError(t, os.WriteFile(tmpFile, []byte(`not-json`), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmpFile)
+
+	c := NewClient()
+	_, err := c.AccessToken(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finding GCP credentials")
+	// Verify discovery error was cached.
+	assert.Error(t, c.adcErr, "discovery error should be cached")
+}
+
+func TestDoRequest_InvalidMethod(t *testing.T) {
+	c := NewClient()
+	c.tokenFunc = func(_ context.Context) (string, error) { return "test-token", nil }
+
+	// A method containing a space is rejected by http.NewRequestWithContext.
+	_, err := c.DoRequest(context.Background(), "BAD METHOD", "http://example.com", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating request")
+}
+
+// tokenSourceFunc adapts a plain function to the oauth2.TokenSource
+// interface, allowing Token() call counting in tests.
+type tokenSourceFunc func() (*oauth2.Token, error)
+
+func (f tokenSourceFunc) Token() (*oauth2.Token, error) { return f() }

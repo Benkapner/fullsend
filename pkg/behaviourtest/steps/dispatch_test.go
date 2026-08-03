@@ -148,6 +148,14 @@ func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, stri
 func (f *fakeDispatchSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+func (f *fakeDispatchSCM) CreateRepo(context.Context, string, string, string) error { return nil }
+func (f *fakeDispatchSCM) EnsureRepoPublic(context.Context, string, string) error   { return nil }
+func (f *fakeDispatchSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	return "main", nil
+}
+func (f *fakeDispatchSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
+}
 
 func TestNegativeSettleDuration(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
@@ -218,4 +226,138 @@ func TestNegativeSettleDuration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGivenCustomHarness_CommitsAgentFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenCustomHarness(w, "local-test", "agent: agents/triage.md\nrole: triage\nslug: local-test")
+	require.NoError(t, err)
+
+	// The agent resource should be committed under .fullsend/ on the config repo.
+	agentData := scm.files["test-org/test-repo/.fullsend/agents/triage.md"]
+	require.NotNil(t, agentData, "agent resource should be committed to config repo")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+
+	// The harness YAML should also be committed.
+	harnessData := scm.files["test-org/test-repo/.fullsend/harness/local-test.yaml"]
+	require.NotNil(t, harnessData, "harness YAML should be committed")
+}
+
+func TestGivenCustomHarness_CommitsAgentAndPolicy(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenCustomHarness(w, "local-test", "agent: agents/test.md\npolicy: policies/test.md\nrole: triage\nslug: local-test")
+	require.NoError(t, err)
+
+	agentData := scm.files["test-org/test-repo/.fullsend/agents/test.md"]
+	require.NotNil(t, agentData, "agent resource should be committed")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+
+	policyData := scm.files["test-org/test-repo/.fullsend/policies/test.md"]
+	require.NotNil(t, policyData, "policy resource should be committed")
+	assert.Contains(t, string(policyData), "Minimal policy")
+}
+
+func TestGivenCustomHarness_SkipsAbsoluteAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenCustomHarness(w, "local-test", "agent: https://example.com/agent.md\nrole: triage\nslug: local-test")
+	require.NoError(t, err)
+
+	// No extra agent file should be committed — only harness YAML and config.
+	for key := range scm.files {
+		assert.NotContains(t, key, "agent.md", "URL agent paths should not be committed as files")
+	}
+}
+
+func TestGivenDisabledCustomHarness_CommitsAgentFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenDisabledCustomHarness(w, "disabled-test", "agent: agents/triage.md\nrole: triage\nslug: disabled-test")
+	require.NoError(t, err)
+
+	agentData := scm.files["test-org/test-repo/.fullsend/agents/triage.md"]
+	require.NotNil(t, agentData, "agent resource should be committed for disabled harness")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+}
+
+func TestCommitLocalHarnessResources_CommitsAgentFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"agent: agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/.fullsend/agents/triage.md"]))
+}
+
+func TestCommitLocalHarnessResources_SkipsURLAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"agent: https://example.com/agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "URL agent paths should not be committed")
+}
+
+func TestCommitLocalHarnessResources_SkipsAbsoluteAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"agent: /absolute/agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "absolute agent paths should not be committed")
+}
+
+func TestCommitLocalHarnessResources_NoAgentField(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"role: triage\nslug: test")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "no files should be committed without agent field")
+}
+
+func TestCommitLocalHarnessResources_InvalidYAML(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"invalid: [yaml: content")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing harness YAML")
 }

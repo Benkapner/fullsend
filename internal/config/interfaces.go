@@ -390,54 +390,123 @@ type LoadOpts struct {
 	MissingOK bool
 }
 
-// LoadConfig reads and parses config.yaml from dir, returning a
-// ConfigReader. This is the preferred entry point for consumer packages
-// that only need read access.
+// LoadConfig reads config.yaml (and config.base.yaml if present) from
+// dir, returning a ConfigReader. For per-repo configs the parent chain
+// is wired as overlay (config.yaml) → base (config.base.yaml) →
+// code defaults. This is the preferred entry point for consumer
+// packages that only need read access.
 func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	overlayData, haveOverlay, baseData, haveBase, err := readConfigFiles(dir)
 	if err != nil {
-		if os.IsNotExist(err) && opts.MissingOK {
+		return nil, err
+	}
+
+	// Neither file exists.
+	if !haveOverlay && !haveBase {
+		if opts.MissingOK {
 			return NewPerRepoConfig(nil, ""), nil
 		}
-		return nil, fmt.Errorf("reading config: %w", err)
+		return nil, fmt.Errorf("reading config: %w",
+			&os.PathError{Op: "open", Path: filepath.Join(dir, "config.yaml"), Err: os.ErrNotExist})
 	}
-	return parseConfigReader(data)
+
+	// Detect malformed YAML before type detection so the error message
+	// names config.yaml rather than the misleading "parsing org config".
+	if haveOverlay {
+		var probe interface{}
+		if err := yaml.Unmarshal(overlayData, &probe); err != nil {
+			return nil, fmt.Errorf("parsing config.yaml: %w", err)
+		}
+	}
+
+	// Org-mode overlay: base layering does not apply.
+	if haveOverlay && !IsPerRepoYAML(overlayData) {
+		return ParseOrgConfig(overlayData)
+	}
+
+	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
 }
 
-// LoadConfigWriter reads and parses config.yaml from dir, returning a
-// ConfigWriter. This is the preferred entry point for consumer packages
-// that need read-write access (e.g. CLI commands that modify and
-// write-back config). It wraps parseConfigData and returns the
-// underlying orgConfig or perRepoConfig.
+// LoadConfigWriter reads config.yaml (and config.base.yaml if present)
+// from dir, returning a ConfigWriter. For per-repo configs the parent
+// chain is wired as overlay (config.yaml) → base (config.base.yaml) →
+// code defaults. Only the overlay layer is mutable; base and defaults
+// are read-only via the parent pointer. This is the preferred entry
+// point for consumer packages that need read-write access (e.g. CLI
+// commands that modify and write-back config).
 func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	overlayData, haveOverlay, baseData, haveBase, err := readConfigFiles(dir)
 	if err != nil {
-		if os.IsNotExist(err) && opts.MissingOK {
+		return nil, err
+	}
+
+	// Neither file exists.
+	if !haveOverlay && !haveBase {
+		if opts.MissingOK {
 			return NewPerRepoConfig(nil, ""), nil
 		}
-		return nil, fmt.Errorf("reading config: %w", err)
+		return nil, fmt.Errorf("reading config: %w",
+			&os.PathError{Op: "open", Path: filepath.Join(dir, "config.yaml"), Err: os.ErrNotExist})
 	}
-	return parseConfigWriter(data)
+
+	// Detect malformed YAML before type detection so the error message
+	// names config.yaml rather than the misleading "parsing org config".
+	if haveOverlay {
+		var probe interface{}
+		if err := yaml.Unmarshal(overlayData, &probe); err != nil {
+			return nil, fmt.Errorf("parsing config.yaml: %w", err)
+		}
+	}
+
+	// Org-mode overlay: base layering does not apply.
+	if haveOverlay && !IsPerRepoYAML(overlayData) {
+		return ParseOrgConfigWriter(overlayData)
+	}
+
+	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
 }
 
-// parseConfigReader parses raw config YAML into a ConfigReader.
-// IsPerRepoYAML performs its own yaml.Unmarshal; for malformed YAML it
-// returns false, so ParseOrgConfig surfaces the parse error.
-func parseConfigReader(data []byte) (ConfigReader, error) {
-	if IsPerRepoYAML(data) {
-		return ParsePerRepoConfig(data)
+// readConfigFiles reads config.yaml and config.base.yaml from dir.
+// Returns data and existence flags for each file. Genuine I/O errors
+// (not "file not found") are returned immediately.
+func readConfigFiles(dir string) (overlayData []byte, haveOverlay bool, baseData []byte, haveBase bool, err error) {
+	overlayData, overlayErr := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	baseData, baseErr := os.ReadFile(filepath.Join(dir, "config.base.yaml"))
+
+	if overlayErr != nil && !os.IsNotExist(overlayErr) {
+		return nil, false, nil, false, fmt.Errorf("reading config: %w", overlayErr)
 	}
-	return ParseOrgConfig(data)
+	if baseErr != nil && !os.IsNotExist(baseErr) {
+		return nil, false, nil, false, fmt.Errorf("reading base config: %w", baseErr)
+	}
+	return overlayData, overlayErr == nil, baseData, baseErr == nil, nil
 }
 
-// parseConfigWriter parses raw config YAML into a ConfigWriter.
-// IsPerRepoYAML performs its own yaml.Unmarshal; for malformed YAML it
-// returns false, so ParseOrgConfigWriter surfaces the parse error.
-func parseConfigWriter(data []byte) (ConfigWriter, error) {
-	if IsPerRepoYAML(data) {
-		return ParsePerRepoConfigWriter(data)
+// loadPerRepoLayers parses per-repo config layers and wires the parent
+// chain: overlay → base → code defaults. When haveOverlay is false an
+// empty overlay is created so writes target config.yaml. The returned
+// *perRepoConfig satisfies both ConfigReader and ConfigWriter.
+func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, haveBase bool) (*perRepoConfig, error) {
+	// Parse base layer; parent = code defaults.
+	var baseReader PerRepoConfigReader = &perRepoDefaults{}
+	if haveBase {
+		var base perRepoConfig
+		if err := yaml.Unmarshal(baseData, &base); err != nil {
+			return nil, fmt.Errorf("parsing base config: %w", err)
+		}
+		base.parent = &perRepoDefaults{}
+		baseReader = &base
 	}
-	return ParseOrgConfigWriter(data)
+
+	// Parse or create overlay layer; parent = base (or defaults).
+	var overlay perRepoConfig
+	if haveOverlay {
+		if err := yaml.Unmarshal(overlayData, &overlay); err != nil {
+			return nil, fmt.Errorf("parsing per-repo config: %w", err)
+		}
+	}
+	overlay.parent = baseReader
+	return &overlay, nil
 }
 
 // IsPerRepoYAML probes raw YAML for structural markers that distinguish

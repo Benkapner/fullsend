@@ -123,4 +123,4 @@ For modified agents, the migration produces a thin `base:` harness containing on
 
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) — building custom agents and configuring existing ones
 - [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — terminology and classification
-- [Customizing with skills](../guides/user/customizing-with-skills.md) — extending agents with skills
+- [Configuring with skills](../guides/user/customizing-with-skills.md) — extending agents with skills

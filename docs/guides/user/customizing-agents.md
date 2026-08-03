@@ -1,6 +1,6 @@
-# Customizing Agents
+# Configuring Agent Behavior
 
-This guide explains how to customize fullsend agents for your organization and repositories through harness configurations and layered content resolution.
+This guide explains how to configure fullsend agents for your organization and repositories through harness configurations and layered content resolution.
 
 ## Harness Configuration
 
@@ -51,6 +51,22 @@ env:
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
+
+> **Where relative script paths resolve.** A **local** harness — the case for
+> the example above — resolves `pre_script` / `post_script` against your
+> workspace root, so `scripts/pre-code.sh` means *your* `scripts/` directory
+> and the harness must ship its own copy. A **URL-sourced** harness resolves
+> them against the parent of the harness file's directory in the source repo;
+> for the stock agents that is [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents),
+> which owns `scripts/pre-code.sh` and `scripts/post-code.sh`.
+>
+> The fullsend scaffold no longer ships `scripts/pre-code.sh` or
+> `scripts/pre-fix.sh`, so copying a stock agents harness into a local file
+> without also copying its scripts will fail validation. Reference the
+> agents-repo harness by URL instead, or supply your own scripts.
+>
+> A `pre_script` can also stop the run before the sandbox starts — see the
+> [pre-script output protocol](../../normative/prescript-output/v1/README.md).
 
 **Optional fields** (all have secure defaults and can be omitted):
 
@@ -129,17 +145,16 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix. See [ADR 0070](../../ADRs/0070-portable-provider-profile-resolution.md) for full details.
+Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 
 ## Layered Configuration Resolution
 
 > **Deprecated:** The `customized/` directory overlay mechanism described
-> below is deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> Use `base:` composition instead: register agents in `config.yaml` with a
-> `base:` URL pointing to the upstream harness, and override only the fields
-> that differ. See [ADR-0045](../../ADRs/0045-forge-portable-harness-schema.md)
-> for the composition model and [ADR-0058](../../ADRs/0058-agent-registration.md)
-> for config-driven registration.
+> below is deprecated. Use `base:` composition instead: register agents in
+> `config.yaml` with a `base:` URL pointing to the upstream harness, and
+> override only the fields that differ. See
+> [Bring Your Own Agent](bring-your-own-agent.md) for the composition model
+> and config-driven registration.
 > Run `fullsend agent migrate-customizations --dry-run` to preview the
 > migration, then `fullsend agent migrate-customizations --repo owner/repo`
 > to apply it.
@@ -148,7 +163,7 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│    Configuration Layering (ADR 0035, deprecated by ADR 0064) │
+│    Configuration Layering (deprecated; use base: instead)    │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  Priority (highest wins):                                    │
@@ -171,15 +186,15 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
 │  └──────────────────────┘                                    │
 │                                                              │
 │  Layered directories:                                        │
-│    agents/  skills/  schemas/  harness/  plugins/             │
+│    agents/  skills/  schemas/  harness/  plugins/            │
 │    policies/  scripts/  env/                                 │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Customization Directory Structure
+### The `customized/` Directory Structure
 
-Orgs customize layered directories by placing overrides in `customized/` subdirectories:
+Orgs configure layered directories by placing overrides in `customized/` subdirectories:
 
 ```
 .fullsend/                          (config repo)
@@ -211,7 +226,7 @@ To add a custom skill to the code agent's harness (deprecated — use `base:` co
    ```bash
    # ⚠ Deprecated: use `fullsend agent migrate-customizations` to convert to config-driven agents
    curl -o .fullsend/customized/harness/code.yaml \
-     https://raw.githubusercontent.com/fullsend-ai/fullsend/main/internal/scaffold/fullsend-repo/harness/code.yaml
+     https://raw.githubusercontent.com/fullsend-ai/agents/main/harness/code.yaml
    ```
 
 2. **Edit the copy** to add your skill:
@@ -240,7 +255,7 @@ To add a custom skill to the code agent's harness (deprecated — use `base:` co
 
 **Important:** You must maintain the full harness structure. You cannot add just a `skills:` field—the entire YAML file must be present and valid.
 
-### Customizing Pre-commit Tool Dependencies
+### Configuring Pre-commit Tool Dependencies
 
 > **Note:** The `customized/scripts/.pre-commit-tools.yaml` L1 overlay path
 > referenced below uses the deprecated `customized/` mechanism.
@@ -320,41 +335,31 @@ upstream defaults (fullsend-ai/fullsend)
 
 Per-repo registries are read from the **base branch**, not from the PR's working tree. This means changes to `.pre-commit-tools.yaml` in a PR do not take effect until the PR is merged. This is intentional — the tool installation pipeline runs outside the sandbox with elevated permissions, and PR content is untrusted.
 
-See [ADR 0056](../../ADRs/0056-per-repo-precommit-tools-registry.md) for the full security rationale.
-
 ## Agent Roles
 
 Each agent role has its own identity, permissions, and purpose:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   Agent Role Architecture                    │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  Role          GitHub App                  Purpose          │
-│  ─────         ──────────                  ───────          │
-│  fullsend      {org}-fullsend[bot]         Dispatch/control │
-│  triage        {org}-triage[bot]           Issue triage     │
-│  coder         {org}-coder[bot]            Code generation  │
-│  review        {org}-review[bot]           PR review        │
-│  fix           (reuses coder app)          Fix failures     │
-│  retro         {org}-retro[bot]            Retrospectives   │
-│  prioritize    {org}-prioritize[bot]       Backlog priority │
-│                                                             │
-│  App naming: {org}-{role}                                   │
-│  Bot naming: {org}-{role}[bot]                              │
-│  PEM storage: GCP Secret Manager or filesystem (standalone)  │
-│  Secret name: fullsend-{role}-app-pem                       │
-│                                                             │
-│  Note: "fix" role reuses the "coder" app and PEM — no       │
-│  separate GitHub App or secret is created for it.          │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| Role | GitHub App | Purpose |
+|------|------------|---------|
+| `fullsend` | `{org}-fullsend[bot]` | Dispatch/control |
+| `triage` | `{org}-triage[bot]` | Issue triage |
+| `coder` | `{org}-coder[bot]` | Code generation |
+| `review` | `{org}-review[bot]` | PR review |
+| `fix` | (reuses coder app) | Fix failures |
+| `retro` | `{org}-retro[bot]` | Retrospectives |
+| `prioritize` | `{org}-prioritize[bot]` | Backlog priority |
 
-## Customization Examples
+**Naming conventions:**
+- App naming: `{org}-{role}`
+- Bot naming: `{org}-{role}[bot]`
+- PEM storage: GCP Secret Manager or filesystem (standalone)
+- Secret name: `fullsend-{role}-app-pem`
 
-### Adding Custom Executables
+> **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
+
+## Configuration Examples
+
+### Adding Executables
 
 The sandbox already has `/sandbox/workspace/bin` on its `PATH`. To make a
 script available as a command, drop it there:
@@ -402,7 +407,7 @@ When you need a directory outside `/sandbox/workspace/bin` on the `PATH`
 **Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
 variables to protect sandbox operation.
 
-### Adding a Custom Skill
+### Adding a Skill
 
 > **Deprecated:** The `customized/skills/` path is deprecated.
 > Use config-driven agent registration instead — see
@@ -432,19 +437,19 @@ Create `.fullsend/customized/agents/code.md` to override the default code agent
 with org-specific instructions:
 
 ```markdown
-# Code Agent (Customized)
+# Code Agent (Configured)
 
-[Custom instructions for your org...]
+[Org-specific instructions...]
 ```
 
-### Customizing Harness Configuration
+### Configuring the Harness
 
 Create `.fullsend/customized/harness/code.yaml` to override the code agent's execution environment.
 
 **Important:** This is a complete file replacement. Start by copying the upstream harness, then modify it:
 
 ```yaml
-# Copy of upstream code.yaml with customizations
+# Copy of upstream code.yaml with configuration overrides
 agent: agents/code.md
 model: claude-opus-4-6           # Changed from: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
@@ -457,7 +462,7 @@ timeout_minutes: 45              # Changed from: 35
 
 skills:
   - skills/code-implementation
-  - skills/my-custom-linting     # Added: org-specific skill
+  - skills/my-custom-linting     # Added: org-specific skill configuration
 
 plugins:
   - plugins/gopls-lsp
@@ -476,8 +481,8 @@ pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 
 validation_loop:
-  script: scripts/custom-validate.sh  # Changed script
-  schema: schemas/custom-result.schema.json
+  script: scripts/org-validate.sh      # Changed script
+  schema: schemas/org-result.schema.json
   max_iterations: 5                   # Changed from: 2
 
 env:
@@ -487,19 +492,19 @@ env:
     REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
-Then create your custom skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.
+Then create your skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.
 
 ### Per-Repo Overrides
 
-Target repos can override org-level customizations by placing files in `.fullsend/customized/` within the repo:
+Target repos can override org-level configuration by placing files in `.fullsend/customized/` within the repo:
 
 ```
 my-repo/
 ├── .fullsend/
 │   └── customized/
-│       ├── agents/code.md         # Repo-specific agent instructions
+│       ├── agents/code.md         # Repo-specific agent configuration
 │       ├── skills/repo-skill/     # Repo-specific skill (contains SKILL.md)
-│       └── harness/code.yaml      # Repo-specific harness config
+│       └── harness/code.yaml      # Repo-specific harness configuration
 ```
 
 ## Disabling Agents
@@ -543,4 +548,3 @@ disables nothing because no agent has that harness name.
 - [Getting Started](../getting-started/) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
 - [Standalone Mint](../infrastructure/standalone-mint.md) - Running your own mint with custom agent roles
-- [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md)

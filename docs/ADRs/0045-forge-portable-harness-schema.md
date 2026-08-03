@@ -375,7 +375,7 @@ The same inheritance table applies to base→child merging:
 `base` can be a URL, reusing ADR 0038's infrastructure:
 
 ```yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/triage.yaml#sha256=abc123...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=abc123...
 ```
 
 URL-referenced bases follow the same rules as other URL resources:
@@ -410,7 +410,7 @@ or agents-repo at runtime)*:
 
 ```yaml
 # .fullsend/harness/triage.yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/triage.yaml#sha256=...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=...
 ```
 
 An org that needs to customize:
@@ -591,10 +591,10 @@ forge-specific artifact. The harness and agent definition are portable.
   removing an agent is deleting a file, adding one is creating a thin
   wrapper with `base:`.
 
-- **Bidirectional composition.** The `base:` merge semantics have an
-  inverse (`DiffHarness`) used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
-  `migrate-customizations` command. Changes to merge rules must be
-  reflected in both directions.
+- **Bidirectional composition.** The `base:` merge semantics had an
+  inverse (`DiffHarness`, removed with the scaffold agent extraction)
+  used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command.
 
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the

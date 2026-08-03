@@ -528,6 +528,15 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 	}, nil
 }
 
+// UpdateRepoVisibility sets a repository's visibility to public or private.
+func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error {
+	body := struct {
+		Private bool `json:"private"`
+	}{Private: private}
+	_, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo), body)
+	return err
+}
+
 // DeleteRepo deletes a repository.
 func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
@@ -3665,6 +3674,11 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 	}
 	resp.Body.Close()
 	return true, nil
+}
+
+// CreatePipeline is not supported on GitHub.
+func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // CreatePipelineSchedule is not supported on GitHub.

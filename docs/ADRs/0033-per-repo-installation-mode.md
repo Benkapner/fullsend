@@ -253,7 +253,7 @@ fullsend admin install <owner/repo>     # per-repo installation
 
 Per-repo flags:
 - `--inference-project` — GCP project for Vertex AI inference (required)
-- `--inference-region` — GCP region for Vertex AI inference (default: `global`)
+- `--inference-region` — GCP region for Vertex AI inference (install-time only, not stored in manifest)
 - `--inference-wif-provider` — full WIF provider resource name (`projects/{number}/locations/global/.../providers/{id}`); auto-provisioned if omitted
 
 Shared flags (valid for both per-org and per-repo):

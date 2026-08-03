@@ -533,6 +533,66 @@ func TestPerRepoConfig_DenyAll_YAMLRoundTrip(t *testing.T) {
 	assert.Empty(t, result, "deny-all must remain empty after roundtrip")
 }
 
+// --- Empty roles YAML roundtrip ---
+
+func TestPerRepoConfig_EmptyRoles_YAMLRoundTrip(t *testing.T) {
+	// A config with roles: [] must preserve the empty-slice semantics
+	// through marshal -> parse -> ConfigRoles(). Before the fix,
+	// omitempty dropped the empty slice, re-parse yielded nil, and
+	// ConfigRoles() fell through to parent defaults.
+	parent := &perRepoConfig{
+		Roles:  []string{"triage", "coder", "review"},
+		parent: &perRepoDefaults{},
+	}
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   []string{}, // explicitly empty — no roles
+		parent:  parent,
+	}
+
+	// Pre-marshal: ConfigRoles must be empty, not parent roles.
+	require.NotNil(t, cfg.ConfigRoles())
+	require.Empty(t, cfg.ConfigRoles())
+
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	// The marshaled output must include the empty list.
+	assert.Contains(t, string(data), "roles: []")
+
+	// Strip the header so ParsePerRepoConfig can parse the YAML body.
+	headerEnd := strings.Index(string(data), "version:")
+	require.True(t, headerEnd >= 0, "marshaled output should contain version:")
+
+	parsed, err := ParsePerRepoConfig(data[headerEnd:])
+	require.NoError(t, err)
+
+	// After roundtrip (without parent), the raw Roles field must be
+	// non-nil empty — not nil.
+	prc := parsed.(*perRepoConfig)
+	assert.NotNil(t, prc.Roles, "roles must not become nil after roundtrip")
+	assert.Empty(t, prc.Roles, "roles must remain empty after roundtrip")
+
+	// Wire up the same parent and verify ConfigRoles does not fall
+	// through.
+	prc.parent = parent
+	assert.NotNil(t, prc.ConfigRoles(), "ConfigRoles must not be nil after roundtrip")
+	assert.Empty(t, prc.ConfigRoles(), "ConfigRoles must be empty after roundtrip, not parent roles")
+}
+
+func TestPerRepoConfig_MarshalEmptyRoles(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   []string{}, // explicitly empty
+		parent:  &perRepoDefaults{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	// Empty roles (non-nil) must appear in output so they survive
+	// a roundtrip. Without MarshalYAML the omitempty tag would drop it.
+	assert.Contains(t, string(data), "roles: []")
+}
+
 // --- Validate with fallback ---
 
 func TestPerRepoConfig_ValidateEmptyVersion_FallsThrough(t *testing.T) {
