@@ -1,6 +1,6 @@
 # Harness Composition
 
-When modifying merge, diff, or path-rewriting functions in the harness
+When modifying merge or path-rewriting functions in the harness
 package, you must update **all** counterpart functions that operate on the
 same set of fields. These functions form a bidirectional invariant: they
 must agree on which harness fields exist and how each field type is
@@ -25,7 +25,7 @@ iterations over 8 days before the PR was closed.
 
 **Any change to a merge function that adds, removes, or changes
 field-level handling must be mirrored in the corresponding
-path-rewriting and diff functions.**
+path-rewriting functions.**
 
 This applies in both directions: a new field in a rewrite function
 also requires a matching update to the merge function if the field
