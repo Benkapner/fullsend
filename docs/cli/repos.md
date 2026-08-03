@@ -80,6 +80,12 @@ fullsend repos migrate <org> --project <gcp-project>
 
 Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, syncing variable drift, and upgrading scaffold refs.
 
+When the manifest file does not exist and positional repo arguments are
+provided, `repos install` bootstraps a new manifest (`version: 1`),
+adds the specified repos, and writes the file. The `--forge` flag is
+required in this case. This enables a greenfield setup without running
+`repos migrate` or manually creating the YAML first.
+
 Runs in three phases:
 
 1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (requires `--forge`). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`) are written to the manifest entry.

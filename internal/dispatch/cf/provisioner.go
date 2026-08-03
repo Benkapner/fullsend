@@ -88,6 +88,13 @@ type Config struct {
 	// wasm_exec.js (staged by `make wasm-stage`).
 	SourceDir string
 
+	// PreviewAlias is the Wrangler preview alias for preview deploys.
+	// When set (and DeployMode is DeployPreview), the provisioner uses
+	// `wrangler versions upload --preview-alias=<alias>` instead of
+	// `wrangler deploy`. The preview mint URL is deterministic:
+	// https://<alias>-<worker-name>.workers.dev
+	PreviewAlias string
+
 	// EnvVars are non-secret environment variables to set on the Worker
 	// (e.g. ROLE_APP_IDS, ALLOWED_ORGS, OIDC_AUDIENCE).
 	EnvVars map[string]string
@@ -102,7 +109,11 @@ type Config struct {
 // WranglerRunner abstracts wrangler CLI operations for testing.
 type WranglerRunner interface {
 	// Deploy deploys a Worker from sourceDir. Returns the Worker URL.
-	Deploy(ctx context.Context, sourceDir, workerName string, preview bool, envVars map[string]string) (url string, err error)
+	// When previewAlias is non-empty, the runner uses
+	// `wrangler versions upload --preview-alias=<alias>` instead of
+	// the production `wrangler deploy`. An empty previewAlias triggers
+	// a durable production deploy.
+	Deploy(ctx context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (url string, err error)
 
 	// PutSecret stores a secret value on a Worker.
 	PutSecret(ctx context.Context, workerName, secretName string, value []byte) error
@@ -170,8 +181,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		return nil, fmt.Errorf("writing version.ts: %w", err)
 	}
 
-	preview := p.cfg.DeployMode == DeployPreview
-	url, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, preview, p.cfg.EnvVars)
+	url, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, p.cfg.PreviewAlias, p.cfg.EnvVars)
 	if err != nil {
 		return nil, fmt.Errorf("deploying worker: %w", err)
 	}
@@ -194,15 +204,25 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 	return nil
 }
 
-// Teardown removes a preview Worker deployment. Only valid when
+// Teardown cleans up a preview Worker deployment. Only valid when
 // DeployMode is DeployPreview.
+//
+// Preview-alias deploys use `wrangler versions upload`, which creates
+// a version routed via the alias. The durable Worker script is shared
+// with production, so teardown abandons the preview version without
+// deleting the Worker script. The alias is simply left unrouted — it
+// will be overwritten on the next preview deploy or can be cleaned up
+// manually via `wrangler versions list`.
+//
+// Note: validate() enforces that DeployPreview always has a non-empty
+// PreviewAlias, so the bare-preview (delete Worker) path is no longer
+// reachable through normal Provisioner lifecycle.
 func (p *Provisioner) Teardown(ctx context.Context) error {
 	if p.cfg.DeployMode != DeployPreview {
 		return fmt.Errorf("teardown is only supported for preview Workers")
 	}
-	if err := p.wrangler.Delete(ctx, p.cfg.WorkerName); err != nil {
-		return fmt.Errorf("deleting worker %s: %w", p.cfg.WorkerName, err)
-	}
+	// Preview-alias teardown: abandon the alias without deleting the
+	// durable Worker script, which is shared with production.
 	return nil
 }
 
@@ -213,6 +233,20 @@ func (p *Provisioner) validate() error {
 	}
 	if !ValidateWorkerName(p.cfg.WorkerName) {
 		return fmt.Errorf("invalid Worker name %q: must be 2-63 lowercase alphanumeric characters or hyphens", p.cfg.WorkerName)
+	}
+	// Guard against DeployPreview with an empty alias: Provision routes
+	// on PreviewAlias (empty → durable deploy) while Teardown routes on
+	// DeployMode (DeployPreview → delete). This mismatch would cause a
+	// durable deploy followed by a destructive teardown.
+	if p.cfg.DeployMode == DeployPreview && p.cfg.PreviewAlias == "" {
+		return fmt.Errorf("DeployPreview requires a non-empty PreviewAlias")
+	}
+	// Guard against the inverse: DeployDurable with a non-empty alias.
+	// Provision routes on PreviewAlias (non-empty → preview deploy) while
+	// Teardown routes on DeployMode (DeployDurable → rejected). This
+	// mismatch would cause a preview deploy that cannot be torn down.
+	if p.cfg.DeployMode != DeployPreview && p.cfg.PreviewAlias != "" {
+		return fmt.Errorf("PreviewAlias %q requires DeployMode=DeployPreview", p.cfg.PreviewAlias)
 	}
 	return nil
 }
@@ -321,6 +355,16 @@ func ValidateWorkerName(name string) bool {
 	return workerNamePattern.MatchString(name)
 }
 
+// previewAliasPattern validates Cloudflare preview alias names.
+// Aliases must be lowercase alphanumeric with hyphens, 2-63 chars —
+// same constraints as Worker names since the alias appears in the URL.
+var previewAliasPattern = workerNamePattern
+
+// ValidatePreviewAlias checks if a string is a valid CF preview alias.
+func ValidatePreviewAlias(alias string) bool {
+	return previewAliasPattern.MatchString(alias)
+}
+
 // DefaultWorkerSourceDir returns the default path to the Worker source
 // directory. This assumes the CLI is run from the repository root.
 func DefaultWorkerSourceDir() string {
@@ -356,8 +400,23 @@ func NewLiveWranglerRunner(accountID string) *LiveWranglerRunner {
 	return &LiveWranglerRunner{AccountID: accountID}
 }
 
-// Deploy deploys a Worker from sourceDir using wrangler deploy.
-func (r *LiveWranglerRunner) Deploy(ctx context.Context, sourceDir, workerName string, preview bool, envVars map[string]string) (string, error) {
+// Deploy deploys a Worker from sourceDir using wrangler.
+//
+// When previewAlias is non-empty, uses `wrangler versions upload` with
+// `--preview-alias=<alias>` for a preview deploy. The preview URL is
+// deterministic: https://<alias>-<workerName>.workers.dev
+//
+// When previewAlias is empty, uses `wrangler deploy` for a durable
+// production deploy.
+func (r *LiveWranglerRunner) Deploy(ctx context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (string, error) {
+	if previewAlias != "" {
+		return r.deployPreview(ctx, sourceDir, workerName, previewAlias, envVars)
+	}
+	return r.deployDurable(ctx, sourceDir, workerName, envVars)
+}
+
+// deployDurable performs a production deploy via `wrangler deploy`.
+func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, workerName string, envVars map[string]string) (string, error) {
 	args := []string{"wrangler", "deploy", "--name", workerName}
 	// Always pass --keep-vars to preserve existing Worker secrets
 	// (e.g. PEM keys stored via StoreAgentPEM). Without this flag,
@@ -385,6 +444,39 @@ func (r *LiveWranglerRunner) Deploy(ctx context.Context, sourceDir, workerName s
 	if url == "" {
 		url = fmt.Sprintf("https://%s.workers.dev", workerName)
 	}
+	return url, nil
+}
+
+// deployPreview performs a preview deploy via `wrangler versions upload`.
+func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, workerName, previewAlias string, envVars map[string]string) (string, error) {
+	args := []string{"wrangler", "versions", "upload", "--name", workerName}
+	args = append(args, fmt.Sprintf("--preview-alias=%s", previewAlias))
+	// Pass --keep-vars to preserve existing Worker secrets (PEM keys
+	// stored via StoreAgentPEM). Preview-alias deploys target the same
+	// Worker script as production, so omitting this could wipe secrets.
+	args = append(args, "--keep-vars")
+
+	// Pass env vars to wrangler via --var flags.
+	for k, v := range envVars {
+		args = append(args, "--var", fmt.Sprintf("%s:%s", k, v))
+	}
+
+	cmd := exec.CommandContext(ctx, "npx", args...)
+	cmd.Dir = sourceDir
+	cmd.Env = append(os.Environ(),
+		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("wrangler versions upload failed: %s\n%s", err, string(output))
+	}
+
+	// Preview URL is deterministic from the alias and worker name.
+	// We don't use parseWorkerURL here because wrangler output may
+	// contain the production Worker URL, which parseWorkerURL would
+	// match as a false positive. The deterministic pattern is reliable.
+	url := fmt.Sprintf("https://%s-%s.workers.dev", previewAlias, workerName)
 	return url, nil
 }
 
