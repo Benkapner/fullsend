@@ -676,7 +676,7 @@ Once all customers are migrated:
 
 1. Update install seeding to use agents repo URLs exclusively
 2. ~~Remove scaffold fallback from `MergedAgents()`~~ *(completed — PR #5425)*
-3. Remove `HarnessNames()` (or restrict to install-time seeding) *(still used by `migrate.go`)*
+3. Remove `HarnessNames()` (or restrict to install-time seeding) *(migrate.go removed — #5864)*
 4. ~~Remove `HarnessWrappersLayer`~~ *(completed — PR #5425)*
 5. Delete scaffold agent files from `internal/scaffold/fullsend-repo/`:
    - `agents/*.md` (all 6)

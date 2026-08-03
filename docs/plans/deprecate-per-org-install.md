@@ -196,7 +196,7 @@ func newMigrateCmd() *cobra.Command {
 }
 ```
 
-**`internal/cli/migrate.go`** (new file):
+**`internal/cli/migrate.go`** *(removed — #5864)*:
 
 Implement `runMigrate()`:
 
@@ -299,7 +299,7 @@ available. Existing commands unchanged.
   (the function is shared with per-repo paths; only remove the
   org-only logic, not the function itself).
 
-**`internal/cli/migrate.go`:**
+**`internal/cli/migrate.go`:** *(completed — #5864)*
 
 - Delete entire file (migration command removed with per-org).
 

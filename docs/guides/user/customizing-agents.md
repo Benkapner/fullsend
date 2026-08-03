@@ -155,9 +155,6 @@ Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_re
 > override only the fields that differ. See
 > [Bring Your Own Agent](bring-your-own-agent.md) for the composition model
 > and config-driven registration.
-> Run `fullsend agent migrate-customizations --dry-run` to preview the
-> migration, then `fullsend agent migrate-customizations --repo owner/repo`
-> to apply it.
 
 Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it.
 
@@ -224,7 +221,7 @@ To add a custom skill to the code agent's harness (deprecated — use `base:` co
 
 1. **Copy the full upstream harness** from `fullsend-ai/fullsend` to your customization directory:
    ```bash
-   # ⚠ Deprecated: use `fullsend agent migrate-customizations` to convert to config-driven agents
+   # ⚠ Deprecated: use config-driven agent registration instead
    curl -o .fullsend/customized/harness/code.yaml \
      https://raw.githubusercontent.com/fullsend-ai/agents/main/harness/code.yaml
    ```

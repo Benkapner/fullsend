@@ -546,32 +546,6 @@ repos:
 - Individual agents can be disabled with `enabled: false` — see [Disabling Agents](customizing-agents.md#disabling-agents).
 - Per-repo config is read from the **base branch**, not from PR branches.
 
-## Migrating from `customized/`
-
-The `customized/` directory overlay is deprecated in favor of the `base:` composition and config-driven registration described in this guide.
-
-If you have existing files in `customized/`, the `fullsend agent migrate-customizations` command automates the conversion to config-driven agents.
-
-Preview what would change:
-```bash
-fullsend agent migrate-customizations --fullsend-dir .fullsend --dry-run
-```
-
-Run the migration (creates a PR with the changes):
-```bash
-fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
-```
-
-The tool classifies each override and takes the appropriate action:
-
-| Override type | Detection | Action |
-|---------------|-----------|--------|
-| Dead | Agent already registered in config | Delete `customized/` files |
-| Custom | Not in upstream scaffold | Move files to regular directories, register local path in config |
-| Modified | Standard scaffold agent, not yet in config | Generate a `base:` composition harness with the minimal diff, register in config |
-
-For modified agents, the migration produces exactly the kind of thin `base:` harness shown in [Configuring existing agents](#configuring-existing-agents) — only the fields that differ from upstream are included.
-
 ## Advanced: custom identity
 
 By default, agents authenticate using shared fullsend GitHub Apps via the `slug` field. If you need your own GitHub App — for custom permissions, compliance, or branding — you can run a **standalone mint**. Follow the [Standalone mint guide](../infrastructure/standalone-mint.md) to set one up.

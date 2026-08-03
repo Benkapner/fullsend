@@ -4,8 +4,6 @@
 > deprecated. For new custom agents, register them in `config.yaml` with a
 > local `source:` path instead. See
 > [Bring Your Own Agent](bring-your-own-agent.md) for the recommended approach.
-> Run `fullsend agent migrate-customizations --dry-run` to preview migrating
-> existing customizations.
 
 This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.
