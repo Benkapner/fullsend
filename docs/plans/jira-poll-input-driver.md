@@ -381,7 +381,20 @@ This is the same pattern used by `internal/forge/jira/client_test.go` (httptest-
 
 ### New step definitions
 
-These steps would live in `pkg/behaviourtest/steps/jirapoll.go` and be registered via `registerJiraPollSteps(sc)` in `registry.go`:
+**Status: implemented differently than planned below.** The steps live in
+`pkg/behaviourtest/steps/jirapoll.go` as planned, but `And the Jira poller
+runs` constructs and calls `jirapoll.Poller` directly (`jirapoll.New(...).Run(ctx)`)
+against the mock server, rather than building and exec'ing the `fullsend`
+binary. It builds its own minimal `dispatch.HarnessRouter` in-process instead
+of going through `buildRouter`/`config.LoadConfig`. This means the scenario
+exercises the Jira client, change detection, conversion, and routing exactly
+as planned, but does **not** exercise the CLI layer (`runJiraPoll`,
+`validateJiraPollArgs`, flag parsing, or `.fullsend/config.yaml` loading) —
+that layer is covered separately by `internal/cli/poll_test.go`. The
+plan below is kept for the original design rationale; treat the CLI-exec
+detail as superseded.
+
+These steps live in `pkg/behaviourtest/steps/jirapoll.go` and are registered via `registerJiraPollSteps(sc)` in `registry.go`:
 
 | Step | Implementation |
 |------|----------------|
@@ -389,11 +402,11 @@ These steps would live in `pkg/behaviourtest/steps/jirapoll.go` and be registere
 | `Given a Jira issue {key} with labels {labels}` | Add an issue to the mock state with the given key and comma/space-separated labels. Assigns a synthetic numeric ID. |
 | `When a comment {body} is added to Jira issue {key}` | Append a `jira.Comment` to the mock's comment store for the issue. Author is a canned human user (not bot). |
 | `When the label {label} is added to Jira issue {key}` | Append a `jira.ChangelogEntry` with a `labels` field change to the mock's changelog store. Update the issue's label list. |
-| `And the Jira poller runs` | Build and exec `fullsend poll --input-driver jira-poll --jira-url {mock URL} --jira-project PROJ --target-repo {test org/repo} --output {tmpfile} --fullsend-dir {config dir}`. Parse the output file into `[]poll.Dispatch` and store in `World`. |
+| `And the Jira poller runs` | Construct a `jirapoll.Poller` in-process against the mock server URL and call `Run(ctx)`. Parse the output file into `[]poll.Dispatch` and store in `World`. |
 | `Then the dispatch output contains a {stage} stage for issue {key}` | Assert that the stored dispatches include a record with the expected stage and a `ResourceKey` matching `issue-{key}`. |
 | `Then the dispatch output does not contain a stage for issue {key}` | Assert absence. |
 
-### Test wiring
+### Test wiring (original design — superseded, see status note above)
 
 ```
   httptest.Server (mock Jira API)
@@ -442,7 +455,7 @@ Environment variables required by `runJiraPoll`:
 
 1. **Mock Jira server implementation** — `pkg/behaviourtest/drivers/jiramock/server.go` or similar. This is the main new code.
 2. **Local-filesystem harness config** — a variant of `givenCustomHarness` that writes to a temp dir instead of committing via SCM. Alternatively, the Jira poll steps can build the `.fullsend/` layout directly.
-3. **`fullsend` binary** — built via `e2etest.BuildCLIBinary(t)` or `go build`, same as existing behaviour tests.
+3. ~~**`fullsend` binary** — built via `e2etest.BuildCLIBinary(t)` or `go build`, same as existing behaviour tests.~~ Not needed as implemented: the step calls `jirapoll.Poller` directly rather than exec'ing the binary (see status note above).
 4. **No external services** — the `@requires:jira-mock` tag signals that the scenario runs entirely locally. No Jira instance, no GitHub API calls (beyond the enrolled-repo background step, which could be skipped or stubbed for pure-poll tests).
 5. **Gherkin tag filtering** — the behaviour test runner must recognize `@requires:jira-mock` and skip these scenarios until the mock server is implemented. Once implemented, the tag can be dropped or kept as documentation.
 

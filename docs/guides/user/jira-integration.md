@@ -22,12 +22,10 @@ The same conventions work across forges:
 |---|---|
 | Comment containing `/fs-triage` | triage |
 | Comment containing `/fs-code` | code |
-| Comment containing `/fs-review` | review |
 | Label `ready-to-code` added | code |
-| Label `ready-for-review` added | review |
 | Comment on an issue with `needs-info` label | triage |
 
-Slash commands follow the `/fs-{agent}` pattern — any registered agent name works.
+Slash commands follow the `/fs-{agent}` pattern for stages that can legitimately run against a bare Jira issue. `review`, `fix`, and `retro` are **not** among them: per the [jira-poll adapter spec](../../normative/normalized-event/v1/jira-poll-adapter.md#state), those stages are change-proposal-scoped (they act on an existing PR) and harness CEL triggers for them MUST require `entity.kind == 'change_proposal'` — which a Jira issue comment alone never has. A `/fs-review` comment on a Jira issue is not expected to dispatch anything.
 
 ## Prerequisites
 
@@ -119,17 +117,23 @@ jobs:
             STAGE=$(echo "$record" | jq -r '.stage')
             RESOURCE_KEY=$(echo "$record" | jq -r '.resource_key')
             EVENT_TYPE=$(echo "$record" | jq -r '.event_type')
+            ISSUE_ID=$(echo "$record" | jq -r '.iid // 0')
 
             # Extract the Jira issue key from the resource key (e.g. "issue-PROJ-101" → "PROJ-101").
             ISSUE_KEY="${RESOURCE_KEY#issue-}"
             ISSUE_URL="${JIRA_BASE_URL}/browse/${ISSUE_KEY}"
 
             # Build a minimal event payload compatible with the scaffold agent workflows.
-            # The concurrency group uses fromJSON(event_payload).issue.number.
+            # The concurrency group uses fromJSON(event_payload).issue.number, so it must
+            # stay a number — per the adapter spec, that's entity.id (here, the record's
+            # own numeric .iid), not the Jira key string. This is a stopgap projection,
+            # not the spec's full FULLSEND_WORK_ITEM_* execution-ref projection (deferred
+            # to the tracked "real output driver" follow-up — see the KNOWN LIMITATION
+            # note in internal/jirapoll/poller.go).
             EVENT_PAYLOAD=$(jq -nc \
-              --arg key "$ISSUE_KEY" \
+              --argjson number "$ISSUE_ID" \
               --arg url "$ISSUE_URL" \
-              '{issue: {number: $key, html_url: $url}}')
+              '{issue: {number: $number, html_url: $url}}')
 
             # Find the workflow file for this stage by scanning for the
             # "# fullsend-stage: <stage>" marker in workflow files.
@@ -161,7 +165,7 @@ jobs:
 2. Replace `PROJ` with your Jira project key.
 3. Commit and push the workflow file.
 
-**`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other. The poller uses Jira entity properties as distributed locks, so concurrent runs are safe but wasteful.
+**`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other, which is the primary defense against concurrent runs — the GitHub Actions concurrency group means only one poll cycle for this workflow ever runs at a time in the common case. The poller's own Jira entity-property locking is a secondary guard for cases outside that group (e.g. a manually triggered run overlapping a scheduled one): it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
 
 ### Custom JQL
 
@@ -221,6 +225,11 @@ Two edge cases of checkpoint tracking are worth knowing:
 - **Comment edits count as new activity.** The poller filters comments on the later of their created and updated timestamps, so editing a comment (for example, adding a slash command to an old comment) is detected on the next cycle. Jira bumps a comment's updated timestamp on modifications other than body edits too (such as visibility changes), and any such bump counts as activity. The flip side: modifying a comment whose slash command was already dispatched makes it look new again and can re-dispatch it.
 
 Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: every cycle that selects at least one issue re-fetches the project's role membership, including paginating the members of any group backing a role (in-process caches do not survive between cron runs). For projects whose roles are backed by large groups, budget Jira rate limits for a full role/group walk every poll interval.
+
+Two more scaling limits, following [ADR 0063](../../ADRs/0063-polling-based-work-discovery.md):
+
+- **Issues beyond the top M candidates can be starved.** Each cycle's JQL search returns at most M (default 50) candidates, ordered by `updated DESC`. If a project has more than M issues with in-scope activity at once, whichever issues aren't in that top-M window this cycle are simply never selected — there's no rotation across cycles to eventually reach them. This is expected to self-resolve for most projects (an issue with new activity moves toward the front of `updated DESC` on its own), but a project that consistently has more than M simultaneously-active issues will have some starved indefinitely. Narrow the default `--jql` (e.g. scope to a label or a subset of issue types) if this applies to you.
+- **Comments are re-listed in full, oldest-first, every cycle.** The Jira REST API has no way to filter comments server-side by date, so `ListComments` always paginates from the start of an issue's comment history; the poller then filters client-side by timestamp. For issues with very long comment histories, this means re-fetching (and re-decoding) old comments every cycle just to discard them.
 
 ## Troubleshooting
 
