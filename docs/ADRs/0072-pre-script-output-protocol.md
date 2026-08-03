@@ -85,8 +85,9 @@ both directions (same class of concern as
 [ADR 0062](0062-dispatch-version-skew.md); the asymmetry is specified in the
 normative doc).
 
-The deferred third option (moving setup into `fullsend run`) is tracked as
-follow-up work on #4718, not decided here.
+The deferred third option (moving setup into `fullsend run`) is tracked in
+[fullsend-ai/fullsend#5870](https://github.com/fullsend-ai/fullsend/issues/5870),
+not decided here.
 
 ## Consequences
 
