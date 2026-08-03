@@ -379,7 +379,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			if isTransientError(err) && isIdempotent(method) && attempt < maxRetries-1 {
+			if isTransientError(err) && isIdempotent(method, path) && attempt < maxRetries-1 {
 				delay := retryDelay(nil, attempt)
 				select {
 				case <-time.After(delay):
@@ -391,7 +391,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 			return fmt.Errorf("http %s %s: %w", method, path, err)
 		}
 
-		if isRetryable(resp, method) {
+		if isRetryable(resp, method, path) {
 			_ = resp.Body.Close()
 			if attempt == maxRetries-1 {
 				return &APIError{
@@ -450,11 +450,11 @@ func parseErrorResponse(resp *http.Response) error {
 	return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
 }
 
-func isRetryable(resp *http.Response, method string) bool {
+func isRetryable(resp *http.Response, method, path string) bool {
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return true
 	}
-	if resp.StatusCode >= 500 && resp.StatusCode <= 504 && isIdempotent(method) {
+	if resp.StatusCode >= 500 && resp.StatusCode <= 504 && isIdempotent(method, path) {
 		return true
 	}
 	return false
@@ -482,9 +482,14 @@ func isTransientAuthError(err error) bool {
 	return errors.As(err, &transient)
 }
 
-func isIdempotent(method string) bool {
-	return method == http.MethodGet || method == http.MethodHead ||
-		method == http.MethodPut || method == http.MethodDelete
+func isIdempotent(method, path string) bool {
+	if method == http.MethodGet || method == http.MethodHead ||
+		method == http.MethodPut || method == http.MethodDelete {
+		return true
+	}
+	// /search/jql is a read-only JQL search issued as a POST because the
+	// query is passed in the request body; it's safe to retry like a GET.
+	return method == http.MethodPost && path == "/search/jql"
 }
 
 func retryDelay(resp *http.Response, attempt int) time.Duration {

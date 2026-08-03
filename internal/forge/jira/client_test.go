@@ -915,6 +915,33 @@ func TestSearchIssues_LimitStopsPagination(t *testing.T) {
 	assert.Equal(t, 1, callCount, "should stop paginating once the limit is reached")
 }
 
+// TestSearchIssues_RetriesOn5xx checks that a transient 5xx from the
+// read-only JQL search endpoint is retried, even though the request is a
+// POST (POST is not idempotent in general, but this endpoint is read-only).
+func TestSearchIssues_RetriesOn5xx(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, SearchResult{
+			Issues: []Issue{{ID: "1", Key: "TEST-1"}},
+			IsLast: true,
+		})
+	})
+
+	issues, err := client.SearchIssues(ctx, "project = TEST", 0)
+	require.NoError(t, err)
+	assert.Len(t, issues, 1)
+	assert.Equal(t, 2, callCount, "should have retried after the 503")
+}
+
 // ---------------------------------------------------------------------------
 // NewOAuth2 / New base URL edge cases
 // ---------------------------------------------------------------------------
@@ -976,12 +1003,15 @@ func TestIsTransientError(t *testing.T) {
 
 func TestIsIdempotent(t *testing.T) {
 	t.Parallel()
-	assert.True(t, isIdempotent(http.MethodGet))
-	assert.True(t, isIdempotent(http.MethodHead))
-	assert.True(t, isIdempotent(http.MethodPut))
-	assert.True(t, isIdempotent(http.MethodDelete))
-	assert.False(t, isIdempotent(http.MethodPost))
-	assert.False(t, isIdempotent(http.MethodPatch))
+	assert.True(t, isIdempotent(http.MethodGet, "/issue/PROJ-1"))
+	assert.True(t, isIdempotent(http.MethodHead, "/issue/PROJ-1"))
+	assert.True(t, isIdempotent(http.MethodPut, "/issue/PROJ-1"))
+	assert.True(t, isIdempotent(http.MethodDelete, "/issue/PROJ-1"))
+	assert.False(t, isIdempotent(http.MethodPost, "/issue"))
+	assert.False(t, isIdempotent(http.MethodPatch, "/issue/PROJ-1"))
+	// /search/jql is a read-only JQL search issued as a POST (the request
+	// body carries the query), so it's safe to retry like any other GET.
+	assert.True(t, isIdempotent(http.MethodPost, "/search/jql"))
 }
 
 func TestIsRetryable(t *testing.T) {
@@ -990,20 +1020,22 @@ func TestIsRetryable(t *testing.T) {
 		name   string
 		status int
 		method string
+		path   string
 		want   bool
 	}{
-		{"429 GET", http.StatusTooManyRequests, http.MethodGet, true},
-		{"429 POST", http.StatusTooManyRequests, http.MethodPost, true},
-		{"500 GET", http.StatusInternalServerError, http.MethodGet, true},
-		{"503 PUT", http.StatusServiceUnavailable, http.MethodPut, true},
-		{"500 POST", http.StatusInternalServerError, http.MethodPost, false},
-		{"404 GET", http.StatusNotFound, http.MethodGet, false},
-		{"505 GET", http.StatusHTTPVersionNotSupported, http.MethodGet, false},
+		{"429 GET", http.StatusTooManyRequests, http.MethodGet, "/issue/PROJ-1", true},
+		{"429 POST", http.StatusTooManyRequests, http.MethodPost, "/issue", true},
+		{"500 GET", http.StatusInternalServerError, http.MethodGet, "/issue/PROJ-1", true},
+		{"503 PUT", http.StatusServiceUnavailable, http.MethodPut, "/issue/PROJ-1", true},
+		{"500 POST", http.StatusInternalServerError, http.MethodPost, "/issue", false},
+		{"500 POST search/jql", http.StatusInternalServerError, http.MethodPost, "/search/jql", true},
+		{"404 GET", http.StatusNotFound, http.MethodGet, "/issue/PROJ-1", false},
+		{"505 GET", http.StatusHTTPVersionNotSupported, http.MethodGet, "/issue/PROJ-1", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := &http.Response{StatusCode: tc.status}
-			assert.Equal(t, tc.want, isRetryable(resp, tc.method))
+			assert.Equal(t, tc.want, isRetryable(resp, tc.method, tc.path))
 		})
 	}
 }
