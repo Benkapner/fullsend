@@ -1899,6 +1899,12 @@ var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // retains these for mintAgentToken and OIDC token refresh; stripping them
 // from child scripts, expanders, and sandbox injection prevents user code
 // and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+//
+// MAINTENANCE: when new OIDC-related credential env vars are introduced
+// (e.g. by mint infrastructure changes), add them here. By convention the
+// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
+// expansion site in this file consults this map, so a single addition
+// propagates to all deny checks.
 var oidcDenyKeys = map[string]bool{
 	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
 	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
@@ -2054,7 +2060,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
-		hostPath := os.ExpandEnv(hf.Src)
+		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
+		// credential vars in host_files src path expansion (#5832).
+		hostPath := safeExpandEnv(hf.Src)
 		if hostPath == "" {
 			if hf.Optional {
 				continue
@@ -2114,6 +2122,19 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	}
 
 	return nil
+}
+
+// safeExpandEnv expands ${VAR} references like os.ExpandEnv but refuses
+// OIDC credential vars (oidcDenyKeys), expanding them to empty. Use this
+// instead of os.ExpandEnv at any site where the expanded value may reach
+// user-controlled or sandbox-visible contexts. See #5832.
+func safeExpandEnv(s string) string {
+	return os.Expand(s, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
+		return os.Getenv(key)
+	})
 }
 
 // shellSafeExpandEnv expands ${VAR} references in text using the host

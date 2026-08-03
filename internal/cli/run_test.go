@@ -1863,6 +1863,29 @@ export E="${SAFE_VAR}"`
 	assert.Contains(t, got, `export E="allowed-value"`, "non-OIDC var must expand normally")
 }
 
+// TestSafeExpandEnv_RefusesOIDCVars verifies that safeExpandEnv refuses OIDC
+// credential vars (expanding them to empty) while passing other vars through
+// unchanged. This covers the host_files src path expansion site (#5832).
+func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "allowed-value")
+
+	// OIDC vars must expand to empty.
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_AUTH_FILE}"))
+
+	// Non-OIDC vars must expand normally.
+	assert.Equal(t, "allowed-value", safeExpandEnv("${SAFE_VAR}"))
+
+	// Mixed usage: OIDC part disappears, safe part remains.
+	assert.Equal(t, "/prefix//suffix", safeExpandEnv("/prefix/${FULLSEND_GCP_OIDC_AUTH_FILE}/suffix"))
+}
+
 // TestReservedSandboxKeys_IncludesOIDCVars verifies that OIDC credential vars
 // are in reservedSandboxKeys so env.sandbox cannot inject them (#5832).
 func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
