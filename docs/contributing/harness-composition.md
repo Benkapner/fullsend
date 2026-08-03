@@ -70,6 +70,14 @@ strip the `customized/` prefix from `h.FooScript`. If
 `ForgeConfig`, then the `for _, fc := range h.Forge` loop in
 `rewriteCustomizedPaths` must also handle that field.
 
+> **Note — diff functions.** Issue #5751 and earlier iterations of this
+> document referenced `DiffHarness` and `diffForgeConfig` as the
+> counterpart to the merge functions. Those functions were removed when
+> ADR-0045 extracted the scaffold agent into a standalone harness
+> (eliminating the need to diff harness structs). The remaining
+> counterpart is the path-rewriting code in `internal/cli/migrate.go`,
+> which is what this document covers.
+
 ## Checklist for harness field changes
 
 When adding or modifying a field in the `Harness` or `ForgeConfig`
@@ -91,6 +99,16 @@ structs:
    loop.
 6. **Update tests** in `compose_test.go`, `forge_test.go`, and
    `migrate_test.go` to cover the new field in all affected functions.
+
+## When reviewing PRs
+
+**When reviewing PRs that touch merge or path-rewriting functions:**
+Flag any change to a merge function (`compose.go`, `forge.go`) that
+adds or modifies field-level handling without a corresponding update to
+`rewriteCustomizedPaths` in `migrate.go` — and vice versa — as a
+**medium-severity** finding. The fix is always to update the
+counterpart function and add test coverage in the matching `_test.go`
+file.
 
 ## Related
 
