@@ -202,7 +202,7 @@ For each issue since `lastCheck`:
   - `labels` field change → `label_changed` event (one per label added/removed)
   - `status` field change → `opened`/`reopened`/`closed` as appropriate
   - `summary`/`description` change → `edited`
-- **New issue:** If `lastCheck` is zero (first poll), emit `opened` — but only when the issue was created within the first-poll backfill window, so first enabling the driver on an existing backlog doesn't dispatch for every open issue. On first poll, comments and changelog entries are bounded by the same window.
+- **New issue:** If `lastCheck` is zero (first poll), emit `opened` — but only when the issue was created within the first-poll backfill window, so first enabling the driver on an existing backlog doesn't dispatch for every open issue. On first poll, comments and changelog entries are bounded by the same window. The window (24 hours) is an implementation choice, not an ADR-derived requirement: it replaces ADR 0063's operator-driven "seed `lastCheck` or narrow queries" mitigation with an automatic bound. Activity older than the window on first poll is permanently skipped (the checkpoint still advances past it); the user guide's troubleshooting table documents this.
 
 ### NormalizedEvent conversion
 
@@ -466,7 +466,7 @@ Add a user-facing guide at `docs/guides/user/jira-integration.md` covering:
 - **Scheduled workflow:** Example `.github/workflows/fullsend-poll.yml` that runs `fullsend poll --input-driver jira-poll` on a cron schedule.
 - **Troubleshooting:** Common failure modes (API token access restricted, project not visible).
 
-**Not pursuing:** OAuth 2.0 client-credentials auth was considered as a fallback for orgs that restrict personal API tokens, but the target Jira instance doesn't support it yet (expected Q4). Rather than ship unused/untested auth code, this was dropped from scope — see the PR discussion for the review finding that prompted this.
+**Not pursuing:** OAuth 2.0 client-credentials auth was considered as a fallback for orgs that restrict personal API tokens, but the target Jira instance doesn't support it today, and we don't have confirmed visibility into when or whether it will. Rather than ship unused/untested auth code, this was dropped from scope — see the PR discussion for the review finding that prompted this.
 
 ## References
 
