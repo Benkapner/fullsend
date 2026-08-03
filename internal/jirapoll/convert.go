@@ -179,9 +179,18 @@ func extractCommand(body string) (command, instruction string) {
 }
 
 // resolveRole maps the event actor's Jira project role to an ADR 0054 role.
+//
+// roleMembership is loaded once per cycle for a single p.opts.JiraProject.
+// A --jql spanning multiple projects can still surface issues outside that
+// project, so an actor's role is only honored for issues in the configured
+// project; anything else fails closed to "external" rather than leaking a
+// role granted in one project onto an issue in another (see PR #5778 review).
 func (p *Poller) resolveRole(event JiraEvent) string {
 	aid := actorID(event)
 	if aid == "" {
+		return "external"
+	}
+	if p.opts.JiraProject != "" && issueProjectKey(event.IssueKey) != p.opts.JiraProject {
 		return "external"
 	}
 	roleName, ok := p.roleMembership[aid]
@@ -189,6 +198,16 @@ func (p *Poller) resolveRole(event JiraEvent) string {
 		return "external"
 	}
 	return mapJiraRole(roleName)
+}
+
+// issueProjectKey extracts the project key from a Jira issue key
+// (e.g. "PROJ-123" -> "PROJ").
+func issueProjectKey(issueKey string) string {
+	i := strings.LastIndex(issueKey, "-")
+	if i < 0 {
+		return ""
+	}
+	return issueKey[:i]
 }
 
 // mapJiraRole maps a Jira project role name to an ADR 0054 role.

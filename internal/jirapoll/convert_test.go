@@ -647,6 +647,65 @@ func TestResolveRole_EmptyActorID(t *testing.T) {
 	}
 }
 
+func TestResolveRole_CrossProjectFailsClosed(t *testing.T) {
+	// roleMembership was loaded for PROJ1 only. An actor who is a Developer
+	// there must not inherit that role on an issue from a different project
+	// matched by a multi-project --jql (see PR #5778 review).
+	p := &Poller{
+		opts: Options{
+			TargetRepo:  "acme/platform",
+			JiraBaseURL: "https://acme.atlassian.net",
+			JiraProject: "PROJ1",
+		},
+		roleMembership: map[string]string{
+			"dev-user": "Developers",
+		},
+	}
+
+	event := JiraEvent{
+		Type:     "comment_added",
+		IssueID:  "10042",
+		IssueKey: "PROJ2-7",
+		CommentAuthor: jira.User{
+			AccountID:   "dev-user",
+			AccountType: "atlassian",
+		},
+	}
+
+	ne := p.toNormalizedEvent(event)
+	if ne.Actor.Role != "external" {
+		t.Errorf("actor.role = %q, want %q for an issue outside the configured Jira project", ne.Actor.Role, "external")
+	}
+}
+
+func TestResolveRole_SameProjectSucceeds(t *testing.T) {
+	p := &Poller{
+		opts: Options{
+			TargetRepo:  "acme/platform",
+			JiraBaseURL: "https://acme.atlassian.net",
+			JiraProject: "PROJ1",
+		},
+		roleMembership: map[string]string{
+			"dev-user": "Developers",
+		},
+	}
+
+	event := JiraEvent{
+		Type:     "comment_added",
+		IssueID:  "10042",
+		IssueKey: "PROJ1-7",
+		CommentAuthor: jira.User{
+			AccountID:   "dev-user",
+			AccountType: "atlassian",
+		},
+	}
+
+	ne := p.toNormalizedEvent(event)
+	if ne.Actor.Role != "write" {
+		t.Errorf("actor.role = %q, want %q for an issue in the configured Jira project", ne.Actor.Role, "write")
+	}
+}
+
 func TestResolveRole_AdminActor(t *testing.T) {
 	p := &Poller{
 		opts: Options{
