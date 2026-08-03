@@ -21,7 +21,10 @@ Accepted
 ## Context
 
 An agent's harness `pre_script` runs inside `fullsend run`, immediately before
-sandbox creation. `reusable-code.yml` and `reusable-fix.yml` additionally
+sandbox creation (the agents and the pipeline they run in are covered by the
+[agent architecture](../problems/agent-architecture.md) and
+[agent infrastructure](../problems/agent-infrastructure.md) problem docs).
+`reusable-code.yml` and `reusable-fix.yml` additionally
 invoked the same scripts inline, ahead of `fullsend run`, so a `skipped=`
 step output could gate expensive setup (GCP credentials, bot identity,
 agent-env prep). The result was two executions per run
