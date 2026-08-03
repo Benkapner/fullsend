@@ -176,6 +176,43 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 	assert.ErrorContains(t, err, "STS returned empty access token")
 }
 
+func TestSTSVerifier_PerRepoBypassesOrgCheck(t *testing.T) {
+	sts := newTestSTSServer(t)
+	// "external-org" is NOT in AllowedOrgs, but external-org/repo is in PerRepoWIFRepos.
+	// The per-repo caller should be authorized without ALLOWED_ORGS membership.
+	v := NewSTSVerifier(STSVerifierConfig{
+		STSURL:             sts.URL,
+		GCPProjectNum:      "123456",
+		WIFPoolName:        "fullsend-pool",
+		DefaultWIFProvider: "fullsend-provider",
+		AllowedOrgs:        []string{"myorg"},
+		AllowedWorkflows:   []string{"*"},
+		PerRepoWIFRepos:    map[string]bool{"external-org/repo": true},
+		OIDCAudience:       "fullsend-mint",
+	})
+
+	c := validClaims()
+	c["repository"] = "external-org/repo"
+	c["repository_owner"] = "external-org"
+	c["job_workflow_ref"] = "external-org/repo/.github/workflows/dispatch.yml@refs/heads/main"
+	token := makeUnsignedJWT(t, c)
+	claims, err := v.Verify(t.Context(), token)
+	require.NoError(t, err)
+	assert.Equal(t, "external-org/repo", claims.Repository)
+}
+
+func TestSTSVerifier_NonPerRepoStillRequiresOrg(t *testing.T) {
+	sts := newTestSTSServer(t)
+	v := newTestSTSVerifier(t, sts.URL)
+
+	c := validClaims()
+	c["repository"] = "external-org/repo"
+	c["repository_owner"] = "external-org"
+	token := makeUnsignedJWT(t, c)
+	_, err := v.Verify(t.Context(), token)
+	assert.ErrorContains(t, err, "not in allowed orgs")
+}
+
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
 	v := NewSTSVerifier(STSVerifierConfig{
 		DefaultWIFProvider: "default-provider",

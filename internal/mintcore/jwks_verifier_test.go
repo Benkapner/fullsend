@@ -550,6 +550,45 @@ func TestJWKSVerifier_StaleKeyRejectedAfterMaxStaleness(t *testing.T) {
 	require.Error(t, err, "should reject stale keys beyond max staleness window")
 }
 
+func TestJWKSVerifier_PerRepoBypassesOrgCheck(t *testing.T) {
+	s := newTestOIDCServer(t)
+	// "myorg" is NOT in AllowedOrgs, but myorg/my-repo is in PerRepoWIFRepos.
+	// The per-repo caller should be authorized without ALLOWED_ORGS membership.
+	v := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL:            s.server.URL,
+		Audience:             "fullsend-mint",
+		AllowedOrgs:          []string{"other-org"},
+		AllowedWorkflowFiles: []string{"*"},
+		PerRepoWIFRepos:      map[string]bool{"myorg/my-repo": true},
+	})
+	token := s.signJWT(t, nil, map[string]interface{}{
+		"repository":       "myorg/my-repo",
+		"repository_owner": "myorg",
+		"job_workflow_ref": "myorg/my-repo/.github/workflows/dispatch.yml@refs/heads/main",
+	})
+
+	claims, err := v.Verify(t.Context(), token)
+	require.NoError(t, err)
+	assert.Equal(t, "myorg/my-repo", claims.Repository)
+}
+
+func TestJWKSVerifier_NonPerRepoStillRequiresOrg(t *testing.T) {
+	s := newTestOIDCServer(t)
+	// "myorg" is NOT in AllowedOrgs and myorg/my-repo is NOT in PerRepoWIFRepos.
+	// The caller should be rejected.
+	v := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL:            s.server.URL,
+		Audience:             "fullsend-mint",
+		AllowedOrgs:          []string{"other-org"},
+		AllowedWorkflowFiles: []string{"*"},
+	})
+	token := s.signJWT(t, nil, nil)
+
+	_, err := v.Verify(t.Context(), token)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed orgs")
+}
+
 func TestParseRSAPublicKey(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)

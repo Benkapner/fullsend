@@ -744,9 +744,10 @@ Per-org enrollment (fullsend mint enroll acme):
   - Requires shared role app IDs to already be configured on the mint
 
 Per-repo enrollment (fullsend mint enroll acme/widget):
-  - Same as per-org plus:
   - Adds repo to PER_REPO_WIF_REPOS
   - Creates a dedicated WIF provider for the repo
+  - Does NOT add the owner to ALLOWED_ORGS (per-repo callers are
+    authorized independently of ALLOWED_ORGS)
 
 Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
 
@@ -1017,22 +1018,12 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS", owner))
 		printer.StepInfo(fmt.Sprintf("  Would add %s to PER_REPO_WIF_REPOS", repoFullName))
 		printer.StepInfo(fmt.Sprintf("  Would create WIF provider: %s", mintcore.BuildRepoProviderID(owner, repo)))
 		return nil
 	}
 
-	printer.StepStart("Registering org in mint")
-	if err := provisioner.EnsureOrgInMint(ctx, discovery.URL, owner); err != nil {
-		printer.StepFail("Failed to register org")
-		return fmt.Errorf("registering org: %w", err)
-	}
-	printer.StepDone("Org registered in mint")
-
-	verifyEnrollment(ctx, printer, provisioner, owner, project)
-
-	// Step 4: Register per-repo WIF.
+	// Register per-repo WIF.
 	printer.StepStart("Registering per-repo WIF")
 	if err := provisioner.RegisterPerRepoWIF(ctx, repoFullName); err != nil {
 		printer.StepFail("Failed to register per-repo WIF")

@@ -1443,9 +1443,13 @@ func TestRunMintEnrollOrg_PublicMode(t *testing.T) {
 
 func TestRunMintEnrollRepo_DryRun(t *testing.T) {
 	withMintGCFClient(t, mintDiscoveryClient())
-	printer := ui.New(&strings.Builder{})
+	out := &strings.Builder{}
+	printer := ui.New(out)
 	err := runMintEnrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", true)
 	require.NoError(t, err)
+	// Per-repo enrollment should not mention ALLOWED_ORGS.
+	assert.NotContains(t, out.String(), "ALLOWED_ORGS")
+	assert.Contains(t, out.String(), "PER_REPO_WIF_REPOS")
 }
 
 func TestRunMintEnrollRepo_InvalidFormat(t *testing.T) {
