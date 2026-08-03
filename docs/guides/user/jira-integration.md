@@ -32,8 +32,8 @@ Slash commands follow the `/fs-{agent}` pattern — any registered agent name wo
 ## Prerequisites
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
-- A Jira Cloud or Data Center instance.
-- A Jira personal API token (Cloud: [Create API token](https://id.atlassian.com/manage-profile/security/api-tokens); Data Center: generate a PAT in your profile settings).
+- A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
+- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)).
 - The Jira user must have read access to the target project and write access to issue entity properties (used for poll coordination state).
 
 ## Credential setup
@@ -43,8 +43,8 @@ Slash commands follow the `/fs-{agent}` pattern — any registered agent name wo
 
 | Secret / variable | Value |
 |---|---|
-| `JIRA_TOKEN` | Your Jira API token or PAT |
-| `JIRA_USER_EMAIL` | Email associated with the token (required for Jira Cloud; omit for Data Center) |
+| `JIRA_TOKEN` | Your Jira API token |
+| `JIRA_USER_EMAIL` | Email associated with the token |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
 
 ## Repo configuration
@@ -196,6 +196,14 @@ This does **not** check the project's permission scheme, so it can be wrong in b
 
 If your project uses Jira's default role names ("Administrators"/"Developers") with their default permissions, this works as expected. If you use custom role names, expect actors to resolve to `read` regardless of their real permissions until real permission-scheme resolution is implemented (tracked as future work, not planned for the MVP).
 
+### Jira membership is not GitHub membership
+
+> **Known limitation.** No cross-system identity check is performed between Jira and GitHub. The Jira project is the entire authorization boundary for Jira-sourced events.
+
+The role resolved above feeds directly into ADR 0054's dispatch authorization gate — there is no separate check against the target GitHub repo's actual collaborators. This means anyone holding a Jira project role that maps to `write` (Jira's default "Developers" role, by default) can trigger write-gated slash commands like `/fs-code` against your repo, **even if that person has no GitHub access to it at all**.
+
+If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
+
 ## Poll coordination
 
 The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following the write-then-verify protocol defined in [ADR 0063](../../ADRs/0063-polling-based-work-discovery.md). Two properties are stored on each processed issue:
@@ -214,7 +222,6 @@ These properties are namespaced per target repo, so multiple repos can poll the 
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Actor role resolution](#actor-role-resolution) if you use custom role names |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
-| `JIRA_USER_EMAIL` error on Data Center | Data Center uses Bearer auth, not Basic | Remove `JIRA_USER_EMAIL` — it is only needed for Jira Cloud |
 | Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |
 
 ## See also

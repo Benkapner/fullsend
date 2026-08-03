@@ -118,8 +118,8 @@ type SearchResult struct {
 
 ### HTTP plumbing
 
-- Auth: `Authorization: Basic base64(email:token)` for Jira Cloud, or `Authorization: Bearer <PAT>` for Jira Data Center
-- Base URL: `https://{instance}.atlassian.net` (Cloud) or custom (Data Center)
+- Auth: `Authorization: Basic base64(email:token)` (email set) or `Authorization: Bearer <token>` (email unset) — both for Jira Cloud. Data Center is not supported; the client is hard-wired to Cloud-only endpoints (v3, cursor pagination, `groupId` group lookup).
+- Base URL: `https://{instance}.atlassian.net` (Cloud)
 - Pagination: `startAt` + `maxResults` loop for search; comment and changelog APIs paginate similarly
 - Error handling: structured Jira error responses, rate limit headers (`X-RateLimit-*`, `Retry-After`)
 - All methods must exhaust pagination and return complete result sets
@@ -460,7 +460,7 @@ Environment variables required by `runJiraPoll`:
 
 Add a user-facing guide at `docs/guides/user/jira-integration.md` covering:
 
-- **Prerequisites:** A personal API token (Cloud) or PAT (Data Center) is the auth path.
+- **Prerequisites:** A Jira Cloud personal API token is the auth path. Data Center is not supported.
 - **Credential setup:** How to obtain `JIRA_TOKEN`, and store it as a repo secret.
 - **Repo configuration:** Minimal `.fullsend/config.yaml` and harness YAML for Jira-triggered agents, including `trigger` CEL expressions that filter on `event.source.system == "jira"`.
 - **Scheduled workflow:** Example `.github/workflows/fullsend-poll.yml` that runs `fullsend poll --input-driver jira-poll` on a cron schedule.

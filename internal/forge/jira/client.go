@@ -55,7 +55,9 @@ func WithBaseURL(rawURL string) Option {
 
 // WithEmail sets the email address for Basic auth (Jira Cloud).
 // When set, the client uses Authorization: Basic base64(email:token).
-// When empty, the client uses Authorization: Bearer token (Data Center/PAT).
+// When empty, the client uses Authorization: Bearer token (Cloud PAT).
+// Note: despite the Bearer-auth option, this client's REST endpoints are
+// Cloud-only (see apiURL) — Data Center is not currently supported.
 func WithEmail(email string) Option {
 	return func(c *LiveClient) {
 		c.email = email
@@ -145,6 +147,11 @@ func (e *APIError) Unwrap() error {
 
 const maxRetries = 5
 
+// apiURL builds a Jira Cloud REST API v3 URL. This client targets Cloud
+// only: v3/ADF and the cursor-based search/group endpoints below don't
+// exist on Data Center (which speaks /rest/api/2 with startAt/total
+// pagination and takes a groupname, not a groupId). Data Center support
+// is tracked as future work, not implemented here.
 func (c *LiveClient) apiURL(path string) string {
 	return c.baseURL + "/rest/api/3" + path
 }
