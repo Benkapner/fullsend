@@ -131,8 +131,26 @@ func NewServer() (*httptest.Server, *State) {
 
 	mux := http.NewServeMux()
 	registerHandlers(mux, state)
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(requireAuth(mux))
 	return srv, state
+}
+
+// requireAuth rejects requests without a plausible Basic or Bearer
+// Authorization header, mirroring the auth methods jira.LiveClient
+// supports. This catches misconfiguration in the real client early,
+// since a request with no auth header would otherwise be served
+// identically to an authenticated one.
+func requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Basic ") && !strings.HasPrefix(auth, "Bearer ") {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"errorMessages": []string{"Unauthorized"},
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func registerHandlers(mux *http.ServeMux, s *State) {

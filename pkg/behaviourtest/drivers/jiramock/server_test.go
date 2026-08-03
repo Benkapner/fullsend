@@ -3,6 +3,7 @@ package jiramock
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -108,6 +109,37 @@ func TestProjectRoleMembership(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Developers", membership["commenter-001"])
 	assert.Equal(t, "Developers", membership["changer-001"])
+}
+
+func TestRejectsMissingOrMalformedAuthHeader(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	state.AddIssue("PROJ-1", nil)
+
+	cases := []struct {
+		name string
+		auth string
+	}{
+		{name: "missing", auth: ""},
+		{name: "malformed", auth: "Token abc123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/rest/api/3/issue/PROJ-1", nil)
+			require.NoError(t, err)
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		})
+	}
 }
 
 func TestConcurrentAccess(t *testing.T) {
