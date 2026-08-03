@@ -1326,6 +1326,64 @@ func TestGetOrgPlan_NoPlanField(t *testing.T) {
 	assert.Equal(t, "free", plan)
 }
 
+func TestIsEnterprise_True(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]interface{}{"version": "17.1.0", "enterprise": true})
+	})
+
+	assert.True(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_False(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]interface{}{"version": "17.1.0", "enterprise": false})
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_ErrorReturnsFalse(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_InvalidJSON(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not-json"))
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestGetOrgPlan_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/namespaces/myorg", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	_, err := client.GetOrgPlan(ctx, "myorg")
+	require.Error(t, err)
+}
+
 func TestUpdateCIVariable(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1507,6 +1565,11 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 
 	t.Run("ListRecentWorkflowRuns", func(t *testing.T) {
 		_, err := client.ListRecentWorkflowRuns(ctx, "o", "r", 10)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("ListWorkflowRunJobs", func(t *testing.T) {
+		_, err := client.ListWorkflowRunJobs(ctx, "o", "r", 1)
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 

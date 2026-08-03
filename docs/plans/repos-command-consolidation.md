@@ -103,7 +103,8 @@ by `--concurrency`).
 
 ### Scenario 12: GitLab repo
 
-Not yet implemented. Return a clear error.
+Install GitLab scaffold files, CI/CD variables (no secrets), set up bot
+token and pipeline schedules. Uses `ForgeGitLab` forge type.
 
 ## `repos install` — Flags
 

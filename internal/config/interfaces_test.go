@@ -426,3 +426,21 @@ func TestOrgConfigWriter_SetRepo_RoundTrip(t *testing.T) {
 	w.SetRepo("repo-a", RepoConfig{Enabled: false})
 	assert.False(t, w.RepoMap()["repo-a"].Enabled)
 }
+
+func TestPerRepoConfig_ConfigForge(t *testing.T) {
+	t.Run("returns forge when set", func(t *testing.T) {
+		cfg := &perRepoConfig{Forge: "gitlab"}
+		assert.Equal(t, "gitlab", cfg.ConfigForge())
+	})
+
+	t.Run("falls through to parent", func(t *testing.T) {
+		parent := &perRepoConfig{Forge: "github"}
+		child := &perRepoConfig{parent: parent}
+		assert.Equal(t, "github", child.ConfigForge())
+	})
+
+	t.Run("returns empty when unset", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		assert.Equal(t, "", cfg.ConfigForge())
+	})
+}
