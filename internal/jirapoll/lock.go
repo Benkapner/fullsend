@@ -69,6 +69,13 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 
 	var current LockValue
 	if err := json.Unmarshal(raw, &current); err != nil {
+		// Same anomaly class as the read-error path above: our write
+		// succeeded, so a corrupt read-back must not leak the lock until
+		// the stale threshold expires. releaseLock compares the lock ID
+		// before deleting, so this is safe even if the content isn't ours.
+		if releaseErr := p.releaseLock(ctx, issueKey, lockID); releaseErr != nil {
+			log.Printf("WARNING: releasing lock on %s after unmarshal failure: %v", issueKey, releaseErr)
+		}
 		return false, fmt.Errorf("unmarshal lock: %w", err)
 	}
 

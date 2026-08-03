@@ -1328,12 +1328,97 @@ func TestMapStatusTransition_CustomWorkflowNames(t *testing.T) {
 			mc.statuses[tc.toStatus] = jira.Status{Name: tc.toStatus, StatusCategory: jira.StatusCategory{Key: tc.toCat}}
 
 			p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
-			got := p.mapStatusTransition(context.Background(), tc.fromStatus, tc.toStatus)
+			item := jira.ChangeItem{Field: "status", FromString: tc.fromStatus, ToString: tc.toStatus}
+			got, err := p.mapStatusTransition(context.Background(), item)
+			if err != nil {
+				t.Fatalf("mapStatusTransition(%q, %q) error: %v", tc.fromStatus, tc.toStatus, err)
+			}
 			if got != tc.want {
 				t.Errorf("mapStatusTransition(%q, %q) = %q, want %q", tc.fromStatus, tc.toStatus, got, tc.want)
 			}
 		})
 	}
+}
+
+func TestMapStatusTransition_PrefersStableID(t *testing.T) {
+	// The changelog's stable status IDs survive renames and stay unambiguous
+	// where team-managed projects reuse names, so resolution must use the ID
+	// when present and only fall back to the display name.
+	mc := newMockClient()
+	mc.statuses["10001"] = jira.Status{Name: "Completed", StatusCategory: jira.StatusCategory{Key: "done"}}
+	mc.statuses["3"] = jira.Status{Name: "In Progress", StatusCategory: jira.StatusCategory{Key: "indeterminate"}}
+
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
+	// The historical display names are stale (status since renamed) and are
+	// NOT in the mock's status table — only ID resolution can succeed.
+	item := jira.ChangeItem{Field: "status", From: "3", FromString: "Old Name", To: "10001", ToString: "Stale Name"}
+	got, err := p.mapStatusTransition(context.Background(), item)
+	if err != nil {
+		t.Fatalf("mapStatusTransition() error: %v", err)
+	}
+	if got != "closed" {
+		t.Errorf("mapStatusTransition() = %q, want %q (resolved via stable IDs)", got, "closed")
+	}
+}
+
+func TestDetectChanges_StatusResolutionFailure(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	changeTime := now.Add(-10 * time.Minute)
+
+	newIssue := func() jira.Issue {
+		return jira.Issue{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id"},
+				Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+			},
+		}
+	}
+	changelog := []jira.ChangelogEntry{
+		{
+			ID:      "400",
+			Created: changeTime.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "user1", AccountType: "atlassian"},
+			Items: []jira.ChangeItem{
+				{Field: "status", FromString: "Open", ToString: "Done"},
+			},
+		},
+	}
+
+	t.Run("transient error propagates so the issue retries next cycle", func(t *testing.T) {
+		mc := newMockClient()
+		mc.changelog["PROJ-123"] = changelog
+		mc.statuses["Open"] = jira.Status{Name: "Open", StatusCategory: jira.StatusCategory{Key: "new"}}
+		mc.statusErr["Done"] = fmt.Errorf("jira api: 429 rate limited")
+
+		p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
+		if _, err := p.detectChanges(context.Background(), newIssue(), lastCheck); err == nil {
+			t.Error("expected detectChanges to propagate a transient status-resolution error")
+		}
+	})
+
+	t.Run("deleted status drops the event without failing the issue", func(t *testing.T) {
+		mc := newMockClient()
+		mc.changelog["PROJ-123"] = changelog
+		mc.statuses["Open"] = jira.Status{Name: "Open", StatusCategory: jira.StatusCategory{Key: "new"}}
+		// "Done" absent from the mock: GetStatus returns forge.ErrNotFound.
+
+		p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net"})
+		result, err := p.detectChanges(context.Background(), newIssue(), lastCheck)
+		if err != nil {
+			t.Fatalf("detectChanges() error: %v", err)
+		}
+		for _, e := range result.events {
+			if e.Type == "closed" || e.Type == "reopened" {
+				t.Errorf("expected no transition event for a deleted status, got %q", e.Type)
+			}
+		}
+		if !result.maxSeen.Equal(changeTime) {
+			t.Errorf("maxSeen = %v, want %v", result.maxSeen, changeTime)
+		}
+	})
 }
 
 func TestDetectChanges_UnsupportedFieldAdvancesMaxSeen(t *testing.T) {

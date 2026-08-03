@@ -2,11 +2,13 @@ package jirapoll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
 
@@ -179,7 +181,14 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 			continue
 		}
 		for _, item := range entry.Items {
-			changeEvents := p.mapChangelogItem(ctx, item, issue, entry, issueURL, createdAt)
+			changeEvents, err := p.mapChangelogItem(ctx, item, issue, entry, issueURL, createdAt)
+			if err != nil {
+				// Propagate so the whole issue is retried next cycle with
+				// lastCheck unadvanced; silently dropping the event here
+				// would permanently lose the transition, since maxSeen has
+				// already moved past this entry.
+				return changeResult{}, fmt.Errorf("map changelog item for %s: %w", issue.Key, err)
+			}
 			events = append(events, changeEvents...)
 		}
 	}
@@ -188,7 +197,10 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 }
 
 // mapChangelogItem maps a single changelog item to zero or more JiraEvents.
-func (p *Poller) mapChangelogItem(ctx context.Context, item jira.ChangeItem, issue jira.Issue, entry jira.ChangelogEntry, issueURL string, createdAt time.Time) []JiraEvent {
+// A transient status-resolution failure is returned as an error; a status
+// that no longer exists (deleted since the transition was recorded) is
+// logged and dropped, since it can never resolve.
+func (p *Poller) mapChangelogItem(ctx context.Context, item jira.ChangeItem, issue jira.Issue, entry jira.ChangelogEntry, issueURL string, createdAt time.Time) ([]JiraEvent, error) {
 	var events []JiraEvent
 
 	base := JiraEvent{
@@ -207,9 +219,17 @@ func (p *Poller) mapChangelogItem(ctx context.Context, item jira.ChangeItem, iss
 		events = append(events, labelEvents...)
 
 	case "status":
-		evt := base
-		evt.Type = p.mapStatusTransition(ctx, item.FromString, item.ToString)
-		if evt.Type != "" {
+		kind, err := p.mapStatusTransition(ctx, item)
+		if err != nil {
+			if errors.Is(err, forge.ErrNotFound) {
+				log.Printf("WARNING: status for transition on %s no longer exists, dropping event: %v", issue.Key, err)
+				break
+			}
+			return nil, err
+		}
+		if kind != "" {
+			evt := base
+			evt.Type = kind
 			events = append(events, evt)
 		}
 
@@ -219,7 +239,7 @@ func (p *Poller) mapChangelogItem(ctx context.Context, item jira.ChangeItem, iss
 		events = append(events, evt)
 	}
 
-	return events
+	return events, nil
 }
 
 // diffLabels parses Jira label changelog strings and returns label_changed events.
@@ -267,17 +287,17 @@ func parseLabels(s string) map[string]bool {
 }
 
 // statusCategory resolves and caches the statusCategory key ("new",
-// "indeterminate", "done") for a Jira status name, making at most one
-// GetStatus call per unique status name per poll cycle. The cache is reset
+// "indeterminate", "done") for a Jira status ID or name, making at most one
+// GetStatus call per unique reference per poll cycle. The cache is reset
 // at the start of each Run.
-func (p *Poller) statusCategory(ctx context.Context, statusName string) (string, error) {
-	if statusName == "" {
+func (p *Poller) statusCategory(ctx context.Context, idOrName string) (string, error) {
+	if idOrName == "" {
 		return "", nil
 	}
-	if cat, ok := p.statusCategoryCache[statusName]; ok {
+	if cat, ok := p.statusCategoryCache[idOrName]; ok {
 		return cat, nil
 	}
-	status, err := p.client.GetStatus(ctx, statusName)
+	status, err := p.client.GetStatus(ctx, idOrName)
 	if err != nil {
 		return "", err
 	}
@@ -285,8 +305,19 @@ func (p *Poller) statusCategory(ctx context.Context, statusName string) (string,
 	if p.statusCategoryCache == nil {
 		p.statusCategoryCache = make(map[string]string)
 	}
-	p.statusCategoryCache[statusName] = cat
+	p.statusCategoryCache[idOrName] = cat
 	return cat, nil
+}
+
+// statusRef returns the identifier to resolve a changelog status value by:
+// the stable status ID when the entry carries one, else the display name.
+// IDs survive renames and stay unambiguous where team-managed projects
+// reuse status names; the name fallback covers entries without IDs.
+func statusRef(id, name string) string {
+	if id != "" {
+		return id
+	}
+	return name
 }
 
 // mapStatusTransition classifies a status transition as "closed" or
@@ -299,26 +330,27 @@ func (p *Poller) statusCategory(ctx context.Context, statusName string) (string,
 // statusCategory field for this because changelog entries are historical —
 // the current category only reflects the latest status, not earlier
 // transitions — so we resolve the category for the specific from/to status
-// names recorded on the changelog entry.
-func (p *Poller) mapStatusTransition(ctx context.Context, fromStatus, toStatus string) string {
-	toCat, err := p.statusCategory(ctx, toStatus)
+// recorded on the changelog entry, preferring the stable ID over the
+// historical display name. Resolution errors are returned to the caller
+// rather than swallowed: dropping the event here would lose it permanently
+// once the checkpoint advances.
+func (p *Poller) mapStatusTransition(ctx context.Context, item jira.ChangeItem) (string, error) {
+	toCat, err := p.statusCategory(ctx, statusRef(item.To, item.ToString))
 	if err != nil {
-		log.Printf("WARNING: resolving statusCategory for %q: %v", toStatus, err)
-		return ""
+		return "", fmt.Errorf("resolving statusCategory for %q: %w", item.ToString, err)
 	}
 	if toCat == "done" {
-		return "closed"
+		return "closed", nil
 	}
 
-	fromCat, err := p.statusCategory(ctx, fromStatus)
+	fromCat, err := p.statusCategory(ctx, statusRef(item.From, item.FromString))
 	if err != nil {
-		log.Printf("WARNING: resolving statusCategory for %q: %v", fromStatus, err)
-		return ""
+		return "", fmt.Errorf("resolving statusCategory for %q: %w", item.FromString, err)
 	}
 	if fromCat == "done" {
-		return "reopened"
+		return "reopened", nil
 	}
-	return ""
+	return "", nil
 }
 
 // extractPlainText extracts plain text from a Jira comment body.

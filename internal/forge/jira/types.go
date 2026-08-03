@@ -63,6 +63,8 @@ type ChangelogEntry struct {
 // ChangeItem describes a single field change within a changelog entry.
 type ChangeItem struct {
 	Field      string `json:"field"`
+	From       string `json:"from"` // Stable ID of the previous value (e.g. status ID); survives renames
+	To         string `json:"to"`   // Stable ID of the new value
 	FromString string `json:"fromString"`
 	ToString   string `json:"toString"`
 }

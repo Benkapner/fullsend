@@ -21,9 +21,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// validProjectKey matches Jira project keys: 2–10 uppercase alphanumeric
-// characters, starting with a letter. Validated before interpolation into JQL.
-var validProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,9}$`)
+// validProjectKey matches Jira Cloud project keys: 2–10 uppercase
+// alphanumeric characters, starting with a letter. Jira Cloud only allows
+// uppercase letters and digits in project keys (the driver is Cloud-only;
+// Data Center's jira.projectkey.pattern is admin-customizable and not
+// supported here). Validated before interpolation into JQL.
+var validProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
 
 // Poller discovers Jira events and dispatches agent stages.
 type Poller struct {
@@ -134,13 +137,14 @@ func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 }
 
 // filterLocked removes locked issues and cleans up stale locks. If every
-// candidate's lock-property read fails (e.g. broken auth/config), it
-// returns an error instead of silently reporting zero unlocked issues,
-// which would otherwise be indistinguishable from a genuinely quiet
-// Jira project.
+// candidate is dropped by a failing lock-property read or a failing
+// stale-lock release (e.g. broken auth, or read-only credentials that
+// cannot write entity properties), it returns an error instead of silently
+// reporting zero unlocked issues, which would otherwise be
+// indistinguishable from a genuinely quiet Jira project.
 func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.Issue, error) {
 	var unlocked []jira.Issue
-	var readErrors int
+	var readErrors, releaseErrors int
 	for _, issue := range issues {
 		lock, err := p.readLock(ctx, issue.Key)
 		if err != nil {
@@ -153,6 +157,7 @@ func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.
 				log.Printf("cleaning stale lock on %s (age > %s)", issue.Key, p.opts.StaleThreshold)
 				if err := p.releaseLock(ctx, issue.Key, lock.ID); err != nil {
 					log.Printf("WARNING: cleaning stale lock for %s: %v", issue.Key, err)
+					releaseErrors++
 					continue
 				}
 			} else {
@@ -161,8 +166,8 @@ func (p *Poller) filterLocked(ctx context.Context, issues []jira.Issue) ([]jira.
 		}
 		unlocked = append(unlocked, issue)
 	}
-	if len(issues) > 0 && readErrors == len(issues) {
-		return nil, fmt.Errorf("reading lock property failed for all %d candidates", readErrors)
+	if len(issues) > 0 && readErrors+releaseErrors == len(issues) {
+		return nil, fmt.Errorf("all %d candidates dropped by lock errors (%d reads, %d stale-lock releases failed)", len(issues), readErrors, releaseErrors)
 	}
 	return unlocked, nil
 }
@@ -190,6 +195,15 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		log.Printf("lock contention on %s, skipping", issue.Key)
 		return nil
 	}
+	// KNOWN LIMITATION: the lock covers the change-detection window only.
+	// It is released here at the end of processIssue — before writeDispatches
+	// runs and before the downstream dispatch step consumes the records — so
+	// it does not provide the through-dispatch-scheduling ownership ADR 0063
+	// describes; that handoff is part of the same tracked follow-up as the
+	// lastCheck dispatch-confirmation note below. The lock is also never
+	// renewed while an issue is processed: a cycle stalled longer than
+	// StaleThreshold can have its lock reclaimed as stale by a concurrent
+	// poller, which may duplicate dispatches for the same activity.
 	defer func() {
 		if err := p.releaseLock(ctx, issue.Key, cycleID); err != nil {
 			log.Printf("WARNING: releasing lock for %s: %v", issue.Key, err)
