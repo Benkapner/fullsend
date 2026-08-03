@@ -59,7 +59,11 @@ instead:
   `create_issues.allow_targets` are existing examples.
 - **Single-agent behavior tuning — adjusts how one specific agent does its
   own job:** it is an `{AGENT}_`-prefixed env var per ADR 0049, delivered
-  via that agent's `env.runner`/`env.sandbox`. It is not also settable as
+  via that agent's `env.runner`/`env.sandbox`. The prefix matters even
+  though the var lives in one agent's harness: `.env` files can be sourced
+  together and `runner_env`/`env.sandbox` can share a host environment, so
+  the agent name scopes the var and prevents collisions in those shared
+  contexts (ADR 0049, Consequences). It is not also settable as
   a `config.yaml` field — overriding it per repo or org means overriding
   the harness (e.g. via `base:` composition, per ADR 0045), not adding a
   parallel field to `config.yaml`.
