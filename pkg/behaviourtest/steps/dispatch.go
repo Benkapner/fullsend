@@ -35,6 +35,32 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
 	})
+	sc.Step(`^the kill switch is active$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenKillSwitchActive(world.FromContext(ctx))
+	})
+}
+
+// givenKillSwitchActive sets kill_switch: true in the enrolled repo's
+// config.yaml, causing Dispatch to return an empty matrix for all agents.
+func givenKillSwitchActive(w *world.World) error {
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	cfg.SetKillSwitch(true)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, "behaviour: activate kill switch", merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
 }
 
 func givenDisabledCustomHarness(w *world.World, name, doc string) error {

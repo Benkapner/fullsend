@@ -1,6 +1,8 @@
 package steps
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,6 +36,117 @@ func TestEnsureHarnessArtifacts_NoWorkflowRun(t *testing.T) {
 	err := ensureHarnessArtifacts(w, "agent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workflow run")
+}
+
+// --- givenKillSwitchActive tests ---
+
+func TestGivenKillSwitchActive_SetsKillSwitch(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := givenKillSwitchActive(w)
+	require.NoError(t, err)
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: true")
+}
+
+func TestGivenKillSwitchActive_GetFileContentError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: fmt.Errorf("not found"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := givenKillSwitchActive(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestGivenKillSwitchActive_CommitFileError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
+		commitErr:   fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := givenKillSwitchActive(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating config")
+}
+
+// fakeDispatchInstall implements install.State for dispatch step tests.
+type fakeDispatchInstall struct {
+	owner string
+	repo  string
+}
+
+func (f *fakeDispatchInstall) Mode() string               { return "per-repo" }
+func (f *fakeDispatchInstall) TestRepo() string           { return f.repo }
+func (f *fakeDispatchInstall) ConfigOwner() string        { return f.owner }
+func (f *fakeDispatchInstall) ConfigRepo() string         { return f.repo }
+func (f *fakeDispatchInstall) ConfigPathPrefix() string   { return ".fullsend" }
+func (f *fakeDispatchInstall) TriageWorkflowRepo() string { return f.repo }
+func (f *fakeDispatchInstall) TriageWorkflowFile() string { return "" }
+func (f *fakeDispatchInstall) AgentWorkflowFile() string  { return "" }
+func (f *fakeDispatchInstall) AgentArtifactName() string  { return "" }
+
+// fakeDispatchSCM implements scm.Driver for dispatch step tests.
+type fakeDispatchSCM struct {
+	fileContent      []byte
+	getFileErr       error
+	commitCalled     bool
+	committedContent []byte
+	commitErr        error
+}
+
+func (f *fakeDispatchSCM) GetFileContent(_ context.Context, _, _, _ string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
+func (f *fakeDispatchSCM) CommitFile(_ context.Context, _, _, _, _ string, content []byte) error {
+	f.commitCalled = true
+	f.committedContent = content
+	return f.commitErr
+}
+func (f *fakeDispatchSCM) CreateIssue(context.Context, string, string, string, string, ...string) (*forge.Issue, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
+	return nil
+}
+func (f *fakeDispatchSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) CreateBranch(context.Context, string, string, string) error { return nil }
+func (f *fakeDispatchSCM) DeleteBranch(context.Context, string, string, string) error { return nil }
+func (f *fakeDispatchSCM) CommitFileToBranch(context.Context, string, string, string, string, string, []byte) error {
+	return nil
+}
+func (f *fakeDispatchSCM) CreateChangeProposal(context.Context, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) SubmitPullRequestReview(context.Context, string, string, int, string) error {
+	return nil
+}
+func (f *fakeDispatchSCM) CloseIssue(context.Context, string, string, int) error { return nil }
+func (f *fakeDispatchSCM) DeleteRepo(context.Context, string, string) error      { return nil }
+func (f *fakeDispatchSCM) CreateFork(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
+	return nil
+}
+func (f *fakeDispatchSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
 }
 
 func TestNegativeSettleDuration(t *testing.T) {
