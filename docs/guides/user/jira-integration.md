@@ -211,6 +211,7 @@ These properties are namespaced per target repo, so multiple repos can poll the 
 | Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role that maps to `write` (typically "Developers") |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | `JIRA_USER_EMAIL` error on Data Center | Data Center uses Bearer auth, not Basic | Remove `JIRA_USER_EMAIL` — it is only needed for Jira Cloud |
+| Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |
 
 ## See also
 
