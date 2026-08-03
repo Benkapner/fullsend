@@ -93,18 +93,6 @@ func isPublicMintAllowedOrgs(allowedOrgs string) bool {
 	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
 }
 
-// perOrgForeignCompatLabel returns "on" or "off" for display from traffic env.
-// Missing/empty/nil trafficEnv is treated as off (compatible with older mints).
-func perOrgForeignCompatLabel(trafficEnv map[string]string) string {
-	if trafficEnv == nil {
-		return "off"
-	}
-	if mintcore.EnvTruthy(trafficEnv["PER_ORG_FOREIGN_COMPAT"]) {
-		return "on"
-	}
-	return "off"
-}
-
 // mintValidationMessage returns the success message after validating an existing mint.
 func mintValidationMessage(trafficEnv map[string]string, envErr error) string {
 	if envErr == nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
@@ -1031,7 +1019,7 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 	}
 	printer.StepDone("Per-repo WIF registered")
 
-	// Step 5: Provision per-repo WIF provider.
+	// Provision per-repo WIF provider.
 	printer.StepStart("Provisioning WIF provider for " + repoFullName)
 	wifProvider, err := provisioner.ProvisionWIF(ctx)
 	if err != nil {
@@ -1529,8 +1517,6 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
-
-	printer.KeyValue("Per-org foreign compat", perOrgForeignCompatLabel(trafficEnv))
 
 	publicMint := trafficEnv != nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
 	if publicMint {

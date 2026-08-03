@@ -159,7 +159,8 @@ func TestValidateWorkflowRef_Wildcard(t *testing.T) {
 
 func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 	publicOrgs := []string{"*"}
-	perRepo := map[string]bool{"myorg/my-repo": true}
+	// Public mode is now expressed as "*" in PER_REPO_WIF_REPOS.
+	perRepo := map[string]bool{"*": true}
 
 	tests := []struct {
 		name       string

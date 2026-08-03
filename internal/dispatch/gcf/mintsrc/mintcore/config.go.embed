@@ -43,11 +43,6 @@ type WorkerConfig struct {
 
 	// Commit is the git SHA stamped on the deployed Worker.
 	Commit string
-
-	// PerOrgForeignCompat enables org-mode repos scope exceptions.
-	// Same format as the PER_ORG_FOREIGN_COMPAT environment variable
-	// (truthy: "1", "true", "yes").
-	PerOrgForeignCompat string
 }
 
 // ParseWorkerConfig parses a WorkerConfig and returns a Handler.
@@ -85,11 +80,10 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 		}
 	}
 
-	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, pemAccessor, oidcVerifier, httpClient)
+	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, pemAccessor, oidcVerifier, httpClient)
 	if err != nil {
 		return nil, err
 	}
-	h.perOrgForeignCompat = EnvTruthy(cfg.PerOrgForeignCompat)
 	return h, nil
 }
 
@@ -112,13 +106,19 @@ func SplitCSV(s string) []string {
 // NewHandlerFromConfig creates a Handler from explicit configuration values
 // instead of reading from environment variables. The roleAppIDsJSON parameter
 // is the JSON-encoded ROLE_APP_IDS mapping; allowedRolesCSV is the
-// comma-separated ALLOWED_ROLES list (empty means all roles from roleAppIDs).
+// comma-separated ALLOWED_ROLES list (empty means all roles from roleAppIDs);
+// perRepoWIFReposCSV is the comma-separated PER_REPO_WIF_REPOS list.
 //
 // The caller is responsible for configuring the OIDCVerifier with the
 // appropriate AllowedOrgs, AllowedWorkflowFiles, and PerRepoWIFRepos
 // before passing it here. ParseWorkerConfig handles this automatically;
 // direct callers must do it themselves.
-func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+	perRepoWIFRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(perRepoWIFReposCSV) {
+		perRepoWIFRepos[strings.ToLower(entry)] = true
+	}
+
 	h := &Handler{
 		httpClient:      httpClient,
 		pemAccessor:     pemAccessor,
@@ -127,6 +127,7 @@ func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV string, pemAccessor PE
 		foreignCache:    make(map[string]foreignCacheEntry),
 		foreignInflight: make(map[string]*foreignInflight),
 		foreignCacheTTL: defaultForeignCacheTTL,
+		perRepoWIFRepos: perRepoWIFRepos,
 	}
 
 	if roleAppIDsJSON != "" {

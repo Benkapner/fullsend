@@ -288,60 +288,6 @@ func TestHandler_StatusEndpoint(t *testing.T) {
 		t.Fatalf("status response should not contain orgs array: %s", body)
 	}
 
-	// Default (unset) is off — dedicated tests opt into compat explicitly.
-	if resp.PerOrgForeignCompat {
-		t.Fatal("expected per_org_foreign_compat false by default")
-	}
-}
-
-func TestHandler_StatusEndpoint_PerOrgForeignCompatOn(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
-	t.Setenv("PER_ORG_FOREIGN_COMPAT", "true")
-
-	env := newTestOIDCEnv(t, &fakePEMAccessor{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
-	req.Header.Set("Authorization", "Bearer "+env.signToken(t, nil))
-	env.handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp statusResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !resp.PerOrgForeignCompat {
-		t.Fatal("expected per_org_foreign_compat true when env is truthy")
-	}
-}
-
-func TestHandler_StatusEndpoint_PerOrgForeignCompatOff(t *testing.T) {
-	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
-	t.Setenv("PER_ORG_FOREIGN_COMPAT", "false")
-
-	env := newTestOIDCEnv(t, &fakePEMAccessor{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
-	req.Header.Set("Authorization", "Bearer "+env.signToken(t, nil))
-	env.handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	var resp statusResponse
-	if err := json.Unmarshal([]byte(body), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.PerOrgForeignCompat {
-		t.Fatal("expected per_org_foreign_compat false")
-	}
-	if !strings.Contains(body, `"per_org_foreign_compat":false`) {
-		t.Fatalf("expected explicit false in JSON body: %s", body)
-	}
 }
 
 func TestHandler_StatusEndpoint_IncludesVersion(t *testing.T) {
@@ -686,7 +632,6 @@ func TestHandler_InvalidRepoName(t *testing.T) {
 
 func TestHandler_EmptyRepos_FullOrgToken(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("PER_ORG_FOREIGN_COMPAT", "true")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -718,7 +663,6 @@ func TestHandler_EmptyRepos_FullOrgToken(t *testing.T) {
 
 func TestHandler_StarRepos_SameOrgDenied(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("PER_ORG_FOREIGN_COMPAT", "true")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -893,7 +837,6 @@ func TestHandler_EmptyRepos_CrossOrgStarAlias(t *testing.T) {
 
 func TestHandler_ReposScope_EnrolledCompat(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("PER_ORG_FOREIGN_COMPAT", "true")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -951,9 +894,10 @@ func TestHandler_ReposScope_EnrolledCompat(t *testing.T) {
 	}
 }
 
-func TestHandler_ReposScope_CompatOff(t *testing.T) {
+func TestHandler_ReposScope_PerRepoDenied(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("PER_ORG_FOREIGN_COMPAT", "false")
+	// Per-repo callers can only request their own repository.
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/test-repo")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -971,7 +915,7 @@ func TestHandler_ReposScope_CompatOff(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	env.handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 with compat off, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 403 for per-repo caller requesting different repo, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1255,7 +1199,7 @@ func TestHandler_FullFlowGrantedScopeAll(t *testing.T) {
 
 func TestHandler_FullFlowWithRepos(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("PER_ORG_FOREIGN_COMPAT", "true")
+	// .fullsend caller is per-org (not per-repo), so org-mode shapes are allowed.
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -1265,7 +1209,7 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
 		pems: map[string][]byte{"coder": pemData},
 	})
-	// .fullsend caller + compat may mint a multi-repo list.
+	// .fullsend caller (per-org) may mint a multi-repo list.
 	token := env.signToken(t, map[string]interface{}{
 		"repository":       "test-org/.fullsend",
 		"repository_owner": "test-org",
@@ -2237,6 +2181,8 @@ func TestHandler_UpstreamWorkflowRef(t *testing.T) {
 func TestHandler_PublicMintMode(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "*")
+	// Public mode is now * in PER_REPO_WIF_REPOS.
+	t.Setenv("PER_REPO_WIF_REPOS", "*")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -2252,6 +2198,7 @@ func TestHandler_PublicMintMode(t *testing.T) {
 		Audience:             os.Getenv("OIDC_AUDIENCE"),
 		AllowedOrgs:          testAllowedOrgs(),
 		AllowedWorkflowFiles: []string{"dispatch.yml"},
+		PerRepoWIFRepos:      map[string]bool{"*": true},
 	})
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2294,6 +2241,7 @@ func TestHandler_PublicMintMode(t *testing.T) {
 func TestHandler_PublicMintRejectsLegacyFullsendRef(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "*")
+	t.Setenv("PER_REPO_WIF_REPOS", "*")
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 
@@ -2302,6 +2250,7 @@ func TestHandler_PublicMintRejectsLegacyFullsendRef(t *testing.T) {
 		Audience:             os.Getenv("OIDC_AUDIENCE"),
 		AllowedOrgs:          testAllowedOrgs(),
 		AllowedWorkflowFiles: []string{"*"},
+		PerRepoWIFRepos:      map[string]bool{"*": true},
 	})
 
 	token := env.signToken(t, map[string]interface{}{
@@ -2323,6 +2272,7 @@ func TestHandler_PublicMintRejectsLegacyFullsendRef(t *testing.T) {
 func TestHandler_PublicMintRejectsPerRepoSelfWorkflow(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "*")
+	t.Setenv("PER_REPO_WIF_REPOS", "*")
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 
@@ -2331,7 +2281,7 @@ func TestHandler_PublicMintRejectsPerRepoSelfWorkflow(t *testing.T) {
 		Audience:             os.Getenv("OIDC_AUDIENCE"),
 		AllowedOrgs:          testAllowedOrgs(),
 		AllowedWorkflowFiles: []string{"*"},
-		PerRepoWIFRepos:      map[string]bool{"other-org/some-repo": true},
+		PerRepoWIFRepos:      map[string]bool{"*": true},
 	})
 
 	token := env.signToken(t, map[string]interface{}{

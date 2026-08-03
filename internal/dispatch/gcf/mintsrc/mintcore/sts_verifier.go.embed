@@ -138,13 +138,8 @@ func (v *STSVerifier) prevalidate(token string) (*Claims, error) {
 		return nil, fmt.Errorf("missing repository claim")
 	}
 
-	// Per-repo callers (repository in PER_REPO_WIF_REPOS) are authorized
-	// without requiring repository_owner in ALLOWED_ORGS. ALLOWED_ORGS
-	// gates org-wide trust; per-repo enrollment is independent.
-	if !v.perRepoWIFRepos[strings.ToLower(claims.Repository)] {
-		if err := ValidateOrgAllowed(claims.RepositoryOwner, v.allowedOrgs); err != nil {
-			return nil, err
-		}
+	if err := AuthorizeToken(&claims, v.allowedOrgs, v.perRepoWIFRepos); err != nil {
+		return nil, err
 	}
 
 	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, v.allowedOrgs, v.perRepoWIFRepos, v.allowedWorkflows); err != nil {

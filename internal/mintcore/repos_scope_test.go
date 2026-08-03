@@ -51,8 +51,8 @@ func TestEnvTruthy(t *testing.T) {
 func TestValidateReposScope(t *testing.T) {
 	t.Parallel()
 	const emptyDeny = "same-org mint requires non-empty repos"
-	const selfDeny = "same-org mint requires repos to be exactly the requesting repository"
-	const compatDeny = "repos scope not allowed under PER_ORG_FOREIGN_COMPAT"
+	const perRepoDeny = "per-repo mint requires repos to be exactly the requesting repository"
+	const perOrgDeny = "repos scope not allowed for per-org caller"
 	const foreignDeny = "foreign mint requires empty repos"
 
 	tests := []struct {
@@ -60,30 +60,31 @@ func TestValidateReposScope(t *testing.T) {
 		foreign        bool
 		requestingRepo string
 		repos          []string
-		compat         bool
+		perRepo        bool
 		wantErrSubstr  string
 		wantShape      string
 	}{
 		{"foreign empty", true, "fullsend-ai/fullsend", nil, false, "", ""},
 		{"foreign non-empty", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, foreignDeny, ""},
 		{"same self", false, "acme/api", []string{"api"}, false, "", ""},
-		{"same empty", false, "acme/api", nil, true, emptyDeny, ""},
-		{"same other flag off", false, "acme/.fullsend", []string{"api"}, false, selfDeny, ""},
-		{"fullsend other flag on", false, "acme/.fullsend", []string{"api"}, true, "", reposScopeShapeFullsendAny},
-		{"fullsend multi flag on", false, "acme/.fullsend", []string{"a", "b", "c"}, true, "", reposScopeShapeFullsendAny},
-		{"fullsend pair flag on", false, "acme/.fullsend", []string{"api", ".fullsend"}, true, "", reposScopeShapeFullsendAny},
-		{"fullsend self", false, "acme/.fullsend", []string{".fullsend"}, false, "", ""},
-		{"enrolled fullsend flag on", false, "acme/api", []string{".fullsend"}, true, "", reposScopeShapeEnrolledFullsend},
-		{"enrolled pair flag on", false, "acme/api", []string{"api", ".fullsend"}, true, "", reposScopeShapeEnrolledPair},
-		{"enrolled pair reverse", false, "acme/api", []string{".fullsend", "api"}, true, "", reposScopeShapeEnrolledPair},
-		{"enrolled other flag on", false, "acme/api", []string{"other"}, true, compatDeny, ""},
-		{"enrolled multi flag on", false, "acme/api", []string{"api", ".fullsend", "x"}, true, compatDeny, ""},
-		{"enrolled pair flag off", false, "acme/api", []string{"api", ".fullsend"}, false, selfDeny, ""},
+		{"same empty per-org", false, "acme/api", nil, false, emptyDeny, ""},
+		{"same empty per-repo", false, "acme/api", nil, true, emptyDeny, ""},
+		{"per-repo other denied", false, "acme/.fullsend", []string{"api"}, true, perRepoDeny, ""},
+		{"per-org fullsend any", false, "acme/.fullsend", []string{"api"}, false, "", reposScopeShapeFullsendAny},
+		{"per-org fullsend multi", false, "acme/.fullsend", []string{"a", "b", "c"}, false, "", reposScopeShapeFullsendAny},
+		{"per-org fullsend pair", false, "acme/.fullsend", []string{"api", ".fullsend"}, false, "", reposScopeShapeFullsendAny},
+		{"fullsend self per-repo", false, "acme/.fullsend", []string{".fullsend"}, true, "", ""},
+		{"enrolled fullsend per-org", false, "acme/api", []string{".fullsend"}, false, "", reposScopeShapeEnrolledFullsend},
+		{"enrolled pair per-org", false, "acme/api", []string{"api", ".fullsend"}, false, "", reposScopeShapeEnrolledPair},
+		{"enrolled pair reverse", false, "acme/api", []string{".fullsend", "api"}, false, "", reposScopeShapeEnrolledPair},
+		{"enrolled other per-org denied", false, "acme/api", []string{"other"}, false, perOrgDeny, ""},
+		{"enrolled multi per-org denied", false, "acme/api", []string{"api", ".fullsend", "x"}, false, perOrgDeny, ""},
+		{"enrolled pair per-repo denied", false, "acme/api", []string{"api", ".fullsend"}, true, perRepoDeny, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			shape, err := validateReposScope(tc.foreign, tc.requestingRepo, tc.repos, tc.compat)
+			shape, err := validateReposScope(tc.foreign, tc.requestingRepo, tc.repos, tc.perRepo)
 			if tc.wantErrSubstr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

@@ -589,6 +589,51 @@ func TestJWKSVerifier_NonPerRepoStillRequiresOrg(t *testing.T) {
 	assert.Contains(t, err.Error(), "not in allowed orgs")
 }
 
+func TestJWKSVerifier_PerRepoCrossRepoWorkflowRefRejected(t *testing.T) {
+	s := newTestOIDCServer(t)
+	// Per-repo caller myorg/my-repo uses a job_workflow_ref from a different
+	// repo (myorg/evil-repo). ValidateWorkflowRef should reject this because
+	// the workflow ref's repo prefix doesn't match the token's repository claim.
+	v := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL:            s.server.URL,
+		Audience:             "fullsend-mint",
+		AllowedOrgs:          []string{"other-org"},
+		AllowedWorkflowFiles: []string{"*"},
+		PerRepoWIFRepos:      map[string]bool{"myorg/my-repo": true},
+	})
+	token := s.signJWT(t, nil, map[string]interface{}{
+		"repository":       "myorg/my-repo",
+		"repository_owner": "myorg",
+		"job_workflow_ref": "myorg/evil-repo/.github/workflows/dispatch.yml@refs/heads/main",
+	})
+
+	_, err := v.Verify(t.Context(), token)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not reference")
+}
+
+func TestJWKSVerifier_EmptyRepositoryOwnerRejected(t *testing.T) {
+	s := newTestOIDCServer(t)
+	// Defense-in-depth: even per-repo callers must have a non-empty
+	// repository_owner claim.
+	v := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL:            s.server.URL,
+		Audience:             "fullsend-mint",
+		AllowedOrgs:          []string{"other-org"},
+		AllowedWorkflowFiles: []string{"*"},
+		PerRepoWIFRepos:      map[string]bool{"myorg/my-repo": true},
+	})
+	token := s.signJWT(t, nil, map[string]interface{}{
+		"repository":       "myorg/my-repo",
+		"repository_owner": "",
+		"job_workflow_ref": "myorg/my-repo/.github/workflows/dispatch.yml@refs/heads/main",
+	})
+
+	_, err := v.Verify(t.Context(), token)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing repository_owner claim")
+}
+
 func TestParseRSAPublicKey(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)

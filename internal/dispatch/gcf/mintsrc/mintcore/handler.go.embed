@@ -42,11 +42,10 @@ type mintResponse struct {
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 type statusResponse struct {
-	Org                 string   `json:"org"`
-	Roles               []string `json:"roles"`
-	Version             string   `json:"version,omitempty"`
-	Commit              string   `json:"commit,omitempty"`
-	PerOrgForeignCompat bool     `json:"per_org_foreign_compat"`
+	Org     string   `json:"org"`
+	Roles   []string `json:"roles"`
+	Version string   `json:"version,omitempty"`
+	Commit  string   `json:"commit,omitempty"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
@@ -66,8 +65,9 @@ type Handler struct {
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
 
-	// perOrgForeignCompat enables org-mode repos shapes under PER_ORG_FOREIGN_COMPAT.
-	perOrgForeignCompat bool
+	// perRepoWIFRepos is the set of repositories with per-repo WIF treatment.
+	// The handler uses this to decide repos scope policy (per-repo vs per-org).
+	perRepoWIFRepos map[string]bool
 }
 
 type foreignInflight struct {
@@ -85,15 +85,20 @@ type foreignInflight struct {
 func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
+	perRepoWIFRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
+		perRepoWIFRepos[strings.ToLower(entry)] = true
+	}
+
 	h := &Handler{
-		httpClient:          httpClient,
-		pemAccessor:         pemAccessor,
-		oidcVerifier:        oidcVerifier,
-		githubBaseURL:       "https://api.github.com",
-		foreignCache:        make(map[string]foreignCacheEntry),
-		foreignInflight:     make(map[string]*foreignInflight),
-		foreignCacheTTL:     defaultForeignCacheTTL,
-		perOrgForeignCompat: EnvTruthy(os.Getenv("PER_ORG_FOREIGN_COMPAT")),
+		httpClient:      httpClient,
+		pemAccessor:     pemAccessor,
+		oidcVerifier:    oidcVerifier,
+		githubBaseURL:   "https://api.github.com",
+		foreignCache:    make(map[string]foreignCacheEntry),
+		foreignInflight: make(map[string]*foreignInflight),
+		foreignCacheTTL: defaultForeignCacheTTL,
+		perRepoWIFRepos: perRepoWIFRepos,
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -241,13 +246,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
-	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, h.perOrgForeignCompat)
+	isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	if shape != "" {
-		log.Printf("PER_ORG_FOREIGN_COMPAT allowed repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
+		log.Printf("org-mode repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
 			shape, req.Repos, claims.Repository, targetOrg, req.Role)
 	}
 
@@ -346,11 +352,10 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:                 org,
-		Roles:               roles,
-		Version:             Version,
-		Commit:              Commit,
-		PerOrgForeignCompat: h.perOrgForeignCompat,
+		Org:     org,
+		Roles:   roles,
+		Version: Version,
+		Commit:  Commit,
 	}); err != nil {
 		log.Printf("encoding status response: %v", err)
 	}
