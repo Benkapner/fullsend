@@ -447,7 +447,7 @@ Cloudflare mode (--platform=cloudflare):
 
 	// Common flags.
 	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
-	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: embedded)")
+	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: checkout path when present, embedded otherwise)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 
 	// GCP-specific flags.
@@ -512,11 +512,18 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	printer.Header("Deploying token mint (GCP)")
 	printer.Blank()
 
+	explicitSourceDir := sourceDir != ""
+	if sourceDir == "" {
+		sourceDir = gcf.DefaultFunctionSourceDir()
+	}
+
 	if dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		printer.StepInfo(fmt.Sprintf("Would deploy mint to project %s, region %s", project, region))
-		if sourceDir != "" {
+		if explicitSourceDir {
+			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
+		} else if _, err := os.Stat(sourceDir); err == nil {
 			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
 		} else {
 			printer.StepInfo("Source: embedded mint function")
@@ -537,10 +544,6 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	}
 
 	gcpClient := mintGCFClientFactory(project)
-
-	if sourceDir == "" {
-		sourceDir = gcf.DefaultFunctionSourceDir()
-	}
 
 	deployCommit := resolveAndReportMintDeployCommit(printer, commitSHA, sourceDir)
 
@@ -638,6 +641,11 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		deployMode = cf.DeployPreview
 	}
 
+	explicitSourceDir := sourceDir != ""
+	if sourceDir == "" {
+		sourceDir = cf.DefaultWorkerSourceDir()
+	}
+
 	effectiveName := workerName
 	if effectiveName == "" {
 		effectiveName = "fullsend-mint"
@@ -652,7 +660,9 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		}
 		printer.StepInfo(fmt.Sprintf("Would deploy Worker %s", dryRunName))
 		printer.StepInfo(fmt.Sprintf("Account: %s", accountID))
-		if sourceDir != "" {
+		if explicitSourceDir {
+			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
+		} else if _, err := os.Stat(sourceDir); err == nil {
 			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
 		} else {
 			printer.StepInfo("Source: embedded Worker adapter")
@@ -665,10 +675,6 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 			printer.StepInfo("Mode: durable (persistent)")
 		}
 		return nil
-	}
-
-	if sourceDir == "" {
-		sourceDir = cf.DefaultWorkerSourceDir()
 	}
 
 	deployCommit := resolveAndReportMintDeployCommit(printer, commitSHA, sourceDir)

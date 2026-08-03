@@ -208,6 +208,80 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	assert.Contains(t, out, "Deployment complete")
 }
 
+func TestMintDeployCmd_DryRunShowsResolvedSource(t *testing.T) {
+	// When --source-dir is not provided and the default checkout path
+	// exists on disk, dry-run should show the resolved path.
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, gcf.DefaultFunctionSourceDir()), 0o755))
+	t.Chdir(tmpDir)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, gcf.DefaultFunctionSourceDir(),
+		"dry-run should show resolved checkout path")
+	assert.NotContains(t, stdout, "embedded mint function",
+		"dry-run should not claim embedded source when checkout path exists")
+}
+
+func TestMintDeployCmd_DryRunShowsEmbeddedWhenPathMissing(t *testing.T) {
+	// When --source-dir is not provided and the default checkout path
+	// does not exist on disk, dry-run should report embedded source.
+	t.Chdir(t.TempDir())
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "embedded mint function",
+		"dry-run should report embedded source when checkout path is missing")
+	assert.NotContains(t, stdout, gcf.DefaultFunctionSourceDir(),
+		"dry-run should not show non-existent checkout path")
+}
+
+func TestMintDeployCmd_DryRunWithExplicitSourceDir(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--source-dir=/custom/path"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "/custom/path",
+		"dry-run should show the explicitly provided source-dir")
+}
+
 func TestMintDeployCmd_DryRunPublic(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--public"})
@@ -358,6 +432,84 @@ func TestMintDeployCmd_CloudflareDryRun(t *testing.T) {
 	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareDryRunShowsResolvedSource(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Create the expected checkout path so os.Stat succeeds.
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, cf.DefaultWorkerSourceDir()), 0o755))
+	t.Chdir(tmpDir)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, cf.DefaultWorkerSourceDir(),
+		"dry-run should show resolved checkout path")
+	assert.NotContains(t, stdout, "embedded Worker adapter",
+		"dry-run should not claim embedded source when checkout path exists")
+}
+
+func TestMintDeployCmd_CloudflareDryRunShowsEmbeddedWhenPathMissing(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Run from a temp dir where the default checkout path does not exist.
+	t.Chdir(t.TempDir())
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "embedded Worker adapter",
+		"dry-run should report embedded source when checkout path is missing")
+	assert.NotContains(t, stdout, cf.DefaultWorkerSourceDir(),
+		"dry-run should not show non-existent checkout path")
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithExplicitSourceDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run", "--source-dir=/custom/worker/path"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "/custom/worker/path",
+		"dry-run should show the explicitly provided source-dir")
 }
 
 func TestMintDeployCmd_CloudflareDryRunPreview(t *testing.T) {
