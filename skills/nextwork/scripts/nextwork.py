@@ -263,9 +263,13 @@ FULLSEND_AGENT_BOTS = frozenset(
     }
 )
 TRIAGE_STALE_HOURS = 3 * 24
+# Post-triage conversation only invalidates after this age (avoids noise right after triage).
+TRIAGE_COMMENT_GRACE_HOURS = 6.0
 # GitHub StatusState for statusCheckRollup.state (no IN_PROGRESS/QUEUED on this enum).
 CHECKS_PENDING = frozenset({"PENDING", "EXPECTED"})
 CHECKS_FAILED = frozenset({"FAILURE", "ERROR"})
+# Comment.authorAssociation values that may launch /fs-* (write-capable roles).
+TRUSTED_FS_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
 def comment_command(body: str | None) -> str:
@@ -280,6 +284,20 @@ def comment_command(body: str | None) -> str:
 
 def _is_agent_bot_comment(comment: dict[str, Any]) -> bool:
     return (comment.get("author") or "") in FULLSEND_AGENT_BOTS
+
+
+def _is_trusted_fs_commenter(comment: dict[str, Any]) -> bool:
+    """True when a /fs-* launch comment should count as a real launch signal.
+
+    Mirrors dispatch's write-capable boundary: org/repo collaborators and
+    fullsend agent bots. Unauthorized commenters are ignored so nextwork does
+    not sit in waiting_* for a slash command that never triggered an agent.
+    """
+    author = comment.get("author") or ""
+    if author in FULLSEND_AGENT_BOTS:
+        return True
+    assoc = comment.get("author_association") or ""
+    return assoc in TRUSTED_FS_ASSOCIATIONS
 
 
 def agent_terminal_succeeded(body: str) -> bool:
@@ -413,8 +431,12 @@ def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | 
 
 
 def latest_fs_command_at(comments: list[dict[str, Any]], command: str) -> str | None:
-    """created_at of the latest comment whose first-line command equals command."""
-    matches = [c for c in comments if comment_command(c.get("body") or "") == command]
+    """created_at of the latest trusted comment whose first-line command equals command."""
+    matches = [
+        c
+        for c in comments
+        if _is_trusted_fs_commenter(c) and comment_command(c.get("body") or "") == command
+    ]
     if not matches:
         return None
     return max(matches, key=lambda c: created_at_key(c.get("created_at"))).get("created_at")
@@ -521,11 +543,16 @@ def is_completed_triage_stale(
     now: datetime,
     *,
     triage_stale_hours: float = TRIAGE_STALE_HOURS,
+    comment_grace_hours: float = TRIAGE_COMMENT_GRACE_HOURS,
 ) -> bool:
-    """Completed Triage older than triage_stale_hours, or non-exempt comments after it.
+    """Completed Triage older than triage_stale_hours, or aged post-triage comments.
 
     Completion is a terminal Triage agent-status, or a sticky
     ``<!-- fullsend:triage-agent -->`` result when status is missing.
+
+    Non-exempt comments after completion only invalidate once they themselves
+    are at least ``comment_grace_hours`` old, so ordinary conversation noise
+    right after triage does not immediately flip to ``needs_triage``.
     """
     completed = latest_completed_triage(comments)
     if completed is None or not completed["created_at"]:
@@ -536,6 +563,8 @@ def is_completed_triage_stale(
     for c in comments:
         created = c.get("created_at") or ""
         if created_at_key(created) <= created_at_key(triage_at):
+            continue
+        if hours_since(created, now) < comment_grace_hours:
             continue
         body = c.get("body") or ""
         if AGENT_STATUS_MARKER in body:
@@ -583,13 +612,20 @@ def is_non_stale_code_wait(
 
 
 def has_newer_code_than_review(item: dict[str, Any], comments: list[dict[str, Any]]) -> bool:
+    """True when head commits landed after the latest review signal (bot or human)."""
     head_at = item.get("head_committed_at")
     if not head_at:
         return False
-    review = latest_terminal_agent(comments, "waiting_review")
-    if review is None or not review["created_at"]:
+    review_at: str | None = None
+    bot_review = latest_terminal_agent(comments, "waiting_review")
+    if bot_review and bot_review.get("created_at"):
+        review_at = bot_review["created_at"]
+    human_at = item.get("latest_approved_review_at")
+    if human_at and (review_at is None or created_at_key(human_at) > created_at_key(review_at)):
+        review_at = human_at
+    if not review_at:
         return False
-    return parse_iso(head_at) > parse_iso(review["created_at"])
+    return parse_iso(head_at) > parse_iso(review_at)
 
 
 # ------------------------------- Classification -------------------------------
@@ -697,7 +733,12 @@ def classify_issue(
             eliminated=True,
         )
 
-    if is_completed_triage_stale(comments, now, triage_stale_hours=triage_stale_hours):
+    if is_completed_triage_stale(
+        comments,
+        now,
+        triage_stale_hours=triage_stale_hours,
+        comment_grace_hours=stale_hours,
+    ):
         completed = latest_completed_triage(comments)
         triage_launch = launch_signal_at(item, "triage", comments)
         # A newer /fs-triage (or triage label signal) after completion means a
@@ -1186,7 +1227,9 @@ query($owner: String!, $name: String!, $number: Int!) {
         createdAt
         updatedAt
         body
-        comments(last: 50) { nodes { author { login } body createdAt } }
+        comments(last: 50) {
+          nodes { author { login } authorAssociation body createdAt }
+        }
         blockedBy(first: 20) {
           nodes { number state repository { nameWithOwner } }
         }
@@ -1207,10 +1250,15 @@ query($owner: String!, $name: String!, $number: Int!) {
         createdAt
         updatedAt
         body
-        comments(last: 50) { nodes { author { login } body createdAt } }
+        comments(last: 50) {
+          nodes { author { login } authorAssociation body createdAt }
+        }
         reviewDecision
         mergeable
         mergeStateStatus
+        reviews(last: 30) {
+          nodes { state submittedAt }
+        }
         reviewThreads(first: 50) {
           nodes {
             isResolved
@@ -1335,6 +1383,7 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
     comments = [
         {
             "author": (c.get("author") or {}).get("login"),
+            "author_association": c.get("authorAssociation") or "",
             "body": c.get("body") or "",
             "created_at": c.get("createdAt"),
         }
@@ -1379,6 +1428,14 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
         item["review_decision"] = node.get("reviewDecision")
         item["mergeable"] = node.get("mergeable")
         item["merge_state_status"] = node.get("mergeStateStatus")
+        approved_ats = [
+            r.get("submittedAt")
+            for r in (node.get("reviews") or {}).get("nodes") or []
+            if r.get("state") == "APPROVED" and r.get("submittedAt")
+        ]
+        item["latest_approved_review_at"] = (
+            max(approved_ats, key=created_at_key) if approved_ats else None
+        )
         threads = (node.get("reviewThreads") or {}).get("nodes") or []
         unresolved_threads: list[dict[str, Any]] = []
         for t in threads:

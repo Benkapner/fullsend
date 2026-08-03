@@ -133,6 +133,7 @@ def make_pr(**overrides):
         "unresolved_review_threads": 0,
         "checks_state": "SUCCESS",
         "head_committed_at": None,
+        "latest_approved_review_at": None,
         "in_merge_queue": False,
     }
     item.update(overrides)
@@ -163,6 +164,16 @@ def agent_comment(body, created_at, *, author=None):
         else:
             author = "fullsend-ai-review[bot]"
     return {"author": author, "body": body, "created_at": created_at}
+
+
+def trusted_fs_comment(body, created_at, *, author="alice", association="MEMBER"):
+    """Human /fs-* launch comment trusted for launch-signal classification."""
+    return {
+        "author": author,
+        "author_association": association,
+        "body": body,
+        "created_at": created_at,
+    }
 
 
 class TestParseInflightAgent(unittest.TestCase):
@@ -382,6 +393,7 @@ class TestNormalizeItem(unittest.TestCase):
         )
         self.assertEqual(item["checks_state"], "SUCCESS")
         self.assertEqual(item["head_committed_at"], "2024-01-02T00:30:00Z")
+        self.assertIsNone(item["latest_approved_review_at"])
         self.assertFalse(item["is_draft"])
         self.assertFalse(item["in_merge_queue"])
         self.assertEqual(item["blockers"], [])
@@ -516,11 +528,7 @@ class TestClassifyIssue(unittest.TestCase):
             labels=["triaged", "feature"],
             assignees=[],
             comments=[
-                {
-                    "author": "alice",
-                    "body": "/fs-triage",
-                    "created_at": "2024-01-09T22:00:00Z",
-                },
+                trusted_fs_comment("/fs-triage", "2024-01-09T22:00:00Z"),
                 {
                     "author": "fullsend-ai-triage[bot]",
                     "body": (
@@ -548,10 +556,7 @@ class TestClassifyIssue(unittest.TestCase):
                     ),
                     "2024-01-09T21:00:00Z",
                 ),
-                {
-                    "body": "/fs-triage",
-                    "created_at": "2024-01-09T23:00:00Z",
-                },
+                trusted_fs_comment("/fs-triage", "2024-01-09T23:00:00Z"),
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -562,10 +567,7 @@ class TestClassifyIssue(unittest.TestCase):
         item = make_issue(
             labels=["triaged"],
             comments=[
-                {
-                    "body": "/fs-code",
-                    "created_at": "2024-01-09T22:00:00Z",
-                },
+                trusted_fs_comment("/fs-code", "2024-01-09T22:00:00Z"),
                 agent_comment(
                     (
                         "<!-- fullsend:agent-status:run-1 -->\n"
@@ -691,6 +693,46 @@ class TestClassifyIssue(unittest.TestCase):
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_triage")
 
+    def test_fresh_post_triage_comment_does_not_stale_within_grace(self):
+        # Comment younger than --stale-hours must not flip a fresh triage.
+        item = make_issue(
+            labels=["triaged"],
+            comments=[
+                agent_comment(
+                    (
+                        "<!-- fullsend:agent-status:t1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "2024-01-09T20:00:00Z",
+                ),
+                {
+                    "author": "bob",
+                    "body": "Thanks!",
+                    "created_at": "2024-01-09T22:00:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+
+    def test_untrusted_fs_command_is_ignored_as_launch_signal(self):
+        item = make_issue(
+            labels=["ready-to-code"],
+            updated_at="2024-01-01T00:00:00Z",
+            comments=[
+                {
+                    "author": "drive-by",
+                    "author_association": "NONE",
+                    "body": "/fs-code",
+                    "created_at": "2024-01-09T23:00:00Z",
+                },
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "trigger_code")
+        self.assertIn("comment:/fs-code", result.suggested_actions)
+
     def test_stale_triage_does_not_override_non_stale_waiting_code(self):
         item = make_issue(
             labels=["ready-to-code"],
@@ -726,7 +768,7 @@ class TestClassifyIssue(unittest.TestCase):
                     ),
                     "2024-01-09T12:00:00Z",
                 ),
-                {"body": "/fs-code please ship it", "created_at": "2024-01-09T23:00:00Z"},
+                trusted_fs_comment("/fs-code please ship it", "2024-01-09T23:00:00Z"),
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -770,11 +812,7 @@ class TestClassifyIssue(unittest.TestCase):
                     ),
                     "2024-01-01T00:00:00Z",
                 ),
-                {
-                    "author": "alice",
-                    "body": "/fs-triage",
-                    "created_at": "2024-01-09T22:00:00Z",
-                },
+                trusted_fs_comment("/fs-triage", "2024-01-09T22:00:00Z"),
             ],
         )
         result = classify_issue(item, "alice", 6, NOW)
@@ -834,11 +872,7 @@ class TestClassifyIssue(unittest.TestCase):
             labels=["ready-for-triage"],
             updated_at="2024-01-09T22:00:00Z",
             comments=[
-                {
-                    "author": "alice",
-                    "body": "/fs-triage",
-                    "created_at": "2024-01-09T21:00:00Z",
-                },
+                trusted_fs_comment("/fs-triage", "2024-01-09T21:00:00Z"),
                 agent_comment(
                     (
                         "<!-- fullsend:agent-status:t1 -->\n"
@@ -889,11 +923,7 @@ class TestClassifyIssue(unittest.TestCase):
             labels=["triaged", "feature"],
             assignees=[],
             comments=[
-                {
-                    "author": "alice",
-                    "body": "/fs-triage",
-                    "created_at": "2024-01-09T22:00:00Z",
-                },
+                trusted_fs_comment("/fs-triage", "2024-01-09T22:00:00Z"),
                 {
                     "author": "fullsend-ai-triage[bot]",
                     "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nDone."),
@@ -1145,6 +1175,17 @@ class TestClassifyPr(unittest.TestCase):
                     "2024-01-09T12:00:00Z",
                 )
             ],
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "trigger_review")
+
+    def test_newer_code_after_human_approval_triggers_review(self):
+        item = make_pr(
+            labels=["ready-for-review"],
+            review_decision="APPROVED",
+            updated_at="2024-01-09T23:00:00Z",
+            head_committed_at="2024-01-09T22:00:00Z",
+            latest_approved_review_at="2024-01-09T12:00:00Z",
         )
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "trigger_review")

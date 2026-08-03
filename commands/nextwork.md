@@ -6,14 +6,17 @@ allowed-tools: Bash(python3 skills/nextwork/scripts/nextwork.py:*)
 
 Follow skill **nextwork**.
 
-From the repository root, run:
+From the repository root, run a **read-only** first pass (strip `--apply` and
+`--decisions-only` from `$ARGUMENTS` if present — those run only after prose
+blockers are persisted):
 
-    python3 skills/nextwork/scripts/nextwork.py $ARGUMENTS --format json --include-text
+    python3 skills/nextwork/scripts/nextwork.py $ARGUMENTS_WITHOUT_APPLY --format json --include-text
 
 Then follow the skill loop in [skills/nextwork/SKILL.md](../skills/nextwork/SKILL.md):
 mine prose-only dependencies from `body`/`comments`, persist confident ones
 with `--link-blocker`, offer take-over for `assigned_elsewhere` items that
-matter to the user's goal, then present the result. Default to actionable
+matter to the user's goal, then present the result. Only then honor `--apply`
+/ `--decisions-only` if the user asked for them. Default to actionable
 items only; include blocked/waiting/assigned-elsewhere detail if the user
 asked for it or passed `--show-blocked`. Don't invent statuses the script
 didn't emit.
