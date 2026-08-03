@@ -302,6 +302,13 @@ class TestTimeHelpers(unittest.TestCase):
         now = datetime(2024, 1, 2, 5, tzinfo=UTC)
         self.assertFalse(is_stale("2024-01-02T00:00:00Z", 6, now))
 
+    def test_empty_created_at_is_not_stale(self):
+        now = datetime(2024, 1, 2, 6, tzinfo=UTC)
+        self.assertEqual(hours_since("", now), 0.0)
+        self.assertEqual(hours_since(None, now), 0.0)
+        self.assertFalse(is_stale("", 6, now))
+        self.assertFalse(is_stale(None, 6, now))
+
 
 class TestParsePrLinks(unittest.TestCase):
     def test_body_keywords_and_closing_refs(self):
@@ -796,6 +803,29 @@ class TestClassifyIssue(unittest.TestCase):
         )
         self.assertIsNone(latest_agent_status(item["comments"]))
         self.assertIsNone(latest_completed_triage(item["comments"]))
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "promote_code")
+
+    def test_newer_sticky_triage_wins_over_older_terminal(self):
+        comments = [
+            agent_comment(
+                (
+                    "<!-- fullsend:agent-status:t1 -->\n"
+                    "<!-- fullsend:status:terminal -->\n"
+                    "🤖 Finished Triage · ✅ Success"
+                ),
+                "2024-01-01T00:00:00Z",
+            ),
+            agent_comment(
+                "<!-- fullsend:triage-agent -->\n## Triage Summary\n\nRe-done.",
+                "2024-01-09T12:00:00Z",
+            ),
+        ]
+        completed = latest_completed_triage(comments)
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(completed["created_at"], "2024-01-09T12:00:00Z")
+        item = make_issue(labels=["triaged"], comments=comments)
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "promote_code")
 

@@ -115,11 +115,15 @@ def created_at_key(value: str | None) -> datetime:
     return parse_iso(value)
 
 
-def hours_since(iso_value: str, now: datetime) -> float:
+def hours_since(iso_value: str | None, now: datetime) -> float:
+    if not iso_value:
+        return 0.0
     return (now - parse_iso(iso_value)).total_seconds() / 3600.0
 
 
-def is_stale(iso_value: str, stale_hours: float, now: datetime) -> bool:
+def is_stale(iso_value: str | None, stale_hours: float, now: datetime) -> bool:
+    if not iso_value:
+        return False
     return hours_since(iso_value, now) >= stale_hours
 
 
@@ -322,7 +326,10 @@ def latest_agent_status(comments: list[dict[str, Any]]) -> dict[str, Any] | None
     ]
     if not agent_comments:
         return None
-    latest = max(agent_comments, key=lambda c: created_at_key(c.get("created_at")))
+    latest = max(
+        enumerate(agent_comments),
+        key=lambda ic: (created_at_key(ic[1].get("created_at")), ic[0]),
+    )[1]
     body = latest.get("body") or ""
     return {
         "created_at": latest.get("created_at") or "",
@@ -351,7 +358,10 @@ def latest_terminal_agent(
             matches.append(c)
     if not matches:
         return None
-    latest = max(matches, key=lambda c: created_at_key(c.get("created_at")))
+    latest = max(
+        enumerate(matches),
+        key=lambda ic: (created_at_key(ic[1].get("created_at")), ic[0]),
+    )[1]
     return {
         "created_at": latest.get("created_at") or "",
         "body": latest.get("body") or "",
@@ -363,31 +373,43 @@ def latest_terminal_agent(
 
 
 def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """When triage finished successfully: prefer terminal agent-status, else sticky.
+    """Latest successful triage completion: terminal agent-status or sticky marker.
 
     Sticky ``<!-- fullsend:triage-agent -->`` posts are a completion signal for
     older runs that never left a terminal agent-status comment. They are not
-    used for in-flight detection. Only bot-authored comments count.
+    used for in-flight detection. Only bot-authored comments count. When both
+    exist, the chronologically later signal wins.
     """
+    candidates: list[dict[str, Any]] = []
     terminal = latest_terminal_agent(comments, "waiting_triage")
     if terminal is not None and terminal.get("created_at"):
-        return terminal
+        candidates.append(terminal)
     matches = [
         c
         for c in comments
         if _is_agent_bot_comment(c) and TRIAGE_RESULT_MARKER in (c.get("body") or "")
     ]
-    if not matches:
+    if matches:
+        latest = max(
+            enumerate(matches),
+            key=lambda ic: (created_at_key(ic[1].get("created_at")), ic[0]),
+        )[1]
+        candidates.append(
+            {
+                "created_at": latest.get("created_at") or "",
+                "body": latest.get("body") or "",
+                "terminal": True,
+                "succeeded": True,
+                "waiting_status": "waiting_triage",
+                "author": latest.get("author"),
+            }
+        )
+    if not candidates:
         return None
-    latest = max(matches, key=lambda c: created_at_key(c.get("created_at")))
-    return {
-        "created_at": latest.get("created_at") or "",
-        "body": latest.get("body") or "",
-        "terminal": True,
-        "succeeded": True,
-        "waiting_status": "waiting_triage",
-        "author": latest.get("author"),
-    }
+    return max(
+        enumerate(candidates),
+        key=lambda ic: (created_at_key(ic[1].get("created_at")), ic[0]),
+    )[1]
 
 
 def latest_fs_command_at(comments: list[dict[str, Any]], command: str) -> str | None:
