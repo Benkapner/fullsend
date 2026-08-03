@@ -104,5 +104,14 @@ follow-up work on #4718, not decided here.
   data, which CEL cannot express. Whether the pre-script performs the forge
   call itself or `fullsend run` performs it and passes the result in is not
   fixed by this decision.
+- Since acceptance, pre-scripts run with only the credentials the harness
+  supplies: `fullsend run` strips the OIDC vars that authenticate to the token
+  mint from the pre-script environment
+  ([#5832](https://github.com/fullsend-ai/fullsend/issues/5832),
+  [#5837](https://github.com/fullsend-ai/fullsend/pull/5837)), enforcing the
+  harness-as-sole-minter intent of
+  [ADR 0073](0073-named-mint-privilege-levels.md) at this boundary. The open
+  forge-call question above is therefore about which side holds the
+  harness-minted token — scripts can no longer mint their own.
 - The scripts' `gh` coupling is unchanged — a pre-existing forge gap tracked
   separately from this decision.
