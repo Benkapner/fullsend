@@ -60,7 +60,7 @@ Set these secrets instead of `JIRA_TOKEN` and `JIRA_USER_EMAIL`:
 | `JIRA_CLIENT_SECRET` | OAuth 2.0 client secret |
 | `JIRA_BASE_URL` | Jira instance URL |
 
-Required scopes: `read:jira-work`, `read:jira-user`, `write:jira-work`.
+Required scopes: `read:jira-work`, `read:jira-user`, `write:jira-work` (the `write:jira-work` scope is used for entity-property writes; a narrower scope may also work but hasn't been verified).
 
 ## Repo configuration
 
