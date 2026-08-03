@@ -675,6 +675,132 @@ allowed_remote_resources:
 	assert.Equal(t, "resource", deps[1].Type)
 }
 
+func TestLoadWithBase_URLBase_ForgePolicyResolved(t *testing.T) {
+	policyContent := []byte("allow:\n  - api.gitlab.com\n")
+	policyHash := computeHash(policyContent)
+
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+forge:
+  gitlab:
+    policy: policies/gitlab.yaml
+    pre_script: scripts/gl-pre.sh
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			w.Write(baseContent)
+		case "/policies/gitlab.yaml":
+			w.WriteHeader(http.StatusOK)
+			w.Write(policyContent)
+		case "/scripts/gl-pre.sh":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("#!/bin/sh\necho gl\n"))
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Forge policy should have been fetched and cached
+	assert.NotEmpty(t, h.Policy)
+	assert.True(t, strings.Contains(h.Policy, "cache"), "policy path should be a cache path")
+
+	// Verify the policy was fetched as a dependency
+	var foundPolicy bool
+	for _, d := range deps {
+		if d.Field == "forge.gitlab.policy" {
+			foundPolicy = true
+			assert.Equal(t, policyHash, d.SHA256)
+		}
+	}
+	assert.True(t, foundPolicy, "forge.gitlab.policy should appear in dependencies")
+	_ = deps
+}
+
+func TestLoadWithBase_URLBase_ForgePolicyPathTraversal(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+forge:
+  gitlab:
+    policy: ../../../etc/shadow
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			w.Write(baseContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
 func TestLoadWithBase_ChainedURLBases(t *testing.T) {
 	// Test URL base whose own base is also a URL
 	grandparentContent := []byte(`
@@ -1124,6 +1250,88 @@ func TestMergeForgeConfigInto_PreflightCheckCarryForward(t *testing.T) {
 	assert.Equal(t, 3, child.ValidationLoop.MaxIterations)
 	assert.Equal(t, "python3 -c 'import jsonschema'", child.ValidationLoop.PreflightCheck,
 		"PreflightCheck should be carried forward from base in forge merge")
+}
+
+func TestMergeForgeConfigInto_PolicyInherited(t *testing.T) {
+	base := &ForgeConfig{
+		Policy:    "policies/base-gitlab.yaml",
+		PreScript: "base-pre.sh",
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, "policies/base-gitlab.yaml", child.Policy)
+	assert.Equal(t, "child-pre.sh", child.PreScript)
+}
+
+func TestMergeForgeConfigInto_PolicyOverriddenByChild(t *testing.T) {
+	base := &ForgeConfig{
+		Policy: "policies/base.yaml",
+	}
+	child := &ForgeConfig{
+		Policy: "policies/child.yaml",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, "policies/child.yaml", child.Policy)
+}
+
+func TestLoadWithBase_ForgePolicyInherited(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  gitlab:
+    policy: policies/gitlab.yaml
+    pre_script: gl-pre.sh
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  gitlab:
+    pre_script: child-gl-pre.sh
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		ForgePlatform: "gitlab",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "policies/gitlab.yaml", h.Policy)
+	assert.Equal(t, "child-gl-pre.sh", h.PreScript)
+}
+
+func TestLoadWithBase_ForgePolicyOverriddenByChild(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  gitlab:
+    policy: policies/base-gitlab.yaml
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  gitlab:
+    policy: policies/child-gitlab.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		ForgePlatform: "gitlab",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "policies/child-gitlab.yaml", h.Policy)
 }
 
 func TestLoadWithBase_InvalidForgeAfterMerge(t *testing.T) {

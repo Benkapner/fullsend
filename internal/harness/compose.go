@@ -716,6 +716,18 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 			*f.ptr = cachePath
 			deps = append(deps, dep)
 		}
+		if fc.Policy != "" && !IsURL(fc.Policy) && !isFullsendCachePath(fc.Policy, opts.WorkspaceRoot) {
+			fieldName := fmt.Sprintf("forge.%s.policy", platform)
+			if err := validateBaseRelPath(fieldName, fc.Policy); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, fc.Policy, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.Policy = cachePath
+			deps = append(deps, dep)
+		}
 		if fc.ValidationLoop != nil && fc.ValidationLoop.Script != "" && !IsURL(fc.ValidationLoop.Script) && !isFullsendCachePath(fc.ValidationLoop.Script, opts.WorkspaceRoot) {
 			fieldName := fmt.Sprintf("forge.%s.validation_loop.script", platform)
 			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Script); err != nil {
@@ -1482,6 +1494,9 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 	}
 
 	// Scalars: child overrides if non-empty
+	if child.Policy == "" {
+		child.Policy = base.Policy
+	}
 	if child.PreScript == "" {
 		child.PreScript = base.PreScript
 	}

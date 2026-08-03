@@ -300,7 +300,7 @@ security:
 
 | Field type | Behavior |
 |-----------|----------|
-| Scalars (`model`, `pre_script`, `image`, etc.) | Child wins if non-empty |
+| Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
 | `skills` | Merged with deduplication by basename (child overrides base) |
 | `plugins`, `providers`, `api_servers`, `openshell.profiles` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |
