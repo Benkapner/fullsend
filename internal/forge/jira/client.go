@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -325,9 +326,17 @@ type searchRequest struct {
 	JQL           string   `json:"jql"`
 	MaxResults    int      `json:"maxResults"`
 	Fields        []string `json:"fields"`
-	Expand        string   `json:"expand,omitempty"`
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
+
+// searchFields lists the issue fields the poller actually consumes.
+// Requesting them explicitly (rather than "*all") bounds search payloads:
+// with "*all", 50 issues per page each carrying full ADF descriptions,
+// embedded first comment pages, attachments, and every custom field can
+// plausibly exceed the client's 10MB decode cap — and since a failed
+// search aborts the whole cycle with the same data returning every time,
+// that failure mode would wedge the poller for the entire project.
+var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.
@@ -341,6 +350,13 @@ const maxSearchPages = 200
 // afterward. A limit <= 0 fetches all matching issues, capped at
 // maxSearchPages pages (10,000 issues at 50 per page) to prevent unbounded
 // memory growth.
+//
+// This endpoint is eventually consistent: Atlassian documents that recent
+// updates might not be immediately visible in results. For the poller that
+// only means an issue can appear (or re-sort under ORDER BY updated) a
+// cycle late — per-issue checkpoints come from the strongly-consistent
+// direct comment/changelog GETs, never from search results, so no events
+// are lost. Do not "fix" ordering assumptions by trusting search freshness.
 func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
@@ -352,7 +368,7 @@ func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([
 		body := searchRequest{
 			JQL:           jql,
 			MaxResults:    50,
-			Fields:        []string{"*all"},
+			Fields:        searchFields,
 			NextPageToken: nextPageToken,
 		}
 		bodyJSON, err := json.Marshal(body)
@@ -402,6 +418,10 @@ func (c *LiveClient) GetStatus(ctx context.Context, idOrName string) (*Status, e
 // changelog, group members) to prevent unbounded memory growth from
 // issues or groups with very large histories, mirroring maxSearchPages.
 // At 100 items per page this caps each listing at 10,000 entries.
+//
+// These endpoints paginate oldest-first, so hitting the cap hides the
+// NEWEST items — the ones the poller cares about — which is why the cap
+// is logged loudly when reached rather than silently truncating.
 const maxListPages = 100
 
 // ListComments fetches all comments on an issue, exhausting pagination up
@@ -409,6 +429,7 @@ const maxListPages = 100
 func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]Comment, error) {
 	var all []Comment
 	startAt := 0
+	truncated := true
 	for page := 0; page < maxListPages; page++ {
 		path := fmt.Sprintf("/issue/%s/comment?orderBy=created&maxResults=100&startAt=%d",
 			url.PathEscape(issueIDOrKey), startAt)
@@ -418,9 +439,13 @@ func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]C
 		}
 		all = append(all, result.Comments...)
 		if startAt+len(result.Comments) >= result.Total || len(result.Comments) == 0 {
+			truncated = false
 			break
 		}
 		startAt += len(result.Comments)
+	}
+	if truncated {
+		log.Printf("WARNING: comment listing for %s truncated at %d pages; newer comments beyond the cap are invisible to the poller", issueIDOrKey, maxListPages)
 	}
 	return all, nil
 }
@@ -430,6 +455,7 @@ func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]C
 func (c *LiveClient) ListChangelog(ctx context.Context, issueIDOrKey string) ([]ChangelogEntry, error) {
 	var all []ChangelogEntry
 	startAt := 0
+	truncated := true
 	for page := 0; page < maxListPages; page++ {
 		path := fmt.Sprintf("/issue/%s/changelog?maxResults=100&startAt=%d",
 			url.PathEscape(issueIDOrKey), startAt)
@@ -439,9 +465,13 @@ func (c *LiveClient) ListChangelog(ctx context.Context, issueIDOrKey string) ([]
 		}
 		all = append(all, result.Values...)
 		if result.IsLast || len(result.Values) == 0 {
+			truncated = false
 			break
 		}
 		startAt += len(result.Values)
+	}
+	if truncated {
+		log.Printf("WARNING: changelog listing for %s truncated at %d pages; newer entries beyond the cap are invisible to the poller", issueIDOrKey, maxListPages)
 	}
 	return all, nil
 }
@@ -552,8 +582,12 @@ func (c *LiveClient) groupMembers(ctx context.Context, groupID string) ([]string
 
 	var accountIDs []string
 	startAt := 0
+	truncated := true
 	for page := 0; page < maxListPages; page++ {
-		path := fmt.Sprintf("/group/member?groupId=%s&maxResults=100&startAt=%d",
+		// maxResults=50 is this endpoint's documented maximum (unlike the
+		// comment/changelog endpoints, whose documented default is 100);
+		// Jira clamps oversized values, but stay in contract.
+		path := fmt.Sprintf("/group/member?groupId=%s&maxResults=50&startAt=%d",
 			url.QueryEscape(groupID), startAt)
 		var result groupMemberPage
 		if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
@@ -565,9 +599,13 @@ func (c *LiveClient) groupMembers(ctx context.Context, groupID string) ([]string
 			}
 		}
 		if result.IsLast || len(result.Values) == 0 {
+			truncated = false
 			break
 		}
 		startAt += len(result.Values)
+	}
+	if truncated {
+		log.Printf("WARNING: member listing for group %s truncated at %d pages; unlisted members will resolve to the external role", groupID, maxListPages)
 	}
 
 	c.groupMemberCacheMu.Lock()

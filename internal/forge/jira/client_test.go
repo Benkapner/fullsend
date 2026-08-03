@@ -156,11 +156,10 @@ func TestSearchIssues_Pagination(t *testing.T) {
 		var body searchRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 
-		// Changelog must not be expanded: the response types have nowhere
-		// to decode it, so expanding would only inflate payloads.
-		assert.Empty(t, body.Expand)
-		// Verify fields requests all data.
-		assert.Equal(t, []string{"*all"}, body.Fields)
+		// The poller requests only the fields it consumes, not "*all":
+		// unbounded payloads can exceed the client's decode cap and wedge
+		// the whole cycle.
+		assert.Equal(t, searchFields, body.Fields)
 
 		callCount++
 		switch body.NextPageToken {
@@ -763,8 +762,7 @@ func TestSearchIssues_SinglePage(t *testing.T) {
 		var body searchRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Contains(t, body.JQL, "project = TEST")
-		assert.Empty(t, body.Expand)
-		assert.Equal(t, []string{"*all"}, body.Fields)
+		assert.Equal(t, searchFields, body.Fields)
 		assert.Empty(t, body.NextPageToken, "first request should have no nextPageToken")
 		writeJSON(t, w, http.StatusOK, SearchResult{
 			Issues: []Issue{{ID: "1", Key: "TEST-1"}},
