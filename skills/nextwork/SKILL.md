@@ -82,7 +82,7 @@ like production dispatch: first whitespace token of the first comment line.
 |--------|---------|---------|
 | `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone). A terminal Triage **or** sticky `<!-- fullsend:triage-agent -->` (when status is absent) at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
 | `waiting_code` | `ready-to-code` / `/fs-code`; **or** non-terminal code agent-status | `trigger_code` (`/fs-code`) |
-| `waiting_review` | `ready-for-review` / `/fs-review` / review-required path; **or** non-terminal review agent-status | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
+| `waiting_review` | `ready-for-review` / `/fs-review` / review-required (or missing decision after other checks); uses `updated_at` as the launch clock when no explicit signal | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
 | `waiting_fix` | Unresolved review threads all from `fullsend-ai-review[bot]`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
 | `waiting_agent` | Non-terminal agent-status comment whose role could not be mapped | _(no re-trigger)_ |
 | `waiting_ci` | Required checks still running | _(no re-trigger)_ |

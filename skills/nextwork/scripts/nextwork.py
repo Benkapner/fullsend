@@ -108,6 +108,13 @@ def parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def created_at_key(value: str | None) -> datetime:
+    """Sort/compare key for ISO timestamps (empty sorts earliest)."""
+    if not value:
+        return datetime.min.replace(tzinfo=UTC)
+    return parse_iso(value)
+
+
 def hours_since(iso_value: str, now: datetime) -> float:
     return (now - parse_iso(iso_value)).total_seconds() / 3600.0
 
@@ -315,7 +322,7 @@ def latest_agent_status(comments: list[dict[str, Any]]) -> dict[str, Any] | None
     ]
     if not agent_comments:
         return None
-    latest = max(agent_comments, key=lambda c: c.get("created_at") or "")
+    latest = max(agent_comments, key=lambda c: created_at_key(c.get("created_at")))
     body = latest.get("body") or ""
     return {
         "created_at": latest.get("created_at") or "",
@@ -344,7 +351,7 @@ def latest_terminal_agent(
             matches.append(c)
     if not matches:
         return None
-    latest = max(matches, key=lambda c: c.get("created_at") or "")
+    latest = max(matches, key=lambda c: created_at_key(c.get("created_at")))
     return {
         "created_at": latest.get("created_at") or "",
         "body": latest.get("body") or "",
@@ -372,7 +379,7 @@ def latest_completed_triage(comments: list[dict[str, Any]]) -> dict[str, Any] | 
     ]
     if not matches:
         return None
-    latest = max(matches, key=lambda c: c.get("created_at") or "")
+    latest = max(matches, key=lambda c: created_at_key(c.get("created_at")))
     return {
         "created_at": latest.get("created_at") or "",
         "body": latest.get("body") or "",
@@ -388,7 +395,7 @@ def latest_fs_command_at(comments: list[dict[str, Any]], command: str) -> str | 
     matches = [c for c in comments if comment_command(c.get("body") or "") == command]
     if not matches:
         return None
-    return max(matches, key=lambda c: c.get("created_at") or "").get("created_at")
+    return max(matches, key=lambda c: created_at_key(c.get("created_at"))).get("created_at")
 
 
 def launch_signal_at(
@@ -467,7 +474,11 @@ def classify_launch_wait(
         completed = latest_completed_triage(comments)
     else:
         completed = latest_terminal_agent(comments, spec["waiting"])
-    if completed and completed["created_at"] and completed["created_at"] >= at:
+    if (
+        completed
+        and completed["created_at"]
+        and created_at_key(completed["created_at"]) >= created_at_key(at)
+    ):
         return None
     if is_stale(at, stale_hours, now):
         return Classification(
@@ -502,7 +513,7 @@ def is_completed_triage_stale(
     triage_at = completed["created_at"]
     for c in comments:
         created = c.get("created_at") or ""
-        if created <= triage_at:
+        if created_at_key(created) <= created_at_key(triage_at):
             continue
         body = c.get("body") or ""
         if AGENT_STATUS_MARKER in body:
@@ -540,7 +551,11 @@ def is_non_stale_code_wait(
     if latest and not latest["terminal"] and latest["waiting_status"] == "waiting_code":
         return False  # stale in-flight handled elsewhere
     terminal = latest_terminal_agent(comments, "waiting_code")
-    if terminal and terminal["created_at"] and terminal["created_at"] >= sig:
+    if (
+        terminal
+        and terminal["created_at"]
+        and created_at_key(terminal["created_at"]) >= created_at_key(sig)
+    ):
         return False  # /fs-code or ready-to-code already completed
     return not is_stale(sig, stale_hours, now)
 
@@ -669,7 +684,7 @@ def classify_issue(
             triage_launch
             and completed
             and completed.get("created_at")
-            and triage_launch > completed["created_at"]
+            and created_at_key(triage_launch) > created_at_key(completed["created_at"])
         ):
             launch = classify_launch_wait(
                 item, "triage", comments, stale_hours, now, signal_at=triage_launch
@@ -753,7 +768,7 @@ def _classify_fix_from_threads(
     thread_times = [
         created_at for t in unresolved if (created_at := t.get("created_at")) is not None
     ]
-    thread_at = max(thread_times) if thread_times else None
+    thread_at = max(thread_times, key=created_at_key) if thread_times else None
     signal_at = cmd_at or thread_at or item.get("updated_at")
     launch = classify_launch_wait(item, "fix", comments, stale_hours, now, signal_at=signal_at)
     if launch:
@@ -911,9 +926,12 @@ def classify_pr(
             suggested_actions=["Add ready-for-merge when merge-ready, or merge if allowed"],
         )
 
+    # Default review path: everything that reached here already cleared
+    # blockers/CI/draft/approval/fix/threads. A missing or REVIEW_REQUIRED
+    # decision therefore means "needs review" — use updated_at as the launch
+    # clock so stale PRs surface as trigger_review rather than human_work.
     review_signal = launch_signal_at(item, "review", comments)
     if not review_signal and review_decision in (None, "REVIEW_REQUIRED"):
-        # Treat review-required path as a launch signal via updated_at.
         review_signal = item.get("updated_at")
     if (
         review_signal
