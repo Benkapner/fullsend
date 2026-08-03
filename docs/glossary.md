@@ -30,9 +30,9 @@ See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ## B
 
-### `base:` Composition
+### Base Composition
 
-The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; list fields like `skills` and `providers` merge (deduplicated by basename/name, child wins on conflict); `env` and `runner_env` merge as maps. Replaces the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field.
+The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; `skills` merges with deduplication by basename (child overrides); `plugins`, `providers`, and `api_servers` concatenate (base + child, no dedup at composition time); `env` and `runner_env` merge as maps (child keys win). Replaces the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field.
 See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md), and [Configuring Agent Behavior](guides/user/customizing-agents.md).
 
 ### Blast Radius
@@ -52,9 +52,9 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or that has no `base` at all. A custom agent is built from scratch, even if it happens to resemble a default agent. Contrast with [derived agent](#derived-agent), which starts from a default.
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
 
-### `customized/` Directory
+### Customized Directory
 
-**Deprecated.** A per-org (`customized/`) or per-repo (`.fullsend/customized/`) directory whose contents were overlaid on top of upstream defaults at runtime, replacing any upstream file with a matching name. The overlay was file-level replacement only — customizing a single harness field required copying and maintaining the entire upstream YAML file. Superseded by [`base:` composition](#base-composition) for harnesses, URL-based references for skills/agents/policies, and config-based agent registration; `fullsend agent migrate-customizations` automates conversion.
+**Deprecated.** A per-org (`customized/`) or per-repo (`.fullsend/customized/`) directory whose contents were overlaid on top of upstream defaults at runtime, replacing any upstream file with a matching name. The overlay was file-level replacement only — customizing a single harness field required copying and maintaining the entire upstream YAML file. Superseded by [base composition](#base-composition) for harnesses, URL-based references for skills/agents/policies, and config-based agent registration; `fullsend agent migrate-customizations` automates conversion.
 See [ADR 0035](ADRs/0035-layered-content-resolution.md) (original mechanism) and [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md) (deprecation).
 
 ## D
