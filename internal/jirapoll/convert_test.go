@@ -517,10 +517,12 @@ func TestExtractCommand(t *testing.T) {
 			wantInstruction: "fix the bug",
 		},
 		{
+			// Per the adapter spec, the instruction is the remainder of the
+			// first line only (same rules as the gha-event adapter).
 			name:            "slash command with multi-line body",
 			body:            "/fs-triage fix the bug\nMore context on the next line",
 			wantCommand:     "/fs-triage",
-			wantInstruction: "fix the bug\nMore context on the next line",
+			wantInstruction: "fix the bug",
 		},
 		{
 			name:            "non-fullsend slash command",

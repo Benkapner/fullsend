@@ -180,8 +180,10 @@ func extractCommand(body string) (command, instruction string) {
 
 	command = tokens[0]
 
-	// Instruction is everything after the command token in the full body.
-	instruction = strings.TrimSpace(trimmed[len(command):])
+	// Instruction is the remainder of the first line after the command
+	// token, per the jira-poll adapter spec (same rules as the gha-event
+	// adapter). Later lines of the comment are not part of the instruction.
+	instruction = strings.TrimSpace(firstLine[len(command):])
 	return command, instruction
 }
 
