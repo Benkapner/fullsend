@@ -43,9 +43,9 @@ project IDs, regions) from agent behavior knobs.
 
 The CI workflow `env:` block (`.github/workflows/<agent>.yml`) is
 reserved for infrastructure plumbing — credentials, project IDs,
-regions, and other values sourced from CI-native inputs (secrets,
-org/repo variables). Agent behavior knobs, as scoped by ADR 0080 and
-named per ADR 0049, are never set there. They go through harness
+regions, and other infrastructure values sourced from CI-native inputs
+(secrets, org/repo variables). Agent behavior knobs, as scoped by ADR
+0080 and named per ADR 0049, are never set there. They go through harness
 composition instead: `env.runner`/`env.sandbox` defaults live in the
 canonical harness, and a per-repo or per-org override edits those
 defaults via `base:` composition (ADR 0045).
@@ -65,7 +65,17 @@ static agent behavior defaults.
 
 - fullsend-ai/agents#567's docs need correcting: `TRIAGE_AUTO_CODE`'s
   override path is harness composition, not CI workflow `env:` — the
-  precedent it cited was itself non-conformant.
+  precedent it cited was itself non-conformant. The fullsend-ai/agents
+  repo's own `docs/review.md` carries the same non-conformant guidance
+  for `REVIEW_FINDING_SEVERITY_THRESHOLD` that this PR fixed in
+  `fullsend`'s copy, and needs the equivalent fix.
+- `CODE_ALLOWED_TARGET_BRANCHES: ''` is still hardcoded in
+  `reusable-code.yml`/`reusable-dispatch.yml`'s workflow `env:` block,
+  even though [ADR 0053](0053-agent-driven-branch-targeting.md) already
+  decided this value belongs in the harness's `runner_env`, not the
+  workflow YAML. It's a pre-existing non-conformance this ADR's rule
+  makes explicit; removing it from the workflow files is a follow-up,
+  not part of this decision.
 - New agent behavior knobs get one documented override path (harness
   `base:` composition), removing the ambiguity between three candidate
   mechanisms.

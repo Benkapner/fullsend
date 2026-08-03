@@ -66,18 +66,21 @@ instead:
 
 **Override convention:** `env.runner`/`env.sandbox` values are agent
 defaults. A per-repo or per-org override edits the harness (`base:`
-composition, per ADR 0045), not the CI workflow `env:` block — that block
-is reserved for infrastructure plumbing (credentials, project IDs,
-regions), not agent behavior knobs (see [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md)
-for the full rule and its exceptions). This also means behavior defaults in
+composition, per ADR 0045), not the CI workflow `env:` block.
+[ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md) reserves that
+block for infrastructure plumbing (credentials, project IDs, regions),
+not agent behavior knobs — overriding ADR 0049's "CI workflow injection"
+delivery mechanism for behavior knobs specifically; see that ADR for the
+full rule and its exceptions. This also means behavior defaults in
 `env.runner`/`env.sandbox` must be literals (e.g. `TRIAGE_AUTO_CODE:
 "on"`), not shell-style passthrough expressions (e.g.
-`${TRIAGE_AUTO_CODE:-on}`) — those two mechanisms deliver plain key-value
-pairs, not shell-expanded strings, so passthrough syntax would be
-mis-parsed — `os.Expand` treats the entire `VAR:-default` as the
-variable name, which resolves to an empty string rather than applying
-the intended default (see [ADR 0055](0055-unified-env-var-delivery.md),
-§ Runner behavior).
+`${TRIAGE_AUTO_CODE:-on}`) — `env.runner`/`env.sandbox` support `${VAR}`
+host-variable expansion (see [ADR 0055](0055-unified-env-var-delivery.md),
+§ Runner behavior), not shell default-value syntax, so passthrough syntax
+is rejected at harness load: env validation treats `TRIAGE_AUTO_CODE:-on`
+as a host variable name and fails with `host variable … is not set`; even
+absent validation, `os.Expand` would resolve the whole reference to an
+empty string, not the intended default.
 
 A knob only moves from one surface to the other by a deliberate migration,
 not by adding a second way to set the same value. Applying this rule to
