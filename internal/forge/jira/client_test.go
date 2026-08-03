@@ -40,6 +40,67 @@ func writeJSON(t *testing.T, w http.ResponseWriter, status int, v any) {
 }
 
 // ---------------------------------------------------------------------------
+// CheckRedirect Authorization stripping
+// ---------------------------------------------------------------------------
+
+// TestCheckRedirect_AuthorizationHandling is a regression test for the
+// credential-stripping logic in the CheckRedirect handler: an earlier
+// revision compared the redirect target against via[0] instead of the
+// immediately preceding request, and shipped without any redirect test.
+// Same-origin redirects must keep the Authorization header; cross-origin
+// redirects must strip it.
+func TestCheckRedirect_AuthorizationHandling(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	newEchoServer := func(t *testing.T) (*httptest.Server, *http.ServeMux) {
+		t.Helper()
+		mux := http.NewServeMux()
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, http.StatusOK, User{
+				AccountID:   "echo",
+				DisplayName: "auth=" + r.Header.Get("Authorization"),
+			})
+		})
+		return srv, mux
+	}
+
+	t.Run("same-origin redirect keeps Authorization", func(t *testing.T) {
+		t.Parallel()
+		srv, mux := newEchoServer(t)
+		mux.HandleFunc("/rest/api/3/redirected", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, srv.URL+"/rest/api/3/myself", http.StatusFound)
+		})
+		client, err := New("test-token", WithBaseURL(srv.URL))
+		require.NoError(t, err)
+
+		var user User
+		require.NoError(t, client.do(ctx, http.MethodGet, "/redirected", nil, &user))
+		assert.Equal(t, "auth=Bearer test-token", user.DisplayName,
+			"Authorization must be preserved across a same-origin, same-scheme redirect")
+	})
+
+	t.Run("cross-origin redirect strips Authorization", func(t *testing.T) {
+		t.Parallel()
+		other, _ := newEchoServer(t)
+		srv, mux := newEchoServer(t)
+		// Different httptest server = different host:port = cross-origin.
+		mux.HandleFunc("/rest/api/3/redirected", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+"/rest/api/3/myself", http.StatusFound)
+		})
+		client, err := New("test-token", WithBaseURL(srv.URL))
+		require.NoError(t, err)
+
+		var user User
+		require.NoError(t, client.do(ctx, http.MethodGet, "/redirected", nil, &user))
+		assert.Equal(t, "auth=", user.DisplayName,
+			"Authorization must be stripped on a cross-origin redirect")
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Auth header verification
 // ---------------------------------------------------------------------------
 
@@ -95,8 +156,9 @@ func TestSearchIssues_Pagination(t *testing.T) {
 		var body searchRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 
-		// Verify expand is a comma-delimited string, not an array.
-		assert.Equal(t, "changelog", body.Expand)
+		// Changelog must not be expanded: the response types have nowhere
+		// to decode it, so expanding would only inflate payloads.
+		assert.Empty(t, body.Expand)
 		// Verify fields requests all data.
 		assert.Equal(t, []string{"*all"}, body.Fields)
 
@@ -701,7 +763,7 @@ func TestSearchIssues_SinglePage(t *testing.T) {
 		var body searchRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Contains(t, body.JQL, "project = TEST")
-		assert.Equal(t, "changelog", body.Expand)
+		assert.Empty(t, body.Expand)
 		assert.Equal(t, []string{"*all"}, body.Fields)
 		assert.Empty(t, body.NextPageToken, "first request should have no nextPageToken")
 		writeJSON(t, w, http.StatusOK, SearchResult{

@@ -345,11 +345,14 @@ func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([
 	var all []Issue
 	var nextPageToken string
 	for page := 0; page < maxSearchPages; page++ {
+		// Changelog is deliberately not expanded here: the response types
+		// have nowhere to decode it, and the poller fetches changelog
+		// per-selected-issue via ListChangelog, so expanding it for every
+		// candidate would only inflate search payloads.
 		body := searchRequest{
 			JQL:           jql,
 			MaxResults:    50,
 			Fields:        []string{"*all"},
-			Expand:        "changelog",
 			NextPageToken: nextPageToken,
 		}
 		bodyJSON, err := json.Marshal(body)
@@ -395,42 +398,50 @@ func (c *LiveClient) GetStatus(ctx context.Context, idOrName string) (*Status, e
 	return &status, nil
 }
 
-// ListComments fetches all comments on an issue, exhausting pagination.
+// maxListPages limits per-issue and per-group pagination (comments,
+// changelog, group members) to prevent unbounded memory growth from
+// issues or groups with very large histories, mirroring maxSearchPages.
+// At 100 items per page this caps each listing at 10,000 entries.
+const maxListPages = 100
+
+// ListComments fetches all comments on an issue, exhausting pagination up
+// to maxListPages pages.
 func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]Comment, error) {
 	var all []Comment
 	startAt := 0
-	for {
+	for page := 0; page < maxListPages; page++ {
 		path := fmt.Sprintf("/issue/%s/comment?orderBy=created&maxResults=100&startAt=%d",
 			url.PathEscape(issueIDOrKey), startAt)
-		var page CommentPage
-		if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
+		var result CommentPage
+		if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
 			return nil, fmt.Errorf("list comments for %s (startAt=%d): %w", issueIDOrKey, startAt, err)
 		}
-		all = append(all, page.Comments...)
-		if startAt+len(page.Comments) >= page.Total || len(page.Comments) == 0 {
+		all = append(all, result.Comments...)
+		if startAt+len(result.Comments) >= result.Total || len(result.Comments) == 0 {
 			break
 		}
-		startAt += len(page.Comments)
+		startAt += len(result.Comments)
 	}
 	return all, nil
 }
 
-// ListChangelog fetches all changelog entries for an issue, exhausting pagination.
+// ListChangelog fetches all changelog entries for an issue, exhausting
+// pagination up to maxListPages pages.
 func (c *LiveClient) ListChangelog(ctx context.Context, issueIDOrKey string) ([]ChangelogEntry, error) {
 	var all []ChangelogEntry
 	startAt := 0
-	for {
+	for page := 0; page < maxListPages; page++ {
 		path := fmt.Sprintf("/issue/%s/changelog?maxResults=100&startAt=%d",
 			url.PathEscape(issueIDOrKey), startAt)
-		var page changelogPage
-		if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
+		var result changelogPage
+		if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
 			return nil, fmt.Errorf("list changelog for %s (startAt=%d): %w", issueIDOrKey, startAt, err)
 		}
-		all = append(all, page.Values...)
-		if page.IsLast || len(page.Values) == 0 {
+		all = append(all, result.Values...)
+		if result.IsLast || len(result.Values) == 0 {
 			break
 		}
-		startAt += len(page.Values)
+		startAt += len(result.Values)
 	}
 	return all, nil
 }
@@ -541,22 +552,22 @@ func (c *LiveClient) groupMembers(ctx context.Context, groupID string) ([]string
 
 	var accountIDs []string
 	startAt := 0
-	for {
+	for page := 0; page < maxListPages; page++ {
 		path := fmt.Sprintf("/group/member?groupId=%s&maxResults=100&startAt=%d",
 			url.QueryEscape(groupID), startAt)
-		var page groupMemberPage
-		if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
+		var result groupMemberPage
+		if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
 			return nil, fmt.Errorf("list group members for %s (startAt=%d): %w", groupID, startAt, err)
 		}
-		for _, member := range page.Values {
+		for _, member := range result.Values {
 			if member.AccountID != "" {
 				accountIDs = append(accountIDs, member.AccountID)
 			}
 		}
-		if page.IsLast || len(page.Values) == 0 {
+		if result.IsLast || len(result.Values) == 0 {
 			break
 		}
-		startAt += len(page.Values)
+		startAt += len(result.Values)
 	}
 
 	c.groupMemberCacheMu.Lock()
