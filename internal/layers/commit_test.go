@@ -348,6 +348,162 @@ func TestCommitScaffoldViaPR_CrossForkGetBranchRefError(t *testing.T) {
 	assert.Contains(t, err.Error(), "acme/widget@main")
 }
 
+func TestCommitScaffoldViaPR_CrossForkBranchAlreadyExists(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	// Simulate the scaffold branch already existing on the fork.
+	client.Errors = map[string]error{
+		"CreateBranchFromSHA": fmt.Errorf("branch exists: %w", forge.ErrAlreadyExists),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	// Should fall through and commit files even though the branch already exists.
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	assert.Equal(t, "contributor", client.CommittedFilesToBranch[0].Owner)
+	assert.NotContains(t, buf.String(), "Failed to create scaffold branch")
+}
+
+func TestCommitScaffoldViaPR_CrossForkCreateBranchGenericError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	// Simulate a generic API error (not forbidden, not already exists).
+	client.Errors = map[string]error{
+		"CreateBranchFromSHA": fmt.Errorf("internal server error"),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating scaffold branch")
+	assert.Contains(t, buf.String(), "Failed to create scaffold branch")
+}
+
+func TestCommitScaffoldViaPR_CrossForkCommitFilesProtected(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	client.Errors = map[string]error{
+		"CommitFilesToBranch": fmt.Errorf("branch protected: %w", forge.ErrBranchProtected),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scaffold branch")
+	assert.Contains(t, err.Error(), "protected")
+	assert.Contains(t, buf.String(), "protected")
+}
+
+func TestCommitScaffoldViaPR_CrossForkNoChanges(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	client.Errors = map[string]error{
+		"CreateChangeProposal": fmt.Errorf("no diff: %w", forge.ErrNoChanges),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	// Should report up to date without error.
+	assert.Contains(t, buf.String(), "up to date")
+	assert.Empty(t, client.CreatedProposals)
+}
+
+func TestCommitScaffoldViaPR_CrossForkPRAlreadyExistsUpdated(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	// CommitFilesToBranch returns changed=true by default.
+	client.Errors = map[string]error{
+		"CreateChangeProposal": fmt.Errorf("pr exists: %w", forge.ErrAlreadyExists),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	// Verify the "updated with new files" message when PR exists but files changed.
+	assert.Contains(t, buf.String(), "updated with new files")
+	assert.Contains(t, buf.String(), "Merge the PR")
+}
+
+func TestCommitScaffoldViaPR_CrossForkPRAlreadyExistsNoUpdate(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	noChange := false
+	client.CommitFilesChanged = &noChange
+	client.Errors = map[string]error{
+		"CreateChangeProposal": fmt.Errorf("pr exists: %w", forge.ErrAlreadyExists),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	// When PR exists and no files changed, should report up to date.
+	assert.Contains(t, buf.String(), "up to date")
+	assert.NotContains(t, buf.String(), "updated with new files")
+}
+
+func TestCommitScaffoldViaPR_NewForkUsesCreateBranchFromSHA(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
+	// No ExistingForks → will create a new fork.
+	client.Repos = append(client.Repos, forge.Repository{
+		FullName: "contributor/widget", DefaultBranch: "main",
+	})
+	client.BranchRefs["acme/widget/main"] = "upstream-sha-new-fork"
+	printer, _ := newTestPrinter()
+
+	// nil reader = non-interactive → auto-fork.
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	// Verify a fork was created.
+	require.Len(t, client.CreatedForks, 1)
+	assert.Equal(t, "acme/widget", client.CreatedForks[0])
+
+	// Verify the cross-fork path used CreateBranchFromSHA with the upstream SHA.
+	require.Len(t, client.CreatedBranchSHAs, 1, "new fork path should use CreateBranchFromSHA")
+	assert.Equal(t, "contributor", client.CreatedBranchSHAs[0].Owner)
+	assert.Equal(t, "widget", client.CreatedBranchSHAs[0].Repo)
+	assert.Equal(t, "upstream-sha-new-fork", client.CreatedBranchSHAs[0].SHA)
+}
+
 func TestCommitScaffoldViaPR_FindExistingForkError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
