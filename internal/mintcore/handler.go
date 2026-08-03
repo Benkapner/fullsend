@@ -240,8 +240,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetOrg = callerOrg
 	}
 
-	foreign := !strings.EqualFold(targetOrg, callerOrg)
-	if err := validateReposScope(foreign, claims.Repository, req.Repos, h.perOrgForeignCompat); err != nil {
+	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
+	if err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, h.perOrgForeignCompat); err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
@@ -254,7 +254,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var token, expiresAt string
 	var granted *GrantedScope
 
-	if !foreign {
+	if !isTargetForeign {
 		token, expiresAt, granted, err = h.mintToken(ctx, callerOrg, req.Role, req.Repos)
 	} else {
 		token, expiresAt, granted, err = h.mintTokenCrossOrg(ctx, claims, targetOrg, req.Role, req.Repos)

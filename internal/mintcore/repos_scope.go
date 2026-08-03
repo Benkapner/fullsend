@@ -26,10 +26,8 @@ func EnvTruthy(v string) bool {
 
 // repositoryBareName returns the repository name without the org prefix.
 func repositoryBareName(repository string) string {
-	if i := strings.LastIndex(repository, "/"); i >= 0 {
-		return repository[i+1:]
-	}
-	return repository
+	parts := strings.Split(repository, "/")
+	return parts[len(parts)-1]
 }
 
 // validateReposScope enforces mint repos authorization after OIDC verification.
@@ -39,8 +37,8 @@ func repositoryBareName(repository string) string {
 // PER_ORG_FOREIGN_COMPAT is on:
 //   - caller .fullsend: any non-empty validated list
 //   - other callers: exactly [.fullsend] or {requestingBare, .fullsend}
-func validateReposScope(foreign bool, requestingRepo string, repos []string, compat bool) error {
-	if foreign {
+func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, compat bool) error {
+	if isTargetForeign {
 		if len(repos) != 0 {
 			return fmt.Errorf("foreign mint requires empty repos")
 		}
@@ -67,6 +65,7 @@ func validateReposScope(foreign bool, requestingRepo string, repos []string, com
 	if len(repos) == 1 && strings.EqualFold(repos[0], ".fullsend") {
 		return nil
 	}
+
 	if len(repos) == 2 {
 		a, b := repos[0], repos[1]
 		if (strings.EqualFold(a, bare) && strings.EqualFold(b, ".fullsend")) ||
