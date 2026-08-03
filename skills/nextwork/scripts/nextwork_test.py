@@ -187,7 +187,7 @@ class TestParseInflightAgent(unittest.TestCase):
                     "🤖 Finished Review · ✅ Success · Started 1:00 PM UTC · Completed 1:10 PM UTC"
                 ),
                 "2024-01-09T13:10:00Z",
-                )
+            )
         ]
         self.assertIsNone(parse_inflight_agent(comments))
 
@@ -204,7 +204,7 @@ class TestParseInflightAgent(unittest.TestCase):
                     "🤖 Finished Review · ✅ Success"
                 ),
                 "2024-01-09T13:10:00Z",
-                ),
+            ),
         ]
         self.assertIsNone(parse_inflight_agent(comments))
 
@@ -217,7 +217,7 @@ class TestParseInflightAgent(unittest.TestCase):
                     "🤖 Finished Fix · ✅ Success"
                 ),
                 "2024-01-09T12:00:00Z",
-                ),
+            ),
             agent_comment(
                 "<!-- fullsend:agent-status:run-2 -->\n🤖 Review · Started 1:00 PM UTC",
                 "2024-01-09T13:00:00Z",
@@ -830,9 +830,7 @@ class TestClassifyIssue(unittest.TestCase):
             updated_at="2024-01-01T00:00:00Z",
             comments=[
                 agent_comment(
-                    (
-                        "<!-- fullsend:triage-agent -->\n## Triage Summary\n\nReady to implement."
-                    ),
+                    ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nReady to implement."),
                     "2024-01-01T00:00:00Z",
                 ),
             ],
@@ -1613,9 +1611,7 @@ class TestGhFetcher(unittest.TestCase):
     @patch("nextwork.gh_graphql_or_none")
     def test_is_in_merge_queue(self, mock_gql):
         merge_queue = {
-            "repository": {
-                "mergeQueue": {"entries": {"nodes": [{"pullRequest": {"number": 42}}]}}
-            }
+            "repository": {"mergeQueue": {"entries": {"nodes": [{"pullRequest": {"number": 42}}]}}}
         }
         mock_gql.side_effect = [
             {"repository": {"defaultBranchRef": {"name": "main"}}},
