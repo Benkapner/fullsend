@@ -1,5 +1,10 @@
 # Escalation ladder for changing agent behavior
 
+> **Status: Proposed.** Level names and evidence-to-escalate criteria are a
+> working proposal pending maintainer agreement on
+> [#5372](https://github.com/fullsend-ai/fullsend/issues/5372). Treat this as
+> guidance under review, not settled project policy.
+
 Before replacing or deriving from a core agent, prove that lighter options
 cannot meet your needs. This page defines the escalation path — start at
 Level 1 and move up only when you can show why the current level is
@@ -30,18 +35,19 @@ must be replicated independently.
 
 Use the extension points the default agent was designed for. These keep you
 in [configured-default territory](default-vs-custom.md) and require no
-harness changes at all.
+changes to the agent's identity-defining fields. Some rows need a thin
+`base`-composed harness (still Level 1); others need no harness at all.
 
 | Extension point | What it does | Guide |
 |---|---|---|
-| `AGENTS.md` | Project-wide instructions for all agents — code style, test commands, architecture rules, domain context | [Customizing with AGENTS.md](../../guides/user/customizing-with-agents-md.md) |
-| Repo skills (`.agents/skills/`) | Domain-specific knowledge for individual agents — linting rules, deployment checklists, label glossaries | [Customizing with Skills](../../guides/user/customizing-with-skills.md) |
-| Documented env vars | Per-agent tuning knobs (e.g., `REVIEW_FINDING_SEVERITY_THRESHOLD`) | Each agent's [reference page](../) |
-| `env:` in harness | Add environment variables without changing the agent's identity | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
-| `skills:` in harness | Add skills via `base` composition — concatenated with the base agent's skill list | [Configuring existing agents](../../guides/user/bring-your-own-agent.md#configuring-existing-agents) |
-| `plugins:` in harness | Add language-server plugins | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
-| `host_files:` in harness | Inject additional files into the sandbox | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
-| Sandbox image layers | Base your image on the default, add tools | [Customizing agents](../../guides/user/customizing-agents.md#customization-examples) |
+| `AGENTS.md` | Project-wide instructions for all agents — code style, test commands, architecture rules, domain context. No harness required. | [Customizing with AGENTS.md](../../guides/user/customizing-with-agents-md.md) |
+| Repo skills (`.agents/skills/`) | Domain-specific knowledge for individual agents — linting rules, deployment checklists, label glossaries. No harness required. | [Customizing with Skills](../../guides/user/customizing-with-skills.md) |
+| Documented env vars | Per-agent tuning knobs (e.g., `REVIEW_FINDING_SEVERITY_THRESHOLD`). No harness required. | Each agent's [reference page](../) |
+| `env:` in harness | Add environment variables without changing the agent's identity. Needs a thin `base` harness. | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
+| `skills:` in harness | Add skills via `base` composition — concatenated with the base agent's skill list. Needs a thin `base` harness. | [Configuring existing agents](../../guides/user/bring-your-own-agent.md#configuring-existing-agents) |
+| `plugins:` in harness | Add language-server plugins. Needs a thin `base` harness. | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
+| `host_files:` in harness | Inject additional files into the sandbox. Needs a thin `base` harness. | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
+| Sandbox image layers | Base your image on the default, add tools; point the harness `image:` field at it. Needs a thin `base` harness. | [Extending the sandbox image](../../guides/user/customizing-agents.md#extending-the-sandbox-image) |
 
 **Evidence to escalate:** show that no combination of these extension points
 produces the behavior you need. Concrete evidence includes:
@@ -75,7 +81,9 @@ If the change is in the [fullsend-ai/fullsend](https://github.com/fullsend-ai/fu
 repo (harness, scripts, skills, agent definitions), contribute there. If the
 agent definition or harness lives in
 [fullsend-ai/agents](https://github.com/fullsend-ai/agents), contribute to
-that repo instead.
+that repo instead. First-time contributors must be
+[vouched](../../../CONTRIBUTING.md) by a maintainer before opening a PR —
+unvouched PRs are auto-closed.
 
 **Evidence to escalate:** show that the improvement you need is specific to
 your team's workflow and would not benefit other users. Concrete evidence
@@ -126,9 +134,10 @@ use case. Concrete evidence includes:
 - A fundamental incompatibility with the base harness's script interface
   (e.g., the base post-script expects an output format your agent does not
   produce, and you cannot adapt either side)
-- A need to control the full execution pipeline including sandbox policy,
-  image, and provider configuration that `base` field merge rules do not
-  support
+- A need to remove or replace a provider the base harness already declares —
+  `providers:` entries are concatenated (base + child), not subtractive.
+  Sandbox policy and image can already be fully overridden at Level 3 via a
+  scalar field replacement
 
 ## Level 4: Replace the role entirely
 
