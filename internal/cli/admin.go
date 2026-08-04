@@ -835,7 +835,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		printer.Blank()
 		if needsWIFProvision {
 			printer.StepInfo("Would provision WIF infrastructure in GCP project " + inferenceProject)
-			printer.StepInfo(fmt.Sprintf("  Service account: fullsend-mint@%s.iam.gserviceaccount.com", inferenceProject))
+			printer.StepInfo("  Service account: " + gcf.MintServiceAccountEmail(inferenceProject))
 			printer.StepInfo("  WIF pool: " + gcf.DefaultInferencePool)
 			printer.StepInfo(fmt.Sprintf("  WIF provider: %s", mintcore.BuildRepoProviderID(owner, repo)))
 			printer.StepInfo(fmt.Sprintf("  Repo restriction: %s/%s", owner, repo))

@@ -191,6 +191,12 @@ func (p *Provisioner) SecretExists(ctx context.Context, role string) (bool, erro
 	return false, fmt.Errorf("checking secret %s: %w", sid, err)
 }
 
+// MintServiceAccountEmail returns the email address of the fullsend-mint
+// service account for the given GCP project.
+func MintServiceAccountEmail(projectID string) string {
+	return saName + "@" + projectID + ".iam.gserviceaccount.com"
+}
+
 // EnsureMintServiceAccount creates the mint service account if it does not
 // already exist. Call this before StoreAgentPEM so the IAM binding on
 // secrets can reference the service account.
@@ -233,7 +239,7 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 		return fmt.Errorf("adding secret version for %s: %w", sid, err)
 	}
 
-	saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+	saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 	secretResource := fmt.Sprintf("projects/%s/secrets/%s", p.cfg.ProjectID, sid)
 	if err := p.gcpAPI.SetSecretIAMBinding(ctx, secretResource,
 		"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
@@ -889,7 +895,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("uploading function source: %w", err)
 		}
 
-		saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+		saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 		fnCfg := FunctionConfig{
 			ServiceAccount: saEmail,
 			EnvVars:        envVars,
@@ -944,7 +950,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("uploading function source: %w", err)
 		}
 
-		saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+		saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 		fnCfg := FunctionConfig{
 			ServiceAccount: saEmail,
 			EnvVars:        deployEnvVars,

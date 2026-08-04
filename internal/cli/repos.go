@@ -707,7 +707,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				continue
 			}
 
-			_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken)
+			// Build WIF config when inference is configured (WIF mode).
+			var wifCfg *botTokenWIFConfig
+			if opts.inferenceProject != "" {
+				wifCfg = &botTokenWIFConfig{
+					GCPClient: gcf.NewLiveGCFClient(opts.inferenceProject),
+					ProjectID: opts.inferenceProject,
+				}
+			}
+
+			_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken, wifCfg)
 			if botErr != nil {
 				printer.StepWarn(fmt.Sprintf("[%s] Bot token setup failed: %v", repoFullName, botErr))
 				postInstallFailed++
