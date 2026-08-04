@@ -814,19 +814,17 @@ def classify_issue(
 
     has_control_label = bool(labels & ISSUE_CONTROL_LABELS)
     triage_launch = launch_signal_at(item, "triage", comments)
+    # Issue creation is the initial triage launch when nothing more explicit
+    # exists yet. Control labels (triaged, ready-to-code, …) mean the issue is
+    # already past that gate — do not drag them back via created_at.
+    if triage_launch is None and not has_control_label:
+        triage_launch = item.get("created_at")
     if triage_launch:
         launch = classify_launch_wait(
             item, "triage", comments, stale_hours, now, signal_at=triage_launch
         )
         if launch:
             return launch
-    elif not has_control_label:
-        # No launch signal yet — wait forever (do not flip from created_at alone).
-        return Classification(
-            status="waiting_triage",
-            reason="Waiting for triage automation",
-            eliminated=True,
-        )
 
     code_launch = classify_launch_wait(item, "code", comments, stale_hours, now)
     if code_launch:

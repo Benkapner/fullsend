@@ -80,7 +80,7 @@ like production dispatch: first whitespace token of the first comment line.
 
 | Status | Meaning | Stale → |
 |--------|---------|---------|
-| `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone). A terminal Triage **or** sticky `<!-- fullsend:triage-agent -->` (when status is absent) at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
+| `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels yet (issue **creation** is the initial triage launch clock). A terminal Triage **or** sticky `<!-- fullsend:triage-agent -->` (when status is absent) at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — when the launch signal (including `created_at`) or stuck start is stale |
 | `waiting_code` | `ready-to-code` / `/fs-code`; **or** non-terminal code agent-status | `trigger_code` (`/fs-code`) |
 | `waiting_review` | `ready-for-review` / `/fs-review` / review-required (or missing decision after other checks); when no explicit `/fs-*` comment exists, uses `updated_at` as the launch clock (same imprecise fallback as code/triage label-only waits) | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
 | `waiting_fix` | Unresolved review threads all from `fullsend-ai-review[bot]`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
@@ -104,7 +104,7 @@ like production dispatch: first whitespace token of the first comment line.
 | Status | Next action | Trivial? |
 |--------|-------------|----------|
 | `needs_assign` | Unassigned with no other automation/decision signal → assign yourself | Yes |
-| `needs_triage` | Stale triage launch/start, **or** completed triage (terminal agent-status **or** sticky `<!-- fullsend:triage-agent -->` when status is absent) older than 3 days / followed by non-exempt comments (does **not** override a non-stale `waiting_code`) → `/fs-triage` | Yes |
+| `needs_triage` | Stale triage launch/start (including unlabeled issues whose only launch clock is `created_at`), **or** completed triage (terminal agent-status **or** sticky `<!-- fullsend:triage-agent -->` when status is absent) older than 3 days / followed by non-exempt comments (does **not** override a non-stale `waiting_code`) → `/fs-triage` | Yes |
 | `promote_code` | `triaged` (feature work) → decide whether to promote | Decision |
 | `close_or_plan` | Has sub-issues and all are closed → close the parent, or plan further work / open new sub-issues | Decision |
 | `trigger_code` | Stale `ready-to-code` / `/fs-code` / stuck Code start → `/fs-code` | Yes |
@@ -214,7 +214,10 @@ like production dispatch: first whitespace token of the first comment line.
   comment, the launch clock falls back to the item's `updated_at` for
   **triage, code, and review** alike. GitHub bumps `updatedAt` on almost any
   activity, so unrelated comments can reset staleness — not only the moment
-  the control label was applied.
+  the control label was applied. For triage only, issues with **no** control
+  label and no `/fs-triage` use `created_at` as the initial launch clock
+  (create = first triage ask); that clock becomes actionable via `--stale-hours`
+  like any other never-started launch — there is no forever wait.
 - Post-triage conversation only invalidates a fresh triage after the comment
   itself is older than `--stale-hours` (default 6h); raw age still uses
   `--triage-stale-hours` (default 72h).

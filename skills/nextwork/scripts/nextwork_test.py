@@ -424,12 +424,14 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertNotIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
 
     def test_blocked_label_only_is_ignored(self):
-        # Orphaned blocked label must not eliminate; no control labels → waiting_triage.
+        # Orphaned blocked label must not eliminate; create is triage launch →
+        # stale needs_triage (default make_issue created_at is older than stale-hours).
         item = make_issue(labels=["blocked"])
         result = classify_item(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "waiting_triage")
-        self.assertTrue(result.eliminated)
+        self.assertEqual(result.status, "needs_triage")
+        self.assertFalse(result.eliminated)
         self.assertIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
+        self.assertIn("comment:/fs-triage", result.suggested_actions)
 
     def test_blocked_label_with_triaged_suggests_remove(self):
         item = make_issue(labels=["blocked", "triaged"], assignees=["alice"])
@@ -527,11 +529,43 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertEqual(result.status, "waiting_triage")
         self.assertTrue(result.eliminated)
 
-    def test_waiting_triage_no_labels_never_flips_from_age(self):
-        # No launch signal → stay waiting_triage forever (not needs_triage from created_at).
+    def test_needs_triage_no_labels_stale_from_created_at(self):
+        # Issue creation is the initial triage launch; past stale-hours → needs_triage.
         item = make_issue(created_at="2024-01-01T00:00:00Z")
         result = classify_issue(item, "alice", 6, NOW)
-        self.assertEqual(result.status, "waiting_triage")
+        self.assertEqual(result.status, "needs_triage")
+        self.assertFalse(result.eliminated)
+        self.assertIn("comment:/fs-triage", result.suggested_actions)
+
+    def test_create_triage_launch_cleared_by_completed_triage(self):
+        # Completed triage after create clears the create-as-launch wait.
+        item = make_issue(
+            created_at="2024-01-01T00:00:00Z",
+            assignees=[],
+            comments=[
+                agent_comment(
+                    (
+                        "<!-- fullsend:agent-status:run-1 -->\n"
+                        "<!-- fullsend:status:terminal -->\n"
+                        "🤖 Finished Triage · ✅ Success"
+                    ),
+                    "2024-01-09T12:00:00Z",
+                ),
+            ],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_assign")
+        self.assertFalse(result.eliminated)
+
+    def test_ready_to_code_not_trapped_by_create_as_triage_launch(self):
+        # Control label ready-to-code skips created_at triage fallback.
+        item = make_issue(
+            labels=["ready-to-code"],
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-09T23:00:00Z",
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_code")
         self.assertTrue(result.eliminated)
 
     def test_waiting_triage_label_takes_priority_over_other_control_labels(self):
@@ -678,7 +712,8 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertEqual(result.suggested_actions[0], ASSIGN_SELF)
 
     def test_classify_item_no_assign_on_waiting_triage(self):
-        item = make_issue(assignees=[])
+        # Fresh create-as-launch wait (within stale-hours) stays eliminated.
+        item = make_issue(assignees=[], created_at="2024-01-09T23:00:00Z")
         result = classify_item(item, "alice", 6, NOW)
         self.assertEqual(result.status, "waiting_triage")
         self.assertTrue(result.eliminated)
