@@ -90,10 +90,11 @@ logs. No behavioral change.
 
 ---
 
-## PR 2: Remove overlay loop from reusable workflows
+## PR 2: Remove overlay loop from reusable workflows *(done — PR #5836)*
 
 **Scope:** Remove the `CUSTOM_BASE` overlay from all 6 reusable
-workflows.
+workflows, the `prepare-workspace` composite action, and the scaffold
+`repo-maintenance.yml` template.
 
 **`.github/workflows/reusable-triage.yml` (~lines 100–113):**
 **`.github/workflows/reusable-code.yml` (~lines 102–113):**

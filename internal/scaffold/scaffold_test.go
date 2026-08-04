@@ -781,7 +781,8 @@ func TestRepoMaintenanceWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
 	assert.Contains(t, s, "Checkout upstream scripts")
 	assert.Contains(t, s, "Prepare scripts")
-	assert.Contains(t, s, "customized/scripts")
+	assert.NotContains(t, s, "customized/scripts",
+		"customized/ overlay removed per ADR-0064")
 	assert.Contains(t, s, "role: fullsend")
 	assert.Contains(t, s, "id-token: write")
 	assert.NotContains(t, s, "create-github-app-token")
