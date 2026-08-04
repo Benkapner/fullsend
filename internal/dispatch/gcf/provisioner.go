@@ -1445,6 +1445,77 @@ func (p *Provisioner) waitForReady(ctx context.Context, mintURL string) error {
 	}
 }
 
+// ProvisionRepoWIFProvider creates a dedicated per-repo WIF provider without
+// granting any IAM roles. This is used by mint enrollment, which only needs
+// the WIF provider for OIDC verification — Vertex AI access is granted
+// separately by the inference provision code path.
+//
+// Returns the full WIF provider resource path. All operations are idempotent.
+func (p *Provisioner) ProvisionRepoWIFProvider(ctx context.Context) (string, error) {
+	wifProvider, _, err := p.provisionRepoWIFProvider(ctx)
+	return wifProvider, err
+}
+
+// provisionRepoWIFProvider validates the repo-scoped config and creates the
+// WIF pool plus the dedicated per-repo provider. Shared by
+// ProvisionRepoWIFProvider (mint enrollment, no IAM grant) and ProvisionWIF's
+// repo-scoped branch (which additionally grants roles/aiplatform.user), so the
+// provider config (attribute condition, audiences, issuer) cannot drift
+// between the two paths. Returns the provider resource path and the project
+// number.
+func (p *Provisioner) provisionRepoWIFProvider(ctx context.Context) (wifProvider, projectNumber string, err error) {
+	if p.cfg.ProjectID == "" {
+		return "", "", fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return "", "", fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
+	}
+	if p.cfg.Repo == "" {
+		return "", "", fmt.Errorf("repo is required for per-repo WIF provisioning")
+	}
+
+	parts := strings.SplitN(p.cfg.Repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
+	}
+	partsLower := [2]string{strings.ToLower(parts[0]), strings.ToLower(parts[1])}
+	if !mintcore.GitHubOrgPattern.MatchString(partsLower[0]) || strings.Contains(partsLower[0], "--") {
+		return "", "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", parts[0])
+	}
+	if !githubRepoSlugPattern.MatchString(partsLower[1]) {
+		return "", "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric, hyphens, dots, or underscores", parts[1])
+	}
+	if partsLower[1] == "." || partsLower[1] == ".." {
+		return "", "", fmt.Errorf("invalid repo name %q: cannot be \".\" or \"..\"", parts[1])
+	}
+	if strings.HasSuffix(partsLower[1], ".git") {
+		return "", "", fmt.Errorf("invalid repo name %q: cannot end with \".git\"", parts[1])
+	}
+
+	projectNumber, err = p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return "", "", fmt.Errorf("getting project number: %w", err)
+	}
+	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
+		return "", "", fmt.Errorf("creating WIF pool: %w", err)
+	}
+	providerID := mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
+	attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
+	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
+	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
+		IssuerURI:          oidcIssuer,
+		AttributeCondition: attrCondition,
+		AllowedAudiences:   audiences,
+	}); err != nil {
+		return "", "", fmt.Errorf("creating WIF provider: %w", err)
+	}
+
+	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
+		projectNumber, p.cfg.WIFPoolName, providerID)
+
+	return wifProvider, projectNumber, nil
+}
+
 // ProvisionWIF creates the WIF infrastructure (service account, pool, provider,
 // principal binding) needed for GitHub Actions to authenticate via OIDC.
 // All operations are idempotent. Returns the full WIF provider resource path
@@ -1474,72 +1545,39 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		orgs[i] = org
 	}
 
-	var projectNumber string
-	providerID := p.cfg.WIFProvider
 	if p.cfg.Repo != "" {
 		// Repo-scoped: dedicated provider per repo, no org merge.
 		// Each repo gets a unique provider ID (via BuildRepoProviderID),
 		// so no risk of clobbering another repo's WIF condition.
-		parts := strings.SplitN(p.cfg.Repo, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
-		}
-		partsLower := [2]string{strings.ToLower(parts[0]), strings.ToLower(parts[1])}
-		if !mintcore.GitHubOrgPattern.MatchString(partsLower[0]) || strings.Contains(partsLower[0], "--") {
-			return "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", parts[0])
-		}
-		if !githubRepoSlugPattern.MatchString(partsLower[1]) {
-			return "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric, hyphens, dots, or underscores", parts[1])
-		}
-		if partsLower[1] == "." || partsLower[1] == ".." {
-			return "", fmt.Errorf("invalid repo name %q: cannot be \".\" or \"..\"", parts[1])
-		}
-		if strings.HasSuffix(partsLower[1], ".git") {
-			return "", fmt.Errorf("invalid repo name %q: cannot end with \".git\"", parts[1])
-		}
-		var err error
-		projectNumber, err = p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
-		if err != nil {
-			return "", fmt.Errorf("getting project number: %w", err)
-		}
-		if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
-			return "", fmt.Errorf("creating WIF pool: %w", err)
-		}
-		providerID = mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
-		attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
-		audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
-		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
-			IssuerURI:          oidcIssuer,
-			AttributeCondition: attrCondition,
-			AllowedAudiences:   audiences,
-		}); err != nil {
-			return "", fmt.Errorf("creating WIF provider: %w", err)
-		}
-	} else {
-		// Org-scoped: shared helper merges with existing orgs.
-		wifResult, err := p.ensureWIFPoolAndProvider(ctx, orgs)
+		// Provider creation is shared with ProvisionRepoWIFProvider; only
+		// this path additionally grants Vertex AI access.
+		repoProvider, projectNumber, err := p.provisionRepoWIFProvider(ctx)
 		if err != nil {
 			return "", err
 		}
-		projectNumber = wifResult.projectNumber
-	}
-
-	if p.cfg.Repo != "" {
 		if err := p.grantRepoVertexAIAccessWithNumber(ctx, projectNumber, p.cfg.Repo); err != nil {
 			return "", err
 		}
 		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", p.cfg.Repo)
-	} else {
-		for _, org := range orgs {
-			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
-				return "", err
-			}
-		}
-		log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", len(orgs))
+		return repoProvider, nil
 	}
 
+	// Org-scoped: shared helper merges with existing orgs.
+	wifResult, err := p.ensureWIFPoolAndProvider(ctx, orgs)
+	if err != nil {
+		return "", err
+	}
+	projectNumber := wifResult.projectNumber
+
+	for _, org := range orgs {
+		if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
+			return "", err
+		}
+	}
+	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", len(orgs))
+
 	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
-		projectNumber, p.cfg.WIFPoolName, providerID)
+		projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
 
 	return wifProvider, nil
 }

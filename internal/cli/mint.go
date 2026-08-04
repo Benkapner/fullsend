@@ -736,16 +736,15 @@ Per-repo enrollment (fullsend mint enroll acme/widget):
   - Creates a dedicated WIF provider for the repo
   - Does NOT add the owner to ALLOWED_ORGS (per-repo callers are
     authorized independently of ALLOWED_ORGS)
+  - Does NOT grant any IAM roles; Vertex AI access is provisioned
+    separately via 'fullsend inference provision'
 
 Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
 
 Required IAM roles on the mint project:
   - roles/cloudfunctions.viewer                (read Cloud Function metadata)
   - roles/run.admin                            (update Cloud Run service env vars)
-  - roles/iam.workloadIdentityPoolAdmin        (update WIF provider condition; create repo-scoped providers)
-
-When enrolling a repo (per-repo mode), additionally requires:
-  - roles/resourcemanager.projectIamAdmin      (grant roles/aiplatform.user to repo WIF principal)`,
+  - roles/iam.workloadIdentityPoolAdmin        (update WIF provider condition; create repo-scoped providers)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -1019,9 +1018,10 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 	}
 	printer.StepDone("Per-repo WIF registered")
 
-	// Provision per-repo WIF provider.
+	// Provision per-repo WIF provider (without granting Vertex AI access;
+	// inference access is granted separately via 'fullsend inference provision').
 	printer.StepStart("Provisioning WIF provider for " + repoFullName)
-	wifProvider, err := provisioner.ProvisionWIF(ctx)
+	wifProvider, err := provisioner.ProvisionRepoWIFProvider(ctx)
 	if err != nil {
 		printer.StepFail("WIF provisioning failed")
 		return fmt.Errorf("provisioning WIF for %s: %w", repoFullName, err)

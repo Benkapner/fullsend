@@ -146,6 +146,8 @@ fullsend mint enroll <owner/repo> \
   --region "us-central1"
 ```
 
+Enrollment creates the WIF provider needed for OIDC verification only — it does not grant any IAM roles. Vertex AI access is provisioned separately via `fullsend inference provision`.
+
 ## `mint unenroll`
 
 Removes an organization or repository from the mint's allowed list.

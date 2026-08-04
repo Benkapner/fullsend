@@ -318,3 +318,14 @@ func LastWIFProviderCondition(client GCFClient) string {
 	}
 	return f.lastWIFProviderConfig.AttributeCondition
 }
+
+// ProjectIAMBindingCount returns the number of SetProjectIAMBinding calls
+// recorded on a fake client, for cross-package test assertions. Returns 0 if
+// client isn't a fake.
+func ProjectIAMBindingCount(client GCFClient) int {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return 0
+	}
+	return len(f.projectIAMBindings)
+}
