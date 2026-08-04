@@ -1221,16 +1221,6 @@ func TestIsPublicMintAllowedOrgs(t *testing.T) {
 	assert.False(t, isPublicMintAllowedOrgs(""))
 }
 
-func TestPerOrgForeignCompatLabel(t *testing.T) {
-	assert.Equal(t, "off", perOrgForeignCompatLabel(nil))
-	assert.Equal(t, "off", perOrgForeignCompatLabel(map[string]string{}))
-	assert.Equal(t, "off", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": ""}))
-	assert.Equal(t, "off", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "false"}))
-	assert.Equal(t, "on", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "true"}))
-	assert.Equal(t, "on", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "1"}))
-	assert.Equal(t, "on", perOrgForeignCompatLabel(map[string]string{"PER_ORG_FOREIGN_COMPAT": "YES"}))
-}
-
 func TestMintValidationMessage(t *testing.T) {
 	assert.Equal(t, "Mint validated (public mode — org registration not required)",
 		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "*"}, nil))
@@ -1443,9 +1433,13 @@ func TestRunMintEnrollOrg_PublicMode(t *testing.T) {
 
 func TestRunMintEnrollRepo_DryRun(t *testing.T) {
 	withMintGCFClient(t, mintDiscoveryClient())
-	printer := ui.New(&strings.Builder{})
+	out := &strings.Builder{}
+	printer := ui.New(out)
 	err := runMintEnrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", true)
 	require.NoError(t, err)
+	// Per-repo enrollment should not mention ALLOWED_ORGS.
+	assert.NotContains(t, out.String(), "ALLOWED_ORGS")
+	assert.Contains(t, out.String(), "PER_REPO_WIF_REPOS")
 }
 
 func TestRunMintEnrollRepo_InvalidFormat(t *testing.T) {
@@ -1515,55 +1509,6 @@ func TestRunMintStatus_Healthy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "coder = 100")
 	assert.Contains(t, out.String(), "existing-org")
-	// Older mints omit PER_ORG_FOREIGN_COMPAT; status treats missing as off.
-	assert.Contains(t, out.String(), "Per-org foreign compat")
-	assert.Contains(t, out.String(), "off")
-}
-
-func TestRunMintStatus_PerOrgForeignCompatOn(t *testing.T) {
-	client := gcf.NewFakeGCFClient(
-		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
-			URI: "https://mint.example.com",
-			EnvVars: map[string]string{
-				"ROLE_APP_IDS":           `{"coder":"100"}`,
-				"ALLOWED_ORGS":           "test-org",
-				"PER_ORG_FOREIGN_COMPAT": "true",
-			},
-		}),
-		gcf.WithFakeTrafficEnvVars(map[string]string{
-			"ROLE_APP_IDS":           `{"coder":"100"}`,
-			"ALLOWED_ORGS":           "test-org",
-			"PER_ORG_FOREIGN_COMPAT": "true",
-		}),
-		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
-			TrafficRevisionShort:   "fullsend-mint-00001",
-			TrafficPercent:         100,
-			TemplateMatchesTraffic: true,
-			TrafficEnvVars: map[string]string{
-				"ROLE_APP_IDS":           `{"coder":"100"}`,
-				"ALLOWED_ORGS":           "test-org",
-				"PER_ORG_FOREIGN_COMPAT": "true",
-			},
-			RecentRevisions: []gcf.RevisionSummary{{
-				Name:       "fullsend-mint-00001",
-				CreateTime: "2026-06-16T12:00:00Z",
-				Active:     true,
-			}},
-		}),
-		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
-			AttributeCondition: "assertion.repository_owner in ['test-org']",
-		}),
-		gcf.WithFakeSecrets(map[string]bool{
-			"fullsend-coder-pem": true,
-		}),
-	)
-	withMintGCFClient(t, client)
-	out := &strings.Builder{}
-	printer := ui.New(out)
-	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "test-org")
-	require.NoError(t, err)
-	assert.Contains(t, out.String(), "Per-org foreign compat")
-	assert.Contains(t, out.String(), "on")
 }
 
 func TestRunMintStatus_WithHealthVersion(t *testing.T) {

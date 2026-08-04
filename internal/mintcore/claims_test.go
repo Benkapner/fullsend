@@ -81,7 +81,6 @@ func TestValidateOrgAllowed_PublicMode(t *testing.T) {
 func TestValidateWorkflowRef(t *testing.T) {
 	perRepo := map[string]bool{"myorg/my-repo": true}
 	allowedFiles := []string{"dispatch.yml", "triage.yml"}
-	tightOrgs := []string{"myorg"}
 
 	tests := []struct {
 		name       string
@@ -136,7 +135,7 @@ func TestValidateWorkflowRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, tightOrgs, perRepo, allowedFiles)
+			err := ValidateWorkflowRef(tt.ref, tt.repository, perRepo, allowedFiles)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
@@ -151,15 +150,93 @@ func TestValidateWorkflowRef_Wildcard(t *testing.T) {
 	err := ValidateWorkflowRef(
 		"myorg/.fullsend/.github/workflows/anything.yml@refs/heads/main",
 		"myorg/.fullsend",
-		[]string{"myorg"},
 		nil, []string{"*"},
 	)
 	assert.NoError(t, err)
 }
 
-func TestValidateWorkflowRef_PublicMode(t *testing.T) {
-	publicOrgs := []string{"*"}
+func TestAuthorizeToken(t *testing.T) {
+	tests := []struct {
+		name            string
+		claims          *Claims
+		allowedOrgs     []string
+		perRepoWIFRepos map[string]bool
+		wantErr         string
+	}{
+		{
+			"per-repo caller bypasses org check",
+			&Claims{Repository: "myorg/my-repo", RepositoryOwner: "myorg"},
+			[]string{"other-org"},
+			map[string]bool{"myorg/my-repo": true},
+			"",
+		},
+		{
+			"per-org caller in ALLOWED_ORGS succeeds",
+			&Claims{Repository: "myorg/my-repo", RepositoryOwner: "myorg"},
+			[]string{"myorg"},
+			nil,
+			"",
+		},
+		{
+			"per-org caller not in ALLOWED_ORGS fails",
+			&Claims{Repository: "evilorg/repo", RepositoryOwner: "evilorg"},
+			[]string{"myorg"},
+			nil,
+			"not in allowed orgs",
+		},
+		{
+			"empty repository_owner fails",
+			&Claims{Repository: "myorg/my-repo", RepositoryOwner: ""},
+			[]string{"myorg"},
+			map[string]bool{"myorg/my-repo": true},
+			"missing repository_owner claim",
+		},
+		{
+			"public mint mode (*) bypasses org check",
+			&Claims{Repository: "anyorg/any-repo", RepositoryOwner: "anyorg"},
+			nil,
+			map[string]bool{"*": true},
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := AuthorizeToken(tt.claims, tt.allowedOrgs, tt.perRepoWIFRepos)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestIsPerRepoMode(t *testing.T) {
 	perRepo := map[string]bool{"myorg/my-repo": true}
+
+	assert.True(t, IsPerRepoMode("myorg/my-repo", perRepo))
+	assert.True(t, IsPerRepoMode("MyOrg/My-Repo", perRepo))
+	assert.False(t, IsPerRepoMode("myorg/other-repo", perRepo))
+	assert.False(t, IsPerRepoMode("myorg/my-repo", nil))
+
+	// Wildcard mode
+	wildcard := map[string]bool{"*": true}
+	assert.True(t, IsPerRepoMode("any/repo", wildcard))
+}
+
+func TestIsPublicMintRepos(t *testing.T) {
+	assert.True(t, IsPublicMintRepos(map[string]bool{"*": true}))
+	assert.True(t, IsPublicMintRepos(map[string]bool{"*": true, "org/repo": true}))
+	assert.False(t, IsPublicMintRepos(map[string]bool{"org/repo": true}))
+	assert.False(t, IsPublicMintRepos(nil))
+	assert.False(t, IsPublicMintRepos(map[string]bool{}))
+}
+
+func TestValidateWorkflowRef_PublicMode(t *testing.T) {
+	// Public mode is expressed as "*" in PER_REPO_WIF_REPOS.
+	perRepo := map[string]bool{"*": true}
 
 	tests := []struct {
 		name       string
@@ -219,7 +296,7 @@ func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, publicOrgs, perRepo, []string{"dispatch.yml"})
+			err := ValidateWorkflowRef(tt.ref, tt.repository, perRepo, []string{"dispatch.yml"})
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {

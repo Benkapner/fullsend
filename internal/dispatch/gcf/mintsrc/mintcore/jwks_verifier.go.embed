@@ -28,13 +28,12 @@ const (
 
 // JWKSVerifier validates GitHub Actions OIDC JWTs by fetching JWKS from
 // the issuer's discovery endpoint and verifying RS256 signatures directly.
+// It handles authentication only (token parsing, signature verification);
+// authorization (org-allowed, workflow-ref) is performed by the Handler.
 type JWKSVerifier struct {
-	issuerURL            string
-	audience             string
-	httpClient           HTTPDoer
-	allowedOrgs          []string
-	allowedWorkflowFiles []string
-	perRepoWIFRepos      map[string]bool
+	issuerURL  string
+	audience   string
+	httpClient HTTPDoer
 
 	mu            sync.RWMutex
 	keys          map[string]*rsa.PublicKey
@@ -46,12 +45,9 @@ type JWKSVerifier struct {
 
 // JWKSVerifierConfig configures a new JWKSVerifier.
 type JWKSVerifierConfig struct {
-	IssuerURL            string
-	Audience             string
-	HTTPClient           HTTPDoer
-	AllowedOrgs          []string
-	AllowedWorkflowFiles []string
-	PerRepoWIFRepos      map[string]bool
+	IssuerURL  string
+	Audience   string
+	HTTPClient HTTPDoer
 }
 
 // NewJWKSVerifier creates a verifier that validates tokens from issuerURL
@@ -61,17 +57,10 @@ func NewJWKSVerifier(opts JWKSVerifierConfig) *JWKSVerifier {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	perRepo := opts.PerRepoWIFRepos
-	if perRepo == nil {
-		perRepo = make(map[string]bool)
-	}
 	return &JWKSVerifier{
-		issuerURL:            opts.IssuerURL,
-		audience:             opts.Audience,
-		httpClient:           httpClient,
-		allowedOrgs:          opts.AllowedOrgs,
-		allowedWorkflowFiles: opts.AllowedWorkflowFiles,
-		perRepoWIFRepos:      perRepo,
+		issuerURL:  opts.IssuerURL,
+		audience:   opts.Audience,
+		httpClient: httpClient,
 	}
 }
 
@@ -172,13 +161,6 @@ func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (*Claims, er
 	hashed := sha256.Sum256([]byte(signingInput))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, hashed[:], signature); err != nil {
 		return nil, fmt.Errorf("invalid JWT signature")
-	}
-
-	if err := ValidateOrgAllowed(claims.RepositoryOwner, v.allowedOrgs); err != nil {
-		return nil, err
-	}
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, v.allowedOrgs, v.perRepoWIFRepos, v.allowedWorkflowFiles); err != nil {
-		return nil, err
 	}
 
 	return &claims, nil

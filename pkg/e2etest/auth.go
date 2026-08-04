@@ -70,7 +70,7 @@ func MintEnrollProjectID(cfg EnvConfig) string {
 }
 
 // resolveE2EToken mints a cross-org e2e installation token for targetOrg.
-// Repos are omitted so the token covers the full installation (needed to
+// Repos is set to ["*"] to explicitly request an org-wide token (needed to
 // create and operate on e2e-lock and .fullsend at runtime).
 func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, error) {
 	if mintURL == "" {
@@ -79,6 +79,7 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 	result, err := mintclient.MintToken(ctx, mintclient.MintRequest{
 		MintURL:   mintURL,
 		Role:      "e2e",
+		Repos:     []string{"*"},
 		TargetOrg: targetOrg,
 	})
 	if err != nil {
