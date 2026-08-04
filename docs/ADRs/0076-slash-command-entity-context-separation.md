@@ -47,9 +47,9 @@ separation is the dispatch-layer corollary.
 
 The restriction was implemented in
 [#533](https://github.com/fullsend-ai/fullsend/issues/533) as `if`
-guards in the dispatch routing script (`reusable-dispatch.yml`) and is
-enforced today via `ISSUE_HAS_PR` checks in the per-repo shim dispatch
-workflow. The Go dispatch router (`internal/dispatch/router.go`) does not
+guards in the per-repo shim dispatch workflow
+(`internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and is
+enforced today via `ISSUE_HAS_PR` checks there. The Go dispatch router (`internal/dispatch/router.go`) does not
 yet enforce entity-kind separation — it accepts any valid agent name
 regardless of entity context. Future CEL trigger expressions on harness
 files ([ADR 0061](0061-harness-cel-dispatch.md)) are the intended
