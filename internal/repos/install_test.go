@@ -645,6 +645,53 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 	}
 }
 
+func TestCheckInstallComponents_GitLabWIF_MissingSecrets(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.VariableValues["acme/api/FULLSEND_CREDENTIAL_MODE"] = "wif"
+	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
+
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if installed {
+		t.Error("expected installed=false when WIF secrets are missing")
+	}
+}
+
+func TestCheckInstallComponents_GitLabWIF_FullyInstalled(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.VariableValues["acme/api/FULLSEND_CREDENTIAL_MODE"] = "wif"
+	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !installed {
+		t.Error("expected installed=true when all WIF components are present")
+	}
+}
+
+func TestCheckInstallComponents_GitLabVariable_NoSecretsNeeded(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.VariableValues["acme/api/FULLSEND_CREDENTIAL_MODE"] = "variable"
+	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
+
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !installed {
+		t.Error("expected installed=true for variable mode without secrets")
+	}
+}
+
 func TestInstallVarsForForge_GitLab(t *testing.T) {
 	cfg := InstallConfig{
 		Forge: ForgeGitLab,
@@ -758,13 +805,49 @@ func TestRequiredVarsForForge(t *testing.T) {
 }
 
 func TestRequiredSecretsForForge(t *testing.T) {
-	ghSecrets := requiredSecretsForForge(ForgeGitHub)
+	ghSecrets := requiredSecretsForForge(ForgeGitHub, "")
 	if len(ghSecrets) == 0 {
 		t.Fatal("expected non-empty required secrets for GitHub")
 	}
-	glSecrets := requiredSecretsForForge(ForgeGitLab)
-	if glSecrets != nil {
-		t.Errorf("expected nil required secrets for GitLab, got %v", glSecrets)
+	glSecretsVar := requiredSecretsForForge(ForgeGitLab, "variable")
+	if glSecretsVar != nil {
+		t.Errorf("expected nil required secrets for GitLab variable mode, got %v", glSecretsVar)
+	}
+	glSecretsWIF := requiredSecretsForForge(ForgeGitLab, "wif")
+	if len(glSecretsWIF) == 0 {
+		t.Fatal("expected non-empty required secrets for GitLab WIF mode")
+	}
+}
+
+func TestInstall_InvalidInferenceProject(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	cfg.InferenceProject = "x"
+	cfg.SkipGuardCheck = true
+
+	sc := &fakeScaffoldCommit{}
+	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error for invalid GCP project ID")
+	}
+	if sc.called {
+		t.Error("expected scaffold commit NOT to be called after validation failure")
+	}
+}
+
+func TestInstall_InvalidInferenceRegion(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	cfg.InferenceRegion = "AB"
+	cfg.SkipGuardCheck = true
+
+	sc := &fakeScaffoldCommit{}
+	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error for invalid GCP region")
+	}
+	if sc.called {
+		t.Error("expected scaffold commit NOT to be called after validation failure")
 	}
 }
 
@@ -891,6 +974,196 @@ func TestInstall_GitLab_ReuseSecrets(t *testing.T) {
 	}
 	if len(fc.CreatedSecrets) != 0 {
 		t.Errorf("expected 0 secrets for GitLab ReuseSecrets, got %d", len(fc.CreatedSecrets))
+	}
+}
+
+func TestInstallVarsForForge_GitLab_WithInference(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:            ForgeGitLab,
+		InferenceProject: "my-gcp-project",
+		InferenceRegion:  "us-central1",
+	}
+	vars, err := installVarsForForge(cfg, "", "")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitLab, inference) error = %v", err)
+	}
+	if vars["FULLSEND_CREDENTIAL_MODE"] != "wif" {
+		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", vars["FULLSEND_CREDENTIAL_MODE"], "wif")
+	}
+	if vars["FULLSEND_GCP_REGION"] != "us-central1" {
+		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", vars["FULLSEND_GCP_REGION"], "us-central1")
+	}
+	if _, ok := vars["FULLSEND_SA"]; ok {
+		t.Error("FULLSEND_SA should not be in regular vars (it is a protected variable)")
+	}
+	protVars := installProtectedVarsForForge(cfg)
+	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
+	if protVars["FULLSEND_SA"] != expectedSA {
+		t.Errorf("protected FULLSEND_SA = %q, want %q", protVars["FULLSEND_SA"], expectedSA)
+	}
+}
+
+func TestInstallVarsForForge_GitLab_WithoutInference(t *testing.T) {
+	cfg := InstallConfig{
+		Forge: ForgeGitLab,
+	}
+	vars, err := installVarsForForge(cfg, "", "")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitLab, no inference) error = %v", err)
+	}
+	if vars["FULLSEND_CREDENTIAL_MODE"] != "variable" {
+		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", vars["FULLSEND_CREDENTIAL_MODE"], "variable")
+	}
+	if _, ok := vars["FULLSEND_GCP_REGION"]; ok {
+		t.Error("FULLSEND_GCP_REGION should not be set without inference")
+	}
+	if _, ok := vars["FULLSEND_SA"]; ok {
+		t.Error("FULLSEND_SA should not be set without inference")
+	}
+}
+
+func TestInstallVarsForForge_GitLab_DiscoveredCredMode_PreservesWIF(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:              ForgeGitLab,
+		DiscoveredCredMode: "wif",
+	}
+	vars, err := installVarsForForge(cfg, "", "")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitLab, DiscoveredCredMode) error = %v", err)
+	}
+	if vars["FULLSEND_CREDENTIAL_MODE"] != "wif" {
+		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", vars["FULLSEND_CREDENTIAL_MODE"], "wif")
+	}
+}
+
+func TestInstallVarsForForge_GitLab_DiscoveredCredMode_InvalidFallsBackToVariable(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:              ForgeGitLab,
+		DiscoveredCredMode: "corrupted-value",
+	}
+	vars, err := installVarsForForge(cfg, "", "")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitLab, invalid DiscoveredCredMode) error = %v", err)
+	}
+	if vars["FULLSEND_CREDENTIAL_MODE"] != "variable" {
+		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q (invalid discovered mode should fall back to variable)", vars["FULLSEND_CREDENTIAL_MODE"], "variable")
+	}
+}
+
+func TestInstallVarsForForge_GitLab_InferenceProjectOverridesDiscovered(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:              ForgeGitLab,
+		InferenceProject:   "my-project",
+		DiscoveredCredMode: "variable",
+	}
+	vars, err := installVarsForForge(cfg, "", "")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitLab, InferenceProject+DiscoveredCredMode) error = %v", err)
+	}
+	if vars["FULLSEND_CREDENTIAL_MODE"] != "wif" {
+		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q (InferenceProject should take precedence)", vars["FULLSEND_CREDENTIAL_MODE"], "wif")
+	}
+}
+
+func TestInstallSecretsForForge_GitLab_WithInference(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:            ForgeGitLab,
+		InferenceProject: "my-gcp-project",
+	}
+	secrets := installSecretsForForge(cfg, fakeWIFProvider)
+	if len(secrets) != 2 {
+		t.Fatalf("expected 2 secrets for GitLab with inference, got %d", len(secrets))
+	}
+	if secrets["FULLSEND_GCP_PROJECT_ID"] != "my-gcp-project" {
+		t.Errorf("FULLSEND_GCP_PROJECT_ID = %q, want %q", secrets["FULLSEND_GCP_PROJECT_ID"], "my-gcp-project")
+	}
+	if secrets["FULLSEND_GCP_WIF_PROVIDER"] != fakeWIFProvider {
+		t.Errorf("FULLSEND_GCP_WIF_PROVIDER = %q, want %q", secrets["FULLSEND_GCP_WIF_PROVIDER"], fakeWIFProvider)
+	}
+}
+
+func TestInstallSecretsForForge_GitLab_WithoutInference(t *testing.T) {
+	cfg := InstallConfig{Forge: ForgeGitLab}
+	secrets := installSecretsForForge(cfg, "some-provider")
+	if secrets != nil {
+		t.Errorf("expected nil secrets for GitLab without inference, got %v", secrets)
+	}
+}
+
+func TestInstall_GitLab_WithInference(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := InstallConfig{
+		Owner:            "acme",
+		Repo:             "widgets",
+		Forge:            ForgeGitLab,
+		Roles:            []string{"triage"},
+		InferenceProject: "my-gcp-project",
+		InferenceRegion:  "us-central1",
+		WIFProvider:      fakeWIFProvider,
+		Direct:           true,
+		SkipGuardCheck:   true,
+	}
+	sc := &fakeScaffoldCommit{}
+	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install(GitLab, inference) returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+
+	varMap := make(map[string]string)
+	for _, v := range fc.Variables {
+		varMap[v.Name] = v.Value
+	}
+	if varMap["FULLSEND_CREDENTIAL_MODE"] != "wif" {
+		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", varMap["FULLSEND_CREDENTIAL_MODE"], "wif")
+	}
+	if varMap["FULLSEND_GCP_REGION"] != "us-central1" {
+		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", varMap["FULLSEND_GCP_REGION"], "us-central1")
+	}
+	if _, ok := varMap["FULLSEND_SA"]; ok {
+		t.Error("FULLSEND_SA should not be in regular vars (it is a protected variable)")
+	}
+	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
+	protVarMap := make(map[string]string)
+	for _, v := range fc.CreatedProtectedVars {
+		protVarMap[v.Name] = v.Value
+	}
+	if protVarMap["FULLSEND_SA"] != expectedSA {
+		t.Errorf("protected FULLSEND_SA = %q, want %q", protVarMap["FULLSEND_SA"], expectedSA)
+	}
+
+	// Verify secrets were written for GitLab with inference.
+	secretMap := make(map[string]string)
+	for _, s := range fc.CreatedSecrets {
+		secretMap[s.Name] = s.Value
+	}
+	if secretMap["FULLSEND_GCP_PROJECT_ID"] != "my-gcp-project" {
+		t.Errorf("FULLSEND_GCP_PROJECT_ID = %q, want %q", secretMap["FULLSEND_GCP_PROJECT_ID"], "my-gcp-project")
+	}
+	if secretMap["FULLSEND_GCP_WIF_PROVIDER"] != fakeWIFProvider {
+		t.Errorf("FULLSEND_GCP_WIF_PROVIDER = %q, want %q", secretMap["FULLSEND_GCP_WIF_PROVIDER"], fakeWIFProvider)
+	}
+}
+
+func TestInstall_GitLab_WithInference_EmptyWIFProvider_Rejected(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := InstallConfig{
+		Owner:            "acme",
+		Repo:             "widgets",
+		Forge:            ForgeGitLab,
+		Roles:            []string{"triage"},
+		InferenceProject: "my-gcp-project",
+		InferenceRegion:  "us-central1",
+		WIFProvider:      "", // must be set when inference is configured
+		Direct:           true,
+		SkipGuardCheck:   true,
+	}
+	sc := &fakeScaffoldCommit{}
+	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error when WIF provider is empty with inference configured")
 	}
 }
 
