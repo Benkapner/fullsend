@@ -1,11 +1,13 @@
 package e2etest
 
 import (
+	"context"
 	"os"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/cli"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMintEnrollProjectID(t *testing.T) {
@@ -38,4 +40,87 @@ func TestMintEnrollProjectID_RespectsEnvOverride(t *testing.T) {
 	cfg := EnvConfig{MintURL: cli.DefaultMintURL}
 	assert.Equal(t, "from-env", MintEnrollProjectID(cfg))
 	_ = os.Unsetenv("E2E_GCP_MINT_PROJECT_ID")
+}
+
+func TestResolveE2EToken_EmptyMintURL(t *testing.T) {
+	_, err := resolveE2EToken(context.Background(), "", "test-org")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint URL not configured")
+}
+
+func TestResolveE2EToken_MintTokenError(t *testing.T) {
+	// With a valid URL but no OIDC env vars, MintToken fails at the
+	// OIDC step. This exercises the struct literal (including Repos)
+	// and the error-return path.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	_, err := resolveE2EToken(context.Background(), "https://mint.example.com", "test-org")
+	require.Error(t, err)
+}
+
+func TestRunningInGitHubActions(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	assert.True(t, runningInGitHubActions())
+
+	t.Setenv("GITHUB_ACTIONS", "false")
+	assert.False(t, runningInGitHubActions())
+
+	t.Setenv("GITHUB_ACTIONS", "")
+	assert.False(t, runningInGitHubActions())
+}
+
+func TestResolveMintURL(t *testing.T) {
+	t.Setenv("FULLSEND_MINT_URL", "https://custom-mint.example.com")
+	assert.Equal(t, "https://custom-mint.example.com", resolveMintURL())
+
+	t.Setenv("FULLSEND_MINT_URL", "")
+	assert.Equal(t, cli.DefaultMintURL, resolveMintURL())
+}
+
+func TestResolveLocalToken_FromGHToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "gh-token-value")
+	t.Setenv("GITHUB_TOKEN", "")
+	token, err := resolveLocalToken()
+	require.NoError(t, err)
+	assert.Equal(t, "gh-token-value", token)
+}
+
+func TestResolveLocalToken_FromGitHubToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "github-token-value")
+	token, err := resolveLocalToken()
+	require.NoError(t, err)
+	assert.Equal(t, "github-token-value", token)
+}
+
+func TestResolveLocalToken_GHTokenTakesPrecedence(t *testing.T) {
+	t.Setenv("GH_TOKEN", "gh-token-value")
+	t.Setenv("GITHUB_TOKEN", "github-token-value")
+	token, err := resolveLocalToken()
+	require.NoError(t, err)
+	assert.Equal(t, "gh-token-value", token)
+}
+
+func TestTokenForOrg_WithMint(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	cfg := envConfig{
+		useMint: true,
+		mintURL: "https://mint.example.com",
+	}
+	_, err := tokenForOrg(context.Background(), cfg, "test-org")
+	// Fails because OIDC env vars are not set, but exercises the mint path.
+	require.Error(t, err)
+}
+
+func TestTokenForOrg_WithoutMint(t *testing.T) {
+	t.Setenv("GH_TOKEN", "local-token")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	cfg := envConfig{useMint: false}
+	token, err := tokenForOrg(context.Background(), cfg, "test-org")
+	require.NoError(t, err)
+	assert.Equal(t, "local-token", token)
 }
