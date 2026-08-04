@@ -61,6 +61,9 @@ func MintToken(ctx context.Context, req MintRequest) (*MintResult, error) {
 	if req.Role == "" {
 		return nil, fmt.Errorf("role is required")
 	}
+	if len(req.Repos) == 0 {
+		return nil, fmt.Errorf("repos is required")
+	}
 	audience := req.Audience
 	if audience == "" {
 		audience = defaultAudience
