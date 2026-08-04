@@ -63,7 +63,6 @@ export interface Env {
   PER_REPO_WIF_REPOS?: string;
   /** JSON-encoded map of custom role permissions. */
   CUSTOM_ROLE_PERMISSIONS?: string;
-
   /**
    * Dynamic secret access: Worker secrets are accessed by name.
    * PEM keys are stored as secrets named <ROLE>_APP_PEM.

@@ -3367,6 +3367,52 @@ func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
 	assert.Equal(t, "issues", runs[0].Event)
 }
 
+func TestListWorkflowRunJobs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"jobs": []map[string]any{
+				{
+					"id":         1,
+					"name":       "dispatch / Route",
+					"status":     "completed",
+					"conclusion": "success",
+				},
+				{
+					"id":         2,
+					"name":       "dispatch / Harness run (triage)",
+					"status":     "completed",
+					"conclusion": "success",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	require.Len(t, jobs, 2)
+	assert.Equal(t, 1, jobs[0].ID)
+	assert.Equal(t, "dispatch / Route", jobs[0].Name)
+	assert.Equal(t, "completed", jobs[0].Status)
+	assert.Equal(t, "success", jobs[0].Conclusion)
+	assert.Equal(t, 2, jobs[1].ID)
+	assert.Equal(t, "dispatch / Harness run (triage)", jobs[1].Name)
+}
+
+func TestListWorkflowRunJobs_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+}
+
 func TestListWorkflowRunArtifacts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/runs/42/artifacts", r.URL.Path)
@@ -3972,6 +4018,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
 
+	t.Run("CreatePipeline", func(t *testing.T) {
+		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)

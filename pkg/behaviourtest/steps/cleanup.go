@@ -59,10 +59,31 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Jira mock cleanup ---
+	if w.JiraMockServer != nil {
+		w.JiraMockServer.Close()
+	}
+	if w.JiraConfigDir != "" {
+		if err := os.RemoveAll(w.JiraConfigDir); err != nil {
+			worldLogf(w, "behaviour cleanup: remove jira config dir: %v", err)
+		}
+	}
+
 	// --- Artifact cleanup ---
 	if w.ArtifactDir != "" && shouldRemoveArtifactDir(w.ArtifactDir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
 		if err := os.RemoveAll(w.ArtifactDir); err != nil {
 			worldLogf(w, "behaviour cleanup: remove artifact dir: %v", err)
+		}
+	}
+
+	// --- Kill switch cleanup ---
+	// Deactivate the kill switch so the next scenario on this slot is
+	// not blocked by sticky state. Runs before dummy-script cleanup
+	// because the kill switch is a repo-level config that affects all
+	// harnesses.
+	if w.KillSwitchActivated {
+		if err := DeactivateKillSwitch(w); err != nil {
+			worldLogf(w, "behaviour cleanup: deactivate kill switch: %v", err)
 		}
 	}
 

@@ -1,5 +1,11 @@
 # Implementation Plan: GitLab Cron-Polling Event Dispatch
 
+> **Note (2026-07):** This plan describes the pre-#5556 architecture using
+> child-pipeline dispatch (bridge jobs, `generate-child-pipeline` CLI,
+> `dispatches.json` output). #5556 replaced that with direct API-triggered
+> pipelines. The cron-polling input driver and event discovery logic are
+> unchanged; the dispatch output path is superseded.
+
 **Context:** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) decides a two-path event dispatch model for GitLab — native CI for MR open/update/reopen events, cron-polled scheduled pipelines for issues, comments, labels, and MR merges. This document contains the implementation plan and pseudocode for the cron-polling subsystem.
 
 ## Table of Contents
@@ -1646,6 +1652,15 @@ func runGitLabPerRepoInstall(ctx context.Context, target string, opts installOpt
     client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE", "{}")
 
     // 14. Set up inference WIF (if --inference-project provided)
+    if inferenceProject != "" {
+        credMode = "wif"
+        vars["FULLSEND_SA"] = "fullsend-mint@" + inferenceProject + ".iam.gserviceaccount.com"
+        client.CreateRepoSecret(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID", inferenceProject)
+        client.CreateRepoSecret(ctx, owner, repo, "FULLSEND_GCP_WIF_PROVIDER", wifProvider)
+        if inferenceRegion != "" {
+            vars["FULLSEND_GCP_REGION"] = inferenceRegion
+        }
+    }
 
     // 15. Print CI minute warning for shared runners
     if tier == "free" {

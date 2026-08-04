@@ -30,7 +30,7 @@ on:
       fullsend_version:
         required: false
         type: string
-        default: "latest"
+        default: ""
       install_mode:
         required: false
         type: string
@@ -114,20 +114,6 @@ jobs:
               cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
             fi
           done
-          CUSTOM_BASE="customized"
-          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-            CUSTOM_BASE=".fullsend/customized"
-          fi
-          for dir in ${LAYERED_DIRS}; do
-            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
-              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
-                | while IFS= read -r -d '' f; do
-                    rel="${f#"${CUSTOM_BASE}"/}"
-                    mkdir -p "$(dirname "${DEST}${rel}")"
-                    cp "${f}" "${DEST}${rel}"
-                  done
-            fi
-          done
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
@@ -163,11 +149,12 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: prioritize
-          version: ${{ inputs.fullsend_version }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           mint-url: ${{ inputs.mint_url }}

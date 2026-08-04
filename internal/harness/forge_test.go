@@ -42,6 +42,32 @@ func TestResolveForge_ScalarNoOverrideWhenEmpty(t *testing.T) {
 	assert.Equal(t, "scripts/post-common.sh", h.PostScript)
 }
 
+func TestResolveForge_PolicyOverride(t *testing.T) {
+	h := &Harness{
+		Agent:  "agents/test.md",
+		Policy: "policies/default.yaml",
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {Policy: "policies/gitlab.yaml"},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("gitlab"))
+	assert.Equal(t, "policies/gitlab.yaml", h.Policy)
+}
+
+func TestResolveForge_PolicyNotOverriddenWhenEmpty(t *testing.T) {
+	h := &Harness{
+		Agent:  "agents/test.md",
+		Policy: "policies/default.yaml",
+		Forge: map[string]*ForgeConfig{
+			"github": {},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, "policies/default.yaml", h.Policy)
+}
+
 func TestResolveForge_SkillsConcat(t *testing.T) {
 	h := &Harness{
 		Agent:  "agents/test.md",
@@ -394,6 +420,48 @@ func TestValidate_ForgeNilConfig(t *testing.T) {
 	require.NoError(t, h.Validate())
 }
 
+func TestValidate_ForgePolicyURLWithoutHash(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Policy: "https://example.com/policies/sandbox.yaml",
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.github.policy")
+	assert.Contains(t, err.Error(), "integrity hash")
+}
+
+func TestValidate_ForgePolicyURLWithHash(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Policy: "https://example.com/policies/sandbox.yaml#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+			},
+		},
+	}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_ForgePolicyLocalPath(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				Policy: "policies/triage-gitlab.yaml",
+			},
+		},
+	}
+	require.NoError(t, h.Validate())
+}
+
 func TestValidate_ForgeSkillURLWithoutHash(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
@@ -544,6 +612,21 @@ forge:
 	require.NotNil(t, h.Forge["github"].Env)
 	assert.Equal(t, map[string]string{"GH_TOKEN": "${GH_TOKEN}"}, h.Forge["github"].Env.Runner)
 	assert.Equal(t, map[string]string{"GITHUB_PR_URL": "${GITHUB_PR_URL}"}, h.Forge["github"].Env.Sandbox)
+}
+
+func TestForgeConfig_PolicyParsesFromYAML(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+policy: policies/triage.yaml
+forge:
+  gitlab:
+    policy: policies/triage-gitlab.yaml
+`
+	h, err := parseRaw([]byte(content))
+	require.NoError(t, err)
+	require.NotNil(t, h.Forge["gitlab"])
+	assert.Equal(t, "policies/triage-gitlab.yaml", h.Forge["gitlab"].Policy)
 }
 
 func TestLoad_WithoutForgeSection(t *testing.T) {

@@ -747,6 +747,57 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 	assert.True(t, strings.HasSuffix(h.Skills[0], "/tree"))
 }
 
+func TestResolveFromLock_DirectoryTypeScript(t *testing.T) {
+	scriptContent := []byte("#!/bin/bash\necho running")
+	helperContent := []byte("#!/bin/bash\necho helper")
+	files := map[string][]byte{
+		"pre-code.sh": scriptContent,
+		"helper.sh":   helperContent,
+	}
+	treeHash := fetch.ComputeTreeHash(files)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://raw.githubusercontent.com/org/repo/main/scripts", files)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "pre_script",
+				URL:    "https://raw.githubusercontent.com/org/repo/main/scripts/pre-code.sh",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "pre-code.sh", SHA256: fetch.ComputeSHA256(scriptContent)},
+					{Path: "helper.sh", SHA256: fetch.ComputeSHA256(helperContent)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Equal(t, "directory", lockResult.Deps[0].Type)
+	assert.Equal(t, treeHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
+
+	// The harness field must point to the specific script file, not the tree root.
+	assert.True(t, strings.HasSuffix(h.PreScript, "/pre-code.sh"),
+		"expected PreScript to end with /pre-code.sh, got %s", h.PreScript)
+
+	// The script file must be executable.
+	info, err := os.Stat(h.PreScript)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o111 != 0, "script should be executable")
+}
+
 func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 	content := []byte("skill content")
 	hash := fetch.ComputeSHA256(content)
@@ -930,6 +981,55 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	require.NotNil(t, baseDep, "should have a base dependency in returned deps")
 	assert.Equal(t, "https://example.com/base.yaml", baseDep.URL)
 	assert.True(t, baseDep.CacheHit)
+}
+
+func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
+	// A lock entry with an "agent_source" field dependency should not corrupt
+	// skills or other harness fields. The agent_source dep is informational —
+	// the harness is already loaded from the resolved path.
+	//
+	// The agent_source URL deliberately uses a different domain
+	// (org-registry.example.com) that is NOT in the harness's own
+	// AllowedRemoteResources. Agent source URLs are validated against the
+	// org-level allowlist during lock creation, so resolveFromLock must
+	// skip the harness-level allowlist check for agent_source entries.
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	harnessSource := []byte("agent: agents/code.md\nrole: test\n")
+	harnessSourceHash := fetch.ComputeSHA256(harnessSource)
+	skillContent := []byte("# Skill A")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(root, "https://org-registry.example.com/harness/code.yaml", harnessSource))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/a", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "agent_source", URL: "https://org-registry.example.com/harness/code.yaml", SHA256: harnessSourceHash},
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+			{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: skillHash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + skillHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+
+	// All three deps should be returned.
+	require.Len(t, lockResult.Deps, 3)
+
+	// Skills should have exactly one entry — the agent_source dep must NOT
+	// be appended to skills.
+	require.Len(t, h.Skills, 1, "agent_source dep must not be appended to skills")
+	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"), "skill should be resolved to cache path")
 }
 
 func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {

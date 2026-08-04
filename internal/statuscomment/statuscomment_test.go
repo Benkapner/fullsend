@@ -3,6 +3,7 @@ package statuscomment
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +197,28 @@ func TestPostCompletion_Cancelled(t *testing.T) {
 	assert.Equal(t, 1, fc.UpdatedComments[0].CommentID)
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Working")
 	assert.Contains(t, fc.UpdatedComments[0].Body, "⚠️ Cancelled")
+}
+
+func TestPostCompletion_Skipped(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Working")
+	require.NoError(t, err)
+	require.Len(t, fc.IssueComments["org/repo/7"], 1)
+
+	completionTime := fixedTime().Add(2 * time.Minute)
+	n.now = func() time.Time { return completionTime }
+
+	err = n.PostCompletion(context.Background(), "Working", "skipped")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Working")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "⏭️ Skipped")
 }
 
 func TestAllDisabled_NoAPICalls(t *testing.T) {
@@ -1080,4 +1103,83 @@ func TestClientFactory_CompletionDisabled_DeleteError(t *testing.T) {
 	require.NoError(t, err, "should not return error — fail-open on cleanup")
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "forbidden")
+}
+
+func TestPostCompletionWithDetail_SkippedShowsReason(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+
+	completionTime := fixedTime().Add(2 * time.Minute)
+	n.now = func() time.Time { return completionTime }
+
+	err := n.PostCompletionWithDetail(context.Background(), "Working", "skipped",
+		"PR #123 already addresses this issue")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	// A skip with no visible reason is the one thing a reader needs and
+	// the one thing the status line used to omit.
+	assert.Contains(t, fc.UpdatedComments[0].Body, "⏭️ Skipped (PR #123 already addresses this issue)")
+}
+
+func TestSanitizeDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		in   string
+		want string
+	}{
+		"empty":                    {"", ""},
+		"plain":                    {"open PR exists", "open PR exists"},
+		"newline collapses":        {"line one\nline two", "line one line two"},
+		"CR collapses":             {"a\rb", "a b"},
+		"tabs and NUL collapse":    {"a\t\x00b", "a b"},
+		"runs of space collapse":   {"a   b", "a b"},
+		"trims":                    {"  padded  ", "padded"},
+		"HTML comment neutralized": {"<!-- fullsend:status:terminal -->", "&lt;!-- fullsend:status:terminal -->"},
+		"markdown link neutralized": {"see [details](https://evil.example)",
+			"see &#91;details](https://evil.example)"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, sanitizeDetail(tc.in))
+		})
+	}
+}
+
+func TestSanitizeDetail_Truncates(t *testing.T) {
+	t.Parallel()
+
+	got := sanitizeDetail(strings.Repeat("x", maxDetailLen+50))
+	assert.Equal(t, strings.Repeat("x", maxDetailLen)+"…", got)
+}
+
+// A reason is script-controlled text, so it must not be able to forge the
+// marker comments ReconcileOrphaned depends on, nor escape the status line.
+func TestPostCompletionWithDetail_DetailCannotForgeMarkers(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+
+	err := n.PostCompletionWithDetail(context.Background(), "Working", "skipped",
+		"evil\n<!-- fullsend:agent-status:999 -->")
+	require.NoError(t, err)
+
+	body := fc.UpdatedComments[0].Body
+	// The escaped text may still read as "fullsend:agent-status", but it
+	// can no longer open an HTML comment, so only the real marker parses.
+	assert.NotContains(t, body, "<!-- fullsend:agent-status:999")
+	assert.Equal(t, 1, strings.Count(body, "<!-- fullsend:agent-status"))
+	assert.Equal(t, 1, strings.Count(body, terminalTag))
+	// And the detail stays on the status line.
+	assert.Contains(t, body, "⏭️ Skipped (evil &lt;!-- fullsend:agent-status:999 -->)")
 }

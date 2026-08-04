@@ -50,7 +50,7 @@ Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests
 In GitHub Actions, tests mint a cross-org installation token via the mint service:
 
 1. Workflow requests a GHA OIDC token (`id-token: write`)
-2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", target_org: "<pool org>"}` (repos omitted for installation-wide access)
+2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", target_org: "<pool org>", repos: ["*"]}` (`repos: ["*"]` is required for installation-wide cross-org access)
 3. Mint verifies the caller against `FULLSEND_FOREIGN_E2E_REPOS` on the target org ([ADR 0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md))
 
 Required repository secrets:
@@ -91,10 +91,10 @@ One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `t
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 12); do
-  fullsend mint enroll "halfsend-${i}/test-repo" \
+  go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
   for j in $(seq -w 1 12); do
-    fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
+    go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
       --project="$GCP_PROJECT" --region=us-central1
   done
 done
@@ -121,14 +121,14 @@ MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
 Verify foreign authorization:
 
 ```bash
-fullsend admin foreign list --org halfsend-01
+go run ./cmd/fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
 Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
-fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
+go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
 ```
 
 ## CI authorization

@@ -26,7 +26,6 @@ func FullsendRepoFile(path string) ([]byte, error) {
 var executableFiles = map[string]struct{}{
 	"scripts/fullsend-check-output":          {},
 	"scripts/install-precommit-tools.sh":     {},
-	"scripts/pre-code.sh":                    {},
 	"scripts/prepare-sandbox-credentials.sh": {},
 	"scripts/reconcile-repos.sh":             {},
 	"scripts/resolve-precommit-tools.py":     {},
@@ -43,8 +42,8 @@ func FileMode(path string) string {
 }
 
 // layeredDirs contain upstream defaults provided at runtime via reusable
-// workflow workspace preparation. The scaffold does not install these —
-// orgs add overrides in customized/<dir>/ instead. See ADR 0035.
+// workflow workspace preparation. The scaffold does not install these;
+// customization uses base: harness composition instead. See ADR 0064.
 var layeredDirs = []string{
 	"agents/",
 	"skills/",
@@ -98,26 +97,6 @@ func WalkFullsendRepoAll(fn func(path string, content []byte) error) error {
 // PerRepoShimTemplate returns the content of the per-repo shim workflow template.
 func PerRepoShimTemplate() ([]byte, error) {
 	return content.ReadFile("fullsend-repo/templates/shim-per-repo.yaml")
-}
-
-// CustomizedDirs returns the set of customized/ subdirectories
-// that should be scaffolded in a per-org .fullsend config repo.
-func CustomizedDirs() []string {
-	dirs := make([]string, 0, len(layeredDirs))
-	for _, d := range layeredDirs {
-		dirs = append(dirs, "customized/"+strings.TrimSuffix(d, "/"))
-	}
-	return dirs
-}
-
-// PerRepoCustomizedDirs returns the set of customized/ subdirectories
-// that should be scaffolded in a per-repo .fullsend/ setup.
-func PerRepoCustomizedDirs() []string {
-	dirs := make([]string, 0, len(layeredDirs))
-	for _, d := range layeredDirs {
-		dirs = append(dirs, ".fullsend/customized/"+strings.TrimSuffix(d, "/"))
-	}
-	return dirs
 }
 
 // IsLayeredPath reports whether path is in a layered content directory.

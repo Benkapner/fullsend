@@ -362,7 +362,7 @@ func newMintDeployCmd() *cobra.Command {
 
 	// Cloudflare-specific flags.
 	var workerName string
-	var preview bool
+	var preview string
 
 	cmd := &cobra.Command{
 		Use:   "deploy",
@@ -401,13 +401,20 @@ Cloudflare mode (--platform=cloudflare):
   WASM module with a thin TypeScript adapter for I/O.
 
   Required flags: none (Worker name defaults to "fullsend-mint")
-  Optional: --worker-name, --preview, --source-dir
+  Optional: --worker-name, --preview=<alias>, --source-dir
 
   Required environment variables:
     - CLOUDFLARE_ACCOUNT_ID    Cloudflare account identifier
     - CLOUDFLARE_API_TOKEN     API token with Workers write permission
 
-  Use --preview for ephemeral BT test deploys (supports teardown).
+  Use --preview=<alias> for ephemeral preview deploys. This runs
+  'wrangler versions upload --preview-alias=<alias>' instead of
+  'wrangler deploy', so the durable Worker script is not affected.
+  The preview mint URL is deterministic from the alias and worker name:
+    https://<alias>-<worker-name>.workers.dev
+  Callers (e.g. BT) can compute this URL and pass it to
+  'fullsend github setup --mint-url' or 'fullsend mint enroll'.
+  Preview teardown abandons the alias without deleting the Worker script.
   Use --worker-name to target a specific Worker script name.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -428,7 +435,7 @@ Cloudflare mode (--platform=cloudflare):
 
 	// Common flags.
 	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
-	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: embedded)")
+	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: checkout path when present, embedded otherwise)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 
 	// GCP-specific flags.
@@ -440,7 +447,10 @@ Cloudflare mode (--platform=cloudflare):
 
 	// Cloudflare-specific flags.
 	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
-	cmd.Flags().BoolVar(&preview, "preview", false, "deploy as ephemeral preview Worker for testing (Cloudflare only)")
+	cmd.Flags().StringVar(&preview, "preview", "", `deploy as preview via wrangler versions upload (Cloudflare only)
+Value is the preview alias passed to --preview-alias. The preview
+mint URL is deterministic: https://<alias>-<worker-name>.workers.dev
+Example: --preview=bt-run-42`)
 
 	return cmd
 }
@@ -490,11 +500,18 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	printer.Header("Deploying token mint (GCP)")
 	printer.Blank()
 
+	explicitSourceDir := sourceDir != ""
+	if sourceDir == "" {
+		sourceDir = gcf.DefaultFunctionSourceDir()
+	}
+
 	if dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		printer.StepInfo(fmt.Sprintf("Would deploy mint to project %s, region %s", project, region))
-		if sourceDir != "" {
+		if explicitSourceDir {
+			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
+		} else if _, err := os.Stat(sourceDir); err == nil {
 			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
 		} else {
 			printer.StepInfo("Source: embedded mint function")
@@ -516,9 +533,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 
 	gcpClient := mintGCFClientFactory(project)
 
-	if sourceDir == "" {
-		sourceDir = gcf.DefaultFunctionSourceDir()
-	}
+	deployCommit := resolveAndReportMintDeployCommit(printer, commitSHA, sourceDir)
 
 	deployMode := gcf.DeployAuto
 	if skipDeploy {
@@ -531,7 +546,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		FunctionSourceDir: sourceDir,
 		DeployMode:        deployMode,
 		Version:           version,
-		Commit:            commitSHA,
+		Commit:            deployCommit,
 		PublicMint:        public,
 	}
 
@@ -570,6 +585,8 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		fmt.Sprintf("Project: %s", project),
 		fmt.Sprintf("Region: %s", region),
 		fmt.Sprintf("URL: %s", mintURL),
+		fmt.Sprintf("Version: %s", version),
+		fmt.Sprintf("Commit: %s", deployCommit),
 	}
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
@@ -585,7 +602,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, preview, dryRun bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool) error {
 	if err := cf.ValidateCloudflareEnv(); err != nil {
 		return err
 	}
@@ -596,6 +613,10 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 		return fmt.Errorf("invalid --worker-name %q: must be 2-63 lowercase alphanumeric characters or hyphens", workerName)
 	}
 
+	if previewAlias != "" && !cf.ValidatePreviewAlias(previewAlias) {
+		return fmt.Errorf("invalid --preview alias %q: must be 2-63 lowercase alphanumeric characters or hyphens", previewAlias)
+	}
+
 	printer := ui.New(os.Stdout)
 
 	printer.Banner(Version())
@@ -604,51 +625,64 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 	printer.Blank()
 
 	deployMode := cf.DeployDurable
-	if preview {
+	if previewAlias != "" {
 		deployMode = cf.DeployPreview
+	}
+
+	explicitSourceDir := sourceDir != ""
+	if sourceDir == "" {
+		sourceDir = cf.DefaultWorkerSourceDir()
+	}
+
+	effectiveName := workerName
+	if effectiveName == "" {
+		effectiveName = "fullsend-mint"
 	}
 
 	if dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
-		effectiveName := workerName
-		if effectiveName == "" {
-			effectiveName = "fullsend-mint (default)"
+		dryRunName := workerName
+		if dryRunName == "" {
+			dryRunName = "fullsend-mint (default)"
 		}
-		printer.StepInfo(fmt.Sprintf("Would deploy Worker %s", effectiveName))
+		printer.StepInfo(fmt.Sprintf("Would deploy Worker %s", dryRunName))
 		printer.StepInfo(fmt.Sprintf("Account: %s", accountID))
-		if sourceDir != "" {
+		if explicitSourceDir {
+			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
+		} else if _, err := os.Stat(sourceDir); err == nil {
 			printer.StepInfo(fmt.Sprintf("Source directory: %s", sourceDir))
 		} else {
 			printer.StepInfo("Source: embedded Worker adapter")
 		}
-		if preview {
-			printer.StepInfo("Mode: preview (ephemeral, supports teardown)")
+		if previewAlias != "" {
+			printer.StepInfo(fmt.Sprintf("Mode: preview (alias=%s)", previewAlias))
+			printer.StepInfo(fmt.Sprintf("Preview URL: https://%s-%s.workers.dev", previewAlias, effectiveName))
+			printer.StepInfo("Command: wrangler versions upload --preview-alias=" + previewAlias)
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
 		}
 		return nil
 	}
 
-	if sourceDir == "" {
-		sourceDir = cf.DefaultWorkerSourceDir()
-	}
+	deployCommit := resolveAndReportMintDeployCommit(printer, commitSHA, sourceDir)
 
 	cfg := cf.Config{
-		AccountID:  accountID,
-		WorkerName: workerName,
-		DeployMode: deployMode,
-		SourceDir:  sourceDir,
-		Version:    version,
-		Commit:     commitSHA,
+		AccountID:    accountID,
+		WorkerName:   workerName,
+		DeployMode:   deployMode,
+		PreviewAlias: previewAlias,
+		SourceDir:    sourceDir,
+		Version:      version,
+		Commit:       deployCommit,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
 	provisioner := cf.NewProvisioner(cfg, wrangler)
 
 	modeLabel := "durable"
-	if preview {
-		modeLabel = "preview"
+	if previewAlias != "" {
+		modeLabel = fmt.Sprintf("preview (alias=%s)", previewAlias)
 	}
 	printer.StepStart(fmt.Sprintf("Deploying %s Worker", modeLabel))
 	result, err := provisioner.Provision(ctx)
@@ -661,18 +695,21 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir string, 
 	printer.StepDone(fmt.Sprintf("Worker deployed at %s", mintURL))
 	printer.Blank()
 
-	effectiveName := workerName
-	if effectiveName == "" {
-		effectiveName = "fullsend-mint"
-	}
 	summaryLines := []string{
 		fmt.Sprintf("Worker: %s", effectiveName),
 		fmt.Sprintf("URL: %s", mintURL),
-		fmt.Sprintf("Mode: %s", modeLabel),
 	}
-	if preview {
-		summaryLines = append(summaryLines, "Teardown: fullsend mint deploy --platform=cloudflare --worker-name="+effectiveName+" --preview (then delete)")
+	if previewAlias != "" {
+		summaryLines = append(summaryLines, fmt.Sprintf("Mode: preview (alias=%s)", previewAlias))
+		summaryLines = append(summaryLines, fmt.Sprintf("Preview URL pattern: https://<alias>-%s.workers.dev", effectiveName))
+		summaryLines = append(summaryLines, "Teardown: preview alias is abandoned (Worker script is preserved)")
+	} else {
+		summaryLines = append(summaryLines, "Mode: durable")
 	}
+	summaryLines = append(summaryLines,
+		fmt.Sprintf("Version: %s", version),
+		fmt.Sprintf("Commit: %s", deployCommit),
+	)
 	printer.Summary("Deployment complete", summaryLines)
 
 	return nil
@@ -695,9 +732,10 @@ Per-org enrollment (fullsend mint enroll acme):
   - Requires shared role app IDs to already be configured on the mint
 
 Per-repo enrollment (fullsend mint enroll acme/widget):
-  - Same as per-org plus:
   - Adds repo to PER_REPO_WIF_REPOS
   - Creates a dedicated WIF provider for the repo
+  - Does NOT add the owner to ALLOWED_ORGS (per-repo callers are
+    authorized independently of ALLOWED_ORGS)
 
 Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
 
@@ -968,22 +1006,12 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS", owner))
 		printer.StepInfo(fmt.Sprintf("  Would add %s to PER_REPO_WIF_REPOS", repoFullName))
 		printer.StepInfo(fmt.Sprintf("  Would create WIF provider: %s", mintcore.BuildRepoProviderID(owner, repo)))
 		return nil
 	}
 
-	printer.StepStart("Registering org in mint")
-	if err := provisioner.EnsureOrgInMint(ctx, discovery.URL, owner); err != nil {
-		printer.StepFail("Failed to register org")
-		return fmt.Errorf("registering org: %w", err)
-	}
-	printer.StepDone("Org registered in mint")
-
-	verifyEnrollment(ctx, printer, provisioner, owner, project)
-
-	// Step 4: Register per-repo WIF.
+	// Register per-repo WIF.
 	printer.StepStart("Registering per-repo WIF")
 	if err := provisioner.RegisterPerRepoWIF(ctx, repoFullName); err != nil {
 		printer.StepFail("Failed to register per-repo WIF")
@@ -991,7 +1019,7 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 	}
 	printer.StepDone("Per-repo WIF registered")
 
-	// Step 5: Provision per-repo WIF provider.
+	// Provision per-repo WIF provider.
 	printer.StepStart("Provisioning WIF provider for " + repoFullName)
 	wifProvider, err := provisioner.ProvisionWIF(ctx)
 	if err != nil {

@@ -19,6 +19,12 @@ Date: 2026-06-16
 
 Accepted
 
+*Amended by [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md), which
+decides when a knob should be an `{AGENT}_` env var at all versus a
+`config.yaml` field, and [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md),
+which narrows the "CI workflow injection" delivery mechanism to
+infrastructure values.*
+
 ## Context
 
 Agents need behavioral knobs — settings that tune *how* they work without
@@ -93,7 +99,10 @@ on the host. A config var needed by both must appear in both places.
 
 3. **For CI workflow injection:** The CI workflow sets the value from org
    secrets, repo variables, or hardcoded defaults. This is the same mechanism
-   used for all other env vars — no change needed.
+   used for all other env vars — no change needed. *Note: [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md)
+   narrows this to infrastructure values and CI-runtime-only computed
+   values; static agent behavior defaults go through harness composition
+   instead.*
 
 ### Defaults
 
@@ -121,8 +130,8 @@ section:
 ```markdown
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 

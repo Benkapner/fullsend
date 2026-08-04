@@ -308,7 +308,7 @@ Unchanged. It still creates the `.fullsend` repo and writes `config.yaml`. The p
 
 ### 4.5 SecretsLayer / InferenceLayer
 
-Minor addition: `InferenceLayer` should store `FULLSEND_GCP_REGION` as a repo variable (the workflows reference `${{ vars.FULLSEND_GCP_REGION || 'global' }}`). Check if this already happens; add if not.
+Minor addition: `InferenceLayer` should store `FULLSEND_GCP_REGION` as a repo variable (the workflows reference `${{ vars.FULLSEND_GCP_REGION || 'global' }}`). This is an install-time-only variable, not managed by sync. Check if this already happens; add if not.
 
 ---
 
@@ -376,7 +376,7 @@ Major revision. The enrollment mechanism changes from "CLI pushes shims" to "rep
 
 **`docs/normative/admin-install/v1/adr-0014-github-apps-and-secrets/SPEC.md`:**
 
-Minor: add `FULLSEND_GCP_REGION` as a repo variable in section 5.
+Minor: add `FULLSEND_GCP_REGION` as a repo variable in section 5 (install-time only, not managed by sync).
 
 ### 6.2 ADRs
 

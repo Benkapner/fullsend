@@ -58,6 +58,12 @@ type VariableRecord struct {
 	Protected                bool
 }
 
+// PipelineCallRecord records a CreatePipeline invocation.
+type PipelineCallRecord struct {
+	Owner, Repo, Ref string
+	Variables        map[string]string
+}
+
 // UpdatedCommentRecord records an issue comment update call.
 type UpdatedCommentRecord struct {
 	Owner, Repo string
@@ -119,6 +125,7 @@ type FakeClient struct {
 	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte        // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
+	WorkflowRunsList          map[string][]WorkflowRun // key: "owner/repo/workflow" → multiple runs (takes precedence over WorkflowRuns)
 	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
 	WorkflowRunArtifacts      map[int][]WorkflowArtifact
 	WorkflowArtifactContents  map[int][]byte
@@ -230,6 +237,9 @@ type FakeClient struct {
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
+	// WorkflowRunJobs for ListWorkflowRunJobs.
+	WorkflowRunJobs map[int][]WorkflowJob // key: runID
+
 	// Annotations for GetWorkflowRunAnnotations.
 	Annotations []Annotation
 
@@ -259,6 +269,8 @@ type FakeClient struct {
 	CreatedForks           []string // "owner/repo"
 	ClosedProposals        []int    // PR numbers
 	DeletedComments        []int    // comment IDs
+	CreatedPipelines       []Pipeline
+	PipelineCalls          []PipelineCallRecord
 	CreatedSchedules       []PipelineSchedule
 	DeletedScheduleIDs     []int64
 	UpdatedVariables       []VariableRecord
@@ -1529,10 +1541,27 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return nil, e
 	}
 	key := owner + "/" + repo + "/" + workflowFile
+	if f.WorkflowRunsList != nil {
+		if runs, ok := f.WorkflowRunsList[key]; ok {
+			return append([]WorkflowRun(nil), runs...), nil
+		}
+	}
 	if run, ok := f.WorkflowRuns[key]; ok {
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunJobs"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowRunJobs == nil {
+		return nil, nil
+	}
+	return append([]WorkflowJob(nil), f.WorkflowRunJobs[runID]...), nil
 }
 
 func (f *FakeClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, runID int) ([]WorkflowArtifact, error) {
@@ -1871,6 +1900,33 @@ func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch st
 
 	key := owner + "/" + repo + "/" + branch
 	return f.ProtectedBranches[key], nil
+}
+
+func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	vars := make(map[string]string, len(variables))
+	for k, v := range variables {
+		vars[k] = v
+	}
+	f.PipelineCalls = append(f.PipelineCalls, PipelineCallRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+	})
+
+	if e := f.err("CreatePipeline"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
 }
 
 func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {

@@ -34,6 +34,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -515,11 +516,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir
 		}
+		// Refuse OIDC credential vars so ${VAR} expansion in harness
+		// YAML cannot leak mint-usable credentials (#5832).
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return os.Getenv(key)
 	}
 	lookup := func(key string) (string, bool) {
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir, true
+		}
+		// Refuse OIDC credential vars (#5832).
+		// Unlike expander (which silently returns "" to produce an empty
+		// expansion), lookup returns false so ValidateRunnerEnvWith treats
+		// the reference as an unresolvable variable and fails validation.
+		if oidcDenyKeys[key] {
+			return "", false
 		}
 		return os.LookupEnv(key)
 	}
@@ -646,6 +659,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// runSkipped records that the pre-script requested a skip (issue #4718);
+	// the status-notification defer below reports it as "skipped" rather
+	// than "success", with runSkipReason as the visible explanation.
+	var runSkipped bool
+	var runSkipReason string
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
@@ -664,14 +683,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			defer func() {
 				status := "success"
+				detail := ""
 				if ctx.Err() != nil {
 					status = "cancelled"
 				} else if runErr != nil {
 					status = "failure"
+				} else if runSkipped {
+					status = "skipped"
+					detail = runSkipReason
 				}
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
-				if err := notifier.PostCompletion(dCtx, description, status); err != nil {
+				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
 					printer.StepWarn("Failed to post completion status: " + err.Error())
 				}
 			}()
@@ -687,7 +710,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
 		defer preflightCancel()
 		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
-		preflightCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+		// Use childScriptEnv to strip OIDC credential vars (#5832).
+		preflightCmd.Env = childScriptEnv(h.RunnerEnv, "")
 		preflightOut, preflightErr := preflightCmd.CombinedOutput()
 		if preflightErr != nil {
 			printer.StepFail("Preflight dependency check failed")
@@ -867,6 +891,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		rootSpan.SetAttributes(
 			attribute.Int("exit_code", exitCode),
 		)
+		// A pre-script skip exits 0 like a success, so without this a
+		// skipped run is indistinguishable from a completed one in traces
+		// — and skip rate is the metric issue #4718 exists to move. Only
+		// set for harnesses that actually have a pre-script, so an absent
+		// attribute means "nothing could have skipped this run".
+		if h != nil && h.PreScript != "" {
+			rootSpan.SetAttributes(attribute.Bool("fullsend.prescript.skipped", runSkipped))
+		}
+		if runSkipped && runSkipReason != "" {
+			rootSpan.SetAttributes(attribute.String("fullsend.prescript.skip_reason", runSkipReason))
+		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(
 				attribute.String("gen_ai.request.model", aggMetrics.Model),
@@ -888,24 +923,55 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		rootSpan.End()
 
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
 		defer cancel()
 		tracingCleanup(flushCtx)
 	}()
 
-	// 4. Run pre-script on the host (if configured).
+	// 4. Run pre-script on the host (if configured). The pre-script may
+	// request a skip via the pre-script output protocol
+	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
+	// ends here — before sandbox creation.
+	var preResult prescript.Result
 	if h.PreScript != "" {
-		preStart := time.Now()
-		printer.StepStart("Running pre-script: " + h.PreScript)
-		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
-		preCmd.Stdout = os.Stdout
-		preCmd.Stderr = os.Stderr
-		if err := preCmd.Run(); err != nil {
-			printer.StepFail("Pre-script failed")
-			return fmt.Errorf("running pre-script: %w", err)
+		preResult, err = runPreScript(h, runDir, traceparent, printer)
+		if err != nil {
+			return err
 		}
-		printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+		// Log the outputs so non-GitHub CIs and local runs still see what
+		// the pre-script reported.
+		if line := prescript.LogLine(preResult); line != "" {
+			printer.StepDone("Pre-script outputs: " + line)
+		}
+	}
+
+	// Relay on every path that reaches the skip decision — skip, proceed,
+	// and harnesses with no pre-script at all — so an absent skipped
+	// output narrows to two cases: a CLI predating this protocol, or a run
+	// that failed before deciding. See docs/normative/prescript-output/v1.
+	if relayed, relayErr := prescript.Relay(preResult); relayErr != nil {
+		// Fail closed: a relay target exists but we could not write to it,
+		// so workflow-level gating would disagree with the decision
+		// fullsend just made — exactly the duplicate-run failure this
+		// protocol exists to prevent.
+		printer.StepFail("Failed to relay skip decision")
+		return fmt.Errorf("relaying pre-script outputs: %w", relayErr)
+	} else if relayed && h.PreScript != "" {
+		// Only worth a line when a pre-script actually produced something;
+		// otherwise this fires on every CI run and names a script that
+		// does not exist.
+		printer.StepDone("Pre-script outputs relayed to GITHUB_OUTPUT")
+	}
+
+	if preResult.Skipped {
+		runSkipped = true
+		runSkipReason = preResult.Reason
+		reason := preResult.Reason
+		if reason == "" {
+			reason = "no reason given"
+		}
+		printer.StepDone("Run skipped by pre-script: " + reason)
+		return nil
 	}
 
 	// 4a. Create sandbox.
@@ -988,7 +1054,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
+			postCmd.Env = postScriptEnv(h, traceparent)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
@@ -1560,7 +1626,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// failure sets it to false and continues (skipping step 9e),
 		// while success sets it to true immediately above. Pass the
 		// repo dir directly.
-		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1826,11 +1894,30 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// oidcDenyKeys lists OIDC credential env vars that must not leak into
+// user-controlled or sandbox-visible contexts. The parent harness process
+// retains these for mintAgentToken and OIDC token refresh; stripping them
+// from child scripts, expanders, and sandbox injection prevents user code
+// and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+//
+// MAINTENANCE: when new OIDC-related credential env vars are introduced
+// (e.g. by mint infrastructure changes), add them here. By convention the
+// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
+// expansion site in this file consults this map, so a single addition
+// propagates to all deny checks.
+var oidcDenyKeys = map[string]bool{
+	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
+	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
+	"FULLSEND_GCP_OIDC_URL":          true,
+	"FULLSEND_GCP_OIDC_AUTH_FILE":    true,
+}
+
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
 // shadow. These are set by the runner in bootstrapEnv and overriding them
 // from harness YAML could break sandbox operation, or are security-sensitive
 // vars that could influence sandbox execution (e.g. shared library injection,
-// auto-sourced shell startup files).
+// auto-sourced shell startup files). OIDC credential vars from oidcDenyKeys
+// are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
 	"PATH":                     true,
@@ -1846,6 +1933,14 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_OUTPUT_SCHEMA":   true,
 	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
+}
+
+func init() {
+	// Merge OIDC credential vars into reservedSandboxKeys so a future
+	// addition to oidcDenyKeys automatically blocks sandbox injection.
+	for k := range oidcDenyKeys {
+		reservedSandboxKeys[k] = true
+	}
 }
 
 // buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
@@ -1965,7 +2060,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
-		hostPath := os.ExpandEnv(hf.Src)
+		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
+		// credential vars in host_files src path expansion (#5832).
+		hostPath := safeExpandEnv(hf.Src)
 		if hostPath == "" {
 			if hf.Optional {
 				continue
@@ -2027,14 +2124,32 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	return nil
 }
 
+// safeExpandEnv expands ${VAR} references like os.ExpandEnv but refuses
+// OIDC credential vars (oidcDenyKeys), expanding them to empty. Use this
+// instead of os.ExpandEnv at any site where the expanded value may reach
+// user-controlled or sandbox-visible contexts. See #5832.
+func safeExpandEnv(s string) string {
+	return os.Expand(s, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
+		return os.Getenv(key)
+	})
+}
+
 // shellSafeExpandEnv expands ${VAR} references in text using the host
 // environment, escaping characters that are special inside double quotes
 // (", $, `, \) so the result is safe to source as a shell script.
 // Templates use the standard export FOO="${FOO}" pattern; this function
 // ensures substituted values cannot break out of the double-quote context.
+// OIDC credential vars are refused (expand to empty) to prevent leaking
+// mint-usable credentials into sandbox-bound files (#5832).
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return escapeForDoubleQuotes(os.Getenv(key))
 	})
 }
@@ -2102,7 +2217,9 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(), validationEnv(h, "", runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, "", runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -2116,6 +2233,21 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, validationFailMessage(valOut, valErr)))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
+}
+
+// stripOIDCEnv returns a copy of env with OIDC credential entries removed.
+// Use this to filter os.Environ() slices in contexts where childScriptEnv is
+// not applicable (e.g., validation scripts that compose their env differently).
+// See #5832.
+func stripOIDCEnv(env []string) []string {
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
@@ -2257,6 +2389,37 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
+// runPreScript executes the harness pre-script with the pre-script output
+// protocol's file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
+// the result. See internal/prescript for the protocol (issue #4718).
+// A non-zero script exit remains a hard failure; a malformed output file
+// is also a hard failure so a mistyped skip cannot silently proceed.
+func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {
+	preStart := time.Now()
+	printer.StepStart("Running pre-script: " + h.PreScript)
+	outPath, cleanup, err := prescript.Prepare(runDir)
+	if err != nil {
+		printer.StepFail("Pre-script setup failed")
+		return prescript.Result{}, fmt.Errorf("preparing pre-script output file: %w", err)
+	}
+	defer cleanup()
+	preCmd := exec.Command(h.PreScript)
+	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
+	preCmd.Stdout = os.Stdout
+	preCmd.Stderr = os.Stderr
+	if err := preCmd.Run(); err != nil {
+		printer.StepFail("Pre-script failed")
+		return prescript.Result{}, fmt.Errorf("running pre-script: %w", err)
+	}
+	result, err := prescript.ParseFile(outPath)
+	if err != nil {
+		printer.StepFail("Pre-script output invalid")
+		return prescript.Result{}, fmt.Errorf("parsing pre-script output: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+	return result, nil
+}
+
 // childScriptEnv builds the environment for a host-side child script (pre- or
 // post-script): the harness RunnerEnv layered over the process environment,
 // plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). Any
@@ -2265,16 +2428,36 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 // match, so a stale value would shadow fullsend's own, and fullsend's trace
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
+//
+// OIDC credential vars (oidcDenyKeys) are stripped so user-authored pre/post
+// scripts and validation/preflight commands cannot mint their own tokens.
+// The parent harness process retains them for mintAgentToken. See #5832.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := append(os.Environ(), envToList(runnerEnv)...)
 	env := make([]string, 0, len(merged)+1)
 	for _, e := range merged {
-		if !strings.HasPrefix(e, "TRACEPARENT=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			continue
 		}
+		// Strip OIDC credential vars from child script env (#5832).
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		env = append(env, e)
 	}
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
+// postScriptEnv builds the environment for post-script execution.
+// It starts with childScriptEnv and conditionally appends
+// FULLSEND_OUTPUT_SCHEMA when the harness specifies a validation loop schema.
+func postScriptEnv(h *harness.Harness, traceparent string) []string {
+	env := childScriptEnv(h.RunnerEnv, traceparent)
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
 }

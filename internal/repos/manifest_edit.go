@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -78,15 +79,20 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 				progress(entries[i].Repo, "discover", fmt.Sprintf("probe failed: %v", err))
 				continue
 			}
-			if !state.Installed {
-				continue
-			}
-			progress(entries[i].Repo, "discover", "existing installation detected")
-			if state.InferenceRegion != "" && state.InferenceRegion != cfg.Manifest.Defaults.InferenceRegion {
-				entries[i].InferenceRegion = NullableString{Set: true, Value: state.InferenceRegion}
-			}
-			if state.FullsendRef != "" && state.FullsendRef != cfg.Manifest.Defaults.FullsendRef {
-				entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
+			if state.Installed {
+				progress(entries[i].Repo, "discover", "existing installation detected")
+
+				// Populate per-repo overrides from discovered state
+				// when values differ from manifest defaults.
+				if entryForge == ForgeGitHub {
+					gh := cfg.Manifest.Forge.GitHub
+					if state.MintURL != "" && state.MintURL != gh.MintURL && !entries[i].MintURL.Set {
+						entries[i].MintURL = NullableString{Set: true, Value: state.MintURL}
+					}
+					if state.FullsendRef != "" && state.FullsendRef != gh.FullsendRef && !entries[i].FullsendRef.Set {
+						entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
+					}
+				}
 			}
 		}
 	}
@@ -257,6 +263,131 @@ func writeManifest(path string, m *Manifest) error {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing manifest: %w", err)
+	}
+	return nil
+}
+
+// ValidDefaultKeys lists the manifest keys that can be set via
+// `repos set-default`. Order matches the help text.
+var ValidDefaultKeys = []string{
+	"defaults.allowed_remote_resources",
+	"forge.github.url",
+	"forge.github.mint_url",
+	"forge.github.fullsend_ref",
+	"forge.gitlab.url",
+	"forge.gitlab.runner_tags",
+}
+
+// validDefaultKeySet is the lookup set for ValidDefaultKeys.
+var validDefaultKeySet = func() map[string]bool {
+	m := make(map[string]bool, len(ValidDefaultKeys))
+	for _, k := range ValidDefaultKeys {
+		m[k] = true
+	}
+	return m
+}()
+
+// SetDefault sets or removes a forge-level default in the manifest.
+// An empty value removes the key. The file is created with version: 1
+// if it does not exist.
+func SetDefault(manifestPath, key, value string) error {
+	if !validDefaultKeySet[key] {
+		return fmt.Errorf("invalid key %q; valid keys: %s\nSee --help for details",
+			key, strings.Join(ValidDefaultKeys, ", "))
+	}
+
+	// Load or create manifest.
+	var m *Manifest
+	data, readErr := os.ReadFile(manifestPath)
+	if readErr != nil {
+		if !os.IsNotExist(readErr) {
+			return fmt.Errorf("reading manifest: %w", readErr)
+		}
+		m = &Manifest{Version: 1}
+	} else {
+		var parsed Manifest
+		if err := parseManifestBytes(data, &parsed); err != nil {
+			return fmt.Errorf("parsing manifest: %w", err)
+		}
+		m = &parsed
+	}
+
+	// Validate value (unless removing).
+	if value != "" {
+		if err := validateDefaultValue(key, value); err != nil {
+			return err
+		}
+	}
+
+	// Apply.
+	switch key {
+	case "defaults.allowed_remote_resources":
+		if value == "" {
+			m.Defaults.AllowedRemoteResources = nil
+		} else {
+			parts := strings.Split(value, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			m.Defaults.AllowedRemoteResources = parts
+		}
+	case "forge.github.url":
+		m.Forge.GitHub.URL = value
+	case "forge.github.mint_url":
+		m.Forge.GitHub.MintURL = value
+	case "forge.github.fullsend_ref":
+		m.Forge.GitHub.FullsendRef = value
+	case "forge.gitlab.url":
+		m.Forge.GitLab.URL = value
+	case "forge.gitlab.runner_tags":
+		if value == "" {
+			m.Forge.GitLab.RunnerTags = nil
+		} else {
+			parts := strings.Split(value, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			m.Forge.GitLab.RunnerTags = parts
+		}
+	}
+
+	return writeManifest(manifestPath, m)
+}
+
+// validateDefaultValue checks that value is appropriate for the given key.
+func validateDefaultValue(key, value string) error {
+	switch key {
+	case "forge.github.url", "forge.github.mint_url", "forge.gitlab.url":
+		u, err := url.Parse(value)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("%s must be a valid HTTPS URL, got %q", key, value)
+		}
+		if key == "forge.github.url" || key == "forge.gitlab.url" {
+			if err := rejectExtraneousURLParts(u, key); err != nil {
+				return err
+			}
+		}
+	case "forge.github.fullsend_ref":
+		if !IsValidRef(value) {
+			return fmt.Errorf("%s %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", key, value)
+		}
+	case "defaults.allowed_remote_resources":
+		for _, raw := range strings.Split(value, ",") {
+			v := strings.TrimSpace(raw)
+			if v == "" {
+				continue
+			}
+			u, err := url.Parse(v)
+			if err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("defaults.allowed_remote_resources: %q must be a valid HTTPS URL", v)
+			}
+		}
+	case "forge.gitlab.runner_tags":
+		for _, raw := range strings.Split(value, ",") {
+			if strings.TrimSpace(raw) == "" {
+				return fmt.Errorf("forge.gitlab.runner_tags: tags must not be empty")
+			}
+		}
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package world
 
 import (
+	"net/http/httptest"
 	"path/filepath"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/jiramock"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 )
 
@@ -61,6 +63,16 @@ type World struct {
 	// scenarios (like other driver fields) and safe for concurrent use.
 	// Nil when lazy ensure is not configured.
 	Ensurer install.RepoEnsurer
+
+	// KillSwitchActivated records whether this scenario activated the
+	// repo-level kill switch. CleanupScenario uses this to deactivate
+	// the switch so the next scenario on this slot is not affected.
+	KillSwitchActivated bool
+
+	// Jira mock state — set by the "Given a mock Jira server" step.
+	JiraMockServer *httptest.Server
+	JiraMockState  *jiramock.State
+	JiraConfigDir  string // temp dir holding .fullsend/ layout for the poller
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,

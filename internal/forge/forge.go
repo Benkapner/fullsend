@@ -141,6 +141,14 @@ type WorkflowRun struct {
 	CreatedAt  string
 }
 
+// WorkflowJob represents a job within a workflow run.
+type WorkflowJob struct {
+	ID         int
+	Name       string
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", etc.
+}
+
 // WorkflowArtifact is a file bundle uploaded by a workflow run.
 type WorkflowArtifact struct {
 	ID   int
@@ -540,6 +548,9 @@ type Client interface {
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 
+	// ListWorkflowRunJobs returns the jobs within a workflow run.
+	ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]WorkflowJob, error)
+
 	// ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 	ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]WorkflowArtifact, error)
 	// DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.
@@ -571,6 +582,13 @@ type Client interface {
 	// The existing RepoVariable methods model GitHub Actions variables;
 	// the CIVariable methods below model GitLab CI protected variables
 	// (branch-restricted, unmasked).
+
+	// CreatePipeline creates a new pipeline on the given ref with the
+	// given variables. Returns the pipeline metadata (ID, web URL).
+	// Used by the cron-poller to dispatch agent stages directly via
+	// the API instead of bridge jobs and child pipelines.
+	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error)
+
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
@@ -581,6 +599,12 @@ type Client interface {
 	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
 	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
+}
+
+// Pipeline represents a triggered pipeline.
+type Pipeline struct {
+	ID     int64
+	WebURL string
 }
 
 // PipelineSchedule represents a scheduled pipeline trigger.

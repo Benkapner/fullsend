@@ -429,6 +429,8 @@ type fakeCleanupSCM struct {
 	deleteRepoErr    error
 	commitFileCalled bool
 	commitFileErr    error
+	fileContent      []byte
+	getFileErr       error
 }
 
 type closedIssueRecord struct {
@@ -491,7 +493,7 @@ func (f *fakeCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.
 }
 
 func (f *fakeCleanupSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
-	return nil, nil
+	return f.fileContent, f.getFileErr
 }
 
 func (f *fakeCleanupSCM) CommitFile(_ context.Context, _, _, _, _ string, _ []byte) error {
@@ -525,6 +527,10 @@ func (f *fakeCleanupSCM) EnsureRepoPublic(context.Context, string, string) error
 
 func (f *fakeCleanupSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
 	return "main", nil
+}
+
+func (f *fakeCleanupSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
 }
 
 func (f *fakeCleanupSCM) CreateFork(context.Context, string, string, string) (string, error) {
@@ -628,6 +634,62 @@ func TestCleanupScenario_ClearsDummyOps_Error(t *testing.T) {
 	CleanupScenario(w)
 	require.Len(t, logged, 1)
 	assert.Contains(t, logged[0], "clear dummy script")
+}
+
+// --- Kill switch cleanup tests ---
+
+func TestCleanupScenario_DeactivatesKillSwitch(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+	}
+	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		KillSwitchActivated: true,
+		Install:             installDriver,
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+	assert.True(t, scmDriver.commitFileCalled, "should commit config to deactivate kill switch")
+}
+
+func TestCleanupScenario_SkipsKillSwitchWhenNotActivated(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		KillSwitchActivated: false,
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not commit when kill switch was not activated")
+}
+
+func TestCleanupScenario_DeactivateKillSwitch_Error(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{
+		fileContent:   []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+		commitFileErr: fmt.Errorf("commit failed"),
+	}
+	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		KillSwitchActivated: true,
+		Install:             installDriver,
+		SCM:                 scmDriver,
+		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "deactivate kill switch")
 }
 
 // fakeCleanupInstall satisfies the Install interface for cleanup tests.

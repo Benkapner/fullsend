@@ -34,11 +34,12 @@ Guides for developers working in repositories where fullsend is active.
 
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
-- [Customizing agents](user/customizing-agents.md) — Harness configurations and layered content resolution for your org and repos
-- [Customizing with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
-- [Customizing with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills with custom skill documents
+- [Configuring agent behavior](user/customizing-agents.md) — Harness configurations and layered content resolution for your org and repos
+- [Configuring with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
+- [Configuring with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills
 - [Bring Your Own Agent](user/bring-your-own-agent.md) — Add a custom agent or configure an existing one, from harness file to CI
 - [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
+- [Jira Integration](user/jira-integration.md) — Connect fullsend to a Jira project so that issue comments and label changes trigger agents
 - [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
 - [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 

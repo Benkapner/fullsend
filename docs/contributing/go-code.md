@@ -19,7 +19,7 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 2. **Register in `embeddedMintFiles`:** If the file will be included in the GCF bundle — either no build tag (e.g., `config.go`) or `//go:build !js` (e.g., `sts_verifier.go`, `gcp_pem.go`, `wif.go`) — add it to `embeddedMintFiles` in `internal/dispatch/gcf/provisioner.go` and to the `go:embed` directive.
 3. **Add to `gcfSkip`:** If the file should NOT be in the GCF bundle — Worker-only files (`//go:build js`) or standalone-mint-only files — add it to the `gcfSkip` map in `TestEmbeddedMintSource_MatchesOriginal` in `provisioner_test.go` instead of `embeddedMintFiles`. The three current entries are `fetch_js.go` and `pem_js.go` (Worker-only, `//go:build js`) and `file_pem.go` (standalone-mint-only, `//go:build !js`).
 
-**Dispatch workflows:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other. The GitLab scaffold has its own dispatch template at `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-dispatch.yml` — it follows the same two-path model (native MR events + cron-polled events) but constructs a NormalizedEvent v1 payload (ADR 0061) from GitLab CI variables. Stage routing uses shell checks annotated with equivalent CEL trigger expressions; when built-in harness triggers land (#2896-2901), the routing can be replaced by `fullsend dispatch --input-driver json`.
+**Dispatch workflows:** See [Workflow Contracts](workflow-contracts.md) for dispatch sync rules, secret/input threading across installation-mode chains, and review instructions.
 
 **Interface documentation:** When extending a Go interface with new methods (e.g., adding methods to `ci.Driver` in `pkg/behaviourtest/drivers/ci/driver.go`), check `docs/guides/dev/` for documentation that lists or enumerates the interface's methods (e.g., `behaviour-drivers.md`). If found, update the method list to include all current methods, not just the newly added one. The `lint-interface-doc-sync` pre-commit hook enforces this for `ci.Driver`.
 
@@ -73,9 +73,45 @@ func TestConcurrentAccess(t *testing.T) {
 
 Convention: use 12 goroutines. This is high enough to trigger races reliably but low enough to avoid resource exhaustion in CI. See [`pkg/behaviourtest/drivers/scm/github/race_test.go`](../../pkg/behaviourtest/drivers/scm/github/race_test.go) for the canonical example.
 
+### Assertions inside goroutines: `assert` not `require`
+
+Inside goroutines spawned by a test, use `assert.XXX` (`testify/assert`), **not** `require.XXX` (`testify/require`). `require` calls `t.FailNow()`, which calls `runtime.Goexit()`. Go's `testing` package [documents](https://pkg.go.dev/testing#T.FailNow) that `FailNow` must be called from the goroutine running the test function, not from other goroutines — calling it from a spawned goroutine violates this contract and can silently mispass the test or crash the process. `assert` calls `t.Errorf()`, which is safe from any goroutine.
+
+```go
+go func() {
+    defer wg.Done()
+    tok, err := d.AccessToken(ctx)
+    assert.NoError(t, err)   // safe from any goroutine
+    assert.Equal(t, "expected", tok)
+    // require.NoError(t, err) — never use require inside a goroutine
+}()
+```
+
+This applies to all `require` functions (`require.NoError`, `require.Equal`, `require.NotNil`, etc.) — the entire `require` package uses `FailNow` internally. The test goroutine itself (the function passed to `t.Run` or the `Test*` function) can use `require` normally.
+
 ### Why synthetic stubs don't work
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
+
+## Running the fullsend CLI
+
+**Audience:** contributors and agents working from a **repo checkout**. Do not
+change end-user or operator guides under `docs/guides/getting-started/`,
+`docs/guides/user/`, or `docs/guides/infrastructure/` to require `go run` —
+those audiences install a released `fullsend` binary.
+
+When agents (or humans working from this checkout) need the fullsend CLI,
+invoke it from the **repo root** with:
+
+```bash
+go run ./cmd/fullsend <subcommand> …
+```
+
+**Do not** use a preinstalled `fullsend` from mise, `$PATH`, `GOBIN`, `go install`, or another clone. Those binaries often lag the branch you are on. Enrollment and other mint-mutating commands rewrite Cloud Run env vars; a stale CLI can apply obsolete merge logic against the hosted mint.
+
+This already happened: an enrollment for `crc-org/crc` used a June-era mise `fullsend` that still wrote org-scoped `ROLE_APP_IDS` keys and re-derived `ALLOWED_ROLES` from slash-keyed entries only. Shared role-only keys such as `e2e` and `fix` were ignored, so the mint dropped those roles from `ALLOWED_ROLES` and e2e broke until the mint was restored. Current tree enroll is safer, but the durable fix for agents is to always run the CLI from source.
+
+`make go-build` / `bin/fullsend` is fine when you intentionally build **this** checkout first. Prefer `go run` unless you have a reason to keep a built binary.
 
 ## Running e2e tests
 

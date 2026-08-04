@@ -180,6 +180,9 @@ for harnesses that still reference it.
   `runner_env` deprecation.
 - ADR 0049's env var naming convention applies unchanged — the delivery
   mechanism changes but the `{AGENT}_{SETTING_NAME}` convention does not.
+  See also [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md), which
+  clarifies when a knob should use the `{AGENT}_` env var pattern versus
+  being a `config.yaml` field.
 - Modular `.env` files via `host_files` remain the right choice for
   per-tool env groups shared across multiple harnesses.
 - This change extends the harness schema; runners older than Phase 1 will

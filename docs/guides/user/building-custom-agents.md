@@ -1,10 +1,11 @@
 # Building custom agents from scratch
 
 > **Deprecated:** This guide uses the `customized/` directory overlay, which is
-> deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> For new custom agents, register them in `config.yaml` with a local `source:`
-> path instead. Run `fullsend agent migrate-customizations --dry-run` to
-> preview migrating existing customizations.
+> deprecated. For new custom agents, register them in `config.yaml` with a
+> local `source:` path instead. See
+> [Bring Your Own Agent](bring-your-own-agent.md) for the recommended approach.
+> Run `fullsend agent migrate-customizations --dry-run` to preview migrating
+> existing customizations.
 
 This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.
@@ -16,7 +17,7 @@ harness and override only what differs — see
 for the distinction and when each approach makes sense.
 
 For the config-driven approach to building or configuring agents, see
-[Bring Your Own Agent](bring-your-own-agent.md). For configuring existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
+[Bring Your Own Agent](bring-your-own-agent.md). For configuring existing agents (overriding harnesses, skills, or policies), see [Configuring agent behavior](customizing-agents.md).
 
 ## Prerequisites
 
@@ -36,7 +37,7 @@ A custom agent is composed of six parts:
   skills/          # Knowledge documents mounted into the sandbox
 ```
 
-At build time, the workflow layers these customized files on top of the upstream fullsend defaults. Your files override the defaults — anything you don't customize uses the standard fullsend configuration. See [Customizing agents — Layered Configuration Resolution](customizing-agents.md#layered-configuration-resolution) for details on how the layering works.
+At build time, the workflow layers these customized files on top of the upstream fullsend defaults. Your files override the defaults — anything you don't configure uses the standard fullsend defaults. See [Configuring agent behavior — Layered Configuration Resolution](customizing-agents.md#layered-configuration-resolution) for details on how the layering works.
 
 The key security invariant: agents run inside an untrusted [sandbox](../../glossary.md#sandbox) with no credentials. Pre-scripts fetch data *before* the sandbox starts; post-scripts act on agent output *after* the sandbox exits. Agents never have direct write access to external systems. See the [security threat model](../../problems/security-threat-model.md) for the full trust model.
 
@@ -177,14 +178,14 @@ env:
 
 timeout_minutes: 20
 
-# Optional: enable runtime skill fetching (ADR-0038 Phase 4)
+# Optional: enable runtime skill fetching
 # allowed_remote_resources:
 #   - https://github.com/org/skills/
 # allow_runtime_fetch: true
 # max_runtime_fetches: 10
 ```
 
-See [Customizing agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
+See [Configuring agent behavior — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 
@@ -314,6 +315,30 @@ echo "Pre-script complete."
 
 The pre-script has full credentials on the trusted runner. It fetches data from external systems and writes it to files that the harness copies into the sandbox. Credentials never enter the sandbox.
 
+#### Skipping the run from the pre-script
+
+A pre-script can tell `fullsend run` not to start the agent at all — useful when
+an open PR already addresses the issue, or when the work is otherwise
+redundant. `fullsend run` exports `FULLSEND_PRESCRIPT_OUTPUT` (a file path); the
+script appends `skipped=true` to it and the run reports a ⏭️ skipped status and
+exits 0 **before the sandbox is created**.
+
+```bash
+if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+  {
+    echo "skipped=true"
+    echo "reason=PR #${EXISTING_PR} already addresses this issue"
+  } >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  exit 0
+fi
+```
+
+Always guard on the variable being set — older `fullsend` versions do not export
+it, and appending to an empty path would fail the script. Malformed content is a
+hard error rather than a silent proceed, so a mistyped skip cannot turn into a
+duplicate agent run. See the [pre-script output v1 contract](../../normative/prescript-output/v1/README.md)
+for the full grammar, error semantics, and CI relay behavior.
+
 ### Post-script (action execution)
 
 `.fullsend/customized/scripts/post-my-agent.sh`:
@@ -384,7 +409,7 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 ## Step 6: Create skills (optional)
 
-[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Customizing agents — Adding a Custom Skill](customizing-agents.md#adding-a-custom-skill) for how to create one.
+[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring agent behavior — Adding a Skill](customizing-agents.md#adding-a-skill) for how to create one.
 
 Place your skill at `.fullsend/customized/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [customized/skills/my-skill]`).
 
@@ -488,7 +513,7 @@ jobs:
           ISSUE_SOURCE: ${{ inputs.issue_source || 'github' }}
           REPO_FULL_NAME: ${{ github.repository }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # install-time only, not managed by sync
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/output"
@@ -638,9 +663,8 @@ When creating a new agent, you need these files:
 
 ## Reference
 
-- [Customizing agents](customizing-agents.md) — override existing agent harnesses, skills, and policies
+- [Configuring agent behavior](customizing-agents.md) — configure existing agent harnesses, skills, and policies
 - [Bugfix workflow](bugfix-workflow.md) — how the built-in agents work together end to end
 - [Getting Started](../getting-started/README.md) — prerequisite: admin setup guide
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack
 - [Security threat model](../../problems/security-threat-model.md) — how fullsend thinks about security
-- [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md) — how customized files override upstream defaults

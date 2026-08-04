@@ -829,6 +829,10 @@ func (f *fakeURLSCM) GetDefaultBranch(_ context.Context, _, _ string) (string, e
 	return "main", nil
 }
 
+func (f *fakeURLSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
+}
+
 func (f *fakeURLSCM) DeleteRepo(_ context.Context, _, repo string) error {
 	delete(f.repos, repo)
 	return nil

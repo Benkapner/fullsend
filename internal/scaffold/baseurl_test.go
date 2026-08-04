@@ -63,38 +63,6 @@ func TestHarnessBaseURL(t *testing.T) {
 	})
 }
 
-func TestHarnessContentHash(t *testing.T) {
-	t.Run("unknown harness errors", func(t *testing.T) {
-		_, err := HarnessContentHash("nonexistent")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unknown harness")
-	})
-
-	t.Run("invalid harness name errors", func(t *testing.T) {
-		_, err := HarnessContentHash("INVALID")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid harness name")
-	})
-}
-
-func TestHarnessBaseURLWithHash(t *testing.T) {
-	t.Run("invalid harness name errors", func(t *testing.T) {
-		_, err := HarnessBaseURLWithHash("INVALID", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
-		assert.Error(t, err)
-	})
-
-	t.Run("invalid commit SHA errors", func(t *testing.T) {
-		_, err := HarnessBaseURLWithHash("triage", "bad")
-		assert.Error(t, err)
-	})
-}
-
-func TestHarnessNames(t *testing.T) {
-	names, err := HarnessNames()
-	require.NoError(t, err)
-	assert.Empty(t, names, "no harness templates should be embedded")
-}
-
 func TestHarnessContent(t *testing.T) {
 	t.Run("invalid name errors", func(t *testing.T) {
 		_, err := HarnessContent("INVALID")

@@ -96,6 +96,10 @@ func resetScenarioWorld(w *world.World) {
 	w.URLHarnessRepoOwner = ""
 	w.URLHarnessRepoName = ""
 	w.LeasedRepoName = ""
+	w.KillSwitchActivated = false
+	w.JiraMockServer = nil
+	w.JiraMockState = nil
+	w.JiraConfigDir = ""
 }
 
 func tagNames(tags []*messages.PickleTag) []string {

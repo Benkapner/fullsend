@@ -503,6 +503,7 @@ type perRepoConfig struct {
 	// where version is always required). This allows the fallback
 	// chain to inherit version from the parent layer.
 	Version    string       `yaml:"version,omitempty"`
+	Forge      string       `yaml:"forge,omitempty"`
 	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
 	Runtime    string       `yaml:"runtime,omitempty"`
 	Roles      []string     `yaml:"roles,omitempty"`
@@ -551,6 +552,83 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 	return cfg
 }
 
+// NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
+// fields from an org config. Per-repo role overrides (repos.<name>.roles)
+// take precedence over defaults.roles. Non-portable fields
+// (max_implementation_retries, auto_merge, status_notifications) are not
+// carried over — callers should warn separately.
+func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string) PerRepoConfigWriter {
+	// Determine roles: per-repo overrides take precedence over defaults.
+	roles := orgCfg.OrgRepoDefaults().Roles
+	if repoMap := orgCfg.RepoMap(); repoMap != nil {
+		if rc, ok := repoMap[repoName]; ok && len(rc.Roles) > 0 {
+			roles = rc.Roles
+		}
+	}
+	if roles == nil {
+		roles = PerRepoDefaultRoles()
+	} else {
+		rolesCopy := make([]string, len(roles))
+		copy(rolesCopy, roles)
+		roles = rolesCopy
+	}
+
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   roles,
+		parent:  &perRepoDefaults{},
+	}
+
+	// Agents: deep-copy org agent entries (AgentEntry.Enabled is *bool).
+	if agents := orgCfg.AgentEntries(); len(agents) > 0 {
+		copied := make([]AgentEntry, len(agents))
+		copy(copied, agents)
+		for i, a := range copied {
+			if a.Enabled != nil {
+				e := *a.Enabled
+				copied[i].Enabled = &e
+			}
+		}
+		cfg.Agents = copied
+	}
+
+	// AllowedRemoteResources: copy from org config with defaults ensured.
+	if arr := orgCfg.AllowedResources(); len(arr) > 0 {
+		cfg.AllowedRemoteResources = EnsureDefaultAllowedRemoteResources(arr)
+	} else {
+		cfg.AllowedRemoteResources = DefaultAllowedRemoteResources()
+	}
+
+	// CreateIssues: deep-copy from org config to avoid pointer aliasing.
+	if ci := orgCfg.IssueCreationConfig(); ci != nil {
+		ciCopy := *ci
+		ciCopy.AllowTargets = AllowTargets{
+			Orgs:  append([]string(nil), ci.AllowTargets.Orgs...),
+			Repos: append([]string(nil), ci.AllowTargets.Repos...),
+		}
+		cfg.CreateIssues = &ciCopy
+	} else if targetRepo != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
+			},
+		}
+	}
+
+	// KillSwitch: only set when active (false is the default).
+	if orgCfg.IsKillSwitchActive() {
+		ks := true
+		cfg.KillSwitch = &ks
+	}
+
+	// Runtime: copy when explicitly set.
+	if rt := orgCfg.OrgRepoDefaults().Runtime; rt != "" {
+		cfg.Runtime = rt
+	}
+
+	return cfg
+}
+
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
 func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 	var cfg perRepoConfig
@@ -593,6 +671,7 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 // `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
 	Version                string              `yaml:"version,omitempty"`
+	Forge                  string              `yaml:"forge,omitempty"`
 	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
 	Runtime                string              `yaml:"runtime,omitempty"`
 	Roles                  *[]string           `yaml:"roles,omitempty"`
@@ -609,6 +688,7 @@ type perRepoConfigMarshal struct {
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:      c.Version,
+		Forge:        c.Forge,
 		KillSwitch:   c.KillSwitch,
 		Runtime:      c.Runtime,
 		Agents:       c.Agents,

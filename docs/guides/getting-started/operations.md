@@ -10,6 +10,8 @@ Day-2 administration for fullsend per-repo installations: configuration updates,
 
 ## Updating configuration values
 
+### GitHub
+
 Update individual secrets or variables without re-running full setup:
 
 ```bash
@@ -24,6 +26,24 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 
+### GitLab
+
+For GitLab repos, re-run `repos install` with updated values to converge configuration:
+
+```bash
+fullsend repos install -f repos.yaml "$OWNER/$REPO" \
+  --inference-project "<GCP_PROJECT>" \
+  --inference-project-number "<GCP_PROJECT_NUMBER>"
+```
+
+| Key | Storage Type | Description | Example value |
+|-----|-------------|-------------|---------------|
+| `FULLSEND_CREDENTIAL_MODE` | CI/CD variable | Credential retrieval mode | `wif` or `variable` |
+| `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
+| `FULLSEND_SA` | CI/CD variable | Service account email for WIF impersonation | `fullsend-mint@project.iam.gserviceaccount.com` |
+| `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference (WIF mode only) | `my-gcp-project` |
+| `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
+
 ## Syncing workflow templates
 
 After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo:
@@ -34,13 +54,13 @@ fullsend github setup "$OWNER/$REPO" \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
-For manifest-managed installations, use `repos upgrade` to update workflow refs across all repos:
+For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):
 
 ```bash
-fullsend repos upgrade -f repos.yaml
+fullsend repos install -f repos.yaml
 ```
 
-This is idempotent — it updates the workflow file in place without changing other configuration.
+This is idempotent — it provisions new repos, syncs variable drift, and upgrades workflow refs.
 
 ## Uninstalling
 
@@ -48,11 +68,20 @@ This is idempotent — it updates the workflow file in place without changing ot
 
 To remove fullsend from a single repository:
 
+**GitHub repos:**
+
 1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
 3. Contact the fullsend team to unenroll the repo from the hosted mint
 
-If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of step 3. See the [standalone commands](#standalone-commands) table for details.
+**GitLab repos:**
+
+1. Delete `.gitlab/ci/fullsend-*.yml`, `.gitlab-ci.yml` (if fullsend-managed), and `.fullsend/config.yaml`
+2. Delete all CI/CD variables prefixed with `FULLSEND_`
+3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
+4. Delete fullsend pipeline schedules
+
+If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of GitHub step 3. See the [standalone commands](#standalone-commands) table for details.
 
 ## Standalone commands
 
@@ -77,16 +106,11 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
-| Fleet Admin | `fullsend repos init --forge <type> <org\|owner/repo>` | Generate a `repos.yaml` manifest by discovering existing installations |
-| Platform Admin | `fullsend repos install [repos...]` | Bulk-install fullsend on repos from a declarative manifest (parallel discovery → sequential WIF → parallel scaffold) |
-| Fleet Admin | `fullsend repos add --forge <type> <repos...>` | Add repo entries to `repos.yaml` manifest (with optional `--install`) |
-| Fleet Admin | `fullsend repos remove <repos...>` | Remove repo entries from `repos.yaml` manifest (with optional `--uninstall`) |
-| Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos (workflow, variables, secrets, WIF) without modifying manifest |
+| Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |
+| Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, sync variables, upgrade refs |
+| Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
-| Fleet Admin | `fullsend repos diff` | Show configuration drift between manifest and actual forge state |
-| Platform Admin | `fullsend repos sync` | Reconcile configuration drift for installed repos (variables and secrets) |
-| Platform Admin | `fullsend repos upgrade [repos...]` | Verify mint deployment then upgrade scaffold shim ref across manifest repos |
-| Platform Admin | `fullsend repos upgrade-mint` | Verify the token mint deployment matches the manifest |
+| Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a forge-level default in the manifest |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |
