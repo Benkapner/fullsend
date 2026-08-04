@@ -859,7 +859,11 @@ func TestHandler_ReposScope_PerRepoDenied(t *testing.T) {
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
 		pems: map[string][]byte{"coder": pemData},
 	})
-	token := env.signToken(t, nil) // test-org/test-repo (default from signToken)
+	// Use upstream workflow ref so workflow host validation passes;
+	// the test exercises repos scope denial, not workflow host denial.
+	token := env.signToken(t, map[string]interface{}{
+		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/code.yml@refs/heads/main",
+	})
 
 	body := `{"role":"coder","repos":["api"]}`
 	rec := httptest.NewRecorder()
@@ -2118,7 +2122,9 @@ func TestHandler_RestrictedWorkflowFiles(t *testing.T) {
 
 func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
+	// Clear ALLOWED_ORGS to prevent dual-enrollment upgrading to per-org mode.
+	// This test exercises per-repo workflow host validation.
+	t.Setenv("ALLOWED_ORGS", "")
 	t.Setenv("PER_REPO_WIF_REPOS", "test-org/custom-repo")
 
 	pemData, err := generateTestRSAKey()
@@ -2136,6 +2142,7 @@ func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	})
 	env.handler.allowedWorkflowFiles = []string{"ci.yml", "dispatch.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/custom-repo": true}
+	env.handler.workflowHostRepos = map[string]bool{"test-org/custom-repo": true}
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2454,7 +2461,8 @@ func TestHandler_PerRepoUnregistered(t *testing.T) {
 
 func TestHandler_PerRepoMixedCase(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
+	// Clear ALLOWED_ORGS to prevent dual-enrollment upgrading to per-org mode.
+	t.Setenv("ALLOWED_ORGS", "")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -2471,6 +2479,7 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 	})
 	env.handler.allowedWorkflowFiles = []string{"ci.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/my-repo": true}
+	env.handler.workflowHostRepos = map[string]bool{"test-org/my-repo": true}
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2510,7 +2519,8 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 }
 
 func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
-	t.Setenv("ALLOWED_ORGS", "test-org")
+	// Clear ALLOWED_ORGS to prevent dual-enrollment upgrading to per-org mode.
+	t.Setenv("ALLOWED_ORGS", "")
 	t.Setenv("ALLOWED_ROLES", "coder")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
@@ -2547,6 +2557,7 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	}, verifier)
 	h.allowedWorkflowFiles = []string{"ci.yml", "dispatch.yml"}
 	h.perRepoWIFRepos = map[string]bool{"test-org/custom-repo": true}
+	h.workflowHostRepos = map[string]bool{"test-org/custom-repo": true}
 
 	buildToken := func(repo, workflowRef string) string {
 		now := time.Now()

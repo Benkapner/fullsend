@@ -347,6 +347,7 @@ platform-specific access. The 'token' subcommand requires only GitHub Actions OI
 	cmd.AddCommand(newMintAddRoleCmd())
 	cmd.AddCommand(newMintRemoveRoleCmd())
 	cmd.AddCommand(newMintTokenCmd())
+	cmd.AddCommand(newMintWorkflowHostCmd())
 	return cmd
 }
 
@@ -1576,6 +1577,29 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 
+	// Workflow host repos.
+	printer.Blank()
+	printer.Header("Workflow Host Repos")
+	var workflowHostRepos []string
+	if trafficEnv != nil {
+		raw := trafficEnv["WORKFLOW_HOST_REPOS"]
+		if raw != "" {
+			for _, entry := range strings.Split(raw, ",") {
+				if trimmed := strings.TrimSpace(entry); trimmed != "" {
+					workflowHostRepos = append(workflowHostRepos, trimmed)
+				}
+			}
+		}
+	}
+	if len(workflowHostRepos) == 0 {
+		printer.StepInfo("  (default: fullsend-ai/fullsend)")
+	} else {
+		sort.Strings(workflowHostRepos)
+		for _, r := range workflowHostRepos {
+			printer.StepInfo("  " + r)
+		}
+	}
+
 	// Step 3: Role PEM secret health (shared across orgs).
 	rolesToCheck := rolesFromAppIDs(roleAppIDs)
 	printer.Blank()
@@ -1619,6 +1643,269 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	printer.Summary("Status", summaryItems)
 
 	return nil
+}
+
+func newMintWorkflowHostCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "workflow-host",
+		Short: "Manage the workflow-host allow-list",
+		Long: `Manage the WORKFLOW_HOST_REPOS allow-list that controls which repositories
+may host workflows calling the mint in per-repo mode.
+
+Per-org callers are not affected — they hard-wire to {org}/.fullsend and
+the upstream fullsend-ai/fullsend repo.
+
+The default workflow-host allow-list contains only fullsend-ai/fullsend.`,
+	}
+	cmd.AddCommand(newMintWorkflowHostAddCmd())
+	cmd.AddCommand(newMintWorkflowHostRemoveCmd())
+	cmd.AddCommand(newMintWorkflowHostListCmd())
+	return cmd
+}
+
+func newMintWorkflowHostAddCmd() *cobra.Command {
+	var project string
+	var region string
+	var dryRun bool
+
+	cmd := &cobra.Command{
+		Use:   "add <owner/repo>",
+		Short: "Add a repo to the workflow-host allow-list",
+		Long: `Adds a repository to WORKFLOW_HOST_REPOS so its workflows are trusted
+to call the mint for per-repo callers. Idempotent.
+
+Required IAM roles on the mint project:
+  - roles/cloudfunctions.viewer
+  - roles/run.admin`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if project == "" {
+				return fmt.Errorf("--project is required")
+			}
+			if !gcf.ValidateProjectID(project) {
+				return fmt.Errorf("invalid GCP project ID: %q", project)
+			}
+			if !gcf.ValidateRegion(region) {
+				return fmt.Errorf("invalid GCP region: %q", region)
+			}
+
+			repo := strings.ToLower(args[0])
+			parts := strings.SplitN(repo, "/", 2)
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return fmt.Errorf("repo must be in owner/repo format, got %q", repo)
+			}
+
+			printer := ui.New(os.Stdout)
+			ctx := cmd.Context()
+
+			printer.Banner(Version())
+			printer.Blank()
+			printer.Header("Adding workflow host " + repo)
+			printer.Blank()
+
+			if dryRun {
+				printer.StepInfo("Dry run — no changes will be made")
+				printer.Blank()
+				printer.StepInfo(fmt.Sprintf("  Would add %s to WORKFLOW_HOST_REPOS", repo))
+				return nil
+			}
+
+			gcpClient := mintGCFClientFactory(project)
+			provisioner := gcf.NewProvisioner(gcf.Config{
+				ProjectID: project,
+				Region:    region,
+			}, gcpClient)
+
+			printer.StepStart("Discovering mint infrastructure")
+			if _, err := provisioner.DiscoverMint(ctx); err != nil {
+				printer.StepFail("Mint discovery failed")
+				return fmt.Errorf("mint not found in project %s region %s: %w", project, region, err)
+			}
+			printer.StepDone("Mint discovered")
+
+			printer.StepStart("Adding repo to WORKFLOW_HOST_REPOS")
+			if err := provisioner.AddWorkflowHostRepo(ctx, repo); err != nil {
+				printer.StepFail("Failed to add workflow host repo")
+				return fmt.Errorf("adding workflow host repo: %w", err)
+			}
+			printer.StepDone("Workflow host repo added")
+
+			printer.Blank()
+			printer.Summary("Workflow host added", []string{
+				fmt.Sprintf("Repository: %s", repo),
+				"Workflows from this repo are now trusted for per-repo callers",
+			})
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
+	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+	return cmd
+}
+
+func newMintWorkflowHostRemoveCmd() *cobra.Command {
+	var project string
+	var region string
+	var dryRun bool
+
+	cmd := &cobra.Command{
+		Use:   "remove <owner/repo>",
+		Short: "Remove a repo from the workflow-host allow-list",
+		Long: `Removes a repository from WORKFLOW_HOST_REPOS so its workflows are no
+longer trusted to call the mint for per-repo callers.
+
+Required IAM roles on the mint project:
+  - roles/cloudfunctions.viewer
+  - roles/run.admin`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if project == "" {
+				return fmt.Errorf("--project is required")
+			}
+			if !gcf.ValidateProjectID(project) {
+				return fmt.Errorf("invalid GCP project ID: %q", project)
+			}
+			if !gcf.ValidateRegion(region) {
+				return fmt.Errorf("invalid GCP region: %q", region)
+			}
+
+			repo := strings.ToLower(args[0])
+			parts := strings.SplitN(repo, "/", 2)
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return fmt.Errorf("repo must be in owner/repo format, got %q", repo)
+			}
+
+			printer := ui.New(os.Stdout)
+			ctx := cmd.Context()
+
+			printer.Banner(Version())
+			printer.Blank()
+			printer.Header("Removing workflow host " + repo)
+			printer.Blank()
+
+			if dryRun {
+				printer.StepInfo("Dry run — no changes will be made")
+				printer.Blank()
+				printer.StepInfo(fmt.Sprintf("  Would remove %s from WORKFLOW_HOST_REPOS", repo))
+				return nil
+			}
+
+			gcpClient := mintGCFClientFactory(project)
+			provisioner := gcf.NewProvisioner(gcf.Config{
+				ProjectID: project,
+				Region:    region,
+			}, gcpClient)
+
+			printer.StepStart("Discovering mint infrastructure")
+			if _, err := provisioner.DiscoverMint(ctx); err != nil {
+				printer.StepFail("Mint discovery failed")
+				return fmt.Errorf("mint not found in project %s region %s: %w", project, region, err)
+			}
+			printer.StepDone("Mint discovered")
+
+			printer.StepStart("Removing repo from WORKFLOW_HOST_REPOS")
+			if err := provisioner.RemoveWorkflowHostRepo(ctx, repo); err != nil {
+				printer.StepFail("Failed to remove workflow host repo")
+				return fmt.Errorf("removing workflow host repo: %w", err)
+			}
+			printer.StepDone("Workflow host repo removed")
+
+			printer.Blank()
+			printer.Summary("Workflow host removed", []string{
+				fmt.Sprintf("Repository: %s", repo),
+				"Workflows from this repo are no longer trusted for per-repo callers",
+			})
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
+	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+	return cmd
+}
+
+func newMintWorkflowHostListCmd() *cobra.Command {
+	var project string
+	var region string
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List the workflow-host allow-list",
+		Long: `Lists the repositories in WORKFLOW_HOST_REPOS that are trusted to host
+workflows for per-repo callers. When WORKFLOW_HOST_REPOS is not set, the
+default (fullsend-ai/fullsend) is shown.
+
+Required IAM roles on the mint project:
+  - roles/cloudfunctions.viewer`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if project == "" {
+				return fmt.Errorf("--project is required")
+			}
+			if !gcf.ValidateProjectID(project) {
+				return fmt.Errorf("invalid GCP project ID: %q", project)
+			}
+			if !gcf.ValidateRegion(region) {
+				return fmt.Errorf("invalid GCP region: %q", region)
+			}
+
+			printer := ui.New(os.Stdout)
+			ctx := cmd.Context()
+
+			printer.Banner(Version())
+			printer.Blank()
+			printer.Header("Workflow Host Allow-List")
+			printer.Blank()
+
+			gcpClient := mintGCFClientFactory(project)
+			provisioner := gcf.NewProvisioner(gcf.Config{
+				ProjectID: project,
+				Region:    region,
+			}, gcpClient)
+
+			printer.StepStart("Discovering mint infrastructure")
+			if _, err := provisioner.DiscoverMint(ctx); err != nil {
+				printer.StepFail("Mint discovery failed")
+				return fmt.Errorf("mint not found in project %s region %s: %w", project, region, err)
+			}
+			printer.StepDone("Mint discovered")
+
+			trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+			if err != nil {
+				return fmt.Errorf("reading mint env vars: %w", err)
+			}
+
+			raw := trafficEnv["WORKFLOW_HOST_REPOS"]
+			var repos []string
+			if raw != "" {
+				for _, entry := range strings.Split(raw, ",") {
+					if trimmed := strings.TrimSpace(entry); trimmed != "" {
+						repos = append(repos, trimmed)
+					}
+				}
+			}
+
+			printer.Blank()
+			if len(repos) == 0 {
+				printer.StepInfo("WORKFLOW_HOST_REPOS is not set")
+				printer.StepInfo("Default: fullsend-ai/fullsend")
+			} else {
+				sort.Strings(repos)
+				for _, r := range repos {
+					printer.StepInfo("  " + r)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
+	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+	return cmd
 }
 
 // queryMintHealth fetches the mint /health endpoint and extracts version

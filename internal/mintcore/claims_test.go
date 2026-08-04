@@ -78,8 +78,8 @@ func TestValidateOrgAllowed_PublicMode(t *testing.T) {
 	assert.Error(t, ValidateOrgAllowed("", public))
 }
 
-func TestValidateWorkflowRef(t *testing.T) {
-	perRepo := map[string]bool{"myorg/my-repo": true}
+func TestValidateWorkflowRef_PerOrg(t *testing.T) {
+	// Per-org mode: only .fullsend and upstream are allowed (hard-wired).
 	allowedFiles := []string{"dispatch.yml", "triage.yml"}
 
 	tests := []struct {
@@ -102,22 +102,16 @@ func TestValidateWorkflowRef(t *testing.T) {
 			"",
 		},
 		{
-			"per-repo workflow matching token repo",
+			"per-repo workflow from own repo denied in per-org mode",
 			"myorg/my-repo/.github/workflows/triage.yml@refs/heads/main",
 			"myorg/my-repo",
-			"",
-		},
-		{
-			"per-repo workflow from different repo",
-			"myorg/my-repo/.github/workflows/triage.yml@refs/heads/main",
-			"myorg/other-repo",
-			"does not reference",
+			"does not reference .fullsend or upstream repo",
 		},
 		{
 			"unregistered repo",
 			"myorg/other-repo/.github/workflows/dispatch.yml@refs/heads/main",
 			"myorg/other-repo",
-			"does not reference",
+			"does not reference .fullsend or upstream repo",
 		},
 		{
 			"not a workflow path",
@@ -135,7 +129,7 @@ func TestValidateWorkflowRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, perRepo, allowedFiles)
+			err := ValidateWorkflowRef(tt.ref, tt.repository, false, nil, nil, allowedFiles)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
@@ -146,11 +140,86 @@ func TestValidateWorkflowRef(t *testing.T) {
 	}
 }
 
+func TestValidateWorkflowRef_PerRepo(t *testing.T) {
+	// Per-repo mode: only workflow host repos and upstream are allowed.
+	workflowHosts := map[string]bool{"myorg/my-repo": true}
+	allowedFiles := []string{"dispatch.yml", "triage.yml"}
+
+	tests := []struct {
+		name       string
+		ref        string
+		repository string
+		wantErr    string
+	}{
+		{
+			"upstream workflow",
+			"fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/heads/main",
+			"myorg/my-repo",
+			"",
+		},
+		{
+			"workflow host listed repo",
+			"myorg/my-repo/.github/workflows/triage.yml@refs/heads/main",
+			"myorg/my-repo",
+			"",
+		},
+		{
+			"workflow host not listed repo",
+			"myorg/other-repo/.github/workflows/dispatch.yml@refs/heads/main",
+			"myorg/other-repo",
+			"does not reference an allowed workflow host repo",
+		},
+		{
+			".fullsend not accepted in per-repo mode without being in host list",
+			"myorg/.fullsend/.github/workflows/dispatch.yml@refs/heads/main",
+			"myorg/.fullsend",
+			"does not reference an allowed workflow host repo",
+		},
+		{
+			"workflow file not in allowed list",
+			"myorg/my-repo/.github/workflows/evil.yml@refs/heads/main",
+			"myorg/my-repo",
+			"not in allowed list",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateWorkflowRef(tt.ref, tt.repository, true, nil, workflowHosts, allowedFiles)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateWorkflowRef_PerRepo_DefaultHost(t *testing.T) {
+	// When no workflow host repos are configured, default includes upstream.
+	defaultHosts := map[string]bool{"fullsend-ai/fullsend": true}
+	err := ValidateWorkflowRef(
+		"fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/heads/main",
+		"myorg/my-repo",
+		true, nil, defaultHosts, []string{"*"},
+	)
+	assert.NoError(t, err)
+
+	err = ValidateWorkflowRef(
+		"myorg/my-repo/.github/workflows/dispatch.yml@refs/heads/main",
+		"myorg/my-repo",
+		true, nil, defaultHosts, []string{"*"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not reference an allowed workflow host repo")
+}
+
 func TestValidateWorkflowRef_Wildcard(t *testing.T) {
 	err := ValidateWorkflowRef(
 		"myorg/.fullsend/.github/workflows/anything.yml@refs/heads/main",
 		"myorg/.fullsend",
-		nil, []string{"*"},
+		false, nil, nil, []string{"*"},
 	)
 	assert.NoError(t, err)
 }
@@ -296,7 +365,8 @@ func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, perRepo, []string{"dispatch.yml"})
+			// isPerRepo and workflowHostRepos are irrelevant in public mode.
+			err := ValidateWorkflowRef(tt.ref, tt.repository, true, perRepo, nil, []string{"dispatch.yml"})
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {

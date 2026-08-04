@@ -42,10 +42,11 @@ type mintResponse struct {
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 type statusResponse struct {
-	Org     string   `json:"org"`
-	Roles   []string `json:"roles"`
-	Version string   `json:"version,omitempty"`
-	Commit  string   `json:"commit,omitempty"`
+	Org               string   `json:"org"`
+	Roles             []string `json:"roles"`
+	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
+	Version           string   `json:"version,omitempty"`
+	Commit            string   `json:"commit,omitempty"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
@@ -74,6 +75,11 @@ type Handler struct {
 
 	// allowedWorkflowFiles lists the workflow basenames permitted to call the mint.
 	allowedWorkflowFiles []string
+
+	// workflowHostRepos lists the repos whose workflows are trusted to
+	// call the mint in per-repo mode. Defaults to fullsend-ai/fullsend.
+	// Per-org callers hard-wire to {org}/.fullsend and upstream instead.
+	workflowHostRepos map[string]bool
 }
 
 type foreignInflight struct {
@@ -97,6 +103,14 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
+	workflowHostRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(os.Getenv("WORKFLOW_HOST_REPOS")) {
+		workflowHostRepos[strings.ToLower(entry)] = true
+	}
+	if len(workflowHostRepos) == 0 {
+		workflowHostRepos["fullsend-ai/fullsend"] = true
+	}
+
 	h := &Handler{
 		httpClient:           httpClient,
 		pemAccessor:          pemAccessor,
@@ -108,6 +122,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		perRepoWIFRepos:      perRepoWIFRepos,
 		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
 		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
+		workflowHostRepos:    workflowHostRepos,
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -192,7 +207,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
-		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
+		isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+		if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
+			ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+			isPerRepo = false
+		}
+		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.perRepoWIFRepos, h.workflowHostRepos, h.allowedWorkflowFiles); err != nil {
 			log.Printf("workflow ref validation failed for /v1/status: %v", err)
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
@@ -268,12 +288,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "authentication failed")
 		return
 	}
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
-		log.Printf("workflow ref validation failed: %v", err)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
-	}
-
 	callerOrg := strings.ToLower(claims.RepositoryOwner)
 	targetOrg := strings.ToLower(strings.TrimSpace(req.TargetOrg))
 	if targetOrg == "" {
@@ -294,6 +308,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
 		log.Printf("dual-enrollment: upgrading %s from per-repo to per-org scope", claims.Repository)
 		isPerRepo = false
+	}
+	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.perRepoWIFRepos, h.workflowHostRepos, h.allowedWorkflowFiles); err != nil {
+		log.Printf("workflow ref validation failed: %v", err)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
 	}
 	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
 	if err != nil {
@@ -396,14 +415,22 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	org := strings.ToLower(claims.RepositoryOwner)
 	roles := append([]string(nil), h.allowedRoles...)
 
+	// Build sorted workflow host repos list for the status response.
+	var hostRepos []string
+	for repo := range h.workflowHostRepos {
+		hostRepos = append(hostRepos, repo)
+	}
+	sort.Strings(hostRepos)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:     org,
-		Roles:   roles,
-		Version: Version,
-		Commit:  Commit,
+		Org:               org,
+		Roles:             roles,
+		WorkflowHostRepos: hostRepos,
+		Version:           Version,
+		Commit:            Commit,
 	}); err != nil {
 		log.Printf("encoding status response: %v", err)
 	}

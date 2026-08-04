@@ -1664,6 +1664,85 @@ func (p *Provisioner) RemoveRepoFromMint(ctx context.Context, repo string) error
 	return nil
 }
 
+// AddWorkflowHostRepo adds a repo to the mint's WORKFLOW_HOST_REPOS env var
+// so the mint accepts workflows hosted in that repo for per-repo callers.
+// Idempotent — skips repos already listed.
+func (p *Provisioner) AddWorkflowHostRepo(ctx context.Context, repo string) error {
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("repo must be in owner/repo format, got %q", repo)
+	}
+	if strings.Contains(repo, ",") {
+		return fmt.Errorf("repo name cannot contain commas, got %q", repo)
+	}
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	repo = strings.ToLower(repo)
+	existing := trafficEnvVars["WORKFLOW_HOST_REPOS"]
+	for _, entry := range strings.Split(existing, ",") {
+		if strings.ToLower(strings.TrimSpace(entry)) == repo {
+			return nil
+		}
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+	if existing == "" {
+		updated["WORKFLOW_HOST_REPOS"] = repo
+	} else {
+		updated["WORKFLOW_HOST_REPOS"] = existing + "," + repo
+	}
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating WORKFLOW_HOST_REPOS (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("updating WORKFLOW_HOST_REPOS: %w", err)
+	}
+	return nil
+}
+
+// RemoveWorkflowHostRepo removes a repo from WORKFLOW_HOST_REPOS.
+func (p *Provisioner) RemoveWorkflowHostRepo(ctx context.Context, repo string) error {
+	repo = strings.ToLower(repo)
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	existing := trafficEnvVars["WORKFLOW_HOST_REPOS"]
+	var filtered []string
+	for _, entry := range strings.Split(existing, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" && strings.ToLower(entry) != repo {
+			filtered = append(filtered, entry)
+		}
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+	updated["WORKFLOW_HOST_REPOS"] = strings.Join(filtered, ",")
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("removing repo from WORKFLOW_HOST_REPOS (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("removing repo from WORKFLOW_HOST_REPOS: %w", err)
+	}
+	return nil
+}
+
 // DisableWIFProvider sets a WIF provider's disabled field to true.
 func (p *Provisioner) DisableWIFProvider(ctx context.Context, providerID string) error {
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
