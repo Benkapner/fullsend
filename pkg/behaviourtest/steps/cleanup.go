@@ -76,6 +76,17 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Kill switch cleanup ---
+	// Deactivate the kill switch so the next scenario on this slot is
+	// not blocked by sticky state. Runs before dummy-script cleanup
+	// because the kill switch is a repo-level config that affects all
+	// harnesses.
+	if w.KillSwitchActivated {
+		if err := DeactivateKillSwitch(w); err != nil {
+			worldLogf(w, "behaviour cleanup: deactivate kill switch: %v", err)
+		}
+	}
+
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		empty := []byte("ops: []\n")

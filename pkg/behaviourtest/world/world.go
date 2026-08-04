@@ -64,6 +64,11 @@ type World struct {
 	// Nil when lazy ensure is not configured.
 	Ensurer install.RepoEnsurer
 
+	// KillSwitchActivated records whether this scenario activated the
+	// repo-level kill switch. CleanupScenario uses this to deactivate
+	// the switch so the next scenario on this slot is not affected.
+	KillSwitchActivated bool
+
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State
