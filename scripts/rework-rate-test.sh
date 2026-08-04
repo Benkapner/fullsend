@@ -158,7 +158,7 @@ run_case "PR own merge commit SHA excluded" "Rework rate: 0.0%"
 ITEMS=""
 for i in $(seq 1 101); do
   [ -n "${ITEMS}" ] && ITEMS="${ITEMS},"
-  ITEMS="${ITEMS}{\"number\":${i},\"title\":\"bot pr ${i}\",\"closed_at\":\"2026-01-01T10:00:00Z\"}"
+  ITEMS="${ITEMS}{\"number\":${i},\"title\":\"bot pr ${i}\",\"closed_at\":\"2026-01-01T10:00:00Z\",\"pull_request\":{\"merged_at\":\"2026-01-01T10:00:00Z\"}}"
 done
 cat >"${SEARCH_RESULTS}" <<EOF
 {"items":[${ITEMS}]}
@@ -170,7 +170,7 @@ cat >"${FOLLOWUP_COMMITS}" <<'EOF'
 []
 EOF
 
-run_case "handles >100 PRs from paginated response" "Found 101 agent PRs"
+run_case "handles >100 PRs from paginated response" "Agent PRs checked: 101"
 
 # --- Test 5: Null-author commits excluded with accounting ---
 # Follow-up commit has null author -> must not count as rework, must report in output
