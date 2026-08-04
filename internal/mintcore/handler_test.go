@@ -905,6 +905,67 @@ func TestHandler_ReposScope_PerRepoDenied(t *testing.T) {
 	}
 }
 
+func TestHandler_ReposScope_DualEnrollment(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	// Dual enrollment: repo in PER_REPO_WIF_REPOS AND org in ALLOWED_ORGS.
+	// The caller should get per-org scope treatment (superset of per-repo).
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/test-repo")
+	t.Setenv("ALLOWED_ORGS", "test-org")
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil) // test-org/test-repo
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/installation") && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 1, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_dual",
+				ExpiresAt: "2026-08-04T12:00:00Z",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	// Org-mode shapes that should succeed for dual-enrolled callers.
+	for _, repos := range []string{`[".fullsend"]`, `["test-repo",".fullsend"]`, `["test-repo"]`} {
+		body := `{"role":"coder","repos":` + repos + `}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		env.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("repos=%s: expected 200 for dual-enrolled caller, got %d: %s", repos, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Shape not allowed even for per-org callers.
+	body := `{"role":"coder","repos":["other"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disallowed per-org shape, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandler_TooManyRepos(t *testing.T) {
 	t.Setenv("ALLOWED_ROLES", "coder")
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
