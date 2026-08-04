@@ -26,7 +26,7 @@ const defaultAudience = "fullsend-mint"
 type MintRequest struct {
 	MintURL   string
 	Role      string
-	Repos     []string // optional: omit for installation-wide token (all repos on the installation)
+	Repos     []string // required: specific repo names, or ["*"] for installation-wide token
 	TargetOrg string   // optional: cross-org mint when set and differs from caller org
 	Audience  string
 }
@@ -153,7 +153,7 @@ func fetchOIDCJWT(ctx context.Context, audience string) (string, error) {
 type mintRequestBody struct {
 	Role      string   `json:"role"`
 	TargetOrg string   `json:"target_org,omitempty"`
-	Repos     []string `json:"repos,omitempty"`
+	Repos     []string `json:"repos"`
 }
 
 func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*MintResult, error) {

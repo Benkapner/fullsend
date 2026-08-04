@@ -619,30 +619,45 @@ func TestHandler_InvalidRepoName(t *testing.T) {
 func TestHandler_EmptyRepos_FullOrgToken(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
-	pemData, err := generateTestRSAKey()
-	if err != nil {
-		t.Fatalf("generating test key: %v", err)
-	}
-
-	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"coder": pemData},
-	})
-	token := env.signToken(t, nil)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
 
 	body := `{"role":"coder"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	env.handler.ServeHTTP(rec, req)
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for same-org empty repos, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for omitted repos, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]string
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.Contains(resp["error"], "same-org mint requires non-empty repos") {
+	if !strings.Contains(resp["error"], "repos is required") {
+		t.Fatalf("unexpected error: %s", resp["error"])
+	}
+}
+
+func TestHandler_EmptyReposList_Rejected(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+
+	body := `{"role":"coder","repos":[]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty repos list, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(resp["error"], "repos is required") {
 		t.Fatalf("unexpected error: %s", resp["error"])
 	}
 }
@@ -671,80 +686,27 @@ func TestHandler_StarRepos_SameOrgDenied(t *testing.T) {
 	}
 }
 
-func TestHandler_EmptyRepos_CrossOrgInstallationWide(t *testing.T) {
+func TestHandler_EmptyRepos_CrossOrgRejected(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org,fullsend-ai")
 	t.Setenv("ROLE_APP_IDS", `{"e2e":"300"}`)
 
-	pemData, err := generateTestRSAKey()
-	if err != nil {
-		t.Fatalf("generating test key: %v", err)
-	}
-
-	env := newTestOIDCEnv(t, &fakePEMAccessor{pems: map[string][]byte{"e2e": pemData}})
-	token := env.signToken(t, map[string]interface{}{
-		"repository":       "fullsend-ai/fullsend",
-		"repository_owner": "fullsend-ai",
-		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/e2e.yml@refs/heads/main",
-	})
-
-	var tokenCalls int
-	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/orgs/pool-org/installation" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(installationResponse{
-				ID: 999, Account: struct {
-					Login string `json:"login"`
-				}{Login: "pool-org"},
-			})
-		case r.URL.Path == "/app/installations/999/access_tokens" && r.Method == http.MethodPost:
-			tokenCalls++
-			var body map[string]interface{}
-			json.NewDecoder(r.Body).Decode(&body)
-			if tokenCalls == 1 {
-				w.WriteHeader(http.StatusCreated)
-				json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_policy_token"})
-				return
-			}
-			if _, ok := body["repositories"]; ok {
-				t.Error("expected installation token request to omit repositories")
-			}
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(installationTokenResponse{
-				Token:               "ghs_e2e_full_org",
-				ExpiresAt:           "2026-05-06T12:00:00Z",
-				Permissions:         map[string]string{"contents": "write", "metadata": "read"},
-				RepositorySelection: "all",
-			})
-		case r.URL.Path == "/orgs/pool-org/actions/variables/FULLSEND_FOREIGN_E2E_REPOS" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(orgVariableResponse{
-				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
-				Value: "fullsend-ai/fullsend",
-			})
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer github.Close()
-	env.handler.githubBaseURL = github.URL
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
 
 	body := `{"role":"e2e","target_org":"pool-org"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	env.handler.ServeHTTP(rec, req)
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for cross-org omitted repos, got %d: %s", rec.Code, rec.Body.String())
 	}
-
-	var resp mintResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp.Token != "ghs_e2e_full_org" {
-		t.Fatalf("expected token=ghs_e2e_full_org, got %s", resp.Token)
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	if resp.RepoSelection != "all" {
-		t.Fatalf("expected repository_selection=all, got %s", resp.RepoSelection)
+	if !strings.Contains(resp["error"], "repos is required") {
+		t.Fatalf("unexpected error: %s", resp["error"])
 	}
 }
 
@@ -2821,7 +2783,7 @@ func TestHandler_CrossOrgFullFlow(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"e2e","target_org":"pool-org"}`
+	body := `{"role":"e2e","target_org":"pool-org","repos":["*"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -2922,7 +2884,7 @@ func TestHandler_ForeignAllowlistCached(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"e2e","target_org":"pool-org"}`
+	body := `{"role":"e2e","target_org":"pool-org","repos":["*"]}`
 	for i := 0; i < 2; i++ {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
@@ -2995,7 +2957,7 @@ func TestHandler_ForeignAllowlistConcurrent(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"e2e","target_org":"pool-org"}`
+	body := `{"role":"e2e","target_org":"pool-org","repos":["*"]}`
 	const workers = 8
 	var wg sync.WaitGroup
 	wg.Add(workers)
@@ -3055,7 +3017,7 @@ func TestHandler_CrossOrgForeignVariableMissing(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"e2e","target_org":"pool-org"}`
+	body := `{"role":"e2e","target_org":"pool-org","repos":["*"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -3104,7 +3066,7 @@ func TestHandler_CrossOrgForeignDenied(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"e2e","target_org":"pool-org"}`
+	body := `{"role":"e2e","target_org":"pool-org","repos":["*"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)

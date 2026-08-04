@@ -28,7 +28,7 @@ type foreignCacheEntry struct {
 type mintRequest struct {
 	Role      string   `json:"role"`
 	TargetOrg string   `json:"target_org,omitempty"`
-	Repos     []string `json:"repos,omitempty"`
+	Repos     []string `json:"repos"`
 }
 
 // mintResponse is returned on success.
@@ -226,6 +226,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !h.checkAllowedRole(req.Role) {
 		writeError(w, http.StatusForbidden, "role not allowed")
+		return
+	}
+
+	if len(req.Repos) == 0 {
+		writeError(w, http.StatusBadRequest, "repos is required")
 		return
 	}
 
