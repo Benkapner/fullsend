@@ -84,7 +84,7 @@ validation_loop:                     # script is required; these sub-fields are 
   schema: schemas/result.schema.json  # JSON Schema file for output validation (optional)
   feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
 
-allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/policies
+allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/plugins/policies
   - https://github.com/org/       # Omit field: first-party defaults apply automatically
                                    # Non-empty list: your entries + first-party defaults appended
                                    # Set to [] to deny all remote fetches (deny-all)

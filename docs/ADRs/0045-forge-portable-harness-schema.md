@@ -261,7 +261,7 @@ compatibility.
 | `host_files`       | File delivery is a runner concern, not forge        |
 | `providers`        | OpenShell providers are forge-agnostic             |
 | `api_servers`      | REST proxies abstract forge details                |
-| `plugins`          | MCP plugins are forge-agnostic                     |
+| `plugins`          | MCP plugins are forge-agnostic; can be local paths or URLs (ADR-0038) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
 | `timeout_minutes`  | Timeouts are operational, not forge-specific        |
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |

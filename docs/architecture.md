@@ -401,7 +401,7 @@ Retrospective analyst — examines completed or in-progress agent workflows, ide
 
 ## Configuration layering
 
-Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it. Guardrails can only be tightened, never weakened.
+Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, plugins, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it. Guardrails can only be tightened, never weakened.
 
 ```
 
@@ -410,7 +410,7 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
   │  fullsend-ai/fullsend                    (upstream open source)  │
   │                                                                  │
   │  Framework defaults:                                             │
-  │    base agents, skills, policies                                 │
+  │    base agents, skills, plugins, policies                         │
   │    fullsend CLI (fullsend run, fullsend install, ...)            │
   │    scaffold templates, security scanners                         │
   │                                                                  │
@@ -457,7 +457,7 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
 
 **Decided:**
 
-- Layered content resolution: upstream defaults (agents, skills, schemas,
+- Layered content resolution: upstream defaults (agents, skills, plugins, schemas,
   harness, policies, scripts) are provided at runtime via sparse checkout of
   `fullsend-ai/fullsend@v0`, or from vendored files when `--vendor` was used at
   install (detected via `.defaults/action.yml` — see
@@ -507,7 +507,7 @@ Each organization that adopts fullsend operates independently. There is no share
                             └──────────────────────┘
 ```
 
-Each org is a fully independent instance. They choose when to upgrade. They configure their own agents, skills, and policies. They use their own model providers and API keys. The only shared element is the upstream fullsend project they all pull from.
+Each org is a fully independent instance. They choose when to upgrade. They configure their own agents, skills, plugins, and policies. They use their own model providers and API keys. The only shared element is the upstream fullsend project they all pull from.
 
 ## Downstream/upstream federation
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -753,6 +754,25 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 					return resolve.ResolveResult{}, fmt.Errorf("naming cached script dir for %s: %w", lockDep.Field, symlinkErr)
 				}
 				localPath = filepath.Join(namedPath, scriptName)
+			} else if strings.HasPrefix(lockDep.Field, "skills[") || strings.HasPrefix(lockDep.Field, "plugins[") {
+				dirName := path.Base(lockDep.URL)
+				if strings.HasPrefix(lockDep.Field, "plugins[") {
+					forgeInfo, parseErr := forge.ParseForgeURL(lockDep.URL)
+					if parseErr == nil {
+						if forgeInfo.Path == "" {
+							return resolve.ResolveResult{}, fmt.Errorf("%s: URL must point to a directory inside the repo, not the repo root", lockDep.Field)
+						}
+						dirName = filepath.Base(forgeInfo.Path)
+					}
+					if !harness.ValidPluginBasename(dirName) {
+						return resolve.ResolveResult{}, fmt.Errorf("%s: cached basename %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", lockDep.Field, dirName)
+					}
+				}
+				namedPath, symlinkErr := fetch.CacheNamedSymlink(treePath, dirName)
+				if symlinkErr != nil {
+					return resolve.ResolveResult{}, fmt.Errorf("naming cached dir for %s: %w", lockDep.Field, symlinkErr)
+				}
+				localPath = namedPath
 			}
 		} else {
 			content, _, err := fetch.CacheGet(workspaceRoot, lockDep.SHA256)
@@ -773,6 +793,18 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		depType := lockDep.Type
 		if depType == "" {
 			depType = "file"
+		}
+		if strings.HasPrefix(lockDep.Field, "plugins[") {
+			var idx int
+			if _, err := fmt.Sscanf(lockDep.Field, "plugins[%d]", &idx); err != nil {
+				return resolve.ResolveResult{}, fmt.Errorf("lock file entry %q: cannot parse plugin index: %w", lockDep.Field, err)
+			}
+			if idx < 0 || idx >= len(h.Plugins) {
+				return resolve.ResolveResult{}, fmt.Errorf("lock file entry %q: plugin index %d out of range (have %d plugins)", lockDep.Field, idx, len(h.Plugins))
+			}
+			if depType != "directory" {
+				return resolve.ResolveResult{}, fmt.Errorf("lock file entry %q: plugins must be directory-type, got %q", lockDep.Field, depType)
+			}
 		}
 		// For openshell.profiles[...] this captures the pre-rename "content"
 		// path (the .yaml rename happens below), but that is safe: the profile
@@ -837,7 +869,34 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		deps = append(deps, dep)
 	}
 
+	// Pre-validate plugin URL entries before applying any mutations,
+	// preserving the collect-then-apply contract: a validation failure
+	// here returns with the harness unchanged.
+	resolvedURLs := make(map[string]string, len(deps))
+	for _, d := range deps {
+		resolvedURLs[d.URL] = d.LocalPath
+	}
+	for i, p := range h.Plugins {
+		if harness.IsURL(p) {
+			cleanURL, _, _ := harness.ParseIntegrityHash(p)
+			if cleanURL == "" {
+				cleanURL = p
+			}
+			if _, ok := resolvedURLs[cleanURL]; !ok {
+				return resolve.ResolveResult{}, fmt.Errorf("plugins[%d] (%s) has no entry in the lock file — run 'fullsend lock' to update", i, p)
+			}
+			forgeInfo, parseErr := forge.ParseForgeURL(cleanURL)
+			if parseErr == nil {
+				dirName := filepath.Base(forgeInfo.Path)
+				if !harness.ValidPluginBasename(dirName) {
+					return resolve.ResolveResult{}, fmt.Errorf("plugins[%d]: basename %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, dirName)
+				}
+			}
+		}
+	}
+
 	// All deps confirmed in cache — apply mutations to the harness.
+	urlResolvedPlugins := make(map[string]bool)
 	for _, m := range mutations {
 		switch {
 		case m.field == "agent":
@@ -893,6 +952,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Agent source is informational — the harness is already loaded
 			// from the resolved path. This entry exists for cache verification
 			// and lock-file completeness; no harness mutation needed.
+		case strings.HasPrefix(m.field, "plugins["):
+			var idx int
+			// Index was validated during collection; Sscanf is safe here.
+			fmt.Sscanf(m.field, "plugins[%d]", &idx)
+			h.Plugins[idx] = m.localPath
+			urlResolvedPlugins[m.localPath] = true
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) {
@@ -916,6 +981,47 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 	h.Skills = filtered
+
+	// Resolve plugins that still hold URLs because the lock file
+	// deduplicated them under another field (e.g. skills[0]).
+	// URL entries were pre-validated above; lookups are guaranteed to succeed.
+	for i, p := range h.Plugins {
+		if harness.IsURL(p) {
+			cleanURL, _, _ := harness.ParseIntegrityHash(p)
+			if cleanURL == "" {
+				cleanURL = p
+			}
+			h.Plugins[i] = resolvedURLs[cleanURL]
+			urlResolvedPlugins[resolvedURLs[cleanURL]] = true
+		}
+	}
+
+	// Remove any remaining URL entries from plugins, mirroring skills above.
+	filtered = h.Plugins[:0]
+	for _, p := range h.Plugins {
+		if !harness.IsURL(p) {
+			filtered = append(filtered, p)
+		}
+	}
+	h.Plugins = filtered
+
+	// De-duplicate plugins by resolved path and set executable permissions.
+	seen := make(map[string]bool, len(h.Plugins))
+	deduped := h.Plugins[:0]
+	for _, p := range h.Plugins {
+		if !seen[p] {
+			seen[p] = true
+			deduped = append(deduped, p)
+		}
+	}
+	h.Plugins = deduped
+	for _, p := range h.Plugins {
+		if urlResolvedPlugins[p] {
+			if err := chmodDirFiles(p); err != nil {
+				return resolve.ResolveResult{}, fmt.Errorf("setting plugin permissions: %w", err)
+			}
+		}
+	}
 
 	// Strip URL entries from providers — URL-resolved providers are now in
 	// the ResolvedProvider list, mirroring resolve.ResolveHarness behavior.
@@ -947,4 +1053,20 @@ func isScriptLockField(field string) bool {
 	default:
 		return false
 	}
+}
+
+// chmodDirFiles sets all regular files in dir to 0755 so that scripts
+// and binaries within a fetched plugin directory are executable.
+// Uses 0755 for consistency with pre_script/post_script permissions.
+func chmodDirFiles(dir string) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	return filepath.Walk(resolved, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		return os.Chmod(path, 0o755)
+	})
 }
