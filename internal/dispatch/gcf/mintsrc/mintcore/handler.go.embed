@@ -287,6 +287,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// already receive per-org treatment in that configuration.
 	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
 		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+		log.Printf("dual-enrollment: upgrading %s from per-repo to per-org scope", claims.Repository)
 		isPerRepo = false
 	}
 	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
