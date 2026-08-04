@@ -440,7 +440,7 @@ security:
     secret_redact_posttool: true
 
 # Remote resource access (ADR-0038). URL-prefix allowlist for skills, agents,
-# and policies fetched from HTTPS endpoints with SHA256 integrity verification.
+# plugins, and policies fetched from HTTPS endpoints with SHA256 integrity verification.
 allowed_remote_resources:
   - https://example.com/skills/
   - https://example.com/policies/
