@@ -54,14 +54,6 @@ jobs:
           set -euo pipefail
           mkdir -p scripts
           cp -r ".defaults/internal/scaffold/fullsend-repo/scripts/." scripts/
-          if [[ -d "customized/scripts" ]]; then
-            find "customized/scripts" -type f ! -name '.gitkeep' -print0 \
-              | while IFS= read -r -d '' f; do
-                  rel="${f#customized/}"
-                  mkdir -p "$(dirname "${rel}")"
-                  cp "${f}" "${rel}"
-                done
-          fi
           rm -rf .defaults
 
       - name: Mint fullsend token
