@@ -52,6 +52,48 @@ func TestGivenKillSwitchActive_SetsKillSwitch(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, scm.commitCalled, "CommitFile should have been called")
 	assert.Contains(t, string(scm.committedContent), "kill_switch: true")
+	assert.True(t, w.KillSwitchActivated, "KillSwitchActivated should be set for cleanup")
+}
+
+func TestDeactivateKillSwitch_ClearsKillSwitch(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := DeactivateKillSwitch(w)
+	require.NoError(t, err)
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: false")
+}
+
+func TestDeactivateKillSwitch_GetFileContentError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: fmt.Errorf("not found"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := DeactivateKillSwitch(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestDeactivateKillSwitch_CommitFileError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+		commitErr:   fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := DeactivateKillSwitch(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating config")
 }
 
 func TestGivenKillSwitchActive_GetFileContentError(t *testing.T) {
