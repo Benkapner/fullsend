@@ -1694,10 +1694,15 @@ func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 }
 
 func TestRunMintEnrollRepo_Success(t *testing.T) {
-	withMintGCFClient(t, mintDiscoveryClient())
+	client := mintDiscoveryClient()
+	withMintGCFClient(t, client)
 	printer := ui.New(&strings.Builder{})
 	err := runMintEnrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", false)
 	require.NoError(t, err)
+
+	// Repo enrollment must not grant any IAM roles (issue #5913) — Vertex AI
+	// access is provisioned separately via 'fullsend inference provision'.
+	assert.Zero(t, gcf.ProjectIAMBindingCount(client))
 }
 
 func TestRunMintEnrollRepo_PreservesCaseInWIFCondition(t *testing.T) {
@@ -1708,6 +1713,7 @@ func TestRunMintEnrollRepo_PreservesCaseInWIFCondition(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "assertion.repository == 'Acme/Widget'", gcf.LastWIFProviderCondition(client))
+	assert.Zero(t, gcf.ProjectIAMBindingCount(client))
 }
 
 func TestRunMintEnrollRepo_PublicMode(t *testing.T) {
