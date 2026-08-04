@@ -192,7 +192,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
-		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.allowedOrgs, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
+		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
 			log.Printf("workflow ref validation failed for /v1/status: %v", err)
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
@@ -263,7 +263,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "authentication failed")
 		return
 	}
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.allowedOrgs, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
+	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
 		log.Printf("workflow ref validation failed: %v", err)
 		writeError(w, http.StatusUnauthorized, "authentication failed")
 		return

@@ -81,7 +81,6 @@ func TestValidateOrgAllowed_PublicMode(t *testing.T) {
 func TestValidateWorkflowRef(t *testing.T) {
 	perRepo := map[string]bool{"myorg/my-repo": true}
 	allowedFiles := []string{"dispatch.yml", "triage.yml"}
-	tightOrgs := []string{"myorg"}
 
 	tests := []struct {
 		name       string
@@ -136,7 +135,7 @@ func TestValidateWorkflowRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, tightOrgs, perRepo, allowedFiles)
+			err := ValidateWorkflowRef(tt.ref, tt.repository, perRepo, allowedFiles)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
@@ -151,7 +150,6 @@ func TestValidateWorkflowRef_Wildcard(t *testing.T) {
 	err := ValidateWorkflowRef(
 		"myorg/.fullsend/.github/workflows/anything.yml@refs/heads/main",
 		"myorg/.fullsend",
-		[]string{"myorg"},
 		nil, []string{"*"},
 	)
 	assert.NoError(t, err)
@@ -237,8 +235,7 @@ func TestIsPublicMintRepos(t *testing.T) {
 }
 
 func TestValidateWorkflowRef_PublicMode(t *testing.T) {
-	publicOrgs := []string{"*"}
-	// Public mode is now expressed as "*" in PER_REPO_WIF_REPOS.
+	// Public mode is expressed as "*" in PER_REPO_WIF_REPOS.
 	perRepo := map[string]bool{"*": true}
 
 	tests := []struct {
@@ -299,7 +296,7 @@ func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, publicOrgs, perRepo, []string{"dispatch.yml"})
+			err := ValidateWorkflowRef(tt.ref, tt.repository, perRepo, []string{"dispatch.yml"})
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {

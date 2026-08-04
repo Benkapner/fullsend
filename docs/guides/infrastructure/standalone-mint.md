@@ -120,11 +120,11 @@ The standalone mint is configured entirely through environment variables:
 
 ### Public mint mode
 
-Set `ALLOWED_ORGS=*` to enable public mint mode:
+Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
 - Any org may request tokens (installation lookup still scopes tokens to the requesting org)
 - `job_workflow_ref` must reference `fullsend-ai/fullsend/.github/workflows/` only
-- Leave `PER_REPO_WIF_REPOS` unset; the basename gate (`ALLOWED_WORKFLOW_FILES`) is not applied
+- Set `PER_REPO_WIF_REPOS=*` alongside `ALLOWED_ORGS=*`; the basename gate (`ALLOWED_WORKFLOW_FILES`) is not applied
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy

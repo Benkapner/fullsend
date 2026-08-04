@@ -150,7 +150,7 @@ func ValidateOrgAllowed(org string, allowedOrgs []string) error {
 // or a registered per-repo repo, and the workflow file must be in the
 // allowed list. The repository parameter is the token's repository claim
 // and is used to cross-check per-repo matches.
-func ValidateWorkflowRef(ref, repository string, allowedOrgs []string, perRepoWIFRepos map[string]bool, allowedWorkflowFiles []string) error {
+func ValidateWorkflowRef(ref, repository string, perRepoWIFRepos map[string]bool, allowedWorkflowFiles []string) error {
 	if ref == "" {
 		return fmt.Errorf("missing job_workflow_ref claim")
 	}
@@ -179,9 +179,8 @@ func ValidateWorkflowRef(ref, repository string, allowedOrgs []string, perRepoWI
 	matched := false
 
 	// Extract the repository owner from the repository claim and only
-	// check that specific org's .fullsend/ prefix, rather than iterating
-	// all allowedOrgs. This ensures the workflow ref matches the token's
-	// own org, not any allowed org.
+	// check that specific org's .fullsend/ prefix. This ensures the
+	// workflow ref matches the token's own org.
 	if idx := strings.Index(repository, "/"); idx > 0 {
 		repoOwner := strings.ToLower(repository[:idx])
 		configPrefix := repoOwner + "/.fullsend/"
