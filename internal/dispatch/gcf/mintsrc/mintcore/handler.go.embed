@@ -28,7 +28,7 @@ type foreignCacheEntry struct {
 type mintRequest struct {
 	Role      string   `json:"role"`
 	TargetOrg string   `json:"target_org,omitempty"`
-	Repos     []string `json:"repos,omitempty"`
+	Repos     []string `json:"repos"`
 }
 
 // mintResponse is returned on success.
@@ -229,6 +229,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Repos) == 0 {
+		writeError(w, http.StatusBadRequest, "repos is required")
+		return
+	}
+
 	req.Repos = normalizeMintRepos(req.Repos)
 
 	if len(req.Repos) > maxRepos {
@@ -301,7 +306,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Repos) == 0 {
-		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
+		log.Printf("WARNING: repos=[\"*\"] normalized to installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
 			targetOrg, req.Role, callerOrg, claims.Repository)
 	}
 
@@ -330,7 +335,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("granted scope: repos=%v permissions=%v repo_selection=%s",
 			granted.Repos, granted.Permissions, granted.RepoSelection)
 		if len(req.Repos) == 0 {
-			log.Printf("WARNING: installation-wide token granted for target_org=%s role=%s repo_selection=%s",
+			log.Printf("WARNING: repos=[\"*\"] installation-wide token granted for target_org=%s role=%s repo_selection=%s",
 				targetOrg, req.Role, granted.RepoSelection)
 		} else if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)
