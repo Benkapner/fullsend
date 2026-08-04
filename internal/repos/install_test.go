@@ -982,6 +982,7 @@ func TestInstallVarsForForge_GitLab_WithInference(t *testing.T) {
 		Forge:            ForgeGitLab,
 		InferenceProject: "my-gcp-project",
 		InferenceRegion:  "us-central1",
+		WIFProvider:      fakeWIFProvider,
 	}
 	vars, err := installVarsForForge(cfg, "", "")
 	if err != nil {
@@ -996,7 +997,29 @@ func TestInstallVarsForForge_GitLab_WithInference(t *testing.T) {
 	if _, ok := vars["FULLSEND_SA"]; ok {
 		t.Error("FULLSEND_SA should not be in regular vars (it is a protected variable)")
 	}
+	if _, ok := vars["FULLSEND_WIF_PROVIDER"]; ok {
+		t.Error("FULLSEND_WIF_PROVIDER should not be in regular vars (it is a protected variable)")
+	}
 	protVars := installProtectedVarsForForge(cfg)
+	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
+	if protVars["FULLSEND_SA"] != expectedSA {
+		t.Errorf("protected FULLSEND_SA = %q, want %q", protVars["FULLSEND_SA"], expectedSA)
+	}
+	if protVars["FULLSEND_WIF_PROVIDER"] != fakeWIFProvider {
+		t.Errorf("protected FULLSEND_WIF_PROVIDER = %q, want %q", protVars["FULLSEND_WIF_PROVIDER"], fakeWIFProvider)
+	}
+}
+
+func TestInstallProtectedVarsForForge_GitLab_EmptyWIFProvider(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:            ForgeGitLab,
+		InferenceProject: "my-gcp-project",
+		WIFProvider:      "",
+	}
+	protVars := installProtectedVarsForForge(cfg)
+	if _, ok := protVars["FULLSEND_WIF_PROVIDER"]; ok {
+		t.Error("FULLSEND_WIF_PROVIDER should not be set when WIFProvider is empty")
+	}
 	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
 	if protVars["FULLSEND_SA"] != expectedSA {
 		t.Errorf("protected FULLSEND_SA = %q, want %q", protVars["FULLSEND_SA"], expectedSA)
@@ -1125,6 +1148,9 @@ func TestInstall_GitLab_WithInference(t *testing.T) {
 	if _, ok := varMap["FULLSEND_SA"]; ok {
 		t.Error("FULLSEND_SA should not be in regular vars (it is a protected variable)")
 	}
+	if _, ok := varMap["FULLSEND_WIF_PROVIDER"]; ok {
+		t.Error("FULLSEND_WIF_PROVIDER should not be in regular vars (it is a protected variable)")
+	}
 	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
 	protVarMap := make(map[string]string)
 	for _, v := range fc.CreatedProtectedVars {
@@ -1132,6 +1158,9 @@ func TestInstall_GitLab_WithInference(t *testing.T) {
 	}
 	if protVarMap["FULLSEND_SA"] != expectedSA {
 		t.Errorf("protected FULLSEND_SA = %q, want %q", protVarMap["FULLSEND_SA"], expectedSA)
+	}
+	if protVarMap["FULLSEND_WIF_PROVIDER"] != fakeWIFProvider {
+		t.Errorf("protected FULLSEND_WIF_PROVIDER = %q, want %q", protVarMap["FULLSEND_WIF_PROVIDER"], fakeWIFProvider)
 	}
 
 	// Verify secrets were written for GitLab with inference.

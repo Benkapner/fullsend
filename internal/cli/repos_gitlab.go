@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -16,11 +19,51 @@ const (
 	gitlabAccessLevelMaintainer = 40
 )
 
+// botTokenWIFConfig provides GCP parameters for storing the bot token in
+// Secret Manager when WIF mode is active. When passed to
+// setupGitLabBotToken, the bot PAT is stored in Secret Manager instead
+// of as a CI/CD variable, and FULLSEND_BOT_TOKEN_SECRET is set as a
+// protected CI/CD variable pointing to the secret name.
+type botTokenWIFConfig struct {
+	GCPClient gcf.GCFClient
+	ProjectID string
+}
+
+// secretIDSanitizer replaces characters invalid in Secret Manager IDs with hyphens.
+// GCP Secret Manager IDs allow [a-zA-Z0-9_-] only.
+var secretIDSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_\-]`)
+
+const secretIDMaxLen = 255
+
+// botTokenSecretID returns the Secret Manager secret ID for a repo's bot token.
+// Slashes in GitLab subgroup paths are mapped to double underscores so that
+// "group/sub" and "group-sub" produce distinct IDs.
+func botTokenSecretID(owner, repo string) (string, error) {
+	combined := strings.ReplaceAll(owner, "/", "__") + "--" + repo
+	sanitized := secretIDSanitizer.ReplaceAllString(combined, "-")
+	id := "fullsend-bot-token-" + sanitized
+	if len(id) > secretIDMaxLen {
+		return "", fmt.Errorf("secret ID %q exceeds %d character limit", id, secretIDMaxLen)
+	}
+	return id, nil
+}
+
 // setupGitLabBotToken creates a project access token for the fullsend bot
-// identity and stores it as a protected CI/CD variable (FULLSEND_FORGE_TOKEN).
-// If project access tokens are not available (free tier), it falls back to
-// the provided fallbackToken (from --gitlab-bot-token). Returns the token value.
-func setupGitLabBotToken(ctx context.Context, client forge.Client, glClient *gitlab.LiveClient, printer *ui.Printer, owner, repo, fallbackToken string) (string, error) {
+// identity and stores it appropriately based on the credential mode.
+//
+// When wifCfg is nil (variable mode), the PAT is stored as a protected
+// CI/CD variable (FULLSEND_FORGE_TOKEN).
+//
+// When wifCfg is non-nil (WIF mode), the PAT is stored in GCP Secret
+// Manager and FULLSEND_BOT_TOKEN_SECRET is set as a protected CI/CD
+// variable pointing to the secret name. The FULLSEND_FORGE_TOKEN CI/CD
+// variable is not written — the scaffold retrieves the PAT from Secret
+// Manager at runtime via OIDC/WIF.
+//
+// If project access tokens are not available (free tier), it falls back
+// to the provided fallbackToken (from --gitlab-bot-token). Returns the
+// token value.
+func setupGitLabBotToken(ctx context.Context, client forge.Client, glClient *gitlab.LiveClient, printer *ui.Printer, owner, repo, fallbackToken string, wifCfg *botTokenWIFConfig) (string, error) {
 	printer.StepStart("Creating project access token")
 	var botPAT string
 	if glClient != nil {
@@ -64,15 +107,74 @@ func setupGitLabBotToken(ctx context.Context, client forge.Client, glClient *git
 	}
 
 	if botPAT != "" {
-		printer.StepStart("Storing bot credentials")
-		if err := client.CreateRepoSecret(ctx, owner, repo, "FULLSEND_FORGE_TOKEN", botPAT); err != nil {
-			printer.StepFail("Failed to store bot credentials")
-			return "", fmt.Errorf("storing bot PAT: %w", err)
+		if wifCfg != nil {
+			// WIF mode: store bot PAT in Secret Manager and set
+			// FULLSEND_BOT_TOKEN_SECRET as a protected CI/CD variable.
+			printer.StepStart("Storing bot credentials in Secret Manager")
+			secretID, err := botTokenSecretID(owner, repo)
+			if err != nil {
+				printer.StepFail("Invalid secret ID")
+				return "", err
+			}
+
+			if err := storeSecretManagerToken(ctx, wifCfg.GCPClient, printer, wifCfg.ProjectID, secretID, []byte(botPAT)); err != nil {
+				printer.StepFail("Failed to store bot credentials in Secret Manager")
+				return "", fmt.Errorf("storing bot PAT in Secret Manager: %w", err)
+			}
+
+			// Grant the WIF service account access to read the secret.
+			saEmail := gcf.MintServiceAccountEmail(wifCfg.ProjectID)
+			secretResource := fmt.Sprintf("projects/%s/secrets/%s", wifCfg.ProjectID, secretID)
+			if err := wifCfg.GCPClient.SetSecretIAMBinding(ctx, secretResource,
+				"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
+				printer.StepFail("Failed to grant secret access")
+				return "", fmt.Errorf("granting secret access for %s: %w", secretID, err)
+			}
+
+			// Set FULLSEND_BOT_TOKEN_SECRET as a protected CI/CD variable
+			// so the scaffold knows which secret to read from Secret Manager.
+			if err := client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_BOT_TOKEN_SECRET", secretID); err != nil {
+				printer.StepFail("Failed to set FULLSEND_BOT_TOKEN_SECRET")
+				return "", fmt.Errorf("setting FULLSEND_BOT_TOKEN_SECRET: %w", err)
+			}
+			printer.StepDone("Bot credentials stored in Secret Manager")
+		} else {
+			// Variable mode: store bot PAT directly as a protected CI/CD variable.
+			printer.StepStart("Storing bot credentials")
+			if err := client.CreateRepoSecret(ctx, owner, repo, "FULLSEND_FORGE_TOKEN", botPAT); err != nil {
+				printer.StepFail("Failed to store bot credentials")
+				return "", fmt.Errorf("storing bot PAT: %w", err)
+			}
+			printer.StepDone("Bot credentials stored as protected CI/CD variable")
 		}
-		printer.StepDone("Bot credentials stored as protected CI/CD variable")
 	}
 
 	return botPAT, nil
+}
+
+// storeSecretManagerToken creates a Secret Manager secret (if it doesn't
+// exist), disables any existing latest version, and stores the provided
+// data as a new version.
+func storeSecretManagerToken(ctx context.Context, gcpClient gcf.GCFClient, printer *ui.Printer, projectID, secretID string, data []byte) error {
+	secretErr := gcpClient.GetSecret(ctx, projectID, secretID)
+	if secretErr != nil {
+		if !errors.Is(secretErr, gcf.ErrSecretNotFound) {
+			return fmt.Errorf("checking secret %s: %w", secretID, secretErr)
+		}
+		if err := gcpClient.CreateSecret(ctx, projectID, secretID); err != nil {
+			return fmt.Errorf("creating secret %s: %w", secretID, err)
+		}
+	} else {
+		// Secret already exists — disable the current latest version so
+		// stale PATs don't accumulate as enabled versions.
+		if err := gcpClient.DisableSecretVersion(ctx, projectID, secretID); err != nil {
+			printer.StepWarn(fmt.Sprintf("Could not disable previous secret version for %s: %v", secretID, err))
+		}
+	}
+	if err := gcpClient.AddSecretVersion(ctx, projectID, secretID, data); err != nil {
+		return fmt.Errorf("adding secret version for %s: %w", secretID, err)
+	}
+	return nil
 }
 
 // setupGitLabPipelineSchedules creates pipeline schedules for polling.
