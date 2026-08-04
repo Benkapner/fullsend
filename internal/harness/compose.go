@@ -823,6 +823,30 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 		deps = append(deps, dep)
 	}
 
+	// Forge-specific skills: same fetch treatment as top-level skills.
+	// resolveBaseScripts already handles forge scripts and forge policy;
+	// skills are directories (fetched via fetchBaseSkill) and belong here.
+	for platform, fc := range base.Forge {
+		if fc == nil {
+			continue
+		}
+		for i, skill := range fc.Skills {
+			if skill == "" || IsURL(skill) || isFullsendCachePath(skill, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.skills[%d]", platform, i)
+			if err := validateBaseRelPath(fieldName, skill); err != nil {
+				return nil, err
+			}
+			dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill, allowlist, opts)
+			if err != nil {
+				return nil, err
+			}
+			fc.Skills[i] = localDir
+			deps = append(deps, dep)
+		}
+	}
+
 	return deps, nil
 }
 
@@ -859,6 +883,31 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 		}
 		base.HostFiles[i].Src = cachePath
 		deps = append(deps, dep)
+	}
+
+	// Forge-specific host_files: same fetch treatment as top-level
+	// host_files. Entries with ${VAR} expansion are left unchanged
+	// (resolved at bootstrap time on the host).
+	for platform, fc := range base.Forge {
+		if fc == nil {
+			continue
+		}
+		for i := range fc.HostFiles {
+			src := fc.HostFiles[i].Src
+			if src == "" || strings.Contains(src, "${") || IsURL(src) || isFullsendCachePath(src, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.host_files[%d].src", platform, i)
+			if err := validateBaseRelPath(fieldName, src); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, src, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.HostFiles[i].Src = cachePath
+			deps = append(deps, dep)
+		}
 	}
 
 	return deps, nil
@@ -1486,8 +1535,8 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 }
 
 // mergeForgeConfigInto merges base ForgeConfig fields into child.
-// Similar to mergeForgeConfig in forge.go but prepends base skills
-// (base + child order) rather than appending forge skills to harness skills.
+// Similar to mergeForgeConfig in forge.go but prepends base skills and host files
+// (base + child order) rather than appending forge values to harness values.
 func mergeForgeConfigInto(base, child *ForgeConfig) {
 	if base == nil {
 		return
@@ -1507,6 +1556,11 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 	// Skills: base + child with child-overrides-base-by-basename
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
+	}
+
+	// HostFiles: concatenated with last-writer-wins dedup by Dest
+	if base.HostFiles != nil {
+		child.HostFiles = mergeHostFiles(base.HostFiles, child.HostFiles)
 	}
 
 	// RunnerEnv: merge, child keys win
