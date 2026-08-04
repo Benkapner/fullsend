@@ -96,8 +96,8 @@ func TestMintToken_CrossOrgTarget(t *testing.T) {
 		if body.TargetOrg != "halfsend-01" {
 			t.Errorf("target_org = %q, want %q", body.TargetOrg, "halfsend-01")
 		}
-		if len(body.Repos) != 0 {
-			t.Errorf("repos = %v, want omitted for installation-wide e2e token", body.Repos)
+		if len(body.Repos) != 1 || body.Repos[0] != "*" {
+			t.Errorf("repos = %v, want [\"*\"] for installation-wide e2e token", body.Repos)
 		}
 
 		json.NewEncoder(w).Encode(MintResult{
@@ -123,6 +123,7 @@ func TestMintToken_CrossOrgTarget(t *testing.T) {
 	result, err := MintToken(context.Background(), MintRequest{
 		MintURL:   mintServer.URL,
 		Role:      "e2e",
+		Repos:     []string{"*"},
 		TargetOrg: "halfsend-01",
 	})
 	if err != nil {
@@ -133,41 +134,16 @@ func TestMintToken_CrossOrgTarget(t *testing.T) {
 	}
 }
 
-func TestMintToken_OmittedRepos(t *testing.T) {
-	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
-	}))
-	defer oidcServer.Close()
-
-	var gotBody mintRequestBody
-	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
-	}))
-	defer mintServer.Close()
-
-	origEnv := envLookup
-	envLookup = func(key string) string {
-		switch key {
-		case "ACTIONS_ID_TOKEN_REQUEST_URL":
-			return oidcServer.URL + "?dummy=1"
-		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
-			return "test-request-token"
-		default:
-			return ""
-		}
-	}
-	defer func() { envLookup = origEnv }()
-
+func TestMintToken_OmittedRepos_Rejected(t *testing.T) {
 	_, err := MintToken(context.Background(), MintRequest{
-		MintURL: mintServer.URL,
+		MintURL: "https://mint.example.com",
 		Role:    "triage",
 	})
-	if err != nil {
-		t.Fatalf("MintToken() error = %v", err)
+	if err == nil {
+		t.Fatal("MintToken() expected error for omitted repos, got nil")
 	}
-	if len(gotBody.Repos) != 0 {
-		t.Errorf("repos = %v, want omitted", gotBody.Repos)
+	if !strings.Contains(err.Error(), "repos is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -220,6 +196,7 @@ func TestMintToken_ValidationErrors(t *testing.T) {
 		{"empty mint URL", MintRequest{Role: "triage", Repos: []string{"r"}}, "mint URL is required"},
 		{"non-HTTPS mint URL", MintRequest{MintURL: "http://example.com", Role: "triage", Repos: []string{"r"}}, "mint URL must use HTTPS"},
 		{"empty role", MintRequest{MintURL: "https://mint.example.com", Repos: []string{"r"}}, "role is required"},
+		{"empty repos", MintRequest{MintURL: "https://mint.example.com", Role: "triage"}, "repos is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

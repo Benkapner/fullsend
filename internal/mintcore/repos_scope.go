@@ -15,7 +15,8 @@ const (
 )
 
 // normalizeMintRepos treats a single "*" entry as an alias for an empty
-// repos list (installation-wide scope on the foreign path).
+// repos list (installation-wide scope). Since repos is now required,
+// ["*"] is the only path to installation-wide scope.
 func normalizeMintRepos(repos []string) []string {
 	if len(repos) == 1 && repos[0] == "*" {
 		return nil
