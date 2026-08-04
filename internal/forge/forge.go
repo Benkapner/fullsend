@@ -114,6 +114,7 @@ type ChangeProposal struct {
 	Number int
 	Head   string
 	Base   string
+	Author string // login of the user who opened the PR/MR
 }
 
 // PullRequestInfo carries branch/repo context for dispatch enrichment.
@@ -138,6 +139,14 @@ type WorkflowRun struct {
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+}
+
+// WorkflowJob represents a job within a workflow run.
+type WorkflowJob struct {
+	ID         int
+	Name       string
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", etc.
 }
 
 // WorkflowArtifact is a file bundle uploaded by a workflow run.
@@ -266,14 +275,18 @@ type DirectoryEntry struct {
 type Client interface {
 	// Repository operations
 	// ListOrgRepos returns repositories eligible for fullsend enrollment.
-	// It excludes archived repos (no active development), forks, and
-	// private repos.
+	// It excludes archived repos (no active development) and forks.
 	//
-	// Private repos are excluded because the default .fullsend config repo
-	// is public, and agent workflows dispatched to it run with public logs.
-	// Enrolling a private repo would expose its code in those logs when
-	// agents check out and process the repo content. Private repo support
-	// requires per-repo .fullsend mode where agents run on the target repo.
+	// When includePrivate is false, private repos are also excluded.
+	// This is the appropriate setting for per-org mode because the
+	// default .fullsend config repo is public and agent workflows
+	// dispatched to it run with public logs. Enrolling a private repo
+	// would expose its code in those logs when agents check out and
+	// process the repo content.
+	//
+	// When includePrivate is true, private repos are included in the
+	// result. This is appropriate for per-repo mode where agents run
+	// on the target repo itself, so public log exposure does not apply.
 	//
 	// Forks are excluded because fullsend's trust model is org-centric:
 	// trust derives from org repository permissions and CODEOWNERS
@@ -281,9 +294,11 @@ type Client interface {
 	// or lack the same CODEOWNERS configuration, which could bypass
 	// human-approval gates. Installing on both a fork and its upstream
 	// also risks duplicate agent PRs and conflicting changes.
-	ListOrgRepos(ctx context.Context, org string) ([]Repository, error)
+	ListOrgRepos(ctx context.Context, org string, includePrivate bool) ([]Repository, error)
 	GetRepo(ctx context.Context, owner, repo string) (*Repository, error)
 	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
+	// UpdateRepoVisibility sets a repository's visibility to public or private.
+	UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error
 	DeleteRepo(ctx context.Context, owner, repo string) error
 
 	// FindExistingFork checks whether the authenticated user already has
@@ -397,6 +412,10 @@ type Client interface {
 	// Returns forge.ErrNotFound if the branch does not exist.
 	GetBranchRef(ctx context.Context, owner, repo, branch string) (sha string, err error)
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error
+
+	// DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
+	// Returns forge.ErrNotFound if the ref does not exist.
+	DeleteRef(ctx context.Context, owner, repo, refPath string) error
 	CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	// CreateOrUpdateFileOnBranch creates or updates a file on a specific branch.
 	// Combines SHA-aware upsert with branch targeting.
@@ -404,7 +423,21 @@ type Client interface {
 
 	// Change proposals (PRs/MRs)
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*ChangeProposal, error)
+
+	// CreateCrossRepoChangeProposal opens a pull request where the head
+	// branch lives in a different repository than the base. This is
+	// necessary for same-owner forks where the REST API's "owner:branch"
+	// head format is ambiguous. Implementations should use a mechanism
+	// that can explicitly identify the head repository (e.g., GraphQL
+	// createPullRequest with headRepositoryId on GitHub).
+	CreateCrossRepoChangeProposal(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*ChangeProposal, error)
+
 	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
+
+	// CloseChangeProposal closes an open pull request / merge request by
+	// number without merging it. This is used to clean up stale PRs
+	// (e.g., scaffold PRs left over from a previous install mode).
+	CloseChangeProposal(ctx context.Context, owner, repo string, number int) error
 
 	// Organization metadata
 	// GetOrgPlan returns the billing plan name for the org (e.g. "free", "team", "enterprise").
@@ -515,6 +548,9 @@ type Client interface {
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 
+	// ListWorkflowRunJobs returns the jobs within a workflow run.
+	ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]WorkflowJob, error)
+
 	// ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 	ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]WorkflowArtifact, error)
 	// DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.
@@ -546,15 +582,29 @@ type Client interface {
 	// The existing RepoVariable methods model GitHub Actions variables;
 	// the CIVariable methods below model GitLab CI protected variables
 	// (branch-restricted, unmasked).
+
+	// CreatePipeline creates a new pipeline on the given ref with the
+	// given variables. Returns the pipeline metadata (ID, web URL).
+	// Used by the cron-poller to dispatch agent stages directly via
+	// the API instead of bridge jobs and child pipelines.
+	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error)
+
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 
 	// CI/CD branch-restricted variables (distinct from RepoVariable methods).
+	// UpdateCIVariable upserts a CI/CD variable (update if exists, create if not).
 	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
 	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
 	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
+}
+
+// Pipeline represents a triggered pipeline.
+type Pipeline struct {
+	ID     int64
+	WebURL string
 }
 
 // PipelineSchedule represents a scheduled pipeline trigger.

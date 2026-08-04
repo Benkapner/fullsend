@@ -17,10 +17,15 @@ object form via a custom YAML unmarshaler:
 
 ```go
 type AgentEntry struct {
-    Name   string `yaml:"name,omitempty"`
-    Source string `yaml:"source"`
+    Name    string `yaml:"name,omitempty"`
+    Source  string `yaml:"source"`
+    Enabled *bool  `yaml:"enabled,omitempty"`
 }
 ```
+
+When `Enabled` is nil (omitted), the entry defaults to enabled.
+Setting `enabled: false` suppresses the agent from the merged set
+and blocks resolution. Disabled entries must have an explicit `Name`.
 
 `AgentEntry` implements `yaml.Unmarshaler`: if the YAML node is a
 scalar string, it populates `Source` and leaves `Name` empty (derived
@@ -242,8 +247,10 @@ scaffold), and whether it came from config or scaffold.
 
 When `fullsend run <name>` is invoked:
 
-1. Build the merged agent set via `MergedAgents()` (scaffold base +
-   config overlay from the target repo's `config.yaml`).
+1. ~~Build the merged agent set via `MergedAgents()` (scaffold base +
+   config overlay from the target repo's `config.yaml`).~~ Look up the
+   requested agent by name in config entries; fall back to agents-repo
+   for known first-party agents *(updated — PR #5425)*.
 2. Look up the requested agent by name.
 3. **URL source:** pass the URL directly to `LoadWithBase()`. The
    harness is fetched at runtime — no wrapper file is written to disk.
@@ -266,16 +273,16 @@ When `fullsend run <name>` is invoked:
 The `--harness` flag, when given a name instead of a file path, uses
 this same resolution path.
 
-### 3c. Remove wrapper generation for config agents
+### 3c. ~~Remove wrapper generation for config agents~~ *(completed — PR #5425)*
 
-**File:** `internal/layers/harnesswrappers.go`
+~~**File:** `internal/layers/harnesswrappers.go`~~ *(file removed — PR #5425)*
 
-`HarnessWrappersLayer` continues to generate wrappers for
+~~`HarnessWrappersLayer` continues to generate wrappers for
 scaffold-based agents in org mode (these still need `role:` and
 `slug:` from the GitHub App credentials). Config-driven agents bypass
 wrapper generation entirely — `fullsend run` resolves them at runtime
 (3b). As agents migrate from scaffold to config, the wrapper layer
-shrinks.
+shrinks.~~
 
 ### 3d. Tests
 
@@ -285,7 +292,7 @@ shrinks.
 - Config agent resolved by name loads from local path.
 - Name collision: config entry wins over scaffold.
 - Unknown agent name returns an error.
-- Scaffold fallback works when agent is not in config.
+- ~~Scaffold fallback works when agent is not in config.~~ Agent not in config returns resolution error *(updated — PR #5425)*.
 
 ---
 
@@ -293,11 +300,13 @@ shrinks.
 
 **Goal:** Delete compiled-in agent map and triage scaffold files.
 
-**Prerequisite:** Dispatch routing must resolve agents from the merged
-agent set (Phase 3) before scaffold files are deleted. Verify that
-dispatch does not check for scaffold harness existence independently
-— if it does, update it to use `MergedAgents()` so triage dispatch
-continues to work after scaffold deletion.
+**Prerequisite:** Dispatch routing must resolve agents from config
+entries (with agents-repo fallback) before scaffold files are deleted.
+~~Verify that dispatch does not check for scaffold harness existence
+independently — if it does, update it to use `MergedAgents()` so
+triage dispatch continues to work after scaffold deletion.~~
+*(updated — PR #5425: `MergedAgents()` removed; resolution is now
+config entries with agents-repo fallback)*
 
 ### 4a. Clean up scaffold agent helpers
 
@@ -390,14 +399,14 @@ track the transition. The issue should verify:
 - The deprecation notice from the additive merge is no longer being
   triggered in CI/logs.
 
-### 5b. Remove scaffold fallback
+### 5b. Remove scaffold fallback *(completed — PR #5425)*
 
-**File:** `internal/config/agents.go` (or wherever `MergedAgents`
-lives)
+~~**File:** `internal/config/agents.go` (or wherever `MergedAgents`
+lives)~~
 
-Change `MergedAgents()` to return only config entries — scaffold
+~~Change `MergedAgents()` to return only config entries — scaffold
 names are no longer included as a base set. If `agents` is empty,
-return an empty list (or error) instead of falling back.
+return an empty list (or error) instead of falling back.~~
 
 ### 5c. Remove scaffold harness files
 
@@ -411,13 +420,14 @@ have been deleted in their respective extraction phases.
 ### 5d. Remove `HarnessNames()` and `HarnessWrappersLayer`
 
 **Files:** `internal/scaffold/baseurl.go`,
-`internal/layers/harnesswrappers.go`
+~~`internal/layers/harnesswrappers.go`~~ *(removed — PR #5425)*
 
-`HarnessNames()` is no longer needed for agent discovery. Either
-remove it or repurpose it for install-time defaults only.
-`HarnessWrappersLayer` is no longer needed — all agents are resolved
+`HarnessNames()` is still used by `migrate.go` for
+`fullsend agent migrate-customizations` — retained until that
+command is removed.
+~~`HarnessWrappersLayer` is no longer needed — all agents are resolved
 at runtime from config. Remove the layer and its `harnessesForRole()`
-helper.
+helper.~~ *(completed — PR #5425)*
 
 ### 5e. Update install seeding
 
@@ -452,7 +462,6 @@ follow-up tracked by a GitHub issue, filed once all first-party
 agents have been extracted from the scaffold.
 
 **Related:** `fullsend agent migrate-customizations` (implemented in
-ADR-0064 / PR #2932) migrates existing `customized/` overrides into
-config-driven agents. It uses `DiffHarness` to compute minimal `base:`
-composition harnesses and registers agents via the same config schema
-defined in Phase 1.
+ADR-0064 / PR #2932) migrated existing `customized/` overrides into
+config-driven agents. The `DiffHarness`-based composition path was
+removed when agents moved to `fullsend-ai/agents` (PR #5552).

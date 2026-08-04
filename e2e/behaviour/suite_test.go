@@ -5,6 +5,7 @@ package behaviour_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -19,12 +20,27 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
+// poolSize is the number of enrolled test-repo-NN repos in the pool org.
+// GODOG_CONCURRENCY must not exceed this — extra workers would block in
+// pool.Acquire with no warning because the pool org only has test-repo-01
+// through test-repo-12 with per-repo mint enrollment.
+const poolSize = 12
+
 func TestBehaviourSuite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping behaviour tests in short mode")
 	}
-	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" && c != "1" {
-		t.Fatalf("behaviour suite does not support GODOG_CONCURRENCY=%q (shared World); use serial runs until parallel support lands", c)
+
+	concurrency := poolSize
+	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" {
+		n, err := strconv.Atoi(c)
+		if err != nil || n < 1 {
+			t.Fatalf("GODOG_CONCURRENCY must be a positive integer, got %q", c)
+		}
+		concurrency = n
+	}
+	if concurrency > poolSize {
+		t.Fatalf("GODOG_CONCURRENCY=%d exceeds repo pool size %d", concurrency, poolSize)
 	}
 
 	cfg := env.LoadRunnerConfig()
@@ -65,12 +81,20 @@ func TestBehaviourSuite(t *testing.T) {
 		}
 	})
 
+	pool, err := world.NewRepoPool(poolSize)
+	if err != nil {
+		t.Fatalf("creating repo pool: %v", err)
+	}
+
+	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, t.Logf)
+
 	testRepo := installState.TestRepo()
-	w := &world.World{
+	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
 		CI:           gaci.New(client, token),
 		Install:      installState,
+		Ensurer:      ensurer,
 		Org:          org,
 		Token:        token,
 		Logf:         t.Logf,
@@ -82,13 +106,13 @@ func TestBehaviourSuite(t *testing.T) {
 
 	suiteRunner := godog.TestSuite{
 		Name:                "behaviour",
-		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, w) },
+		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template, pool) },
 		Options: &godog.Options{
 			Format:      "pretty",
 			Paths:       []string{"features"},
 			TestingT:    t,
 			Tags:        os.Getenv("GODOG_TAGS"),
-			Concurrency: 1,
+			Concurrency: concurrency,
 		},
 	}
 	if st := suiteRunner.Run(); st != 0 {

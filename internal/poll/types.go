@@ -9,8 +9,10 @@ import (
 type Options struct {
 	SlashCommandsOnly bool
 	BotUserID         int
-	OutputPath        string
 	GitLabURL         string
+	PipelineRef       string // git ref for API-triggered pipelines (required; resolved at CLI wiring time)
+	PollJobURL        string // back-link to the poller CI job (optional; from CI_JOB_URL)
+	DispatchSecret    string // HMAC shared secret for signing dispatch variables (optional; from FULLSEND_DISPATCH_SECRET)
 }
 
 // RoutableEvent is an intermediate representation of a detected change,
@@ -53,12 +55,16 @@ func (e RoutableEvent) Key() string {
 // LabelState tracks previously-seen labels per issue IID.
 type LabelState map[int][]string
 
-// Dispatch represents a single child pipeline dispatch record.
+// Dispatch represents a single API-triggered pipeline dispatch record.
 type Dispatch struct {
 	Stage           string `json:"stage"`
 	EventType       string `json:"event_type"`
 	EventPayloadB64 string `json:"event_payload_b64"`
 	ResourceKey     string `json:"resource_key"`
+	MRAuthorID      int    `json:"mr_author_id,omitempty"`
+	ActorID         int    `json:"actor_id,omitempty"`
+	IsFork          bool   `json:"is_fork"`
+	IID             int    `json:"iid,omitempty"`
 }
 
 // LabelAuthor identifies who applied a label.

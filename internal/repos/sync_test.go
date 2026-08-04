@@ -21,7 +21,7 @@ func TestDiff_NoDrift(t *testing.T) {
 	fc.Secrets["acme-corp/api-server/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme-corp/web-frontend/FULLSEND_GCP_PROJECT_ID"] = true
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestDiff_VariableDrift_MintURL(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,32 +63,24 @@ func TestDiff_VariableDrift_MintURL(t *testing.T) {
 	}
 }
 
-func TestDiff_VariableDrift_Region(t *testing.T) {
+func TestDiff_VariableDrift_Region_NoLongerManaged(t *testing.T) {
+	// FULLSEND_GCP_REGION is no longer managed by sync — it is an
+	// install-time-only value. Diff should not report region changes.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-west1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	found := false
 	for _, c := range result.Changes {
-		if c.Field == "FULLSEND_GCP_REGION" && c.Action == "update" {
-			found = true
-			if c.OldValue != "us-west1" {
-				t.Errorf("old = %q, want us-west1", c.OldValue)
-			}
-			if c.NewValue != "us-central1" {
-				t.Errorf("new = %q, want us-central1", c.NewValue)
-			}
+		if c.Field == "FULLSEND_GCP_REGION" {
+			t.Errorf("diff should not report FULLSEND_GCP_REGION changes: %+v", c)
 		}
-	}
-	if !found {
-		t.Error("expected FULLSEND_GCP_REGION change")
 	}
 }
 
@@ -99,7 +91,7 @@ func TestDiff_MissingGuardVariable(t *testing.T) {
 	fc.VariableValues["acme-corp/api-server/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["acme-corp/api-server/FULLSEND_GCP_REGION"] = "us-central1"
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,50 +111,44 @@ func TestDiff_MissingGuardVariable(t *testing.T) {
 	}
 }
 
-func TestDiff_SecretMissing(t *testing.T) {
+func TestDiff_SecretNoLongerManaged(t *testing.T) {
+	// Secrets are no longer managed by sync — they are written once at
+	// install time. Verify that diff does not report secret changes.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	found := false
 	for _, c := range result.Changes {
-		if c.Field == "FULLSEND_GCP_PROJECT_ID" && c.Type == "secret" {
-			found = true
-			if c.Action != "create" {
-				t.Errorf("action = %q, want create", c.Action)
-			}
+		if c.Type == "secret" {
+			t.Errorf("sync should not report secret changes, got: %+v", c)
 		}
-	}
-	if !found {
-		t.Error("expected secret create change")
 	}
 }
 
-func TestDiff_SecretExists_NoChange(t *testing.T) {
+func TestDiff_SecretExists_NotManaged(t *testing.T) {
+	// Secrets are no longer managed by sync — existence is irrelevant.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 	fc.Secrets["acme-corp/api-server/FULLSEND_GCP_PROJECT_ID"] = true
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	for _, c := range result.Changes {
-		if c.Field == "FULLSEND_GCP_PROJECT_ID" && c.Type == "secret" {
-			t.Error("should not report change for existing secret (values cannot be compared)")
+		if c.Type == "secret" {
+			t.Error("sync should not report secret changes")
 		}
 	}
 }
@@ -171,7 +157,7 @@ func TestDiff_RepoNotInstalled_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,17 +181,15 @@ func TestDiff_APIError_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("rate limit exceeded")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -225,9 +209,9 @@ func TestDiff_MultipleRepos(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
-		"https://mint.example.com", "us-west1")
+		"https://old-mint.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,7 +239,7 @@ func TestDiff_RepoFilter(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -278,13 +262,11 @@ func TestDiff_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/*"}},
 	}
@@ -292,7 +274,7 @@ func TestDiff_GlobExpansion(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,14 +294,12 @@ func TestDiff_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 	}
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -333,13 +313,11 @@ func TestDiff_EmptyDesiredValue_Skips(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceRegion: "",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -347,7 +325,7 @@ func TestDiff_EmptyDesiredValue_Skips(t *testing.T) {
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
 		"https://some-mint.example.com", "us-west1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,7 +351,7 @@ func TestDiff_ConcurrencyValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Diff(context.Background(), m, fc, tt.concurrency, nil)
+			_, err := Diff(context.Background(), m, newTestClientFactory(fc), tt.concurrency, nil)
 			if err == nil {
 				t.Error("expected error for invalid concurrency")
 			}
@@ -384,18 +362,17 @@ func TestDiff_ConcurrencyValidation(t *testing.T) {
 	}
 }
 
-func TestDiff_SecretCheckError_Warning(t *testing.T) {
+func TestDiff_SecretCheckError_NoLongerManaged(t *testing.T) {
+	// Secrets are no longer managed by sync, so secret API errors
+	// should not produce warnings or changes.
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceProject: "my-project",
-			InferenceRegion:  "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -404,18 +381,14 @@ func TestDiff_SecretCheckError_Warning(t *testing.T) {
 		"https://mint.example.com", "us-central1")
 	fc.Errors["RepoSecretExists"] = fmt.Errorf("secret API error")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(result.Warnings) == 0 {
-		t.Error("expected warning from secret check error")
-	}
-
 	for _, c := range result.Changes {
 		if c.Type == "secret" {
-			t.Error("should not report secret change when check failed")
+			t.Error("sync should not report secret changes")
 		}
 	}
 }
@@ -423,14 +396,13 @@ func TestDiff_SecretCheckError_Warning(t *testing.T) {
 func TestSync_NoDrift_NoVariableWrites(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = ""
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -455,7 +427,7 @@ func TestSync_AppliesVariableChanges(t *testing.T) {
 		progressCalls = append(progressCalls, fmt.Sprintf("%s/%s/%s", repo, phase, msg))
 	}
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, progress)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, progress)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -479,37 +451,27 @@ func TestSync_AppliesVariableChanges(t *testing.T) {
 	}
 }
 
-func TestSync_AppliesSecretChanges(t *testing.T) {
+func TestSync_DoesNotWriteSecrets(t *testing.T) {
+	// Secrets are written once at install time and NOT reconciled by sync.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	foundSecret := false
-	for _, s := range fc.CreatedSecrets {
-		if s.Name == "FULLSEND_GCP_PROJECT_ID" && s.Value == "my-project" {
-			foundSecret = true
-		}
-	}
-	if !foundSecret {
-		t.Error("expected FULLSEND_GCP_PROJECT_ID secret to be created")
+	if len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no secret writes, got %d", len(fc.CreatedSecrets))
 	}
 
-	foundApplied := false
 	for _, c := range result.Applied {
-		if c.Field == "FULLSEND_GCP_PROJECT_ID" && c.Type == "secret" {
-			foundApplied = true
+		if c.Type == "secret" {
+			t.Errorf("sync should not apply secret changes, got: %+v", c)
 		}
-	}
-	if !foundApplied {
-		t.Error("expected secret change in applied list")
 	}
 }
 
@@ -522,7 +484,7 @@ func TestSync_VariableWriteError(t *testing.T) {
 
 	fc.Errors["CreateOrUpdateRepoVariable"] = fmt.Errorf("write error")
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err == nil {
 		t.Fatal("expected error from variable write failure")
 	}
@@ -531,19 +493,21 @@ func TestSync_VariableWriteError(t *testing.T) {
 	}
 }
 
-func TestSync_SecretWriteError(t *testing.T) {
+func TestSync_SecretWriteErrorNoLongerApplies(t *testing.T) {
+	// Secrets are no longer managed by sync. Even if CreateRepoSecret
+	// would fail, sync should not attempt it.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	fc.Errors["CreateRepoSecret"] = fmt.Errorf("secret write error")
 
-	_, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
-	if err == nil {
-		t.Fatal("expected error from secret write failure")
+	_, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
+	// No error expected — sync does not write secrets.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -554,7 +518,7 @@ func TestSync_NilProgress(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	_, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	_, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error with nil progress: %v", err)
 	}
@@ -563,11 +527,10 @@ func TestSync_NilProgress(t *testing.T) {
 func TestSync_DiffAPIError_SkipsReconciliation(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("expected no error (warnings only), got: %v", err)
 	}
@@ -592,7 +555,7 @@ func TestSync_MultipleRepos(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -613,7 +576,7 @@ func TestSync_ConcurrencyValidation(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	_, err := Sync(context.Background(), m, fc, 0, nil, nil)
+	_, err := Sync(context.Background(), m, newTestClientFactory(fc), 0, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid concurrency")
 	}
@@ -623,6 +586,8 @@ func TestSync_ConcurrencyValidation(t *testing.T) {
 }
 
 func TestSync_GlobWithPerEntryOverride(t *testing.T) {
+	// Secrets are no longer managed by sync. Verify that glob-expanded
+	// repos reconcile variables correctly but do not write secrets.
 	fc := forge.NewFakeClient()
 	fc.OrgRepos = map[string][]forge.Repository{
 		"acme": {{Name: "api", FullName: "acme/api"}},
@@ -630,40 +595,28 @@ func TestSync_GlobWithPerEntryOverride(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceProject: "default-project",
-			InferenceRegion:  "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{
-			Repo:             "acme/*",
-			InferenceProject: NullableString{Value: "override-project", Set: true},
+			Repo: "acme/*",
 		}},
 	}
 
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	_, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	foundOverride := false
-	for _, s := range fc.CreatedSecrets {
-		if s.Name == "FULLSEND_GCP_PROJECT_ID" {
-			foundOverride = true
-			if s.Value != "override-project" {
-				t.Errorf("expected override-project, got %q", s.Value)
-			}
-		}
-	}
-	if !foundOverride {
-		t.Errorf("expected FULLSEND_GCP_PROJECT_ID to be written; applied=%+v", result.Applied)
+	// No secrets should be written by sync.
+	if len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no secret writes from sync, got %d", len(fc.CreatedSecrets))
 	}
 }
 
@@ -776,15 +729,13 @@ func TestDiff_GlobExpandError(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "bad-org/*"}},
 	}
 
-	_, err := Diff(context.Background(), m, fc, 4, nil)
+	_, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err == nil {
 		t.Fatal("expected error from glob expansion")
 	}
@@ -794,33 +745,28 @@ func TestDiff_PerRepoOverride(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
-			{
-				Repo:            "org/repo",
-				InferenceRegion: NullableString{Value: "eu-west1", Set: true},
-			},
+			{Repo: "org/repo"},
 		},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
 		"https://mint.example.com", "eu-west1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	for _, c := range result.Changes {
 		if c.Field == "FULLSEND_GCP_REGION" && c.Type == "variable" {
-			t.Error("should not report region drift when per-repo override matches actual")
+			t.Error("should not report region drift when forge-level region matches actual")
 		}
 	}
 }
@@ -834,7 +780,7 @@ func TestSync_RepoFilter(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -850,17 +796,15 @@ func TestDiff_GuardVarFalse_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "false"
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -888,13 +832,11 @@ func TestSync_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme/*"}},
 	}
@@ -902,7 +844,7 @@ func TestSync_GlobExpansion(t *testing.T) {
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0",
 		"https://old.example.com", "us-central1")
 
-	result, err := Sync(context.Background(), m, fc, 4, nil, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -922,13 +864,11 @@ func TestDiff_MultiOrg(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "org-a/repo1"},
@@ -939,7 +879,7 @@ func TestDiff_MultiOrg(t *testing.T) {
 	populateInstalledRepo(fc, "org-a", "repo1", "v2.3.0", "https://old.example.com", "us-central1")
 	populateInstalledRepo(fc, "org-b", "repo2", "v2.3.0", "https://old.example.com", "us-central1")
 
-	result, err := Diff(context.Background(), m, fc, 4, nil)
+	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -968,37 +908,28 @@ func TestValidateConcurrency(t *testing.T) {
 	}
 }
 
-func TestSync_EnsuresSecretsOnNoDrift(t *testing.T) {
+func TestSync_NoSecretsOnNoDrift(t *testing.T) {
+	// Secrets are no longer managed by sync — they are written once at
+	// install time. Sync should not write secrets even on convergence.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.InferenceProject = "my-project"
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 	fc.Secrets["acme-corp/api-server/FULLSEND_GCP_PROJECT_ID"] = true
 
-	result, err := Sync(context.Background(), m, fc, 4, []string{"acme-corp/api-server"}, nil)
+	result, err := Sync(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	foundSecret := false
-	for _, s := range fc.CreatedSecrets {
-		if s.Name == "FULLSEND_GCP_PROJECT_ID" && s.Value == "my-project" {
-			foundSecret = true
-		}
-	}
-	if !foundSecret {
-		t.Error("expected secret to be written for convergence even when no drift detected")
+	if len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no secret writes from sync, got %d", len(fc.CreatedSecrets))
 	}
 
-	foundApplied := false
 	for _, c := range result.Applied {
-		if c.Field == "FULLSEND_GCP_PROJECT_ID" && c.Type == "secret" {
-			foundApplied = true
+		if c.Type == "secret" {
+			t.Errorf("sync should not apply secret changes, got: %+v", c)
 		}
-	}
-	if !foundApplied {
-		t.Error("expected secret in applied list")
 	}
 }

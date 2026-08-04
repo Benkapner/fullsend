@@ -72,6 +72,62 @@ And the agent will output issues.out with:
 
 Use tags only for **exceptions** when a backend cannot run a scenario yet: `@skip:gitlab`, `@skip:per-org`, `@requires:per-repo`. Untagged scenarios run everywhere applicable.
 
+## Fixture authoring
+
+Every scenario that dispatches an agent stage must include a `write_fixture` row emitting `output/agent-result.json` with content that conforms to the stage's result schema. The harness post-script validates this file before performing any post-processing (labelling, commenting, PR creation). If the fixture is missing or invalid, the harness fails with `Validation failed: FAIL: output/agent-result.json not found`.
+
+### Checklist for new scenarios
+
+Before merging a scenario that dispatches an agent stage:
+
+1. Identify the agent **role** (triage, code, review, fix, retro, prioritize). The role determines which result schema applies.
+2. Create a fixture JSON file under `e2e/behaviour/fixtures/<stage>/` that satisfies the corresponding schema at `schemas/<stage>-result.schema.json` (scaffolded into target repos under `internal/scaffold/fullsend-repo/schemas/`).
+3. Add a `write_fixture` row to the dummy agent table:
+   ```
+   | Emit <stage> JSON | write_fixture | output/agent-result.json, fixtures/<stage>/<name>.json |
+   ```
+4. Add an assertion step to verify the fixture was written:
+   ```gherkin
+   And the agent will succeed to Emit <stage> JSON
+   ```
+5. Verify that fixture field values satisfy downstream CLI validation, not just the JSON schema. For example, `head_sha` in `review-result` must be a full-length 40-character hex SHA (`abcdef0123456789abcdef0123456789abcdef01`), not a short prefix.
+
+### Fixture inventory
+
+Existing fixtures under `e2e/behaviour/fixtures/`:
+
+| Fixture | Target schema | Purpose |
+|---------|---------------|---------|
+| `triage/sufficient.json` | `triage-result.schema.json` | Triage stage result with `action: "sufficient"` |
+| `dispatch/ok.json` | _(none — dispatch proof)_ | Lightweight proof-of-execution marker for dispatch scenarios |
+| `review/comment.json` | `review-result.schema.json` | Review stage result with `action: "comment"` |
+
+The `dispatch/ok.json` fixture is not emitted as `output/agent-result.json` — it is used for auxiliary proof-of-execution files (e.g., `output/bash-routing-ok.json`). Scenarios that dispatch a **real agent stage** (triage, review, code, fix) must emit a schema-valid fixture to `output/agent-result.json`.
+
+### Adding a fixture for a new stage
+
+To add a fixture for a stage that does not yet have one (e.g., code or fix):
+
+1. Read the stage's result schema under `internal/scaffold/fullsend-repo/schemas/<stage>-result.schema.json`.
+2. Copy the closest existing fixture and adapt it to satisfy the new schema's `required` fields and `additionalProperties: false` constraint.
+3. Populate field values with plausible test data. Pay attention to:
+   - **String patterns** — schemas may enforce regex patterns (e.g., `repo` must match `^[^/]+/[^/]+$`).
+   - **Conditional requirements** — some schemas use `allOf`/`if`/`then` to require extra fields depending on the `action` value (e.g., `review-result` requires `head_sha` and `body` when `action` is `"comment"`).
+   - **Downstream validation** — the harness post-script may apply stricter checks than the schema. For example, SHAs must be full-length hex, not truncated.
+4. Place the fixture in `e2e/behaviour/fixtures/<stage>/<name>.json`.
+5. Reference it in your scenario's dummy agent table with a `write_fixture` row targeting `output/agent-result.json`.
+
+**Example:** The fork-bash-routing scenario dispatches a review agent, so it emits `review/comment.json` as the agent result:
+
+```gherkin
+Given a dummy agent that would:
+  | description          | op            | args                                                       |
+  | Prove bash routing   | write_fixture | output/bash-routing-ok.json, fixtures/dispatch/ok.json     |
+  | Emit review JSON     | write_fixture | output/agent-result.json, fixtures/review/comment.json     |
+```
+
+The first row proves execution via an auxiliary file; the second row emits the schema-valid `agent-result.json` that the harness post-script requires.
+
 ## Running locally
 
 ```bash
@@ -79,7 +135,43 @@ Use tags only for **exceptions** when a backend cannot run a scenario yet: `@ski
 make behaviour-test
 ```
 
+### Parallel execution
+
+The suite runs scenarios in parallel by default (`GODOG_CONCURRENCY=12`,
+matching the repo pool size). Each scenario gets its own `World` clone and
+leases a unique `test-repo-NN` from the pool, so no cross-scenario state
+is shared. The `behaviour-test` Make target includes `-race` to catch
+data races under concurrent execution.
+
+To adjust concurrency:
+
+```bash
+# Run at default concurrency (12)
+make behaviour-test
+
+# Run with explicit concurrency
+GODOG_CONCURRENCY=4 make behaviour-test
+
+# Serial mode for debugging
+GODOG_CONCURRENCY=1 make behaviour-test
+```
+
+Serial mode (`GODOG_CONCURRENCY=1`) is useful when debugging a single
+scenario or when `-v` output from multiple scenarios would interleave.
+
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+
+### Lazy create+install (`RepoEnsurer`)
+
+The `Given the enrolled test repository` step lazily creates and installs numbered pool repos (`test-repo-NN`) on demand via `RepoEnsurer`. When a scenario leases a repo name from the pool and an ensurer is configured, the step calls `EnsureRepo(ctx, org, repoName)` which:
+
+1. Creates the repo if it does not exist (the forge's `auto_init` provides the initial commit).
+2. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
+3. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
+
+Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
+
+**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
 
@@ -97,6 +189,146 @@ For the reusable test GitHub Apps (`fullsend-test-*`) used by temporary and test
 
 See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [ADR 0066](../../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) for the decision record.
 
+## Fork PR scenarios
+
+Fork dispatch scenarios test `pull_request_target` harness triggering from cross-fork pull requests.
+
+### Logical fork name → leased base
+
+Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased a numbered base (for example leased `test-repo-07` → actual fork repo `test-repo-07-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code `test-repo-NN-fork` in Gherkin.
+
+### Pool-org prerequisites
+
+Fork scenarios require the pool org to have:
+
+- **Permission to create forks** of the leased enrolled base (`test-repo-NN`) under the same org. The `Given a fork` step creates `{leased}-fork` idempotently when missing.
+- **The same installation token** must have write access to both the base repo and the fork repo within the org, since the e2e bot commits to the fork and opens cross-fork PRs.
+
+### Fork lifecycle
+
+| Resource | Lifecycle | Cleanup |
+|----------|-----------|---------|
+| Fork repo | Per-scenario (`{RepoName}-fork`); created on demand | Deleted by `CleanupScenario` |
+| Fork branches | Per-scenario | Deleted by `CleanupScenario` (before repo deletion) |
+| Fork PRs | Per-scenario | Closed by `CleanupScenario` |
+
+Fork repos are **ephemeral**: created when the `Given a fork` step runs and deleted by `CleanupScenario` after the scenario completes. Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo, deletes the head branch on the fork repo, and then deletes the fork repo itself. Do **not** mint-enroll fork names — forks are PR sources only; mint stays on the enrolled base.
+
+### Background step usage
+
+Fork scenarios share a common `Background:` block that sets up the enrolled test repository and the fork:
+
+```gherkin
+Background:
+  Given the enrolled test repository
+  And a fork "test-repo-fork" of the enrolled test repository
+```
+
+The `Given a fork` step remaps the logical name as above and is idempotent for that actual fork repo. Each scenario then creates its own branch and PR within the fork.
+
+### Fork PR behaviour contract
+
+The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contract for `harness-dispatch`. Each CEL port PR ([#2896](https://github.com/fullsend-ai/fullsend/issues/2896)–[#2901](https://github.com/fullsend-ai/fullsend/issues/2901)) should follow this contract when adding fork-PR rows to the agent's harness behaviour feature file.
+
+| Scenario | Expected | How tested |
+|----------|----------|------------|
+| Fork PR matches CEL trigger; authorized actor | Agent runs via `harness-dispatch`; workflow completes | Positive dispatch + artifact assertion |
+| Kill switch active (`kill_switch: true`) on fork event | Empty matrix, exit 0 | Separate scenario; `the kill switch is active` step + assert agent did not run |
+| Disabled harness (`enabled: false`) on fork event | Empty matrix, exit 0 | Disabled harness in positive scenario; assert agent did not run |
+| Fork PR `synchronize` + label dispatches harness | Harness dispatched exactly 1 time; workflow completes | Separate scenario with sync commit + label |
+| CEL `is_fork` exclusion (`!event.state.change_proposal.is_fork`) | Empty matrix, exit 0 | Harness with `is_fork` guard in positive scenario; assert agent did not run |
+
+**Kill switch vs disabled harness:** These are distinct mechanisms. The **kill switch** (`kill_switch: true` in `config.yaml`) is a global emergency stop that blocks *all* harness dispatch for the repo — tested in its own scenario because no positive harness can run alongside it. A **disabled harness** (`enabled: false` per agent entry) only prevents that single agent from running — tested as a piggyback negative assertion in the positive-path scenario.
+
+**Consolidation pattern:** To conserve parallel execution slots, add negative-path harnesses (disabled agent, CEL exclusion) alongside the positive-path harness in a single scenario rather than creating separate scenarios. The positive harness wait acts as the settle window for negative assertions (piggyback pattern — see `negativeSettleDuration` in `dispatch.go`). The kill switch scenario cannot be consolidated because it blocks all harnesses.
+
+**Unauthorized-actor denial** ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) for fork PRs is tracked separately in [#5613](https://github.com/fullsend-ai/fullsend/issues/5613) and is not part of this contract.
+
+### Dispatch step reference
+
+**`a disabled custom harness "<name>" with:`** — Registers the harness YAML under `.fullsend/harness/<name>.yaml` and adds an agent entry with `enabled: false` to the repo's `config.yaml`. Use this step for negative dispatch assertions where a single agent should be excluded while other agents in the same scenario continue to run. This is *not* the kill switch; for the global emergency stop that blocks all harnesses, use `the kill switch is active`.
+
+**`the kill switch is active`** — Sets `kill_switch: true` in the repo's `config.yaml`, causing `Dispatch` to return an empty matrix for *all* agents. Use this step in a dedicated scenario where no harness should run. Because the kill switch blocks everything, it cannot share a scenario with a positive-path harness.
+
+## Forge operational constraints
+
+When modifying behaviour test repo provisioning, fork handling, or workflow dispatch, be aware of these constraints. They are not enforced by the compiler or linter — violations surface as cryptic API errors or silently dropped events in CI.
+
+### `auto_init` creates an initial commit
+
+The forge's `CreateRepo` uses `auto_init`, which creates an initial commit containing a README. Do **not** call `CreateFile("README.md")` (or any file that `auto_init` already provides) on a newly created repo — the GitHub API returns a 422 because the file already exists in the initial commit.
+
+If a scenario needs to seed additional files, use a filename that does not collide with the `auto_init` commit (e.g., `seed.txt` instead of `README.md`), or check for existence first.
+
+Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go) — see the `auto_init` comment and `CreateRepo` call.
+
+### Fork name derivation depends on `World.RepoName`
+
+The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `test-repo-07` resolves to `test-repo-07-fork`.
+
+When modifying repo naming, leasing, or provisioning logic, verify that fork steps still resolve correctly. If `World.RepoName` changes (e.g., because leasing logic changes), fork resolution breaks — scenarios that use `Given a fork` will create or look for the wrong repo.
+
+Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — maps logical fork names to actual repo names based on the leased base.
+
+### Actions workflow readiness after repo creation
+
+After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
+
+The `RepoEnsurer` handles this by polling `GetWorkflow` until the workflow file is visible (up to 30 attempts with 5-second intervals). The function returns success as soon as the API returns a non-nil workflow object — it logs the workflow state but does not gate on it. When writing new provisioning code or modifying the install flow, always poll for workflow readiness before dispatching events that depend on the workflow.
+
+Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is visible to the API.
+
+### CI timeout budgeting for lazy provisioning
+
+Each lazily provisioned repo adds approximately 3–5 minutes of overhead (create + inference provision + `github setup` + Actions settle). The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leased repos in the suite.
+
+Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos, verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
+
+Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
+
+## URL-sourced harness scenarios
+
+URL dispatch scenarios test `FetchAgentHarness` URL resolution for agents whose harness YAML lives in a separate hosting repository rather than the local config directory.
+
+### Harness-hosting repository
+
+The `Given a harness-hosting repository "<name>"` step creates a public repository in the pool org to host harness YAML files. The repo is:
+
+- **Ephemeral / per-scenario** — created per-scenario and deleted by `CleanupScenario` (same lifecycle as fork repos). When a leased repo is in use, the logical name is remapped via `resolveHostRepoName` (e.g. `"url-harness-host"` + leased `"test-repo-07"` → `"test-repo-07-url-harness-host"`) so parallel scenarios each get their own isolated hosting repo.
+- **Public** — required for unauthenticated `raw.githubusercontent.com` access. The step calls `EnsureRepoPublic` to detect and fix org policies that force repos private.
+
+### URL-sourced custom harness
+
+The `Given a URL-sourced custom harness "<name>" with:` step:
+
+1. Commits the harness YAML to the hosting repo at `harness/<name>.yaml`
+2. Commits any relative resources (agent, policy files) referenced in the YAML (ADR-0045)
+3. Verifies accessibility via the Contents API and unauthenticated raw URL
+4. Registers the agent in `config.yaml` with the raw URL (including `#sha256=` integrity hash)
+5. Adds the hosting repo URL prefix to `allowed_remote_resources`
+
+Variants:
+- `with bad integrity hash:` — injects a wrong SHA256 to test integrity failure
+- `not in allowlist with:` — omits the URL prefix from the allowlist to test validation
+
+### Background step usage
+
+URL dispatch scenarios share a common `Background:` block:
+
+```gherkin
+Background:
+  Given the enrolled test repository
+  And a harness-hosting repository "url-harness-host"
+```
+
+### FetchPolicy and binary freshness
+
+URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`-aware harness dispatch. Production dispatch uses `fetch.DefaultPolicy` (allows `github.com` and `raw.githubusercontent.com`) when `Options.FetchPolicy` is nil — this is what enables URL-sourced agents to resolve `raw.githubusercontent.com` URLs.
+
+The `RepoEnsurer` always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
+
+The settle step (polling for GitHub Actions workflow readiness) is skipped on re-vendors since the workflow file already existed — only fresh installs incur the settle wait.
+
 ## Version pinning for `fullsend-ai/agents`
 
 External behaviour runners import the shared libraries from this module:
@@ -110,5 +342,29 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 - Set `world.FixturesRoot` to the module-relative fixtures directory (e.g. `"behaviour"` in the agents repo).
 - Build the fullsend CLI with `e2etest.BuildModuleBinary(t, "github.com/fullsend-ai/fullsend")` — not `BuildCLIBinary`, which resolves the **current** module root.
 - Run with `-tags behaviour` and the same env vars as CI (see above).
+
+### API changes
+
+**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, w)` to `InitScenario(sc, template, pool)` starting in the release that includes this change. Instead of passing a single `*world.World`, callers now pass a template `*world.World` (cloned per scenario) and a `*world.RepoPool` (used to lease unique repo names). Update your `suite_test.go` accordingly:
+
+```go
+pool, err := world.NewRepoPool(12)
+if err != nil {
+    t.Fatalf("creating repo pool: %v", err)
+}
+
+template := &world.World{ /* ... driver fields ... */ }
+
+suiteRunner := godog.TestSuite{
+    ScenarioInitializer: func(sc *godog.ScenarioContext) {
+        suite.InitScenario(sc, template, pool)
+    },
+    // ...
+}
+```
+
+**`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
+
+**`scm.Driver.DeleteRepo` addition:** The `scm.Driver` interface now includes a `DeleteRepo(ctx context.Context, owner, repo string) error` method. `CleanupScenario` calls it to delete ephemeral fork repos after each scenario. External `scm.Driver` implementations must add this method — return `forge.ErrNotFound` when the repository does not exist.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.

@@ -70,6 +70,11 @@ func (e *APIError) Error() string {
 	for _, d := range e.Errors {
 		if d.Message != "" {
 			s += fmt.Sprintf(" (%s)", d.Message)
+		} else if d.Field != "" || d.Code != "" {
+			// Include field/code when the detail message is empty.
+			// GitHub 422 validation errors sometimes omit the message
+			// but still provide the field and error code.
+			s += fmt.Sprintf(" (field=%s, code=%s)", d.Field, d.Code)
 		}
 	}
 	return s
@@ -159,7 +164,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 			return nil, fmt.Errorf("create request: %w", err)
 		}
 
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if body != nil {
@@ -248,6 +255,14 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 // typically require waiting at least 60 seconds.
 var secondaryRateLimitBackoff = 60 * time.Second
 
+// mergeRetryPollInterval is the interval for polling head SHA after an
+// update-branch call to confirm the branch actually advanced. Overridable in tests.
+var mergeRetryPollInterval = 200 * time.Millisecond
+
+// mergeRetryPollTimeout is the maximum time to wait for the head SHA to
+// change after an update-branch call. Overridable in tests.
+var mergeRetryPollTimeout = 10 * time.Second
+
 // retryDelay calculates how long to wait before retrying.
 // It uses the Retry-After header if present, otherwise exponential backoff
 // with jitter to prevent thundering-herd effects.
@@ -287,8 +302,27 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 		Message string           `json:"message"`
 		Errors  []APIErrorDetail `json:"errors"`
 	}
-	if json.Unmarshal(data, &msg) == nil && msg.Message != "" {
-		return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: msg.Errors}
+	if json.Unmarshal(data, &msg) == nil {
+		if msg.Message != "" {
+			return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: msg.Errors}
+		}
+		// Unmarshal succeeded but top-level message is empty. Preserve
+		// any error details GitHub included and fall back to the raw
+		// response body so callers see the full server response.
+		if len(msg.Errors) > 0 {
+			return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode), Errors: msg.Errors}
+		}
+	}
+	// Unmarshal failed or yielded no useful fields — use raw body when
+	// available so the caller can see exactly what GitHub returned.
+	if len(data) > 0 {
+		body := string(data)
+		const maxLen = 200
+		runes := []rune(body)
+		if len(runes) > maxLen {
+			body = string(runes[:maxLen]) + "..."
+		}
+		return &APIError{StatusCode: resp.StatusCode, Message: body}
 	}
 	return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
 }
@@ -357,18 +391,22 @@ func decodeJSON(resp *http.Response, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-// ListOrgRepos returns public, non-archived, non-fork repositories for an org.
+// ListOrgRepos returns non-archived, non-fork repositories for an org.
 //
-// Private repos are excluded because the default .fullsend config repo is
-// public and agent workflow logs are visible to anyone. Enrolling a private
-// repo would expose its code in those public logs.
+// When includePrivate is false, private repos are also excluded. This
+// is the appropriate setting for per-org mode because the .fullsend
+// config repo is public and agent workflow logs are visible to anyone.
+//
+// When includePrivate is true, private repos are included. This is
+// appropriate for per-repo mode where agents run on the target repo
+// itself and logs are not publicly exposed.
 //
 // Forks are excluded because fullsend's trust model assumes org-owned repos
 // where CODEOWNERS governance and org-level permissions control agent
 // autonomy. Fork repos may have different ownership and CODEOWNERS configs,
 // which could bypass human-approval gates. Archived repos are excluded
 // because they represent inactive targets where agent work would be wasted.
-func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repository, error) {
+func (c *LiveClient) ListOrgRepos(ctx context.Context, org string, includePrivate bool) ([]forge.Repository, error) {
 	var result []forge.Repository
 
 	for page := 1; page <= 100; page++ {
@@ -392,7 +430,10 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repo
 		}
 
 		for _, r := range repos {
-			if r.Archived || r.Fork || r.Private {
+			if r.Archived || r.Fork {
+				continue
+			}
+			if r.Private && !includePrivate {
 				continue
 			}
 			result = append(result, forge.Repository{
@@ -485,6 +526,15 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		Archived:      r.Archived,
 		Fork:          r.Fork,
 	}, nil
+}
+
+// UpdateRepoVisibility sets a repository's visibility to public or private.
+func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error {
+	body := struct {
+		Private bool `json:"private"`
+	}{Private: private}
+	_, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo), body)
+	return err
 }
 
 // DeleteRepo deletes a repository.
@@ -1577,6 +1627,15 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	return nil
 }
 
+// DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
+// Returns forge.ErrNotFound (wrapped) if the ref does not exist.
+func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
+	if err := c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/%s", owner, repo, refPath)); err != nil {
+		return fmt.Errorf("delete ref %s in %s/%s: %w", refPath, owner, repo, err)
+	}
+	return nil
+}
+
 // CreateChangeProposal creates a pull request.
 func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error) {
 	payload := map[string]string{
@@ -1607,6 +1666,98 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}, nil
 }
 
+// getRepoNodeID fetches the GraphQL node ID for a repository via the REST
+// API. The node ID is needed for GraphQL mutations such as createPullRequest.
+func (c *LiveClient) getRepoNodeID(ctx context.Context, owner, repo string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+	if err != nil {
+		return "", fmt.Errorf("get repo node ID for %s/%s: %w", owner, repo, err)
+	}
+	var r struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := decodeJSON(resp, &r); err != nil {
+		return "", fmt.Errorf("decode repo node ID for %s/%s: %w", owner, repo, err)
+	}
+	if r.NodeID == "" {
+		return "", fmt.Errorf("empty node ID for %s/%s", owner, repo)
+	}
+	return r.NodeID, nil
+}
+
+// CreateCrossRepoChangeProposal opens a pull request where the head branch
+// lives in a different repository than the base. It uses the GraphQL
+// createPullRequest mutation with explicit repositoryId and
+// headRepositoryId to avoid the ambiguity of the REST API's
+// "owner:branch" head format (which fails for same-owner forks).
+func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*forge.ChangeProposal, error) {
+	baseNodeID, err := c.getRepoNodeID(ctx, baseOwner, baseRepo)
+	if err != nil {
+		return nil, fmt.Errorf("create cross-repo pull request: %w", err)
+	}
+	headNodeID, err := c.getRepoNodeID(ctx, headOwner, headRepo)
+	if err != nil {
+		return nil, fmt.Errorf("create cross-repo pull request: %w", err)
+	}
+
+	query := `mutation($input: CreatePullRequestInput!) {
+		createPullRequest(input: $input) {
+			pullRequest {
+				number
+				title
+				url
+			}
+		}
+	}`
+	variables := map[string]any{
+		"input": map[string]any{
+			"repositoryId":     baseNodeID,
+			"headRepositoryId": headNodeID,
+			"headRefName":      headBranch,
+			"baseRefName":      baseBranch,
+			"title":            title,
+			"body":             body,
+		},
+	}
+	gqlPayload := map[string]any{
+		"query":     query,
+		"variables": variables,
+	}
+
+	resp, err := c.post(ctx, "/graphql", gqlPayload)
+	if err != nil {
+		return nil, fmt.Errorf("create cross-repo pull request via graphql: %w", err)
+	}
+
+	var gqlResult struct {
+		Data struct {
+			CreatePullRequest struct {
+				PullRequest struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					URL    string `json:"url"`
+				} `json:"pullRequest"`
+			} `json:"createPullRequest"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := decodeJSON(resp, &gqlResult); err != nil {
+		return nil, fmt.Errorf("decode cross-repo pull request response: %w", err)
+	}
+	if len(gqlResult.Errors) > 0 {
+		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", gqlResult.Errors[0].Message)
+	}
+
+	pr := gqlResult.Data.CreatePullRequest.PullRequest
+	return &forge.ChangeProposal{
+		URL:    pr.URL,
+		Title:  pr.Title,
+		Number: pr.Number,
+	}, nil
+}
+
 // ListRepoPullRequests lists open pull requests for a repository with pagination.
 func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error) {
 	var result []forge.ChangeProposal
@@ -1621,6 +1772,15 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
+			Head    struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+			Base struct {
+				Ref string `json:"ref"`
+			} `json:"base"`
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
 		}
 		if err := decodeJSON(resp, &prs); err != nil {
 			return nil, fmt.Errorf("decode pull requests page %d: %w", page, err)
@@ -1631,6 +1791,9 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				URL:    pr.HTMLURL,
 				Title:  pr.Title,
 				Number: pr.Number,
+				Head:   pr.Head.Ref,
+				Base:   pr.Base.Ref,
+				Author: pr.User.Login,
 			})
 		}
 
@@ -1640,6 +1803,17 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 	}
 
 	return result, nil
+}
+
+// CloseChangeProposal closes an open pull request without merging it.
+func (c *LiveClient) CloseChangeProposal(ctx context.Context, owner, repo string, number int) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
+	resp, err := c.patch(ctx, path, map[string]string{"state": "closed"})
+	if err != nil {
+		return fmt.Errorf("close pull request #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // GetOrgPlan returns the billing plan name for the org (e.g. "free", "team", "enterprise").
@@ -2749,13 +2923,45 @@ func (c *LiveClient) DismissPullRequestReview(ctx context.Context, owner, repo s
 }
 
 // MergeChangeProposal squash-merges a pull request by number.
+// If the merge fails with a 409 (head branch out of date), it updates the PR
+// branch and retries up to 3 times with a short delay between attempts.
 func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string, number int) error {
-	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number), map[string]string{"merge_method": "squash"})
-	if err != nil {
-		return fmt.Errorf("merge pull request #%d: %w", number, err)
+	const maxAttempts = 3
+	mergePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
+
+	var lastMergeErr error
+	for attempt := range maxAttempts {
+		resp, err := c.put(ctx, mergePath, map[string]string{"merge_method": "squash"})
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+			return fmt.Errorf("merge pull request #%d: %w", number, err)
+		}
+		lastMergeErr = err
+
+		if attempt < maxAttempts-1 {
+			headSHA, shaErr := c.GetPullRequestHeadSHA(ctx, owner, repo, number)
+			if shaErr != nil {
+				return fmt.Errorf("merge pull request #%d: get head SHA: %w", number, shaErr)
+			}
+
+			if err := c.UpdatePullRequestBranch(ctx, owner, repo, number); err != nil {
+				return fmt.Errorf("merge pull request #%d: update branch failed: %w", number, err)
+			}
+
+			// Poll until the head SHA advances, confirming the async
+			// update-branch actually landed before we retry the merge.
+			if err := c.awaitBranchUpdate(ctx, owner, repo, number, headSHA); err != nil {
+				return fmt.Errorf("merge pull request #%d: %w", number, err)
+			}
+		}
 	}
-	resp.Body.Close()
-	return nil
+
+	return fmt.Errorf("merge pull request #%d: branch remained out of date after %d update-and-retry attempts: %w", number, maxAttempts, lastMergeErr)
 }
 
 // UpdatePullRequestBranch updates a PR's head branch by merging the base
@@ -2771,6 +2977,31 @@ func (c *LiveClient) UpdatePullRequestBranch(ctx context.Context, owner, repo st
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// awaitBranchUpdate polls the PR's head SHA until it differs from oldSHA,
+// confirming that an async update-branch call has landed. It polls at
+// mergeRetryPollInterval and gives up after mergeRetryPollTimeout, falling
+// through so the caller can retry the merge (which will get another 409 if
+// the update still hasn't landed).
+func (c *LiveClient) awaitBranchUpdate(ctx context.Context, owner, repo string, number int, oldSHA string) error {
+	deadline := time.After(mergeRetryPollTimeout)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return nil // timed out; let the caller retry the merge
+		case <-time.After(mergeRetryPollInterval):
+			newSHA, err := c.GetPullRequestHeadSHA(ctx, owner, repo, number)
+			if err != nil {
+				continue // transient error; keep polling
+			}
+			if newSHA != oldSHA {
+				return nil
+			}
+		}
+	}
 }
 
 // ListWorkflowRuns returns recent workflow runs for a workflow file.
@@ -2847,6 +3078,35 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 		}
 	}
 	return runs, nil
+}
+
+// ListWorkflowRunJobs returns the jobs within a workflow run.
+func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID))
+	if err != nil {
+		return nil, fmt.Errorf("list workflow run jobs: %w", err)
+	}
+	var result struct {
+		Jobs []struct {
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"jobs"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode workflow run jobs: %w", err)
+	}
+	jobs := make([]forge.WorkflowJob, len(result.Jobs))
+	for i, j := range result.Jobs {
+		jobs[i] = forge.WorkflowJob{
+			ID:         j.ID,
+			Name:       j.Name,
+			Status:     j.Status,
+			Conclusion: j.Conclusion,
+		}
+	}
+	return jobs, nil
 }
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
@@ -3443,6 +3703,11 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 	}
 	resp.Body.Close()
 	return true, nil
+}
+
+// CreatePipeline is not supported on GitHub.
+func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // CreatePipelineSchedule is not supported on GitHub.

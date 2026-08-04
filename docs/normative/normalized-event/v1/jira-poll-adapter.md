@@ -66,7 +66,7 @@ the first line after the command (same rules as
 |-------|--------|
 | `actor.id` | Jira `accountId` (preferred) or `name` when accountId unavailable |
 | `actor.kind` | `bot` when Jira account type is `app` or display name matches automation pattern; else `human` |
-| `actor.role` | Effective permission on the **target repo** when the actor maps to a forge user with repo access; otherwise map Jira project role to closest ADR 0054 role (`write` for Developers, `read` for Reporter, `admin` for Administrators). When membership cannot be resolved, use `external`. |
+| `actor.role` | Derived from the actor's Jira project role: `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
 | `actor.is_entity_author` | `true` when actor is the issue reporter |
 
 Authorization is enforced by `fullsend dispatch` per

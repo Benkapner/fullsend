@@ -28,7 +28,7 @@ type foreignCacheEntry struct {
 type mintRequest struct {
 	Role      string   `json:"role"`
 	TargetOrg string   `json:"target_org,omitempty"`
-	Repos     []string `json:"repos,omitempty"`
+	Repos     []string `json:"repos"`
 }
 
 // mintResponse is returned on success.
@@ -64,6 +64,16 @@ type Handler struct {
 	foreignInflight map[string]*foreignInflight
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
+
+	// perRepoWIFRepos is the set of repositories with per-repo WIF treatment.
+	// The handler uses this to decide repos scope policy (per-repo vs per-org).
+	perRepoWIFRepos map[string]bool
+
+	// allowedOrgs lists the orgs permitted to use the mint (per-org callers).
+	allowedOrgs []string
+
+	// allowedWorkflowFiles lists the workflow basenames permitted to call the mint.
+	allowedWorkflowFiles []string
 }
 
 type foreignInflight struct {
@@ -73,22 +83,31 @@ type foreignInflight struct {
 }
 
 // NewHandler creates a Handler with the given dependencies.
-// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES)
-// are read once at construction time. The OIDCVerifier is injected by the caller
-// so different verification strategies can be used (STSVerifier for the Cloud
-// Function, JWKSVerifier for devmint). Org validation is the OIDCVerifier's
-// responsibility.
+// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES,
+// ALLOWED_ORGS, ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS) are read once at
+// construction time. The OIDCVerifier is injected by the caller so different
+// verification strategies can be used (STSVerifier for the Cloud Function,
+// JWKSVerifier for devmint). The handler performs authorization (org-allowed,
+// workflow-ref) after the verifier authenticates the token.
 func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
+	perRepoWIFRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
+		perRepoWIFRepos[strings.ToLower(entry)] = true
+	}
+
 	h := &Handler{
-		httpClient:      httpClient,
-		pemAccessor:     pemAccessor,
-		oidcVerifier:    oidcVerifier,
-		githubBaseURL:   "https://api.github.com",
-		foreignCache:    make(map[string]foreignCacheEntry),
-		foreignInflight: make(map[string]*foreignInflight),
-		foreignCacheTTL: defaultForeignCacheTTL,
+		httpClient:           httpClient,
+		pemAccessor:          pemAccessor,
+		oidcVerifier:         oidcVerifier,
+		githubBaseURL:        "https://api.github.com",
+		foreignCache:         make(map[string]foreignCacheEntry),
+		foreignInflight:      make(map[string]*foreignInflight),
+		foreignCacheTTL:      defaultForeignCacheTTL,
+		perRepoWIFRepos:      perRepoWIFRepos,
+		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
+		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -168,6 +187,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
+		if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
+			log.Printf("token authorization failed for /v1/status: %v", err)
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
+		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
+			log.Printf("workflow ref validation failed for /v1/status: %v", err)
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
 		h.handleStatus(w, claims)
 		return
 	}
@@ -200,6 +229,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Repos) == 0 {
+		writeError(w, http.StatusBadRequest, "repos is required")
+		return
+	}
+
+	req.Repos = normalizeMintRepos(req.Repos)
+
 	if len(req.Repos) > maxRepos {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many repos (max %d)", maxRepos))
 		return
@@ -227,21 +263,57 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
+		log.Printf("token authorization failed: %v", err)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
+		log.Printf("workflow ref validation failed: %v", err)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+
 	callerOrg := strings.ToLower(claims.RepositoryOwner)
 	targetOrg := strings.ToLower(strings.TrimSpace(req.TargetOrg))
 	if targetOrg == "" {
 		targetOrg = callerOrg
 	}
 
+	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
+	isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+	// Dual enrollment: if the caller is explicitly listed in
+	// PER_REPO_WIF_REPOS (not via wildcard public mint) and their
+	// owner org is also in ALLOWED_ORGS, use per-org scope treatment
+	// — per-org shapes are a superset of per-repo self-only scope.
+	// Note: when ALLOWED_ORGS=* with specific PER_REPO_WIF_REPOS
+	// entries, per-repo callers are upgraded to per-org scope; this
+	// is consistent because all non-per-repo callers from any org
+	// already receive per-org treatment in that configuration.
+	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
+		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+		log.Printf("dual-enrollment: upgrading %s from per-repo to per-org scope", claims.Repository)
+		isPerRepo = false
+	}
+	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if shape != "" {
+		log.Printf("org-mode repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
+			shape, req.Repos, claims.Repository, targetOrg, req.Role)
+	}
+
 	if len(req.Repos) == 0 {
-		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
+		log.Printf("WARNING: repos=[\"*\"] normalized to installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
 			targetOrg, req.Role, callerOrg, claims.Repository)
 	}
 
 	var token, expiresAt string
 	var granted *GrantedScope
 
-	if strings.EqualFold(targetOrg, callerOrg) {
+	if !isTargetForeign {
 		token, expiresAt, granted, err = h.mintToken(ctx, callerOrg, req.Role, req.Repos)
 	} else {
 		token, expiresAt, granted, err = h.mintTokenCrossOrg(ctx, claims, targetOrg, req.Role, req.Repos)
@@ -263,7 +335,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("granted scope: repos=%v permissions=%v repo_selection=%s",
 			granted.Repos, granted.Permissions, granted.RepoSelection)
 		if len(req.Repos) == 0 {
-			log.Printf("WARNING: installation-wide token granted for target_org=%s role=%s repo_selection=%s",
+			log.Printf("WARNING: repos=[\"*\"] installation-wide token granted for target_org=%s role=%s repo_selection=%s",
 				targetOrg, req.Role, granted.RepoSelection)
 		} else if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)

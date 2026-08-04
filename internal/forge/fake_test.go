@@ -22,11 +22,37 @@ func TestFakeClient_ListOrgRepos(t *testing.T) {
 		},
 	}
 
-	repos, err := fc.ListOrgRepos(ctx, "org")
+	repos, err := fc.ListOrgRepos(ctx, "org", false)
 	require.NoError(t, err)
 	assert.Len(t, repos, 2)
 	assert.Equal(t, "active", repos[0].Name)
 	assert.Equal(t, "also-active", repos[1].Name)
+}
+
+func TestFakeClient_ListOrgRepos_IncludePrivate(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		Repos: []Repository{
+			{Name: "public", FullName: "org/public"},
+			{Name: "private", FullName: "org/private", Private: true},
+			{Name: "archived", FullName: "org/archived", Archived: true},
+			{Name: "forked", FullName: "org/forked", Fork: true},
+		},
+	}
+
+	// includePrivate=false excludes private repos.
+	repos, err := fc.ListOrgRepos(ctx, "org", false)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, "public", repos[0].Name)
+
+	// includePrivate=true includes private repos but still excludes archived/fork.
+	repos, err = fc.ListOrgRepos(ctx, "org", true)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
+	assert.Equal(t, "public", repos[0].Name)
+	assert.Equal(t, "private", repos[1].Name)
+	assert.True(t, repos[1].Private)
 }
 
 func TestFakeClient_CreateRepo(t *testing.T) {
@@ -42,6 +68,19 @@ func TestFakeClient_CreateRepo(t *testing.T) {
 
 	require.Len(t, fc.CreatedRepos, 1)
 	assert.Equal(t, "new-repo", fc.CreatedRepos[0].Name)
+}
+
+func TestFakeClient_CreateRepo_DuplicateReturnsErrAlreadyExists(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	_, err := fc.CreateRepo(ctx, "org", "repo", "desc", false)
+	require.NoError(t, err)
+
+	// Second create of the same repo should return ErrAlreadyExists.
+	_, err = fc.CreateRepo(ctx, "org", "repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, IsAlreadyExists(err), "duplicate CreateRepo should wrap ErrAlreadyExists")
 }
 
 func TestFakeClient_CreateFile(t *testing.T) {
@@ -168,6 +207,45 @@ func TestFakeClient_CreateBranch(t *testing.T) {
 	err := fc.CreateBranch(ctx, "owner", "repo", "feature-branch")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"owner/repo/feature-branch"}, fc.CreatedBranches)
+}
+
+func TestFakeClient_DeleteRef(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	err := fc.DeleteRef(ctx, "owner", "repo", "heads/my-branch")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"owner/repo/heads/my-branch"}, fc.DeletedRefs)
+
+	// Append a second ref.
+	err = fc.DeleteRef(ctx, "owner", "repo", "tags/v1.0")
+	require.NoError(t, err)
+	assert.Len(t, fc.DeletedRefs, 2)
+}
+
+func TestFakeClient_CreateCrossRepoChangeProposal(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	cp, err := fc.CreateCrossRepoChangeProposal(ctx,
+		"base-owner", "base-repo", "head-owner", "head-repo",
+		"PR title", "PR body", "feature-branch", "main",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 1, cp.Number)
+	assert.Equal(t, "PR title", cp.Title)
+	assert.Equal(t, "head-owner:feature-branch", cp.Head)
+	assert.Equal(t, "main", cp.Base)
+	assert.Contains(t, cp.URL, "base-owner/base-repo/pull/1")
+
+	// Second proposal gets incremented number.
+	cp2, err := fc.CreateCrossRepoChangeProposal(ctx,
+		"base-owner", "base-repo", "head-owner", "head-repo",
+		"title2", "body2", "branch2", "main",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, cp2.Number)
+	assert.Len(t, fc.CreatedProposals, 2)
 }
 
 func TestFakeClient_CreateChangeProposal(t *testing.T) {
@@ -609,16 +687,25 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		name string
 		call func(fc *FakeClient) error
 	}{
-		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org"); return err }},
+		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org", false); return err }},
 		{"CreateRepo", func(fc *FakeClient) error { _, err := fc.CreateRepo(ctx, "o", "r", "d", false); return err }},
 		{"DeleteRepo", func(fc *FakeClient) error { return fc.DeleteRepo(ctx, "o", "r") }},
 		{"CreateFile", func(fc *FakeClient) error { return fc.CreateFile(ctx, "o", "r", "p", "m", nil) }},
 		{"CreateOrUpdateFile", func(fc *FakeClient) error { return fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", nil) }},
+		{"UpdateRepoVisibility", func(fc *FakeClient) error {
+			fc.Repos = []Repository{{Name: "r", FullName: "o/r"}}
+			return fc.UpdateRepoVisibility(ctx, "o", "r", true)
+		}},
 		{"GetFileContent", func(fc *FakeClient) error { _, err := fc.GetFileContent(ctx, "o", "r", "p"); return err }},
 		{"CreateBranch", func(fc *FakeClient) error { return fc.CreateBranch(ctx, "o", "r", "b") }},
+		{"DeleteRef", func(fc *FakeClient) error { return fc.DeleteRef(ctx, "o", "r", "heads/b") }},
 		{"CreateFileOnBranch", func(fc *FakeClient) error { return fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", nil) }},
 		{"CreateChangeProposal", func(fc *FakeClient) error {
 			_, err := fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
+			return err
+		}},
+		{"CreateCrossRepoChangeProposal", func(fc *FakeClient) error {
+			_, err := fc.CreateCrossRepoChangeProposal(ctx, "o", "r", "ho", "hr", "t", "b", "h", "base")
 			return err
 		}},
 		{"ListRepoPullRequests", func(fc *FakeClient) error { _, err := fc.ListRepoPullRequests(ctx, "o", "r"); return err }},
@@ -702,6 +789,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.ListRepoVariables(ctx, "o", "r")
 			return err
 		}},
+		{"ListWorkflowRunJobs", func(fc *FakeClient) error {
+			_, err := fc.ListWorkflowRunJobs(ctx, "o", "r", 1)
+			return err
+		}},
 	}
 
 	for _, m := range methods {
@@ -742,15 +833,18 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			_, _ = fc.ListOrgRepos(ctx, "org")
+			_, _ = fc.ListOrgRepos(ctx, "org", false)
 			_, _ = fc.CreateRepo(ctx, "org", "r", "d", false)
+			_ = fc.UpdateRepoVisibility(ctx, "org", "repo1", false)
 			_ = fc.DeleteRepo(ctx, "o", "r")
 			_ = fc.CreateFile(ctx, "o", "r", "p", "m", []byte("data"))
 			_ = fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", []byte("data"))
 			_, _ = fc.GetFileContent(ctx, "o", "r", "file.txt")
 			_ = fc.CreateBranch(ctx, "o", "r", "b")
+			_ = fc.DeleteRef(ctx, "o", "r", "heads/b")
 			_ = fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data"))
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
+			_, _ = fc.CreateCrossRepoChangeProposal(ctx, "o", "r", "ho", "hr", "t", "b", "h", "base")
 			_, _ = fc.ListRepoPullRequests(ctx, "o", "r")
 			_, _ = fc.GetAuthenticatedUser(ctx)
 			_, _ = fc.GetAuthenticatedUserIdentity(ctx)
@@ -776,6 +870,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 			_ = fc.DeleteRepoSecret(ctx, "o", "r", "n")
 			_, _ = fc.ListRepoVariables(ctx, "o", "r")
+			_, _ = fc.ListWorkflowRunJobs(ctx, "o", "r", 1)
 		}(i)
 	}
 
@@ -1030,6 +1125,66 @@ func TestFakeClient_ListWorkflowRunArtifacts(t *testing.T) {
 	assert.Nil(t, arts)
 }
 
+func TestFakeClient_ListWorkflowRunJobs(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunJobs = map[int][]WorkflowJob{
+		42: {
+			{ID: 1, Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+			{ID: 2, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"},
+		},
+	}
+
+	jobs, err := fc.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	require.Len(t, jobs, 2)
+	assert.Equal(t, "dispatch / Route", jobs[0].Name)
+	assert.Equal(t, "dispatch / Harness run (triage)", jobs[1].Name)
+
+	// Missing run returns nil.
+	jobs, err = fc.ListWorkflowRunJobs(context.Background(), "org", "repo", 99)
+	require.NoError(t, err)
+	assert.Nil(t, jobs)
+
+	// Nil map returns nil.
+	fc2 := NewFakeClient()
+	jobs, err = fc2.ListWorkflowRunJobs(context.Background(), "org", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, jobs)
+}
+
+func TestFakeClient_ListWorkflowRuns_WorkflowRunsList(t *testing.T) {
+	fc := NewFakeClient()
+	// WorkflowRunsList takes precedence over WorkflowRuns.
+	fc.WorkflowRuns = map[string]*WorkflowRun{
+		"org/repo/ci.yml": {ID: 1, Status: "completed", Conclusion: "success"},
+	}
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 10, Status: "completed", Conclusion: "success"},
+			{ID: 20, Status: "completed", Conclusion: "failure"},
+		},
+	}
+
+	runs, err := fc.ListWorkflowRuns(context.Background(), "org", "repo", "ci.yml")
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+	assert.Equal(t, 10, runs[0].ID)
+	assert.Equal(t, 20, runs[1].ID)
+
+	// Missing key falls back to WorkflowRuns (not in WorkflowRunsList).
+	fc2 := NewFakeClient()
+	fc2.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/other.yml": {{ID: 99}},
+	}
+	fc2.WorkflowRuns = map[string]*WorkflowRun{
+		"org/repo/ci.yml": {ID: 1, Status: "completed", Conclusion: "success"},
+	}
+	runs, err = fc2.ListWorkflowRuns(context.Background(), "org", "repo", "ci.yml")
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 1, runs[0].ID)
+}
+
 func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {
 	fc := NewFakeClient()
 	fc.WorkflowArtifactContents = map[int][]byte{
@@ -1176,6 +1331,33 @@ func TestFakeClient_PipelineScheduleRoundTrip(t *testing.T) {
 	assert.Equal(t, []int64{id}, fc.DeletedScheduleIDs)
 }
 
+func TestFakeClient_CreatePipeline(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	p, err := fc.CreatePipeline(ctx, "org", "repo", "main", map[string]string{"STAGE": "triage"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), p.ID)
+	assert.Contains(t, p.WebURL, "pipelines/1")
+	require.Len(t, fc.CreatedPipelines, 1)
+
+	p2, err := fc.CreatePipeline(ctx, "org", "repo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), p2.ID)
+	require.Len(t, fc.CreatedPipelines, 2)
+}
+
+func TestFakeClient_CreatePipeline_Error(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.Errors["CreatePipeline"] = fmt.Errorf("forbidden")
+
+	p, err := fc.CreatePipeline(ctx, "org", "repo", "main", nil)
+	require.Error(t, err)
+	assert.Nil(t, p)
+	assert.Empty(t, fc.CreatedPipelines)
+}
+
 func TestFakeClient_UpdateCIVariable_RecordsProtected(t *testing.T) {
 	ctx := context.Background()
 	fc := NewFakeClient()
@@ -1247,6 +1429,35 @@ func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
 	})
 }
 
+func TestFakeClient_CreateReviewErrSeq(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("first call errors, second succeeds", func(t *testing.T) {
+		fc := &FakeClient{
+			CreateReviewErrSeq: []error{fmt.Errorf("422 unprocessable")},
+		}
+		err := fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "", "", nil)
+		require.Error(t, err)
+		assert.Empty(t, fc.CreatedReviews)
+
+		err = fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "ok", "", nil)
+		require.NoError(t, err)
+		require.Len(t, fc.CreatedReviews, 1)
+	})
+
+	t.Run("nil entry means no error for that call", func(t *testing.T) {
+		fc := &FakeClient{
+			CreateReviewErrSeq: []error{nil, fmt.Errorf("fail")},
+		}
+		err := fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "", "", nil)
+		require.NoError(t, err)
+		require.Len(t, fc.CreatedReviews, 1)
+
+		err = fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "", "", nil)
+		require.Error(t, err)
+	})
+}
+
 func TestFakeClient_GetRepo(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{
@@ -1259,6 +1470,51 @@ func TestFakeClient_GetRepo(t *testing.T) {
 
 	_, err = fc.GetRepo(ctx, "org", "missing")
 	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_UpdateRepoVisibility(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("updates repo in Repos", func(t *testing.T) {
+		fc := &FakeClient{
+			Repos: []Repository{{Name: "repo", FullName: "org/repo", Private: false}},
+		}
+		err := fc.UpdateRepoVisibility(ctx, "org", "repo", true)
+		require.NoError(t, err)
+		assert.True(t, fc.Repos[0].Private)
+
+		err = fc.UpdateRepoVisibility(ctx, "org", "repo", false)
+		require.NoError(t, err)
+		assert.False(t, fc.Repos[0].Private)
+	})
+
+	t.Run("updates repo in CreatedRepos", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.CreateRepo(ctx, "org", "new-repo", "desc", true)
+		require.NoError(t, err)
+		assert.True(t, fc.CreatedRepos[0].Private)
+
+		err = fc.UpdateRepoVisibility(ctx, "org", "new-repo", false)
+		require.NoError(t, err)
+		assert.False(t, fc.CreatedRepos[0].Private)
+	})
+
+	t.Run("returns ErrNotFound for missing repo", func(t *testing.T) {
+		fc := &FakeClient{}
+		err := fc.UpdateRepoVisibility(ctx, "org", "missing", true)
+		require.Error(t, err)
+		assert.True(t, IsNotFound(err))
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := &FakeClient{
+			Repos:  []Repository{{Name: "repo", FullName: "org/repo"}},
+			Errors: map[string]error{"UpdateRepoVisibility": errors.New("forbidden")},
+		}
+		err := fc.UpdateRepoVisibility(ctx, "org", "repo", true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "forbidden")
+	})
 }
 
 func TestFakeClient_GetOrgPlan(t *testing.T) {
@@ -1339,6 +1595,27 @@ func TestFakeClient_ListRepositoryFiles(t *testing.T) {
 		_, err := fc.ListRepositoryFiles(ctx, "org", "repo")
 		require.ErrorIs(t, err, ErrTreeTruncated)
 	})
+}
+
+func TestFakeClient_CloseChangeProposal(t *testing.T) {
+	fc := NewFakeClient()
+	err := fc.CloseChangeProposal(context.Background(), "owner", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []int{42}, fc.ClosedProposals)
+
+	err = fc.CloseChangeProposal(context.Background(), "owner", "repo", 99)
+	require.NoError(t, err)
+	assert.Equal(t, []int{42, 99}, fc.ClosedProposals)
+}
+
+func TestFakeClient_CloseChangeProposal_Error(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{
+		"CloseChangeProposal": fmt.Errorf("forbidden"),
+	}
+	err := fc.CloseChangeProposal(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "forbidden")
+	assert.Empty(t, fc.ClosedProposals)
 }
 
 func TestFakeClient_ListRepositoryFiles_ConcurrentSafe(t *testing.T) {

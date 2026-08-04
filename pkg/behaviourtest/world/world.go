@@ -1,6 +1,7 @@
 package world
 
 import (
+	"net/http/httptest"
 	"path/filepath"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/jiramock"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 )
 
@@ -48,6 +50,48 @@ type World struct {
 	ForkRepo     string
 	ForkPRNumber int
 	ForkPRBranch string
+
+	// URL harness hosting repo — set by URL dispatch step definitions.
+	URLHarnessRepoOwner string
+	URLHarnessRepoName  string
+
+	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
+	// for this scenario's duration. Empty when no pool is configured.
+	LeasedRepoName string
+
+	// Ensurer lazily creates and installs repos on demand. Shared across
+	// scenarios (like other driver fields) and safe for concurrent use.
+	// Nil when lazy ensure is not configured.
+	Ensurer install.RepoEnsurer
+
+	// KillSwitchActivated records whether this scenario activated the
+	// repo-level kill switch. CleanupScenario uses this to deactivate
+	// the switch so the next scenario on this slot is not affected.
+	KillSwitchActivated bool
+
+	// Jira mock state — set by the "Given a mock Jira server" step.
+	JiraMockServer *httptest.Server
+	JiraMockState  *jiramock.State
+	JiraConfigDir  string // temp dir holding .fullsend/ layout for the poller
+}
+
+// Clone creates a shallow copy of w. Drivers and shared state (SCM,
+// CI, Install as install.State) are shared by reference — this is safe
+// because the production implementations are immutable wrappers:
+//   - scm/github.Driver holds only a forge.Client (concurrent-safe).
+//   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
+//   - install.perRepoState holds only immutable string fields.
+//
+// Race tests in each driver package (TestConcurrentAccess,
+// TestConcurrentStateAccess) verify the real types under -race with
+// forge.FakeClient. See scm.Driver, ci.Driver, and install.State doc
+// comments for the concurrency contract.
+//
+// Scenario-level fields are copied verbatim; callers should call
+// resetScenarioWorld (in package suite) to zero them for each new scenario.
+func (w *World) Clone() *World {
+	clone := *w
+	return &clone
 }
 
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"

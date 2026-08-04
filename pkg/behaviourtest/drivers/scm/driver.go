@@ -7,6 +7,17 @@ import (
 )
 
 // Driver abstracts SCM operations for behaviour tests.
+//
+// Concurrency: the github.Driver implementation is an immutable wrapper
+// around forge.Client (which is itself safe for concurrent use) and
+// holds no unsynchronized mutable fields. Sharing a single Driver
+// across goroutines via World.Clone is safe by design for
+// GODOG_CONCURRENCY>1. TestConcurrentAccess in package
+// github exercises the real driver under -race with a FakeClient.
+//
+// If a future implementation adds mutable state (caches, counters,
+// buffers), it must synchronize access or be deep-copied per scenario
+// in World.Clone.
 type Driver interface {
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*forge.Issue, error)
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
@@ -15,10 +26,31 @@ type Driver interface {
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
+	// DeleteBranch deletes a branch from a repository. Returns
+	// forge.ErrNotFound if the branch does not exist.
+	DeleteBranch(ctx context.Context, owner, repo, branch string) error
 	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
+
+	// CreateRepo creates a new repository in the given org. It is
+	// idempotent — if a repo with the given name already exists,
+	// it returns without error.
+	CreateRepo(ctx context.Context, org, name, description string) error
+	// EnsureRepoPublic verifies that a repository is public and
+	// attempts to update its visibility if the org forced it private.
+	// Returns an error if the repo cannot be made public.
+	EnsureRepoPublic(ctx context.Context, owner, repo string) error
+	// GetDefaultBranch returns the name of a repository's default branch.
+	GetDefaultBranch(ctx context.Context, owner, repo string) (string, error)
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns an error if the branch ref does not exist (e.g. the
+	// fork's Git data has not been replicated yet).
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error)
+	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
+	// if the repository does not exist.
+	DeleteRepo(ctx context.Context, owner, repo string) error
 
 	// CreateFork creates a fork of owner/repo within the same
 	// organization as the source repository, using the given
@@ -32,6 +64,8 @@ type Driver interface {
 	CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error
 
 	// CreateForkChangeProposal opens a cross-fork pull request from
-	// forkOwner:headBranch into baseOwner/baseRepo's baseBranch.
-	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, headBranch, baseBranch string) (*forge.ChangeProposal, error)
+	// forkOwner/forkRepo:head into baseOwner/baseRepo's base branch.
+	// The forkRepo parameter is required to disambiguate same-owner forks
+	// (where forkOwner == baseOwner) from branches on the base repo.
+	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, forkRepo, head, base string) (*forge.ChangeProposal, error)
 }

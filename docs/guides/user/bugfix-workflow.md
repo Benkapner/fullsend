@@ -11,7 +11,7 @@ When someone files a bug, fullsend's agent pipeline processes it through four st
 3. **Review** — multiple review agents evaluate the PR independently, a coordinator decides the outcome
 4. **Fix** — addresses review feedback automatically or on human command, then loops back to review
 
-Each stage is triggered by labels and can be restarted with slash commands. The pipeline uses GitHub's native primitives (issues, PRs, labels, branch protection) as its coordination layer — there is no central orchestrator. See [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) for the full design.
+Each stage is triggered by labels and can be restarted with slash commands. The pipeline uses GitHub's native primitives (issues, PRs, labels, branch protection) as its coordination layer — there is no central orchestrator.
 
 ```
 Issue filed → Triage → ready-to-code → Code Agent → PR opened → Review → ready-for-merge → Merge
@@ -65,10 +65,12 @@ You can control the pipeline from issue or PR comments:
 | `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
 
-All slash commands require write-level repository permission (admin,
-maintain, or write), verified via the collaborator permission API.
-Bot-to-bot agent handoffs are not affected because they use label-based
-triggers, not slash commands.
+Authorization is verified via the collaborator permission API and is
+stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
+permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
+`/fs-fix-stop` require write-level permission or higher (admin,
+maintain, or write). Bot-to-bot agent handoffs are not affected because
+they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
 
@@ -186,7 +188,6 @@ Fullsend does not lock you out. The labels are the state machine, and you have f
 
 ## Reference
 
-- [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) — initial fullsend design (full workflow specification)
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack
 - [Installing fullsend](../getting-started/) — prerequisite: setup guide
 - [Security threat model](../../problems/security-threat-model.md) — how fullsend thinks about security

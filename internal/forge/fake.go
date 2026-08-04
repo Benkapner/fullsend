@@ -58,6 +58,12 @@ type VariableRecord struct {
 	Protected                bool
 }
 
+// PipelineCallRecord records a CreatePipeline invocation.
+type PipelineCallRecord struct {
+	Owner, Repo, Ref string
+	Variables        map[string]string
+}
+
 // UpdatedCommentRecord records an issue comment update call.
 type UpdatedCommentRecord struct {
 	Owner, Repo string
@@ -119,6 +125,7 @@ type FakeClient struct {
 	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte        // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
+	WorkflowRunsList          map[string][]WorkflowRun // key: "owner/repo/workflow" → multiple runs (takes precedence over WorkflowRuns)
 	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
 	WorkflowRunArtifacts      map[int][]WorkflowArtifact
 	WorkflowArtifactContents  map[int][]byte
@@ -209,6 +216,12 @@ type FakeClient struct {
 	// A nil entry means no error for that call.
 	CommitFilesErrSeq []error
 
+	// CreateReviewErrSeq is an error queue for CreatePullRequestReview.
+	// Each call shifts the first element; when empty, falls through to
+	// Errors["CreatePullRequestReview"]. A nil entry means no error
+	// for that call.
+	CreateReviewErrSeq []error
+
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
@@ -224,6 +237,9 @@ type FakeClient struct {
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
+	// WorkflowRunJobs for ListWorkflowRunJobs.
+	WorkflowRunJobs map[int][]WorkflowJob // key: runID
+
 	// Annotations for GetWorkflowRunAnnotations.
 	Annotations []Annotation
 
@@ -231,6 +247,7 @@ type FakeClient struct {
 	CreatedRepos           []Repository
 	CreatedFiles           []FileRecord
 	CreatedBranches        []string // "owner/repo/branch"
+	DeletedRefs            []string // "owner/repo/refPath"
 	CreatedProposals       []ChangeProposal
 	DeletedRepos           []string // "owner/repo"
 	DeletedFiles           []FileRecord
@@ -250,7 +267,10 @@ type FakeClient struct {
 	CommittedFiles         []CommitFilesRecord
 	CommittedFilesToBranch []CommitFilesToBranchRecord
 	CreatedForks           []string // "owner/repo"
+	ClosedProposals        []int    // PR numbers
 	DeletedComments        []int    // comment IDs
+	CreatedPipelines       []Pipeline
+	PipelineCalls          []PipelineCallRecord
 	CreatedSchedules       []PipelineSchedule
 	DeletedScheduleIDs     []int64
 	UpdatedVariables       []VariableRecord
@@ -270,7 +290,7 @@ func (f *FakeClient) err(method string) error {
 	return f.Errors[method]
 }
 
-func (f *FakeClient) ListOrgRepos(_ context.Context, org string) ([]Repository, error) {
+func (f *FakeClient) ListOrgRepos(_ context.Context, org string, includePrivate bool) ([]Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -285,7 +305,10 @@ func (f *FakeClient) ListOrgRepos(_ context.Context, org string) ([]Repository, 
 
 	var result []Repository
 	for _, r := range source {
-		if r.Archived || r.Fork || r.Private {
+		if r.Archived || r.Fork {
+			continue
+		}
+		if r.Private && !includePrivate {
 			continue
 		}
 		result = append(result, r)
@@ -305,13 +328,13 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 	// Check for duplicates in pre-populated repos.
 	for _, r := range f.Repos {
 		if r.FullName == fullName {
-			return nil, fmt.Errorf("repository already exists: %s", fullName)
+			return nil, fmt.Errorf("%w: %s", ErrAlreadyExists, fullName)
 		}
 	}
 	// Check for duplicates in previously created repos.
 	for _, r := range f.CreatedRepos {
 		if r.FullName == fullName {
-			return nil, fmt.Errorf("repository already exists: %s", fullName)
+			return nil, fmt.Errorf("%w: %s", ErrAlreadyExists, fullName)
 		}
 	}
 
@@ -346,6 +369,30 @@ func (f *FakeClient) GetRepo(_ context.Context, owner, repo string) (*Repository
 		}
 	}
 	return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
+}
+
+func (f *FakeClient) UpdateRepoVisibility(_ context.Context, owner, repo string, private bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateRepoVisibility"); e != nil {
+		return e
+	}
+
+	fullName := owner + "/" + repo
+	for i := range f.Repos {
+		if f.Repos[i].FullName == fullName {
+			f.Repos[i].Private = private
+			return nil
+		}
+	}
+	for i := range f.CreatedRepos {
+		if f.CreatedRepos[i].FullName == fullName {
+			f.CreatedRepos[i].Private = private
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
 }
 
 func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
@@ -735,6 +782,18 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	return nil
 }
 
+func (f *FakeClient) DeleteRef(_ context.Context, owner, repo, refPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRef"); e != nil {
+		return e
+	}
+
+	f.DeletedRefs = append(f.DeletedRefs, owner+"/"+repo+"/"+refPath)
+	return nil
+}
+
 func (f *FakeClient) CreateFileOnBranch(_ context.Context, owner, repo, branch, path, message string, content []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -798,6 +857,26 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 	return &cp, nil
 }
 
+func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*ChangeProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateCrossRepoChangeProposal"); e != nil {
+		return nil, e
+	}
+
+	f.proposalCounter++
+	cp := ChangeProposal{
+		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		Title:  title,
+		Number: f.proposalCounter,
+		Head:   headOwner + ":" + headBranch,
+		Base:   baseBranch,
+	}
+	f.CreatedProposals = append(f.CreatedProposals, cp)
+	return &cp, nil
+}
+
 func (f *FakeClient) ListRepoPullRequests(_ context.Context, owner, repo string) ([]ChangeProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -812,6 +891,18 @@ func (f *FakeClient) ListRepoPullRequests(_ context.Context, owner, repo string)
 		}
 	}
 	return []ChangeProposal{}, nil
+}
+
+func (f *FakeClient) CloseChangeProposal(_ context.Context, _, _ string, number int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CloseChangeProposal"); e != nil {
+		return e
+	}
+
+	f.ClosedProposals = append(f.ClosedProposals, number)
+	return nil
 }
 
 func (f *FakeClient) GetOrgPlan(_ context.Context, _ string) (string, error) {
@@ -1356,6 +1447,13 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.CreateReviewErrSeq) > 0 {
+		e := f.CreateReviewErrSeq[0]
+		f.CreateReviewErrSeq = f.CreateReviewErrSeq[1:]
+		if e != nil {
+			return e
+		}
+	}
 	if e := f.err("CreatePullRequestReview"); e != nil {
 		return e
 	}
@@ -1443,10 +1541,27 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return nil, e
 	}
 	key := owner + "/" + repo + "/" + workflowFile
+	if f.WorkflowRunsList != nil {
+		if runs, ok := f.WorkflowRunsList[key]; ok {
+			return append([]WorkflowRun(nil), runs...), nil
+		}
+	}
 	if run, ok := f.WorkflowRuns[key]; ok {
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunJobs"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowRunJobs == nil {
+		return nil, nil
+	}
+	return append([]WorkflowJob(nil), f.WorkflowRunJobs[runID]...), nil
 }
 
 func (f *FakeClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, runID int) ([]WorkflowArtifact, error) {
@@ -1785,6 +1900,33 @@ func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch st
 
 	key := owner + "/" + repo + "/" + branch
 	return f.ProtectedBranches[key], nil
+}
+
+func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	vars := make(map[string]string, len(variables))
+	for k, v := range variables {
+		vars[k] = v
+	}
+	f.PipelineCalls = append(f.PipelineCalls, PipelineCallRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+	})
+
+	if e := f.err("CreatePipeline"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
 }
 
 func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {

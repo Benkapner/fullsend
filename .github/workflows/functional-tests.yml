@@ -15,29 +15,34 @@ on:
       - 'internal/scaffold/**'
       - 'internal/cli/run.go'
       - '.github/workflows/functional-tests.yml'
+      - '.github/workflows/functional-ok-to-test.yml'
       - '.github/scripts/**'
   pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
+    # labeled / ok-to-test is handled by functional-ok-to-test.yml via workflow_call.
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request_target'
         && format('functional-{0}', github.event.pull_request.number)
         || format('{0}-{1}', github.workflow, github.ref) }}
+  # Label events are auth, not a code change — never cancel an in-progress run.
+  # Keep in sync with e2e.yml. Explicit outer parens: (A && B) || (C && D).
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request_target'
-        || github.ref != 'refs/heads/main' }}
+    ${{ (github.event_name == 'pull_request_target'
+        && github.event.action != 'labeled')
+        || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
     # Separate job so pull-requests: write stays out of the job that checks
     # out fork head and runs tests with secrets.
     # Never checkout github.event.pull_request.head.sha here.
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+    # workflow_call from functional-ok-to-test.yml still has event_name pull_request_target.
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -46,7 +51,7 @@ jobs:
     outputs:
       authorized: ${{ steps.auth.outputs.authorized }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
 
@@ -63,7 +68,6 @@ jobs:
 
   functional-tests:
     # For pull_request_target, runs only when gate sets authorized=true.
-    # Do not treat a skipped gate as authorized.
     # This job checks out untrusted PR head code — no pull-requests: write here.
     needs: gate
     if: >-
@@ -106,14 +110,14 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '^eval/|^internal/scaffold/|^internal/cli/run\.go$|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/'; then
+          if echo "$FILES" | grep -qE '^eval/|^internal/scaffold/|^internal/cli/run\.go$|^\.github/workflows/functional-tests\.yml$|^\.github/workflows/functional-ok-to-test\.yml$|^\.github/scripts/'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No functional-test-relevant files changed — skipping tests"
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
@@ -181,9 +185,7 @@ jobs:
 
       - name: Install Podman
         if: steps.changes.outputs.relevant != 'false'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman
+        run: .github/scripts/install-podman.sh
 
       - name: Configure rootless Podman
         if: steps.changes.outputs.relevant != 'false'

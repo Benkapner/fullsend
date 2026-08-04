@@ -14,16 +14,14 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/layers"
-	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 type migrationAction int
 
 const (
-	migrateDead     migrationAction = iota // agent already in config — delete customized files
-	migrateCustom                          // unknown agent — move files, register local path
-	migrateModified                        // scaffold agent not in config — base: composition
+	migrateDead   migrationAction = iota // agent already in config — delete customized files
+	migrateCustom                        // agent not in config — move files, register local path
 )
 
 type agentMigration struct {
@@ -43,10 +41,8 @@ func newAgentMigrateCustomizationsCmd() *cobra.Command {
 		Long: `Scan the customized/ directory and migrate each override:
 
   - Dead overrides (agent already in config) are deleted.
-  - Custom agents (not in upstream scaffold) are moved to regular
-    directories and registered as local paths in config.yaml.
-  - Modified standard agents are converted to base: composition
-    harnesses and registered in config.yaml.
+  - Custom agents (not in config) are moved to regular directories
+    and registered as local paths in config.yaml.
 
 Changes are committed to a branch and delivered via pull request.
 Use --dry-run to preview changes without creating a PR.`,
@@ -63,7 +59,7 @@ Use --dry-run to preview changes without creating a PR.`,
 			return runMigrateCustomizations(cmd.Context(), fullsendDir, repoFlag, dryRun, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	cmd.Flags().StringVar(&repoFlag, "repo", "", "target repository (owner/repo) for the migration PR")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without creating a PR")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
@@ -98,16 +94,7 @@ func runMigrateCustomizations(ctx context.Context, fullsendDir, repoFlag string,
 		return nil
 	}
 
-	scaffoldNames, err := scaffold.HarnessNames()
-	if err != nil {
-		return fmt.Errorf("listing scaffold harnesses: %w", err)
-	}
-	scaffoldSet := make(map[string]bool, len(scaffoldNames))
-	for _, n := range scaffoldNames {
-		scaffoldSet[n] = true
-	}
-
-	migrations := planMigrations(files, cfg, scaffoldSet)
+	migrations := planMigrations(files, cfg)
 	standaloneFiles := findStandaloneFiles(files, migrations)
 
 	if len(migrations) == 0 && len(standaloneFiles) == 0 {
@@ -123,8 +110,6 @@ func runMigrateCustomizations(ctx context.Context, fullsendDir, repoFlag string,
 				printer.StepInfo(fmt.Sprintf("Would remove dead override: %s", m.name))
 			case migrateCustom:
 				printer.StepInfo(fmt.Sprintf("Would register custom agent: %s", m.name))
-			case migrateModified:
-				printer.StepInfo(fmt.Sprintf("Would convert to base: composition: %s", m.name))
 			}
 		}
 		for _, f := range standaloneFiles {
@@ -199,15 +184,6 @@ func runMigrateCustomizations(ctx context.Context, fullsendDir, repoFlag string,
 			}
 			prBodyParts = append(prBodyParts, fmt.Sprintf("- Registered custom agent **%s**", m.name))
 
-		case migrateModified:
-			printer.StepInfo(fmt.Sprintf("Modified standard agent: %s → base: composition", m.name))
-			agentFiles, buildErr := buildModifiedAgentFiles(customizedBase, customizedPrefix, destPrefix, m, cfg, printer)
-			if buildErr != nil {
-				return fmt.Errorf("building modified agent %s files: %w", m.name, buildErr)
-			}
-			treeFiles = append(treeFiles, agentFiles...)
-			configChanged = true
-			prBodyParts = append(prBodyParts, fmt.Sprintf("- Converted **%s** to `base:` composition", m.name))
 		}
 	}
 
@@ -307,7 +283,7 @@ func walkCustomized(root string) ([]string, error) {
 
 // planMigrations groups customized files by agent name and determines the
 // migration action for each.
-func planMigrations(files []string, cfg config.ConfigWriter, scaffoldSet map[string]bool) []agentMigration {
+func planMigrations(files []string, cfg config.ConfigWriter) []agentMigration {
 	// Group files by agent name (derived from harness filename).
 	harnessAgents := make(map[string][]string) // agent name → list of all related files
 	var harnessNames []string
@@ -369,8 +345,6 @@ func planMigrations(files []string, cfg config.ConfigWriter, scaffoldSet map[str
 
 		if _, found := findAgentByName(cfg.AgentEntries(), name); found {
 			m.action = migrateDead
-		} else if scaffoldSet[name] {
-			m.action = migrateModified
 		} else {
 			m.action = migrateCustom
 		}
@@ -412,125 +386,6 @@ func checkDuplicateDestinations(files []forge.TreeFile) error {
 		seen[f.Path] = true
 	}
 	return nil
-}
-
-// resolveBaseURL determines the base: URL for a composition harness. The diff
-// is computed against the embedded scaffold, so the base URL must reference
-// the same content — always the scaffold URL pinned to the CLI's commit SHA.
-func resolveBaseURL(agentName string) (string, error) {
-	if commitSHA == "" || commitSHA == "dev" {
-		return "", fmt.Errorf("cannot determine base URL: no valid commit SHA (binary built without version info)")
-	}
-	return scaffold.HarnessBaseURLWithHash(agentName, commitSHA)
-}
-
-// registerMigratedAgent adds the agent to cfg and ensures
-// allowed_remote_resources covers the base URL prefix.
-func registerMigratedAgent(cfg config.ConfigWriter, agentName, baseURL string) {
-	entry := config.AgentEntry{Source: "harness/" + agentName + ".yaml"}
-	if _, found := findAgentByName(cfg.AgentEntries(), agentName); !found {
-		cfg.SetAgents(append(cfg.AgentEntries(), entry))
-	}
-
-	prefix := allowlistPrefixForURL(baseURL)
-	if prefix != "" {
-		resources := cfg.AllowedResources()
-		if !hasAllowlistPrefix(resources, prefix) {
-			cfg.SetAllowedRemoteResources(append(resources, prefix))
-		}
-	}
-}
-
-// buildModifiedAgentFiles generates TreeFile entries for a modified standard
-// agent. It computes a base: composition harness from the diff between the
-// upstream scaffold and the customized version, then returns file entries for
-// the new harness, deleted customized files, and moved associated files.
-func buildModifiedAgentFiles(
-	customizedBase, customizedPrefix, destPrefix string,
-	m agentMigration,
-	cfg config.ConfigWriter,
-	printer *ui.Printer,
-) ([]forge.TreeFile, error) {
-	upstreamData, err := scaffold.HarnessContent(m.name)
-	if err != nil {
-		return nil, fmt.Errorf("loading upstream harness: %w", err)
-	}
-	var upstreamHarness harness.Harness
-	if err := yaml.Unmarshal(upstreamData, &upstreamHarness); err != nil {
-		return nil, fmt.Errorf("parsing upstream harness: %w", err)
-	}
-
-	customizedPath := filepath.Join(customizedBase, "harness", m.name+".yaml")
-	customizedData, err := os.ReadFile(customizedPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading customized harness: %w", err)
-	}
-	var customizedHarness harness.Harness
-	if err := yaml.Unmarshal(customizedData, &customizedHarness); err != nil {
-		return nil, fmt.Errorf("parsing customized harness: %w", err)
-	}
-	rewriteCustomizedPaths(&customizedHarness)
-
-	customizedFilesSet := make(map[string]bool, len(m.files))
-	for _, f := range m.files {
-		customizedFilesSet[f] = true
-	}
-
-	diffResult := harness.DiffHarness(&upstreamHarness, &customizedHarness, customizedFilesSet)
-	if len(diffResult.Warnings) > 0 {
-		for _, w := range diffResult.Warnings {
-			printer.StepWarn(fmt.Sprintf("Agent %s: %s", m.name, w))
-		}
-		if diffResult.Child == nil {
-			return nil, fmt.Errorf("agent %s: diff aborted due to unrepresentable changes (see warnings above)", m.name)
-		}
-	}
-
-	baseURL, err := resolveBaseURL(m.name)
-	if err != nil {
-		return nil, fmt.Errorf("resolving base URL for %s: %w", m.name, err)
-	}
-
-	var outputHarness *harness.Harness
-	if diffResult.Child == nil {
-		outputHarness = &harness.Harness{}
-	} else {
-		outputHarness = diffResult.Child
-	}
-	outputHarness.Base = baseURL
-
-	outputData, err := yaml.Marshal(outputHarness)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling composition harness: %w", err)
-	}
-
-	var treeFiles []forge.TreeFile
-
-	treeFiles = append(treeFiles, forge.TreeFile{
-		Path: destPrefix + "harness/" + m.name + ".yaml", Content: outputData, Mode: "100644",
-	})
-
-	for _, f := range m.files {
-		if filepath.Dir(f) == "harness" {
-			treeFiles = append(treeFiles, forge.TreeFile{
-				Path: customizedPrefix + f, Delete: true,
-			})
-			continue
-		}
-		tf, readErr := readTreeFile(customizedBase, f)
-		if readErr != nil {
-			return nil, fmt.Errorf("reading customized file %s: %w", f, readErr)
-		}
-		tf.Path = destPrefix + tf.Path
-		treeFiles = append(treeFiles, tf)
-		treeFiles = append(treeFiles, forge.TreeFile{
-			Path: customizedPrefix + f, Delete: true,
-		})
-	}
-
-	registerMigratedAgent(cfg, m.name, baseURL)
-
-	return treeFiles, nil
 }
 
 // rewriteCustomizedPaths strips the "customized/" prefix from path-bearing

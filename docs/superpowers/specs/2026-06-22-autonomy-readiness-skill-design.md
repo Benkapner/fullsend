@@ -132,7 +132,7 @@ Field mapping:
 
 ## Skill File Structure
 
-`internal/scaffold/fullsend-repo/skills/autonomy-readiness/SKILL.md` containing:
+The skill file (now in `fullsend-ai/agents`, formerly `internal/scaffold/fullsend-repo/skills/autonomy-readiness/SKILL.md`) containing:
 
 1. Frontmatter (name, description)
 2. Overview

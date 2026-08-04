@@ -3,24 +3,14 @@ package repos
 import (
 	"context"
 	"fmt"
-	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-var workflowRefPattern = regexp.MustCompile(
-	`uses:\s+fullsend-ai/fullsend/\.github/workflows/[^@]+@(\S+)`,
-)
-
-// workflowPaths lists the shim workflow file paths to try, in order.
-var workflowPaths = []string{
-	".github/workflows/fullsend.yml",
-	".github/workflows/fullsend.yaml",
-}
-
 // RepoState holds the installation state of a single repo as read
-// from GitHub variables and workflow files.
+// from forge variables and workflow files.
 type RepoState struct {
 	Installed       bool
 	MintURL         string
@@ -29,8 +19,8 @@ type RepoState struct {
 }
 
 // ProbeRepoState reads a repo's current per-repo installation state
-// from GitHub variables and workflow files.
-func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string) (RepoState, error) {
+// from forge variables and workflow files.
+func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (RepoState, error) {
 	vars, err := client.ListRepoVariables(ctx, owner, repo)
 	if err != nil {
 		return RepoState{}, fmt.Errorf("listing variables for %s/%s: %w", owner, repo, err)
@@ -46,7 +36,7 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string
 		InferenceRegion: vars["FULLSEND_GCP_REGION"],
 	}
 
-	ref, err := readWorkflowRef(ctx, client, owner, repo)
+	ref, err := readWorkflowRef(ctx, client, owner, repo, fc)
 	if err != nil {
 		return state, fmt.Errorf("reading workflow for %s/%s: %w", owner, repo, err)
 	}
@@ -74,7 +64,6 @@ type RepoStatus struct {
 	MintURL         string  `json:"mint_url,omitempty"`
 	ExpectedMintURL string  `json:"expected_mint_url,omitempty"`
 	Region          string  `json:"region,omitempty"`
-	ExpectedRegion  string  `json:"expected_region,omitempty"`
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 }
@@ -93,24 +82,30 @@ type StatusSummary struct {
 
 // StatusResult holds the full output of a status check.
 type StatusResult struct {
-	Repos   []RepoStatus  `json:"repos"`
-	Summary StatusSummary `json:"summary"`
+	Repos    []RepoStatus  `json:"repos"`
+	Summary  StatusSummary `json:"summary"`
+	Warnings []string      `json:"warnings,omitempty"`
 }
 
 // Status compares the manifest's desired state against the actual forge
 // state for each repo. It returns a StatusResult with per-repo status
 // and aggregate counts. API calls are parallelised up to maxConcurrency.
-func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxConcurrency int, repoFilter []string) (*StatusResult, error) {
-	resolved, err := manifest.ExpandGlobs(ctx, client)
+func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string) (*StatusResult, error) {
+	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
 	}
 
+	var warnings []string
 	if len(repoFilter) > 0 {
+		var unmatched []string
 		var filterErr error
-		resolved, filterErr = filterRepos(resolved, repoFilter)
+		resolved, unmatched, filterErr = filterRepos(resolved, repoFilter)
 		if filterErr != nil {
 			return nil, filterErr
+		}
+		for _, p := range unmatched {
+			warnings = append(warnings, fmt.Sprintf("--repo filter %q matched no manifest entries", p))
 		}
 	}
 
@@ -135,7 +130,17 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
-			status := checkRepoStatus(ctx, client, rr.Owner, rr.Repo, cfg)
+			fc, fcErr := clients.ConfigFor(cfg.Forge)
+			if fcErr != nil {
+				results[idx] = RepoStatus{
+					Owner: rr.Owner,
+					Repo:  rr.Repo,
+					Error: fcErr.Error(),
+				}
+				return
+			}
+			cfg.ForgeConfig = fc
+			status := checkRepoStatus(ctx, cfg)
 			results[idx] = status
 		}(i, rr)
 	}
@@ -156,19 +161,23 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 		}
 	}
 
-	return &StatusResult{Repos: results, Summary: summary}, nil
+	return &StatusResult{Repos: results, Summary: summary, Warnings: warnings}, nil
 }
 
-func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo string, cfg ResolvedConfig) RepoStatus {
+func checkRepoStatus(ctx context.Context, cfg ResolvedConfig) RepoStatus {
+	owner := cfg.Owner
+	repo := cfg.Repo
+	client := cfg.ForgeConfig.Client
+	fc := cfg.ForgeConfig
+
 	status := RepoStatus{
 		Owner:           owner,
 		Repo:            repo,
 		ExpectedRef:     cfg.FullsendRef,
 		ExpectedMintURL: cfg.MintURL,
-		ExpectedRegion:  cfg.InferenceRegion,
 	}
 
-	state, err := ProbeRepoState(ctx, client, owner, repo)
+	state, err := ProbeRepoState(ctx, client, owner, repo, fc)
 	if err != nil {
 		status.Error = err.Error()
 	}
@@ -193,13 +202,8 @@ func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo strin
 		})
 	}
 
-	if cfg.InferenceRegion != "" && status.Region != cfg.InferenceRegion {
-		status.Drifts = append(status.Drifts, Drift{
-			Field:    "FULLSEND_GCP_REGION",
-			Expected: cfg.InferenceRegion,
-			Actual:   status.Region,
-		})
-	}
+	// InferenceRegion is now install-time-only (not in the manifest),
+	// so we no longer check for region drift here.
 
 	if cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
 		status.Drifts = append(status.Drifts, Drift{
@@ -212,8 +216,8 @@ func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo strin
 	return status
 }
 
-func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string) (string, error) {
-	for _, path := range workflowPaths {
+func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
+	for _, path := range fc.WorkflowPaths {
 		content, err := client.GetFileContent(ctx, owner, repo, path)
 		if err != nil {
 			if forge.IsNotFound(err) {
@@ -221,34 +225,64 @@ func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo strin
 			}
 			return "", err
 		}
-		return extractWorkflowRef(content), nil
+		return extractWorkflowRef(content, fc), nil
 	}
 	return "", nil
 }
 
-// extractWorkflowRef extracts the @ref from a fullsend workflow file.
-func extractWorkflowRef(content []byte) string {
-	m := workflowRefPattern.FindSubmatch(content)
+// extractWorkflowRef extracts the @ref from a fullsend workflow file
+// using the forge-specific ref pattern.
+func extractWorkflowRef(content []byte, fc ForgeConfig) string {
+	m := fc.WorkflowRefPattern.FindSubmatch(content)
 	if m == nil {
 		return ""
 	}
 	return string(m[1])
 }
 
-func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, error) {
+// filterRepos returns the subset of repos matching at least one filter
+// pattern, plus any patterns that matched nothing. When every pattern
+// is unmatched (the result is empty), an error is returned so callers
+// can surface a non-zero exit code.
+//
+// Callers surface unmatched-pattern warnings through two mechanisms:
+// Status, Diff, and Sync collect them into a result struct field;
+// BatchInstall and Upgrade emit them via progress callbacks. This
+// dual-surface design reflects each caller's existing output architecture.
+func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []string, error) {
+	matched := make(map[string]bool)
 	var result []ResolvedRepo
 	for _, rr := range repos {
 		fullName := rr.Owner + "/" + rr.Repo
+		added := false
 		for _, pattern := range filter {
 			ok, err := matchesPattern(pattern, fullName)
 			if err != nil {
-				return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+				return nil, nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
 			}
 			if ok {
-				result = append(result, rr)
-				break
+				matched[pattern] = true
+				if !added {
+					result = append(result, rr)
+					added = true
+				}
 			}
 		}
 	}
-	return result, nil
+
+	var unmatched []string
+	for _, pattern := range filter {
+		if !matched[pattern] {
+			unmatched = append(unmatched, pattern)
+		}
+	}
+
+	if len(result) == 0 && len(unmatched) > 0 {
+		return nil, unmatched, fmt.Errorf(
+			"--repo filter matched no manifest entries: %s",
+			strings.Join(unmatched, ", "),
+		)
+	}
+
+	return result, unmatched, nil
 }

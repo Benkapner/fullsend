@@ -31,6 +31,67 @@ Accepted
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
 
+> **Update (2026-07, #5556):** The child-pipeline output driver described in
+> this ADR was replaced by direct API-triggered pipelines
+> (`POST /projects/:id/pipeline`). The poller now creates standalone pipelines
+> with dispatch variables instead of generating child pipeline YAML. This
+> eliminates the bridge job, YAML generation, and 2-level pipeline nesting.
+> The cron-polling input driver and dispatch core are unchanged. Superseded
+> sections: "Relationship to the dispatch driver architecture" (child-pipeline
+> output driver), "Pipeline nesting" under GitLab tier considerations, and the
+> architecture diagram showing parent-child pipeline flow.
+>
+> **Trust boundary change:** With child pipelines, dispatch variables were
+> computed server-side by the trusted poller and injected via the trigger YAML
+> artifact — only the poller could produce them. With API-triggered pipelines,
+> any user with pipeline-create access on the protected branch can POST
+> arbitrary variables (STAGE, EVENT_TYPE, EVENT_PAYLOAD_B64, RESOURCE_KEY,
+> IS_FORK, MR_AUTHOR_ID, ACTOR_ID, STATUS_IID, FULLSEND_POLL_JOB_URL). The
+> in-job authorization gate and fork
+> protection read these attacker-supplied variables. Mitigation #1 is
+> implemented: the agent job uses the Pipelines API
+> (`GET /projects/:id/pipelines/$CI_PIPELINE_ID`) to fetch the server-side
+> `.source` field and `.user.id`, then branches with a deny-by-default
+> `case` statement. For API-triggered pipelines (`.source == "api"`), it
+> verifies the pipeline creator matches the bot PAT identity. MR child
+> pipelines (`.source == "parent_pipeline"`) skip this check since their
+> creator is the MR author. A missing or unrecognized `.source` aborts the
+> job (fail-closed). Both dispatch paths now depend on a successful
+> pipeline-record read. The `.source` field is server-computed and cannot
+> be overridden by pipeline variables, unlike the `CI_PIPELINE_SOURCE` env
+> var. Residual risk: `CI_API_V4_URL` and `CI_PIPELINE_ID` are still
+> overridable, so a sophisticated attacker can redirect the API calls.
+> Mitigation #2 (HMAC signing, #5572) reduces this residual risk: the
+> poller signs dispatch variables with `FULLSEND_DISPATCH_SECRET` using
+> HMAC-SHA256 and the agent job verifies the signature before trusting
+> any dispatch variable. The HMAC computation itself uses no CI-provided
+> URLs, but the verification is gated on PIPELINE_SOURCE (derived from
+> CI_API_V4_URL), so the risk is reduced rather than fully closed. `FULLSEND_DISPATCH_SECRET`
+> MUST be configured as a protected, masked CI/CD variable — pipeline
+> variables can be overridden by API-triggered pipelines, so protection
+> is required to prevent a Developer+ user from supplying their own
+> secret and computing a valid HMAC over forged variables.
+>
+> **New permission requirement:** The bot PAT must have merge or push access
+> to the protected branch to create pipelines via the API endpoint. The
+> child-pipeline path had no such requirement (the trigger ran inside an
+> existing pipeline context).
+>
+> **Pipeline visibility change:** Dispatched pipelines are first-class
+> pipelines on the default branch, not nested children. Agent failures mark
+> the latest pipeline on main as failed. The scaffold sets
+> `workflow:auto_cancel:on_new_commit:none` to prevent new commits from
+> canceling queued agent pipelines. This setting applies globally (including
+> MR pipelines) because GitLab does not scope auto_cancel per pipeline
+> source. MR dispatch jobs are fast (<30s) so the impact on MR pipeline
+> redundancy is negligible.
+>
+> **Observability trade-off:** The old `trigger: strategy: depend` mirrored
+> child pipeline pass/fail into the poll job's own status. API-triggered
+> pipelines are fire-and-forget — the poll job reports success after creating
+> the pipeline, regardless of downstream agent outcome. Dispatched pipeline
+> URLs are logged for manual inspection.
+
 ## Context
 
 Fullsend needs to detect and react to GitLab events — new issues, merge
@@ -140,7 +201,8 @@ ENROLLED PROJECT                           GCP (optional, WIF mode only)
 .gitlab-ci.yml (root pipeline)             WIF pool/provider (validates GitLab OIDC)
 .gitlab/ci/fullsend-dispatch.yml (MR routing)  Service Account (impersonated by jobs)
 .gitlab/ci/fullsend-poll.yml (cron-poller)     Secret Manager:
-.gitlab/ci/fullsend-triage.yml … retro.yml       - bot PAT per enrolled project
+.gitlab/ci/fullsend-agent.yml (generic stage)      - bot PAT per enrolled project
+  (replaces per-stage templates — see PR #3193)
 .fullsend/ (config workspace)
 
 MR events (native CI):
@@ -212,6 +274,20 @@ OIDC/WIF mode additionally provides:
   cannot modify WIF attribute conditions without GCP IAM access.
 - **No token mint.** Standard GCP WIF replaces the custom mint Cloud
   Function used for GitHub.
+- **Inference credential support.** WIF mode additionally configures
+  Vertex AI inference credentials (`FULLSEND_GCP_PROJECT_ID`,
+  `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_SA`, `FULLSEND_GCP_REGION`)
+  so that agent jobs can authenticate to Vertex AI using the same
+  OIDC/WIF flow. Variable mode does not support inference credentials.
+- **OIDC issuer reachability requirement.** WIF mode requires the
+  GitLab instance's OIDC discovery endpoints to be publicly reachable
+  by GCP's Security Token Service (STS). During the WIF token exchange,
+  GCP's STS resolves the GitLab instance hostname to validate the JWT
+  issuer. Internal or private GitLab instances (e.g., those accessible
+  only via VPN or corporate DNS) will fail with
+  `Error code invalid_grant: Error connecting to the given credential's issuer`.
+  Use variable mode for GitLab instances that are not resolvable in
+  public DNS.
 
 ### Cron poller (`gitlab-poll` input driver)
 
@@ -319,7 +395,7 @@ runs inline in the root scheduled pipeline (no child pipeline). Level 1:
 the root pipeline triggers a dynamically generated dispatch child pipeline
 (via `trigger: include: artifact:`). Level 2: the dispatch child pipeline
 triggers per-stage child pipelines (via
-`trigger: include: .gitlab/ci/fullsend-{stage}.yml`). This is at the
+`trigger: include: .gitlab/ci/fullsend-agent.yml`). This is at the
 nesting ceiling — no additional `trigger: include:` levels can be added
 without restructuring. See
 [GitLab CI/CD pipeline nesting](https://docs.gitlab.com/ee/ci/pipelines/downstream_pipelines.html#nesting).

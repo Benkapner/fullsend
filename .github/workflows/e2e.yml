@@ -37,32 +37,38 @@ on:
       - 'Makefile'
       - '.github/scripts/**'
       - '.github/workflows/e2e.yml'
+      - '.github/workflows/e2e-ok-to-test.yml'
       - '.github/workflows/reusable-dispatch.yml'
       - 'action.yml'
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'
   pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
+    # labeled / ok-to-test is handled by e2e-ok-to-test.yml via workflow_call.
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request_target'
         && format('e2e-{0}', github.event.pull_request.number)
         || format('{0}-{1}', github.workflow, github.ref) }}
+  # Label events are auth, not a code change — never cancel an in-progress run.
+  # Cancel for opened/synchronize/reopened and for non-main non-PR triggers.
+  # Explicit outer parens: (A && B) || (C && D).
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request_target'
-        || github.ref != 'refs/heads/main' }}
+    ${{ (github.event_name == 'pull_request_target'
+        && github.event.action != 'labeled')
+        || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
     # Separate job (not steps in e2e) so pull-requests: write stays out of the
     # job that checks out fork head and runs make e2e-test with secrets.
     # Never checkout github.event.pull_request.head.sha here.
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+    # workflow_call from e2e-ok-to-test.yml still has event_name pull_request_target.
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -71,7 +77,7 @@ jobs:
     outputs:
       authorized: ${{ steps.auth.outputs.authorized }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
 
@@ -88,7 +94,6 @@ jobs:
 
   e2e:
     # For pull_request_target, runs only when gate sets authorized=true.
-    # Do not treat a skipped gate as authorized (e.g. labeled events for non-ok-to-test labels).
     # This job checks out untrusted PR head code — no pull-requests: write here.
     needs: gate
     if: >-
@@ -131,14 +136,14 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^pkg/e2etest/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^pkg/e2etest/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No e2e-relevant files changed — skipping tests"
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
@@ -182,7 +187,7 @@ jobs:
       !cancelled() &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -219,14 +224,14 @@ jobs:
             }
           fi
           # pkg/e2etest: shared pool/CLI/cleanup; pkg/behaviourtest: framework; e2e/admin: admin-only helpers
-          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}

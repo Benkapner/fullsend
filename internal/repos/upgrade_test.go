@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -12,15 +13,12 @@ import (
 func newUpgradeManifest(defaultRef string) *Manifest {
 	return &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: defaultRef,
+		}},
 		Defaults: DefaultsConfig{
-			InferenceProject: "example-inference",
-			InferenceRegion:  "us-central1",
-			FullsendRef:      defaultRef,
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
@@ -56,7 +54,7 @@ func TestUpgrade_AllBehindTarget(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +88,7 @@ func TestUpgrade_AllAtTarget(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,8 +97,8 @@ func TestUpgrade_AllAtTarget(t *testing.T) {
 		if !r.Skipped {
 			t.Errorf("%s/%s: expected Skipped=true", r.Owner, r.Repo)
 		}
-		if r.SkipReason != "no uses: lines matched for replacement" {
-			t.Errorf("%s/%s: SkipReason = %q, want 'no uses: lines matched for replacement'", r.Owner, r.Repo, r.SkipReason)
+		if r.SkipReason != "already at v2.3.0" {
+			t.Errorf("%s/%s: SkipReason = %q, want 'already at v2.3.0'", r.Owner, r.Repo, r.SkipReason)
 		}
 	}
 }
@@ -108,13 +106,12 @@ func TestUpgrade_AllAtTarget(t *testing.T) {
 func TestUpgrade_MixedStates(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
-		Defaults: DefaultsConfig{
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/current"},
@@ -133,7 +130,7 @@ func TestUpgrade_MixedStates(t *testing.T) {
 		MaxConcurrency: 4,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +140,7 @@ func TestUpgrade_MixedStates(t *testing.T) {
 		byRepo[r.Owner+"/"+r.Repo] = r
 	}
 
-	if r := byRepo["acme-corp/current"]; !r.Skipped || r.SkipReason != "no uses: lines matched for replacement" {
+	if r := byRepo["acme-corp/current"]; !r.Skipped || r.SkipReason != "already at v2.3.0" {
 		t.Errorf("current: expected skipped (already at target), got Skipped=%v, reason=%q", r.Skipped, r.SkipReason)
 	}
 	if r := byRepo["acme-corp/behind"]; !r.Upgraded {
@@ -166,7 +163,7 @@ func TestUpgrade_ForceOverridesNewerCheck(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -191,7 +188,7 @@ func TestUpgrade_RefOverride(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +215,7 @@ func TestUpgrade_RepoFilter(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,7 +246,7 @@ func TestUpgrade_DryRun(t *testing.T) {
 		MaxConcurrency: 2,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, dryRunCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), dryRunCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -270,21 +267,19 @@ func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "latest",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "latest"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "latest" (not eligible for upgrade)` {
 		t.Errorf("expected floating tag skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -294,21 +289,19 @@ func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v0")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "v0" (not eligible for upgrade)` {
 		t.Errorf("expected floating current ref skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -318,21 +311,19 @@ func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "v2.3" (not eligible for upgrade)` {
 		t.Errorf("expected floating tag skip for partial version, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -342,21 +333,19 @@ func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v1.2")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != "floating tag, skipped" {
+	if !results[0].Skipped || results[0].SkipReason != `floating ref "v1.2" (not eligible for upgrade)` {
 		t.Errorf("expected floating tag skip for partial version current ref, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
 	}
 }
@@ -366,16 +355,14 @@ func TestUpgrade_WorkflowNotFound(t *testing.T) {
 	// No workflow file set — FakeClient returns not-found.
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -394,16 +381,14 @@ func TestUpgrade_CommitError(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, errCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), errCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -427,16 +412,14 @@ func TestUpgrade_VerifiesWorkflowContent(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -506,13 +489,13 @@ func TestUpgrade_NoTargetRef(t *testing.T) {
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
 		Defaults: DefaultsConfig{},
 		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -526,26 +509,27 @@ func TestUpgrade_NoTargetRef(t *testing.T) {
 func TestUpgrade_NonSemverCurrentRef(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// SHA ref that isn't semver — should proceed with upgrade (can't compare).
+	// Since the current ref looks like a SHA, GetRef is called to resolve
+	// the target tag; pre-populate the ref so resolution succeeds.
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("abc123def")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = "def456abc789012345678901234567890abcd1234"
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if !results[0].Upgraded {
-		t.Errorf("expected upgrade for non-semver current ref, got Skipped=%v, reason=%q",
-			results[0].Skipped, results[0].SkipReason)
+		t.Errorf("expected upgrade for non-semver current ref, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
 	}
 }
 
@@ -556,18 +540,18 @@ func TestUpgrade_PerRepoOverrideRef(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
 		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
-			{Repo: "acme-corp/web-frontend", FullsendRef: NullableString{Set: true, Value: "v2.1.0"}},
+			{Repo: "acme-corp/web-frontend"},
 		},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 2}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -577,13 +561,13 @@ func TestUpgrade_PerRepoOverrideRef(t *testing.T) {
 		byRepo[r.Owner+"/"+r.Repo] = r
 	}
 
+	// Both repos use the forge-level ref and should be upgraded from v2.1.0 to v2.3.0.
 	if r := byRepo["acme-corp/api-server"]; !r.Upgraded {
 		t.Errorf("api-server: expected Upgraded=true")
 	}
 
-	if r := byRepo["acme-corp/web-frontend"]; !r.Skipped {
-		t.Errorf("web-frontend: expected Skipped=true (pinned to same version), got Upgraded=%v, reason=%q",
-			r.Upgraded, r.SkipReason)
+	if r := byRepo["acme-corp/web-frontend"]; !r.Upgraded {
+		t.Errorf("web-frontend: expected Upgraded=true (forge-level ref applies to all repos)")
 	}
 }
 
@@ -593,12 +577,10 @@ func TestUpgrade_YAMLExtension(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yaml"] = makeWorkflow("v2.1.0")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
@@ -611,7 +593,7 @@ func TestUpgrade_YAMLExtension(t *testing.T) {
 		return nil
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -629,12 +611,10 @@ func TestUpgrade_ProgressCallback(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	var phases []string
@@ -643,7 +623,7 @@ func TestUpgrade_ProgressCallback(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	_, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, progressFn)
+	_, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, progressFn)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -720,7 +700,7 @@ func TestReplaceShimRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag)
+			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag, GitHubForgeConfig())
 			if changed != tt.wantDiff {
 				t.Errorf("changed = %v, want %v", changed, tt.wantDiff)
 			}
@@ -813,98 +793,6 @@ func TestIsFloatingRef(t *testing.T) {
 	}
 }
 
-func TestUpgradeMint_Success(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "https://mint.example.com",
-		},
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestUpgradeMint_URLMismatch(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "https://other-mint.example.com",
-		},
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err == nil {
-		t.Fatal("expected error for URL mismatch")
-	}
-	if indexOf(err.Error(), "does not match") < 0 {
-		t.Errorf("error should mention mismatch, got: %v", err)
-	}
-}
-
-func TestUpgradeMint_DiscoverError(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverErr: fmt.Errorf("network error"),
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err == nil {
-		t.Fatal("expected error for discover failure")
-	}
-}
-
-func TestUpgradeMint_EmptyURL(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "",
-		},
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-
-	err := UpgradeMint(context.Background(), m, prov, nil)
-	if err == nil {
-		t.Fatal("expected error for empty URL")
-	}
-}
-
-type fakeProvisioner struct {
-	discoverResult *MintDiscovery
-	discoverErr    error
-	provisionWIF   string
-	provisionErr   error
-}
-
-func (f *fakeProvisioner) DiscoverMint(_ context.Context) (*MintDiscovery, error) {
-	return f.discoverResult, f.discoverErr
-}
-
-func (f *fakeProvisioner) ProvisionWIF(_ context.Context) (string, error) {
-	return f.provisionWIF, f.provisionErr
-}
-
-func (f *fakeProvisioner) RegisterPerRepoWIF(_ context.Context, _ string) error {
-	return nil
-}
-
-func (f *fakeProvisioner) EnsureOrgInMint(_ context.Context, _, _ string) error {
-	return nil
-}
-
-func (f *fakeProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error {
-	return nil
-}
-
-func (f *fakeProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	return nil
-}
-
 func TestUpgrade_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -913,7 +801,7 @@ func TestUpgrade_ContextCancellation(t *testing.T) {
 	m := newUpgradeManifest("v2.3.0")
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
 
-	_, err := Upgrade(ctx, cfg, fc, noopCommitFn, nil)
+	_, err := Upgrade(ctx, cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err == nil {
 		t.Error("expected context cancellation error")
 	}
@@ -948,7 +836,7 @@ func TestUpgrade_PartialVersionTag(t *testing.T) {
 
 func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0", GitHubForgeConfig())
 	if !changed {
 		t.Error("expected change")
 	}
@@ -960,7 +848,7 @@ func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 
 func TestReplaceShimRef_EmptyTag(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Error("expected change")
 	}
@@ -972,7 +860,7 @@ func TestReplaceShimRef_EmptyTag(t *testing.T) {
 
 func TestReplaceShimRef_MultiWordComment(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0 # version 2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1030,45 +918,20 @@ func TestUpgrade_APIErrorOnWorkflowRead(t *testing.T) {
 	fc.Errors["GetFileContent"] = fmt.Errorf("API rate limit exceeded")
 
 	m := &Manifest{
-		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{
-			FullsendRef: "v2.3.0",
-		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if results[0].Error == nil {
 		t.Error("expected error for API failure")
-	}
-}
-
-func TestUpgradeMint_ProgressCallback(t *testing.T) {
-	prov := &fakeProvisioner{
-		discoverResult: &MintDiscovery{
-			URL: "https://mint.example.com",
-		},
-	}
-
-	var phases []string
-	progressFn := func(_, phase, _ string) {
-		phases = append(phases, phase)
-	}
-
-	m := newUpgradeManifest("v2.3.0")
-	err := UpgradeMint(context.Background(), m, prov, progressFn)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(phases) == 0 {
-		t.Error("expected progress callbacks")
 	}
 }
 
@@ -1084,11 +947,9 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "us-central1"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
 		Defaults: DefaultsConfig{
-			InferenceProject: "inf",
-			InferenceRegion:  "us-central1",
-			FullsendRef:      "v2.3.0",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -1099,7 +960,7 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, trackingCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), trackingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1114,7 +975,7 @@ func TestUpgrade_DirectFlagPassedToCommitFn(t *testing.T) {
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 	cfg.Direct = true
 
-	results, err = Upgrade(context.Background(), cfg, fc, trackingCommitFn, nil)
+	results, err = Upgrade(context.Background(), cfg, newTestClientFactory(fc), trackingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1145,8 +1006,8 @@ jobs:
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{FullsendRef: "v2.3.0"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
@@ -1157,7 +1018,7 @@ jobs:
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1, Direct: true}
-	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1212,11 +1073,9 @@ func TestUpgrade_PrereleaseDowngradeBlocked(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "us-central1"},
+		Forge:   ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0-rc1"}},
 		Defaults: DefaultsConfig{
-			InferenceProject: "inf",
-			InferenceRegion:  "us-central1",
-			FullsendRef:      "v2.3.0-rc1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -1226,7 +1085,7 @@ func TestUpgrade_PrereleaseDowngradeBlocked(t *testing.T) {
 		MaxConcurrency: 1,
 	}
 
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1274,13 +1133,13 @@ func TestUpgrade_InvalidManifestRef(t *testing.T) {
 
 	m := &Manifest{
 		Version:  1,
-		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
-		Defaults: DefaultsConfig{FullsendRef: "v3.0.0; rm -rf /"},
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v3.0.0; rm -rf /"}},
+		Defaults: DefaultsConfig{Forge: "github"},
 		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1298,7 +1157,7 @@ func TestReplaceShimRef_StandaloneCommentPreserved(t *testing.T) {
     # This is a standalone comment on the next line
     with:
 `
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "")
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1311,9 +1170,417 @@ func TestReplaceShimRef_StandaloneCommentPreserved(t *testing.T) {
 	}
 }
 
+func TestIsSHARef(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want bool
+	}{
+		{"abc123def456789012345678901234567890abcd", true}, // full 40-char SHA
+		{"abc123d", true},  // 7-char short SHA
+		{"deadbeef", true}, // 8-char hex
+		{"0123456789abcdef0123456789abcdef01234567", true}, // all hex chars
+		{"v2.3.0", false},       // semver tag
+		{"v0", false},           // partial version
+		{"main", false},         // branch name (non-hex 'm')
+		{"latest", false},       // non-hex chars
+		{"", false},             // empty
+		{"abcde", false},        // too short (5 chars)
+		{"abcdef", false},       // too short (6 chars)
+		{"ABCDEF1234567", true}, // uppercase hex (case-insensitive match)
+		{"abc12g", false},       // non-hex char 'g'
+		{"v1.0.0-rc1", false},   // prerelease tag
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got := isSHARef(tt.ref)
+			if got != tt.want {
+				t.Errorf("isSHARef(%q) = %v, want %v", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
+func makeWorkflowSHAPinned(sha, tag string) []byte {
+	return []byte(fmt.Sprintf(`name: fullsend
+on:
+  workflow_dispatch:
+jobs:
+  dispatch:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@%s # %s
+    with:
+      install_mode: per-repo
+`, sha, tag))
+}
+
+func TestUpgrade_SHAPinnedRepoPreservesPin(t *testing.T) {
+	oldSHA := "abc123def456789012345678901234567890abcd"
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = newSHA
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected one upgraded result, got %+v", results)
+	}
+
+	if len(committedFiles) != 1 {
+		t.Fatalf("expected 1 committed file, got %d", len(committedFiles))
+	}
+
+	content := string(committedFiles[0].Content)
+	// Should contain the new SHA
+	if !strings.Contains(content, "@"+newSHA) {
+		t.Errorf("expected @%s in content, got:\n%s", newSHA, content)
+	}
+	// Should contain the tag as a trailing comment
+	if !strings.Contains(content, "# v2.3.0") {
+		t.Errorf("expected '# v2.3.0' comment in content, got:\n%s", content)
+	}
+	// Should NOT contain the old SHA
+	if strings.Contains(content, oldSHA) {
+		t.Errorf("content should not contain old SHA %s, got:\n%s", oldSHA, content)
+	}
+}
+
+func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// Pre-populate ref — should NOT be consulted for tag-only repos.
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = "def456abc789012345678901234567890abcd1234"
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !results[0].Upgraded {
+		t.Fatal("expected Upgraded=true")
+	}
+
+	content := string(committedFiles[0].Content)
+	// Should contain the tag directly — no SHA, no trailing comment.
+	if !strings.Contains(content, "@v2.3.0") {
+		t.Errorf("expected @v2.3.0 in content, got:\n%s", content)
+	}
+	if strings.Contains(content, "# v2.3.0") {
+		t.Errorf("tag-only repo should not have trailing comment, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_SHAPinnedTagResolutionError(t *testing.T) {
+	oldSHA := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// Do NOT set fc.Refs — GetRef will return ErrNotFound.
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if results[0].Error == nil {
+		t.Fatal("expected error when tag resolution fails for SHA-pinned repo")
+	}
+	if !strings.Contains(results[0].Error.Error(), "resolving tag") {
+		t.Errorf("error should mention 'resolving tag', got: %v", results[0].Error)
+	}
+	if results[0].Upgraded {
+		t.Error("should not be marked upgraded when tag resolution fails")
+	}
+}
+
+func TestUpgrade_MixedPinningStyles(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
+	fc := forge.NewFakeClient()
+	// One repo is SHA-pinned, the other is tag-only.
+	fc.FileContents["acme-corp/sha-pinned/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "v2.1.0")
+	fc.FileContents["acme-corp/tag-only/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = newSHA
+
+	var mu sync.Mutex
+	committedContent := make(map[string]string)
+	recordingCommitFn := func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool) error {
+		if len(files) > 0 {
+			mu.Lock()
+			committedContent[owner+"/"+repo] = string(files[0].Content)
+			mu.Unlock()
+		}
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos: []RepoEntry{
+			{Repo: "acme-corp/sha-pinned"},
+			{Repo: "acme-corp/tag-only"},
+		},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 2}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, r := range results {
+		if !r.Upgraded {
+			t.Errorf("%s/%s: expected Upgraded=true, got err=%v skip=%q",
+				r.Owner, r.Repo, r.Error, r.SkipReason)
+		}
+	}
+
+	// SHA-pinned repo should have @<newSHA> # v2.3.0
+	shaContent := committedContent["acme-corp/sha-pinned"]
+	if !strings.Contains(shaContent, "@"+newSHA) {
+		t.Errorf("SHA-pinned repo should contain @%s, got:\n%s", newSHA, shaContent)
+	}
+	if !strings.Contains(shaContent, "# v2.3.0") {
+		t.Errorf("SHA-pinned repo should contain '# v2.3.0', got:\n%s", shaContent)
+	}
+
+	// Tag-only repo should have @v2.3.0 without SHA
+	tagContent := committedContent["acme-corp/tag-only"]
+	if !strings.Contains(tagContent, "@v2.3.0") {
+		t.Errorf("tag-only repo should contain @v2.3.0, got:\n%s", tagContent)
+	}
+	if strings.Contains(tagContent, newSHA) {
+		t.Errorf("tag-only repo should not contain SHA, got:\n%s", tagContent)
+	}
+}
+
+func TestUpgrade_DryRunSHAPinnedSkipsGetRef(t *testing.T) {
+	oldSHA := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// Do NOT set fc.Refs — GetRef would return ErrNotFound if called.
+
+	commitCalled := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
+		commitCalled = true
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), commitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if commitCalled {
+		t.Error("commit function should not be called during dry-run")
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if !results[0].Upgraded {
+		t.Errorf("expected Upgraded=true in dry-run for SHA-pinned repo, got err=%v skip=%q",
+			results[0].Error, results[0].SkipReason)
+	}
+	if results[0].Error != nil {
+		t.Errorf("DryRun should not error when tag cannot be resolved, got: %v", results[0].Error)
+	}
+}
+
+func TestUpgrade_SkipReasonMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetRef  string
+		currentRef string
+		wantReason string
+	}{
+		{
+			name:       "downgrade blocked",
+			targetRef:  "v0.31.0",
+			currentRef: "v0.32.0",
+			wantReason: `v0.32.0 → v0.31.0 is a downgrade (use --force to allow)`,
+		},
+		{
+			name:       "already at target",
+			targetRef:  "v0.32.0",
+			currentRef: "v0.32.0",
+			wantReason: "already at v0.32.0",
+		},
+		{
+			name:       "floating target ref",
+			targetRef:  "main",
+			currentRef: "v2.1.0",
+			wantReason: `floating ref "main" (not eligible for upgrade)`,
+		},
+		{
+			name:       "floating current ref",
+			targetRef:  "v2.3.0",
+			currentRef: "latest",
+			wantReason: `floating ref "latest" (not eligible for upgrade)`,
+		},
+		{
+			name:       "partial version target",
+			targetRef:  "v2",
+			currentRef: "v2.1.0",
+			wantReason: `floating ref "v2" (not eligible for upgrade)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.FileContents["acme-corp/repo/.github/workflows/fullsend.yml"] = makeWorkflow(tt.currentRef)
+
+			m := &Manifest{
+				Version:  1,
+				Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: tt.targetRef}},
+				Defaults: DefaultsConfig{Forge: "github"},
+				Repos:    []RepoEntry{{Repo: "acme-corp/repo"}},
+			}
+
+			cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+			results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(results) != 1 {
+				t.Fatalf("got %d results, want 1", len(results))
+			}
+			r := results[0]
+			if !r.Skipped {
+				t.Fatalf("expected Skipped=true, got false (err=%v)", r.Error)
+			}
+			if r.SkipReason != tt.wantReason {
+				t.Errorf("SkipReason = %q, want %q", r.SkipReason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestUpgrade_SHAPinnedAlreadyAtTarget(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "v2.3.0")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = sha
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Skipped {
+		t.Fatalf("expected Skipped=true, got false (err=%v)", r.Error)
+	}
+	if r.SkipReason != "already at v2.3.0" {
+		t.Errorf("SkipReason = %q, want %q", r.SkipReason, "already at v2.3.0")
+	}
+}
+
+func TestSkipReasonForNoChange(t *testing.T) {
+	tests := []struct {
+		name       string
+		currentRef string
+		targetRef  string
+		want       string
+	}{
+		{
+			name:       "same tag",
+			currentRef: "v2.3.0",
+			targetRef:  "v2.3.0",
+			want:       "already at v2.3.0",
+		},
+		{
+			name:       "sha pinned current ref",
+			currentRef: "abc123def456789012345678901234567890abcd",
+			targetRef:  "v2.3.0",
+			want:       "already at v2.3.0",
+		},
+		{
+			name:       "different tags no match",
+			currentRef: "v2.1.0",
+			targetRef:  "v2.3.0",
+			want:       "no uses: lines matched for replacement",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := skipReasonForNoChange(tt.currentRef, tt.targetRef)
+			if got != tt.want {
+				t.Errorf("skipReasonForNoChange(%q, %q) = %q, want %q",
+					tt.currentRef, tt.targetRef, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReplaceShimRef_DollarSignInRef(t *testing.T) {
 	content := []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n")
-	result, changed := replaceShimRef(content, "v2.0.0$test", "")
+	result, changed := replaceShimRef(content, "v2.0.0$test", "", GitHubForgeConfig())
 	if !changed {
 		t.Fatal("expected content to change")
 	}

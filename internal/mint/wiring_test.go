@@ -19,13 +19,13 @@ func TestInitWiring(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+
 	verifier := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
 		HTTPClient:         &http.Client{Timeout: 5 * time.Second},
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "test-pool",
 		DefaultWIFProvider: "test-provider",
-		AllowedOrgs:        []string{"test-org"},
-		AllowedWorkflows:   []string{"*"},
 		OIDCAudience:       "fullsend-mint",
 	})
 
@@ -72,6 +72,23 @@ func TestInitWiring(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("expected 404, got %d", rec.Code)
+		}
+	})
+
+	t.Run("starts without ALLOWED_ORGS", func(t *testing.T) {
+		t.Setenv("ALLOWED_ORGS", "")
+		t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-repo")
+
+		h, err := mintcore.NewHandler(pemAccessor, verifier)
+		if err != nil {
+			t.Fatalf("NewHandler should succeed without ALLOWED_ORGS: %v", err)
+		}
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
 		}
 	})
 

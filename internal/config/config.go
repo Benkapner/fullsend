@@ -20,9 +20,16 @@ var validConfigAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // AgentEntry represents a registered agent source in config.
 // It supports both string shorthand (just the source URL/path) and
 // object form (with an explicit name override).
+//
+// Enabled controls whether the agent participates in the merged agent
+// set. When nil (omitted) the agent defaults to enabled. When
+// explicitly set to false the agent is suppressed — this allows
+// disabling built-in scaffold agents without removing their role.
+// A suppression-only entry (Enabled=false, no Source) is valid.
 type AgentEntry struct {
-	Name   string `yaml:"name,omitempty"`
-	Source string `yaml:"source"`
+	Name    string `yaml:"name,omitempty"`
+	Source  string `yaml:"source"`
+	Enabled *bool  `yaml:"enabled,omitempty"`
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler so that a plain string
@@ -54,6 +61,12 @@ func (a *AgentEntry) UnmarshalYAML(value *yaml.Node) error {
 		return value.Decode((*plain)(a))
 	}
 	return fmt.Errorf("agents entry must be a string or mapping, got %v", value.Kind)
+}
+
+// IsEnabled returns whether the agent entry is enabled.
+// A nil Enabled pointer (field omitted) defaults to true.
+func (a AgentEntry) IsEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
 }
 
 // DerivedName returns the explicit Name if set, otherwise derives one
@@ -134,8 +147,10 @@ type CreateIssuesConfig struct {
 	AllowTargets AllowTargets `yaml:"allow_targets"`
 }
 
-// OrgConfig is the top-level configuration for a fullsend organization.
-type OrgConfig struct {
+// orgConfig is the top-level configuration for a fullsend organization.
+// Consumer packages should use the OrgConfigReader or OrgConfigWriter
+// interfaces rather than referencing this type directly.
+type orgConfig struct {
 	Version                string                `yaml:"version"`
 	KillSwitch             bool                  `yaml:"kill_switch,omitempty"`
 	Dispatch               DispatchConfig        `yaml:"dispatch"`
@@ -213,33 +228,9 @@ func EnsureDefaultAllowedRemoteResources(existing []string) []string {
 	return result
 }
 
-// DefaultAgentEntries computes default agent URL entries for the given
-// harness names at a specific commit SHA. Each entry is a pinned
-// raw.githubusercontent.com URL with an integrity hash.
-type AgentEntryBuilder func(harnessName, commitSHA string) (string, error)
-
-// DefaultAgentEntries returns agent entries for the given harness names,
-// using builder to compute each URL. When builder is nil, it returns
-// nil (for callers that don't have access to the scaffold package).
-// Called by install/scaffold in Phase 2 (ADR 0058); defined here in
-// Phase 1 so the type and validation are co-located.
-func DefaultAgentEntries(harnessNames []string, commitSHA string, builder AgentEntryBuilder) ([]AgentEntry, error) {
-	if builder == nil || commitSHA == "" {
-		return nil, nil
-	}
-	entries := make([]AgentEntry, 0, len(harnessNames))
-	for _, name := range harnessNames {
-		urlWithHash, err := builder(name, commitSHA)
-		if err != nil {
-			return nil, fmt.Errorf("building agent URL for %s: %w", name, err)
-		}
-		entries = append(entries, AgentEntry{Source: urlWithHash})
-	}
-	return entries, nil
-}
-
-// NewOrgConfig creates a new OrgConfig with sensible defaults.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) *OrgConfig {
+// NewOrgConfig creates a new orgConfig with sensible defaults.
+// The returned OrgConfigWriter provides full read-write access.
+func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) OrgConfigWriter {
 	repos := make(map[string]RepoConfig, len(allRepos))
 	for _, r := range allRepos {
 		repos[r] = RepoConfig{
@@ -247,7 +238,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org
 		}
 	}
 
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -275,9 +266,19 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org
 	return cfg
 }
 
-// ParseOrgConfig parses YAML bytes into an OrgConfig.
-func ParseOrgConfig(data []byte) (*OrgConfig, error) {
-	var cfg OrgConfig
+// ParseOrgConfig parses YAML bytes into an OrgConfigReader.
+func ParseOrgConfig(data []byte) (OrgConfigReader, error) {
+	var cfg orgConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing org config: %w", err)
+	}
+	return &cfg, nil
+}
+
+// ParseOrgConfigWriter parses YAML bytes into an OrgConfigWriter
+// for callers that need to modify the config after parsing.
+func ParseOrgConfigWriter(data []byte) (OrgConfigWriter, error) {
+	var cfg orgConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing org config: %w", err)
 	}
@@ -290,8 +291,8 @@ const configHeader = `# fullsend organization configuration
 # This file is managed by fullsend. Manual edits may be overwritten.
 `
 
-// Marshal serializes the OrgConfig to YAML with a descriptive header comment.
-func (c *OrgConfig) Marshal() ([]byte, error) {
+// Marshal serializes the orgConfig to YAML with a descriptive header comment.
+func (c *orgConfig) Marshal() ([]byte, error) {
 	body, err := yaml.Marshal(c)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling org config: %w", err)
@@ -299,8 +300,8 @@ func (c *OrgConfig) Marshal() ([]byte, error) {
 	return []byte(configHeader + string(body)), nil
 }
 
-// Validate checks the OrgConfig for structural correctness.
-func (c *OrgConfig) Validate() error {
+// Validate checks the orgConfig for structural correctness.
+func (c *orgConfig) Validate() error {
 	if c.Version != "1" {
 		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
 	}
@@ -354,10 +355,43 @@ func (c *OrgConfig) Validate() error {
 // resolution (case-insensitive scheme, percent-decoding, dot-segment
 // cleaning).
 func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
-	seen := make(map[string]bool, len(agents))
+	// seen tracks agent names for duplicate detection. Each state
+	// (enabled/disabled) is tracked independently so that exactly one
+	// disable-then-enable or enable-then-disable pair is accepted while
+	// three-or-more entries with the same name are rejected.
+	type seenState struct {
+		seenEnabled  bool
+		seenDisabled bool
+	}
+	seen := make(map[string]seenState, len(agents))
 	for i, entry := range agents {
+		// A suppression-only entry (enabled: false, no source) is valid —
+		// it exists solely to disable a scaffold default by name.
+		if entry.Source == "" && !entry.IsEnabled() {
+			if entry.Name == "" {
+				return fmt.Errorf("agents[%d]: disabled agent entry with no source must have an explicit name", i)
+			}
+			if !validConfigAgentName.MatchString(entry.Name) {
+				return fmt.Errorf("agents[%d] (%s): name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-]", i, entry.Name)
+			}
+			lowerName := strings.ToLower(entry.Name)
+			if prev, exists := seen[lowerName]; exists {
+				if prev.seenDisabled {
+					return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, entry.Name)
+				}
+			}
+			prev := seen[lowerName]
+			prev.seenDisabled = true
+			seen[lowerName] = prev
+			continue
+		}
+		// Disabled entries with a source must also have an explicit name so
+		// dispatch workflows can match by name via yq without deriving it.
+		if !entry.IsEnabled() && entry.Name == "" {
+			return fmt.Errorf("agents[%d]: disabled agent entry must have an explicit name", i)
+		}
 		if entry.Source == "" {
-			return fmt.Errorf("agents[%d]: source must not be empty", i)
+			return fmt.Errorf("agents[%d]: enabled agent entry must have a source", i)
 		}
 
 		name := entry.DerivedName()
@@ -365,10 +399,22 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 			return fmt.Errorf("agents[%d] (%s): derived name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-] (source: %q)", i, name, entry.Source)
 		}
 		lowerName := strings.ToLower(name)
-		if seen[lowerName] {
-			return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, name)
+		currentDisabled := !entry.IsEnabled()
+		if prev, exists := seen[lowerName]; exists {
+			if currentDisabled && prev.seenDisabled {
+				return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, name)
+			}
+			if !currentDisabled && prev.seenEnabled {
+				return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, name)
+			}
 		}
-		seen[lowerName] = true
+		prev := seen[lowerName]
+		if currentDisabled {
+			prev.seenDisabled = true
+		} else {
+			prev.seenEnabled = true
+		}
+		seen[lowerName] = prev
 
 		if urlutil.IsURL(entry.Source) {
 			cleanURL, _, hasHash := urlutil.ParseIntegrityHash(entry.Source)
@@ -415,7 +461,7 @@ func validateStatusNotifications(cfg *StatusNotificationConfig) error {
 }
 
 // EnabledRepos returns a sorted list of repo names where Enabled is true.
-func (c *OrgConfig) EnabledRepos() []string {
+func (c *orgConfig) EnabledRepos() []string {
 	var enabled []string
 	for name, rc := range c.Repos {
 		if rc.Enabled {
@@ -427,7 +473,7 @@ func (c *OrgConfig) EnabledRepos() []string {
 }
 
 // DisabledRepos returns a sorted list of repo names where Enabled is false.
-func (c *OrgConfig) DisabledRepos() []string {
+func (c *orgConfig) DisabledRepos() []string {
 	var disabled []string
 	for name, rc := range c.Repos {
 		if !rc.Enabled {
@@ -439,20 +485,40 @@ func (c *OrgConfig) DisabledRepos() []string {
 }
 
 // DefaultRoles returns the default roles configured for the organization.
-func (c *OrgConfig) DefaultRoles() []string {
+func (c *orgConfig) DefaultRoles() []string {
 	return c.Defaults.Roles
 }
 
-// PerRepoConfig holds configuration for per-repo installation mode.
+// perRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
-type PerRepoConfig struct {
-	Version                string              `yaml:"version"`
-	KillSwitch             bool                `yaml:"kill_switch,omitempty"`
-	Runtime                string              `yaml:"runtime,omitempty"`
-	Roles                  []string            `yaml:"roles,omitempty"`
-	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
+// Consumer packages should use the PerRepoConfigReader or ConfigWriter
+// interfaces rather than referencing this type directly.
+//
+// The parent field implements a fallback chain per ADR 0069 Decision 2:
+// accessors check the local struct first, then fall through to parent
+// when the local value is unset. The terminal parent is perRepoDefaults,
+// which returns compiled-in code defaults.
+type perRepoConfig struct {
+	// omitempty so unset version is not marshaled (unlike orgConfig,
+	// where version is always required). This allows the fallback
+	// chain to inherit version from the parent layer.
+	Version    string       `yaml:"version,omitempty"`
+	Forge      string       `yaml:"forge,omitempty"`
+	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
+	Runtime    string       `yaml:"runtime,omitempty"`
+	Roles      []string     `yaml:"roles,omitempty"`
+	Agents     []AgentEntry `yaml:"agents,omitempty"`
+	// AllowedRemoteResources holds the locally-set allowed remote
+	// resource prefixes. MarshalYAML preserves the nil-vs-empty
+	// distinction: nil (unset) is omitted, empty (deny-all) is
+	// marshaled as `allowed_remote_resources: []`.
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+
+	// parent is the next layer in the fallback chain. Getters consult
+	// parent when the local field is unset. Excluded from YAML
+	// serialization so Marshal emits only locally-set values.
+	parent PerRepoConfigReader `yaml:"-"`
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -462,15 +528,19 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 # See ADR 0033 for details.
 `
 
-// NewPerRepoConfig creates a new PerRepoConfig with the given roles.
-func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
+// NewPerRepoConfig creates a new perRepoConfig with the given roles.
+// The returned ConfigWriter provides read-write access to shared config
+// fields; use PerRepoConfigReader type assertion for per-repo-specific
+// methods.
+func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 	if roles == nil {
 		roles = DefaultAgentRoles()
 	}
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version:                "1",
 		Roles:                  roles,
 		AllowedRemoteResources: DefaultAllowedRemoteResources(),
+		parent:                 &perRepoDefaults{},
 	}
 	if targetRepo != "" {
 		cfg.CreateIssues = &CreateIssuesConfig{
@@ -482,32 +552,106 @@ func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 	return cfg
 }
 
-// OrgConfigFromPerRepo adapts a PerRepoConfig into an OrgConfig so callers
-// that expect OrgConfig can work uniformly with both config formats. Shared
-// fields and Roles (mapped to Defaults.Roles) are copied; OrgConfig-specific
-// fields (Dispatch, Inference, Repos) remain zero-valued.
-func OrgConfigFromPerRepo(pr *PerRepoConfig) *OrgConfig {
-	return &OrgConfig{
-		Version:                pr.Version,
-		KillSwitch:             pr.KillSwitch,
-		Defaults:               RepoDefaults{Roles: pr.Roles, Runtime: pr.Runtime},
-		Agents:                 pr.Agents,
-		AllowedRemoteResources: pr.AllowedRemoteResources,
-		CreateIssues:           pr.CreateIssues,
+// NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
+// fields from an org config. Per-repo role overrides (repos.<name>.roles)
+// take precedence over defaults.roles. Non-portable fields
+// (max_implementation_retries, auto_merge, status_notifications) are not
+// carried over — callers should warn separately.
+func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string) PerRepoConfigWriter {
+	// Determine roles: per-repo overrides take precedence over defaults.
+	roles := orgCfg.OrgRepoDefaults().Roles
+	if repoMap := orgCfg.RepoMap(); repoMap != nil {
+		if rc, ok := repoMap[repoName]; ok && len(rc.Roles) > 0 {
+			roles = rc.Roles
+		}
 	}
+	if roles == nil {
+		roles = PerRepoDefaultRoles()
+	} else {
+		rolesCopy := make([]string, len(roles))
+		copy(rolesCopy, roles)
+		roles = rolesCopy
+	}
+
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   roles,
+		parent:  &perRepoDefaults{},
+	}
+
+	// Agents: deep-copy org agent entries (AgentEntry.Enabled is *bool).
+	if agents := orgCfg.AgentEntries(); len(agents) > 0 {
+		copied := make([]AgentEntry, len(agents))
+		copy(copied, agents)
+		for i, a := range copied {
+			if a.Enabled != nil {
+				e := *a.Enabled
+				copied[i].Enabled = &e
+			}
+		}
+		cfg.Agents = copied
+	}
+
+	// AllowedRemoteResources: copy from org config with defaults ensured.
+	if arr := orgCfg.AllowedResources(); len(arr) > 0 {
+		cfg.AllowedRemoteResources = EnsureDefaultAllowedRemoteResources(arr)
+	} else {
+		cfg.AllowedRemoteResources = DefaultAllowedRemoteResources()
+	}
+
+	// CreateIssues: deep-copy from org config to avoid pointer aliasing.
+	if ci := orgCfg.IssueCreationConfig(); ci != nil {
+		ciCopy := *ci
+		ciCopy.AllowTargets = AllowTargets{
+			Orgs:  append([]string(nil), ci.AllowTargets.Orgs...),
+			Repos: append([]string(nil), ci.AllowTargets.Repos...),
+		}
+		cfg.CreateIssues = &ciCopy
+	} else if targetRepo != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
+			},
+		}
+	}
+
+	// KillSwitch: only set when active (false is the default).
+	if orgCfg.IsKillSwitchActive() {
+		ks := true
+		cfg.KillSwitch = &ks
+	}
+
+	// Runtime: copy when explicitly set.
+	if rt := orgCfg.OrgRepoDefaults().Runtime; rt != "" {
+		cfg.Runtime = rt
+	}
+
+	return cfg
 }
 
-// ParsePerRepoConfig parses YAML bytes into a PerRepoConfig.
-func ParsePerRepoConfig(data []byte) (*PerRepoConfig, error) {
-	var cfg PerRepoConfig
+// ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
+func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
+	var cfg perRepoConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
+	cfg.parent = &perRepoDefaults{}
+	return &cfg, nil
+}
+
+// ParsePerRepoConfigWriter parses YAML bytes into a ConfigWriter for
+// callers that need to modify the config after parsing.
+func ParsePerRepoConfigWriter(data []byte) (ConfigWriter, error) {
+	var cfg perRepoConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing per-repo config: %w", err)
+	}
+	cfg.parent = &perRepoDefaults{}
 	return &cfg, nil
 }
 
 // Marshal serializes the PerRepoConfig to YAML with a descriptive header.
-func (c *PerRepoConfig) Marshal() ([]byte, error) {
+func (c *perRepoConfig) Marshal() ([]byte, error) {
 	body, err := yaml.Marshal(c)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling per-repo config: %w", err)
@@ -515,23 +659,78 @@ func (c *PerRepoConfig) Marshal() ([]byte, error) {
 	return []byte(perRepoConfigHeader + string(body)), nil
 }
 
+// perRepoConfigMarshal is a shadow struct used by MarshalYAML to
+// preserve the nil-vs-empty distinction for slice fields where nil
+// (unset, inherit parent) and empty (explicitly no values) carry
+// different semantics.
+//
+// With the plain []string + omitempty tag, yaml.v3 omits both nil
+// and empty slices. Using *[]string means a nil pointer (unset)
+// is omitted while a non-nil pointer to an empty slice is marshaled
+// as an empty YAML sequence (e.g. `roles: []`,
+// `allowed_remote_resources: []`).
+type perRepoConfigMarshal struct {
+	Version                string              `yaml:"version,omitempty"`
+	Forge                  string              `yaml:"forge,omitempty"`
+	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
+	Runtime                string              `yaml:"runtime,omitempty"`
+	Roles                  *[]string           `yaml:"roles,omitempty"`
+	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
+	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+}
+
+// MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
+// distinction for Roles and AllowedRemoteResources through YAML
+// roundtrips. nil (unset) is omitted so the field inherits from
+// parent; an explicit empty slice is marshaled as an empty YAML
+// sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
+func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
+	h := perRepoConfigMarshal{
+		Version:      c.Version,
+		Forge:        c.Forge,
+		KillSwitch:   c.KillSwitch,
+		Runtime:      c.Runtime,
+		Agents:       c.Agents,
+		CreateIssues: c.CreateIssues,
+	}
+	if c.Roles != nil {
+		h.Roles = &c.Roles
+	}
+	if c.AllowedRemoteResources != nil {
+		h.AllowedRemoteResources = &c.AllowedRemoteResources
+	}
+	return &h, nil
+}
+
 // Validate checks the PerRepoConfig for structural correctness.
-func (c *PerRepoConfig) Validate() error {
-	if c.Version != "1" {
+// Locally-set fields are validated; resolved values (e.g.,
+// AllowedResources) are used where validation requires the full
+// effective config.
+func (c *perRepoConfig) Validate() error {
+	// Version: empty means "inherit from parent"; non-empty must be "1".
+	if c.Version != "" && c.Version != "1" {
 		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
 	}
-	valid := ValidRoles()
-	seen := make(map[string]bool, len(c.Roles))
-	for _, role := range c.Roles {
-		if !slices.Contains(valid, role) {
-			return fmt.Errorf("invalid role %q: must be one of %s", role, strings.Join(valid, ", "))
+	// Roles: nil means "inherit from parent"; non-nil (including empty)
+	// is locally set and validated.
+	if c.Roles != nil {
+		valid := ValidRoles()
+		seen := make(map[string]bool, len(c.Roles))
+		for _, role := range c.Roles {
+			if !slices.Contains(valid, role) {
+				return fmt.Errorf("invalid role %q: must be one of %s", role, strings.Join(valid, ", "))
+			}
+			if seen[role] {
+				return fmt.Errorf("duplicate role %q in roles", role)
+			}
+			seen[role] = true
 		}
-		if seen[role] {
-			return fmt.Errorf("duplicate role %q in roles", role)
-		}
-		seen[role] = true
 	}
-	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
+	// Agents are validated against the resolved allowlist (including
+	// parent resources) so that URL agents covered by a parent or
+	// default prefix pass validation.
+	if err := ValidateAgentEntries(c.Agents, c.AllowedResources()); err != nil {
 		return err
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {

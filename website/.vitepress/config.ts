@@ -199,6 +199,7 @@ export default defineConfig({
             { text: "Getting Inference", link: "/guides/getting-started/getting-inference" },
             { text: "Configuring GitHub", link: "/guides/getting-started/configuring-github" },
             { text: "Per-Org Mode", link: "/guides/getting-started/org-mode" },
+            { text: "Repo Management", link: "/guides/getting-started/repo-management" },
             { text: "Operations", link: "/guides/getting-started/operations" },
           ],
         },
@@ -223,15 +224,17 @@ export default defineConfig({
           link: "/guides/",
           items: [
             { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+            { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
-            { text: "Customizing Agents", link: "/guides/user/customizing-agents" },
-            { text: "Customizing with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
-            { text: "Customizing with Skills", link: "/guides/user/customizing-with-skills" },
+            { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },
+            { text: "Configuring with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
+            { text: "Configuring with Skills", link: "/guides/user/customizing-with-skills" },
             {
               text: "Building custom agents from scratch (deprecated)",
               link: "/guides/user/building-custom-agents",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
+            { text: "Jira Integration", link: "/guides/user/jira-integration" },
           ],
         },
         {
@@ -257,6 +260,10 @@ export default defineConfig({
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Distributed Tracing", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
+            {
+              text: "Layered Config Reference",
+              link: "/guides/infrastructure/layered-config-reference",
+            },
           ],
         },
         {
@@ -273,6 +280,11 @@ export default defineConfig({
                 { text: "E2E Testing", link: "/guides/dev/e2e-testing" },
                 { text: "Testing Workflows", link: "/guides/dev/testing-workflows" },
               ],
+            },
+            {
+              text: "Contributor Guidelines",
+              collapsed: true,
+              items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
             { text: "Landscape", link: "/landscape" },
@@ -332,32 +344,64 @@ export default defineConfig({
 
     search: {
       provider: "local",
+      options: {
+        scopes: [
+          { label: "Guides", prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/"] },
+          {
+            label: "Design Docs",
+            prefixes: [
+              "/docs/problems/",
+              "/docs/ADRs/",
+              "/docs/superpowers/",
+              "/docs/plans/",
+              "/docs/normative/",
+              "/docs/spikes/",
+            ],
+          },
+          { label: "Experiments", prefixes: ["/docs/experiments/"] },
+          { label: "Contributing", prefixes: ["/docs/contributing/"] },
+          { label: "Others", prefixes: [], others: true },
+        ],
+      },
     },
   },
 
   vite: {
     resolve: {
-      alias: {
-        "vue/server-renderer": path.resolve(
-          __dirname,
-          "..",
-          "node_modules",
-          "vue",
-          "server-renderer",
-          "index.mjs",
-        ),
-        vue: path.resolve(__dirname, "..", "node_modules", "vue"),
-        // Use mermaid's pre-bundled ESM build; the default entry (mermaid.core.mjs)
-        // externalizes dayjs (CJS-only), which breaks under noExternal: [/./].
-        mermaid: path.resolve(
-          __dirname,
-          "..",
-          "node_modules",
-          "mermaid",
-          "dist",
-          "mermaid.esm.mjs",
-        ),
-      },
+      alias: [
+        {
+          find: /^.*\/VPLocalSearchBox\.vue$/,
+          replacement: fileURLToPath(
+            new URL("./theme/components/VPLocalSearchBox.vue", import.meta.url),
+          ),
+        },
+        {
+          find: "vue/server-renderer",
+          replacement: path.resolve(
+            __dirname,
+            "..",
+            "node_modules",
+            "vue",
+            "server-renderer",
+            "index.mjs",
+          ),
+        },
+        {
+          find: "vue",
+          replacement: path.resolve(__dirname, "..", "node_modules", "vue"),
+        },
+        {
+          find: "mermaid",
+          replacement: path.resolve(
+            __dirname,
+            "..",
+            "node_modules",
+            "mermaid",
+            "dist",
+            "mermaid.esm.mjs",
+          ),
+        },
+      ],
       // Prevent VitePress SSR from resolving CJS packages in the
       // repo-root node_modules (which causes ESM default-import
       // failures on Node 22 for packages like entities, estree-walker).

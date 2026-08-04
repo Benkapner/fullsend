@@ -34,6 +34,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -65,6 +66,13 @@ const (
 	defaultAgentsRepoOwner = "fullsend-ai"
 	defaultAgentsRepoName  = "agents"
 )
+
+// preflightCheckTimeout bounds the execution time for a validation_loop
+// preflight_check command. Mirrors the preflightGitHubTimeout pattern —
+// these are fast host-side dependency checks that should never hang. A var
+// (not const) so tests can shrink it to genuinely exercise deadline expiry
+// without waiting out the real duration.
+var preflightCheckTimeout = 30 * time.Second
 
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
 // from the agents repository. It is a var (not const) to allow test overrides.
@@ -239,7 +247,7 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	cmd.Flags().StringVar(&outputBase, "output-dir", "", "base directory for run output (default: /tmp/fullsend)")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "path to the target repository")
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to copy into the sandbox (default: current executable)")
@@ -301,8 +309,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// Best-effort org config loading — provides the allowlist for base
 	// harness fetching and the agent registry for config-driven resolution.
-	// If the file is missing or unparseable we proceed without it;
-	// HasURLReferences will enforce its presence later if needed.
+	// If the file is missing or unparseable, resolveAgentSource falls back
+	// to agents-repo resolution; a malformed file is warned by
+	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
@@ -332,11 +341,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
-	// fallback, then disk harnesses.
-	var fallbackForgeClient forge.Client
-	if composeGitToken != "" {
-		fallbackForgeClient = gh.New(composeGitToken)
-	}
+	// fallback. Always create a GitHub client for the agents-repo fallback —
+	// fullsend-ai/agents is public, so unauthenticated requests work when no
+	// GitHub token is available (e.g., on GitLab pipelines).
+	fallbackForgeClient := gh.New(composeGitToken)
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
@@ -508,11 +516,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir
 		}
+		// Refuse OIDC credential vars so ${VAR} expansion in harness
+		// YAML cannot leak mint-usable credentials (#5832).
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return os.Getenv(key)
 	}
 	lookup := func(key string) (string, bool) {
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir, true
+		}
+		// Refuse OIDC credential vars (#5832).
+		// Unlike expander (which silently returns "" to produce an empty
+		// expansion), lookup returns false so ValidateRunnerEnvWith treats
+		// the reference as an unresolvable variable and fails validation.
+		if oidcDenyKeys[key] {
+			return "", false
 		}
 		return os.LookupEnv(key)
 	}
@@ -538,6 +558,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
 		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
+		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
 	}
 
 	if err := h.ValidateFilesExist(); err != nil {
@@ -636,6 +659,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// runSkipped records that the pre-script requested a skip (issue #4718);
+	// the status-notification defer below reports it as "skipped" rather
+	// than "success", with runSkipReason as the visible explanation.
+	var runSkipped bool
+	var runSkipReason string
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
@@ -654,18 +683,44 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			defer func() {
 				status := "success"
+				detail := ""
 				if ctx.Err() != nil {
 					status = "cancelled"
 				} else if runErr != nil {
 					status = "failure"
+				} else if runSkipped {
+					status = "skipped"
+					detail = runSkipReason
 				}
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
-				if err := notifier.PostCompletion(dCtx, description, status); err != nil {
+				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
 					printer.StepWarn("Failed to post completion status: " + err.Error())
 				}
 			}()
 		}
+	}
+
+	// 1d. Preflight dependency check for host-side scripts.
+	// When a validation_loop declares a preflight_check command, run it now
+	// to catch missing host dependencies (e.g. python3-jsonschema) before
+	// sandbox creation — not after the agent has already finished. See #5074.
+	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
+		printer.StepStart("Preflight: checking validation_loop dependencies")
+		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
+		defer preflightCancel()
+		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
+		// Use childScriptEnv to strip OIDC credential vars (#5832).
+		preflightCmd.Env = childScriptEnv(h.RunnerEnv, "")
+		preflightOut, preflightErr := preflightCmd.CombinedOutput()
+		if preflightErr != nil {
+			printer.StepFail("Preflight dependency check failed")
+			if preflightCtx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
+			}
+			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, validationFailMessage(preflightOut, preflightErr))
+		}
+		printer.StepDone("Preflight dependency check passed")
 	}
 
 	// 2. Check openshell availability.
@@ -836,13 +891,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		rootSpan.SetAttributes(
 			attribute.Int("exit_code", exitCode),
 		)
+		// A pre-script skip exits 0 like a success, so without this a
+		// skipped run is indistinguishable from a completed one in traces
+		// — and skip rate is the metric issue #4718 exists to move. Only
+		// set for harnesses that actually have a pre-script, so an absent
+		// attribute means "nothing could have skipped this run".
+		if h != nil && h.PreScript != "" {
+			rootSpan.SetAttributes(attribute.Bool("fullsend.prescript.skipped", runSkipped))
+		}
+		if runSkipped && runSkipReason != "" {
+			rootSpan.SetAttributes(attribute.String("fullsend.prescript.skip_reason", runSkipReason))
+		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(
 				attribute.String("gen_ai.request.model", aggMetrics.Model),
 				attribute.Int("gen_ai.usage.input_tokens", aggMetrics.TokenUsage.Input),
 				attribute.Int("gen_ai.usage.output_tokens", aggMetrics.TokenUsage.Output),
-				attribute.Int("gen_ai.usage.cache_creation_input_tokens", aggMetrics.TokenUsage.CacheCreation),
-				attribute.Int("gen_ai.usage.cache_read_input_tokens", aggMetrics.TokenUsage.CacheRead),
+				attribute.Int("gen_ai.usage.cache_creation.input_tokens", aggMetrics.TokenUsage.CacheCreation),
+				attribute.Int("gen_ai.usage.cache_read.input_tokens", aggMetrics.TokenUsage.CacheRead),
 				attribute.Float64("fullsend.cost_usd", roundUSD(aggMetrics.TotalCostUSD)),
 				attribute.Int("fullsend.num_turns", aggMetrics.NumTurns),
 				attribute.Int("fullsend.tool_calls", aggMetrics.ToolCalls),
@@ -857,24 +923,55 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		rootSpan.End()
 
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
 		defer cancel()
 		tracingCleanup(flushCtx)
 	}()
 
-	// 4. Run pre-script on the host (if configured).
+	// 4. Run pre-script on the host (if configured). The pre-script may
+	// request a skip via the pre-script output protocol
+	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
+	// ends here — before sandbox creation.
+	var preResult prescript.Result
 	if h.PreScript != "" {
-		preStart := time.Now()
-		printer.StepStart("Running pre-script: " + h.PreScript)
-		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
-		preCmd.Stdout = os.Stdout
-		preCmd.Stderr = os.Stderr
-		if err := preCmd.Run(); err != nil {
-			printer.StepFail("Pre-script failed")
-			return fmt.Errorf("running pre-script: %w", err)
+		preResult, err = runPreScript(h, runDir, traceparent, printer)
+		if err != nil {
+			return err
 		}
-		printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+		// Log the outputs so non-GitHub CIs and local runs still see what
+		// the pre-script reported.
+		if line := prescript.LogLine(preResult); line != "" {
+			printer.StepDone("Pre-script outputs: " + line)
+		}
+	}
+
+	// Relay on every path that reaches the skip decision — skip, proceed,
+	// and harnesses with no pre-script at all — so an absent skipped
+	// output narrows to two cases: a CLI predating this protocol, or a run
+	// that failed before deciding. See docs/normative/prescript-output/v1.
+	if relayed, relayErr := prescript.Relay(preResult); relayErr != nil {
+		// Fail closed: a relay target exists but we could not write to it,
+		// so workflow-level gating would disagree with the decision
+		// fullsend just made — exactly the duplicate-run failure this
+		// protocol exists to prevent.
+		printer.StepFail("Failed to relay skip decision")
+		return fmt.Errorf("relaying pre-script outputs: %w", relayErr)
+	} else if relayed && h.PreScript != "" {
+		// Only worth a line when a pre-script actually produced something;
+		// otherwise this fires on every CI run and names a script that
+		// does not exist.
+		printer.StepDone("Pre-script outputs relayed to GITHUB_OUTPUT")
+	}
+
+	if preResult.Skipped {
+		runSkipped = true
+		runSkipReason = preResult.Reason
+		reason := preResult.Reason
+		if reason == "" {
+			reason = "no reason given"
+		}
+		printer.StepDone("Run skipped by pre-script: " + reason)
+		return nil
 	}
 
 	// 4a. Create sandbox.
@@ -900,6 +997,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// ADR 0022's zero-trust model.
 	var validationPassed bool
 
+	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
+	// and corresponds to the validated iteration. It is false when:
+	//   - the last SafeDownload call failed (dir may be missing/unsanitized), or
+	//   - the post-loop sweep validated an earlier iteration (dir holds a
+	//     different iteration's checkout than what was validated).
+	// Callers (validation, post-script) must not use the dir when false.
+	var repoExtractedOK bool
+
+	// validatedIterNum records which iteration passed validation (1-based),
+	// or 0 if none. Set by inline validation (step 9e break) or the
+	// post-loop sweep. The post-script defer uses it to communicate
+	// FULLSEND_VALIDATED_ITERATION_DIR to the post-script so it selects
+	// the correct iteration's output rather than blindly taking the last.
+	var validatedIterNum int
+
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
 	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
@@ -907,7 +1019,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if keepSandbox {
 			return
 		}
-		if err := os.RemoveAll(hostRepositoryDownloadDir); err != nil {
+		if err := forceRemoveAll(hostRepositoryDownloadDir); err != nil {
 			printer.StepWarn("Failed to remove download dir: " + err.Error())
 		} else {
 			printer.StepDone(fmt.Sprintf("Download directory removed: %s", hostRepositoryDownloadDir))
@@ -942,12 +1054,54 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
+			postCmd.Env = postScriptEnv(h, traceparent)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
 			// remove REPO_DIR from RunnerEnv entirely once harnesses no longer set it.
-			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", hostRepositoryDownloadDir))
+			//
+			// Pass REPO_DIR only when repoExtractedOK is true: the last
+			// SafeDownload succeeded AND corresponds to the validated
+			// iteration (repoExtractedOK is forced false by the sweep when
+			// it validates an earlier iteration — see its doc comment).
+			// Passing a stale or missing dir would expose the post-script
+			// to unsanitized or wrong-iteration content.
+			//
+			// post-fix.sh and post-code.sh both fail closed on an empty
+			// REPO_DIR in their own script logic (via ${REPO_DIR:-repo} +
+			// directory existence check) — both need actual repo content to
+			// push. The other validation_loop post-scripts (post-review.sh,
+			// post-triage.sh, post-retro.sh, post-prioritize.sh) don't
+			// reference REPO_DIR at all. code.yaml has no validation_loop,
+			// so post-code.sh cannot currently observe an empty REPO_DIR in
+			// practice — a SafeDownload failure is fatal for it and this
+			// defer never runs — but the check in its script is real, not a
+			// dead branch, and would activate the moment code.yaml gained a
+			// validation_loop. Because there is no per-iteration repo
+			// checkout, post-fix.sh (and post-code.sh, were it to gain a
+			// validation_loop) cannot recover a sweep-validated non-final
+			// iteration's repo state — it fails closed with "Extracted repo
+			// not found" instead of pushing. See #5393 follow-up.
+			//
+			// FULLSEND_VALIDATED_ITERATION_DIR (set below) is set for
+			// forward compatibility, but the scaffold-embedded post-scripts
+			// don't consume it yet — that port is tracked separately in
+			// fullsend-ai/agents#411, since agent scripts now live in that
+			// repo, not internal/scaffold/fullsend-repo/. Until that lands,
+			// post-review.sh/post-triage.sh/post-retro.sh/post-prioritize.sh
+			// still scan for the last iteration-*/output blindly.
+			postRepoDir, postValidatedIterDir := postScriptRepoEnv(h, runDir, hostRepositoryDownloadDir, repoExtractedOK, validatedIterNum)
+			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", postRepoDir))
+			// FULLSEND_VALIDATED_ITERATION_DIR tells the post-script which
+			// iteration's output was validated. Without this, post-scripts
+			// that scan for the last iteration-*/output would pick up
+			// unvalidated output when the sweep validated an earlier
+			// iteration. Empty when no validation loop is configured or
+			// when no iteration passed validation (the post-script is
+			// skipped in the latter case, so this is defensive).
+			if postValidatedIterDir != "" {
+				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_VALIDATED_ITERATION_DIR=%s", postValidatedIterDir))
+			}
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -1231,6 +1385,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		maxIterations = h.ValidationLoop.MaxIterations
 	}
 
+	// Dual-phase validation design (#5393):
+	//
+	// Phase 1 — inline validation (step 9e): runs after each iteration.
+	// If the iteration passes, we break immediately without waiting for
+	// remaining iterations. This is an early-exit optimization that
+	// avoids burning agent compute when a good result is already in hand.
+	//
+	// Phase 2 — post-loop sweep (postLoopValidationSweep): runs only when
+	// no iteration passed inline. This is the #5393 fix: it catches the
+	// case where an iteration produced valid output but its inline
+	// validation was skipped because SafeDownload failed on that same
+	// iteration (extraction failure triggers `continue`, bypassing 9e).
+	// The sweep re-validates all completed iteration directories, latest
+	// first, using only the output files (TARGET_REPO_DIR is empty because
+	// hostRepositoryDownloadDir may not correspond to the validated
+	// iteration).
+	//
+	// Both phases are necessary: removing inline validation would force
+	// every run to exhaust all maxIterations even when iteration 1 passes,
+	// while removing the sweep would regress #5393.
+
 	oidcCtx, oidcCancel := context.WithCancel(context.Background())
 	var oidcWg sync.WaitGroup
 	if oidcURL := os.Getenv("FULLSEND_GCP_OIDC_URL"); oidcURL != "" {
@@ -1388,7 +1563,28 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
-		if clearErr := os.RemoveAll(hostRepositoryDownloadDir); clearErr != nil {
+		//
+		// SafeDownload is a security boundary: it combines Download with
+		// sanitizeDownload, which strips dangerous symlinks. If either step
+		// fails, the on-disk content may contain unsanitized symlinks that
+		// could reach the post-script. SafeDownload failures are therefore
+		// always treated as fatal for the current iteration's repo state —
+		// we clean up the directory and skip to the next iteration.
+		//
+		// The forceRemoveAll pre-clear guards against a stale destination:
+		// whether "openshell sandbox download" fully replaces a non-empty
+		// destination directory or merges onto it is not verified anywhere
+		// in this codebase (it's an external binary). Rather than assume
+		// replace semantics, a failed pre-clear is treated the same as a
+		// SafeDownload failure with a validation loop: skip this
+		// iteration's repo state instead of extracting into a directory of
+		// unknown provenance.
+		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
+			if h.ValidationLoop != nil {
+				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, clearErr))
+				repoExtractedOK = false
+				continue
+			}
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
 		}
 
@@ -1398,8 +1594,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
+			if h.ValidationLoop != nil {
+				// SafeDownload failed — the repo directory may contain
+				// unsanitized content (sanitizeDownload aborts on first
+				// error, leaving subsequent dangerous symlinks intact).
+				// Clean up to prevent unsanitized content from reaching
+				// validation or the post-script, then continue the retry
+				// loop. Output files (extracted in 9b) are unaffected.
+				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
+				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
+					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
+				}
+				repoExtractedOK = false
+				continue
+			}
 			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
+		repoExtractedOK = true
 		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
@@ -1411,12 +1622,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+		// At this point repoExtractedOK is always true: SafeDownload
+		// failure sets it to false and continues (skipping step 9e),
+		// while success sets it to true immediately above. Pass the
+		// repo dir directly.
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
 			printer.StepDone(fmt.Sprintf("Validation passed: %s (%.1fs)", strings.TrimSpace(string(valOut)), time.Since(valStart).Seconds()))
 			validationPassed = true
+			validatedIterNum = iteration
 			break
 		}
 
@@ -1424,6 +1642,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if iteration < maxIterations {
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
 		}
+	}
+
+	// Post-loop validation sweep: if no iteration passed validation
+	// inline (e.g., because extraction failed on the iteration that
+	// produced valid output), check all completed iterations starting
+	// from the latest. This ensures a successful retry's output is
+	// found even when earlier steps in that iteration failed. See #5393.
+	if h.ValidationLoop != nil && !validationPassed {
+		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, printer)
+		validationPassed = sweep.passed
+		repoExtractedOK = sweep.repoExtractedOK
+		validatedIterNum = sweep.validatedIter
 	}
 
 	// Write aggregated behavioral metrics.
@@ -1664,11 +1894,30 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// oidcDenyKeys lists OIDC credential env vars that must not leak into
+// user-controlled or sandbox-visible contexts. The parent harness process
+// retains these for mintAgentToken and OIDC token refresh; stripping them
+// from child scripts, expanders, and sandbox injection prevents user code
+// and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+//
+// MAINTENANCE: when new OIDC-related credential env vars are introduced
+// (e.g. by mint infrastructure changes), add them here. By convention the
+// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
+// expansion site in this file consults this map, so a single addition
+// propagates to all deny checks.
+var oidcDenyKeys = map[string]bool{
+	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
+	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
+	"FULLSEND_GCP_OIDC_URL":          true,
+	"FULLSEND_GCP_OIDC_AUTH_FILE":    true,
+}
+
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
 // shadow. These are set by the runner in bootstrapEnv and overriding them
 // from harness YAML could break sandbox operation, or are security-sensitive
 // vars that could influence sandbox execution (e.g. shared library injection,
-// auto-sourced shell startup files).
+// auto-sourced shell startup files). OIDC credential vars from oidcDenyKeys
+// are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
 	"PATH":                     true,
@@ -1684,6 +1933,14 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_OUTPUT_SCHEMA":   true,
 	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
+}
+
+func init() {
+	// Merge OIDC credential vars into reservedSandboxKeys so a future
+	// addition to oidcDenyKeys automatically blocks sandbox injection.
+	for k := range oidcDenyKeys {
+		reservedSandboxKeys[k] = true
+	}
 }
 
 // buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
@@ -1803,7 +2060,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
-		hostPath := os.ExpandEnv(hf.Src)
+		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
+		// credential vars in host_files src path expansion (#5832).
+		hostPath := safeExpandEnv(hf.Src)
 		if hostPath == "" {
 			if hf.Optional {
 				continue
@@ -1865,14 +2124,32 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	return nil
 }
 
+// safeExpandEnv expands ${VAR} references like os.ExpandEnv but refuses
+// OIDC credential vars (oidcDenyKeys), expanding them to empty. Use this
+// instead of os.ExpandEnv at any site where the expanded value may reach
+// user-controlled or sandbox-visible contexts. See #5832.
+func safeExpandEnv(s string) string {
+	return os.Expand(s, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
+		return os.Getenv(key)
+	})
+}
+
 // shellSafeExpandEnv expands ${VAR} references in text using the host
 // environment, escaping characters that are special inside double quotes
 // (", $, `, \) so the result is safe to source as a shell script.
 // Templates use the standard export FOO="${FOO}" pattern; this function
 // ensures substituted values cannot break out of the double-quote context.
+// OIDC credential vars are refused (expand to empty) to prevent leaking
+// mint-usable credentials into sandbox-bound files (#5832).
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return escapeForDoubleQuotes(os.Getenv(key))
 	})
 }
@@ -1897,6 +2174,80 @@ func validationFailMessage(output []byte, execErr error) string {
 		return msg
 	}
 	return execErr.Error()
+}
+
+// postScriptRepoEnv computes the REPO_DIR and FULLSEND_VALIDATED_ITERATION_DIR
+// values for the post-script's environment. Extracted from the post-script
+// defer closure for testability.
+//
+// repoDir is hostRepositoryDownloadDir when repoExtractedOK is true, empty
+// otherwise — see the call site's doc comment for why repoExtractedOK can be
+// false. validatedIterDir points at the validated iteration's output
+// directory when a validation loop is configured and an iteration passed;
+// it is empty when there's no validation loop (the post-script's own
+// last-iteration scan is used instead) or when no iteration passed (the
+// post-script is skipped entirely in that case, so this is defensive).
+func postScriptRepoEnv(h *harness.Harness, runDir, hostRepositoryDownloadDir string, repoExtractedOK bool, validatedIterNum int) (repoDir, validatedIterDir string) {
+	if repoExtractedOK {
+		repoDir = hostRepositoryDownloadDir
+	}
+	if h.ValidationLoop != nil && validatedIterNum > 0 {
+		validatedIterDir = filepath.Join(runDir, fmt.Sprintf("iteration-%d/output", validatedIterNum))
+	}
+	return repoDir, validatedIterDir
+}
+
+// sweepResult holds the outcome of a post-loop validation sweep.
+type sweepResult struct {
+	passed          bool // true if any iteration's validation passed
+	validatedIter   int  // which iteration passed (0 if none)
+	repoExtractedOK bool // false when the validated iteration != runCount
+}
+
+// postLoopValidationSweep runs the validation script against each completed
+// iteration directory, starting from the latest (runCount) and working
+// backwards. It returns the first iteration that passes, or signals that
+// none passed. When the passing iteration is not runCount, repoExtractedOK
+// is set to false because hostRepositoryDownloadDir holds a different
+// iteration's repo checkout — the post-script must not use it.
+func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, currentRepoExtractedOK bool, printer *ui.Printer) sweepResult {
+	for i := runCount; i >= 1; i-- {
+		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+		valStart := time.Now()
+		printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
+		valCmd := exec.Command(h.ValidationLoop.Script)
+		valCmd.Dir = iterDir
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, "", runDir)...))
+		valOut, valErr := valCmd.CombinedOutput()
+
+		if valErr == nil {
+			printer.StepDone(fmt.Sprintf("Validation passed (iteration %d): %s (%.1fs)", i, strings.TrimSpace(string(valOut)), time.Since(valStart).Seconds()))
+			repoOK := currentRepoExtractedOK
+			if i != runCount {
+				repoOK = false
+			}
+			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
+		}
+		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, validationFailMessage(valOut, valErr)))
+	}
+	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
+}
+
+// stripOIDCEnv returns a copy of env with OIDC credential entries removed.
+// Use this to filter os.Environ() slices in contexts where childScriptEnv is
+// not applicable (e.g., validation scripts that compose their env differently).
+// See #5832.
+func stripOIDCEnv(env []string) []string {
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
@@ -1926,8 +2277,8 @@ func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.R
 		attribute.String("gen_ai.request.model", m.Model),
 		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
-		attribute.Int("gen_ai.usage.cache_creation_input_tokens", m.CacheCreationInputTokens),
-		attribute.Int("gen_ai.usage.cache_read_input_tokens", m.CacheReadInputTokens),
+		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
+		attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
@@ -1969,6 +2320,20 @@ func resolveWorkItemID() string {
 	}
 	if num != "" {
 		return num
+	}
+	// Fall back to PR-shaped env vars. Review agents triggered by
+	// pull_request / pull_request_target events have GITHUB_PR_URL and
+	// PR_NUMBER set but no issue-shaped equivalents. See #5621.
+	if repo != "" {
+		if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
+			return repo + "#" + prNum
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("GITHUB_PR_URL")); v != "" {
+		return v
+	}
+	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
+		return prNum
 	}
 	return "unknown"
 }
@@ -2024,6 +2389,37 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
+// runPreScript executes the harness pre-script with the pre-script output
+// protocol's file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
+// the result. See internal/prescript for the protocol (issue #4718).
+// A non-zero script exit remains a hard failure; a malformed output file
+// is also a hard failure so a mistyped skip cannot silently proceed.
+func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {
+	preStart := time.Now()
+	printer.StepStart("Running pre-script: " + h.PreScript)
+	outPath, cleanup, err := prescript.Prepare(runDir)
+	if err != nil {
+		printer.StepFail("Pre-script setup failed")
+		return prescript.Result{}, fmt.Errorf("preparing pre-script output file: %w", err)
+	}
+	defer cleanup()
+	preCmd := exec.Command(h.PreScript)
+	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
+	preCmd.Stdout = os.Stdout
+	preCmd.Stderr = os.Stderr
+	if err := preCmd.Run(); err != nil {
+		printer.StepFail("Pre-script failed")
+		return prescript.Result{}, fmt.Errorf("running pre-script: %w", err)
+	}
+	result, err := prescript.ParseFile(outPath)
+	if err != nil {
+		printer.StepFail("Pre-script output invalid")
+		return prescript.Result{}, fmt.Errorf("parsing pre-script output: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+	return result, nil
+}
+
 // childScriptEnv builds the environment for a host-side child script (pre- or
 // post-script): the harness RunnerEnv layered over the process environment,
 // plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). Any
@@ -2032,16 +2428,36 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 // match, so a stale value would shadow fullsend's own, and fullsend's trace
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
+//
+// OIDC credential vars (oidcDenyKeys) are stripped so user-authored pre/post
+// scripts and validation/preflight commands cannot mint their own tokens.
+// The parent harness process retains them for mintAgentToken. See #5832.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := append(os.Environ(), envToList(runnerEnv)...)
 	env := make([]string, 0, len(merged)+1)
 	for _, e := range merged {
-		if !strings.HasPrefix(e, "TRACEPARENT=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			continue
 		}
+		// Strip OIDC credential vars from child script env (#5832).
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		env = append(env, e)
 	}
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
+// postScriptEnv builds the environment for post-script execution.
+// It starts with childScriptEnv and conditionally appends
+// FULLSEND_OUTPUT_SCHEMA when the harness specifies a validation loop schema.
+func postScriptEnv(h *harness.Harness, traceparent string) []string {
+	env := childScriptEnv(h.RunnerEnv, traceparent)
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
 }
@@ -2659,8 +3075,15 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil && orgCfg.StatusNotifications() != nil {
-		notifyCfg = *orgCfg.StatusNotifications()
+	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil {
+		// tryLoadFullsendConfig returns a ConfigWriter which may wrap either
+		// orgConfig or perRepoConfig. Only orgConfig implements OrgConfigReader
+		// (and carries StatusNotifications). When the loaded config is per-repo,
+		// this assertion intentionally falls through, leaving notifyCfg at its
+		// zero value — per-repo configs do not support status notifications.
+		if ocr, ok := orgCfg.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
+			notifyCfg = *ocr.StatusNotifications()
+		}
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -2795,17 +3218,9 @@ func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Print
 	}
 	printer.StepStart("Minting agent token (role: " + role + ")")
 
-	result, err := statusMintToken(ctx, mintclient.MintRequest{
-		MintURL: mintURL,
-		Role:    role,
-		Repos:   repos,
-	})
+	result, err := mintAgentTokenWithRetry(ctx, role, mintURL, repos, printer)
 	if err != nil {
-		return false, nil, fmt.Errorf("minting agent token for role %s: %w", role, err)
-	}
-
-	if !mintTokenPattern.MatchString(result.Token) {
-		return false, nil, fmt.Errorf("minted agent token contains unexpected characters for role %s", role)
+		return false, nil, err
 	}
 
 	// TODO(ADR-0045 R22): use forge platform context instead of raw env check.
@@ -2855,6 +3270,73 @@ func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Print
 	return true, cleanup, nil
 }
 
+// mintTokenMaxAttempts is the total number of minting attempts — the initial
+// attempt plus mintTokenMaxAttempts-1 retries — before mintAgentTokenWithRetry
+// gives up.
+const mintTokenMaxAttempts = 4
+
+// mintTokenMaxBackoff caps the delay mintTokenBackoff can return, guarding
+// against overflow or runaway waits if mintTokenMaxAttempts ever grows.
+const mintTokenMaxBackoff = 8 * time.Second
+
+// mintTokenBackoff computes the delay before the retry that follows the
+// given failed attempt (1-indexed), doubling each time: 2s, 4s, 8s for the
+// default mintTokenMaxAttempts of 4. It is a package variable so tests can
+// shorten it and avoid real sleeps.
+var mintTokenBackoff = func(attempt int) time.Duration {
+	shift := attempt - 1
+	if shift > 10 {
+		shift = 10
+	}
+	backoff := 2 * time.Second * time.Duration(uint64(1)<<uint(shift))
+	if backoff > mintTokenMaxBackoff {
+		backoff = mintTokenMaxBackoff
+	}
+	return backoff
+}
+
+// mintAgentTokenWithRetry retries only the token-shape validation performed
+// on top of statusMintToken's response — a malformed token on an otherwise
+// successful mint call, the exact failure reported in issue #5377 ("minted
+// agent token contains unexpected characters"). Issue #5377 suspects, but
+// never confirms, that this is a transient response glitch; retrying it
+// tests that suspicion without re-litigating it. statusMintToken
+// (mintclient.MintToken) already retries transient request failures (5xx,
+// network errors) internally and fails fast on permanent ones (4xx), so its
+// errors are returned as-is rather than retried a second time here — doing
+// so would retry permanent failures pointlessly and compound latency on
+// persistent transient ones.
+func mintAgentTokenWithRetry(ctx context.Context, role, mintURL string, repos []string, printer *ui.Printer) (*mintclient.MintResult, error) {
+	var lastErr error
+	for attempt := 1; attempt <= mintTokenMaxAttempts; attempt++ {
+		result, err := statusMintToken(ctx, mintclient.MintRequest{
+			MintURL: mintURL,
+			Role:    role,
+			Repos:   repos,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("minting agent token for role %s: %w", role, err)
+		}
+		if mintTokenPattern.MatchString(result.Token) {
+			return result, nil
+		}
+		lastErr = fmt.Errorf("minted agent token contains unexpected characters")
+
+		if attempt < mintTokenMaxAttempts {
+			backoff := mintTokenBackoff(attempt)
+			printer.StepWarn(fmt.Sprintf("Minting agent token failed (attempt %d/%d): %v — retrying in %s", attempt, mintTokenMaxAttempts, lastErr, backoff))
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return nil, fmt.Errorf("minting agent token for role %s failed after %d attempts: %w", role, mintTokenMaxAttempts, lastErr)
+}
+
 // resolveMintRepos determines which repos to request token access for.
 // MINT_REPOS (comma-separated) takes precedence, falling back to extracting
 // the repo name from REPO_FULL_NAME (owner/repo → repo).
@@ -2901,72 +3383,56 @@ func validateRepoNames(repos []string) error {
 
 // resolveAgentSource resolves the harness path for an agent, checking
 // config-registered agents first, then falling back to the agents repo
-// (fullsend-ai/agents), then to disk-based lookup.
+// (fullsend-ai/agents).
 // Returns the local filesystem path to the harness (cached for URL sources)
 // and any fetch dependencies from URL-based agent resolution.
-func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
+func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg config.ConfigReader, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	if orgCfg == nil || len(orgCfg.AgentEntries()) == 0 {
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
-		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
-		return path, nil, err
+		return "", nil, fmt.Errorf("resolving agent %q: no config and agents-repo fallback unavailable", agentName)
 	}
 
 	if err := config.ValidateAgentEntries(orgCfg.AgentEntries(), orgCfg.AllowedResources()); err != nil {
 		return "", nil, fmt.Errorf("invalid agent config: %w", err)
 	}
 
-	sha := commitSHA
-	if sha == "dev" {
-		sha = ""
-	}
-	scaffoldNames, snErr := scaffold.HarnessNames()
-	if snErr != nil {
-		return "", nil, fmt.Errorf("listing scaffold harnesses: %w", snErr)
+	if config.IsAgentExplicitlyDisabled(orgCfg.AgentEntries(), agentName) {
+		printer.StepFail(fmt.Sprintf("Agent %s is disabled in config", agentName))
+		return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
 	}
 
-	merged, err := config.MergedAgents(scaffoldNames, sha, orgCfg.AgentEntries(), scaffold.HarnessBaseURLWithHash)
-	if err != nil {
-		return "", nil, fmt.Errorf("building merged agent set: %w", err)
-	}
-
-	agent := config.LookupMergedAgent(merged, agentName)
-	if agent == nil || !agent.IsConfig {
+	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)
+	if entry == nil {
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
-		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
-		return path, nil, err
+		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
 	}
 
-	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agent.Name)
-	if entry == nil {
-		return "", nil, fmt.Errorf("config agent %s: entry not found", agent.Name)
-	}
-
-	if harness.IsURL(agent.Source) {
-		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
+	if harness.IsURL(entry.Source) {
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agentName))
 	}
 	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, orgCfg.AllowedResources(), composeOpts)
 	if err != nil {
-		if harness.IsURL(agent.Source) {
+		if harness.IsURL(entry.Source) {
 			printer.StepFail("Failed to fetch agent harness")
 		}
-		return "", nil, fmt.Errorf("resolving config agent %s: %w", agent.Name, err)
+		return "", nil, fmt.Errorf("resolving config agent %q: %w", agentName, err)
 	}
-	if harness.IsURL(agent.Source) {
-		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agent.Name))
+	if harness.IsURL(entry.Source) {
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agentName))
 		return resolved.Path, []harness.Dependency{resolved.Dep}, nil
 	}
-	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agentName))
 	return resolved.Path, nil, nil
 }
 
 func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.AgentEntry {
 	lower := strings.ToLower(name)
-	for i := range agents {
-		if strings.ToLower(agents[i].DerivedName()) == lower {
+	for i := len(agents) - 1; i >= 0; i-- {
+		if strings.ToLower(agents[i].DerivedName()) == lower && agents[i].IsEnabled() {
 			return &agents[i]
 		}
 	}
@@ -2981,7 +3447,7 @@ func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.Agent
 //
 // Returns (path, deps, true) on success, or ("", nil, false) if the fallback
 // should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
-// All errors are non-fatal — the caller falls through to disk-based lookup.
+// All errors are non-fatal — returns false to signal that this fallback path was not usable.
 func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, bool) {
 	normalizedName := strings.ToLower(agentName)
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
@@ -3188,6 +3654,49 @@ func sandboxProviderNames(harnessProviders []string, resolved []resolve.Resolved
 		}
 	}
 	return names
+}
+
+// forceRemoveAll restores owner-write permission on all directories under
+// path, then removes the entire tree. This handles directories left read-only
+// by the readonly_repo sandbox enforcement — os.RemoveAll alone fails with
+// EACCES when parent directories lack write permission (the unlinkat syscall
+// requires write permission on the containing directory).
+//
+// Assumption: the readonly_repo enforcement only strips write permission
+// (chmod a-w), preserving read and execute bits. WalkDir performs a
+// single-pass traversal and cannot retry children after fixing a parent, so
+// if a directory also lacked read+execute permissions its children would be
+// silently skipped. This is currently unreachable, but callers should be
+// aware of the limitation if the permission model changes.
+func forceRemoveAll(path string) error {
+	// Best-effort permission restore; if WalkDir itself fails on a
+	// directory it cannot read, we fix the parent and continue.
+	// Chmod errors are logged for operator visibility — if chmod fails
+	// for an unexpected reason (e.g. TOCTOU race), the subsequent
+	// os.RemoveAll error alone may not indicate the root cause.
+	filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error { //nolint:errcheck // best-effort walk; errors are logged individually and the final os.RemoveAll is the authoritative result
+		if err != nil {
+			// Can't stat p — likely the parent directory lacks +rx.
+			// Restore the parent so the next iteration can proceed.
+			// Lstat guard: verify the parent is a real directory before
+			// chmod to avoid following symlinks (defense-in-depth;
+			// SafeDownload already strips dangerous symlinks).
+			parent := filepath.Dir(p)
+			if fi, lstatErr := os.Lstat(parent); lstatErr == nil && fi.IsDir() {
+				if chmodErr := os.Chmod(parent, 0o755); chmodErr != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod parent %s: %v\n", parent, chmodErr)
+				}
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if chmodErr := os.Chmod(p, 0o755); chmodErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod %s: %v\n", p, chmodErr)
+			}
+		}
+		return nil
+	})
+	return os.RemoveAll(path)
 }
 
 // checkProviderProfileIntegrity validates that every URL-resolved provider

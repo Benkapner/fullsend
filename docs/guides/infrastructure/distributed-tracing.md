@@ -3,8 +3,6 @@
 Fullsend produces structured telemetry for every agent run. This guide covers
 how to configure, consume, and extend the tracing system.
 
-Decided in [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md).
-
 ## Zero-configuration baseline (Level 1)
 
 Every `fullsend run` produces one file in the run output directory with no
@@ -14,9 +12,8 @@ configuration required:
   (sandbox creation, agent iterations, validation) with timestamps, durations,
   trace IDs, and token/cost attributes.
 
-This file is written on every run unless `OTEL_SDK_DISABLED=true`, which
-suppresses all telemetry output including the local file. It contains
-metadata only — no prompts, completions, or source code content.
+This file is written on every run. It contains metadata only — no prompts,
+completions, or source code content.
 
 ## Prerequisites
 
@@ -33,16 +30,31 @@ Level 1 requires nothing. To enable OTLP export (Level 2 and Level 3) you need:
   and bring-your-own-workflow runs only — the managed workflows do not yet
   pass a CA bundle through.
 
+## Disabling telemetry
+
+To disable all telemetry, including the local file exporter:
+
+```bash
+export OTEL_SDK_DISABLED=true  # case-insensitive
+```
+
+To disable only the OTLP exporter:
+
+```bash
+unset OTEL_EXPORTER_OTLP_ENDPOINT
+unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+```
+
 ## Enabling OTLP export (Level 2)
 
 To send metadata spans to an OpenTelemetry-compatible backend, set one of the
 standard OTEL environment variables:
 
 ```bash
-# Signal-specific (takes precedence, used as-is — no /v1/traces appended)
+# Signal-specific (used as-is, no path appended)
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://your-backend:4318/v1/traces"
 
-# Base URL (SDK appends /v1/traces automatically)
+# Base URL (SDK appends /v1/traces)
 export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-backend:4318"
 ```
 
@@ -50,13 +62,13 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-backend:4318"
 Headers follow the same pattern: `OTEL_EXPORTER_OTLP_TRACES_HEADERS` > `OTEL_EXPORTER_OTLP_HEADERS`.
 
 The local file (`run-telemetry.jsonl`) is produced with no configuration
-needed (Level 1), unless `OTEL_SDK_DISABLED=true`.
+needed (Level 1).
 
 When an endpoint is configured, spans are exported via OTLP/HTTP. Any backend
 that speaks OTLP works: Jaeger, Grafana Tempo, MLflow, Arize Phoenix,
 Langfuse, SigNoz, Honeycomb, Datadog, etc.
 
-If the endpoint is unreachable, the CLI continues normally — local files are
+If the endpoint is unreachable, the CLI continues normally; local files are
 still produced and the run is not affected.
 
 Operational details:
@@ -64,6 +76,11 @@ Operational details:
 - **Export timing:** spans are exported live via the OTel SDK's batch
   processor as they complete. On shutdown, the provider flushes remaining
   spans within a 5-second budget. A dead endpoint does not block the run.
+- **Retry:** the exporter retries on transient failures (HTTP 503, etc.)
+  with an initial interval of 250 ms and a max interval of 2 s. The
+  5-second context deadline passed to `tp.Shutdown` bounds both retries
+  and in-flight requests, so a persistently failing or hanging endpoint
+  does not extend shutdown.
 - **Crashed runs:** completed spans that were already flushed mid-run reach
   the backend; spans still in the batch buffer are lost. The local
   `run-telemetry.jsonl` (written synchronously per span) remains the
@@ -71,15 +88,15 @@ Operational details:
 - **Sampling:** when the run continues an inbound `TRACEPARENT` whose W3C
   sampled flag is unset (`-00`), the upstream sampling decision is respected:
   nothing is exported. The local file is still written.
-- **Protocol:** OTLP over `http/protobuf` only. Setting
-  `OTEL_EXPORTER_OTLP_PROTOCOL` (or the traces-specific variant) to anything
-  else — e.g. `grpc` — skips export with a warning rather than posting
-  protobuf at a gRPC endpoint.
-- **Validation:** a malformed endpoint value skips export with a warning; it
-  is never silently replaced with the SDK's `localhost:4318` default.
-- **Kill switches:** `OTEL_SDK_DISABLED=true` disables all telemetry output
-  (OTLP export *and* the local file). `OTEL_TRACES_EXPORTER=none` disables
-  only the OTLP export; the local file is still written.
+- **Endpoint validation:** before creating the OTLP exporter, the CLI
+  validates whichever endpoint the SDK will actually use
+  (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` if set, else
+  `OTEL_EXPORTER_OTLP_ENDPOINT`). An endpoint is invalid if it cannot be
+  parsed as a URL, has no scheme, uses a scheme other than `http` or `https`,
+  or has no host (e.g. `localhost:4318` instead of
+  `http://localhost:4318`). When invalid, the CLI prints a warning to stderr
+  and skips OTLP export; the local file exporter is unaffected. A valid
+  signal-specific endpoint is not blocked by an invalid generic endpoint.
 - **Private CAs:** point `OTEL_EXPORTER_OTLP_CERTIFICATE` at a PEM bundle for
   backends with certificates outside the system trust store. There is no
   skip-verify option.
@@ -110,8 +127,7 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Basic%20${CREDS_B64},x-m
 ## Enabling content capture (Level 3)
 
 > **Planned:** Level 3 content capture is not yet implemented. This section
-> documents the contract decided in
-> [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md).
+> documents the telemetry contract.
 
 By default, spans contain metadata only (timing, token counts, tool names,
 errors). To include full prompt/completion content in spans:
@@ -202,14 +218,14 @@ Fullsend-specific attributes:
 
 ### Managed workflows
 
-Only the **triage** stage forwards OTEL configuration in this release; the
-other agents (code, fix, review, retro, prioritize) do not export yet.
-
-To enable export for triage runs, set on the org (or repo) that hosts the
-fullsend caller workflows:
+All agent stages (triage, code, review, fix, retro, prioritize, harness)
+forward OTEL configuration. To enable export, set on the org (or repo)
+that hosts the fullsend caller workflows:
 
 1. Actions **variable** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — the backend's
    full traces URL (e.g. `https://mlflow.example.com/v1/traces`).
+   Alternatively, set `OTEL_EXPORTER_OTLP_ENDPOINT` (the base URL without a
+   signal path); managed workflows forward both variants.
 2. Actions **secret** `OTEL_EXPORTER_OTLP_TRACES_HEADERS` — the complete
    header string, auth and routing included (e.g.
    `Authorization=Bearer%20<token>,x-mlflow-experiment-id=42`).
@@ -217,10 +233,10 @@ fullsend caller workflows:
    `k=v,k=v` trace tags. The value is used verbatim: `${{ github.* }}`
    expressions evaluate only in workflow YAML, not in variables.
 
-Installations scaffolded before this release must also forward the secret
-(add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` under `secrets:`) until the scaffold
-is re-synced: in the `.fullsend` repo's `triage.yml` (per-org), or in the
-fullsend shim workflow's dispatch job (per-repo).
+Installations scaffolded before OTEL support was added must also forward the
+secret (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` under `secrets:`) until the
+scaffold is re-synced: in the `.fullsend` repo's stage workflows (per-org),
+or in the fullsend shim workflow's dispatch job (per-repo).
 
 ### Bring your own workflow
 
@@ -228,6 +244,7 @@ Add the environment variables to any job that runs `fullsend run`:
 
 ```yaml
 env:
+  OTEL_EXPORTER_OTLP_ENDPOINT: "${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}"
   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}"
   OTEL_EXPORTER_OTLP_TRACES_HEADERS: "${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}"
 ```

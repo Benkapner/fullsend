@@ -43,7 +43,7 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
@@ -55,14 +55,16 @@ var embeddedMintFiles = map[string]string{
 	"main.go.embed":                   "main.go",
 	"mintcore/go.mod.embed":           "mintcore/go.mod",
 	"mintcore/go.sum.embed":           "mintcore/go.sum",
+	"mintcore/claims.go.embed":        "mintcore/claims.go",
+	"mintcore/config.go.embed":        "mintcore/config.go",
+	"mintcore/foreign.go.embed":       "mintcore/foreign.go",
 	"mintcore/gcp_pem.go.embed":       "mintcore/gcp_pem.go",
 	"mintcore/github.go.embed":        "mintcore/github.go",
 	"mintcore/handler.go.embed":       "mintcore/handler.go",
-	"mintcore/foreign.go.embed":       "mintcore/foreign.go",
 	"mintcore/interfaces.go.embed":    "mintcore/interfaces.go",
 	"mintcore/jwks_verifier.go.embed": "mintcore/jwks_verifier.go",
-	"mintcore/claims.go.embed":        "mintcore/claims.go",
 	"mintcore/patterns.go.embed":      "mintcore/patterns.go",
+	"mintcore/repos_scope.go.embed":   "mintcore/repos_scope.go",
 	"mintcore/sts_verifier.go.embed":  "mintcore/sts_verifier.go",
 	"mintcore/version.go.embed":       "mintcore/version.go",
 	"mintcore/wif.go.embed":           "mintcore/wif.go",
@@ -98,7 +100,7 @@ const (
 	// DefaultInferencePool is the WIF pool used by inference commands.
 	// Separate from the mint pool (defaultPool) so that mint and inference
 	// lifecycle operations don't interfere with each other.
-	DefaultInferencePool = "fullsend-inference"
+	DefaultInferencePool = mintcore.DefaultInferencePool
 )
 
 // Config holds the inputs for GCF mint provisioning.
@@ -189,12 +191,21 @@ func (p *Provisioner) SecretExists(ctx context.Context, role string) (bool, erro
 	return false, fmt.Errorf("checking secret %s: %w", sid, err)
 }
 
+// MintServiceAccountEmail returns the email address of the fullsend-mint
+// service account for the given GCP project.
+func MintServiceAccountEmail(projectID string) string {
+	return saName + "@" + projectID + ".iam.gserviceaccount.com"
+}
+
 // EnsureMintServiceAccount creates the mint service account if it does not
 // already exist. Call this before StoreAgentPEM so the IAM binding on
 // secrets can reference the service account.
 func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
 	if p.cfg.ProjectID == "" {
-		return fmt.Errorf("project ID is required")
+		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	return p.gcpAPI.CreateServiceAccount(ctx, p.cfg.ProjectID, saName, "Fullsend token mint Cloud Function")
 }
@@ -204,6 +215,9 @@ func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
 func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []byte) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -225,7 +239,7 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 		return fmt.Errorf("adding secret version for %s: %w", sid, err)
 	}
 
-	saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+	saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 	secretResource := fmt.Sprintf("projects/%s/secrets/%s", p.cfg.ProjectID, sid)
 	if err := p.gcpAPI.SetSecretIAMBinding(ctx, secretResource,
 		"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
@@ -239,6 +253,9 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -255,6 +272,9 @@ func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
 func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -295,6 +315,9 @@ func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) err
 func (p *Provisioner) RemoveRoleFromMint(ctx context.Context, role string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -872,7 +895,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("uploading function source: %w", err)
 		}
 
-		saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+		saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 		fnCfg := FunctionConfig{
 			ServiceAccount: saEmail,
 			EnvVars:        envVars,
@@ -927,7 +950,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("uploading function source: %w", err)
 		}
 
-		saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+		saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 		fnCfg := FunctionConfig{
 			ServiceAccount: saEmail,
 			EnvVars:        deployEnvVars,

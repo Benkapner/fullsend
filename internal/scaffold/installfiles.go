@@ -2,6 +2,7 @@ package scaffold
 
 import (
 	"fmt"
+	"strings"
 )
 
 // InstallFile is a file to commit during install.
@@ -39,22 +40,7 @@ func CollectInstallFiles(opts CollectInstallFilesOptions) (InstallFiles, error) 
 		return nil, err
 	}
 
-	for _, dir := range customizedDirsForPrefix(opts.PathPrefix) {
-		files = append(files, InstallFile{
-			Path:    dir + "/.gitkeep",
-			Content: []byte(""),
-			Mode:    "100644",
-		})
-	}
-
 	return files, nil
-}
-
-func customizedDirsForPrefix(prefix string) []string {
-	if prefix == ".fullsend/" {
-		return PerRepoCustomizedDirs()
-	}
-	return CustomizedDirs()
 }
 
 // CollectPerRepoInstallFiles gathers files for per-repo installation.
@@ -76,15 +62,44 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 		Mode:    "100644",
 	}}
 
-	for _, dir := range PerRepoCustomizedDirs() {
-		files = append(files, InstallFile{
-			Path:    dir + "/.gitkeep",
-			Content: []byte(""),
-			Mode:    "100644",
-		})
-	}
-
 	return files, nil
+}
+
+// CollectGitLabPerRepoInstallFiles gathers CI template files for GitLab
+// per-repo installation. The embedded .fullsend/config.yaml is excluded —
+// callers generate a config with roles and forge field instead.
+// runnerTags specifies GitLab runner tags to inject into CI job definitions.
+func CollectGitLabPerRepoInstallFiles(runnerTags []string) (InstallFiles, error) {
+	tagYAML := formatRunnerTags(runnerTags)
+	var files InstallFiles
+	err := WalkGitLabPerRepo(func(path string, content []byte) error {
+		if path == ".fullsend/config.yaml" {
+			return nil
+		}
+		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
+		files = append(files, InstallFile{
+			Path:    path,
+			Content: []byte(rendered),
+			Mode:    FileMode(path),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking GitLab per-repo scaffold: %w", err)
+	}
+	return files, nil
+}
+
+// formatRunnerTags formats runner tags as a YAML inline list.
+func formatRunnerTags(tags []string) string {
+	if len(tags) == 0 {
+		return "[]"
+	}
+	quoted := make([]string, len(tags))
+	for i, t := range tags {
+		quoted[i] = fmt.Sprintf("%q", t)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 // ManagedPaths returns embed-derived scaffold paths for analyze/sync.

@@ -29,7 +29,7 @@ The `customized/` overlay touches these subsystems:
 | Scaffold (vendor) | `internal/scaffold/vendorcontent.go` | `IsLayeredPath()` call |
 | Scaffold (embed) | `internal/scaffold/fullsend-repo/customized/` | 8 empty subdirectories with `.gitkeep` files |
 | Scaffold (data) | `internal/scaffold/fullsend-repo/scripts/.pre-commit-tools.yaml` | Comments documenting `customized/scripts/` as L1 override path |
-| Harness wrappers | `internal/layers/harnesswrappers.go` | `wrapperHeader` comment referencing `customized/harness/` |
+| ~~Harness wrappers~~ | ~~`internal/layers/harnesswrappers.go`~~ | ~~`wrapperHeader` comment referencing `customized/harness/`~~ *(file removed — PR #5425)* |
 | User docs | `docs/guides/user/customizing-agents.md` | Guide pointing users to `customized/` |
 | Agent docs | `docs/agents/README.md`, `docs/agents/{triage,review}.md` | References to `customized/` |
 | Architecture docs | `docs/architecture.md`, `docs/runtimes.md` | References to layered content resolution |
@@ -90,10 +90,11 @@ logs. No behavioral change.
 
 ---
 
-## PR 2: Remove overlay loop from reusable workflows
+## PR 2: Remove overlay loop from reusable workflows *(done — PR #5836)*
 
 **Scope:** Remove the `CUSTOM_BASE` overlay from all 6 reusable
-workflows.
+workflows, the `prepare-workspace` composite action, and the scaffold
+`repo-maintenance.yml` template.
 
 **`.github/workflows/reusable-triage.yml` (~lines 100–113):**
 **`.github/workflows/reusable-code.yml` (~lines 102–113):**
@@ -173,11 +174,11 @@ directories.
   (~lines 77–84) that calls `PerRepoCustomizedDirs()`.
 - Remove `customizedDirsForPrefix()` (~lines 53–58).
 
-**`internal/layers/harnesswrappers.go`:**
+~~**`internal/layers/harnesswrappers.go`:**~~ *(file removed — PR #5425)*
 
-- Update `wrapperHeader` (~line 13) to remove the reference to
+~~- Update `wrapperHeader` (~line 13) to remove the reference to
   `customized/harness/` and ADR-0035. Replace with guidance pointing to
-  `base:` composition (ADR-0045).
+  `base:` composition (ADR-0045).~~
 
 **`internal/scaffold/fullsend-repo/scripts/.pre-commit-tools.yaml`
 (~lines 37–39):**
@@ -193,8 +194,8 @@ directories.
   assertion for `repo-maintenance.yml` overlay at ~line 735).
 - `internal/scaffold/installfiles_test.go`: Remove assertions for
   `.gitkeep` files in `customized/` paths.
-- `internal/layers/harnesswrappers_test.go`: Update `wrapperHeader`
-  assertions if any.
+- ~~`internal/layers/harnesswrappers_test.go`: Update `wrapperHeader`
+  assertions if any.~~ *(file removed — PR #5425)*
 - `internal/layers/workflows_test.go`: Remove assertion for
   `customized/agents/.gitkeep` file mode (~line 455).
 - `e2e/admin/admin_test.go`: Remove assertions for all 8

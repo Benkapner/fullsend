@@ -6,7 +6,7 @@ A survey of AI-driven code review systems and **adjacent agent infrastructure** 
 
 ## The industry consensus
 
-The entire industry is solving "AI as first-pass reviewer that helps humans review faster." Nobody is seriously tackling the full autonomous merge problem. GitHub has published an [explicit position paper](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) arguing that developers will always own the merge button. This is the question we're asking differently.
+There isn't one. Projects range from entirely banning AI to having AI agents doing work with little structure or oversight.
 
 ## Major tools
 
@@ -77,13 +77,11 @@ Uses "a series of AI code reviewers, each with different specialties" — e.g., 
 
 **Relevance to fullsend:** Sourcery's candor about their limitations is informative. Their specialized-reviewer approach validates our sub-agent decomposition, but their inability to reason about the broader codebase illustrates why context management per sub-agent matters. A correctness sub-agent needs repo context; a security sub-agent needs raw PR content; an intent & coherence sub-agent needs the intent repo. Different sub-agents, different context.
 
-### GitHub Copilot Code Review
+### GitHub Copilot
 
-[Blog post](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/)
+[Website](https://github.com/features/copilot)
 
-GA since April 2025. 1 million users in one month. Assign Copilot as a reviewer like any teammate. October 2025 update added context gathering — reads source files, explores directory structure, integrates CodeQL and ESLint.
-
-**Relevance to fullsend:** GitHub's explicit "humans own the merge button" position means we cannot rely on GitHub's native tooling for autonomous merging. We'll need to build merge authority outside of (or on top of) GitHub's review/approval system.
+Very relevant to fullsend: has code review and also supports having background agents steered interactively. Backend infrastructure here is reused by GitHub Agentic Workflows (see below).
 
 ### GitLab AI Merge Agent
 
@@ -291,7 +289,7 @@ Open-source GitHub Actions template that deploys four Claude-powered agents — 
 
 [Website](https://github.github.com/gh-aw/) | [Security architecture](https://github.github.com/gh-aw/introduction/architecture/) | [Blog post](https://github.blog/news-insights/product-news/automate-repository-tasks-with-github-agentic-workflows/)
 
-Repository automation from GitHub Next and Microsoft Research, running coding agents (Copilot, Claude, Codex) in GitHub Actions with strong guardrails. Workflows are defined in markdown files with YAML frontmatter specifying triggers (schedule, events), permissions, and safe-output constraints. A `gh aw` CLI extension compiles each markdown definition into a `.lock.yml` GitHub Actions workflow, performing schema validation, expression safety checks, action SHA pinning, and security scanning (actionlint, zizmor, poutine) at compile time. Early development; may change significantly.
+Repository automation from GitHub Next and Microsoft Research, running coding agents (Copilot, Claude, Codex) in GitHub Actions with strong guardrails. Workflows are defined in markdown files with YAML frontmatter specifying triggers (schedule, events), permissions, and safe-output constraints. A `gh aw` CLI extension compiles each markdown definition into a `.lock.yml` GitHub Actions workflow, performing schema validation, expression safety checks, action SHA pinning, and security scanning (actionlint, zizmor, poutine) at compile time. gh-aw entered technical preview in February 2026 and moved to public preview in June 2026; it has not yet reached GA and may still change significantly before then.
 
 **Architecture:** The agent runs in an isolated container on an Actions runner with a read-only `GITHUB_TOKEN`. It produces a structured artifact (SafeOutputs) describing its intended actions. A separate job with scoped write permissions reads the artifact and applies only what the workflow explicitly permits — hard limits per operation, required title prefixes, label constraints. The agent requests; the gated job decides. An [orchestration pattern](https://github.github.com/gh-aw/patterns/orchestration/) supports multi-workflow fan-out via `dispatch-workflow` (async) and `call-workflow` (same run) safe outputs, and [cross-repository operations](https://github.github.com/gh-aw/reference/cross-repository/) allow reading from and writing to external repos via `target-repo` and `allowed-repos` parameters.
 
@@ -299,13 +297,11 @@ Repository automation from GitHub Next and Microsoft Research, running coding ag
 
 1. **Substrate-level trust** — the Actions runner VM, kernel, container runtime, and three privileged containers: the Agent Workflow Firewall (AWF) that uses iptables to redirect HTTP/HTTPS through a Squid proxy enforcing a domain allowlist, an API proxy that routes model traffic while keeping credentials isolated, and an MCP Gateway that spawns isolated containers for each MCP server with per-server domain allowlists and tool allowlisting.
 2. **Configuration-level trust** — declarative artifacts (workflow frontmatter, network policies, MCP configs) that constrain what components are loaded, how they connect, and what credentials they receive. Includes [content sanitization](https://github.github.com/gh-aw/introduction/architecture/#content-sanitization) of untrusted input (@mention neutralization, URI filtering to trusted domains, XML/HTML tag conversion, unicode normalization, 0.5MB/65k-line limits) and [integrity filtering (DIFC)](https://github.github.com/gh-aw/reference/integrity/) — a trust-based system that filters GitHub content by author association level (`merged > approved > unapproved > none > blocked`), with support for `trusted-users`, `blocked-users`, and `approval-labels` overrides.
-3. **Plan-level trust** — the compiler decomposes workflows into stages. The SafeOutputs subsystem buffers all external writes as artifacts, runs a threat detection job (AI-powered scan plus optional custom scanners like Semgrep, TruffleHog, LlamaGuard), and only externalizes writes after the scan passes. [Supply chain protection](https://github.github.com/gh-aw/reference/threat-detection/#supply-chain-protection-protected-files) blocks agent modifications to dependency manifests, CI/CD config, agent instruction files, and CODEOWNERS by default, with `blocked/allowed/fallback-to-issue` policies.
+3. **Plan-level trust** — the compiler decomposes workflows into stages. The SafeOutputs subsystem buffers all external writes as artifacts, runs a threat detection job (AI-powered scan plus optional custom scanners like Semgrep, TruffleHog, LlamaGuard), and only externalizes writes after the scan passes. [Supply chain protection](https://github.github.com/gh-aw/reference/threat-detection/#supply-chain-protection-protected-files) flags agent modifications to dependency manifests, CI/CD config, agent instruction files, and CODEOWNERS — the default `request_review` policy still creates the PR but attaches a blocking review requiring human approval, with `blocked` (hard-fail), `allowed`, and `fallback-to-issue` as configurable alternatives.
 
 **Relevance to fullsend:** gh-aw is the most mature implementation of "GitHub Actions as agent runtime" (pattern #5 below) and substantially more sophisticated than its homepage summary suggests. Its native position within GitHub eliminates entire categories of problems that fullsend must solve externally: cross-repo dispatch wiring ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)), GitHub App manifest creation ([ADR 0007](ADRs/0007-per-role-github-apps.md)), enrollment shim security ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)), and the install/uninstall layer stack ([ADR 0006](ADRs/0006-ordered-layer-model.md)). Its credential isolation via the substrate layer achieves the same security goal as fullsend's host-side L7 REST proxy design ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)) with substantially less complexity.
 
 Its integrity filtering system is particularly interesting — it implements a form of input trust tiering (`merged > approved > unapproved > none`) that addresses a subset of what fullsend explores in [autonomy-spectrum.md](problems/autonomy-spectrum.md), though applied to content visibility rather than merge authority. The content sanitization pipeline is a concrete implementation of pre-LLM injection defense, complementing the post-LLM threat detection scan. The orchestration pattern (`dispatch-workflow` / `call-workflow`) provides native multi-workflow coordination that fullsend builds custom infrastructure for.
-
-However, gh-aw explicitly stops at human-in-the-loop automation. It does not address autonomous merge judgment, intent verification, inter-agent trust, or agent governance. Its orchestration is workflow fan-out, not the specialized sub-agent composition with zero-trust review that fullsend envisions. And it inherits GitHub's product constraints — including the position that [developers will always own the merge button](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/).
 
 The comparison raises a structural question for fullsend: which problems in our implementation are inherent to the goal of autonomous development, and which are artifacts of building externally to the platform we're automating? See [platform-nativeness.md](problems/platform-nativeness.md) for the full analysis.
 
@@ -331,7 +327,7 @@ Structure the workflow as a pipeline where deterministic steps (context prefetch
 
 ### 5. GitHub Actions as agent runtime (Collo.dev, gh-aw)
 
-Use GitHub's native workflow engine as both the orchestration layer and the compute runtime. Agents are invoked by workflow triggers (label changes, issue comments, schedules), run in ephemeral Actions runners, and coordinate through issues and labels. Zero infrastructure beyond a GitHub repo and an API key. gh-aw adds significant depth to this pattern with containerized execution, network firewalling, artifact-based safe outputs, and AI-powered threat detection — demonstrating that Actions-native agents can have strong guardrails without external infrastructure. The trade-off: tightly coupled to GitHub's event model, limited to Actions runner capabilities and timeouts, and (in the case of gh-aw) constrained by GitHub's product position against autonomous merging.
+Use GitHub's native workflow engine as both the orchestration layer and the compute runtime. Agents are invoked by workflow triggers (label changes, issue comments, schedules), run in ephemeral Actions runners, and coordinate through issues and labels. Zero infrastructure beyond a GitHub repo and an API key. gh-aw adds significant depth to this pattern with containerized execution, network firewalling, artifact-based safe outputs, and AI-powered threat detection — demonstrating that Actions-native agents can have strong guardrails without external infrastructure. The trade-off: tightly coupled to GitHub's event model, limited to Actions runner capabilities and timeouts.
 
 These are complementary, not competing. A system could use stacked PRs (Graphite's insight) reviewed by specialized sub-agents (CodeRabbit's insight) with deep codebase context where needed (Greptile's insight), all orchestrated through a deterministic pipeline with agentic steps (Stripe's insight), running on GitHub Actions (Collo.dev's insight for teams that want zero infrastructure overhead).
 

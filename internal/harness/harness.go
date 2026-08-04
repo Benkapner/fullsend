@@ -204,10 +204,11 @@ type APIServer struct {
 
 // ValidationLoop configures a deterministic validation step after the agent exits.
 type ValidationLoop struct {
-	Script        string `yaml:"script"`
-	Schema        string `yaml:"schema,omitempty"`
-	MaxIterations int    `yaml:"max_iterations"`
-	FeedbackMode  string `yaml:"feedback_mode,omitempty"`
+	Script         string `yaml:"script"`
+	Schema         string `yaml:"schema,omitempty"`
+	MaxIterations  int    `yaml:"max_iterations"`
+	FeedbackMode   string `yaml:"feedback_mode,omitempty"`
+	PreflightCheck string `yaml:"preflight_check,omitempty"` // shell command to validate host deps before sandbox creation
 }
 
 // EnvConfig holds environment variable maps for runner and sandbox targets.
@@ -267,7 +268,7 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
 	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"` // source-repo-only; not resolved at runtime, used by lint-agent-docs
+	Doc                    string                  `yaml:"doc,omitempty"`
 	Description            string                  `yaml:"description,omitempty"`
 	Role                   string                  `yaml:"role,omitempty"`
 	Slug                   string                  `yaml:"slug,omitempty"`
@@ -608,6 +609,11 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
 		if err := checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
+			return err
+		}
+	}
+	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
+		if err := checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); err != nil {
 			return err
 		}
 	}

@@ -27,10 +27,12 @@ If a prior review exists (e.g., re-review after fixes), it is injected into the 
 |---------|-------|--------|
 | `/fs-review` | PR comment | Triggers a review on the PR (per-repo installs only; standalone issues are ignored) |
 
-Requires write-level repository permission (admin, maintain, or write).
+Requires triage-level repository permission or higher (triage, write,
+maintain, or admin). Mutation stages such as `/fs-fix` still require
+write or higher.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
-synchronized (new commits pushed), or moved out of draft by a user with write-level repository permission.
+synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
 
 ## Control labels
 
@@ -72,8 +74,8 @@ the upstream default -- no other configuration needed.
 > config-driven agent registration instead. Run `fullsend agent migrate-customizations`
 > to migrate existing overrides.
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 
@@ -81,9 +83,14 @@ See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
-Set this in the CI workflow `env:` block. The env file passes it to the
-sandbox automatically, and the post-script reads it from the runner
-environment directly — no separate configuration is needed.
+Set this in the harness's `env.sandbox` (the upstream default lives in
+`harness/review.yaml`). To override per repo or org, use `base:`
+composition ([ADR 0045](../ADRs/0045-forge-portable-harness-schema.md))
+rather than the CI workflow `env:` block — workflow `env:` is reserved
+for infrastructure plumbing per
+[ADR 0081](../ADRs/0081-reserve-workflow-env-for-infra-plumbing.md).
+The post-script reads the value from the runner environment directly —
+no separate configuration is needed.
 
 The review agent omits findings below the threshold from its output. The
 post-script also filters the structured `findings` array as
@@ -93,4 +100,4 @@ verdict to `comment` (applying the `requires-manual-review` label).
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/review.yaml`](../../internal/scaffold/fullsend-repo/harness/review.yaml)
+[`fullsend-ai/agents` — `harness/review.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/review.yaml)

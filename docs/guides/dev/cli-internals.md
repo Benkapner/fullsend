@@ -39,82 +39,58 @@ fullsend
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── repos                                    # Manage per-repo installations via manifest
-│   ├── init         <org|owner/repo>        # Generate repos.yaml from discovered installs
-│   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
-│   │   ├── --repos <list>                   #   Comma-separated repos to include
-│   │   ├── --all                            #   Include all eligible repos
-│   │   ├── --mint-project <id>              #   GCP project for the mint
-│   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
-│   │   ├── --inference-project <id>         #   Default GCP project for inference
-│   │   ├── --force                          #   Overwrite output file if it exists
-│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── install      [repos...]              # Install fullsend on uninstalled manifest repos
+│   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
+│   ├── migrate      <org>                   # Migrate org from per-org to per-repo install
+│   │   ├── --project <id>                   #   GCP project ID for inference (required)
+│   │   ├── --repo <name>                    #   Filter to specific repos (repeatable, supports globs)
+│   │   ├── --dry-run                        #   Preview only
+│   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
+│   │   ├── --concurrency <int>              #   Parallel limit (1-32, default: 4)
+│   │   └── -f, --manifest <path>            #   Output path for repos.yaml (default: repos.yaml)
+│   ├── install      [repos...]              # Converge repos to desired state (provision, sync, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --skip-mint-check                #   Skip org registration in mint
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
-│   │   └── --direct                         #   Push scaffold to default branch (skip PR)
-│   ├── add          <repos...>              # Add repo entries to manifest
-│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --install                        #   Also install fullsend on the added repos
-│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   └── --roles <list>                   #   Agent roles to install (used with --install)
-│   ├── remove       <repos...>              # Remove repo entries from manifest
+│   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
+│   │   ├── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
+│   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
+│   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
+│   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
+│   │   ├── --mint-url <url>                 #   Per-repo mint URL override
+│   │   └── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --uninstall                      #   Tear down fullsend before removing
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   ├── uninstall    <repos...>              # Tear down fullsend from repos
-│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --yes                            #   Skip confirmation for glob patterns
-│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --manifest-only                  #   Remove from manifest without tearing down
+│   │   └── --uninstall-only                 #   Tear down without removing from manifest
 │   ├── status                               # Compare manifest against actual repo state
-│   ├── diff                                 # Show configuration drift between manifest and actual state
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── sync                                 # Reconcile configuration drift for installed repos
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
-│   │   ├── --dry-run                        #   Preview changes without applying them
-│   │   ├── --json                           #   Emit JSON output instead of table
-│   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   ├── upgrade        [repos...]            # Upgrade scaffold shim ref across repos
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
-│   │   ├── --ref <version>                  #   Override manifest fullsend_ref for all repos
-│   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --force                          #   Upgrade even if current ref is newer
-│   │   ├── --direct                         #   Push directly to default branch (skip PR)
-│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   └── upgrade-mint                         # Verify token mint deployment matches manifest
-│       └── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
 │   ├── remove       <name>                   # Unregister agent from config
 │   └── migrate-customizations               # Migrate customized/ → config agents
-│       ├── --fullsend-dir <dir>             #   Base directory with .fullsend layout
+│       ├── --fullsend-dir <dir>             #   .fullsend configuration directory
 │       ├── --repo <owner/repo>              #   Target repo for migration PR
 │       └── --dry-run                        #   Preview changes without PR
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
 │   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
@@ -164,10 +140,7 @@ Migration actions per agent:
 | Override type | Detection | Action |
 |---------------|-----------|--------|
 | Dead | Agent already registered in config | Delete customized files |
-| Custom | Not in upstream scaffold | Move files, register local path in config |
-| Modified | Standard scaffold agent, not in config | Compute `base:` composition harness via `DiffHarness`, register in config |
-
-The diff engine (`internal/harness/diff.go`) computes the minimal child harness that reproduces the customized version when composed with the upstream base. It mirrors `mergeBaseIntoChild` semantics: scalar overrides, slice concatenation extras, map merge deltas, and security fields always included.
+| Custom | Not in config | Move files, register local path in config |
 
 ### Command Decomposition
 
@@ -182,7 +155,10 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
 
-> **Note:** The legacy `admin install` command wraps all phases into a single invocation but is deprecated. The standalone commands above are the recommended path. See the [Unified Installation Flow](#unified-installation-flow) section below for how the phases are structured internally.
+> **Deprecated:** The `admin install` command is deprecated. Use the
+> standalone commands above instead. See the
+> [Unified Installation Flow](#unified-installation-flow) section below for
+> how the phases are structured internally.
 
 ### Token Resolution Chain
 
@@ -211,21 +187,21 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│              Unified Install Pipeline (both modes)               │
+│              Unified Install Pipeline (both modes)              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  fullsend admin install <target>                                │
 │  ┌──────────────────────┐                                       │
 │  │ Parse target          │                                      │
-│  │  "acme"      → org   │                                      │
-│  │  "acme/repo" → repo  │                                      │
+│  │  "acme"      → org   │                                       │
+│  │  "acme/repo" → repo  │                                       │
 │  └──────────┬───────────┘                                       │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 1: Discover (read-only)                              │ │
 │  │                                                            │ │
 │  │  a. Discover mint   --mint-url / --mint-project / default  │ │
-│  │     └─ DiscoverMint() → check if GCF exists, get URL      │ │
+│  │     └─ DiscoverMint() → check if GCF exists, get URL       │ │
 │  │  b. Resolve existing app IDs from mint env vars            │ │
 │  │     └─ ROLE_APP_IDS (role → app ID, shared) → skip app     │ │
 │  │        creation when all roles are present                 │ │
@@ -235,7 +211,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 2: App setup (shared: runAppSetup)                   │ │
 │  │                                                            │ │
 │  │  For each role in --agents:                                │ │
-│  │    - Create/reuse GitHub App ({appSet}-{role} via --app-set)│ │
+│  │    - Create/reuse GitHub App ({appSet}-{role} --app-set)   │ │
 │  │    - Download PEM key from App creation flow               │ │
 │  │    - Store PEM in GCP Secret Manager                       │ │
 │  │    - Record App ID + Client ID                             │ │
@@ -262,8 +238,8 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │                                                            │ │
 │  │  Both modes: ProvisionWIF() → create pool, provider, IAM   │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  org-wide WIF provider           │              │ │
-│  │  │ Per-repo: repo-scoped (mintcore.BuildRepoProviderID)│     │ │
+│  │  │ Per-org:  org-wide WIF provider          │              │ │
+│  │  │ Per-repo: repo-scoped WIF provider       │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -271,19 +247,19 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
 │  │  Both modes: write workflow files (customized/ deprecated  │ │
-│  │  by ADR-0064; use migrate-customizations to convert)      │ │
-│  │  CommitScaffoldFiles() delivery modes:                      │ │
+│  │  by ADR-0064; use migrate-customizations to convert)       │ │
+│  │  CommitScaffoldFiles() delivery modes:                     │ │
 │  │    Default (PR):  create feature branch → commit → open PR │ │
 │  │    --direct:      try CommitFiles (default branch)         │ │
 │  │      if ErrBranchProtected → fall back to PR mode          │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  create .fullsend config repo    │              │ │
-│  │  │           push reusable workflows         │              │ │
-│  │  │           vendor fullsend binary (opt)    │              │ │
-│  │  │                                           │              │ │
-│  │  │ Per-repo: write .fullsend/ dir in repo    │              │ │
-│  │  │           push shim workflow template     │              │ │
-│  │  │           vendor fullsend binary (opt)    │              │ │
+│  │  │ Per-org:  create .fullsend config repo   │              │ │
+│  │  │           push reusable workflows        │              │ │
+│  │  │           vendor fullsend binary (opt)   │              │ │
+│  │  │                                          │              │ │
+│  │  │ Per-repo: write .fullsend/ dir in repo   │              │ │
+│  │  │           push shim workflow template    │              │ │
+│  │  │           vendor fullsend binary (opt)   │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -291,20 +267,22 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 6: Set secrets & variables                           │ │
 │  │                                                            │ │
 │  │  Both modes write the same credential set:                 │ │
-│  │    Secrets:   FULLSEND_GCP_PROJECT_ID                      │ │
+│  │    Secrets (install-time only, not managed by sync):       │ │
+│  │              FULLSEND_GCP_PROJECT_ID                       │ │
 │  │              FULLSEND_GCP_WIF_PROVIDER                     │ │
-│  │    Variables: FULLSEND_GCP_REGION                           │ │
-│  │              FULLSEND_MINT_URL                              │ │
+│  │    Variables (managed by sync):                            │ │
+│  │              FULLSEND_GCP_REGION                           │ │
+│  │              FULLSEND_MINT_URL                             │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  secrets → .fullsend config repo │              │ │
-│  │  │           MINT_URL → org variable         │              │ │
-│  │  │           + repo var (dot-prefix fix)      │              │ │
-│  │  │           + PEM keys as repo secrets       │              │ │
-│  │  │           + client IDs as repo variables   │              │ │
-│  │  │                                           │              │ │
-│  │  │ Per-repo: secrets → target repo            │              │ │
-│  │  │           + FULLSEND_PER_REPO_GUARD=true   │              │ │
+│  │  │ Per-org:  secrets → .fullsend config repo│              │ │
+│  │  │           MINT_URL → org variable        │              │ │
+│  │  │           + repo var (dot-prefix fix)    │              │ │
+│  │  │           + PEM keys as repo secrets     │              │ │
+│  │  │           + client IDs as repo variables │              │ │
+│  │  │                                          │              │ │
+│  │  │ Per-repo: secrets → target repo          │              │ │
+│  │  │           + FULLSEND_PER_REPO_GUARD=true │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -327,7 +305,7 @@ Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `Provis
 | **1. Discover** | `DiscoverMint()`, resolve app IDs | Discovers all org repos | Single repo validation |
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
 | **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | + `RegisterPerRepoWIF()` |
-| **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped) |
+| **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
 | **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
 | **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` |
 | **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
@@ -347,12 +325,12 @@ type Layer interface {
 ```
 
 ```
-Stack order:  ConfigRepo → Workflows → HarnessWrappers → VendorBinary → Secrets → Inference → Dispatch → Enrollment
-Install:      process 1→8 (forward)
-Uninstall:    process 8→1 (reverse)
+Stack order:  ConfigRepo → Workflows → VendorBinary → Secrets → Inference → Dispatch → Enrollment
+Install:      process 1→7 (forward)
+Uninstall:    process 7→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (guard check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -374,11 +352,11 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                   Sandbox Lifecycle (run.go)                     │
+│                   Sandbox Lifecycle (run.go)                    │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────────┐                                                │
-│  │ Load harness │ LoadWithBase: unmarshal → compose base →       │
+│  │ Load harness │ LoadWithBase: unmarshal → compose base →      │
 │  │              │ ResolveForge(--forge / env) → Validate        │
 │  └──────┬──────┘                                                │
 │         ▼                                                       │
@@ -401,13 +379,14 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
-│  │ Pre-script        │ Run harness.pre_script (host-side)       │
+│  │ Pre-script        │ Run harness.pre_script (host-side).      │
+│  │                   │ skipped=true exits 0 here (#4718)        │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
-│  │ Create()          │ openshell sandbox create                  │
-│  │                   │ --image {harness.image}                   │
-│  │                   │ Returns sandbox ID                        │
+│  │ Create()          │ openshell sandbox create                 │
+│  │                   │ --image {harness.image}                  │
+│  │                   │ Returns sandbox ID                       │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
@@ -427,7 +406,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
-│  │  ├── FULLSEND_FETCH_TOKEN=<per-run token> (if above)│       │
+│  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
 │  │  └── sources .env.d/*.env files          │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
@@ -458,26 +437,66 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Extract output    │ SafeDownload() with sanitization:        │
-│  │                   │ - Remove dangerous symlinks (sandbox escape) │
+│  │                   │ - Remove dangerous symlinks (escape)     │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
+│  │                   │                                          │
+│  │                   │ With validation_loop: SafeDownload       │
+│  │                   │ failure is non-fatal — clean up repo dir │
+│  │                   │ and continue to next iteration. Output   │
+│  │                   │ files (extracted separately) are kept.   │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
 │  │ Validation loop (if configured)          │                   │
 │  │                                          │                   │
-│  │ for i := 0; i < max_iterations; i++ {    │                   │
+│  │ Phase 1 — inline validation:             │                   │
+│  │ for i := 1; i <= max_iterations; i++ {   │                   │
+│  │   run agent → extract output             │                   │
+│  │   SafeDownload repo (non-fatal on fail)  │                   │
 │  │   run validation script                  │                   │
-│  │   if pass → break                        │                   │
-│  │   feed feedback → re-run agent           │                   │
+│  │   if pass → break (early exit)           │                   │
+│  │   feed feedback → next iteration         │                   │
 │  │ }                                        │                   │
+│  │                                          │                   │
+│  │ Phase 2 — post-loop sweep (#5393):       │                   │
+│  │ if no inline pass:                       │                   │
+│  │   for i := latest..1 {                   │                   │
+│  │     run validation on iteration-i dir    │                   │
+│  │     TARGET_REPO_DIR="" (repo dir is      │                   │
+│  │       unreliable across iterations)      │                   │
+│  │     if pass → use this iteration; break  │                   │
+│  │   }                                      │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Post-script       │ Run harness.post_script (host-side)      │
+│  │                   │ REPO_DIR set only when last SafeDownload │
+│  │                   │ succeeded and validated iteration is the │
+│  │                   │ latest; empty otherwise. post-fix.sh and │
+│  │                   │ post-code.sh both fail closed on empty   │
+│  │                   │ REPO_DIR in their own script logic; the  │
+│  │                   │ other validation_loop post-scripts don't │
+│  │                   │ reference REPO_DIR at all. code.yaml has │
+│  │                   │ no validation_loop, so post-code.sh      │
+│  │                   │ can't currently hit this path, but the   │
+│  │                   │ check is real, not dead code. There is   │
+│  │                   │ no per-iteration repo checkout, so post- │
+│  │                   │ fix.sh cannot recover a sweep-validated  │
+│  │                   │ non-final iteration; it fails closed     │
+│  │                   │ instead of pushing (known limitation,    │
+│  │                   │ see #5393).                              │
+│  │                   │                                          │
+│  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points  │
+│  │                   │ to the validated iteration's output dir, │
+│  │                   │ for forward compatibility. The scaffold- │
+│  │                   │ embedded post-scripts don't consume it   │
+│  │                   │ yet (tracked in fullsend-ai/agents#411)  │
+│  │                   │ — they still scan for the last iteration │
+│  │                   │ blindly.                                 │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
-│  │ Delete()          │ openshell sandbox delete                  │
+│  │ Delete()          │ openshell sandbox delete                 │
 │  │                   │ Cleanup sandbox resources                │
 │  └──────────────────┘                                           │
 │                                                                 │
@@ -567,10 +586,13 @@ Since `embed.FS` doesn't preserve Unix permissions, executable files are tracked
 
 ```go
 var executableFiles = map[string]struct{}{
-    "scripts/post-code.sh":       {},
-    "scripts/pre-triage.sh":      {},
-    "scripts/scan-secrets":       {},
-    // ... 20+ entries
+    "scripts/fullsend-check-output":          {},
+    "scripts/install-precommit-tools.sh":     {},
+    "scripts/prepare-sandbox-credentials.sh": {},
+    "scripts/reconcile-repos.sh":             {},
+    "scripts/resolve-precommit-tools.py":     {},
+    "scripts/setup-prioritize.sh":            {},
+    "scripts/validate-source-repo.sh":        {},
 }
 ```
 
@@ -582,7 +604,7 @@ var executableFiles = map[string]struct{}{
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│           End-to-End: Issue Triage → Code → Review               │
+│           End-to-End: Issue Triage → Code → Review              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  1. Issue created on target repo                                │
@@ -649,6 +671,7 @@ var executableFiles = map[string]struct{}{
 | `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |
 | `internal/mintcore/` | ~1425 | Shared mint library (handler, OIDC verifiers, GitHub API) |
 | `internal/dispatch/gcf/provisioner.go` | ~1959 | GCP infrastructure provisioner |
+| `internal/dispatch/cf/workersrc/` | ~800 | CF Worker adapter for mint (WASM bridge, I/O only) |
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
 | `internal/harness/harness.go` | ~486 | Harness YAML parsing |
 | `internal/layers/layers.go` | ~159 | Layer interface and stack |

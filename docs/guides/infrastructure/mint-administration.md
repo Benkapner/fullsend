@@ -1,10 +1,10 @@
 # Mint service administration
 
-This guide covers deploying and managing the fullsend token mint Cloud Function. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories.
+This guide covers deploying and managing the fullsend token mint. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker).
 
 | Command | Description |
 |---------|-------------|
-| `mint deploy` | Deploy or update the mint Cloud Function and GCP infrastructure |
+| `mint deploy` | Deploy or update the token mint (GCP Cloud Function or Cloudflare Worker) |
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
@@ -12,7 +12,7 @@ This guide covers deploying and managing the fullsend token mint Cloud Function.
 | `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
-> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
+> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
 
 ## Hosted mint
 
@@ -72,7 +72,7 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Per-repo behaviour tests need `halfsend-NN/test-repo` enrolled on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per pool org — not from CI. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by `RepoEnsurer` — see [behaviour-testing.md](../dev/behaviour-testing.md#lazy-createinstall-repoensurer)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; `RepoEnsurer` creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -109,7 +109,7 @@ The deploy command automatically detects when the deployed function is up-to-dat
 
 ### Public mint deployment
 
-Use `--public` to bootstrap a public mint ([ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)): `ALLOWED_ORGS=*` on the Cloud Function and a permissive WIF provider CEL for the STS authentication path. Orgs call the mint via upstream reusable workflows in `fullsend-ai/fullsend` after installing the shared public GitHub Apps — `mint enroll` is not required.
+Use `--public` to bootstrap a public mint: `ALLOWED_ORGS=*` on the Cloud Function and a permissive WIF provider CEL for the STS authentication path. Orgs call the mint via upstream reusable workflows in `fullsend-ai/fullsend` after installing the shared public GitHub Apps — `mint enroll` is not required.
 
 ```bash
 fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems --public
@@ -125,7 +125,7 @@ Redeploying or upgrading an existing mint must use the same mode: `--public` for
 | `--region` | `us-central1` | Cloud region for the mint function |
 | `--pem-dir` | | Path to directory containing `{role}.pem` files (first-time bootstrap only); uses the default app set (`fullsend-ai`) |
 | `--public` | `false` | Deploy public mint (`ALLOWED_ORGS=*`, permissive WIF); required to redeploy an existing public mint |
-| `--source-dir` | (embedded) | Path to local mint source directory (for development; default uses the embedded copy) |
+| `--source-dir` | | Path to local mint source directory (default: checkout path when present, embedded otherwise) |
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (only update WIF/config) |
 | `--dry-run` | `false` | Preview changes without making them |
 
@@ -277,7 +277,7 @@ Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created duri
 
 ### Public mint mode
 
-When the mint is configured with `ALLOWED_ORGS=*` ([ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `ALLOWED_ORGS` and WIF. In public mode, org registration is unnecessary because all orgs are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching. `mint enroll owner/repo` also succeeds without per-repo WIF changes; per-repo installs use the default WIF provider and upstream reusable workflows.
+When the mint is configured with `ALLOWED_ORGS=*` (public mode), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `ALLOWED_ORGS` and WIF. In public mode, org registration is unnecessary because all orgs are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching. `mint enroll owner/repo` also succeeds without per-repo WIF changes; per-repo installs use the default WIF provider and upstream reusable workflows.
 
 `mint unenroll` cannot remove individual orgs from a public mint. To restrict access, replace `ALLOWED_ORGS=*` with an explicit org list (config-only rollback; no PEM rotation required).
 

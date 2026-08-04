@@ -45,11 +45,11 @@ PRs 1, 2, 7 can start in parallel. PR 4 depends on PRs 1, 2, and 3 (`loadRaw` fo
 **Scope:** New struct, merge function, validation. No callers in the load pipeline — pure library code.
 
 **Create `internal/harness/forge.go`:**
-- `ForgeConfig` struct with `PreScript`, `PostScript`, `Skills`, `ValidationLoop`, `RunnerEnv`
+- `ForgeConfig` struct with `PreScript`, `PostScript`, `Policy`, `Skills`, `ValidationLoop`, `RunnerEnv`
 - `validForgeKeys = map[string]bool{"github": true, "gitlab": true}`
 - `(h *Harness) ResolveForge(platform string) error` — merges forge overrides into harness in place per ADR rules:
   - Scalars: forge overrides if non-empty
-  - Skills: top-level + forge (concatenated)
+  - Skills: merged with deduplication by basename (forge overrides top-level)
   - RunnerEnv: top-level + forge map, forge wins on key conflict
   - ValidationLoop: forge replaces entirely if non-nil
   - Sets `h.Forge = nil` after merge (consumed)
@@ -149,7 +149,8 @@ For **lock file integration**, `base` URLs are recorded as `DependencyEntry` ent
   - After the full base chain is merged, calls `ResolveForge(opts.ForgePlatform)` once on the final merged result, then calls `Validate()`. This matches the ADR's resolution order: `base harness (recursive) → child overrides → ResolveForge(platform)`.
   - `mergeHarness(base, child *Harness)` — same inheritance rules as forge merge:
     - Scalars: child overrides base if non-zero
-    - Skills, Plugins, Providers, APIServers: concatenated (base + child)
+    - Skills: merged with deduplication by basename (child overrides base)
+    - Plugins, Providers, APIServers: concatenated (base + child)
     - RunnerEnv: base map merged with child map, child keys win
     - ValidationLoop, Security: child replaces if non-nil
     - HostFiles: concatenated (base + child order), last-writer-wins dedup by `Dest` (exact string comparison, no path canonicalization) — child entries override base entries with the same `Dest`

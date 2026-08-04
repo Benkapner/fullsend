@@ -747,6 +747,57 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 	assert.True(t, strings.HasSuffix(h.Skills[0], "/tree"))
 }
 
+func TestResolveFromLock_DirectoryTypeScript(t *testing.T) {
+	scriptContent := []byte("#!/bin/bash\necho running")
+	helperContent := []byte("#!/bin/bash\necho helper")
+	files := map[string][]byte{
+		"pre-code.sh": scriptContent,
+		"helper.sh":   helperContent,
+	}
+	treeHash := fetch.ComputeTreeHash(files)
+
+	root := t.TempDir()
+	_, err := fetch.CachePutDir(root, "https://raw.githubusercontent.com/org/repo/main/scripts", files)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "pre_script",
+				URL:    "https://raw.githubusercontent.com/org/repo/main/scripts/pre-code.sh",
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "pre-code.sh", SHA256: fetch.ComputeSHA256(scriptContent)},
+					{Path: "helper.sh", SHA256: fetch.ComputeSHA256(helperContent)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Equal(t, "directory", lockResult.Deps[0].Type)
+	assert.Equal(t, treeHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
+
+	// The harness field must point to the specific script file, not the tree root.
+	assert.True(t, strings.HasSuffix(h.PreScript, "/pre-code.sh"),
+		"expected PreScript to end with /pre-code.sh, got %s", h.PreScript)
+
+	// The script file must be executable.
+	info, err := os.Stat(h.PreScript)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o111 != 0, "script should be executable")
+}
+
 func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 	content := []byte("skill content")
 	hash := fetch.ComputeSHA256(content)
@@ -930,6 +981,55 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	require.NotNil(t, baseDep, "should have a base dependency in returned deps")
 	assert.Equal(t, "https://example.com/base.yaml", baseDep.URL)
 	assert.True(t, baseDep.CacheHit)
+}
+
+func TestResolveFromLock_AgentSourceNoOp(t *testing.T) {
+	// A lock entry with an "agent_source" field dependency should not corrupt
+	// skills or other harness fields. The agent_source dep is informational —
+	// the harness is already loaded from the resolved path.
+	//
+	// The agent_source URL deliberately uses a different domain
+	// (org-registry.example.com) that is NOT in the harness's own
+	// AllowedRemoteResources. Agent source URLs are validated against the
+	// org-level allowlist during lock creation, so resolveFromLock must
+	// skip the harness-level allowlist check for agent_source entries.
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	harnessSource := []byte("agent: agents/code.md\nrole: test\n")
+	harnessSourceHash := fetch.ComputeSHA256(harnessSource)
+	skillContent := []byte("# Skill A")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(root, "https://org-registry.example.com/harness/code.yaml", harnessSource))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/a", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "agent_source", URL: "https://org-registry.example.com/harness/code.yaml", SHA256: harnessSourceHash},
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+			{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: skillHash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + skillHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+
+	// All three deps should be returned.
+	require.Len(t, lockResult.Deps, 3)
+
+	// Skills should have exactly one entry — the agent_source dep must NOT
+	// be appended to skills.
+	require.Len(t, h.Skills, 1, "agent_source dep must not be appended to skills")
+	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"), "skill should be resolved to cache path")
 }
 
 func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
@@ -1147,7 +1247,7 @@ func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "badcfg", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRunLock_NoOrgConfigNoURLRefs(t *testing.T) {
@@ -1213,7 +1313,7 @@ func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "urlrefs", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
@@ -1309,6 +1409,64 @@ func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
 	require.Len(t, lockResult.Profiles, 1)
 	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)
 	assert.True(t, lockResult.Deps[0].CacheHit)
+	assert.True(t, strings.HasSuffix(lockResult.Profiles[0].LocalPath, ".yaml"),
+		"profile LocalPath should end with .yaml for openshell compatibility, got %s",
+		lockResult.Profiles[0].LocalPath)
+	assert.Equal(t, "anthropic.yaml", filepath.Base(lockResult.Profiles[0].LocalPath),
+		"profile LocalPath basename should be <id>.yaml")
+	assert.Equal(t, lockResult.Profiles[0].LocalPath, lockResult.Deps[0].LocalPath,
+		"Dependency.LocalPath should match the renamed profile path, not the pre-rename cache path")
+
+	// The named path must be a symlink (not a copy) so its relative "content"
+	// target keeps resolving after the cache dir is bind-mounted into the sandbox.
+	info, err := os.Lstat(lockResult.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&os.ModeSymlink != 0,
+		"profile LocalPath should be a symlink, got mode %s", info.Mode())
+
+	// Verify the symlink target is readable and contains the profile content.
+	got, err := os.ReadFile(lockResult.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, got)
+}
+
+// TestResolveFromLock_ProfileSymlinkError covers the error branch in
+// resolveFromLock when CacheNamedSymlink fails: the cache is populated but its
+// directory is made unwritable, so naming the cached profile returns a wrapped
+// error rather than a bare path.
+func TestResolveFromLock_ProfileSymlinkError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permission checks")
+	}
+	profileContent := []byte("id: anthropic\nname: Anthropic\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	root := t.TempDir()
+	url := "https://example.com/profiles/anthropic.yaml"
+	require.NoError(t, fetch.CachePut(root, url, profileContent))
+
+	cacheDir, err := fetch.CachePath(root, profileHash)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(cacheDir, 0o500)) // read+execute, no write
+	t.Cleanup(func() { _ = os.Chmod(cacheDir, 0o700) })
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "openshell.profiles[0]", URL: url, SHA256: profileHash},
+		},
+	}
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{url + "#sha256=" + profileHash},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err = resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "naming cached profile")
 }
 
 func TestResolveFromLock_ProfileEmptyID(t *testing.T) {

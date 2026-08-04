@@ -452,7 +452,6 @@ func TestWorkflowsLayer_Install_ExecutableModes(t *testing.T) {
 	}
 
 	assert.Equal(t, "100644", modes[".github/workflows/triage.yml"])
-	assert.Equal(t, "100644", modes["customized/agents/.gitkeep"])
 	assert.Equal(t, "100644", modes["AGENTS.md"])
 }
 
@@ -621,6 +620,6 @@ func TestManagedVendoredContentPathsFromEmbed(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, paths, ".github/workflows/reusable-triage.yml")
-	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/agents/triage.md")
+	assert.Contains(t, paths, ".defaults/internal/scaffold/fullsend-repo/scripts/fullsend-check-output")
 	assert.Contains(t, paths, scaffold.VendoredMarkerPath())
 }

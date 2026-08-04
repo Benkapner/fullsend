@@ -1,7 +1,7 @@
 // Package poll implements the GitLab cron-polling event dispatch loop.
 // It discovers events from the GitLab API, converts them to
 // NormalizedEvents, routes them through the dispatch core, and
-// triggers child pipelines for matched stages.
+// dispatches agent stages via API-triggered pipelines.
 package poll
 
 import (
@@ -34,20 +34,26 @@ type GitLabClient interface {
 	// (the poller iterates in reverse to find the most recent "add").
 	ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]ResourceLabelEvent, error)
 	GetCIVariable(ctx context.Context, owner, repo, name string) (string, error)
-	// UpdateCIVariable creates or updates a CI variable. GitLab CI/CD
-	// variable values are capped at 10,000 characters.
+	// UpdateCIVariable upserts a CI variable: update if it exists,
+	// create if it does not. GitLab CI/CD variable values are capped
+	// at 10,000 characters.
 	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
+	GetAuthenticatedUserID(ctx context.Context) (int, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be
 	// "Issue" or "MergeRequest" to select the correct API endpoint.
 	CreateNoteAwardEmoji(ctx context.Context, owner, repo string, noteableType string, noteableIID, noteID int, emoji string) error
 	GetIssue(ctx context.Context, owner, repo string, issueIID int) (*Issue, error)
+	GetMergeRequest(ctx context.Context, owner, repo string, mrIID int) (*MergeRequest, error)
 	// GetMemberAccessLevel returns the access level for a project member.
 	// Implementations MUST use the /members/all/:user_id endpoint to
 	// include inherited (group-level) membership, not /members/:user_id
 	// which only returns direct members.
 	GetMemberAccessLevel(ctx context.Context, owner, repo string, userID int) (int, error)
 	GetProjectPath(ctx context.Context, projectID int) (string, error)
+	// CreatePipeline creates a new pipeline on the given ref with the
+	// given variables. Returns the pipeline ID and web URL.
+	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error)
 }
 
 // Issue represents a GitLab issue as returned by the API.

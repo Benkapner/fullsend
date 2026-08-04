@@ -6,21 +6,88 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func CleanupScenario(w *world.World) {
 	ctx := context.Background()
+
+	// --- Issue / PR cleanup ---
 	if w.IssueNumber > 0 {
 		if err := w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, w.IssueNumber); err != nil {
 			worldLogf(w, "behaviour cleanup: close issue #%d: %v", w.IssueNumber, err)
 		}
 	}
+	if w.ForkPRNumber > 0 {
+		// Fork PRs are opened against the base repo, so close on base repo.
+		if err := w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, w.ForkPRNumber); err != nil {
+			worldLogf(w, "behaviour cleanup: close fork PR #%d: %v", w.ForkPRNumber, err)
+		}
+	}
+
+	// --- Fork repo cleanup ---
+	// Fork repos are ephemeral: created per-scenario and deleted here.
+	// Branch and PR cleanup above already ran against the base repo;
+	// deleting the fork repo removes the branch implicitly, but we
+	// still attempt branch deletion first so partial failures leave
+	// less debris.
+	if w.ForkPRBranch != "" && w.ForkOwner != "" && w.ForkRepo != "" {
+		if err := w.SCM.DeleteBranch(ctx, w.ForkOwner, w.ForkRepo, w.ForkPRBranch); err != nil {
+			if !forge.IsNotFound(err) {
+				worldLogf(w, "behaviour cleanup: delete fork branch %s: %v", w.ForkPRBranch, err)
+			}
+		}
+	}
+	if w.ForkOwner != "" && w.ForkRepo != "" && w.ForkRepo != w.RepoName {
+		if err := w.SCM.DeleteRepo(ctx, w.ForkOwner, w.ForkRepo); err != nil {
+			if !forge.IsNotFound(err) {
+				worldLogf(w, "behaviour cleanup: delete fork repo %s/%s: %v", w.ForkOwner, w.ForkRepo, err)
+			}
+		}
+	}
+
+	// --- URL harness hosting repo cleanup ---
+	// Hosting repos are ephemeral: created per-scenario and deleted here
+	// (same lifecycle as fork repos). Guard against deleting the enrolled
+	// test repo itself.
+	if w.URLHarnessRepoOwner != "" && w.URLHarnessRepoName != "" && w.URLHarnessRepoName != w.RepoName {
+		if err := w.SCM.DeleteRepo(ctx, w.URLHarnessRepoOwner, w.URLHarnessRepoName); err != nil {
+			if !forge.IsNotFound(err) {
+				worldLogf(w, "behaviour cleanup: delete harness-hosting repo %s/%s: %v", w.URLHarnessRepoOwner, w.URLHarnessRepoName, err)
+			}
+		}
+	}
+
+	// --- Jira mock cleanup ---
+	if w.JiraMockServer != nil {
+		w.JiraMockServer.Close()
+	}
+	if w.JiraConfigDir != "" {
+		if err := os.RemoveAll(w.JiraConfigDir); err != nil {
+			worldLogf(w, "behaviour cleanup: remove jira config dir: %v", err)
+		}
+	}
+
+	// --- Artifact cleanup ---
 	if w.ArtifactDir != "" && shouldRemoveArtifactDir(w.ArtifactDir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
 		if err := os.RemoveAll(w.ArtifactDir); err != nil {
 			worldLogf(w, "behaviour cleanup: remove artifact dir: %v", err)
 		}
 	}
+
+	// --- Kill switch cleanup ---
+	// Deactivate the kill switch so the next scenario on this slot is
+	// not blocked by sticky state. Runs before dummy-script cleanup
+	// because the kill switch is a repo-level config that affects all
+	// harnesses.
+	if w.KillSwitchActivated {
+		if err := DeactivateKillSwitch(w); err != nil {
+			worldLogf(w, "behaviour cleanup: deactivate kill switch: %v", err)
+		}
+	}
+
+	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		empty := []byte("ops: []\n")
 		if err := w.SCM.CommitFile(ctx, w.Install.ConfigOwner(), w.Install.ConfigRepo(), w.BehaviourScriptPath(), "behaviour: clear dummy agent script", empty); err != nil {

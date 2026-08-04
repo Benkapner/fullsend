@@ -216,7 +216,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 
 	perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
 	if cfg.runtime != "" {
-		perRepoCfg.Runtime = cfg.runtime
+		perRepoCfg.SetRuntime(cfg.runtime)
 	}
 	if err := perRepoCfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
@@ -359,7 +359,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		}
 	}
 
-	allRepos, err := client.ListOrgRepos(ctx, org)
+	allRepos, err := client.ListOrgRepos(ctx, org, false)
 	if err != nil {
 		return fmt.Errorf("listing org repos: %w", err)
 	}
@@ -441,7 +441,11 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	}
 
 	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-	orgCfg.Dispatch.Mode = "oidc-mint"
+	{
+		d := orgCfg.DispatchSettings()
+		d.Mode = "oidc-mint"
+		orgCfg.SetDispatch(d)
+	}
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
@@ -457,7 +461,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		vendorFn, vendorCollect = vendorStackArgs(true, cfg.fullsendBinary, cfg.fullsendSource)
 	}
 
-	stack := buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
+	stack := buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, cfg.direct)
 
 	if cfg.dryRun {
 		printer.Header("Dry run — analyzing what setup would do")
@@ -487,9 +491,13 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		// Rebuild with real credentials.
 		agentCreds = creds
 		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-		orgCfg.Dispatch.Mode = "oidc-mint"
+		{
+			d := orgCfg.DispatchSettings()
+			d.Mode = "oidc-mint"
+			orgCfg.SetDispatch(d)
+		}
 
-		stack = buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
+		stack = buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, cfg.direct)
 	}
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {

@@ -184,6 +184,11 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
@@ -209,6 +214,11 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yml\n"),
+		0o644,
+	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
@@ -228,7 +238,7 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found: tried nonexistent.yaml and nonexistent.yml")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
@@ -251,7 +261,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
-		[]byte("allowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		[]byte("agents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
 		0o644,
 	))
 
@@ -264,6 +274,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 }
 
 func TestRunAgent_PerRepoConfig(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -280,7 +291,7 @@ func TestRunAgent_PerRepoConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
-		[]byte("version: \"1\"\nroles:\n  - triage\n  - coder\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		[]byte("version: \"1\"\nroles:\n  - triage\n  - coder\nagents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
 		0o644,
 	))
 
@@ -307,10 +318,14 @@ func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}
-	assert.Equal(t, expected, cfg.AllowedRemoteResources)
-	require.Len(t, cfg.Agents, 1)
-	assert.Equal(t, "lint", cfg.Agents[0].Name)
-	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+	assert.Equal(t, expected, cfg.AllowedResources())
+	require.Len(t, cfg.AgentEntries(), 1)
+	assert.Equal(t, "lint", cfg.AgentEntries()[0].Name)
+	if prc, ok := cfg.(config.PerRepoConfigReader); ok {
+		assert.Equal(t, []string{"triage"}, prc.ConfigRoles())
+	} else {
+		assert.Equal(t, []string{"triage"}, cfg.(config.OrgConfigReader).OrgRepoDefaults().Roles)
+	}
 }
 
 func TestTryLoadFullsendConfig_MissingFile(t *testing.T) {
@@ -372,7 +387,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	assert.Nil(t, cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
@@ -391,8 +406,12 @@ func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}
-	assert.Equal(t, expected, cfg.AllowedRemoteResources)
-	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+	assert.Equal(t, expected, cfg.AllowedResources())
+	if prc, ok := cfg.(config.PerRepoConfigReader); ok {
+		assert.Equal(t, []string{"triage"}, prc.ConfigRoles())
+	} else {
+		assert.Equal(t, []string{"triage"}, cfg.(config.OrgConfigReader).OrgRepoDefaults().Roles)
+	}
 }
 
 func TestIsPerRepoYAML(t *testing.T) {
@@ -438,13 +457,13 @@ func TestTryLoadFullsendConfig_OrgConfig(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Equal(t, "github", cfg.Dispatch.Platform)
+	assert.Equal(t, "github", cfg.(config.OrgConfigReader).DispatchSettings().Platform)
 	expected := []string{
 		"https://example.com/",
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}
-	assert.Equal(t, expected, cfg.AllowedRemoteResources)
+	assert.Equal(t, expected, cfg.AllowedResources())
 }
 
 func TestTryLoadFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
@@ -457,7 +476,7 @@ func TestTryLoadFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+	assert.Empty(t, cfg.AllowedResources(), "explicit empty [] must preserve deny-all")
 }
 
 func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
@@ -470,7 +489,7 @@ func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources,
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedResources(),
 		"omitted field must get defaults")
 }
 
@@ -485,7 +504,7 @@ func TestRequireFullsendConfig_OrgGetsDefaultAllowlist(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedResources())
 }
 
 func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
@@ -499,7 +518,7 @@ func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+	assert.Empty(t, cfg.AllowedResources(), "explicit empty [] must preserve deny-all")
 }
 
 func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
@@ -515,8 +534,8 @@ func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
 }
 
 func TestRunAgent_MalformedOrgConfig(t *testing.T) {
-	// A malformed config.yaml should produce a warning but not prevent
-	// local-only harnesses from proceeding through the pipeline.
+	// A malformed config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails.
 	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -543,13 +562,13 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	useFakeOpenshell(t)
-	// A malformed config.yaml with URL-referenced resources should fail
-	// with a parse error on the re-attempt inside HasURLReferences.
+	// A malformed config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails before URL refs are checked.
 	agentHash := fetch.ComputeSHA256([]byte("agent content"))
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -570,13 +589,13 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	useFakeOpenshell(t)
-	// Harness with URL agent but no config.yaml → exercises the
-	// orgCfg == nil path inside HasURLReferences.
+	// No config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails before URL refs are checked.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -592,7 +611,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_WithURLBase(t *testing.T) {
@@ -622,7 +641,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
-		[]byte(fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)),
+		[]byte(fmt.Sprintf("agents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"%s/\"\n", srv.URL)),
 		0o644,
 	))
 
@@ -700,10 +719,10 @@ openshell:
 	assert.NotContains(t, err.Error(), "creating sandbox")
 }
 
-func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
+func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
 	useFakeOpenshell(t)
-	// Harness with a URL base but no config.yaml — exercises the
-	// pre-check that loads config strictly when a URL base is detected.
+	// Harness with a URL base but config.yaml has no allowed_remote_resources
+	// — exercises the pre-check that loads config strictly when a URL base is detected.
 	baseContent := []byte("agent: agents/shared.md\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
@@ -715,21 +734,24 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 		[]byte(fmt.Sprintf("base: \"https://example.com/base.yaml#sha256=%s\"\n", baseHash)),
 		0o644,
 	))
-
-	// No config.yaml.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
 }
 
 func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	useFakeOpenshell(t)
-	// Harness with a URL base and malformed config.yaml — exercises the
-	// pre-check parse error path.
+	// Malformed config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails before URL base is checked.
 	baseContent := []byte("agent: agents/shared.md\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
@@ -752,7 +774,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
@@ -937,25 +959,14 @@ func TestRunAgent_ConfigAgentOverridesScaffold(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
-func TestRunAgent_ScaffoldFallback(t *testing.T) {
+func TestRunAgent_AgentNotInConfig(t *testing.T) {
 	useFakeOpenshell(t)
-	// When config has agents but the requested agent is not in config,
-	// fall back to disk-based resolution.
+	// When config has agents but the requested agent is not among them
+	// and agents-repo fallback is unavailable, resolution fails.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
 
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "agents", "code.md"),
-		[]byte("You are a coding agent."),
-		0o644,
-	))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: test\n"),
-		0o644,
-	))
-	// Config has agents but "code" is not among them — should fall back to disk.
+	// Config has agents but "code" is not among them.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
 		[]byte("agents:\n  - harness/other.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
@@ -967,7 +978,7 @@ func TestRunAgent_ScaffoldFallback(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
+	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_UnknownAgentName(t *testing.T) {
@@ -975,7 +986,7 @@ func TestRunAgent_UnknownAgentName(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	// Config has agents but "nonexistent" is not among them, and no file on disk.
+	// Config has agents but "nonexistent" is not among them.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
 		[]byte("agents:\n  - harness/other.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
@@ -987,23 +998,16 @@ func TestRunAgent_UnknownAgentName(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
+	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
 
 func TestResolveAgentSource_NoConfig(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: test\n"),
-		0o644,
-	))
 
 	printer := ui.New(io.Discard)
-	path, deps, err := resolveAgentSource(context.Background(), dir, "code", nil, nil, harness.ComposeOpts{}, printer)
-	require.NoError(t, err)
-	assert.Contains(t, path, "code.yaml")
-	assert.Empty(t, deps)
+	_, _, err := resolveAgentSource(context.Background(), dir, "code", nil, nil, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 // canonTempDir returns t.TempDir() with symlinks resolved, so equality
@@ -1026,12 +1030,11 @@ func TestResolveAgentSource_ConfigLocalPath(t *testing.T) {
 		0o644,
 	))
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/custom.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/custom.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	path, deps, err := resolveAgentSource(context.Background(), dir, "custom", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1044,28 +1047,26 @@ func TestResolveAgentSource_ConfigLocalPathNotFound(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/missing.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/missing.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "missing", nil, orgCfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "config agent missing")
+	assert.Contains(t, err.Error(), `config agent "missing"`)
 }
 
 func TestResolveAgentSource_ConfigLocalPathAbsoluteRejected(t *testing.T) {
 	dir := t.TempDir()
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "/etc/evil.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "/etc/evil.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "evil", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1076,12 +1077,11 @@ func TestResolveAgentSource_ConfigLocalPathAbsoluteRejected(t *testing.T) {
 func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/../../etc/passwd"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/../../etc/passwd"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "passwd", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1091,18 +1091,16 @@ func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
 
 func TestResolveAgentSource_AgentsRepoFallback_UnknownAgent(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "nonexistent", fakeClient, nil, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestResolveAgentSource_AgentsRepoFallback_Offline(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
@@ -1111,33 +1109,104 @@ func TestResolveAgentSource_AgentsRepoFallback_Offline(t *testing.T) {
 	}
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, nil, opts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestResolveAgentSource_AgentsRepoFallback_NoClient(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
-func TestResolveAgentSource_AgentsRepoFallback_DiskFallback(t *testing.T) {
+func TestResolveAgentSource_DisabledAgentBlocksFallback(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	// Place a triage harness on disk to prove fallback is NOT used.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "triage.yaml"),
 		[]byte("agent: agents/triage.md\nrole: test\n"),
 		0o644,
 	))
 
+	f := false
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "triage", Enabled: &f},
+	})
+
 	printer := ui.New(io.Discard)
-	path, deps, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicitly disabled")
+}
+
+func TestResolveAgentSource_DisabledFirstPartyAgentBlocksFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	// Place a retro harness on disk so it would resolve if fallback were allowed.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "retro.yaml"),
+		[]byte("agent: agents/retro.md\nrole: test\n"),
+		0o644,
+	))
+
+	f := false
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "retro", Enabled: &f},
+	})
+
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "retro", fakeClient, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicitly disabled")
+}
+
+func TestResolveAgentSource_SuppressionOnlyEntryBlocksFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "retro.yaml"),
+		[]byte("agent: agents/retro.md\nrole: test\n"),
+		0o644,
+	))
+
+	// Suppression-only entry: enabled=false, no source.
+	f := false
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "retro", Enabled: &f},
+	})
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "retro", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicitly disabled")
+}
+
+func TestResolveAgentSource_EnabledAgentStillResolves(t *testing.T) {
+	dir := canonTempDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "custom.yaml"),
+		[]byte("agent: agents/custom.md\nrole: test\n"),
+		0o644,
+	))
+
+	tr := true
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "custom", Source: "harness/custom.yaml", Enabled: &tr},
+	})
+
+	printer := ui.New(io.Discard)
+	path, _, err := resolveAgentSource(context.Background(), dir, "custom", nil, orgCfg, harness.ComposeOpts{}, printer)
 	require.NoError(t, err)
-	assert.Contains(t, path, "triage.yaml")
-	assert.Empty(t, deps)
+	assert.Contains(t, path, "custom.yaml")
 }
 
 func TestTryAgentsRepoFallback_UnknownAgent(t *testing.T) {
@@ -1769,6 +1838,125 @@ func TestShellSafeExpandEnv_ShellRoundtrip(t *testing.T) {
 	}
 }
 
+// TestShellSafeExpandEnv_RefusesOIDCVars verifies that OIDC credential vars
+// expand to empty in host_files templates so they cannot leak into sandbox-bound
+// files (#5832).
+func TestShellSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "allowed-value")
+
+	template := `export A="${ACTIONS_ID_TOKEN_REQUEST_URL}"
+export B="${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
+export C="${FULLSEND_GCP_OIDC_URL}"
+export D="${FULLSEND_GCP_OIDC_AUTH_FILE}"
+export E="${SAFE_VAR}"`
+
+	got := shellSafeExpandEnv(template)
+
+	assert.Contains(t, got, `export A=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export B=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export C=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export D=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export E="allowed-value"`, "non-OIDC var must expand normally")
+}
+
+// TestSafeExpandEnv_RefusesOIDCVars verifies that safeExpandEnv refuses OIDC
+// credential vars (expanding them to empty) while passing other vars through
+// unchanged. This covers the host_files src path expansion site (#5832).
+func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "allowed-value")
+
+	// OIDC vars must expand to empty.
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_AUTH_FILE}"))
+
+	// Non-OIDC vars must expand normally.
+	assert.Equal(t, "allowed-value", safeExpandEnv("${SAFE_VAR}"))
+
+	// Mixed usage: OIDC part disappears, safe part remains.
+	assert.Equal(t, "/prefix//suffix", safeExpandEnv("/prefix/${FULLSEND_GCP_OIDC_AUTH_FILE}/suffix"))
+}
+
+// TestReservedSandboxKeys_IncludesOIDCVars verifies that OIDC credential vars
+// are in reservedSandboxKeys so env.sandbox cannot inject them (#5832).
+func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
+	for _, key := range []string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"FULLSEND_GCP_OIDC_URL",
+		"FULLSEND_GCP_OIDC_AUTH_FILE",
+	} {
+		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
+	}
+}
+
+// TestBuildSandboxEnvLines_SkipsOIDCVars verifies that OIDC credential vars
+// in env.sandbox are rejected by buildSandboxEnvLines (#5832).
+func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":                     "allowed",
+				"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://stolen.example.com",
+				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "stolen-token",
+				"FULLSEND_GCP_OIDC_URL":          "https://stolen-gcp.example.com",
+				"FULLSEND_GCP_OIDC_AUTH_FILE":    "/tmp/stolen-auth.json",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+// TestStripOIDCEnv verifies that stripOIDCEnv removes OIDC credential entries
+// from an env slice while preserving all other entries (#5832).
+func TestStripOIDCEnv(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"ACTIONS_ID_TOKEN_REQUEST_URL=https://oidc.example.com",
+		"HOME=/home/user",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN=secret",
+		"FULLSEND_GCP_OIDC_URL=https://gcp.example.com",
+		"FULLSEND_GCP_OIDC_AUTH_FILE=/tmp/auth.json",
+		"SAFE_VAR=value",
+	}
+
+	result := stripOIDCEnv(env)
+
+	assert.Equal(t, []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"SAFE_VAR=value",
+	}, result)
+}
+
+// TestOIDCDenyKeys_Completeness verifies that all four OIDC credential vars
+// are present in oidcDenyKeys (#5832).
+func TestOIDCDenyKeys_Completeness(t *testing.T) {
+	expected := []string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"FULLSEND_GCP_OIDC_URL",
+		"FULLSEND_GCP_OIDC_AUTH_FILE",
+	}
+	for _, key := range expected {
+		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
+	}
+	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
+}
+
 func TestNeedsCrossCompilation(t *testing.T) {
 	result := needsCrossCompilation()
 	if runtime.GOOS == "linux" {
@@ -2081,6 +2269,275 @@ func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
 	for _, e := range env {
 		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
 			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
+func TestPostScriptEnv_IncludesOutputSchema(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/path/to/schema.json",
+		},
+	}
+	env := postScriptEnv(h, "")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/path/to/schema.json")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := postScriptEnv(h, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := postScriptEnv(h, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
+// writeValScript creates a validation script at dir/name that exits 0 if a
+// marker file named "pass" exists in the script's working directory, and
+// exits 1 otherwise. Returns the absolute path to the script.
+func writeValScript(t *testing.T, dir, name string) string {
+	t.Helper()
+	script := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n[ -f pass ]\n"), 0o755))
+	return script
+}
+
+func TestPostLoopValidationSweep_LatestIterPasses(t *testing.T) {
+	runDir := t.TempDir()
+	scriptDir := t.TempDir()
+	script := writeValScript(t, scriptDir, "validate.sh")
+
+	// Create 3 iteration dirs; mark iteration-3 as passing.
+	for i := 1; i <= 3; i++ {
+		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+		require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	}
+	// Create "pass" marker in iteration-3 so the script exits 0.
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, "iteration-3", "pass"), nil, 0o644))
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	result := postLoopValidationSweep(h, runDir, 3, true, printer)
+	assert.True(t, result.passed, "sweep should pass when latest iteration passes")
+	assert.Equal(t, 3, result.validatedIter, "validated iteration should be runCount")
+	assert.True(t, result.repoExtractedOK, "repoExtractedOK should stay true when i == runCount")
+}
+
+func TestPostLoopValidationSweep_EarlierIterPasses(t *testing.T) {
+	runDir := t.TempDir()
+	scriptDir := t.TempDir()
+	script := writeValScript(t, scriptDir, "validate.sh")
+
+	// Create 3 iteration dirs; only iteration-1 passes.
+	for i := 1; i <= 3; i++ {
+		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+		require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, "iteration-1", "pass"), nil, 0o644))
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	result := postLoopValidationSweep(h, runDir, 3, true, printer)
+	assert.True(t, result.passed, "sweep should pass when earlier iteration passes")
+	assert.Equal(t, 1, result.validatedIter, "validated iteration should be 1")
+	assert.False(t, result.repoExtractedOK, "repoExtractedOK must be false when i != runCount")
+}
+
+func TestPostLoopValidationSweep_NonePass(t *testing.T) {
+	runDir := t.TempDir()
+	scriptDir := t.TempDir()
+	script := writeValScript(t, scriptDir, "validate.sh")
+
+	// Create 2 iteration dirs; none pass.
+	for i := 1; i <= 2; i++ {
+		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+		require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	}
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	result := postLoopValidationSweep(h, runDir, 2, false, printer)
+	assert.False(t, result.passed, "sweep should not pass when no iteration passes")
+	assert.Equal(t, 0, result.validatedIter, "validatedIter should be 0 when none pass")
+	assert.False(t, result.repoExtractedOK, "repoExtractedOK should propagate input value")
+}
+
+func TestPostLoopValidationSweep_EarlierIterClearsRepoOK(t *testing.T) {
+	// Verifies the key security invariant: when the sweep validates an
+	// earlier iteration (i != runCount), repoExtractedOK is cleared even
+	// if the caller passed true (meaning the last SafeDownload succeeded).
+	// This prevents the post-script from receiving REPO_DIR pointing to
+	// a different iteration's checkout than what was validated.
+	runDir := t.TempDir()
+	scriptDir := t.TempDir()
+	script := writeValScript(t, scriptDir, "validate.sh")
+
+	for i := 1; i <= 2; i++ {
+		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+		require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	}
+	// Only iteration-1 passes; iteration-2 (runCount) fails.
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, "iteration-1", "pass"), nil, 0o644))
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	// currentRepoExtractedOK=true simulates a successful last SafeDownload.
+	result := postLoopValidationSweep(h, runDir, 2, true, printer)
+	assert.True(t, result.passed)
+	assert.Equal(t, 1, result.validatedIter)
+	assert.False(t, result.repoExtractedOK,
+		"repoExtractedOK must be false when validated iteration != runCount, even if last SafeDownload succeeded")
+}
+
+func TestPostLoopValidationSweep_PassesEmptyTargetRepoDir(t *testing.T) {
+	// Verifies that the sweep always passes TARGET_REPO_DIR="" to the
+	// validation script (hostRepositoryDownloadDir is unreliable during sweep).
+	runDir := t.TempDir()
+	scriptDir := t.TempDir()
+
+	// Script that checks TARGET_REPO_DIR is empty and writes it to a file.
+	script := filepath.Join(scriptDir, "validate.sh")
+	checkFile := filepath.Join(scriptDir, "target_repo_dir.txt")
+	require.NoError(t, os.WriteFile(script, []byte(fmt.Sprintf(
+		"#!/bin/sh\necho \"$TARGET_REPO_DIR\" > %s\n[ -f pass ]\n", checkFile)), 0o755))
+
+	iterDir := filepath.Join(runDir, "iteration-1")
+	require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(iterDir, "pass"), nil, 0o644))
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	result := postLoopValidationSweep(h, runDir, 1, true, printer)
+	require.True(t, result.passed)
+
+	got, err := os.ReadFile(checkFile)
+	require.NoError(t, err)
+	assert.Equal(t, "\n", string(got), "TARGET_REPO_DIR should be empty during sweep")
+}
+
+func TestSweepResult_RepoExtractedOK_PreservesWhenRunCount(t *testing.T) {
+	// When the latest iteration (runCount) passes, the input
+	// currentRepoExtractedOK should be preserved.
+	runDir := t.TempDir()
+	scriptDir := t.TempDir()
+	script := writeValScript(t, scriptDir, "validate.sh")
+
+	iterDir := filepath.Join(runDir, "iteration-1")
+	require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(iterDir, "pass"), nil, 0o644))
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	// With currentRepoExtractedOK=false (last SafeDownload failed).
+	result := postLoopValidationSweep(h, runDir, 1, false, printer)
+	assert.True(t, result.passed)
+	assert.Equal(t, 1, result.validatedIter)
+	assert.False(t, result.repoExtractedOK,
+		"repoExtractedOK should remain false when input was false, even when i == runCount")
+
+	// With currentRepoExtractedOK=true (last SafeDownload succeeded).
+	result2 := postLoopValidationSweep(h, runDir, 1, true, printer)
+	assert.True(t, result2.passed)
+	assert.True(t, result2.repoExtractedOK,
+		"repoExtractedOK should remain true when input was true and i == runCount")
+}
+
+func TestPostScriptRepoEnv(t *testing.T) {
+	runDir := "/run"
+	hostRepoDir := "/host/repo"
+	withLoop := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Script: "validate.sh"}}
+	noLoop := &harness.Harness{}
+
+	tests := []struct {
+		name             string
+		h                *harness.Harness
+		repoExtractedOK  bool
+		validatedIterNum int
+		wantRepoDir      string
+		wantIterDir      string
+	}{
+		{
+			name:             "extraction succeeded and validated iteration is latest",
+			h:                withLoop,
+			repoExtractedOK:  true,
+			validatedIterNum: 2,
+			wantRepoDir:      hostRepoDir,
+			wantIterDir:      filepath.Join(runDir, "iteration-2/output"),
+		},
+		{
+			name:             "extraction failed: REPO_DIR empty regardless of validated iteration",
+			h:                withLoop,
+			repoExtractedOK:  false,
+			validatedIterNum: 0,
+			wantRepoDir:      "",
+			wantIterDir:      "",
+		},
+		{
+			name:             "sweep validated an earlier iteration: REPO_DIR empty, iteration dir still set",
+			h:                withLoop,
+			repoExtractedOK:  false,
+			validatedIterNum: 1,
+			wantRepoDir:      "",
+			wantIterDir:      filepath.Join(runDir, "iteration-1/output"),
+		},
+		{
+			name:             "no validation loop: iteration dir never set even if validatedIterNum leaked",
+			h:                noLoop,
+			repoExtractedOK:  true,
+			validatedIterNum: 3,
+			wantRepoDir:      hostRepoDir,
+			wantIterDir:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir, iterDir := postScriptRepoEnv(tt.h, runDir, hostRepoDir, tt.repoExtractedOK, tt.validatedIterNum)
+			assert.Equal(t, tt.wantRepoDir, repoDir, "REPO_DIR")
+			assert.Equal(t, tt.wantIterDir, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR")
+		})
 	}
 }
 
@@ -2414,6 +2871,136 @@ func TestExpandValidationLoopSchema(t *testing.T) {
 	assert.Equal(t, schemaPath, h.ValidationLoop.Schema)
 	_, err := os.Stat(h.ValidationLoop.Schema)
 	require.NoError(t, err, "expanded schema path should exist")
+}
+
+// preflightTestSetup creates a temporary fullsend directory with the required
+// agent and harness files for preflight check tests. When harnessYAML contains
+// a validation_loop.script reference, the script file is created as a no-op
+// stub so ValidateFilesExist passes.
+func preflightTestSetup(t *testing.T, harnessYAML string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "scripts"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "scripts", "validate.sh"),
+		[]byte("#!/bin/sh\nexit 0\n"),
+		0o755,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(harnessYAML),
+		0o644,
+	))
+	return dir
+}
+
+func TestRunAgent_PreflightCheck_Passing(t *testing.T) {
+	// A passing preflight_check should not block the run — runAgent
+	// proceeds past the guard and fails later at openshell CheckGateway.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"true\"\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	// Must pass the preflight guard and reach the openshell check.
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_Failing(t *testing.T) {
+	// A failing preflight_check should abort runAgent with a descriptive
+	// error, exercising the StepFail + error-wrapping logic.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"exit 1\"\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+}
+
+func TestRunAgent_PreflightCheck_NoCheckConfigured(t *testing.T) {
+	// When no preflight_check is set, runAgent should skip the guard
+	// and proceed to the openshell check.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_NilValidationLoop(t *testing.T) {
+	// When no validation_loop is set at all, runAgent should skip the
+	// preflight guard and proceed to the openshell check.
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
+	// A preflight_check that exceeds the context deadline should abort
+	// with a "timed out" error, not hang indefinitely.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"sleep 5\"\n  max_iterations: 2\n")
+
+	// Shrink the real timeout so the "sleep 5" command genuinely outlives
+	// it, exercising the actual DeadlineExceeded branch rather than
+	// short-circuiting via an already-cancelled parent context.
+	original := preflightCheckTimeout
+	preflightCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { preflightCheckTimeout = original })
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
 }
 
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
@@ -3024,6 +3611,11 @@ func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
 		[]byte("agent: agents/code.md\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -3081,6 +3673,15 @@ func TestWriteMetricsJSON(t *testing.T) {
 }
 
 // --- mintAgentToken tests ---
+
+// useZeroMintTokenBackoff overrides mintTokenBackoff to skip real sleeps so
+// tests exercising mint retries run fast, restoring the original on cleanup.
+func useZeroMintTokenBackoff(t *testing.T) {
+	t.Helper()
+	orig := mintTokenBackoff
+	mintTokenBackoff = func(int) time.Duration { return 0 }
+	t.Cleanup(func() { mintTokenBackoff = orig })
+}
 
 func TestMintAgentToken_SkipsWhenNoMintURL(t *testing.T) {
 	printer := ui.New(io.Discard)
@@ -3233,7 +3834,9 @@ func TestMintAgentToken_MintError(t *testing.T) {
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
 
+	var calls int
 	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
 		return nil, fmt.Errorf("OIDC exchange failed")
 	}
 
@@ -3243,6 +3846,7 @@ func TestMintAgentToken_MintError(t *testing.T) {
 	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "minting agent token for role coder")
+	assert.Equal(t, 1, calls, "a request error should fail immediately — statusMintToken already retries transient failures and fails fast on permanent ones internally")
 }
 
 func TestMintAgentToken_RepoResolutionError(t *testing.T) {
@@ -3250,6 +3854,8 @@ func TestMintAgentToken_RepoResolutionError(t *testing.T) {
 	defer func() { statusMintToken = origMint }()
 
 	// No REPO_FULL_NAME and no MINT_REPOS set
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("MINT_REPOS", "")
 	printer := ui.New(io.Discard)
 	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
 	require.Error(t, err)
@@ -3259,6 +3865,7 @@ func TestMintAgentToken_RepoResolutionError(t *testing.T) {
 func TestMintAgentToken_RejectsMalformedToken(t *testing.T) {
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
+	useZeroMintTokenBackoff(t)
 
 	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
 		return &mintclient.MintResult{Token: "bad token with spaces!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
@@ -3270,6 +3877,96 @@ func TestMintAgentToken_RejectsMalformedToken(t *testing.T) {
 	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected characters")
+}
+
+func TestMintAgentToken_RetriesMalformedTokenThenSucceeds(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	useZeroMintTokenBackoff(t)
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "bad token with spaces!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "test-recovered-token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	assert.Equal(t, 2, calls, "a malformed token should be retried, not treated as fatal")
+	assert.Equal(t, "test-recovered-token", os.Getenv("GH_TOKEN"))
+
+	output := buf.String()
+	assert.Contains(t, output, "attempt 1/4")
+	assert.Contains(t, output, "retrying in")
+}
+
+func TestMintAgentToken_ExhaustsAllRetriesBeforeFailing(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	useZeroMintTokenBackoff(t)
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "still bad!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Equal(t, mintTokenMaxAttempts, calls, "should attempt exactly mintTokenMaxAttempts times before giving up")
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed after %d attempts", mintTokenMaxAttempts), "final error should surface the total attempt count")
+}
+
+func TestMintAgentToken_RetryAbortsOnContextCancellation(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	// Deliberately not using useZeroMintTokenBackoff: cancel() fires from
+	// inside the mock before mintAgentTokenWithRetry reaches its select, so
+	// ctx.Done() always wins over the real backoff timer regardless of its
+	// duration — this stays fast without needing the zero-backoff seam.
+	var calls int
+	ctx, cancel := context.WithCancel(context.Background())
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		cancel()
+		return &mintclient.MintResult{Token: "still bad!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(ctx, "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, calls, "should stop retrying once the context is cancelled during backoff")
+}
+
+func TestMintTokenBackoff_Doubles(t *testing.T) {
+	assert.Equal(t, 2*time.Second, mintTokenBackoff(1))
+	assert.Equal(t, 4*time.Second, mintTokenBackoff(2))
+	assert.Equal(t, 8*time.Second, mintTokenBackoff(3))
+}
+
+func TestMintTokenBackoff_CapsAtMax(t *testing.T) {
+	// attempt 4 exercises the value clamp alone (shift=3 needs no shift-guard,
+	// but 2s*2^3=16s exceeds mintTokenMaxBackoff); attempt 20 additionally
+	// exercises the shift guard (shift would otherwise be 19).
+	assert.Equal(t, mintTokenMaxBackoff, mintTokenBackoff(4))
+	assert.Equal(t, mintTokenMaxBackoff, mintTokenBackoff(20))
 }
 
 func TestMintAgentToken_MasksTokenInGitHubActions(t *testing.T) {
@@ -3337,6 +4034,8 @@ func TestResolveMintRepos_MINT_REPOS_TakesPrecedence(t *testing.T) {
 }
 
 func TestResolveMintRepos_NeitherSet(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("MINT_REPOS", "")
 	_, err := resolveMintRepos()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MINT_REPOS or REPO_FULL_NAME must be set")
@@ -3509,6 +4208,11 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: coder\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
@@ -3553,6 +4257,11 @@ func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: coder\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
@@ -3588,6 +4297,11 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
 		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
 		0o644,
 	))
 
@@ -3627,6 +4341,11 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: coder\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
@@ -3661,11 +4380,16 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 func TestResolveBackendFromConfigData_OrgConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
-	cfg.Defaults.Runtime = "dummy"
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
-
+	data := []byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: dummy
+repos:
+  widget:
+    enabled: true
+`)
 	backend, err := resolveBackendFromConfigData(data)
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
@@ -3675,7 +4399,7 @@ func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
-	cfg.Runtime = "dummy"
+	cfg.SetRuntime("dummy")
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 
@@ -3695,12 +4419,17 @@ func TestResolveBackendFromConfigData_Invalid(t *testing.T) {
 func TestResolveBackendFromConfigData_UnknownRuntime(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
-	cfg.Defaults.Runtime = "nonexistent"
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
-
-	_, err = resolveBackendFromConfigData(data)
+	data := []byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: nonexistent
+repos:
+  widget:
+    enabled: true
+`)
+	_, err := resolveBackendFromConfigData(data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
@@ -3733,7 +4462,7 @@ func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
-	cfg.Runtime = "dummy"
+	cfg.SetRuntime("dummy")
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	path := filepath.Join(dir, "config.yaml")
@@ -3749,7 +4478,7 @@ func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
-	cfg.Runtime = "dummy"
+	cfg.SetRuntime("dummy")
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
@@ -3779,14 +4508,20 @@ func TestBackendFromConfigFile_ResolveError(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
-	cfg.Defaults.Runtime = "nonexistent"
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
+	data := []byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: nonexistent
+repos:
+  widget:
+    enabled: true
+`)
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	_, _, err = backendFromConfigFile(path)
+	_, _, err := backendFromConfigFile(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
@@ -4251,4 +4986,59 @@ func TestDedupResolvedProviders_ComposeScenario(t *testing.T) {
 	assert.Equal(t, "my-claude", got[0].Def.Name)
 	assert.Equal(t, "claude-code-v2", got[0].Def.Type)
 	assert.Equal(t, "/cache/child/my-claude.yaml", got[0].LocalPath)
+}
+
+func TestForceRemoveAll_ReadOnlyTree(t *testing.T) {
+	// Simulate the readonly_repo enforcement: create a directory tree
+	// with files and directories that have had write permission removed.
+	// forceRemoveAll must restore permissions and successfully delete.
+	root := t.TempDir()
+	nested := filepath.Join(root, "target", ".claude", "commands")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "enable-arm64-builds.md"), []byte("content"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "target", "README.md"), []byte("readme"), 0o644))
+
+	target := filepath.Join(root, "target")
+
+	// Remove write permissions recursively, mirroring the sandbox chmod.
+	err := filepath.WalkDir(target, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(p, info.Mode()&^0o222) // a-w
+	})
+	require.NoError(t, err)
+
+	// Verify that plain os.RemoveAll fails.
+	err = os.RemoveAll(target)
+	require.Error(t, err, "os.RemoveAll should fail on read-only tree")
+
+	// forceRemoveAll must succeed.
+	require.NoError(t, forceRemoveAll(target))
+
+	// Verify complete removal.
+	_, err = os.Stat(target)
+	assert.True(t, os.IsNotExist(err), "directory should be fully removed")
+}
+
+func TestForceRemoveAll_AlreadyWritable(t *testing.T) {
+	// Normal (writable) directories should be removed without issues.
+	root := t.TempDir()
+	target := filepath.Join(root, "writable")
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "sub", "file.txt"), []byte("data"), 0o644))
+
+	require.NoError(t, forceRemoveAll(target))
+
+	_, err := os.Stat(target)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestForceRemoveAll_NonExistent(t *testing.T) {
+	// Removing a path that does not exist should succeed (same as os.RemoveAll).
+	require.NoError(t, forceRemoveAll(filepath.Join(t.TempDir(), "does-not-exist")))
 }

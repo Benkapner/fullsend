@@ -12,15 +12,16 @@ import (
 
 // Poller discovers GitLab events and dispatches agent stages.
 type Poller struct {
-	client      GitLabClient
-	router      dispatch.EventRouter
-	projectPath string
-	owner       string
-	repo        string
-	botUserID   int
-	gitlabURL   string
-	opts        Options
-	dispatches  []Dispatch
+	client       GitLabClient
+	router       dispatch.EventRouter
+	projectPath  string
+	owner        string
+	repo         string
+	botUserID    int
+	gitlabURL    string
+	opts         Options
+	dispatches   []Dispatch
+	warnedNoHMAC bool
 }
 
 // New creates a Poller for the given project.
@@ -61,7 +62,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	var labelState LabelState
 	var minSkippedAt time.Time
 	if p.opts.SlashCommandsOnly {
-		events, err = p.discoverSlashCommands(ctx, p.owner, p.repo, lastPollAt)
+		events, minSkippedAt, err = p.discoverSlashCommands(ctx, p.owner, p.repo, lastPollAt)
 	} else {
 		events, labelState, minSkippedAt, err = p.discoverAllEvents(ctx, p.owner, p.repo, lastPollAt)
 	}
@@ -99,13 +100,17 @@ func (p *Poller) Run(ctx context.Context) error {
 			continue
 		}
 
-		normalizedEvent, err := p.toNormalizedEvent(ctx, event)
+		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
 			log.Printf("WARNING: skipping %s event on IID %d: %v", event.Type, event.IID, err)
 			failedKeys[eventKey]++
 			trackFailure(&minFailedAt, event.UpdatedAt)
 			trackLabelFailure(failedLabelEvents, event)
 			continue
+		}
+
+		if event.Type == "issue_label" && actorID != 0 {
+			event.NoteAuthorID = actorID
 		}
 
 		var stages []string
@@ -167,14 +172,9 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Write dispatches before persisting keys: at-least-once delivery.
-	// If key persistence fails, events re-dispatch on the next cycle.
-	if p.opts.OutputPath != "" {
-		if err := p.writeDispatches(p.opts.OutputPath); err != nil {
-			return fmt.Errorf("write dispatches: %w", err)
-		}
-	}
-
+	// Persist dispatched keys. Pipelines were already created via API
+	// during dispatch — if key persistence fails, events may re-dispatch
+	// on the next cycle (at-least-once delivery).
 	for k, ts := range newDispatchedKeys {
 		previouslyDispatched[k] = ts
 	}
@@ -196,6 +196,14 @@ func (p *Poller) Run(ctx context.Context) error {
 		maxUpdatedAt = minSkippedAt
 	}
 	newWatermark := maxUpdatedAt.Add(-30 * time.Second)
+
+	if len(newDispatchedKeys) > 0 {
+		keys := make([]string, 0, len(newDispatchedKeys))
+		for k := range newDispatchedKeys {
+			keys = append(keys, k)
+		}
+		log.Printf("persisting %d new dispatched keys: %v", len(keys), keys)
+	}
 
 	if err := p.persistDispatchedKeys(ctx, p.owner, p.repo, previouslyDispatched, newWatermark); err != nil {
 		return fmt.Errorf("persist dispatched keys: %w", err)

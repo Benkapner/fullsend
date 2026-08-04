@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,12 +50,40 @@ func TestListOrgRepos(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	repos, err := client.ListOrgRepos(context.Background(), "org")
+	repos, err := client.ListOrgRepos(context.Background(), "org", false)
 	require.NoError(t, err)
 	require.Len(t, repos, 1)
 	assert.Equal(t, "repo1", repos[0].Name)
 	assert.Equal(t, "org/repo1", repos[0].FullName)
 	assert.Equal(t, "main", repos[0].DefaultBranch)
+}
+
+func TestListOrgRepos_IncludePrivate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"name": "public-repo", "full_name": "org/public-repo", "default_branch": "main", "private": false, "archived": false, "fork": false},
+			{"name": "private-repo", "full_name": "org/private-repo", "default_branch": "main", "private": true, "archived": false, "fork": false},
+			{"name": "archived-repo", "full_name": "org/archived-repo", "default_branch": "main", "private": false, "archived": true, "fork": false},
+			{"name": "forked-repo", "full_name": "org/forked-repo", "default_branch": "main", "private": false, "archived": false, "fork": true},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+
+	// includePrivate=false excludes private repos.
+	repos, err := client.ListOrgRepos(context.Background(), "org", false)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, "public-repo", repos[0].Name)
+
+	// includePrivate=true includes private repos but still excludes archived/fork.
+	repos, err = client.ListOrgRepos(context.Background(), "org", true)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
+	assert.Equal(t, "public-repo", repos[0].Name)
+	assert.Equal(t, "private-repo", repos[1].Name)
+	assert.True(t, repos[1].Private)
 }
 
 func TestCreateRepo(t *testing.T) {
@@ -101,6 +130,36 @@ func TestDeleteRepo(t *testing.T) {
 	err := client.DeleteRepo(context.Background(), "owner", "repo")
 	require.NoError(t, err)
 	assert.True(t, called)
+}
+
+func TestDeleteRef(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/owner/repo/git/refs/heads/my-branch", r.URL.Path)
+			called = true
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRef(context.Background(), "owner", "repo", "heads/my-branch")
+		require.NoError(t, err)
+		assert.True(t, called)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRef(context.Background(), "owner", "repo", "heads/gone")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
 }
 
 func TestFindExistingFork(t *testing.T) {
@@ -430,6 +489,26 @@ func TestGetRef_NotFound(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err))
 }
 
+func TestGetRef_UnauthenticatedClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		// Unauthenticated client must not send an Authorization header.
+		assert.Empty(t, r.Header.Get("Authorization"), "unauthenticated client should not send Authorization header")
+		json.NewEncoder(w).Encode(map[string]any{
+			"object": map[string]any{
+				"sha":  "abc123def456",
+				"type": "commit",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := New("").WithBaseURL(srv.URL)
+	sha, err := client.GetRef(context.Background(), "owner", "repo", "tags/v0")
+	require.NoError(t, err)
+	assert.Equal(t, "abc123def456", sha)
+}
+
 func TestGetBranchRef_DelegatesToGetRef(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
@@ -577,6 +656,382 @@ func TestCreateChangeProposal(t *testing.T) {
 	assert.Equal(t, "https://github.com/owner/repo/pull/42", cp.URL)
 }
 
+func TestCreateCrossRepoChangeProposal(t *testing.T) {
+	t.Run("same-org fork uses GraphQL", func(t *testing.T) {
+		var getRepoCalls []string
+		var graphqlCalled bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				getRepoCalls = append(getRepoCalls, r.URL.Path)
+				// Return node_id for the repo.
+				repoName := strings.TrimPrefix(r.URL.Path, "/repos/")
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id":   "NODE_" + strings.ReplaceAll(repoName, "/", "_"),
+					"full_name": repoName,
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				graphqlCalled = true
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+
+				vars, _ := body["variables"].(map[string]any)
+				input, _ := vars["input"].(map[string]any)
+				assert.Equal(t, "NODE_org_repo", input["repositoryId"])
+				assert.Equal(t, "NODE_org_repo-fork", input["headRepositoryId"])
+				assert.Equal(t, "feature-branch", input["headRefName"])
+				assert.Equal(t, "main", input["baseRefName"])
+				assert.Equal(t, "PR title", input["title"])
+
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{
+						"createPullRequest": map[string]any{
+							"pullRequest": map[string]any{
+								"number": 99,
+								"title":  "PR title",
+								"url":    "https://github.com/org/repo/pull/99",
+							},
+						},
+					},
+				})
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		cp, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"PR title", "PR body", "feature-branch", "main",
+		)
+		require.NoError(t, err)
+		assert.True(t, graphqlCalled, "should use GraphQL createPullRequest")
+		require.Len(t, getRepoCalls, 2, "should fetch node IDs for both repos")
+		assert.Equal(t, 99, cp.Number)
+		assert.Equal(t, "PR title", cp.Title)
+		assert.Equal(t, "https://github.com/org/repo/pull/99", cp.URL)
+	})
+
+	t.Run("graphql error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				json.NewEncoder(w).Encode(map[string]any{
+					"errors": []map[string]any{
+						{"message": "head ref must be a branch in the head repository"},
+					},
+				})
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "head ref must be a branch")
+	})
+
+	t.Run("base repo not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "missing", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "get repo node ID")
+	})
+
+	t.Run("head repo not found", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				callCount++
+				if callCount == 1 {
+					// Base repo succeeds.
+					json.NewEncoder(w).Encode(map[string]any{
+						"node_id": "NODE_base",
+					})
+					return
+				}
+				// Head repo fails.
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "missing-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "get repo node ID")
+	})
+
+	t.Run("empty node ID", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				// Return valid JSON but with empty node_id.
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "",
+				})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "empty node ID")
+	})
+
+	t.Run("graphql post error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cross-repo pull request via graphql")
+	})
+
+	t.Run("graphql decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				// Return invalid JSON body.
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("not json"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode cross-repo pull request response")
+	})
+
+	t.Run("repo node ID decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				// Return invalid JSON for repo lookup.
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("not json"))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode repo node ID")
+	})
+}
+
+func TestAPIError_FieldCode(t *testing.T) {
+	// When a GitHub 422 has empty detail messages but provides field/code,
+	// the error string should include them for debuggability.
+	err := &APIError{
+		StatusCode: 422,
+		Message:    "Validation Failed",
+		Errors: []APIErrorDetail{
+			{Field: "head", Code: "invalid"},
+		},
+	}
+	assert.Contains(t, err.Error(), "field=head")
+	assert.Contains(t, err.Error(), "code=invalid")
+
+	// When the detail message is present, it should still use that.
+	err2 := &APIError{
+		StatusCode: 422,
+		Message:    "Validation Failed",
+		Errors: []APIErrorDetail{
+			{Message: "Branch not found", Field: "head", Code: "invalid"},
+		},
+	}
+	assert.Contains(t, err2.Error(), "Branch not found")
+	assert.NotContains(t, err2.Error(), "field=head")
+}
+
+func TestCheckStatus_EmptyMessageWithErrors(t *testing.T) {
+	// When GitHub returns 422 with an empty top-level message but
+	// populated errors, checkStatus should preserve the error details.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "",
+			"errors": []map[string]any{
+				{"resource": "PullRequestReviewComment", "field": "line", "code": "invalid"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	assert.Equal(t, "Unprocessable Entity", apiErr.Message)
+	require.Len(t, apiErr.Errors, 1)
+	assert.Equal(t, "PullRequestReviewComment", apiErr.Errors[0].Resource)
+	assert.Equal(t, "line", apiErr.Errors[0].Field)
+	assert.Equal(t, "invalid", apiErr.Errors[0].Code)
+}
+
+func TestCheckStatus_NoMessageNoErrors_UsesRawBody(t *testing.T) {
+	// When GitHub returns a non-standard JSON body without a message
+	// or errors array, checkStatus should include the raw body.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, `{"error":"something unexpected"}`)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Message, "something unexpected")
+}
+
+func TestCheckStatus_NonJSONBody(t *testing.T) {
+	// When GitHub returns a non-JSON body, checkStatus should use
+	// the raw body as the error message.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, "Bad Gateway: upstream timeout")
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Message, "Bad Gateway: upstream timeout")
+}
+
+func TestCheckStatus_EmptyBody(t *testing.T) {
+	// When the response body is empty, fall back to http.StatusText.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	assert.Equal(t, "Unprocessable Entity", apiErr.Message)
+}
+
+func TestCheckStatus_MultiByteTruncation(t *testing.T) {
+	// When the raw body contains multi-byte UTF-8 characters and
+	// exceeds the truncation limit, the result should not split a
+	// character — truncation operates on runes, not bytes.
+	// Build a body that is >200 runes, using multi-byte chars.
+	body := strings.Repeat("日", 201) // 201 three-byte runes = 603 bytes
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+
+	// Should be exactly 200 runes + "..." — no invalid byte sequences.
+	assert.True(t, strings.HasSuffix(apiErr.Message, "..."), "should end with ellipsis")
+	// The message without "..." should be exactly 200 runes of "日".
+	withoutEllipsis := strings.TrimSuffix(apiErr.Message, "...")
+	assert.Equal(t, 200, len([]rune(withoutEllipsis)), "should truncate at 200 runes")
+	assert.True(t, utf8.ValidString(apiErr.Message), "truncated message must be valid UTF-8")
+}
+
 func TestListRepoPullRequests(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
@@ -585,8 +1040,22 @@ func TestListRepoPullRequests(t *testing.T) {
 		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
 
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"html_url": "https://github.com/owner/repo/pull/1", "title": "PR 1", "number": 1},
-			{"html_url": "https://github.com/owner/repo/pull/2", "title": "PR 2", "number": 2},
+			{
+				"html_url": "https://github.com/owner/repo/pull/1",
+				"title":    "PR 1",
+				"number":   1,
+				"head":     map[string]any{"ref": "feature-branch"},
+				"base":     map[string]any{"ref": "main"},
+				"user":     map[string]any{"login": "alice"},
+			},
+			{
+				"html_url": "https://github.com/owner/repo/pull/2",
+				"title":    "PR 2",
+				"number":   2,
+				"head":     map[string]any{"ref": "fix-branch"},
+				"base":     map[string]any{"ref": "main"},
+				"user":     map[string]any{"login": "bob"},
+			},
 		})
 	}))
 	defer srv.Close()
@@ -596,7 +1065,31 @@ func TestListRepoPullRequests(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, prs, 2)
 	assert.Equal(t, "PR 1", prs[0].Title)
+	assert.Equal(t, "feature-branch", prs[0].Head)
+	assert.Equal(t, "main", prs[0].Base)
+	assert.Equal(t, "alice", prs[0].Author)
 	assert.Equal(t, 2, prs[1].Number)
+	assert.Equal(t, "fix-branch", prs[1].Head)
+	assert.Equal(t, "bob", prs[1].Author)
+}
+
+func TestCloseChangeProposal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/42", r.URL.Path)
+
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "closed", body["state"])
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"number": 42, "state": "closed"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CloseChangeProposal(context.Background(), "owner", "repo", 42)
+	require.NoError(t, err)
 }
 
 func TestGetAuthenticatedUser(t *testing.T) {
@@ -1981,7 +2474,7 @@ func TestListOrgRepos_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	repos, err := client.ListOrgRepos(context.Background(), "org")
+	repos, err := client.ListOrgRepos(context.Background(), "org", false)
 	require.NoError(t, err)
 	assert.Len(t, repos, 101)
 	assert.Equal(t, 2, page) // Should have made exactly 2 requests
@@ -2874,6 +3367,52 @@ func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
 	assert.Equal(t, "issues", runs[0].Event)
 }
 
+func TestListWorkflowRunJobs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"jobs": []map[string]any{
+				{
+					"id":         1,
+					"name":       "dispatch / Route",
+					"status":     "completed",
+					"conclusion": "success",
+				},
+				{
+					"id":         2,
+					"name":       "dispatch / Harness run (triage)",
+					"status":     "completed",
+					"conclusion": "success",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	require.Len(t, jobs, 2)
+	assert.Equal(t, 1, jobs[0].ID)
+	assert.Equal(t, "dispatch / Route", jobs[0].Name)
+	assert.Equal(t, "completed", jobs[0].Status)
+	assert.Equal(t, "success", jobs[0].Conclusion)
+	assert.Equal(t, 2, jobs[1].ID)
+	assert.Equal(t, "dispatch / Harness run (triage)", jobs[1].Name)
+}
+
+func TestListWorkflowRunJobs_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+}
+
 func TestListWorkflowRunArtifacts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/runs/42/artifacts", r.URL.Path)
@@ -3479,6 +4018,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
 
+	t.Run("CreatePipeline", func(t *testing.T) {
+		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)

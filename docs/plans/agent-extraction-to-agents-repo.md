@@ -592,6 +592,14 @@ agents:
     - source: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/prioritize.yaml#sha256=<hash>
 ```
 
+To selectively disable an agent, add an `enabled: false` entry:
+
+```yaml
+agents:
+    - name: retro
+      enabled: false
+```
+
 #### 6b. Verify agent resolution
 
 Run `fullsend agent list` from the `.fullsend` checkout to verify all
@@ -667,9 +675,9 @@ them would break customers who haven't migrated.
 Once all customers are migrated:
 
 1. Update install seeding to use agents repo URLs exclusively
-2. Remove scaffold fallback from `MergedAgents()`
-3. Remove `HarnessNames()` (or restrict to install-time seeding)
-4. Remove `HarnessWrappersLayer`
+2. ~~Remove scaffold fallback from `MergedAgents()`~~ *(completed — PR #5425)*
+3. Remove `HarnessNames()` (or restrict to install-time seeding) *(still used by `migrate.go`)*
+4. ~~Remove `HarnessWrappersLayer`~~ *(completed — PR #5425)*
 5. Delete scaffold agent files from `internal/scaffold/fullsend-repo/`:
    - `agents/*.md` (all 6)
    - `harness/*.yaml` (all 6)

@@ -14,6 +14,7 @@ import (
 type ForgeConfig struct {
 	PreScript      string            `yaml:"pre_script,omitempty"`
 	PostScript     string            `yaml:"post_script,omitempty"`
+	Policy         string            `yaml:"policy,omitempty"`
 	Skills         []string          `yaml:"skills,omitempty"`
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
@@ -49,6 +50,11 @@ func (h *Harness) validateForge() error {
 		}
 		if fc == nil {
 			continue
+		}
+		if fc.Policy != "" && IsURL(fc.Policy) {
+			if _, _, hasHash := ParseIntegrityHash(fc.Policy); !hasHash {
+				return fmt.Errorf("forge.%s.policy URL must include #sha256=... integrity hash", key)
+			}
 		}
 		if fc.PreScript != "" && IsURL(fc.PreScript) {
 			return fmt.Errorf("forge.%s.pre_script must be a local path, not a URL", key)
@@ -120,9 +126,12 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	if fc.PostScript != "" {
 		h.PostScript = fc.PostScript
 	}
+	if fc.Policy != "" {
+		h.Policy = fc.Policy
+	}
 
 	if fc.Skills != nil {
-		h.Skills = append(h.Skills, fc.Skills...)
+		h.Skills = mergeSkills(h.Skills, fc.Skills)
 	}
 
 	if fc.RunnerEnv != nil {

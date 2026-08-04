@@ -187,7 +187,7 @@ resolved as follows:
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge value overrides top-level value                | Absent = inherit from top level                       |
-| `skills`         | Top-level list + forge-specific list (concatenated)  | Absent (nil) = inherit; `skills: []` = no forge-specific additions (top-level skills still apply) |
+| `skills`         | Merged with deduplication by basename (forge overrides top-level) | Absent (nil) = inherit; `skills: []` = no forge-specific additions (top-level skills still apply) |
 | `runner_env`     | Top-level map merged with forge map; forge keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `validation_loop`| Forge value replaces top-level value entirely        | Absent (nil) = inherit from top level; explicit empty struct = intended to mean "no validation" but requires implementation changes (see note¹) |
 
@@ -249,6 +249,7 @@ compatibility.
 | `skills`           | Some skills wrap forge-specific APIs               |
 | `runner_env`       | Token names and event URLs differ per forge        |
 | `validation_loop`  | Validation scripts may call forge-specific tools   |
+| `policy`           | Sandbox policies may need forge-specific filesystem or process rules; network access is managed via providers (ADR-0065) but non-network policy sections can still differ per forge |
 
 #### Fields that stay at top level only (platform-neutral)
 
@@ -257,7 +258,6 @@ compatibility.
 | `agent`            | Agent definitions are forge-agnostic               |
 | `model`            | Model selection is independent of forge             |
 | `image`            | Container images are platform-neutral              |
-| `policy`           | Sandbox policies describe capabilities, not forges |
 | `host_files`       | File delivery is a runner concern, not forge        |
 | `providers`        | OpenShell providers are forge-agnostic             |
 | `api_servers`      | REST proxies abstract forge details                |
@@ -359,7 +359,7 @@ itself is consumed during loading and is not present on the merged harness.
 The same inheritance table applies to base→child merging:
 
 - **Scalar fields** (agent, model, image, pre_script, etc.): child overrides base
-- **`skills`**: base list + child list (concatenated)
+- **`skills`**: merged with deduplication by basename (child overrides base)
 - **`runner_env`**: base map merged with child map; child keys win
 - **`validation_loop`**: child replaces base entirely (if non-nil)
 - **`host_files`**: concatenated (base + child); if both declare the same
@@ -375,7 +375,7 @@ The same inheritance table applies to base→child merging:
 `base` can be a URL, reusing ADR 0038's infrastructure:
 
 ```yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/triage.yaml#sha256=abc123...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=abc123...
 ```
 
 URL-referenced bases follow the same rules as other URL resources:
@@ -404,11 +404,13 @@ as the same file.
 
 #### Example: composed harness
 
-A fresh `fullsend install` generates thin harness wrappers:
+A fresh `fullsend install` generated thin harness wrappers
+*(wrapper generation removed — PR #5425; agents now resolve from config
+or agents-repo at runtime)*:
 
 ```yaml
 # .fullsend/harness/triage.yaml
-base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/triage.yaml#sha256=...
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=...
 ```
 
 An org that needs to customize:
@@ -469,6 +471,7 @@ operational config file.
 type ForgeConfig struct {
     PreScript      string            `yaml:"pre_script,omitempty"`
     PostScript     string            `yaml:"post_script,omitempty"`
+    Policy         string            `yaml:"policy,omitempty"`
     Skills         []string          `yaml:"skills,omitempty"`
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
@@ -510,8 +513,9 @@ func (h *Harness) ResolveForge(platform string) error { ... }
    identically to the current schema.
 
 2. **Phase 2 (adopt):** Migrate existing harnesses to include `role` and
-   `slug`. `fullsend install` generates thin harness wrappers with `base:`
-   pointing to upstream scaffold harnesses via URL. Harnesses that only
+   `slug`. `fullsend install` generated thin harness wrappers with `base:`
+   pointing to upstream scaffold harnesses via URL *(wrapper generation
+   removed — PR #5425)*. Harnesses that only
    target GitHub can optionally add `forge.github` but are not required
    to — top-level fields still work as implicit defaults for the
    single-forge case.
@@ -588,10 +592,10 @@ forge-specific artifact. The harness and agent definition are portable.
   removing an agent is deleting a file, adding one is creating a thin
   wrapper with `base:`.
 
-- **Bidirectional composition.** The `base:` merge semantics have an
-  inverse (`DiffHarness`) used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
-  `migrate-customizations` command. Changes to merge rules must be
-  reflected in both directions.
+- **Bidirectional composition.** The `base:` merge semantics had an
+  inverse (`DiffHarness`, removed with the scaffold agent extraction)
+  used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command.
 
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the
@@ -609,7 +613,7 @@ forge-specific artifact. The harness and agent definition are portable.
   both are written atomically during `fullsend install`.
 
 - **Merge semantics add complexity.** The inheritance rules (scalars
-  override, skills concatenate, runner_env merges, validation_loop replaces)
+  override, skills merge with deduplication by basename, runner_env merges, validation_loop replaces)
   must be well-documented and tested. Edge cases — such as a forge block
   wanting to *remove* an inherited skill or runner_env key — are not
   supported by this design. If needed, a future extension could add explicit
@@ -657,7 +661,7 @@ forge-specific artifact. The harness and agent definition are portable.
   field type, matching the inheritance rules in the table above:
   - `skills`: nil = inherit top-level list; `skills: []` = no
     forge-specific additions (top-level skills still apply, since skills
-    uses concatenation semantics).
+    uses merge-with-deduplication-by-basename semantics).
   - `runner_env`: nil = inherit top-level map; `runner_env: {}` = no
     forge-specific keys (top-level env still inherited, since runner_env
     uses merge semantics).

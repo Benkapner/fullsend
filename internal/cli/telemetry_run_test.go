@@ -40,6 +40,8 @@ func TestResolveWorkItemID(t *testing.T) {
 		repoFull    string
 		issueNumber string
 		issueURL    string
+		prURL       string
+		prNumber    string
 		want        string
 	}{
 		{
@@ -68,6 +70,33 @@ func TestResolveWorkItemID(t *testing.T) {
 			want:        "42",
 		},
 		{
+			name:     "PR URL fallback when issue env absent",
+			repoFull: "octo/repo",
+			prURL:    "https://github.com/octo/repo/pull/5617",
+			prNumber: "5617",
+			want:     "octo/repo#5617",
+		},
+		{
+			name:     "PR URL used when repo missing",
+			prURL:    "https://github.com/octo/repo/pull/5617",
+			prNumber: "5617",
+			want:     "https://github.com/octo/repo/pull/5617",
+		},
+		{
+			name:     "bare PR number when only PR_NUMBER set",
+			prNumber: "42",
+			want:     "42",
+		},
+		{
+			name:        "issue env takes precedence over PR env",
+			repoFull:    "octo/repo",
+			issueURL:    "https://github.com/octo/repo/issues/9",
+			prURL:       "https://github.com/octo/repo/pull/9",
+			prNumber:    "9",
+			issueNumber: "9",
+			want:        "octo/repo#9",
+		},
+		{
 			name: "unknown when nothing is set",
 			want: "unknown",
 		},
@@ -78,6 +107,8 @@ func TestResolveWorkItemID(t *testing.T) {
 			t.Setenv("REPO_FULL_NAME", tc.repoFull)
 			t.Setenv("ISSUE_NUMBER", tc.issueNumber)
 			t.Setenv("GITHUB_ISSUE_URL", tc.issueURL)
+			t.Setenv("GITHUB_PR_URL", tc.prURL)
+			t.Setenv("PR_NUMBER", tc.prNumber)
 			assert.Equal(t, tc.want, resolveWorkItemID())
 		})
 	}
@@ -184,6 +215,77 @@ func TestChildScriptEnv_PreservesTracestate(t *testing.T) {
 	assert.True(t, found, "TRACESTATE must pass through to child scripts")
 }
 
+// TestChildScriptEnv_StripsOIDCVars verifies that OIDC credential vars
+// are stripped from the child script environment so user-authored
+// pre/post scripts cannot mint their own tokens (#5832).
+func TestChildScriptEnv_StripsOIDCVars(t *testing.T) {
+	// Set OIDC vars in the process environment.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "should-survive")
+
+	env := childScriptEnv(map[string]string{"RUNNER_VAR": "present"}, "")
+
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key = e[:i]
+		}
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_URL", "OIDC var must be stripped")
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OIDC var must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_URL", "OIDC var must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_AUTH_FILE", "OIDC var must be stripped")
+	}
+
+	// Non-OIDC vars must survive.
+	hasSafe, hasRunner := false, false
+	for _, e := range env {
+		if e == "SAFE_VAR=should-survive" {
+			hasSafe = true
+		}
+		if e == "RUNNER_VAR=present" {
+			hasRunner = true
+		}
+	}
+	assert.True(t, hasSafe, "non-OIDC process env var must survive")
+	assert.True(t, hasRunner, "RunnerEnv var must survive")
+}
+
+// TestChildScriptEnv_StripsOIDCFromRunnerEnv verifies that OIDC credential
+// vars injected via RunnerEnv are also stripped (#5832).
+func TestChildScriptEnv_StripsOIDCFromRunnerEnv(t *testing.T) {
+	runnerEnv := map[string]string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://injected.example.com",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "injected-token",
+		"FULLSEND_GCP_OIDC_URL":          "https://injected-gcp.example.com",
+		"FULLSEND_GCP_OIDC_AUTH_FILE":    "/tmp/injected-auth.json",
+		"LEGIT_VAR":                      "allowed",
+	}
+
+	env := childScriptEnv(runnerEnv, "")
+
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key = e[:i]
+		}
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_URL", "OIDC var from RunnerEnv must be stripped")
+		assert.False(t, key == "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "OIDC var from RunnerEnv must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_URL", "OIDC var from RunnerEnv must be stripped")
+		assert.False(t, key == "FULLSEND_GCP_OIDC_AUTH_FILE", "OIDC var from RunnerEnv must be stripped")
+	}
+
+	hasLegit := false
+	for _, e := range env {
+		if e == "LEGIT_VAR=allowed" {
+			hasLegit = true
+		}
+	}
+	assert.True(t, hasLegit, "non-OIDC RunnerEnv var must survive")
+}
+
 func TestAgentSpanStartAttrs(t *testing.T) {
 	attrs := agentSpanStartAttrs(3, "code")
 	require.Len(t, attrs, 3)
@@ -209,8 +311,8 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 1505))
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation_input_tokens", 38832))
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read_input_tokens", 109938))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", 38832))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", 109938))
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 11))
 }

@@ -2,14 +2,16 @@ package steps
 
 import (
 	"github.com/cucumber/godog"
-
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func Register(ctx *godog.ScenarioContext, w *world.World) {
-	registerDummyAgentSteps(ctx, w)
-	registerTriageSteps(ctx, w)
-	registerDispatchSteps(ctx, w)
-	registerDispatchCountSteps(ctx, w)
-	registerForkSteps(ctx, w)
+// Register binds all step definitions. Steps retrieve their per-scenario
+// World from the godog context via world.FromContext.
+func Register(sc *godog.ScenarioContext) {
+	registerDummyAgentSteps(sc)
+	registerTriageSteps(sc)
+	registerDispatchSteps(sc)
+	registerDispatchCountSteps(sc)
+	registerURLDispatchSteps(sc)
+	registerForkSteps(sc)
+	registerJiraPollSteps(sc)
 }

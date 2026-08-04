@@ -42,14 +42,14 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 **Decided:**
 
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
-- Installation model: ordered layer stack (install forward, uninstall reverse, analyze for status reporting) with idempotent operations. Current stack: config-repo → workflows → harness-wrappers → vendor-binary → secrets → inference → dispatch → enrollment ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
-- Cross-repo dispatch: enrolled repos call `.fullsend` via `workflow_call`; a dispatch workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint) or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
+- Installation model: ordered layer stack (install forward, uninstall reverse, analyze for status reporting) with idempotent operations. Current stack: config-repo → workflows → vendor-binary → secrets → inference → dispatch → enrollment ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
+- Cross-repo dispatch: enrolled repos call `.fullsend` via `workflow_call`; a dispatch workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Repo maintenance: a workflow in `.fullsend` (`.github/workflows/repo-maintenance.yml`) reconciles enrollment shims in target repos when `config.yaml` changes or on manual dispatch. The CLI's `EnrollmentLayer.Install()` dispatches this workflow via `workflow_dispatch` and monitors it for completion, then reports any enrollment PRs created in target repos.
 - Installer scaffold: the `WorkflowsLayer` deploys content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants.
 - Reusable workflows: agent workflows in `.fullsend` are thin callers (~40-70 lines) that delegate infrastructure logic to upstream reusable workflows (`fullsend-ai/fullsend/.github/workflows/reusable-*.yml`) via `workflow_call`. Infrastructure patches ship once upstream and propagate to all orgs without re-install ([ADR 0031](ADRs/0031-reusable-workflows-for-action-installed-distribution.md)). **`--vendor`** ([ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)) commits workflows and agent content at install time; layered installs (default) fetch upstream at runtime.
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
-- Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — bulk install, status, sync, upgrade, and removal across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md)).
+- Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — install, convergence (provision, sync, upgrade), status, and uninstall across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md), [ADR 0074](ADRs/0074-repos-command-consolidation.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
 - Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
 - GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT via OIDC/WIF from Secret Manager or protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
@@ -119,6 +119,17 @@ repo baseline and overrides)
   `env.sandbox` in the harness YAML. Each agent documents its config vars in
   `docs/agents/<agent>.md`
   ([ADR 0049](ADRs/0049-agent-configuration-env-var-convention.md)).
+- Config surface boundary: a knob that applies to one agent is an
+  `{AGENT}_`-prefixed harness env var (never a `config.yaml` field); a
+  knob that applies across agents or governs dispatch/policy is a
+  `config.yaml` field (never also an env var)
+  ([ADR 0080](ADRs/0080-config-yaml-vs-agent-env-var-scope.md)).
+- CI workflow `env:` scope: the workflow `env:` block is reserved for
+  infrastructure plumbing (credentials, project IDs, regions) and values
+  computable only at CI runtime; agent behavior defaults are set via
+  harness `env.runner`/`env.sandbox` and overridden through `base:`
+  composition, never the workflow file
+  ([ADR 0081](ADRs/0081-reserve-workflow-env-for-infra-plumbing.md)).
 - Agent-driven branch targeting: the code agent writes its chosen target
   branch to structured output. The post-script validates the choice against
   an allowlist and falls back to the repo's auto-detected default branch.
@@ -134,6 +145,17 @@ repo baseline and overrides)
   URL-resolved providers are validated against `allowed_remote_resources`
   and merged with local definitions at resolution time
   ([ADR 0070](ADRs/0070-portable-provider-profile-resolution.md)).
+- Run-stage-scoped privilege levels: a `privilege_levels` field in harness config
+  maps run-stages (`pre_script`, `runtime`, `post_script`) to named mint
+  privilege levels. A `default` key covers unspecified run-stages. When omitted,
+  the harness defaults to `write` for all run-stages, preserving backward
+  compatibility ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
+- Pre-script skip signalling: the harness `pre_script` runs exactly once,
+  inside `fullsend run`; a pre-script stops the run before sandbox creation by
+  writing `skipped=true` to the CLI-provided `FULLSEND_PRESCRIPT_OUTPUT` file
+  (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
+  replacing the inline workflow pre-checks and their scaffold script copies
+  ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
 
 **Open questions:**
 
@@ -173,9 +195,11 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
 - Host-side API server design: Credential delivery tier 3 servers follow a uniform process contract (`--port`, `--token`, `--bind-address`, `/healthz`, `/tools.json`, `SIGTERM`). Network access is controlled via composable provider profiles — atomic capability profiles composed per-harness. Per-run UUID bearer tokens are delivered through OpenShell provider placeholders. File transfer uses `openshell sandbox upload/download` ([ADR 0046](ADRs/0046-host-side-api-server-design.md)).
 - Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. `ROLE_APP_IDS` uses the same shared-per-role model (`coder` → app ID). Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)). Public multi-tenant mint (`ALLOWED_ORGS=*`) with upstream-only workflow provenance is defined in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); upstream-only provenance limits which workflows can call the mint, complementing [ADR 0029](ADRs/0029-central-token-mint-secretless-fullsend.md) multi-tenant blast-radius concerns.
-- Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS`. Empty `repos` yields installation-wide tokens on either path; cross-org adds FOREIGN gating, same-org relies on WIF/OIDC enrollment ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)).
+- Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS` ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)).
+- Mint `repos` scope: foreign mints require empty `repos` (or `["*"]` as an empty alias). Per-repo callers (repo in `PER_REPO_WIF_REPOS`) must list exactly the requesting repository. Per-org callers (org in `ALLOWED_ORGS`, repo not in `PER_REPO_WIF_REPOS`) get org-mode shapes: `.fullsend` callers may use any non-empty validated list; other callers may use `[.fullsend]` or `{self,.fullsend}`. Same-org installation-wide tokens are denied ([ADR 0077](ADRs/0077-mint-repos-scope-hardening.md), simplified in [ADR 0078](ADRs/0078-simplified-mint-authorization-policy.md)).
 - Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `RolePermissionsFor`, `HasRole`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. The GCF mint never calls `RegisterCustomRolePermissions`, so the code is inert there. See the [standalone mint guide](guides/infrastructure/standalone-mint.md).
 - Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0068](ADRs/0068-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
+- Named privilege levels: each role defines ordered named levels (`read`, `write`), where each level's permissions are a superset of preceding levels. `read` for built-in roles is derived by downgrading `*:write` permissions to their `read` counterparts. The mint API accepts an optional `level` field (default `read`); omitting it produces narrower tokens than the current behavior. `write` is defined as the current max permission set for each built-in role. `CUSTOM_ROLE_PERMISSIONS` auto-detects a multi-level JSON shape alongside the existing flat format, with mixed format supported per role. The harness `privilege_levels` flag maps run-stages to levels; omitting it defaults to `write`, preserving backward compatibility for existing harness configurations ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
@@ -287,8 +311,8 @@ the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
 **Decided:**
 
 - Config-level agent registration: an `agents` list in both `OrgConfig` and `PerRepoConfig` declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
-- Runtime resolution: `fullsend run <name>` resolves agents in three tiers: (1) config entries from `OrgConfig.Agents` (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config, (3) scaffold-embedded harnesses on disk. The agents-repo fallback is a transitional mechanism for the [agent extraction](plans/agent-extraction-to-agents-repo.md); it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
-- Additive merge: config entries overlay scaffold-discovered agents (config wins on name collision), enabling gradual extraction of first-party agents without disrupting existing installations. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
+- Runtime resolution: `fullsend run <name>` resolves agents in two tiers: (1) config entries from `OrgConfig.Agents` (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config. The agents-repo fallback is a transitional mechanism for the [agent extraction](plans/agent-extraction-to-agents-repo.md); it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
+- Config lookup: config entries are looked up directly via `findConfigAgentEntry`; the agents-repo fallback operates independently when the agent is not found in config. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
 - CLI management: `fullsend agent add|list|update|remove|migrate-customizations` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 
 **Open questions:**
@@ -556,6 +580,7 @@ event ──► DISPATCHER
           ║                                                       ║
           ║ Runs pre-script on host:                              ║
           ║   validate inputs, prefetch data                      ║
+          ║   may request skip, exiting before sandbox creation   ║
           ║                                                       ║
           ║ ┌───────────────────────────────────────────────────┐ ║
           ║ │ SANDBOX (ephemeral, per-run)                      │ ║
@@ -623,14 +648,14 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ╔═══════════════════════════════════════════════════════════════╗
                  ║ DISPATCH WORKFLOW (.fullsend repo, dispatch.yml)              ║
                  ║                                                               ║
-                 ║ Mints OIDC token → Cloud Function (token mint) → scoped      ║
-                 ║ GitHub App installation token per agent role.                  ║
+                 ║ Mints OIDC token → Cloud Function (token mint) → scoped       ║
+                 ║ GitHub App installation token per agent role.                 ║
                  ║ Dispatches per-role agent workflows (code.yml, triage.yml).   ║
                  ╚═══════════════════════════════════════════════════════════════╝
                        │
                        ▼
                  ╔═══════════════════════════════════════════════════════════════╗
-                 ║ AGENT WORKFLOW (.fullsend repo, e.g. code.yml)               ║
+                 ║ AGENT WORKFLOW (.fullsend repo, e.g. code.yml)                ║
                  ║                                                               ║
                  ║ Validates source repo is enrolled in config.yaml.             ║
                  ║ Uses scoped GitHub App tokens:                                ║
@@ -721,7 +746,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 | Sandbox image | `ghcr.io/fullsend-ai/fullsend-code:latest` (pre-built with tools, runtimes, security scanners) | |
 | Credential isolation | Read-only GitHub App token inside sandbox; write token only in post-script | [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) |
 | Validation | Host-side schema validation script with retry loop | [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) |
-| Post-script | `post-code.sh`: protected-path check, gitleaks scan, pre-commit, push, PR creation | |
+| Post-script | `post-code.sh` (in `fullsend-ai/agents`): protected-path check, gitleaks scan, pre-commit, push, PR creation | |
 | Observability | JSONL transcript extraction, security findings, trace ID correlation | [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md) |
 
 ## Repository layout (design workspace vs. web delivery)

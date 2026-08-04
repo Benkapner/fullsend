@@ -21,25 +21,14 @@ import (
 
 // buildHandler creates the HTTP handler chain from environment variables.
 func buildHandler() (http.Handler, error) {
-	allowedOrgs := splitCSV(os.Getenv("ALLOWED_ORGS"))
-	allowedWorkflows := splitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES"))
-
-	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range splitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
-		perRepoWIFRepos[strings.ToLower(entry)] = true
-	}
-
-	if len(allowedWorkflows) == 0 {
+	if len(mintcore.SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES"))) == 0 {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
 
 	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:            "https://token.actions.githubusercontent.com",
-		Audience:             os.Getenv("OIDC_AUDIENCE"),
-		HTTPClient:           &http.Client{Timeout: 30 * time.Second},
-		AllowedOrgs:          allowedOrgs,
-		AllowedWorkflowFiles: allowedWorkflows,
-		PerRepoWIFRepos:      perRepoWIFRepos,
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		Audience:   os.Getenv("OIDC_AUDIENCE"),
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	})
 
 	if err := registerCustomPermissions(); err != nil {
@@ -75,7 +64,7 @@ func buildHandler() (http.Handler, error) {
 }
 
 func run(ctx context.Context) error {
-	missing := checkRequired("ALLOWED_ORGS", "ROLE_APP_IDS", "OIDC_AUDIENCE", "PEM_DIR")
+	missing := checkRequired("ROLE_APP_IDS", "OIDC_AUDIENCE", "PEM_DIR")
 	if len(missing) > 0 {
 		return fmt.Errorf("required environment variables not set: %s", strings.Join(missing, ", "))
 	}
@@ -129,19 +118,6 @@ func checkRequired(names ...string) []string {
 		}
 	}
 	return missing
-}
-
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	for _, entry := range strings.Split(s, ",") {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
 
 func parseLocalRoles(raw string) (map[string]bool, error) {

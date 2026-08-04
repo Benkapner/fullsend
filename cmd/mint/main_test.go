@@ -63,30 +63,30 @@ func TestCheckRequired(t *testing.T) {
 	})
 }
 
-func TestSplitCSV(t *testing.T) {
+func TestSplitCSV_ViaExported(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		result := splitCSV("")
+		result := mintcore.SplitCSV("")
 		if result != nil {
 			t.Fatalf("expected nil, got %v", result)
 		}
 	})
 
 	t.Run("single value", func(t *testing.T) {
-		result := splitCSV("foo")
+		result := mintcore.SplitCSV("foo")
 		if len(result) != 1 || result[0] != "foo" {
 			t.Fatalf("expected [foo], got %v", result)
 		}
 	})
 
 	t.Run("multiple values with spaces", func(t *testing.T) {
-		result := splitCSV("foo, bar , baz")
+		result := mintcore.SplitCSV("foo, bar , baz")
 		if len(result) != 3 || result[0] != "foo" || result[1] != "bar" || result[2] != "baz" {
 			t.Fatalf("expected [foo bar baz], got %v", result)
 		}
 	})
 
 	t.Run("trailing comma", func(t *testing.T) {
-		result := splitCSV("foo,bar,")
+		result := mintcore.SplitCSV("foo,bar,")
 		if len(result) != 2 {
 			t.Fatalf("expected 2 items, got %v", result)
 		}
@@ -197,6 +197,42 @@ func TestRun_MissingEnvVars(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "required environment variables not set") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	// ALLOWED_ORGS is no longer required — it should not appear in the missing list.
+	if strings.Contains(err.Error(), "ALLOWED_ORGS") {
+		t.Fatalf("ALLOWED_ORGS should not be required, but error mentions it: %v", err)
+	}
+}
+
+func TestRun_StartsWithoutAllowedOrgs(t *testing.T) {
+	pemDir := setupTestPEMDir(t)
+
+	t.Setenv("ALLOWED_ORGS", "")
+	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+	t.Setenv("PEM_DIR", pemDir)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("PORT", "0")
+	t.Setenv("FALLBACK_MINT_URL", "")
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-repo")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("mint should start without ALLOWED_ORGS: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() did not return after context cancellation")
 	}
 }
 
@@ -527,11 +563,9 @@ func TestStandaloneWiring(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
 	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:            "https://token.actions.githubusercontent.com",
-		Audience:             "fullsend-mint",
-		HTTPClient:           &http.Client{Timeout: 5 * time.Second},
-		AllowedOrgs:          []string{"test-org"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		Audience:   "fullsend-mint",
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(pemDir)

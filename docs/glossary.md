@@ -30,6 +30,11 @@ See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ## B
 
+### Base Composition
+
+The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; `skills` merges with deduplication by basename (child overrides); `plugins`, `providers`, and `api_servers` concatenate (base + child, no dedup at composition time); `env.runner` and `env.sandbox` merge as independent maps (child keys win); `runner_env` is deprecated in favor of `env.runner`. Replaces the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field.
+See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [ADR 0055](ADRs/0055-unified-env-var-delivery.md), [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md), and [Configuring Agent Behavior](guides/user/customizing-agents.md).
+
 ### Blast Radius
 
 The scope of damage a compromised or misbehaving agent can cause. A core design constraint: every architectural decision about sandboxing, identity scoping, and network policy is evaluated by asking "what is the blast radius if this agent is compromised?" Minimizing blast radius is the primary goal of the sandbox layer.
@@ -46,6 +51,11 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or that has no `base` at all. A custom agent is built from scratch, even if it happens to resemble a default agent. Contrast with [derived agent](#derived-agent), which starts from a default.
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
+
+### Customized Directory
+
+**Deprecated.** A per-org (`customized/`) or per-repo (`.fullsend/customized/`) directory whose contents were overlaid on top of upstream defaults at runtime, replacing any upstream file with a matching name. The overlay was file-level replacement only — customizing a single harness field required copying and maintaining the entire upstream YAML file. Superseded by [base composition](#base-composition) for harnesses, URL-based references for skills/agents/policies, and config-based agent registration; `fullsend agent migrate-customizations` automates conversion.
+See [ADR 0035](ADRs/0035-layered-content-resolution.md) (original mechanism) and [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md) (deprecation).
 
 ## D
 
@@ -76,6 +86,16 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 1 and [#101]
 Stopping automated processing and routing to a human. Escalation is triggered when agents cannot reach consensus (flapping), when trust violations are detected, when loop limits are exceeded, or when the work falls outside the authorized scope (e.g., a change that looks like a feature when only bug fixes are authorized). The escalation queue is the "dead letter queue" — the place humans monitor for items the system could not resolve autonomously.
 See [autonomy-spectrum.md](problems/autonomy-spectrum.md) and [agent-architecture.md](problems/agent-architecture.md).
 
+### Eval Measurement
+
+A score, judge, or metric applied to agent (or agent-chain) behavior — for example cost per run, whether the code agent later passes review, or whether a review agent recommends merge and a human still intervenes. Measurements are not the inputs under test; they are what you score. The same measurement can be applied to curated [eval scenarios](#eval-scenario) or to live ("wild") production traffic, at agent scope or across the platform chain. Prefer this term (or synonyms *eval score* / *eval judge*) over the bare word "evals," which is ambiguous with [eval scenarios](#eval-scenario).
+See [testing-agents.md](problems/testing-agents.md) and [Observability](#observability).
+
+### Eval Scenario
+
+A fixed, reproducible test case — a concrete input with an expected outcome that you re-run when an agent changes. Example: triage is presented with an issue asking to add a cheeseburger to the README and is expected to reject and close it. Scenarios are maintained like tests: if intentional agent behavior changes, update the scenario expectations. They answer "did this change make the agent better or worse on known cases?" and can later grow by promoting interesting production cases from telemetry into the curated set. Distinct from [eval measurements](#eval-measurement) (the scores/judges applied to a scenario or to wild traffic). Prefer this term over the bare word "evals."
+See [testing-agents.md](problems/testing-agents.md) (golden-set evaluation).
+
 ### Evergreen
 
 A workflow concept where a repository automatically stays up-to-date with dependency updates (e.g., Renovate PRs) by automerging changes that consist solely of known-safe dependency bumps. Named by analogy with evergreen browsers that silently self-update. Proposed as a stretch-goal supplementary workflow.
@@ -105,8 +125,8 @@ See [architecture.md](architecture.md) and [agent-architecture.md](problems/agen
 
 ### Label State Machine
 
-The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-for-triage`, `ready-to-code`, and `ready-for-review` drive agent dispatch; others such as `ready-for-merge` and `requires-manual-review` encode review outcomes. In per-repo installs, `ready-for-review` on a PR also triggers review; applying it to a standalone issue does not. Per-org installs still accept legacy issue-side review triggers pending a follow-up. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
-See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 3.
+The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-for-triage`, `ready-to-code`, and `ready-for-review` drive agent dispatch; others such as `ready-for-merge` and `requires-manual-review` encode review outcomes. Every routing label carries the `ready-` prefix, but not every `ready-` label routes: `ready-for-merge` is a review outcome that reaches dispatch without matching a stage. Per-org shims filter on this prefix, while per-repo shims allow arbitrary labels for BYOA harness agents. In per-repo installs, `ready-for-review` on a PR also triggers review; applying it to a standalone issue does not. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
+See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 3 and [Bring Your Own Agent — routing label convention](guides/user/bring-your-own-agent.md).
 
 ## M
 

@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
@@ -23,6 +25,15 @@ type Client struct {
 	// It defaults to ADC but can be overridden for testing.
 	tokenFunc    func(ctx context.Context) (string, error)
 	QuotaProject string
+
+	// adcOnce guards lazy initialization of adcTS.
+	adcOnce sync.Once
+	// adcTS is the cached TokenSource from FindDefaultCredentials.
+	// It handles token refresh internally.
+	adcTS oauth2.TokenSource
+	// adcErr records any error from credential discovery so it
+	// can be returned on every subsequent call.
+	adcErr error
 }
 
 // NewClient creates a new Client with default settings.
@@ -52,12 +63,24 @@ func (c *Client) AccessToken(ctx context.Context) (string, error) {
 }
 
 // adcToken obtains a token via Application Default Credentials.
+// Credential discovery (FindDefaultCredentials) runs once; the
+// returned TokenSource handles refresh internally.
 func (c *Client) adcToken(ctx context.Context) (string, error) {
-	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
-		return "", fmt.Errorf("finding GCP credentials: %w (ensure 'gcloud auth application-default login' has been run or GOOGLE_APPLICATION_CREDENTIALS is set)", err)
+	c.adcOnce.Do(func() {
+		// Use WithoutCancel so credential discovery is not tied to a
+		// single request's lifecycle — a cancelled first-caller context
+		// must not permanently poison the cached result.
+		creds, err := google.FindDefaultCredentials(context.WithoutCancel(ctx), "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			c.adcErr = fmt.Errorf("finding GCP credentials: %w (ensure 'gcloud auth application-default login' has been run or GOOGLE_APPLICATION_CREDENTIALS is set)", err)
+			return
+		}
+		c.adcTS = creds.TokenSource
+	})
+	if c.adcErr != nil {
+		return "", c.adcErr
 	}
-	tok, err := creds.TokenSource.Token()
+	tok, err := c.adcTS.Token()
 	if err != nil {
 		return "", fmt.Errorf("obtaining GCP access token: %w", err)
 	}

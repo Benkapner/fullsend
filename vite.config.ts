@@ -111,6 +111,7 @@ export default defineConfig(({ command }) => ({
     environment: "jsdom",
     include: [
       "admin/src/**/*.test.ts",
+      "../website/.vitepress/**/*.test.ts",
     ],
     passWithNoTests: true,
   },

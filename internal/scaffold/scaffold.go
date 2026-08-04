@@ -11,6 +11,9 @@ import (
 //go:embed all:fullsend-repo
 var content embed.FS
 
+//go:embed all:fullsend-repo-gitlab
+var gitlabContent embed.FS
+
 // FullsendRepoFile returns the content of a file from the fullsend-repo scaffold.
 // The path is relative to the fullsend-repo root (e.g., ".github/workflows/triage.yml").
 func FullsendRepoFile(path string) ([]byte, error) {
@@ -21,29 +24,13 @@ func FullsendRepoFile(path string) ([]byte, error) {
 // embed.FS does not preserve permission bits, so we track them here.
 // TestFileModeMatchesFilesystem verifies this set stays in sync.
 var executableFiles = map[string]struct{}{
-	"scripts/extract-transcript-error.sh":    {},
-	"scripts/post-code.sh":                   {},
-	"scripts/post-prioritize.sh":             {},
-	"scripts/post-retro.sh":                  {},
-	"scripts/post-review.sh":                 {},
-	"scripts/post-triage.sh":                 {},
-	"scripts/post-triage-test.sh":            {},
-	"scripts/post-prioritize-test.sh":        {},
-	"scripts/pre-code.sh":                    {},
-	"scripts/pre-prioritize.sh":              {},
-	"scripts/pre-review.sh":                  {},
-	"scripts/pre-triage.sh":                  {},
+	"scripts/fullsend-check-output":          {},
+	"scripts/install-precommit-tools.sh":     {},
 	"scripts/prepare-sandbox-credentials.sh": {},
 	"scripts/reconcile-repos.sh":             {},
-	"scripts/scan-secrets":                   {},
-	"scripts/setup-prioritize.sh":            {},
-	"scripts/pre-retro.sh":                   {},
-	"scripts/validate-output-schema.sh":      {},
-	"scripts/fullsend-check-output":          {},
-	"scripts/validate-output-schema-test.sh": {},
-	"scripts/validate-source-repo.sh":        {},
-	"scripts/install-precommit-tools.sh":     {},
 	"scripts/resolve-precommit-tools.py":     {},
+	"scripts/setup-prioritize.sh":            {},
+	"scripts/validate-source-repo.sh":        {},
 }
 
 // FileMode returns the Git tree mode for a scaffold file.
@@ -55,12 +42,8 @@ func FileMode(path string) string {
 }
 
 // layeredDirs contain upstream defaults provided at runtime via reusable
-// workflow workspace preparation. The scaffold does not install these —
-// orgs add overrides in customized/<dir>/ instead. See ADR 0035.
-//
-// When adding or removing harness YAML files (default agents), update
-// docs/agents/README.md and add a corresponding docs/agents/<name>.md.
-// The lint-agent-docs pre-commit hook enforces this.
+// workflow workspace preparation. The scaffold does not install these;
+// customization uses base: harness composition instead. See ADR 0064.
 var layeredDirs = []string{
 	"agents/",
 	"skills/",
@@ -114,26 +97,6 @@ func WalkFullsendRepoAll(fn func(path string, content []byte) error) error {
 // PerRepoShimTemplate returns the content of the per-repo shim workflow template.
 func PerRepoShimTemplate() ([]byte, error) {
 	return content.ReadFile("fullsend-repo/templates/shim-per-repo.yaml")
-}
-
-// CustomizedDirs returns the set of customized/ subdirectories
-// that should be scaffolded in a per-org .fullsend config repo.
-func CustomizedDirs() []string {
-	dirs := make([]string, 0, len(layeredDirs))
-	for _, d := range layeredDirs {
-		dirs = append(dirs, "customized/"+strings.TrimSuffix(d, "/"))
-	}
-	return dirs
-}
-
-// PerRepoCustomizedDirs returns the set of customized/ subdirectories
-// that should be scaffolded in a per-repo .fullsend/ setup.
-func PerRepoCustomizedDirs() []string {
-	dirs := make([]string, 0, len(layeredDirs))
-	for _, d := range layeredDirs {
-		dirs = append(dirs, ".fullsend/customized/"+strings.TrimSuffix(d, "/"))
-	}
-	return dirs
 }
 
 // IsLayeredPath reports whether path is in a layered content directory.
@@ -191,7 +154,7 @@ func ManagedHeader(path string) string {
 			upstreamBase, path,
 		)
 	default:
-		// Check for extensionless scripts (e.g. scripts/scan-secrets)
+		// Check for extensionless scripts (e.g. scripts/fullsend-check-output)
 		if strings.HasPrefix(path, "scripts/") && ext == "" {
 			return fmt.Sprintf(
 				"# This file is managed by fullsend. Do not edit it directly.\n# Upstream: %s%s\n",
@@ -219,22 +182,45 @@ func PrependManagedHeader(path string, content []byte) []byte {
 	return []byte(header + s)
 }
 
-func walkFullsendRepo(fn func(path string, content []byte) error, filter bool) error {
-	return fs.WalkDir(content, "fullsend-repo", func(path string, d fs.DirEntry, err error) error {
+func walkEmbedFS(fsys embed.FS, root string, fn func(path string, content []byte) error, skip func(string) bool) error {
+	return fs.WalkDir(fsys, root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		relPath := path[len("fullsend-repo/"):]
-		if filter && isSkippedDir(relPath) {
+		relPath := path[len(root)+1:]
+		if skip != nil && skip(relPath) {
 			return nil
 		}
-		data, readErr := content.ReadFile(path)
+		data, readErr := fsys.ReadFile(path)
 		if readErr != nil {
 			return fmt.Errorf("reading %s: %w", path, readErr)
 		}
 		return fn(relPath, data)
 	})
+}
+
+func walkFullsendRepo(fn func(path string, content []byte) error, filter bool) error {
+	var skip func(string) bool
+	if filter {
+		skip = isSkippedDir
+	}
+	return walkEmbedFS(content, "fullsend-repo", fn, skip)
+}
+
+// GitLabPerRepoFile returns the content of a file from the GitLab per-repo scaffold.
+// The path is relative to the fullsend-repo-gitlab root (e.g., ".gitlab-ci.yml").
+func GitLabPerRepoFile(path string) ([]byte, error) {
+	return gitlabContent.ReadFile("fullsend-repo-gitlab/" + path)
+}
+
+// WalkGitLabPerRepo calls fn for each file in the GitLab per-repo scaffold.
+// Unlike WalkFullsendRepo, this does not filter layered directories because
+// the GitLab scaffold contains only CI pipeline YAML and .fullsend/config.yaml
+// — it has no layered content (harness, agents, policies) to filter. Harness
+// resolution at runtime is handled by fullsend run's config-driven lookup.
+func WalkGitLabPerRepo(fn func(path string, content []byte) error) error {
+	return walkEmbedFS(gitlabContent, "fullsend-repo-gitlab", fn, nil)
 }

@@ -21,12 +21,12 @@ Accepted
 
 ## Context
 
-Which agents fullsend knows about is currently compiled into the binary.
-Scaffold-embedded harnesses (`internal/scaffold/fullsend-repo/harness/`)
-define the complete agent set, and `HarnessNames()` enumerates them
-from the embed. There is no mechanism for registering agents that live
-outside the scaffold — adding or extracting an agent requires a code
-change to the fullsend binary.
+Which agents fullsend knows about was originally compiled into the binary.
+Scaffold-embedded harnesses (formerly `internal/scaffold/fullsend-repo/harness/`,
+now in `fullsend-ai/agents`) defined the complete agent set, and
+`HarnessNames()` enumerated them from the embed. There was no mechanism
+for registering agents that lived outside the scaffold — adding or
+extracting an agent required a code change to the fullsend binary.
 
 The triage agent extraction to `fullsend-ai/agents`
 ([ADR 0045](0045-forge-portable-harness-schema.md) Phase 4) is the
@@ -41,23 +41,29 @@ list to both `OrgConfig` and `PerRepoConfig`. (Note: ADR 0045 Phase 4
 previously removed the `agents` block from `OrgConfig`; this re-adds
 a field with the same YAML key but different semantics — harness
 source URLs rather than role/name/slug identity tuples.) Each entry
-is a URL or local path, with an optional name override:
+is a URL or local path, with an optional name override. Entries may
+also set `enabled: false` to disable an agent (including scaffold
+defaults) without removing it from configuration:
 
 ```yaml
 agents:
   - https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=<hash>
   - name: lint
     source: harness/my-linter.yaml
+  - name: retro
+    enabled: false   # suppression-only — disables scaffold default
 ```
 
 `fullsend run <name>` resolves agents from config at runtime, loading
 harnesses directly from URLs or local paths. No intermediate wrapper
 files are generated on disk — role and slug come from the harness
-content itself. Config entries merge additively with
-scaffold-discovered agents; collision is keyed by agent name (explicit
-`name` if set, otherwise derived from source filename) and resolved in
-favor of config, enabling gradual migration. Once all first-party agents are extracted, config
-becomes authoritative and the scaffold fallback is removed.
+content itself. Config entries are looked up directly via the agent name (explicit
+`name` if set, otherwise derived from source filename). When an agent is
+not in config, a runtime fallback resolves it from the `fullsend-ai/agents`
+repository for known first-party agents. *(Originally, config entries
+merged additively with scaffold-discovered agents on disk; the additive
+merge and disk fallback were removed once all first-party agents were
+extracted — see PR #5425.)*
 
 A `fullsend agent` CLI subcommand (`add`, `list`, `update`, `remove`;
 plus `migrate-customizations` per [ADR 0064](0064-deprecate-customized-directory-overlay.md))
@@ -76,9 +82,9 @@ phasing, schema details, CLI behavior, and migration mechanics.
 
 - Anyone can add an agent to a fullsend installation via `fullsend agent add` — no code change required.
 - First-party and third-party agents follow the same registration path.
-- The additive merge model allows agents to be extracted from the scaffold one at a time without disrupting existing installations.
+- Config-driven registration allows agents to be added, updated, or removed without code changes.
 - Per-repo installs no longer need org config for remote resource validation.
-- No forced migration — empty config falls back to scaffold discovery until populated.
+- Empty config falls back to agents-repo resolution for known first-party agents. *(The original scaffold-discovery disk fallback was removed once all customers migrated to config-driven agents — see PR #5425.)*
 - **Transitional agents-repo fallback:** During the [agent extraction](../plans/agent-extraction-to-agents-repo.md), a runtime fallback resolves known first-party agents from `fullsend-ai/agents` when not in config. This avoids requiring config changes from existing users during extraction. The fallback will be removed once all users have migrated to config-driven registration (Phase 5 / extraction plan Step 7).
 - The `agents` YAML key was previously used in `OrgConfig` with a different schema (role/name/slug identity tuples, removed by ADR 0045 Phase 4). The new schema (URL/path source entries) is incompatible; a custom unmarshaler detects and rejects old-format entries with a clear error message.
 

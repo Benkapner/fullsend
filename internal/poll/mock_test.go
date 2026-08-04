@@ -16,6 +16,14 @@ type emojiCall struct {
 	Emoji       string
 }
 
+// pipelineCall records a CreatePipeline invocation.
+type pipelineCall struct {
+	Owner     string
+	Repo      string
+	Ref       string
+	Variables map[string]string
+}
+
 // mockClient implements GitLabClient with configurable return values
 // and error injection for deterministic testing.
 type mockClient struct {
@@ -45,6 +53,8 @@ type mockClient struct {
 
 	issue    map[int]*Issue // keyed by IID
 	issueErr map[int]error
+	mr       map[int]*MergeRequest // keyed by IID
+	mrErr    map[int]error
 
 	memberLevel map[int]int   // keyed by userID
 	memberErr   map[int]error // keyed by userID
@@ -55,6 +65,11 @@ type mockClient struct {
 
 	authenticatedUser string
 	authErr           error
+
+	pipelineCounter  int
+	pipelineErr      error
+	pipelineCalls    []pipelineCall
+	pipelineErrAfter int // fail after N successful calls (0 = always fail if pipelineErr set)
 }
 
 func newMockClient() *mockClient {
@@ -70,6 +85,8 @@ func newMockClient() *mockClient {
 		updatedVars:    make(map[string]string),
 		issue:          make(map[int]*Issue),
 		issueErr:       make(map[int]error),
+		mr:             make(map[int]*MergeRequest),
+		mrErr:          make(map[int]error),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
 		projectPaths:   make(map[int]string),
@@ -131,6 +148,10 @@ func (m *mockClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 	return m.authenticatedUser, m.authErr
 }
 
+func (m *mockClient) GetAuthenticatedUserID(_ context.Context) (int, error) {
+	return 0, m.authErr
+}
+
 func (m *mockClient) CreateNoteAwardEmoji(_ context.Context, _, _, _ string, noteableIID, noteID int, emoji string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -153,6 +174,17 @@ func (m *mockClient) GetIssue(_ context.Context, _, _ string, issueIID int) (*Is
 	return iss, nil
 }
 
+func (m *mockClient) GetMergeRequest(_ context.Context, _, _ string, mrIID int) (*MergeRequest, error) {
+	if err, ok := m.mrErr[mrIID]; ok && err != nil {
+		return nil, err
+	}
+	mrObj, ok := m.mr[mrIID]
+	if !ok {
+		return nil, forge.ErrNotFound
+	}
+	return mrObj, nil
+}
+
 func (m *mockClient) GetMemberAccessLevel(_ context.Context, _, _ string, userID int) (int, error) {
 	if err, ok := m.memberErr[userID]; ok && err != nil {
 		return 0, err
@@ -170,4 +202,24 @@ func (m *mockClient) GetProjectPath(_ context.Context, projectID int) (string, e
 		return "", forge.ErrNotFound
 	}
 	return path, nil
+}
+
+func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	vars := make(map[string]string, len(variables))
+	for k, v := range variables {
+		vars[k] = v
+	}
+	m.pipelineCalls = append(m.pipelineCalls, pipelineCall{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+	})
+	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
+		return 0, "", m.pipelineErr
+	}
+	m.pipelineCounter++
+	return int64(m.pipelineCounter), fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", m.pipelineCounter), nil
 }

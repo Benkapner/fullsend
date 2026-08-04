@@ -1,5 +1,10 @@
 # Implementation Plan: `fullsend repos init`
 
+> **Superseded:** The `repos init` command has been replaced by
+> `repos migrate` (PR #5816). See
+> [ADR 0074](../ADRs/0074-repos-command-consolidation.md) for the
+> consolidation decision. This plan is retained for historical context.
+
 ## Context
 
 [ADR 0057](../ADRs/0057-repos-management.md) defines a declarative
@@ -60,10 +65,18 @@ Flags:
 - `--repos` (string, comma-separated): explicit list of repo names to
   include. Skips interactive selection.
 - `--all` (bool): include all eligible repos without prompting.
-- `--mint-project` (string): GCP project for the `mint.project` field.
-- `--mint-region` (string, default `us-central1`): GCP region for
-  the `mint.region` field.
+- `--forge` (string, **required**): forge type (`github` or `gitlab`).
+- `--forge-url` (string): forge instance URL. Required for `gitlab`;
+  defaults to `https://github.com` for `github`.
+- `--mint-url` (string): token mint Cloud Run endpoint URL for the
+  `forge.github.mint_url` field.
 - `--inference-project` (string): default GCP project for inference.
+- `--inference-region` (string): GCP region for inference (default:
+  `us-central1`).
+- `--inference-project-number` (string): GCP project number for the
+  `forge.github.inference_project_number` field.
+- `--fullsend-ref` (string): pin the fullsend workflow ref (e.g.
+  `v0.42.0`).
 - `--concurrency` (int, default 8): max parallel API calls.
 
 Positional argument: `<target>` (org name or `owner/repo`). Detection
@@ -74,13 +87,14 @@ uses the same `strings.Contains(arg, "/")` pattern as
 
 ```go
 type InitConfig struct {
-    Target           string   // org name or owner/repo
-    Repos            []string // explicit repo names (nil = interactive/all)
-    All              bool     // include all repos without prompting
-    MintProject      string
-    MintRegion       string
-    InferenceProject string
-    MaxConcurrency   int
+    Target                 string   // org name or owner/repo
+    Repos                  []string // explicit repo names (nil = interactive/all)
+    All                    bool     // include all repos without prompting
+    Forge                  string   // forge type ("github" or "gitlab")
+    ForgeURL               string   // forge instance URL
+    InferenceProject       string
+    InferenceProjectNumber string
+    MaxConcurrency         int
 }
 
 type DiscoveredRepo struct {
@@ -101,7 +115,7 @@ type InitResult struct {
 }
 
 func Init(ctx context.Context, cfg InitConfig,
-    client forge.Client,
+    clients ForgeClientFactory,
     selectRepos RepoSelectFunc,
     progress ProgressFunc) (*InitResult, error)
 ```
@@ -145,7 +159,7 @@ manifest contains one entry.
 
 **Org-level** (target has no `/`):
 
-1. Call `ListOrgRepos(ctx, org)` to enumerate eligible repos.
+1. Call `ListOrgRepos(ctx, org, false)` to enumerate eligible repos (the `includePrivate` parameter is `false` for per-org mode).
 2. Check for per-org config repo (`{org}/.fullsend`):
    - Read `config.yaml` via `GetFileContent`
      (`internal/forge/forge.go:199`).
@@ -160,19 +174,21 @@ manifest contains one entry.
      variable, mint URL, and region in one API call.
    - If `FULLSEND_PER_REPO_INSTALL == "true"`
      (`forge.PerRepoGuardVar`, `internal/forge/forge.go:17`):
-     - Read workflow file (`.github/workflows/fullsend.yml`, fall
-       back to `.yaml`) via `GetFileContent`.
-     - Extract `@ref` from `uses:` line.
+     - Read workflow file via `GetFileContent` using forge-specific
+       paths from `ForgeConfig.WorkflowPaths`.
+     - Extract ref using `ForgeConfig.WorkflowRefPattern`.
      - Mark `source: per-repo`.
    - Else if repo appears in per-org enrollment with
      `enabled: true`:
-     - Use mint URL and config from per-org `config.yaml`.
+     - Use mint URL and config from per-org `config.yaml`. If no
+       mint URL is set in `config.yaml`, fall back to reading the
+       `FULLSEND_MINT_URL` org-level variable via `GetOrgVariable`.
      - Read the per-org shim workflow file and extract `@ref` from
        the `uses:` line (same as per-repo discovery). Do not use
        `config.DefaultUpstreamRef` — it is `v0`, a major-version
        floating tag for workflow-call resolution, not a concrete
        release version. If no workflow file exists, omit the ref
-       and let it inherit from `defaults.fullsend_ref`.
+       and let it inherit from `forge.github.fullsend_ref`.
      - Mark `source: per-org`.
    - Otherwise:
      - Mark `source: new` (not yet installed).
@@ -197,39 +213,32 @@ func buildManifest(repos []DiscoveredRepo,
     cfg InitConfig) (*Manifest, []string)
 ```
 
-1. **Compute `mint:` block:**
-   - `url`: from discovered `FULLSEND_MINT_URL` (should be uniform
+1. **Compute `forge.github:` block** (only when `--forge=github`):
+   - `mint_url`: from discovered `FULLSEND_MINT_URL` (should be uniform
      across repos sharing a mint). If repos report different mint
      URLs, use the most common and add a TODO. For greenfield (no
      discovered URLs), leave as TODO (Cloud Run URLs contain a random
      hash and cannot be derived from the project name alone).
-   - `project`: from `--mint-project` flag. If not provided, add to
-     TODO list.
-   - `region`: from `--mint-region` flag (default `us-central1`).
 
-2. **Compute `defaults:` block** by finding the mode (most common
-   value) for each field across discovered repos. For greenfield
+2. **Compute `forge.github:` infrastructure fields** by finding the
+   mode (most common value) across discovered repos. For greenfield
    repos (`source: new`) with no discovered values, use the CLI
-   version as `fullsend_ref` and `--inference-project` /
-   `--mint-region` from flags:
-   - `fullsend_ref`: mode of all discovered refs, or CLI version.
-   - `inference_region`: mode of all discovered
-     `FULLSEND_GCP_REGION` values, or `--mint-region`.
+   version as `fullsend_ref` and flags:
+   - `fullsend_ref`: `--fullsend-ref` flag > mode of discovered refs > CLI version.
    - `inference_project`: from `--inference-project` flag, or TODO.
-   - `allowed_remote_resources`: from per-org config if present.
+   - `inference_project_number`: from `--inference-project-number` flag, or TODO.
+   - `defaults.allowed_remote_resources`: from per-org config if present.
 
 3. **Build repo entries:**
-   - Repos matching all defaults → simple string entries
-     (`acme-corp/api-server`).
-   - Repos with overrides (different ref, different region) → object
-     entries with only the differing fields.
+   - All repos use simple string entries (`acme-corp/api-server`)
+     or object entries with a `forge` override.
    - Per-org enrolled repos are included as normal entries. A YAML
      comment group header notes they are currently per-org and will
      be converted to per-repo on `repos install`.
    - New repos (not yet installed) are included as normal entries.
 
 4. **Return TODO list** for fields that could not be discovered (e.g.,
-   `inference_project` when no flag provided, `mint.project` when
+   `inference_project` when no flag provided, `inference_project_number` when
    omitted).
 
 **Secret limitation:** `FULLSEND_GCP_PROJECT_ID` and
@@ -242,17 +251,15 @@ provisioned by `repos install`).
 #### Ref extraction
 
 ```go
-var workflowRefPattern = regexp.MustCompile(
-    `uses:\s+fullsend-ai/fullsend/.*@(\S+)`,
-)
+// Patterns and extraction are now forge-specific via ForgeConfig.
+// GitHub uses a `uses:` action ref pattern; GitLab uses a `ref:` include pattern.
+// See internal/repos/forge_config.go for the per-forge definitions.
 
-func extractWorkflowRef(content []byte) string
+func extractWorkflowRef(content []byte, fc ForgeConfig) string
 ```
 
-Reuses the same regex pattern as `internal/repos/status.go` (PR 4 of
-the repos management plan). If this PR lands before PR 4, define the
-function in `init.go` and move it to a shared file (e.g.,
-`internal/repos/workflow.go`) when PR 4 lands.
+The ref pattern is now part of `ForgeConfig` rather than a standalone
+regex, allowing each forge to define its own extraction logic.
 
 #### Manifest serialization
 
@@ -283,10 +290,8 @@ Add `Marshal()` to the `Manifest` type defined in PR 2. Uses
 - Single repo (per-repo installed) → minimal manifest.
 - Single repo (per-org enrolled) → reads org config for enrollment.
 - Single repo (not installed) → manifest with one new entry.
-- Defaults computation: most common ref becomes default, repos with
-  minority values get object entries.
-- Per-repo overrides: repos with different ref/region generate object
-  entries with only the differing fields.
+- Infrastructure field computation: most common ref and region become
+  `forge.github` values.
 - Interactive selection callback: verify candidates include status
   labels, pre-selected repos match existing installations.
 - Secret limitation: `inference_project` left as TODO when no flag

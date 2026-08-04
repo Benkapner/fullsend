@@ -11,15 +11,12 @@ import (
 func newTestManifest() *Manifest {
 	return &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceProject: "example-inference",
-			InferenceRegion:  "us-central1",
-			FullsendRef:      "v2.3.0",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
@@ -55,7 +52,7 @@ func TestProbeRepoState_Installed(t *testing.T) {
 	fc := forge.NewFakeClient()
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	if err != nil {
 		t.Fatalf("ProbeRepoState() error = %v", err)
 	}
@@ -76,7 +73,7 @@ func TestProbeRepoState_Installed(t *testing.T) {
 func TestProbeRepoState_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	if err != nil {
 		t.Fatalf("ProbeRepoState() error = %v", err)
 	}
@@ -91,7 +88,7 @@ func TestProbeRepoState_WorkflowError(t *testing.T) {
 	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "us-east1"
 	fc.Errors["GetFileContent"] = fmt.Errorf("server error")
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
 	if err == nil {
 		t.Fatal("expected error for workflow read failure")
 	}
@@ -112,7 +109,7 @@ func TestStatus_AllInstalled_NoDrift(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +145,7 @@ func TestStatus_RepoNotInstalled(t *testing.T) {
 		"https://mint.example.com", "us-central1")
 	// web-frontend has no variables — not installed.
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,7 +175,7 @@ func TestStatus_MintURLDrift(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +211,7 @@ func TestStatus_RefDrift(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.1.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,36 +232,31 @@ func TestStatus_RefDrift(t *testing.T) {
 	}
 }
 
-func TestStatus_RegionDrift(t *testing.T) {
+func TestStatus_RegionDrift_NoLongerReported(t *testing.T) {
+	// FULLSEND_GCP_REGION is no longer in the manifest (install-time only),
+	// so status should not report region drift.
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-west1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	found := false
 	for _, s := range result.Repos {
 		if s.Repo == "api-server" {
-			found = true
 			for _, d := range s.Drifts {
 				if d.Field == "FULLSEND_GCP_REGION" {
-					if d.Expected != "us-central1" || d.Actual != "us-west1" {
-						t.Errorf("region drift = %+v", d)
-					}
-					return
+					t.Errorf("status should not report FULLSEND_GCP_REGION drift: %+v", d)
 				}
 			}
-			t.Error("no FULLSEND_GCP_REGION drift found")
+			return
 		}
 	}
-	if !found {
-		t.Error("api-server not found in results")
-	}
+	t.Error("api-server not found in results")
 }
 
 func TestStatus_MultipleDrifts(t *testing.T) {
@@ -274,21 +266,21 @@ func TestStatus_MultipleDrifts(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.1.0",
 		"https://old.example.com", "us-west1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	for _, s := range result.Repos {
 		if s.Repo == "api-server" {
-			if len(s.Drifts) != 3 {
-				t.Fatalf("want 3 drifts, got %d: %v", len(s.Drifts), s.Drifts)
+			if len(s.Drifts) != 2 {
+				t.Fatalf("want 2 drifts, got %d: %v", len(s.Drifts), s.Drifts)
 			}
 			fields := map[string]bool{}
 			for _, d := range s.Drifts {
 				fields[d.Field] = true
 			}
-			for _, f := range []string{"FULLSEND_MINT_URL", "FULLSEND_GCP_REGION", "fullsend_ref"} {
+			for _, f := range []string{"FULLSEND_MINT_URL", "fullsend_ref"} {
 				if !fields[f] {
 					t.Errorf("missing drift for %s", f)
 				}
@@ -301,19 +293,18 @@ func TestStatus_WorkflowMissing_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
-		Defaults: DefaultsConfig{
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	// Guard variable not set → not installed, workflow not checked.
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,13 +318,12 @@ func TestStatus_WorkflowYAMLExtension(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
-		Defaults: DefaultsConfig{
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
@@ -344,7 +334,7 @@ func TestStatus_WorkflowYAMLExtension(t *testing.T) {
 	// Use .yaml extension instead of .yml
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yaml"] = []byte(shimWorkflow)
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -366,7 +356,7 @@ func TestStatus_RepoFilter(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, []string{"acme-corp/api-server"})
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -386,7 +376,7 @@ func TestStatus_RepoFilterCaseInsensitive(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, []string{"ACME-CORP/API-SERVER"})
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"ACME-CORP/API-SERVER"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -400,17 +390,15 @@ func TestStatus_APIError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -437,14 +425,12 @@ func TestStatus_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+		}},
 		Defaults: DefaultsConfig{
-			FullsendRef:     "v2.3.0",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "acme-corp/*"}},
 	}
@@ -452,7 +438,7 @@ func TestStatus_GlobExpansion(t *testing.T) {
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -472,36 +458,31 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "example-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+		}},
 		Defaults: DefaultsConfig{
-			FullsendRef:     "v2.3.0",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "acme-corp/api-server"},
-			{
-				Repo:        "acme-corp/legacy",
-				FullsendRef: NullableString{Value: "v2.1.0", Set: true},
-			},
+			{Repo: "acme-corp/legacy"},
 		},
 	}
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "legacy", "v2.1.0",
+	populateInstalledRepo(fc, "acme-corp", "legacy", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if result.Summary.Drifted != 0 {
-		t.Errorf("drifted = %d, want 0 (legacy has v2.1.0 pinned)", result.Summary.Drifted)
+		t.Errorf("drifted = %d, want 0 (both repos match forge-level ref)", result.Summary.Drifted)
 	}
 }
 
@@ -509,15 +490,13 @@ func TestStatus_DefaultConcurrency(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
-	result, err := Status(context.Background(), m, fc, 0, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -530,14 +509,12 @@ func TestStatus_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 	}
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -550,13 +527,12 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
-		Defaults: DefaultsConfig{
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -566,7 +542,7 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.Errors["GetFileContent"] = fmt.Errorf("server error")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -586,13 +562,12 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
-		Defaults: DefaultsConfig{
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
@@ -601,7 +576,7 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -666,7 +641,7 @@ func TestExtractWorkflowRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractWorkflowRef([]byte(tt.content))
+			got := extractWorkflowRef([]byte(tt.content), defaultForgeConfig)
 			if got != tt.want {
 				t.Errorf("extractWorkflowRef() = %q, want %q", got, tt.want)
 			}
@@ -682,7 +657,7 @@ func TestFilterRepos(t *testing.T) {
 	}
 
 	t.Run("single filter", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"acme-corp/api-server"})
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/api-server"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -692,30 +667,39 @@ func TestFilterRepos(t *testing.T) {
 		if result[0].Repo != "api-server" {
 			t.Errorf("repo = %q, want api-server", result[0].Repo)
 		}
+		if len(unmatched) != 0 {
+			t.Errorf("unmatched = %v, want empty", unmatched)
+		}
 	})
 
 	t.Run("multiple filters", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"acme-corp/api-server", "other-org/tool"})
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/api-server", "other-org/tool"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(result) != 2 {
 			t.Fatalf("got %d results, want 2", len(result))
 		}
+		if len(unmatched) != 0 {
+			t.Errorf("unmatched = %v, want empty", unmatched)
+		}
 	})
 
-	t.Run("no match", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"nonexistent/repo"})
-		if err != nil {
-			t.Fatal(err)
+	t.Run("all unmatched returns error", func(t *testing.T) {
+		result, unmatched, err := filterRepos(repos, []string{"nonexistent/repo"})
+		if err == nil {
+			t.Fatal("expected error when all filters are unmatched")
 		}
-		if len(result) != 0 {
-			t.Fatalf("got %d results, want 0", len(result))
+		if result != nil {
+			t.Errorf("got %d results, want nil", len(result))
+		}
+		if len(unmatched) != 1 || unmatched[0] != "nonexistent/repo" {
+			t.Errorf("unmatched = %v, want [nonexistent/repo]", unmatched)
 		}
 	})
 
 	t.Run("case insensitive", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"ACME-CORP/API-SERVER"})
+		result, _, err := filterRepos(repos, []string{"ACME-CORP/API-SERVER"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -725,7 +709,7 @@ func TestFilterRepos(t *testing.T) {
 	})
 
 	t.Run("glob wildcard", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"acme-corp/*"})
+		result, _, err := filterRepos(repos, []string{"acme-corp/*"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -735,7 +719,7 @@ func TestFilterRepos(t *testing.T) {
 	})
 
 	t.Run("glob question mark", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"other-org/too?"})
+		result, _, err := filterRepos(repos, []string{"other-org/too?"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -747,18 +731,18 @@ func TestFilterRepos(t *testing.T) {
 		}
 	})
 
-	t.Run("glob no match", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"missing-org/*"})
-		if err != nil {
-			t.Fatal(err)
+	t.Run("all unmatched glob returns error", func(t *testing.T) {
+		_, unmatched, err := filterRepos(repos, []string{"missing-org/*"})
+		if err == nil {
+			t.Fatal("expected error when all filters are unmatched")
 		}
-		if len(result) != 0 {
-			t.Fatalf("got %d results, want 0", len(result))
+		if len(unmatched) != 1 || unmatched[0] != "missing-org/*" {
+			t.Errorf("unmatched = %v, want [missing-org/*]", unmatched)
 		}
 	})
 
 	t.Run("glob case insensitive", func(t *testing.T) {
-		result, err := filterRepos(repos, []string{"ACME-CORP/*"})
+		result, _, err := filterRepos(repos, []string{"ACME-CORP/*"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -768,9 +752,48 @@ func TestFilterRepos(t *testing.T) {
 	})
 
 	t.Run("bad pattern", func(t *testing.T) {
-		_, err := filterRepos(repos, []string{"acme-corp/[invalid"})
+		_, _, err := filterRepos(repos, []string{"acme-corp/[invalid"})
 		if err == nil {
 			t.Error("expected error for malformed glob pattern")
+		}
+	})
+
+	t.Run("mixed matched and unmatched", func(t *testing.T) {
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/api-server", "org/nonexistent"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 1 {
+			t.Fatalf("got %d results, want 1", len(result))
+		}
+		if result[0].Repo != "api-server" {
+			t.Errorf("repo = %q, want api-server", result[0].Repo)
+		}
+		if len(unmatched) != 1 || unmatched[0] != "org/nonexistent" {
+			t.Errorf("unmatched = %v, want [org/nonexistent]", unmatched)
+		}
+	})
+
+	t.Run("overlapping filters no spurious unmatched", func(t *testing.T) {
+		result, unmatched, err := filterRepos(repos, []string{"acme-corp/*", "acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+		if len(unmatched) != 0 {
+			t.Errorf("unmatched = %v, want empty (glob should cover exact match)", unmatched)
+		}
+	})
+
+	t.Run("multiple unmatched returns error", func(t *testing.T) {
+		_, unmatched, err := filterRepos(repos, []string{"bad/one", "bad/two"})
+		if err == nil {
+			t.Fatal("expected error when all filters are unmatched")
+		}
+		if len(unmatched) != 2 {
+			t.Errorf("unmatched count = %d, want 2", len(unmatched))
 		}
 	})
 }
@@ -779,17 +802,15 @@ func TestStatus_GuardVarFalse(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "false"
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -803,14 +824,12 @@ func TestStatus_MultiOrg(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+		}},
 		Defaults: DefaultsConfig{
-			FullsendRef:     "v2.3.0",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{
 			{Repo: "org-a/repo1"},
@@ -821,7 +840,7 @@ func TestStatus_MultiOrg(t *testing.T) {
 	populateInstalledRepo(fc, "org-a", "repo1", "v2.3.0", "https://mint.example.com", "us-central1")
 	populateInstalledRepo(fc, "org-b", "repo2", "v2.3.0", "https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -840,15 +859,13 @@ func TestStatus_GlobExpandError(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "bad-org/*"}},
 	}
 
-	_, err := Status(context.Background(), m, fc, 4, nil)
+	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err == nil {
 		t.Fatal("expected error from glob expansion")
 	}
@@ -858,21 +875,19 @@ func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "",
+			FullsendRef: "v2.3.0",
+		}},
 		Defaults: DefaultsConfig{
-			FullsendRef:     "v2.3.0",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://some-mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -886,17 +901,15 @@ func TestStatus_EmptyExpectedRef_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL: "https://mint.example.com",
+		}},
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, fc, 4, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -912,14 +925,12 @@ func TestStatus_Concurrency(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "proj",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+		}},
 		Defaults: DefaultsConfig{
-			FullsendRef:     "v2.3.0",
-			InferenceRegion: "us-central1",
+			Forge: "github",
 		},
 	}
 
@@ -929,7 +940,7 @@ func TestStatus_Concurrency(t *testing.T) {
 		populateInstalledRepo(fc, "org", repo, "v2.3.0", "https://mint.example.com", "us-central1")
 	}
 
-	result, err := Status(context.Background(), m, fc, 2, nil)
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 2, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -939,5 +950,41 @@ func TestStatus_Concurrency(t *testing.T) {
 	}
 	if result.Summary.Installed != 20 {
 		t.Errorf("installed = %d, want 20", result.Summary.Installed)
+	}
+}
+
+func TestStatus_RepoFilterAllUnmatched(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"org/nonexistent"})
+	if err == nil {
+		t.Fatal("expected error when --repo filter matches nothing")
+	}
+}
+
+func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
+		[]string{"acme-corp/api-server", "org/nonexistent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Summary.Total != 1 {
+		t.Errorf("total = %d, want 1", result.Summary.Total)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("warnings count = %d, want 1", len(result.Warnings))
+	}
+	if result.Warnings[0] != `--repo filter "org/nonexistent" matched no manifest entries` {
+		t.Errorf("warning = %q, want match message", result.Warnings[0])
 	}
 }

@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch/cf"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
@@ -37,6 +40,38 @@ func generateTestPEM(t *testing.T) []byte {
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
+}
+
+// fakeCFWranglerRunner implements cf.WranglerRunner for CLI tests.
+type fakeCFWranglerRunner struct {
+	deployErr   error
+	deployURL   string
+	deployCalls []fakeCFDeployCall
+}
+
+type fakeCFDeployCall struct {
+	workerName   string
+	previewAlias string
+}
+
+func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, _ map[string]string) (string, error) {
+	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias})
+	if f.deployErr != nil {
+		return "", f.deployErr
+	}
+	url := f.deployURL
+	if url == "" {
+		url = fmt.Sprintf("https://%s.workers.dev", workerName)
+	}
+	return url, nil
+}
+
+func (f *fakeCFWranglerRunner) PutSecret(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (f *fakeCFWranglerRunner) Delete(context.Context, string) error {
+	return nil
 }
 
 func TestMintCommand_HasSubcommands(t *testing.T) {
@@ -135,6 +170,118 @@ func TestMintDeployCmd_DryRun(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:   "https://fullsend-mint-abc123-uc.a.run.app",
+			State: "ACTIVE",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "existing-org",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+			"ALLOWED_ORGS": "existing-org",
+		}),
+		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+			AttributeCondition: "assertion.repository_owner in ['existing-org']",
+		}),
+	))
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	oldStdout := os.Stdout
+	os.Stdout = w
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", false)
+	require.NoError(t, w.Close())
+	os.Stdout = oldStdout
+	require.NoError(t, deployErr)
+
+	var buf bytes.Buffer
+	_, copyErr := io.Copy(&buf, r)
+	require.NoError(t, copyErr)
+	out := buf.String()
+	assert.Contains(t, out, "Could not resolve mint commit from checkout")
+	assert.Contains(t, out, "Version:")
+	assert.Contains(t, out, "Commit:")
+	assert.Contains(t, out, "Deployment complete")
+}
+
+func TestMintDeployCmd_DryRunShowsResolvedSource(t *testing.T) {
+	// When --source-dir is not provided and the default checkout path
+	// exists on disk, dry-run should show the resolved path.
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, gcf.DefaultFunctionSourceDir()), 0o755))
+	t.Chdir(tmpDir)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, gcf.DefaultFunctionSourceDir(),
+		"dry-run should show resolved checkout path")
+	assert.NotContains(t, stdout, "embedded mint function",
+		"dry-run should not claim embedded source when checkout path exists")
+}
+
+func TestMintDeployCmd_DryRunShowsEmbeddedWhenPathMissing(t *testing.T) {
+	// When --source-dir is not provided and the default checkout path
+	// does not exist on disk, dry-run should report embedded source.
+	t.Chdir(t.TempDir())
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "embedded mint function",
+		"dry-run should report embedded source when checkout path is missing")
+	assert.NotContains(t, stdout, gcf.DefaultFunctionSourceDir(),
+		"dry-run should not show non-existent checkout path")
+}
+
+func TestMintDeployCmd_DryRunWithExplicitSourceDir(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--source-dir=/custom/path"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "/custom/path",
+		"dry-run should show the explicitly provided source-dir")
+}
+
 func TestMintDeployCmd_DryRunPublic(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--public"})
@@ -202,6 +349,425 @@ func TestMintDeployCmd_DryRunWithInvalidPEM(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid PEM for role")
+}
+
+// --- deploy command: platform flag tests ---
+
+func TestMintDeployCmd_PlatformFlag(t *testing.T) {
+	cmd := newMintDeployCmd()
+	platformFlag := cmd.Flags().Lookup("platform")
+	require.NotNil(t, platformFlag, "expected --platform flag")
+	assert.Equal(t, "gcp", platformFlag.DefValue)
+}
+
+func TestMintDeployCmd_CloudflareFlags(t *testing.T) {
+	cmd := newMintDeployCmd()
+
+	workerNameFlag := cmd.Flags().Lookup("worker-name")
+	require.NotNil(t, workerNameFlag, "expected --worker-name flag")
+
+	previewFlag := cmd.Flags().Lookup("preview")
+	require.NotNil(t, previewFlag, "expected --preview flag")
+	assert.Equal(t, "", previewFlag.DefValue)
+}
+
+func TestMintDeployCmd_InvalidPlatform(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=azure"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported platform")
+}
+
+func TestMintDeployCmd_CloudflareMissingEnv(t *testing.T) {
+	// Save and restore env vars.
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Unsetenv("CLOUDFLARE_ACCOUNT_ID")
+	os.Unsetenv("CLOUDFLARE_API_TOKEN")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLOUDFLARE_ACCOUNT_ID")
+	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN")
+}
+
+func TestMintDeployCmd_CloudflareInvalidWorkerName(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--worker-name=INVALID_NAME"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --worker-name")
+}
+
+func TestMintDeployCmd_CloudflareDryRun(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareDryRunShowsResolvedSource(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Create the expected checkout path so os.Stat succeeds.
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, cf.DefaultWorkerSourceDir()), 0o755))
+	t.Chdir(tmpDir)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, cf.DefaultWorkerSourceDir(),
+		"dry-run should show resolved checkout path")
+	assert.NotContains(t, stdout, "embedded Worker adapter",
+		"dry-run should not claim embedded source when checkout path exists")
+}
+
+func TestMintDeployCmd_CloudflareDryRunShowsEmbeddedWhenPathMissing(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Run from a temp dir where the default checkout path does not exist.
+	t.Chdir(t.TempDir())
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "embedded Worker adapter",
+		"dry-run should report embedded source when checkout path is missing")
+	assert.NotContains(t, stdout, cf.DefaultWorkerSourceDir(),
+		"dry-run should not show non-existent checkout path")
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithExplicitSourceDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run", "--source-dir=/custom/worker/path"})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "/custom/worker/path",
+		"dry-run should show the explicitly provided source-dir")
+}
+
+func TestMintDeployCmd_CloudflareDryRunPreview(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--dry-run", "--preview=bt-test-42"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareDryRunPreviewInvalidAlias(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--preview=INVALID_ALIAS"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --preview alias")
+}
+
+// --- Cloudflare non-dry-run deploy tests ---
+
+// withMintCFWrangler overrides the mintCFWranglerFactory package-level
+// variable to return a fake WranglerRunner for the test's lifetime.
+func withMintCFWrangler(t *testing.T, runner cf.WranglerRunner) {
+	t.Helper()
+	old := mintCFWranglerFactory
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return runner }
+	t.Cleanup(func() { mintCFWranglerFactory = old })
+}
+
+// createMinimalWorkerSourceDir creates a temp directory with the minimal
+// files required by validateSourceDir (src/index.ts, wrangler.toml,
+// package.json) so Provision can succeed without real wrangler.
+func createMinimalWorkerSourceDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/index.ts"), []byte("export default {}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wrangler.toml"), []byte("name = \"test\""), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+	return dir
+}
+
+// withCFEnvVars sets the required Cloudflare env vars and restores them
+// after the test.
+func withCFEnvVars(t *testing.T) {
+	t.Helper()
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+	t.Cleanup(func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	})
+}
+
+func TestMintDeployCmd_CloudflareDurableDeploy(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflarePreviewDeploy(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://bt-run-42-fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-run-42",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-run-42", fake.deployCalls[0].previewAlias)
+}
+
+func TestMintDeployCmd_CloudflareCustomWorkerName(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://custom-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--worker-name=custom-mint",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "custom-mint", fake.deployCalls[0].workerName)
+}
+
+func TestMintDeployCmd_CloudflareDeployFailure(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{
+		deployErr: fmt.Errorf("wrangler deploy failed: exit status 1"),
+	})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deploying worker")
+}
+
+func TestMintDeployCmd_CloudflareDeployBadSourceDir(t *testing.T) {
+	withCFEnvVars(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=/nonexistent/path",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deploying worker")
+}
+
+func TestMintDeployCmd_GCPDefaultPlatform(t *testing.T) {
+	// Default platform is GCP, so omitting --platform should require --project.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintDeployCmd_GCPExplicitPlatform(t *testing.T) {
+	// Explicitly setting --platform=gcp should still require --project.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintDeployCmd_GCPPlatformDryRun(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+// --- platform flag warning tests ---
+
+func TestMintDeployCmd_WarnsGCPFlagsOnCloudflare(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	// Capture stderr to check warnings.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare", "--project=my-project", "--dry-run"})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--project is a GCP flag")
+	assert.Contains(t, stderr, "--platform=cloudflare")
+}
+
+func TestMintDeployCmd_WarnsCFFlagsOnGCP(t *testing.T) {
+	// Capture stderr to check warnings.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp", "--project=my-project-id", "--worker-name=test", "--dry-run"})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--worker-name is a Cloudflare flag")
+	assert.Contains(t, stderr, "--platform=gcp")
+}
+
+func TestMintDeployCmd_NoWarningForCorrectPlatformFlags(t *testing.T) {
+	// Capture stderr to check no warnings.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--platform=gcp", "--project=my-project-id", "--dry-run"})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.NotContains(t, stderr, "WARNING:")
 }
 
 // --- lookupAppID tests ---
@@ -867,9 +1433,13 @@ func TestRunMintEnrollOrg_PublicMode(t *testing.T) {
 
 func TestRunMintEnrollRepo_DryRun(t *testing.T) {
 	withMintGCFClient(t, mintDiscoveryClient())
-	printer := ui.New(&strings.Builder{})
+	out := &strings.Builder{}
+	printer := ui.New(out)
 	err := runMintEnrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", true)
 	require.NoError(t, err)
+	// Per-repo enrollment should not mention ALLOWED_ORGS.
+	assert.NotContains(t, out.String(), "ALLOWED_ORGS")
+	assert.Contains(t, out.String(), "PER_REPO_WIF_REPOS")
 }
 
 func TestRunMintEnrollRepo_InvalidFormat(t *testing.T) {
@@ -2112,7 +2682,7 @@ func TestResolveAddRoleFromSlugPEM_StoreFails(t *testing.T) {
 		}),
 	))
 	printer := ui.New(&strings.Builder{})
-	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "p"}, mintGCFClientFactory("p"))
+	provisioner := gcf.NewProvisioner(gcf.Config{ProjectID: "my-test-proj1"}, mintGCFClientFactory("my-test-proj1"))
 	_, err := resolveAddRoleFromSlugPEM(context.Background(), printer, provisioner, mintSetupAddRoleConfig{
 		role:    "review",
 		slug:    "fullsend-ai-review",
