@@ -63,9 +63,6 @@ export interface Env {
   PER_REPO_WIF_REPOS?: string;
   /** JSON-encoded map of custom role permissions. */
   CUSTOM_ROLE_PERMISSIONS?: string;
-  /** When truthy (1/true/yes), enable org-mode repos scope exceptions. */
-  PER_ORG_FOREIGN_COMPAT?: string;
-
   /**
    * Dynamic secret access: Worker secrets are accessed by name.
    * PEM keys are stored as secrets named <ROLE>_APP_PEM.
@@ -166,7 +163,6 @@ function buildWasmConfig(env: Env): string {
     AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "",
     PerRepoWIFRepos: env.PER_REPO_WIF_REPOS ?? "",
     CustomRolePermissions: env.CUSTOM_ROLE_PERMISSIONS ?? "",
-    PerOrgForeignCompat: env.PER_ORG_FOREIGN_COMPAT ?? "",
     // Version constants are imported from the generated version.ts file
     // (written by writeVersionTS at deploy time) rather than read from
     // env vars, so they cannot diverge from the deployed code.

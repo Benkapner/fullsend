@@ -18,7 +18,6 @@ import (
 )
 
 var requiredEnvVars = []string{
-	"ALLOWED_ORGS",
 	"GCP_PROJECT_NUMBER",
 	"WIF_POOL_NAME",
 	"WIF_PROVIDER_NAME",
@@ -43,22 +42,6 @@ func init() {
 
 	oidcAudience := os.Getenv("OIDC_AUDIENCE")
 
-	var allowedOrgs []string
-	for _, entry := range strings.Split(os.Getenv("ALLOWED_ORGS"), ",") {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			allowedOrgs = append(allowedOrgs, trimmed)
-		}
-	}
-
-	var allowedWorkflows []string
-	if wf := os.Getenv("ALLOWED_WORKFLOW_FILES"); wf != "" {
-		for _, entry := range strings.Split(wf, ",") {
-			if trimmed := strings.TrimSpace(entry); trimmed != "" {
-				allowedWorkflows = append(allowedWorkflows, trimmed)
-			}
-		}
-	}
-
 	perRepoWIFRepos := make(map[string]bool)
 	if raw := os.Getenv("PER_REPO_WIF_REPOS"); raw != "" {
 		for _, entry := range strings.Split(raw, ",") {
@@ -76,8 +59,6 @@ func init() {
 		GCPProjectNum:      gcpProjectNum,
 		WIFPoolName:        os.Getenv("WIF_POOL_NAME"),
 		DefaultWIFProvider: os.Getenv("WIF_PROVIDER_NAME"),
-		AllowedOrgs:        allowedOrgs,
-		AllowedWorkflows:   allowedWorkflows,
 		PerRepoWIFRepos:    perRepoWIFRepos,
 		OIDCAudience:       oidcAudience,
 	})

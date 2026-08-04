@@ -132,9 +132,8 @@ A single mint instance can serve multiple orgs:
 - **Authorization:** Any valid OIDC token from an allowed org — no role restriction
 - **Response:**
   ```json
-  {"org": "my-org", "roles": ["coder", "review", "triage"], "per_org_foreign_compat": false}
+  {"org": "my-org", "roles": ["coder", "review", "triage"]}
   ```
-  `per_org_foreign_compat` is always present (bool; `false` when `PER_ORG_FOREIGN_COMPAT` is unset).
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token
 - **Security:** Returns only the requesting org and its role names (not app IDs, not other orgs' roles)
 

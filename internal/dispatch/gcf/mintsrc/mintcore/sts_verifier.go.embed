@@ -29,23 +29,20 @@ type STSVerifierConfig struct {
 	GCPProjectNum      string
 	WIFPoolName        string
 	DefaultWIFProvider string
-	AllowedOrgs        []string
-	AllowedWorkflows   []string
 	PerRepoWIFRepos    map[string]bool
 	OIDCAudience       string
 }
 
 // STSVerifier validates OIDC tokens by exchanging them with GCP STS
 // (Workload Identity Federation). It performs lightweight JWT pre-validation
-// before the STS exchange.
+// before the STS exchange. Authorization (org-allowed, workflow-ref) is
+// performed by the Handler after authentication succeeds.
 type STSVerifier struct {
 	httpClient         HTTPDoer
 	stsBaseURL         string
 	gcpProjectNum      string
 	wifPoolName        string
 	defaultWIFProvider string
-	allowedOrgs        []string
-	allowedWorkflows   []string
 	perRepoWIFRepos    map[string]bool
 	oidcAudience       string
 }
@@ -70,8 +67,6 @@ func NewSTSVerifier(opts STSVerifierConfig) *STSVerifier {
 		gcpProjectNum:      opts.GCPProjectNum,
 		wifPoolName:        opts.WIFPoolName,
 		defaultWIFProvider: opts.DefaultWIFProvider,
-		allowedOrgs:        opts.AllowedOrgs,
-		allowedWorkflows:   opts.AllowedWorkflows,
 		perRepoWIFRepos:    perRepo,
 		oidcAudience:       opts.OIDCAudience,
 	}
@@ -136,14 +131,6 @@ func (v *STSVerifier) prevalidate(token string) (*Claims, error) {
 
 	if claims.Repository == "" {
 		return nil, fmt.Errorf("missing repository claim")
-	}
-
-	if err := ValidateOrgAllowed(claims.RepositoryOwner, v.allowedOrgs); err != nil {
-		return nil, err
-	}
-
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, v.allowedOrgs, v.perRepoWIFRepos, v.allowedWorkflows); err != nil {
-		return nil, err
 	}
 
 	return &claims, nil

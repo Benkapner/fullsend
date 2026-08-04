@@ -115,17 +115,16 @@ The standalone mint is configured entirely through environment variables:
 | `ALLOWED_WORKFLOW_FILES` | Comma-separated workflow file allowlist; `*` for all | `*` |
 | `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://fullsend-mint-gljhbkcloq-uc.a.run.app` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
-| `PER_REPO_WIF_REPOS` | Comma-separated repos requiring per-repo WIF | `myorg/private-repo` |
-| `PER_ORG_FOREIGN_COMPAT` | When `1`/`true`/`yes`, allow org-mode `repos` shapes: any non-empty list from `.fullsend` callers; `[.fullsend]` or `{self,.fullsend}` from enrolled callers. Default off (same-org = requesting repo only). Does not allow same-org installation-wide tokens. | `true` |
+| `PER_REPO_WIF_REPOS` | Comma-separated repos with per-repo WIF treatment. Use `*` for public mint mode (all repos get per-repo treatment). Per-repo callers can only mint to their own repo scope. Callers not in this list fall through to per-org (`ALLOWED_ORGS`) and get org-mode repos shapes. | `myorg/private-repo` |
 | `PORT` | HTTP listen port | `8080` (default) |
 
 ### Public mint mode
 
-Set `ALLOWED_ORGS=*` to enable public mint mode:
+Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
 - Any org may request tokens (installation lookup still scopes tokens to the requesting org)
 - `job_workflow_ref` must reference `fullsend-ai/fullsend/.github/workflows/` only
-- Leave `PER_REPO_WIF_REPOS` unset; the basename gate (`ALLOWED_WORKFLOW_FILES`) is not applied
+- Set `PER_REPO_WIF_REPOS=*` alongside `ALLOWED_ORGS=*`; the basename gate (`ALLOWED_WORKFLOW_FILES`) is not applied
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy
@@ -262,7 +261,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `POST /v1/token` with a role in `ROLE_APP_IDS` | Handled locally |
 | `POST /v1/token` with an unknown role | Forwarded to `FALLBACK_MINT_URL` |
 | `GET /health` | Always handled locally |
-| `GET /v1/status` | Always handled locally (`per_org_foreign_compat` bool; default `false` when unset) |
+| `GET /v1/status` | Always handled locally |
 
 The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — your organization must be enrolled on the upstream mint for proxied requests to succeed.
 

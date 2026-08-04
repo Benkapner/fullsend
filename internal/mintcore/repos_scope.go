@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// Compat shape labels returned by validateReposScope when PER_ORG_FOREIGN_COMPAT
-// allows a broader-than-self same-org repos list. Empty means the default path
+// Org-mode shape labels returned by validateReposScope when a per-org caller
+// uses a broader-than-self same-org repos list. Empty means the default path
 // (foreign empty repos, or same-org requesting-repo-only).
 const (
 	reposScopeShapeFullsendAny      = "fullsend-any"
@@ -42,13 +42,17 @@ func repositoryBareName(repository string) string {
 // validateReposScope enforces mint repos authorization after OIDC verification.
 //
 // Foreign (cross-org) requests may only omit repos (or use "*" → empty).
-// Same-org requests must list exactly the requesting repository, unless
-// PER_ORG_FOREIGN_COMPAT is on:
-//   - caller .fullsend: any non-empty validated list
-//   - other callers: exactly [.fullsend] or {requestingBare, .fullsend}
+// Same-org requests differ based on whether the caller is per-repo or per-org:
 //
-// On success, shape is non-empty only when a compat exception matched.
-func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, compat bool) (shape string, err error) {
+//   - Per-repo callers (perRepo=true): must list exactly the requesting
+//     repository. No broader shapes are allowed.
+//   - Per-org callers (perRepo=false): may use org-mode shapes:
+//     caller .fullsend: any non-empty validated list;
+//     other callers: exactly [.fullsend] or {requestingBare, .fullsend}.
+//     Same-org installation-wide (empty repos) is always denied.
+//
+// On success, shape is non-empty only when an org-mode exception matched.
+func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, perRepo bool) (shape string, err error) {
 	if isTargetForeign {
 		if len(repos) != 0 {
 			return "", fmt.Errorf("foreign mint requires empty repos")
@@ -65,10 +69,11 @@ func validateReposScope(isTargetForeign bool, requestingRepo string, repos []str
 		return "", nil
 	}
 
-	if !compat {
-		return "", fmt.Errorf("same-org mint requires repos to be exactly the requesting repository")
+	if perRepo {
+		return "", fmt.Errorf("per-repo mint requires repos to be exactly the requesting repository")
 	}
 
+	// Per-org callers get org-mode shapes.
 	if strings.EqualFold(bare, ".fullsend") {
 		return reposScopeShapeFullsendAny, nil
 	}
@@ -85,5 +90,5 @@ func validateReposScope(isTargetForeign bool, requestingRepo string, repos []str
 		}
 	}
 
-	return "", fmt.Errorf("repos scope not allowed under PER_ORG_FOREIGN_COMPAT for requesting repository")
+	return "", fmt.Errorf("repos scope not allowed for per-org caller")
 }

@@ -107,10 +107,8 @@ func (s *testOIDCServer) signJWT(t *testing.T, headerOverrides, claimsOverrides 
 func TestJWKSVerifier_ValidToken(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            s.server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL: s.server.URL,
+		Audience:  "fullsend-mint",
 	})
 	token := s.signJWT(t, nil, nil)
 
@@ -133,6 +131,7 @@ func TestJWKSVerifier_InvalidFormat(t *testing.T) {
 func TestJWKSVerifier_WrongAlgorithm(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	token := s.signJWT(t, map[string]interface{}{"alg": "HS256"}, nil)
 
 	_, err := v.Verify(t.Context(), token)
@@ -142,6 +141,7 @@ func TestJWKSVerifier_WrongAlgorithm(t *testing.T) {
 func TestJWKSVerifier_WrongIssuer(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	token := s.signJWT(t, nil, map[string]interface{}{"iss": "https://evil.com"})
 
 	_, err := v.Verify(t.Context(), token)
@@ -151,6 +151,7 @@ func TestJWKSVerifier_WrongIssuer(t *testing.T) {
 func TestJWKSVerifier_WrongAudience(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	token := s.signJWT(t, nil, map[string]interface{}{"aud": "wrong-audience"})
 
 	_, err := v.Verify(t.Context(), token)
@@ -160,6 +161,7 @@ func TestJWKSVerifier_WrongAudience(t *testing.T) {
 func TestJWKSVerifier_ExpiredToken(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	past := time.Now().Add(-10 * time.Minute).Unix()
 	token := s.signJWT(t, nil, map[string]interface{}{
 		"iat": past - 600,
@@ -173,6 +175,7 @@ func TestJWKSVerifier_ExpiredToken(t *testing.T) {
 func TestJWKSVerifier_FutureToken(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	future := time.Now().Add(10 * time.Minute).Unix()
 	token := s.signJWT(t, nil, map[string]interface{}{"iat": future})
 
@@ -183,6 +186,7 @@ func TestJWKSVerifier_FutureToken(t *testing.T) {
 func TestJWKSVerifier_MissingRepository(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	token := s.signJWT(t, nil, map[string]interface{}{"repository": ""})
 
 	_, err := v.Verify(t.Context(), token)
@@ -192,6 +196,7 @@ func TestJWKSVerifier_MissingRepository(t *testing.T) {
 func TestJWKSVerifier_InvalidSignature(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	token := s.signJWT(t, nil, nil)
 
 	// Tamper with the signature
@@ -203,6 +208,7 @@ func TestJWKSVerifier_InvalidSignature(t *testing.T) {
 func TestJWKSVerifier_UnknownKid(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+
 	token := s.signJWT(t, map[string]interface{}{"kid": "unknown-key"}, nil)
 
 	_, err := v.Verify(t.Context(), token)
@@ -244,10 +250,8 @@ func TestJWKSVerifier_KeyRotation(t *testing.T) {
 	defer server.Close()
 
 	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL: server.URL,
+		Audience:  "fullsend-mint",
 	})
 
 	signToken := func(kid string, key *rsa.PrivateKey) string {
@@ -284,10 +288,8 @@ func TestJWKSVerifier_KeyRotation(t *testing.T) {
 func TestJWKSVerifier_AudienceArray(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            s.server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL: s.server.URL,
+		Audience:  "fullsend-mint",
 	})
 	token := s.signJWT(t, nil, map[string]interface{}{
 		"aud": []string{"other", "fullsend-mint"},
@@ -336,56 +338,13 @@ func TestJWKSVerifier_DiscoveryIssuerMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "issuer mismatch in discovery document")
 }
 
-func TestJWKSVerifier_OrgNotAllowed(t *testing.T) {
-	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            s.server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"allowed-org"},
-		AllowedWorkflowFiles: []string{"*"},
-	})
-	token := s.signJWT(t, nil, nil) // default claims use "myorg"
-
-	_, err := v.Verify(t.Context(), token)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not in allowed orgs")
-}
-
-func TestJWKSVerifier_WorkflowNotAllowed(t *testing.T) {
-	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            s.server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"only-this.yml"},
-	})
-	token := s.signJWT(t, nil, nil) // default workflow is dispatch.yml
-
-	_, err := v.Verify(t.Context(), token)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not in allowed list")
-}
-
-func TestJWKSVerifier_EmptyOrgList_FailsClosed(t *testing.T) {
-	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            s.server.URL,
-		Audience:             "fullsend-mint",
-		AllowedWorkflowFiles: []string{"*"},
-	})
-	token := s.signJWT(t, nil, nil)
-
-	_, err := v.Verify(t.Context(), token)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not in allowed orgs")
-}
+// NOTE: OrgNotAllowed, WorkflowNotAllowed, EmptyOrgList tests moved to handler level.
+// Authorization (AuthorizeToken, ValidateWorkflowRef) is now the handler's responsibility.
 
 func TestJWKSVerifier_EmptyAudience_FailsClosed(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            s.server.URL,
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL: s.server.URL,
 	})
 	token := s.signJWT(t, nil, nil)
 
@@ -397,10 +356,8 @@ func TestJWKSVerifier_EmptyAudience_FailsClosed(t *testing.T) {
 func TestJWKSVerifier_MissingIat(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            s.server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL: s.server.URL,
+		Audience:  "fullsend-mint",
 	})
 	token := s.signJWT(t, nil, map[string]interface{}{"iat": 0})
 
@@ -443,10 +400,8 @@ func TestJWKSVerifier_StaleKeyFallback(t *testing.T) {
 	defer server.Close()
 
 	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL: server.URL,
+		Audience:  "fullsend-mint",
 	})
 
 	signToken := func() string {
@@ -515,10 +470,8 @@ func TestJWKSVerifier_StaleKeyRejectedAfterMaxStaleness(t *testing.T) {
 	defer server.Close()
 
 	v := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL:            server.URL,
-		Audience:             "fullsend-mint",
-		AllowedOrgs:          []string{"myorg"},
-		AllowedWorkflowFiles: []string{"*"},
+		IssuerURL: server.URL,
+		Audience:  "fullsend-mint",
 	})
 
 	signToken := func() string {
@@ -549,6 +502,10 @@ func TestJWKSVerifier_StaleKeyRejectedAfterMaxStaleness(t *testing.T) {
 	_, err = v.Verify(t.Context(), signToken())
 	require.Error(t, err, "should reject stale keys beyond max staleness window")
 }
+
+// NOTE: PerRepoBypassesOrgCheck, NonPerRepoStillRequiresOrg,
+// PerRepoCrossRepoWorkflowRefRejected, EmptyRepositoryOwnerRejected tests
+// moved to handler level — authorization is now the handler's responsibility.
 
 func TestParseRSAPublicKey(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
