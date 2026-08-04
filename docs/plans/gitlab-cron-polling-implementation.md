@@ -1652,6 +1652,15 @@ func runGitLabPerRepoInstall(ctx context.Context, target string, opts installOpt
     client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE", "{}")
 
     // 14. Set up inference WIF (if --inference-project provided)
+    if inferenceProject != "" {
+        credMode = "wif"
+        vars["FULLSEND_SA"] = "fullsend-mint@" + inferenceProject + ".iam.gserviceaccount.com"
+        client.CreateRepoSecret(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID", inferenceProject)
+        client.CreateRepoSecret(ctx, owner, repo, "FULLSEND_GCP_WIF_PROVIDER", wifProvider)
+        if inferenceRegion != "" {
+            vars["FULLSEND_GCP_REGION"] = inferenceRegion
+        }
+    }
 
     // 15. Print CI minute warning for shared runners
     if tier == "free" {

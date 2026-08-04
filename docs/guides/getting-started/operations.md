@@ -10,6 +10,8 @@ Day-2 administration for fullsend per-repo installations: configuration updates,
 
 ## Updating configuration values
 
+### GitHub
+
 Update individual secrets or variables without re-running full setup:
 
 ```bash
@@ -24,6 +26,24 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 
+### GitLab
+
+For GitLab repos, re-run `repos install` with updated values to converge configuration:
+
+```bash
+fullsend repos install -f repos.yaml "$OWNER/$REPO" \
+  --inference-project "<GCP_PROJECT>" \
+  --inference-project-number "<GCP_PROJECT_NUMBER>"
+```
+
+| Key | Storage Type | Description | Example value |
+|-----|-------------|-------------|---------------|
+| `FULLSEND_CREDENTIAL_MODE` | CI/CD variable | Credential retrieval mode | `wif` or `variable` |
+| `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
+| `FULLSEND_SA` | CI/CD variable | Service account email for WIF impersonation | `fullsend-mint@project.iam.gserviceaccount.com` |
+| `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference (WIF mode only) | `my-gcp-project` |
+| `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
+
 ## Syncing workflow templates
 
 After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo:
@@ -34,7 +54,7 @@ fullsend github setup "$OWNER/$REPO" \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
-For manifest-managed installations, use `repos install` to converge all repos (including workflow ref upgrades):
+For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):
 
 ```bash
 fullsend repos install -f repos.yaml

@@ -20,13 +20,20 @@ var gitlabUninstallVars = []string{
 	"FULLSEND_CREDENTIAL_MODE",
 	"FULLSEND_FORGE",
 	"FULLSEND_FORGE_TOKEN",
+	"FULLSEND_GCP_REGION",
 	"FULLSEND_LABEL_STATE",
 	"FULLSEND_LAST_POLL_AT_FAST",
 	"FULLSEND_LAST_POLL_AT_FULL",
+	"FULLSEND_SA",
 	"FULLSEND_DISPATCHED_KEYS_FAST",
 	"FULLSEND_DISPATCHED_KEYS_FULL",
 	"FULLSEND_FAILED_KEYS_FAST",
 	"FULLSEND_FAILED_KEYS_FULL",
+}
+
+var gitlabUninstallSecrets = []string{
+	"FULLSEND_GCP_PROJECT_ID",
+	"FULLSEND_GCP_WIF_PROVIDER",
 }
 
 var gitlabScaffoldPaths = []string{
@@ -50,7 +57,7 @@ func UninstallVarsForForge(forgeName string) []string {
 // the given forge during uninstall.
 func UninstallSecretsForForge(forgeName string) []string {
 	if forgeName == ForgeGitLab {
-		return nil
+		return gitlabUninstallSecrets
 	}
 	return uninstallSecrets
 }
