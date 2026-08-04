@@ -245,7 +245,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 #### GitLab
 
 **Target repo CI/CD variables (protected):**
-- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity
+- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity (variable mode only)
 - `FULLSEND_CREDENTIAL_MODE` — Set to `"variable"` or `"wif"` (when `--inference-project` is provided)
 - `FULLSEND_FORGE` — Set to `"gitlab"`
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to `"true"`)
@@ -258,6 +258,8 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
 - `FULLSEND_SA` — Service account email for WIF impersonation
+- `FULLSEND_WIF_PROVIDER` — Full WIF provider resource name (protected CI/CD variable)
+- `FULLSEND_BOT_TOKEN_SECRET` — Secret Manager secret ID for the bot PAT (protected CI/CD variable; the scaffold retrieves the PAT at runtime via OIDC/WIF)
 
 ### Secrets Layer Behavior
 

@@ -279,6 +279,15 @@ OIDC/WIF mode additionally provides:
   `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_SA`, `FULLSEND_GCP_REGION`)
   so that agent jobs can authenticate to Vertex AI using the same
   OIDC/WIF flow. Variable mode does not support inference credentials.
+- **OIDC issuer reachability requirement.** WIF mode requires the
+  GitLab instance's OIDC discovery endpoints to be publicly reachable
+  by GCP's Security Token Service (STS). During the WIF token exchange,
+  GCP's STS resolves the GitLab instance hostname to validate the JWT
+  issuer. Internal or private GitLab instances (e.g., those accessible
+  only via VPN or corporate DNS) will fail with
+  `Error code invalid_grant: Error connecting to the given credential's issuer`.
+  Use variable mode for GitLab instances that are not resolvable in
+  public DNS.
 
 ### Cron poller (`gitlab-poll` input driver)
 
