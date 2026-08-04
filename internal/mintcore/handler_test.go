@@ -884,6 +884,10 @@ func TestHandler_ReposScope_PerRepoDenied(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	// Per-repo callers can only request their own repository.
 	t.Setenv("PER_REPO_WIF_REPOS", "test-org/test-repo")
+	// Clear ALLOWED_ORGS (set by TestMain) so the dual-enrollment guard
+	// does not fire — this test must exercise the per-repo denial path
+	// (repos_scope.go:73), not the per-org catch-all.
+	t.Setenv("ALLOWED_ORGS", "")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
