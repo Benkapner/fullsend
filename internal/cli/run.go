@@ -1859,7 +1859,7 @@ const deprecatedImplicitFetchWarning = "Harness declares allowed_remote_resource
 // should be started, and returns a deprecation warning if the harness relies
 // on the legacy implicit opt-in via allowed_remote_resources.
 func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning string) {
-	if h.HasURLSkills() || h.AllowRuntimeFetch {
+	if h.HasURLDirResources() || h.AllowRuntimeFetch {
 		return true, ""
 	}
 	if len(h.AllowedRemoteResources) > 0 {
@@ -1875,7 +1875,7 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 	cfg.TreeFetcher = treeFetcher
 	if gitToken != "" {
 		cfg.GitToken = gitToken
-	} else if h.HasURLSkills() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
+	} else if h.HasURLDirResources() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
 		if token, err := resolveToken(); err == nil {
 			cfg.GitToken = token
 		} else {

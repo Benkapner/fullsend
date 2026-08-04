@@ -24,6 +24,11 @@ var (
 	envVarRef     = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
+// ValidPluginBasename reports whether name matches the allowed plugin name pattern.
+func ValidPluginBasename(name string) bool {
+	return validPluginName.MatchString(name)
+}
+
 // HostFile describes a file on the host that must be copied into the sandbox
 // during bootstrap. Src may contain ${VAR} references that are expanded from
 // the host environment at bootstrap time. Use this for any file that must
@@ -408,6 +413,9 @@ func (h *Harness) Validate() error {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
 	}
 	for i, p := range h.Plugins {
+		if IsURL(p) {
+			continue // validated by ValidateResourceTypes below
+		}
 		pluginBase := filepath.Base(p)
 		if !validPluginName.MatchString(pluginBase) {
 			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
@@ -771,8 +779,8 @@ func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
 
 // ValidateResourceTypes checks that executable fields (pre_script, post_script,
 // validation_loop.script, host_files[].src, api_servers[].script) are local paths
-// and not URLs, and that declarative fields (agent, policy, skills[]) that are URLs
-// include an integrity hash (#sha256=...).
+// and not URLs, and that declarative fields (agent, policy, skills[], plugins[])
+// that are URLs include an integrity hash (#sha256=...).
 func (h *Harness) ValidateResourceTypes() error {
 	// Executable fields must be local paths, not URLs.
 	execFields := []struct {
@@ -828,16 +836,43 @@ func (h *Harness) ValidateResourceTypes() error {
 	}
 	for i, s := range h.Skills {
 		if IsURL(s) {
-			if _, _, hasHash := ParseIntegrityHash(s); !hasHash {
+			cleanURL, _, hasHash := ParseIntegrityHash(s)
+			if !hasHash {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
-			cleanURL, _, _ := ParseIntegrityHash(s)
 			info, err := forge.ParseForgeURL(cleanURL)
 			if err != nil {
 				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
 			}
 			if info.Forge != "github" {
 				return fmt.Errorf("skills[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
+			}
+			if info.PathType == "blob" {
+				return fmt.Errorf("skills[%d] URL must use /tree/ (directory), not /blob/ (single file) — skills are directories", i)
+			}
+		}
+	}
+	for i, p := range h.Plugins {
+		if IsURL(p) {
+			cleanURL, _, hasHash := ParseIntegrityHash(p)
+			if !hasHash {
+				return fmt.Errorf("plugins[%d] URL must include #sha256=... integrity hash", i)
+			}
+			info, err := forge.ParseForgeURL(cleanURL)
+			if err != nil {
+				return fmt.Errorf("plugins[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
+			if info.Forge != "github" {
+				return fmt.Errorf("plugins[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
+			}
+			if info.PathType == "blob" {
+				return fmt.Errorf("plugins[%d] URL must use /tree/ (directory), not /blob/ (single file) — plugins are directories", i)
+			}
+			if info.Path == "" {
+				return fmt.Errorf("plugins[%d] URL must point to a directory inside the repo, not the repo root", i)
+			}
+			if base := filepath.Base(info.Path); !ValidPluginBasename(base) {
+				return fmt.Errorf("plugins[%d] URL path %q does not end in a valid plugin basename (allowed: a-z, A-Z, 0-9, _, -)", i, info.Path)
 			}
 		}
 	}
@@ -871,11 +906,16 @@ func (h *Harness) EffectiveMaxRuntimeFetches() int {
 	return *h.MaxRuntimeFetches
 }
 
-// HasURLSkills reports whether any skill field contains a URL. Used to determine
-// whether a forge client is needed for resolution.
-func (h *Harness) HasURLSkills() bool {
+// HasURLDirResources reports whether any skill or plugin field contains a
+// URL. Used to determine whether a forge client is needed for resolution.
+func (h *Harness) HasURLDirResources() bool {
 	for _, s := range h.Skills {
 		if IsURL(s) {
+			return true
+		}
+	}
+	for _, p := range h.Plugins {
+		if IsURL(p) {
 			return true
 		}
 	}
@@ -883,14 +923,19 @@ func (h *Harness) HasURLSkills() bool {
 }
 
 // HasURLReferences reports whether any declarative field (agent, policy, skills,
-// profiles, providers) contains a URL reference. Used to skip remote resource
-// validation and resolution when the harness references only local paths.
+// plugins, profiles, providers) contains a URL reference. Used to skip remote
+// resource validation and resolution when the harness references only local paths.
 func (h *Harness) HasURLReferences() bool {
 	if IsURL(h.Agent) || IsURL(h.Policy) {
 		return true
 	}
 	for _, s := range h.Skills {
 		if IsURL(s) {
+			return true
+		}
+	}
+	for _, p := range h.Plugins {
+		if IsURL(p) {
 			return true
 		}
 	}
