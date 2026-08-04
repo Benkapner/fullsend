@@ -79,8 +79,8 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 	result, err := mintclient.MintToken(ctx, mintclient.MintRequest{
 		MintURL:   mintURL,
 		Role:      "e2e",
-		TargetOrg: targetOrg,
 		Repos:     []string{"*"},
+		TargetOrg: targetOrg,
 	})
 	if err != nil {
 		return "", err
