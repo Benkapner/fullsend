@@ -206,14 +206,6 @@ func TestParseWorkerConfig_MissingRequired(t *testing.T) {
 			},
 			want: "OIDCAudience is required",
 		},
-		{
-			name: "missing AllowedOrgs",
-			cfg: WorkerConfig{
-				RoleAppIDs:   `{"coder":"200"}`,
-				OIDCAudience: "fullsend-mint",
-			},
-			want: "AllowedOrgs is required",
-		},
 	}
 
 	for _, tc := range tests {
@@ -226,6 +218,29 @@ func TestParseWorkerConfig_MissingRequired(t *testing.T) {
 				t.Fatalf("expected error containing %q, got: %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestParseWorkerConfig_EmptyAllowedOrgs(t *testing.T) {
+	cfg := WorkerConfig{
+		RoleAppIDs:      `{"coder":"200"}`,
+		OIDCAudience:    "fullsend-mint",
+		PerRepoWIFRepos: "test-org/my-repo",
+	}
+	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	if err != nil {
+		t.Fatalf("ParseWorkerConfig should succeed with empty AllowedOrgs: %v", err)
+	}
+	if h == nil {
+		t.Fatal("expected non-nil handler")
+	}
+
+	// Health endpoint should work.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }
 

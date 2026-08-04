@@ -55,10 +55,6 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 	if cfg.OIDCAudience == "" {
 		return nil, fmt.Errorf("OIDCAudience is required")
 	}
-	if cfg.AllowedOrgs == "" {
-		return nil, fmt.Errorf("AllowedOrgs is required")
-	}
-
 	// Stamp version metadata from the config so that /health and /status
 	// report the deployed version. For GCF deploys this is compiled into
 	// the source (version.go); for WASM deploys it arrives at runtime via

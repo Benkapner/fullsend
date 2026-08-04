@@ -64,7 +64,7 @@ func buildHandler() (http.Handler, error) {
 }
 
 func run(ctx context.Context) error {
-	missing := checkRequired("ALLOWED_ORGS", "ROLE_APP_IDS", "OIDC_AUDIENCE", "PEM_DIR")
+	missing := checkRequired("ROLE_APP_IDS", "OIDC_AUDIENCE", "PEM_DIR")
 	if len(missing) > 0 {
 		return fmt.Errorf("required environment variables not set: %s", strings.Join(missing, ", "))
 	}

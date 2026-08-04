@@ -75,6 +75,23 @@ func TestInitWiring(t *testing.T) {
 		}
 	})
 
+	t.Run("starts without ALLOWED_ORGS", func(t *testing.T) {
+		t.Setenv("ALLOWED_ORGS", "")
+		t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-repo")
+
+		h, err := mintcore.NewHandler(pemAccessor, verifier)
+		if err != nil {
+			t.Fatalf("NewHandler should succeed without ALLOWED_ORGS: %v", err)
+		}
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+	})
+
 	t.Run("status with invalid token returns 401", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)

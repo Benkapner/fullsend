@@ -18,7 +18,6 @@ import (
 )
 
 var requiredEnvVars = []string{
-	"ALLOWED_ORGS",
 	"GCP_PROJECT_NUMBER",
 	"WIF_POOL_NAME",
 	"WIF_PROVIDER_NAME",
