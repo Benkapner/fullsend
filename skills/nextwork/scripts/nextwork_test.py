@@ -126,6 +126,7 @@ def make_pr(**overrides):
         "blockers": [],
         "linked_prs": [],
         "is_draft": False,
+        "base_ref_name": "main",
         "review_decision": None,
         "mergeable": "MERGEABLE",
         "merge_state_status": "CLEAN",
@@ -370,6 +371,15 @@ class TestNormalizeItem(unittest.TestCase):
             [{"repo": "acme/widget", "number": 50, "title": "Child open"}],
         )
 
+    def test_cross_repo_sub_issue_keeps_child_repo(self):
+        node = load_fixture("issue_node_sample.json")
+        node["subIssues"]["nodes"][0]["repository"] = {"nameWithOwner": "acme/gadget"}
+        item = normalize_item("acme/widget", node, quiet=True)
+        self.assertEqual(
+            item["open_sub_issues"],
+            [{"repo": "acme/gadget", "number": 50, "title": "Child open"}],
+        )
+
     def test_issue_node_without_sub_issues_fields(self):
         node = load_fixture("issue_node_sample.json")
         del node["subIssuesSummary"]
@@ -396,6 +406,7 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertIsNone(item["latest_approved_review_at"])
         self.assertFalse(item["is_draft"])
         self.assertFalse(item["in_merge_queue"])
+        self.assertEqual(item["base_ref_name"], "main")
         self.assertEqual(item["blockers"], [])
 
 
@@ -479,6 +490,19 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertFalse(result.eliminated)
         self.assertTrue(any("close this issue" in a for a in result.suggested_actions))
         self.assertIn("close_or_plan", DECISION_STATUSES)
+
+    def test_waiting_sub_issues_when_summary_shows_incomplete(self):
+        # Truncated first page has no OPEN nodes, but summary proves work remains.
+        item = make_issue(
+            labels=["triaged"],
+            open_sub_issues=[],
+            sub_issues_total=60,
+            sub_issues_completed=50,
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_sub_issues")
+        self.assertTrue(result.eliminated)
+        self.assertIn("50/60", result.reason)
 
     def test_no_sub_issues_keeps_promote_code(self):
         item = make_issue(labels=["triaged"])
@@ -955,7 +979,8 @@ class TestClassifyPr(unittest.TestCase):
         item = make_pr(labels=["blocked"])
         result = classify_item(item, "alice", 6, NOW)
         self.assertNotEqual(result.status, "blocked_by")
-        self.assertIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
+        # PRs keep the blocked label — no structured blockedBy replacement exists.
+        self.assertNotIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
 
     def test_assigned_elsewhere(self):
         item = make_pr(assignees=["bob"])
@@ -1258,7 +1283,7 @@ class TestBuildQueue(unittest.TestCase):
             ("acme/other", 2): make_issue(repo="acme/other", number=2, labels=["question"]),
         }
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining, _fetch_errors = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         numbers = {(r["repo"], r["number"]) for r in results}
         self.assertEqual(numbers, {("acme/widget", 1), ("acme/other", 2)})
         first = next(r for r in results if r["number"] == 1)
@@ -1267,7 +1292,7 @@ class TestBuildQueue(unittest.TestCase):
     def test_does_not_revisit(self):
         items = {("acme/widget", 1): make_issue(repo="acme/widget", number=1)}
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue(
+        results, _remaining, _fetch_errors = build_queue(
             [("acme/widget", 1), ("acme/widget", 1)], fetcher, "alice", 6, NOW
         )
         self.assertEqual(len(results), 1)
@@ -1275,13 +1300,13 @@ class TestBuildQueue(unittest.TestCase):
     def test_drops_closed_items(self):
         items = {("acme/widget", 1): make_issue(repo="acme/widget", number=1, state="CLOSED")}
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining, _fetch_errors = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         self.assertEqual(results, [])
 
     def test_drops_duplicate_labeled(self):
         items = {("acme/widget", 1): make_issue(repo="acme/widget", number=1, labels=["duplicate"])}
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining, _fetch_errors = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         self.assertEqual(results, [])
 
     def test_respects_max_visits_cap(self):
@@ -1291,7 +1316,7 @@ class TestBuildQueue(unittest.TestCase):
             blockers = [{"repo": "acme/widget", "number": n + 1}] if n < 9 else []
             items[("acme/widget", n)] = make_issue(repo="acme/widget", number=n, blockers=blockers)
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue(
+        results, _remaining, _fetch_errors = build_queue(
             [("acme/widget", 1)], fetcher, "alice", 6, NOW, max_visits=3
         )
         self.assertEqual(len(results), 3)
@@ -1317,7 +1342,7 @@ class TestBuildQueue(unittest.TestCase):
             ),
         }
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
+        results, _remaining, _fetch_errors = build_queue([("acme/widget", 1)], fetcher, "alice", 6, NOW)
         numbers = {r["number"] for r in results}
         self.assertEqual(numbers, {1, 2, 3})
         parent = next(r for r in results if r["number"] == 1)
@@ -1342,7 +1367,7 @@ class TestBuildQueue(unittest.TestCase):
             ),
         }
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue(
+        results, _remaining, _fetch_errors = build_queue(
             [("acme/widget", 1), ("acme/widget", 3)],
             fetcher,
             "alice",
@@ -1364,7 +1389,7 @@ class TestBuildQueue(unittest.TestCase):
             blockers = [{"repo": "acme/widget", "number": n + 1}] if n < 5 else []
             items[("acme/widget", n)] = make_issue(repo="acme/widget", number=n, blockers=blockers)
         fetcher = FakeFetcher(items)
-        results, _remaining = build_queue(
+        results, _remaining, _fetch_errors = build_queue(
             [("acme/widget", 99), ("acme/widget", 98), ("acme/widget", 1)],
             fetcher,
             "alice",
@@ -1504,7 +1529,7 @@ class TestApplyTrivialActions(unittest.TestCase):
     def test_apply_both_primary_and_remove_blocked(self, mock_run_gh_soft):
         items = [
             {
-                "kind": "pull",
+                "kind": "issue",
                 "repo": "acme/widget",
                 "number": 99,
                 "status": "needs_assign",
@@ -1517,11 +1542,11 @@ class TestApplyTrivialActions(unittest.TestCase):
         self.assertEqual(actions, [ASSIGN_SELF, REMOVE_BLOCKED_LABEL])
         self.assertEqual(mock_run_gh_soft.call_count, 2)
         mock_run_gh_soft.assert_any_call(
-            ["pr", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
+            ["issue", "edit", "99", "--repo", "acme/widget", "--add-assignee", "alice"],
             quiet=False,
         )
         mock_run_gh_soft.assert_any_call(
-            ["pr", "edit", "99", "--repo", "acme/widget", "--remove-label", "blocked"],
+            ["issue", "edit", "99", "--repo", "acme/widget", "--remove-label", "blocked"],
             quiet=False,
         )
 
@@ -1551,6 +1576,26 @@ class TestAgentTerminalSucceeded(unittest.TestCase):
         self.assertFalse(agent_terminal_succeeded("🤖 Finished · ❌ Failed"))
         self.assertFalse(agent_terminal_succeeded("Terminated by user"))
         self.assertFalse(agent_terminal_succeeded("run cancelled"))
+        self.assertFalse(
+            agent_terminal_succeeded(
+                "🤖 Finished Code · ⏭️ Skipped (change is already in review on #123)"
+            )
+        )
+
+
+class TestRoleWaitingStatus(unittest.TestCase):
+    def test_uses_structured_prefix_not_skip_reason(self):
+        from nextwork import _role_waiting_status
+
+        body = (
+            "<!-- fullsend:agent-status:1 -->\n<!-- fullsend:status:terminal -->\n"
+            "🤖 Finished Code · ⏭️ Skipped (change is already in review on #123)"
+        )
+        self.assertEqual(_role_waiting_status(body), "waiting_code")
+        self.assertEqual(
+            _role_waiting_status("🤖 Review · Started 1:00 PM UTC"),
+            "waiting_review",
+        )
 
 
 class TestTakeOver(unittest.TestCase):
@@ -1562,6 +1607,7 @@ class TestTakeOver(unittest.TestCase):
                 "issueOrPullRequest": {
                     "__typename": "Issue",
                     "id": "I_1",
+                    "state": "OPEN",
                     "assignees": {"nodes": []},
                 }
             }
@@ -1581,6 +1627,7 @@ class TestTakeOver(unittest.TestCase):
                 "issueOrPullRequest": {
                     "__typename": "PullRequest",
                     "id": "PR_1",
+                    "state": "OPEN",
                     "assignees": {"nodes": []},
                 }
             }
@@ -1600,6 +1647,7 @@ class TestTakeOver(unittest.TestCase):
                 "issueOrPullRequest": {
                     "__typename": "Issue",
                     "id": "I_1",
+                    "state": "OPEN",
                     "assignees": {"nodes": [{"login": "bob"}, {"login": "carol"}]},
                 }
             }
@@ -1616,6 +1664,22 @@ class TestTakeOver(unittest.TestCase):
                 ["issue", "edit", "1", "--repo", "acme/widget", "--remove-assignee", "carol"],
             ],
         )
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_skips_closed(self, mock_gql):
+        mock_gql.return_value = {
+            "repository": {
+                "issueOrPullRequest": {
+                    "__typename": "Issue",
+                    "id": "I_1",
+                    "state": "CLOSED",
+                    "assignees": {"nodes": []},
+                }
+            }
+        }
+        result = take_over("acme/widget", 1, "alice")
+        self.assertEqual(result["action"], "error")
+        self.assertIn("not open", result["detail"])
 
     @patch("nextwork.gh_graphql_or_none", return_value=None)
     def test_ref_not_found(self, _mock_gql):
@@ -1655,8 +1719,13 @@ class TestGhFetcher(unittest.TestCase):
         self.assertEqual(item["labels"], ["triaged"])
 
     @patch("nextwork.gh_graphql_or_none", return_value=None)
-    def test_fetch_item_none_on_gh_failure(self, _mock_gql):
-        self.assertIsNone(GhFetcher(quiet=True).fetch_item("acme/widget", 1))
+    def test_fetch_item_raises_on_gh_failure(self, _mock_gql):
+        from nextwork import FetchError
+
+        with self.assertRaises(FetchError) as ctx:
+            GhFetcher(quiet=True).fetch_item("acme/widget", 1)
+        self.assertEqual(ctx.exception.repo, "acme/widget")
+        self.assertEqual(ctx.exception.number, 1)
 
     @patch("nextwork.gh_graphql_or_none")
     def test_get_linked_prs_caches_pull_pages(self, mock_gql):
@@ -1687,13 +1756,27 @@ class TestGhFetcher(unittest.TestCase):
         mock_gql.side_effect = [
             {"repository": {"defaultBranchRef": {"name": "main"}}},
             merge_queue,
-            merge_queue,
         ]
         fetcher = GhFetcher(quiet=True)
         self.assertTrue(fetcher.is_in_merge_queue("acme/widget", 42))
         self.assertFalse(fetcher.is_in_merge_queue("acme/widget", 99))
-        # default branch cached; second call only hits merge-queue query
-        self.assertEqual(mock_gql.call_count, 3)
+        # default branch + queue cached; second call hits neither GraphQL again
+        self.assertEqual(mock_gql.call_count, 2)
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_is_in_merge_queue_uses_base_branch(self, mock_gql):
+        merge_queue = {
+            "repository": {
+                "mergeQueue": {"entries": {"nodes": [{"pullRequest": {"number": 7}}]}}
+            }
+        }
+        mock_gql.return_value = merge_queue
+        fetcher = GhFetcher(quiet=True)
+        self.assertTrue(fetcher.is_in_merge_queue("acme/widget", 7, base_branch="release-1"))
+        # No default-branch query when base_branch is provided.
+        self.assertEqual(mock_gql.call_count, 1)
+        self.assertEqual(mock_gql.call_args.args[1]["branch"], "release-1")
+
 
 
 class TestLinkBlocker(unittest.TestCase):
@@ -1897,18 +1980,63 @@ class TestParseArgs(unittest.TestCase):
 class TestMaybeCheckMergeQueue(unittest.TestCase):
     def test_sets_flag_only_for_ready_for_merge_prs(self):
         class StubFetcher:
-            def is_in_merge_queue(self, repo, number):
+            def is_in_merge_queue(self, repo, number, *, base_branch=None):
+                self.seen = (repo, number, base_branch)
                 return number == 2
 
+        stub = StubFetcher()
         items = [
             {"kind": "pull", "repo": "a/b", "number": 1, "labels": ["ready-for-review"]},
-            {"kind": "pull", "repo": "a/b", "number": 2, "labels": ["ready-for-merge"]},
+            {
+                "kind": "pull",
+                "repo": "a/b",
+                "number": 2,
+                "labels": ["ready-for-merge"],
+                "base_ref_name": "release",
+            },
             {"kind": "issue", "repo": "a/b", "number": 3, "labels": ["ready-for-merge"]},
         ]
-        maybe_check_merge_queue(items, StubFetcher())
+        maybe_check_merge_queue(items, stub)
         self.assertNotIn("in_merge_queue", items[0])
         self.assertTrue(items[1]["in_merge_queue"])
+        self.assertEqual(stub.seen, ("a/b", 2, "release"))
         self.assertNotIn("in_merge_queue", items[2])
+
+
+class TestFetchErrors(unittest.TestCase):
+    def test_build_queue_records_fetch_errors(self):
+        from nextwork import FetchError
+
+        class FlakyFetcher:
+            def fetch_item(self, repo, number):
+                if number == 1:
+                    raise FetchError(repo, number)
+                return make_issue(number=number, assignees=["alice"], labels=["triaged"])
+
+        results, _remaining, fetch_errors = build_queue(
+            [("acme/widget", 1), ("acme/widget", 2)],
+            FlakyFetcher(),
+            "alice",
+            6,
+            NOW,
+            quiet=True,
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["number"], 2)
+        self.assertEqual(fetch_errors, [{"repo": "acme/widget", "number": 1, "detail": "GraphQL/API failure"}])
+
+    def test_json_includes_fetch_errors(self):
+        out = format_json_output(
+            [],
+            "a/b",
+            "alice",
+            6,
+            [],
+            include_text=False,
+            fetch_errors=[{"repo": "a/b", "number": 9, "detail": "GraphQL/API failure"}],
+        )
+        payload = json.loads(out)
+        self.assertEqual(payload["fetch_errors"][0]["number"], 9)
 
 
 class TestApplyContinuesOnError(unittest.TestCase):

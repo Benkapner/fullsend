@@ -12,9 +12,9 @@ allowed-tools: Bash(python3 skills/nextwork/scripts/nextwork.py:*)
 
 Deterministically build a queue of **open** issues/PRs (assigned to you, or
 explicit refs), follow **open** GitHub `blockedBy` links and **open**
-sub-issues deepen-first (`blockedBy` may be cross-repo; sub-issues are
-same-repo; dependency chains are preferred over unrelated seeds), classify
-every item into a status catalog, and recommend the next action.
+sub-issues deepen-first (`blockedBy` and sub-issues may be cross-repo;
+dependency chains are preferred over unrelated seeds), classify every item
+into a status catalog, and recommend the next action.
 
 ## vs `/topissues`
 
@@ -49,8 +49,8 @@ python3 skills/nextwork/scripts/nextwork.py [ITEMS...] [OPTIONS]
 | `--user LOGIN` | GitHub login (default: authenticated user) |
 | `--format markdown\|json` | Output format (default: markdown) |
 | `--show-blocked` | Include Waiting/Blocked/Assigned-elsewhere sections in markdown output (JSON always includes every item) |
-| `--apply` | Perform trivial actions: `assign:self` first when suggested on actionable unassigned items; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments; remove orphaned `blocked` labels (`remove-label:blocked`). Never steals assignment from others and never auto-merges. |
-| `--take-over REFS` | Assign the listed refs (comma-separated or repeatable) to `--user`, even if already assigned elsewhere, then classify them as owned by the user. Skill-mediated — ask the user before using this. |
+| `--apply` | Perform trivial actions: `assign:self` first when suggested on actionable unassigned items; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments; remove orphaned `blocked` labels on **Issues** only (`remove-label:blocked`). Never steals assignment from others and never auto-merges. |
+| `--take-over REFS` | Assign the listed refs (comma-separated or repeatable) to `--user` **exclusively** (adds `--user`, then removes every other assignee) on **open** items only, then classify them as owned. Skill-mediated — ask the user before using this; confirmation must cover exclusive ownership. |
 | `--link-blocker DEPENDENT=BLOCKER` | Repeatable. Persist a real GitHub `blockedBy` dependency (DEPENDENT is blocked by BLOCKER, both as `owner/repo#N`). Idempotent if the link already exists. **Both sides must be open Issues** — GitHub's blocked-by relationship is issue-only on the dependent **and** the blocker (a PR cannot appear on either side). |
 | `--decisions-only` | Filter output to non-trivial decisions only (statuses in the "Decision?" = No/Decision column below) |
 | `--stale-hours N` | Default 6. Hours after which a **stuck in-flight** agent-status start, or a **never-started** launch label/`/fs-*` command, becomes an actionable re-trigger |
@@ -82,7 +82,7 @@ like production dispatch: first whitespace token of the first comment line.
 |--------|---------|---------|
 | `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels / launch signal yet (never auto-flips from `created_at` alone). A terminal Triage **or** sticky `<!-- fullsend:triage-agent -->` (when status is absent) at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — only when a launch signal or stuck start is stale |
 | `waiting_code` | `ready-to-code` / `/fs-code`; **or** non-terminal code agent-status | `trigger_code` (`/fs-code`) |
-| `waiting_review` | `ready-for-review` / `/fs-review` / review-required (or missing decision after other checks); uses `updated_at` as the launch clock when no explicit signal | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
+| `waiting_review` | `ready-for-review` / `/fs-review` / review-required (or missing decision after other checks); when no explicit `/fs-*` comment exists, uses `updated_at` as the launch clock (same imprecise fallback as code/triage label-only waits) | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
 | `waiting_fix` | Unresolved review threads all from `fullsend-ai-review[bot]`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
 | `waiting_agent` | Non-terminal agent-status comment whose role could not be mapped | _(no re-trigger)_ |
 | `waiting_ci` | Required checks still running | _(no re-trigger)_ |
@@ -93,7 +93,7 @@ like production dispatch: first whitespace token of the first comment line.
 | Status | Meaning |
 |--------|---------|
 | `blocked_by` | Open GitHub `blockedBy` link(s) only. `blockers[]` lists those open refs (issues only — GitHub has no PR-side `blockedBy`). The `blocked` label alone does **not** yield this status. |
-| `waiting_sub_issues` | Issue has one or more open GitHub sub-issues. `open_sub_issues[]` lists them; BFS enqueues each open child (same repo) for classification. Prefer this over promoting an epic while children are unfinished. |
+| `waiting_sub_issues` | Issue has one or more open GitHub sub-issues (or `subIssuesSummary` shows incomplete when the first page has no OPEN nodes). `open_sub_issues[]` lists children from the first page (may be cross-repo); BFS enqueues each for classification. Prefer this over promoting an epic while children are unfinished. |
 | `waiting_linked_pr` | Issue has an open linked PR (native closing keywords + `partial-fix #N`) — go look at that PR instead |
 | `waiting_info_other` | `needs-info` label and you're not the author (waiting on the reporter) |
 | `assigned_elsewhere` | Assignees present and you're not among them. `assignees[]` is included so the skill can offer take-over. Never suggested as something to self-assign — that's `--take-over` only. |
@@ -121,7 +121,7 @@ like production dispatch: first whitespace token of the first comment line.
 | Suggestion | When | Trivial? |
 |------------|------|----------|
 | `assign:self` | Actionable (`eliminated: false`) and unassigned — prepended ahead of other suggestions | Yes (`--apply` assigns **first**, before `/fs-*` comments or label removal) |
-| `remove-label:blocked` | Item has the `blocked` label but no open structured blockers | Yes (`--apply` removes it) |
+| `remove-label:blocked` | **Issue** has the `blocked` label but no open structured blockers | Yes (`--apply` removes it). Never suggested for PRs — the label is the only PR-side blocked signal and cannot be replaced via `--link-blocker`. |
 
 `--apply` performs the "Yes" (trivial) status rows **and** side-actions: `assign:self` on actionable unassigned items (including decision statuses), then primary `/fs-*` comments, then any `remove-label:blocked` (including on eliminated / decision items). It never steals assignees from others. `--decisions-only` shows only the "Decision" status rows.
 
@@ -181,7 +181,7 @@ like production dispatch: first whitespace token of the first comment line.
 | 0 | Success |
 | 1 | Missing `gh` or not in a resolvable repository |
 | 2 | Invalid arguments (bad `--repo`, unparseable ref, malformed `--link-blocker` spec) |
-| 3 | GraphQL/API failure |
+| 3 | GraphQL/API failure (including mid-walk per-item fetch failures; JSON may still list partial `items` plus `fetch_errors`) |
 
 ## Limitations
 
@@ -199,24 +199,39 @@ like production dispatch: first whitespace token of the first comment line.
   (`FAILURE`/`ERROR`), human unresolved conversations, or `BLOCKED` yield
   `needs_review_decision` instead of `ready_to_merge`.
 - GitHub's `blockedBy` dependency feature is **issue-only on both sides**. The
-  `blocked` label alone does not classify as `blocked_by`; when present without
-  open structured blockers it yields `remove-label:blocked` (trivial /
-  `--apply`). `--link-blocker` cannot use a PR as the dependent **or** the
-  blocker — both refs must be open Issues.
+  `blocked` label alone does not classify as `blocked_by`; when present on an
+  **Issue** without open structured blockers it yields `remove-label:blocked`
+  (trivial / `--apply`). PRs never get that suggestion — the label is the only
+  PR-side blocked signal. `--link-blocker` cannot use a PR as the dependent
+  **or** the blocker — both refs must be open Issues.
 - `/fs-*` launch signals are trusted only from comments with
   `authorAssociation` of `OWNER` / `MEMBER` / `COLLABORATOR` (or fullsend
-  agent bots). Slash commands from other commenters are ignored for waiting /
-  trigger classification (the real dispatch pipeline would also reject them).
+  agent bots). This is an **author-association approximation**, not dispatch's
+  live `collaborators/<user>/permission` write check (read-only collaborators
+  can appear as `COLLABORATOR`). Slash commands from other commenters are
+  ignored for waiting / trigger classification.
+- When a role's control label is present but there is no trusted `/fs-*`
+  comment, the launch clock falls back to the item's `updated_at` for
+  **triage, code, and review** alike. GitHub bumps `updatedAt` on almost any
+  activity, so unrelated comments can reset staleness — not only the moment
+  the control label was applied.
 - Post-triage conversation only invalidates a fresh triage after the comment
   itself is older than `--stale-hours` (default 6h); raw age still uses
   `--triage-stale-hours` (default 72h).
 - `waiting_ci` and `waiting_merge_queue` are not flipped by `--stale-hours`.
 - Merge-queue membership is only checked for PRs labeled `ready-for-merge`
-  (to avoid an extra API call per PR); other PRs never report
+  (to avoid an extra API call per PR); the check uses the PR's `baseRefName`
+  when available (not only the repo default branch). Other PRs never report
   `in_merge_queue`.
 - Linked-PR detection scans open PRs only when an issue reaches that check
   (after blockers / assignment / sub-issues). The scan is capped at five
   GraphQL pages (~500 PRs) per repo; beyond that, some links may be missed.
+- Item GraphQL fetches use soft page caps (not full pagination): last 50
+  comments, first 20 `blockedBy`, first 50 `subIssues`, first 50
+  `reviewThreads`. A full page emits a stderr warning; classifications that
+  depend on dropped rows (launch signals, blockers, open children, unresolved
+  threads) may be incomplete. `subIssuesSummary` still gates `close_or_plan`
+  when open children fall past the first sub-issue page.
 - Queue walking is **deepen-first**: newly discovered blockers/sub-issues are
   prepended so a dependency chain finishes before unrelated seeds. A long
   chain can consume `--max-visits` before other seeds are fetched.
@@ -224,3 +239,4 @@ like production dispatch: first whitespace token of the first comment line.
   required checks; wording says “commit checks,” not “required checks.”
 - `--apply` / `--link-blocker` / `--take-over` continue on per-item mutation
   failures and record `action: error` entries instead of aborting the run.
+  Mid-walk fetch failures are recorded in JSON `fetch_errors` and exit code 3.

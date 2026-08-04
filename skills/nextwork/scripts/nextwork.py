@@ -71,6 +71,11 @@ INCLUDE_TEXT_COMMENT_COUNT = 3
 MAX_QUEUE_VISITS = 100
 # Cap open-PR pagination used for issue↔PR linking (100 nodes per page).
 MAX_OPEN_PR_PAGES_FOR_LINKING = 5
+# Soft page sizes for ITEM_QUERY connections (not paginated; full page ⇒ possible truncation).
+COMMENTS_PAGE_SIZE = 50
+BLOCKERS_PAGE_SIZE = 20
+SUB_ISSUES_PAGE_SIZE = 50
+REVIEW_THREADS_PAGE_SIZE = 50
 
 
 # ------------------------------- Ref parsing -------------------------------
@@ -171,13 +176,18 @@ AGENT_RESULT_MARKER_RE = re.compile(r"fullsend:[a-z0-9-]+-agent\b")
 # Sticky triage summary (older runs may lack a terminal agent-status comment).
 TRIAGE_RESULT_MARKER = "fullsend:triage-agent"
 
-# Role word in the status body (e.g. "🤖 Review · Started …") → waiting status.
-_INFLIGHT_ROLE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\bReview\b", re.IGNORECASE), "waiting_review"),
-    (re.compile(r"\bFix\b", re.IGNORECASE), "waiting_fix"),
-    (re.compile(r"\bCode\b", re.IGNORECASE), "waiting_code"),
-    (re.compile(r"\bTriage\b", re.IGNORECASE), "waiting_triage"),
+# Structured status-comment role prefix (internal/statuscomment startBodyRe / Finished line).
+# Matches "🤖 Review · …" or "🤖 Finished Code · …" — not free-text skip reasons later in the body.
+_ROLE_PREFIX_RE = re.compile(
+    r"🤖\s+(?:Finished\s+)?(Review|Fix|Code|Triage)\b",
+    re.IGNORECASE,
 )
+_ROLE_TO_WAITING = {
+    "review": "waiting_review",
+    "fix": "waiting_fix",
+    "code": "waiting_code",
+    "triage": "waiting_triage",
+}
 
 _INFLIGHT_REASON = {
     "waiting_review": "Review agent run in progress (non-terminal status comment)",
@@ -268,8 +278,19 @@ TRIAGE_COMMENT_GRACE_HOURS = 6.0
 # GitHub StatusState for statusCheckRollup.state (no IN_PROGRESS/QUEUED on this enum).
 CHECKS_PENDING = frozenset({"PENDING", "EXPECTED"})
 CHECKS_FAILED = frozenset({"FAILURE", "ERROR"})
-# Comment.authorAssociation values that may launch /fs-* (write-capable roles).
+# Comment.authorAssociation values treated as plausible /fs-* launchers.
+# Approximation only — not a live permission check (see _is_trusted_fs_commenter).
 TRUSTED_FS_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
+class FetchError(Exception):
+    """Raised when a per-item GraphQL/API fetch fails (distinct from missing/closed)."""
+
+    def __init__(self, repo: str, number: int, detail: str = "GraphQL/API failure"):
+        self.repo = repo
+        self.number = number
+        self.detail = detail
+        super().__init__(f"{repo}#{number}: {detail}")
 
 
 def comment_command(body: str | None) -> str:
@@ -289,9 +310,11 @@ def _is_agent_bot_comment(comment: dict[str, Any]) -> bool:
 def _is_trusted_fs_commenter(comment: dict[str, Any]) -> bool:
     """True when a /fs-* launch comment should count as a real launch signal.
 
-    Mirrors dispatch's write-capable boundary: org/repo collaborators and
-    fullsend agent bots. Unauthorized commenters are ignored so nextwork does
-    not sit in waiting_* for a slash command that never triggered an agent.
+    Approximation of dispatch's write boundary using Comment.authorAssociation
+    (OWNER/MEMBER/COLLABORATOR) plus fullsend agent bots. This is *not* a live
+    ``collaborators/<user>/permission`` check: GitHub's COLLABORATOR association
+    includes read-only collaborators, while reusable-dispatch requires write (or
+    triage for some stages). Bounded by ``--stale-hours`` rather than permanent.
     """
     author = comment.get("author") or ""
     if author in FULLSEND_AGENT_BOTS:
@@ -303,13 +326,15 @@ def _is_trusted_fs_commenter(comment: dict[str, Any]) -> bool:
 def agent_terminal_succeeded(body: str) -> bool:
     """True when a terminal agent-status body reports success.
 
-    Failed/cancelled/terminated runs must not clear launch waits. Sticky triage
-    results without an explicit outcome are treated as success (legacy runs).
+    Failed/cancelled/terminated/skipped runs must not clear launch waits. Sticky
+    triage results without an explicit outcome are treated as success (legacy).
     """
     lower = body.lower()
-    if "❌" in body or "terminated" in lower or "cancelled" in lower or "canceled" in lower:
+    if "❌" in body or "⏭️" in body:
         return False
-    if re.search(r"\b(?:failure|failed)\b", lower):
+    if "terminated" in lower or "cancelled" in lower or "canceled" in lower:
+        return False
+    if re.search(r"\b(?:failure|failed|skipped)\b", lower):
         return False
     if "✅" in body or re.search(r"\bsuccess\b", lower):
         return True
@@ -329,9 +354,10 @@ def parse_inflight_agent(comments: list[dict[str, Any]]) -> str | None:
 
 
 def _role_waiting_status(body: str) -> str:
-    for pattern, status in _INFLIGHT_ROLE_PATTERNS:
-        if pattern.search(body):
-            return status
+    """Map an agent-status body to waiting_* using the structured 🤖 role prefix only."""
+    match = _ROLE_PREFIX_RE.search(body)
+    if match:
+        return _ROLE_TO_WAITING[match.group(1).lower()]
     return "waiting_agent"
 
 
@@ -449,7 +475,13 @@ def launch_signal_at(
     *,
     extra_label: bool = False,
 ) -> str | None:
-    """ISO timestamp when the agent was asked to run, or None if there is no launch signal."""
+    """ISO timestamp when the agent was asked to run, or None if there is no launch signal.
+
+    Prefer an explicit trusted ``/fs-*`` comment. When only a control label is
+    present (or ``extra_label``), fall back to ``item.updated_at``. That clock
+    resets on any subsequent activity (comments, edits, other labels) — not just
+    label application — for every role that uses this helper (triage/code/review).
+    """
     spec = _LAUNCH_SPEC[role]
     cmd_at = latest_fs_command_at(comments, spec["command"])
     if cmd_at:
@@ -688,7 +720,21 @@ def classify_issue(
             open_sub_issues=open_subs,
         )
 
-    if (item.get("sub_issues_total") or 0) > 0:
+    sub_total = item.get("sub_issues_total") or 0
+    if sub_total > 0:
+        sub_completed = item.get("sub_issues_completed") or 0
+        # Prefer summary totals over the capped subIssues page: open children may
+        # sit past first:50 even when the page has no OPEN nodes.
+        if sub_completed < sub_total:
+            return Classification(
+                status="waiting_sub_issues",
+                reason=(
+                    f"Sub-issues still open ({sub_completed}/{sub_total} completed; "
+                    "open children may be beyond the first page)"
+                ),
+                eliminated=True,
+                open_sub_issues=[],
+            )
         return Classification(
             status="close_or_plan",
             reason="All sub-issues are closed; close this issue or plan further work",
@@ -1045,7 +1091,14 @@ def annotate_unassigned_assign_self(
 def annotate_orphaned_blocked_label(
     classification: Classification, item: dict[str, Any]
 ) -> Classification:
-    """If labeled blocked but no open structured blockers, suggest removing the label."""
+    """If an Issue is labeled blocked but has no open structured blockers, suggest removal.
+
+    PRs never get ``remove-label:blocked``: GitHub has no PR-side ``blockedBy``, so
+    the label is the only way to mark a PR blocked and ``--link-blocker`` cannot
+    replace it.
+    """
+    if item.get("kind") != "issue":
+        return classification
     labels = item.get("labels") or []
     blockers = item.get("blockers") or []
     already = REMOVE_BLOCKED_LABEL in classification.suggested_actions
@@ -1235,7 +1288,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         }
         subIssuesSummary { total completed }
         subIssues(first: 50) {
-          nodes { number state title }
+          nodes { number state title repository { nameWithOwner } }
         }
       }
       ... on PullRequest {
@@ -1250,6 +1303,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         createdAt
         updatedAt
         body
+        baseRefName
         comments(last: 50) {
           nodes { author { login } authorAssociation body createdAt }
         }
@@ -1344,10 +1398,12 @@ query($owner: String!, $name: String!, $number: Int!) {
       __typename
       ... on Issue {
         id
+        state
         assignees(first: 20) { nodes { login } }
       }
       ... on PullRequest {
         id
+        state
         assignees(first: 20) { nodes { login } }
       }
     }
@@ -1375,11 +1431,23 @@ mutation($issueId: ID!, $blockingIssueId: ID!) {
 # ------------------------------- Fetch / normalize -------------------------------
 
 
-def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
+def _warn_page_cap(kind: str, repo: str, number: int, count: int, cap: int, *, quiet: bool) -> None:
+    if quiet or count < cap:
+        return
+    print(
+        f"warning: {repo}#{number} {kind} page full ({cap}); "
+        "some entries may be missing from classification",
+        file=sys.stderr,
+    )
+
+
+def normalize_item(repo: str, node: dict[str, Any], *, quiet: bool = False) -> dict[str, Any]:
     """Turn a raw issueOrPullRequest GraphQL node into the internal item schema."""
     kind = "issue" if node["__typename"] == "Issue" else "pull"
     labels = [n["name"] for n in node.get("labels", {}).get("nodes", [])]
     assignees = [n["login"] for n in node.get("assignees", {}).get("nodes", [])]
+    comment_nodes = node.get("comments", {}).get("nodes", [])
+    _warn_page_cap("comments", repo, node["number"], len(comment_nodes), COMMENTS_PAGE_SIZE, quiet=quiet)
     comments = [
         {
             "author": (c.get("author") or {}).get("login"),
@@ -1387,7 +1455,7 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
             "body": c.get("body") or "",
             "created_at": c.get("createdAt"),
         }
-        for c in node.get("comments", {}).get("nodes", [])
+        for c in comment_nodes
     ]
     item: dict[str, Any] = {
         "kind": kind,
@@ -1407,17 +1475,31 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
         "linked_prs": [],
     }
     if kind == "issue":
+        blocked_nodes = (node.get("blockedBy") or {}).get("nodes") or []
+        _warn_page_cap(
+            "blockedBy", repo, node["number"], len(blocked_nodes), BLOCKERS_PAGE_SIZE, quiet=quiet
+        )
         item["blockers"] = parse_open_blockers(node.get("blockedBy"))
         summary = node.get("subIssuesSummary") or {}
         item["sub_issues_total"] = int(summary.get("total") or 0)
         item["sub_issues_completed"] = int(summary.get("completed") or 0)
+        child_nodes = (node.get("subIssues") or {}).get("nodes") or []
+        _warn_page_cap(
+            "subIssues",
+            repo,
+            node["number"],
+            len(child_nodes),
+            SUB_ISSUES_PAGE_SIZE,
+            quiet=quiet,
+        )
         open_subs: list[dict[str, Any]] = []
-        for child in (node.get("subIssues") or {}).get("nodes") or []:
+        for child in child_nodes:
             if child.get("state") != "OPEN":
                 continue
+            child_repo = (child.get("repository") or {}).get("nameWithOwner") or repo
             open_subs.append(
                 {
-                    "repo": repo,
+                    "repo": child_repo,
                     "number": child["number"],
                     "title": child.get("title") or "",
                 }
@@ -1425,6 +1507,7 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
         item["open_sub_issues"] = open_subs
     else:
         item["is_draft"] = node.get("isDraft", False)
+        item["base_ref_name"] = node.get("baseRefName") or ""
         item["review_decision"] = node.get("reviewDecision")
         item["mergeable"] = node.get("mergeable")
         item["merge_state_status"] = node.get("mergeStateStatus")
@@ -1437,6 +1520,14 @@ def normalize_item(repo: str, node: dict[str, Any]) -> dict[str, Any]:
             max(approved_ats, key=created_at_key) if approved_ats else None
         )
         threads = (node.get("reviewThreads") or {}).get("nodes") or []
+        _warn_page_cap(
+            "reviewThreads",
+            repo,
+            node["number"],
+            len(threads),
+            REVIEW_THREADS_PAGE_SIZE,
+            quiet=quiet,
+        )
         unresolved_threads: list[dict[str, Any]] = []
         for t in threads:
             if t.get("isResolved") is not False:
@@ -1474,7 +1565,9 @@ class ItemFetcher(Protocol):
 class MergeQueueChecker(Protocol):
     """Structural interface for merge-queue membership checks."""
 
-    def is_in_merge_queue(self, repo: str, number: int) -> bool: ...
+    def is_in_merge_queue(
+        self, repo: str, number: int, *, base_branch: str | None = None
+    ) -> bool: ...
 
 
 class GhFetcher:
@@ -1483,6 +1576,8 @@ class GhFetcher:
     def __init__(self, *, quiet: bool = False):
         self.quiet = quiet
         self._pulls_by_repo: dict[str, list[dict[str, Any]]] = {}
+        # Cache merge-queue PR numbers per (repo, base branch).
+        self._merge_queue_entries_by_branch: dict[tuple[str, str], set[int]] = {}
         self._default_branch_by_repo: dict[str, str | None] = {}
 
     def fetch_item(self, repo: str, number: int) -> dict[str, Any] | None:
@@ -1491,12 +1586,11 @@ class GhFetcher:
             ITEM_QUERY, {"owner": owner, "name": name, "number": number}, quiet=self.quiet
         )
         if data is None:
-            return None
+            raise FetchError(repo, number)
         node = (data.get("repository") or {}).get("issueOrPullRequest")
         if node is None:
             return None
-        item = normalize_item(repo, node)
-        return item
+        return normalize_item(repo, node, quiet=self.quiet)
 
     def _pulls_for_linking(self, repo: str) -> list[dict[str, Any]]:
         if repo not in self._pulls_by_repo:
@@ -1535,9 +1629,9 @@ class GhFetcher:
         by_issue = build_pr_links_by_issue(self._pulls_for_linking(repo))
         return by_issue.get(issue_number, [])
 
-    def is_in_merge_queue(self, repo: str, number: int) -> bool:
-        owner, name = repo.split("/", 1)
+    def _default_branch(self, repo: str) -> str | None:
         if repo not in self._default_branch_by_repo:
+            owner, name = repo.split("/", 1)
             data = gh_graphql_or_none(
                 DEFAULT_BRANCH_QUERY, {"owner": owner, "name": name}, quiet=self.quiet
             )
@@ -1546,19 +1640,32 @@ class GhFetcher:
                 ref = (data.get("repository") or {}).get("defaultBranchRef")
                 branch = ref.get("name") if ref else None
             self._default_branch_by_repo[repo] = branch
-        branch = self._default_branch_by_repo[repo]
+        return self._default_branch_by_repo[repo]
+
+    def is_in_merge_queue(
+        self, repo: str, number: int, *, base_branch: str | None = None
+    ) -> bool:
+        branch = base_branch or self._default_branch(repo)
         if not branch:
             return False
-        data = gh_graphql_or_none(
-            MERGE_QUEUE_QUERY, {"owner": owner, "name": name, "branch": branch}, quiet=self.quiet
-        )
-        if data is None:
-            return False
-        queue = (data.get("repository") or {}).get("mergeQueue")
-        if not queue:
-            return False
-        entries = queue.get("entries", {}).get("nodes", [])
-        return any((e.get("pullRequest") or {}).get("number") == number for e in entries)
+        owner, name = repo.split("/", 1)
+        cache_key = (repo, branch)
+        if cache_key not in self._merge_queue_entries_by_branch:
+            data = gh_graphql_or_none(
+                MERGE_QUEUE_QUERY,
+                {"owner": owner, "name": name, "branch": branch},
+                quiet=self.quiet,
+            )
+            numbers: set[int] = set()
+            if data is not None:
+                queue = (data.get("repository") or {}).get("mergeQueue")
+                if queue:
+                    for entry in queue.get("entries", {}).get("nodes", []) or []:
+                        pr_num = (entry.get("pullRequest") or {}).get("number")
+                        if pr_num is not None:
+                            numbers.add(pr_num)
+            self._merge_queue_entries_by_branch[cache_key] = numbers
+        return number in self._merge_queue_entries_by_branch[cache_key]
 
 
 # ------------------------------- Seeding + deepen-first queue -------------------------------
@@ -1630,7 +1737,7 @@ def build_queue(
     max_visits: int = MAX_QUEUE_VISITS,
     triage_stale_hours: float = TRIAGE_STALE_HOURS,
     quiet: bool = False,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     """Walk seed refs, deepen-first via open blockedBy / sub-issues.
 
     Only classified open items count toward ``max_visits`` (closed, missing, and
@@ -1638,12 +1745,15 @@ def build_queue(
     blockers and sub-issues are prepended so dependency chains complete before
     remaining unrelated seeds.
 
-    Returns ``(results, remaining)`` where ``remaining`` is how many queued refs
-    were left unprocessed when the visit cap was hit (0 if the queue drained).
+    Returns ``(results, remaining, fetch_errors)`` where ``remaining`` is how
+    many queued refs were left unprocessed when the visit cap was hit (0 if the
+    queue drained), and ``fetch_errors`` lists per-item API failures (distinct
+    from missing/closed).
     """
     visited: set[tuple[str, int]] = set()
     to_visit: deque[tuple[str, int]] = deque(seeds)
     results: list[dict[str, Any]] = []
+    fetch_errors: list[dict[str, Any]] = []
 
     while to_visit and len(results) < max_visits:
         ref = to_visit.popleft()
@@ -1651,7 +1761,19 @@ def build_queue(
             continue
         visited.add(ref)
         repo, number = ref
-        item = fetcher.fetch_item(repo, number)
+        try:
+            item = fetcher.fetch_item(repo, number)
+        except FetchError as exc:
+            fetch_errors.append(
+                {
+                    "repo": exc.repo,
+                    "number": exc.number,
+                    "detail": exc.detail,
+                }
+            )
+            if not quiet:
+                print(f"warning: failed to fetch {exc.repo}#{exc.number}: {exc.detail}", file=sys.stderr)
+            continue
         if item is None or item["state"] != "OPEN":
             continue
 
@@ -1707,14 +1829,18 @@ def build_queue(
             f"warning: visit cap ({max_visits}) reached; {remaining} queued ref(s) not processed",
             file=sys.stderr,
         )
-    return results, remaining
+    return results, remaining, fetch_errors
 
 
 def maybe_check_merge_queue(items: list[dict[str, Any]], fetcher: MergeQueueChecker) -> None:
     """Second pass: only hits the merge-queue API for PRs labeled ready-for-merge."""
     for item in items:
         if item["kind"] == "pull" and "ready-for-merge" in item.get("labels", []):
-            item["in_merge_queue"] = fetcher.is_in_merge_queue(item["repo"], item["number"])
+            item["in_merge_queue"] = fetcher.is_in_merge_queue(
+                item["repo"],
+                item["number"],
+                base_branch=item.get("base_ref_name") or None,
+            )
 
 
 # ------------------------------- Apply / take-over / link-blocker -------------------------------
@@ -1817,6 +1943,7 @@ def apply_trivial_actions(
 
 
 def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict[str, Any]:
+    """Assign ``user`` exclusively (removes other assignees) on an open issue/PR."""
     owner, name = repo.split("/", 1)
     data = gh_graphql_or_none(
         NODE_ID_QUERY, {"owner": owner, "name": name, "number": number}, quiet=quiet
@@ -1824,6 +1951,12 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     node = (data or {}).get("repository", {}).get("issueOrPullRequest") if data else None
     if node is None:
         return {"ref": format_ref(repo, number), "action": "error", "detail": "ref not found"}
+    if node.get("state") != "OPEN":
+        return {
+            "ref": format_ref(repo, number),
+            "action": "error",
+            "detail": f"ref is not open (state={node.get('state')})",
+        }
     sub = "issue" if node["__typename"] == "Issue" else "pr"
     if (
         run_gh_soft(
@@ -2026,6 +2159,7 @@ def format_json_output(
     link_results: list[dict[str, Any]] | None = None,
     take_over_results: list[dict[str, Any]] | None = None,
     truncated_remaining: int = 0,
+    fetch_errors: list[dict[str, Any]] | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "repo": repo,
@@ -2038,6 +2172,8 @@ def format_json_output(
     if truncated_remaining:
         payload["truncated"] = True
         payload["truncated_remaining"] = truncated_remaining
+    if fetch_errors:
+        payload["fetch_errors"] = fetch_errors
     if link_results:
         payload["link_results"] = link_results
     if take_over_results:
@@ -2238,7 +2374,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(2)
 
     fetcher = GhFetcher(quiet=args.quiet)
-    items, truncated_remaining = build_queue(
+    items, truncated_remaining, fetch_errors = build_queue(
         seeds,
         fetcher,
         user,
@@ -2288,6 +2424,7 @@ def main(argv: list[str] | None = None) -> None:
                 link_results=link_results,
                 take_over_results=take_over_results,
                 truncated_remaining=truncated_remaining,
+                fetch_errors=fetch_errors,
             )
         )
     else:
@@ -2296,6 +2433,8 @@ def main(argv: list[str] | None = None) -> None:
                 items, repo, user, args.stale_hours, applied, show_blocked=args.show_blocked
             )
         )
+    if fetch_errors:
+        sys.exit(3)
 
 
 if __name__ == "__main__":
