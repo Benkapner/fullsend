@@ -1126,10 +1126,6 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 	manifestPath := filepath.Join(dir, "repos.yaml")
 	fc := newInstallFakeClient("acme/repo")
 
-	// Bootstrap writes the manifest to disk during the add phase.
-	// The subsequent provision phase requires forge infrastructure
-	// config (mint_url, etc.), so it returns an error. We verify the
-	// manifest file was written correctly despite the provision error.
 	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:    manifestPath,
 		concurrency: 4,
@@ -1140,7 +1136,6 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint_url")
 
-	// Manifest should have been persisted to disk with the new repo.
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
 	assert.Equal(t, 1, m.Version)
@@ -1178,7 +1173,6 @@ func TestRunReposInstall_BootstrapDryRun(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Manifest file should not be created in dry-run mode.
 	_, statErr := os.Stat(manifestPath)
 	assert.True(t, os.IsNotExist(statErr), "dry-run should not create manifest file")
 }
@@ -1515,7 +1509,7 @@ func TestRunReposInstall_SyncFailureSkipsUpgrade(t *testing.T) {
 		testClient:  fc,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed during convergence")
+	assert.Contains(t, err.Error(), "repos failed")
 	assert.Empty(t, fc.CommittedFiles, "upgrade should not commit files for sync-failed repos")
 	assert.Empty(t, fc.CreatedProposals, "upgrade should not create PRs for sync-failed repos")
 }

@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -345,6 +346,123 @@ func TestUninstall_SecretDeleteError(t *testing.T) {
 	}
 	if !r.WorkflowDeleted {
 		t.Error("WorkflowDeleted = false, want true")
+	}
+}
+
+func newInstalledFakeGitLabClient(repos ...string) *forge.FakeClient {
+	client := forge.NewFakeClient()
+	for _, r := range repos {
+		for _, v := range gitlabUninstallVars {
+			client.VariableValues[r+"/"+v] = "test-value"
+			client.VariablesExist[r+"/"+v] = true
+		}
+		for _, s := range gitlabUninstallSecrets {
+			client.Secrets[r+"/"+s] = true
+		}
+		for _, p := range gitlabScaffoldPaths {
+			client.FileContents[r+"/"+p] = []byte("content")
+		}
+	}
+	return client
+}
+
+func testGitLabManifest(repos ...string) *Manifest {
+	m := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{
+			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
+		},
+		Defaults: DefaultsConfig{
+			Forge: ForgeGitLab,
+		},
+	}
+	for _, r := range repos {
+		m.Repos = append(m.Repos, RepoEntry{Repo: r})
+	}
+	return m
+}
+
+func TestUninstall_GitLabRepo(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
+	}
+	if !r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = false, want true")
+	}
+	if r.VarsDeleted != len(gitlabUninstallVars) {
+		t.Errorf("VarsDeleted = %d, want %d", r.VarsDeleted, len(gitlabUninstallVars))
+	}
+	if r.SecretsDeleted != len(gitlabUninstallSecrets) {
+		t.Errorf("SecretsDeleted = %d, want %d", r.SecretsDeleted, len(gitlabUninstallSecrets))
+	}
+
+	// Verify GitLab scaffold paths were deleted, not GitHub paths.
+	for _, df := range client.DeletedFiles {
+		if df.Path == ".github/workflows/fullsend.yml" {
+			t.Error("GitHub workflow path was deleted for GitLab repo")
+		}
+	}
+}
+
+func TestUninstall_GitLabCommitMessage_HasSkipCI(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if len(client.DeletedFiles) == 0 {
+		t.Fatal("no files were deleted")
+	}
+	msg := client.DeletedFiles[0].Message
+	if msg == "" {
+		t.Fatal("commit message is empty")
+	}
+	if !strings.Contains(msg, "[skip ci]") {
+		t.Errorf("commit message %q does not contain [skip ci]", msg)
+	}
+}
+
+func TestUninstall_GitLabConfigYaml_Deleted(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	found := false
+	for _, df := range client.DeletedFiles {
+		if df.Path == ".fullsend/config.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error(".fullsend/config.yaml was not in scaffold paths for GitLab uninstall")
 	}
 }
 

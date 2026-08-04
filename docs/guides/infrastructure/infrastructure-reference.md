@@ -132,8 +132,9 @@ A single mint instance can serve multiple orgs:
 - **Authorization:** Any valid OIDC token from an allowed org — no role restriction
 - **Response:**
   ```json
-  {"org": "my-org", "roles": ["coder", "review", "triage"]}
+  {"org": "my-org", "roles": ["coder", "review", "triage"], "per_org_foreign_compat": false}
   ```
+  `per_org_foreign_compat` is always present (bool; `false` when `PER_ORG_FOREIGN_COMPAT` is unset).
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token
 - **Security:** Returns only the requesting org and its role names (not app IDs, not other orgs' roles)
 
@@ -201,7 +202,7 @@ During installation, the GCF provisioner creates:
 2. **WIF Pool** — `fullsend-inference` for inference, `fullsend-pool` for mint
 3. **WIF Provider** — Maps GitHub OIDC claims to GCP attributes
 4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities
-5. **Per-repo providers** (per-repo mode) — Scoped WIF provider per repository via `mintcore.BuildRepoProviderID()`
+5. **Per-repo providers** (per-repo mode) — Scoped WIF provider per repository via `mintcore.BuildRepoProviderID()` (GitHub only; GitLab uses a shared `gitlab-oidc` provider scoped via attribute conditions on the WIF pool)
 
 ---
 
@@ -231,6 +232,8 @@ Secrets and variables are deployed at different scopes depending on the installa
 
 ### Per-Repo Mode Secrets/Variables
 
+#### GitHub
+
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
@@ -239,6 +242,23 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_MINT_URL`
 - `FULLSEND_GCP_REGION` (install-time only, not managed by sync)
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to "true")
+
+#### GitLab
+
+**Target repo CI/CD variables (protected):**
+- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity
+- `FULLSEND_CREDENTIAL_MODE` — Set to `"variable"` or `"wif"` (when `--inference-project` is provided)
+- `FULLSEND_FORGE` — Set to `"gitlab"`
+- `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to `"true"`)
+- `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last fast poll run
+- `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last full poll run
+- `FULLSEND_LABEL_STATE` — JSON object tracking label sync state
+
+**Additional variables when `--inference-project` is provided (WIF mode):**
+- `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
+- `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
+- `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
+- `FULLSEND_SA` — Service account email for WIF impersonation
 
 ### Secrets Layer Behavior
 

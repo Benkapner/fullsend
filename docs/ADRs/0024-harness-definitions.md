@@ -28,6 +28,11 @@ and the manual `.env` file convention.*
 adds `openshell.profiles` and URL-based `providers` fields to the harness schema
 for portable provider and profile resolution.*
 
+*See also [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md), which
+narrows the CI workflow `env:` injection path described in "Template
+instantiation" below to infrastructure plumbing and CI-runtime-only values;
+static agent behavior defaults go through harness composition instead.*
+
 ## Context
 
 Each agent invocation requires configuration that ties together several moving

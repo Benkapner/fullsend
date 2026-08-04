@@ -141,6 +141,14 @@ type WorkflowRun struct {
 	CreatedAt  string
 }
 
+// WorkflowJob represents a job within a workflow run.
+type WorkflowJob struct {
+	ID         int
+	Name       string
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", etc.
+}
+
 // WorkflowArtifact is a file bundle uploaded by a workflow run.
 type WorkflowArtifact struct {
 	ID   int
@@ -539,6 +547,9 @@ type Client interface {
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
+
+	// ListWorkflowRunJobs returns the jobs within a workflow run.
+	ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]WorkflowJob, error)
 
 	// ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 	ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]WorkflowArtifact, error)

@@ -195,16 +195,20 @@ func (l *DispatchTokenLayer) uninstallPAT(ctx context.Context) error {
 }
 
 // uninstallOIDC removes the org-level dispatch URL variable.
+// Errors are accumulated across all managed variables so that a single
+// failure does not prevent cleanup of the remaining ones.
 func (l *DispatchTokenLayer) uninstallOIDC(ctx context.Context) error {
 	if l.dispatcher == nil {
 		return nil
 	}
 
+	var errs []error
 	var foundAny bool
 	for _, name := range l.dispatcher.OrgVariableNames() {
 		exists, err := l.client.OrgVariableExists(ctx, l.org, name)
 		if err != nil {
-			return fmt.Errorf("checking org variable %s: %w", name, err)
+			errs = append(errs, fmt.Errorf("checking org variable %s: %w", name, err))
+			continue
 		}
 
 		if !exists {
@@ -216,7 +220,8 @@ func (l *DispatchTokenLayer) uninstallOIDC(ctx context.Context) error {
 		l.ui.StepStart("deleting org variable " + name)
 		if err := l.client.DeleteOrgVariable(ctx, l.org, name); err != nil {
 			l.ui.StepFail("failed to delete org variable " + name)
-			return fmt.Errorf("deleting org variable %s: %w", name, err)
+			errs = append(errs, fmt.Errorf("deleting org variable %s: %w", name, err))
+			continue
 		}
 		l.ui.StepDone("deleted org variable " + name)
 	}
@@ -225,7 +230,7 @@ func (l *DispatchTokenLayer) uninstallOIDC(ctx context.Context) error {
 		l.ui.StepWarn("GCP resources (Cloud Function, service account, secrets) must be deleted manually")
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // Analyze checks whether the dispatch mechanism is configured.

@@ -1838,6 +1838,125 @@ func TestShellSafeExpandEnv_ShellRoundtrip(t *testing.T) {
 	}
 }
 
+// TestShellSafeExpandEnv_RefusesOIDCVars verifies that OIDC credential vars
+// expand to empty in host_files templates so they cannot leak into sandbox-bound
+// files (#5832).
+func TestShellSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "allowed-value")
+
+	template := `export A="${ACTIONS_ID_TOKEN_REQUEST_URL}"
+export B="${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
+export C="${FULLSEND_GCP_OIDC_URL}"
+export D="${FULLSEND_GCP_OIDC_AUTH_FILE}"
+export E="${SAFE_VAR}"`
+
+	got := shellSafeExpandEnv(template)
+
+	assert.Contains(t, got, `export A=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export B=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export C=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export D=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export E="allowed-value"`, "non-OIDC var must expand normally")
+}
+
+// TestSafeExpandEnv_RefusesOIDCVars verifies that safeExpandEnv refuses OIDC
+// credential vars (expanding them to empty) while passing other vars through
+// unchanged. This covers the host_files src path expansion site (#5832).
+func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "allowed-value")
+
+	// OIDC vars must expand to empty.
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_AUTH_FILE}"))
+
+	// Non-OIDC vars must expand normally.
+	assert.Equal(t, "allowed-value", safeExpandEnv("${SAFE_VAR}"))
+
+	// Mixed usage: OIDC part disappears, safe part remains.
+	assert.Equal(t, "/prefix//suffix", safeExpandEnv("/prefix/${FULLSEND_GCP_OIDC_AUTH_FILE}/suffix"))
+}
+
+// TestReservedSandboxKeys_IncludesOIDCVars verifies that OIDC credential vars
+// are in reservedSandboxKeys so env.sandbox cannot inject them (#5832).
+func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
+	for _, key := range []string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"FULLSEND_GCP_OIDC_URL",
+		"FULLSEND_GCP_OIDC_AUTH_FILE",
+	} {
+		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
+	}
+}
+
+// TestBuildSandboxEnvLines_SkipsOIDCVars verifies that OIDC credential vars
+// in env.sandbox are rejected by buildSandboxEnvLines (#5832).
+func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":                     "allowed",
+				"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://stolen.example.com",
+				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "stolen-token",
+				"FULLSEND_GCP_OIDC_URL":          "https://stolen-gcp.example.com",
+				"FULLSEND_GCP_OIDC_AUTH_FILE":    "/tmp/stolen-auth.json",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+// TestStripOIDCEnv verifies that stripOIDCEnv removes OIDC credential entries
+// from an env slice while preserving all other entries (#5832).
+func TestStripOIDCEnv(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"ACTIONS_ID_TOKEN_REQUEST_URL=https://oidc.example.com",
+		"HOME=/home/user",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN=secret",
+		"FULLSEND_GCP_OIDC_URL=https://gcp.example.com",
+		"FULLSEND_GCP_OIDC_AUTH_FILE=/tmp/auth.json",
+		"SAFE_VAR=value",
+	}
+
+	result := stripOIDCEnv(env)
+
+	assert.Equal(t, []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"SAFE_VAR=value",
+	}, result)
+}
+
+// TestOIDCDenyKeys_Completeness verifies that all four OIDC credential vars
+// are present in oidcDenyKeys (#5832).
+func TestOIDCDenyKeys_Completeness(t *testing.T) {
+	expected := []string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"FULLSEND_GCP_OIDC_URL",
+		"FULLSEND_GCP_OIDC_AUTH_FILE",
+	}
+	for _, key := range expected {
+		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
+	}
+	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
+}
+
 func TestNeedsCrossCompilation(t *testing.T) {
 	result := needsCrossCompilation()
 	if runtime.GOOS == "linux" {

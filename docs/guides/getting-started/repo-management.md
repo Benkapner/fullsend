@@ -134,8 +134,11 @@ Install runs in three phases:
    drift (synced automatically) and scaffold ref drift (upgraded
    automatically).
 
-> **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
-> enrollment) must be provisioned separately before running install.
+> **Prerequisite:** For GitHub repos and GitLab repos using WIF mode
+> (`--inference-project`), GCP infrastructure (WIF pools/providers,
+> mint enrollment) must be provisioned separately before running
+> install. GitLab repos can be installed without GCP infrastructure
+> when `--inference-project` is omitted (variable mode).
 > See `fullsend inference provision` and `fullsend mint enroll`.
 
 > **Note:** When your token does not have direct push access to a target
@@ -328,19 +331,6 @@ secrets were manually modified. To resolve, either:
 - Delete the existing secret and re-run `repos install` to re-provision
   both secrets together.
 - Manually create the missing secret with the correct value.
-
-### GitLab scaffold limitation
-
-`repos install` only supports GitHub repos for scaffold generation.
-GitLab repos in the manifest will fail during the provision phase with:
-
-```
-GitLab scaffold generation is not yet implemented; install is only supported for GitHub repos
-```
-
-GitLab repos can still use `repos status` (read-only drift detection)
-and `repos uninstall` (teardown). Scaffold provisioning for GitLab repos
-must be performed manually until GitLab support is implemented.
 
 ## Migrating from per-org mode to manifest management
 

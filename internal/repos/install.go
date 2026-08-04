@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -68,6 +69,10 @@ type InstallConfig struct {
 
 	VendorBinary bool
 
+	// RunnerTags is a list of GitLab CI runner tags to embed in scaffold
+	// pipeline YAML so that agent jobs are routed to specific runners.
+	RunnerTags []string
+
 	// Direct controls scaffold delivery: true pushes directly to the default
 	// branch; false creates a PR.
 	Direct bool
@@ -77,6 +82,11 @@ type InstallConfig struct {
 	// be overwritten. When true, InferenceProject and WIFProvider may be
 	// empty and secret writes are skipped.
 	ReuseSecrets bool
+
+	// DiscoveredCredMode is the existing FULLSEND_CREDENTIAL_MODE value
+	// read from the repo during discovery. Used to preserve the credential
+	// mode on re-install when InferenceProject is not provided.
+	DiscoveredCredMode string
 }
 
 // InstallResult holds the outcome of a per-repo installation.
@@ -126,10 +136,6 @@ func Install(ctx context.Context, cfg InstallConfig,
 		progress = func(_, _, _ string) {}
 	}
 
-	if cfg.Forge == ForgeGitLab {
-		return nil, fmt.Errorf("GitLab scaffold generation is not yet implemented; install is only supported for GitHub repos")
-	}
-
 	repoFullName := cfg.Owner + "/" + cfg.Repo
 	result := &InstallResult{
 		Owner: cfg.Owner,
@@ -154,7 +160,7 @@ func Install(ctx context.Context, cfg InstallConfig,
 			return result, fmt.Errorf("checking guard variable: %w", guardErr)
 		}
 		if guardExists && guardVal == "true" {
-			fullyInstalled, checkErr := checkInstallComponents(ctx, client, cfg.Owner, cfg.Repo, ForgeConfigFor(cfg.Forge))
+			fullyInstalled, checkErr := checkInstallComponents(ctx, client, cfg.Owner, cfg.Repo, cfg.Forge, ForgeConfigFor(cfg.Forge))
 			if checkErr != nil {
 				return result, fmt.Errorf("checking installation components: %w", checkErr)
 			}
@@ -181,7 +187,19 @@ func Install(ctx context.Context, cfg InstallConfig,
 		return result, nil
 	}
 
-	if !cfg.ReuseSecrets {
+	if cfg.InferenceProject != "" && !IsValidGCPProjectID(cfg.InferenceProject) {
+		return result, fmt.Errorf("invalid GCP project ID %q", cfg.InferenceProject)
+	}
+	if cfg.InferenceRegion != "" && !IsValidGCPRegion(cfg.InferenceRegion) {
+		return result, fmt.Errorf("invalid GCP region %q", cfg.InferenceRegion)
+	}
+
+	// Validate WIF provider when secrets will be written. GitHub always
+	// requires WIF; GitLab requires it only when inference is configured
+	// (InferenceProject is set), otherwise it uses variable-mode and no
+	// secrets are written.
+	needsWIF := cfg.Forge == ForgeGitHub || (cfg.Forge == ForgeGitLab && cfg.InferenceProject != "")
+	if !cfg.ReuseSecrets && needsWIF {
 		if wifProvider == "" {
 			return result, fmt.Errorf("WIF provider required for repository secret configuration; set WIFProvider or enable WIF provisioning")
 		}
@@ -206,12 +224,9 @@ func Install(ctx context.Context, cfg InstallConfig,
 
 	// Step 6: Write repository variables.
 	progress(repoFullName, "vars", "Configuring repository variables")
-	repoVars := map[string]string{
-		"FULLSEND_MINT_URL":   mintURL,
-		forge.PerRepoGuardVar: "true",
-	}
-	if cfg.InferenceRegion != "" {
-		repoVars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
+	repoVars, err := installVarsForForge(cfg, mintURL, wifProvider)
+	if err != nil {
+		return result, err
 	}
 	for _, name := range maputil.SortedKeys(repoVars) {
 		if err := client.CreateOrUpdateRepoVariable(ctx, cfg.Owner, cfg.Repo, name, repoVars[name]); err != nil {
@@ -220,15 +235,21 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 	progress(repoFullName, "vars", fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
-	// Step 7: Write repository secrets (skipped when reusing existing secrets).
+	// Step 6b: Write protected CI/CD variables (GitLab only).
+	protectedVars := installProtectedVarsForForge(cfg)
+	for _, name := range maputil.SortedKeys(protectedVars) {
+		if err := client.CreateProtectedCIVariable(ctx, cfg.Owner, cfg.Repo, name, protectedVars[name]); err != nil {
+			return result, fmt.Errorf("setting protected variable %s: %w", name, err)
+		}
+	}
+
+	// Step 7: Write repository secrets. GitLab writes secrets only when
+	// inference is configured (WIF mode). Skipped when reusing existing secrets.
+	repoSecrets := installSecretsForForge(cfg, wifProvider)
 	if cfg.ReuseSecrets {
 		progress(repoFullName, "secrets", "Reusing existing repository secrets")
-	} else {
+	} else if len(repoSecrets) > 0 {
 		progress(repoFullName, "secrets", "Configuring repository secrets")
-		repoSecrets := map[string]string{
-			"FULLSEND_GCP_PROJECT_ID":   cfg.InferenceProject,
-			"FULLSEND_GCP_WIF_PROVIDER": wifProvider,
-		}
 		for _, name := range maputil.SortedKeys(repoSecrets) {
 			if err := client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, name, repoSecrets[name]); err != nil {
 				return result, fmt.Errorf("setting repo secret %s: %w", name, err)
@@ -260,7 +281,15 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 		return nil, fmt.Errorf("marshaling config: %w", err)
 	}
 
-	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
+	var installFiles scaffold.InstallFiles
+	switch cfg.Forge {
+	case ForgeGitHub:
+		installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
+	case ForgeGitLab:
+		installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags)
+	default:
+		return nil, fmt.Errorf("unsupported forge %q for scaffold generation", cfg.Forge)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("collecting install files: %w", err)
 	}
@@ -282,10 +311,76 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	return files, nil
 }
 
+func installVarsForForge(cfg InstallConfig, mintURL, wifProvider string) (map[string]string, error) {
+	switch cfg.Forge {
+	case ForgeGitHub:
+		vars := map[string]string{
+			"FULLSEND_MINT_URL":   mintURL,
+			forge.PerRepoGuardVar: "true",
+		}
+		if cfg.InferenceRegion != "" {
+			vars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
+		}
+		return vars, nil
+	case ForgeGitLab:
+		now := time.Now().UTC().Format(time.RFC3339)
+		credMode := "variable"
+		if cfg.InferenceProject != "" {
+			credMode = "wif"
+		} else if cfg.DiscoveredCredMode == "wif" || cfg.DiscoveredCredMode == "variable" {
+			credMode = cfg.DiscoveredCredMode
+		}
+		vars := map[string]string{
+			"FULLSEND_CREDENTIAL_MODE":   credMode,
+			"FULLSEND_FORGE":             "gitlab",
+			"FULLSEND_LAST_POLL_AT_FAST": now,
+			"FULLSEND_LAST_POLL_AT_FULL": now,
+			"FULLSEND_LABEL_STATE":       "{}",
+			forge.PerRepoGuardVar:        "true",
+		}
+		if cfg.InferenceRegion != "" {
+			vars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
+		}
+		return vars, nil
+	default:
+		return nil, fmt.Errorf("unsupported forge %q for variable configuration", cfg.Forge)
+	}
+}
+
+func installProtectedVarsForForge(cfg InstallConfig) map[string]string {
+	if cfg.Forge == ForgeGitLab && cfg.InferenceProject != "" {
+		return map[string]string{
+			"FULLSEND_SA": "fullsend-mint@" + cfg.InferenceProject + ".iam.gserviceaccount.com",
+		}
+	}
+	return nil
+}
+
+func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]string {
+	switch cfg.Forge {
+	case ForgeGitHub:
+		return map[string]string{
+			"FULLSEND_GCP_PROJECT_ID":   cfg.InferenceProject,
+			"FULLSEND_GCP_WIF_PROVIDER": wifProvider,
+		}
+	case ForgeGitLab:
+		if cfg.InferenceProject != "" {
+			return map[string]string{
+				"FULLSEND_GCP_PROJECT_ID":   cfg.InferenceProject,
+				"FULLSEND_GCP_WIF_PROVIDER": wifProvider,
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
 // requiredVariables lists the per-repo variables (excluding the guard)
 // that must exist for a complete installation. FULLSEND_GCP_REGION is
 // excluded because it is install-time-only and may not be present when
-// secrets are reused. Shared by install and checkInstallComponents.
+// secrets are reused. Shared by install, checkInstallComponents, and
+// uninstall.
 var requiredVariables = []string{"FULLSEND_MINT_URL"}
 
 // requiredSecrets lists the per-repo secrets that must exist for a
@@ -293,11 +388,30 @@ var requiredVariables = []string{"FULLSEND_MINT_URL"}
 // and uninstall.
 var requiredSecrets = []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROVIDER"}
 
+var gitlabRequiredVariables = []string{"FULLSEND_CREDENTIAL_MODE", "FULLSEND_FORGE"}
+
+func requiredVarsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabRequiredVariables
+	}
+	return requiredVariables
+}
+
+func requiredSecretsForForge(forgeName, credMode string) []string {
+	if forgeName == ForgeGitLab {
+		if credMode == "wif" {
+			return requiredSecrets
+		}
+		return nil
+	}
+	return requiredSecrets
+}
+
 // checkInstallComponents verifies that all per-repo installation
 // components beyond the guard variable are present: workflow file,
 // variables, and secrets. The caller has already confirmed the guard
 // variable is set. Returns true only when every component exists.
-func checkInstallComponents(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (bool, error) {
+func checkInstallComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig) (bool, error) {
 	// Workflow file (try forge-appropriate extensions).
 	workflowFound := false
 	for _, path := range fc.WorkflowPaths {
@@ -315,19 +429,23 @@ func checkInstallComponents(ctx context.Context, client forge.Client, owner, rep
 		return false, nil
 	}
 
-	// Variables.
-	for _, varName := range requiredVariables {
-		_, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
+	// Variables (forge-specific).
+	credMode := ""
+	for _, varName := range requiredVarsForForge(forgeName) {
+		val, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
 		if err != nil {
 			return false, fmt.Errorf("checking variable %s: %w", varName, err)
 		}
 		if !exists {
 			return false, nil
 		}
+		if varName == "FULLSEND_CREDENTIAL_MODE" {
+			credMode = val
+		}
 	}
 
 	// Secrets (existence check only — values cannot be read back).
-	for _, secretName := range requiredSecrets {
+	for _, secretName := range requiredSecretsForForge(forgeName, credMode) {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
 		if err != nil {
 			return false, fmt.Errorf("checking secret %s: %w", secretName, err)

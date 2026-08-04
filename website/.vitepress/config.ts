@@ -233,6 +233,7 @@ export default defineConfig({
               link: "/guides/user/building-custom-agents",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
+            { text: "Jira Integration", link: "/guides/user/jira-integration" },
           ],
         },
         {

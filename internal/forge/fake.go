@@ -125,6 +125,7 @@ type FakeClient struct {
 	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte        // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
+	WorkflowRunsList          map[string][]WorkflowRun // key: "owner/repo/workflow" → multiple runs (takes precedence over WorkflowRuns)
 	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
 	WorkflowRunArtifacts      map[int][]WorkflowArtifact
 	WorkflowArtifactContents  map[int][]byte
@@ -235,6 +236,9 @@ type FakeClient struct {
 
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
+
+	// WorkflowRunJobs for ListWorkflowRunJobs.
+	WorkflowRunJobs map[int][]WorkflowJob // key: runID
 
 	// Annotations for GetWorkflowRunAnnotations.
 	Annotations []Annotation
@@ -1537,10 +1541,27 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return nil, e
 	}
 	key := owner + "/" + repo + "/" + workflowFile
+	if f.WorkflowRunsList != nil {
+		if runs, ok := f.WorkflowRunsList[key]; ok {
+			return append([]WorkflowRun(nil), runs...), nil
+		}
+	}
 	if run, ok := f.WorkflowRuns[key]; ok {
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunJobs"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowRunJobs == nil {
+		return nil, nil
+	}
+	return append([]WorkflowJob(nil), f.WorkflowRunJobs[runID]...), nil
 }
 
 func (f *FakeClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, runID int) ([]WorkflowArtifact, error) {

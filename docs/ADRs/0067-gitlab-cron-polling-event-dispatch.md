@@ -274,6 +274,11 @@ OIDC/WIF mode additionally provides:
   cannot modify WIF attribute conditions without GCP IAM access.
 - **No token mint.** Standard GCP WIF replaces the custom mint Cloud
   Function used for GitHub.
+- **Inference credential support.** WIF mode additionally configures
+  Vertex AI inference credentials (`FULLSEND_GCP_PROJECT_ID`,
+  `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_SA`, `FULLSEND_GCP_REGION`)
+  so that agent jobs can authenticate to Vertex AI using the same
+  OIDC/WIF flow. Variable mode does not support inference credentials.
 
 ### Cron poller (`gitlab-poll` input driver)
 

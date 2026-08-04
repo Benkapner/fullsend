@@ -106,12 +106,13 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 	// Phase 1: Parallel discovery — check guard variables.
 	type discoveryResult struct {
-		repo            ResolvedRepo
-		resolved        ResolvedConfig
-		installed       bool
-		secretsExist    bool
-		regionVarExists bool
-		err             error
+		repo               ResolvedRepo
+		resolved           ResolvedConfig
+		installed          bool
+		secretsExist       bool
+		regionVarExists    bool
+		discoveredCredMode string
+		err                error
 	}
 
 	concurrency := cfg.MaxConcurrency
@@ -151,7 +152,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 			installed := false
 			if guardExists && guardVal == "true" {
-				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, fc)
+				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc)
 				if checkErr != nil {
 					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
 					return
@@ -162,8 +163,10 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			// When repo is NOT fully installed, check whether GCP
 			// secrets already exist so we can reuse them instead of
 			// requiring --inference-project / --inference-project-number.
+			// Applies to both GitHub (always uses WIF) and GitLab
+			// (uses WIF when inference is configured).
 			var secretsExist bool
-			if !installed && resolved.Forge == ForgeGitHub {
+			if !installed && (resolved.Forge == ForgeGitHub || resolved.Forge == ForgeGitLab) {
 				projExists, projErr := fc.Client.RepoSecretExists(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_PROJECT_ID")
 				if projErr != nil {
 					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: projErr}
@@ -181,11 +184,23 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 						discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: regionErr}
 						return
 					}
+					var credMode string
+					if resolved.Forge == ForgeGitLab {
+						credModeVal, credModeExists, credModeErr := fc.Client.GetRepoVariable(ctx, rr.Owner, rr.Repo, "FULLSEND_CREDENTIAL_MODE")
+						if credModeErr != nil {
+							discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: credModeErr}
+							return
+						}
+						if credModeExists {
+							credMode = credModeVal
+						}
+					}
 					discoveries[idx] = discoveryResult{
-						repo:            rr,
-						resolved:        resolved,
-						secretsExist:    true,
-						regionVarExists: regionExists,
+						repo:               rr,
+						resolved:           resolved,
+						secretsExist:       true,
+						regionVarExists:    regionExists,
+						discoveredCredMode: credMode,
 					}
 					return
 				} else if projExists != wifExists {
@@ -257,24 +272,35 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	}
 
 	// Validate resolved config — fail fast on missing fields to avoid
-	// partial installations. Only GitHub repos require these fields.
-	// InferenceProject, InferenceProjectNumber, and InferenceRegion are
-	// install-time-only values from CLI flags, not from the manifest.
-	// When secrets already exist on the repo, these flags are not
-	// required — the existing secrets are reused.
+	// partial installations. GitHub repos always require inference flags.
+	// GitLab repos require them only when --inference-project is provided
+	// (inference is optional for GitLab). InferenceProject,
+	// InferenceProjectNumber, and InferenceRegion are install-time-only
+	// values from CLI flags, not from the manifest. When secrets already
+	// exist on the repo, these flags are not required — the existing
+	// secrets are reused.
 	var validCandidates []discoveryResult
 	for _, d := range toInstall {
 		fullName := d.repo.Owner + "/" + d.repo.Repo
-		if d.resolved.Forge == ForgeGitHub && !d.secretsExist {
-			if cfg.InferenceProject == "" {
-				result.Failed = append(result.Failed, InstallResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-project is required but empty for %s", fullName),
-				})
-				progress(fullName, "validate", "Missing --inference-project flag")
-				continue
-			}
+
+		// GitHub: inference flags are always required.
+		// GitLab: inference flags are optional, but when
+		//   --inference-project is provided, region and project-number
+		//   are also required.
+		requireInference := d.resolved.Forge == ForgeGitHub && !d.secretsExist
+		validateInference := requireInference ||
+			(d.resolved.Forge == ForgeGitLab && !d.secretsExist && cfg.InferenceProject != "")
+
+		if requireInference && cfg.InferenceProject == "" {
+			result.Failed = append(result.Failed, InstallResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("--inference-project is required but empty for %s", fullName),
+			})
+			progress(fullName, "validate", "Missing --inference-project flag")
+			continue
+		}
+		if validateInference {
 			if !IsValidGCPProjectID(cfg.InferenceProject) {
 				result.Failed = append(result.Failed, InstallResult{
 					Owner: d.repo.Owner,
@@ -321,7 +347,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				continue
 			}
 		}
-		if d.secretsExist && !d.regionVarExists && cfg.InferenceRegion == "" {
+		needsRegion := d.resolved.Forge == ForgeGitHub || cfg.InferenceProject != ""
+		if d.secretsExist && !d.regionVarExists && cfg.InferenceRegion == "" && needsRegion {
 			result.Failed = append(result.Failed, InstallResult{
 				Owner: d.repo.Owner,
 				Repo:  d.repo.Repo,
@@ -349,6 +376,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	// Pre-compute WIF provider names and check for collisions.
 	// BuildRepoProviderID truncates to 32 chars, so repos with long
 	// names that share a prefix could produce identical provider IDs.
+	// GitLab uses a shared "gitlab-oidc" provider (scoped via attribute
+	// conditions on the WIF pool) instead of per-repo providers.
 	type candidateWIF struct {
 		discovery   discoveryResult
 		wifProvider string
@@ -357,7 +386,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	wifSeen := make(map[string]string) // wifProvider → "owner/repo"
 	for i, d := range validCandidates {
 		var wif string
-		if d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "" && !d.secretsExist {
+		switch {
+		case d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "" && !d.secretsExist:
 			providerID := mintcore.BuildRepoProviderID(d.repo.Owner, d.repo.Repo)
 			wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
 				cfg.InferenceProjectNumber, mintcore.DefaultInferencePool, providerID)
@@ -366,6 +396,9 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				return nil, fmt.Errorf("WIF provider collision: repos %s and %s produce the same provider ID %q (truncated to 32 chars)", existing, fullName, providerID)
 			}
 			wifSeen[wif] = fullName
+		case d.resolved.Forge == ForgeGitLab && cfg.InferenceProject != "" && cfg.InferenceProjectNumber != "" && !d.secretsExist:
+			wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/gitlab-oidc",
+				cfg.InferenceProjectNumber, mintcore.DefaultInferencePool)
 		}
 		candidates[i] = candidateWIF{discovery: d, wifProvider: wif}
 	}
@@ -404,19 +437,21 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 
 			installCfg := InstallConfig{
-				Owner:            dr.repo.Owner,
-				Repo:             dr.repo.Repo,
-				Forge:            dr.resolved.Forge,
-				Roles:            roles,
-				MintURL:          dr.resolved.MintURL,
-				InferenceProject: cfg.InferenceProject,
-				InferenceRegion:  cfg.InferenceRegion,
-				UpstreamRef:      ref,
-				UpstreamTag:      tag,
-				SkipGuardCheck:   true,
-				WIFProvider:      wifProvider,
-				Direct:           cfg.Direct,
-				ReuseSecrets:     dr.secretsExist,
+				Owner:              dr.repo.Owner,
+				Repo:               dr.repo.Repo,
+				Forge:              dr.resolved.Forge,
+				Roles:              roles,
+				MintURL:            dr.resolved.MintURL,
+				InferenceProject:   cfg.InferenceProject,
+				InferenceRegion:    cfg.InferenceRegion,
+				UpstreamRef:        ref,
+				UpstreamTag:        tag,
+				SkipGuardCheck:     true,
+				WIFProvider:        wifProvider,
+				RunnerTags:         cfg.Manifest.Forge.GitLab.RunnerTags,
+				Direct:             cfg.Direct,
+				ReuseSecrets:       dr.secretsExist,
+				DiscoveredCredMode: dr.discoveredCredMode,
 			}
 
 			installResult, installErr := Install(ctx, installCfg, dr.resolved.ForgeConfig.Client, commitScaffold, progress)

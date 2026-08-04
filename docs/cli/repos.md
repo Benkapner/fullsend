@@ -99,6 +99,16 @@ Runs in three phases:
 > provider resource names deterministically. The `--inference-project` flag
 > (GCP project ID) is also required for GitHub repos and is written as the
 > `FULLSEND_GCP_PROJECT_ID` repo secret.
+>
+> For **GitLab repos**, inference credentials are optional. When
+> `--inference-project` is provided, `repos install` sets
+> `FULLSEND_CREDENTIAL_MODE=wif` and writes inference secrets
+> (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`) and variables
+> (`FULLSEND_GCP_REGION`, `FULLSEND_SA`). GitLab uses a shared
+> `gitlab-oidc` WIF provider (scoped via attribute conditions) instead of
+> per-repo providers. Without `--inference-project`, GitLab repos use
+> `FULLSEND_CREDENTIAL_MODE=variable` (no inference, forge token from
+> CI/CD variable).
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -119,14 +129,25 @@ When repos are specified as positional arguments, only those repos are processed
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
-| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub repos) |
-| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub repos) |
+| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub, optional for GitLab) |
+| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub; required for GitLab when `--inference-project` is set) |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; falls back to `defaults.forge` if set. |
 | `--force` | `false` | Allow scaffold ref downgrades |
 | `--inference-region` | | Per-repo GCP inference region override (install-time only, not stored in the manifest) |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |
+| `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens (env: `FULLSEND_GITLAB_BOT_TOKEN`) |
+
+### GitLab bot token
+
+For GitLab repos, `repos install` automatically creates a project access token and stores it as the `FULLSEND_FORGE_TOKEN` CI/CD variable. This requires GitLab Premium or Ultimate.
+
+On free-tier or Community Edition instances where project access tokens are not available, pass `--gitlab-bot-token` with a personal access token (PAT) that has `api` scope:
+
+```bash
+fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
+```
 
 ### Common workflows
 
@@ -154,9 +175,11 @@ Install specific repos:
 fullsend repos install acme/api acme/web
 ```
 
-### Limitations
+Add a GitLab repo and install it:
 
-- **GitLab scaffold generation is not yet implemented.** `repos install` only supports GitHub repos. GitLab repos in the manifest will fail with an error during the provision phase. GitLab support for `repos status` and `repos uninstall` (teardown) works normally.
+```bash
+fullsend repos install group/project --forge gitlab --direct
+```
 
 ## `repos status`
 
@@ -248,19 +271,46 @@ fullsend repos set-default forge.github.mint_url ""   # removes the key
 
 ### Valid keys
 
-| Key | Description |
-|-----|-------------|
-| `defaults.allowed_remote_resources` | Default allowed remote resources for all repos |
-| `forge.github.url` | GitHub instance URL (defaults to `https://github.com`) |
-| `forge.github.mint_url` | Token mint Cloud Run endpoint URL |
-| `forge.github.fullsend_ref` | Default fullsend workflow ref for GitHub repos |
-| `forge.gitlab.url` | GitLab instance URL |
+| Key | Type | Description |
+|-----|------|-------------|
+| `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
+| `forge.github.url` | URL | GitHub instance URL (default: `https://github.com`) |
+| `forge.github.mint_url` | URL | Cloud Run endpoint URL for the token mint |
+| `forge.github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
+| `forge.gitlab.url` | URL | GitLab instance URL |
+| `forge.gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml |
+
+### Examples
+
+Set the GitLab runner tags:
+
+```bash
+fullsend repos set-default forge.gitlab.runner_tags fullsend-agent
+```
+
+Set multiple runner tags:
+
+```bash
+fullsend repos set-default forge.gitlab.runner_tags "fullsend-agent,gpu-runner"
+```
+
+Remove runner tags:
+
+```bash
+fullsend repos set-default forge.gitlab.runner_tags ""
+```
+
+Set the GitLab instance URL:
+
+```bash
+fullsend repos set-default forge.gitlab.url https://gitlab.example.com
+```
 
 ## See also
 

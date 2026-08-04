@@ -881,6 +881,8 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			}
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.schema"):
 			// Same as forge pre_script above.
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".policy"):
+			// Same as forge pre_script above.
 		case strings.HasPrefix(m.field, "openshell.profiles["):
 			// Profiles don't mutate harness fields — they're consumed via
 			// the ResolvedProfile list built above.
