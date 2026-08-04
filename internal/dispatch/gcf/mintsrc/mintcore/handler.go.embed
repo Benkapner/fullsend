@@ -277,6 +277,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
 	isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+	// Dual enrollment: if the caller is explicitly listed in
+	// PER_REPO_WIF_REPOS (not via wildcard public mint) and their
+	// owner org is also in ALLOWED_ORGS, use per-org scope treatment
+	// — per-org shapes are a superset of per-repo self-only scope.
+	// Note: when ALLOWED_ORGS=* with specific PER_REPO_WIF_REPOS
+	// entries, per-repo callers are upgraded to per-org scope; this
+	// is consistent because all non-per-repo callers from any org
+	// already receive per-org treatment in that configuration.
+	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
+		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+		log.Printf("dual-enrollment: upgrading %s from per-repo to per-org scope", claims.Repository)
+		isPerRepo = false
+	}
 	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
