@@ -143,6 +143,34 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 	},
 }
 
+// stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
+var stepDeclRe = regexp.MustCompile(`(?m)^      - name: (.+)$`)
+
+// extractStepSection returns the YAML block for the step named marker in
+// content. It fails the test if the marker doesn't match exactly one step
+// declaration.
+func extractStepSection(t *testing.T, content, marker string) string {
+	t.Helper()
+
+	var count int
+	var matchStart int
+	for _, loc := range stepDeclRe.FindAllStringSubmatchIndex(content, -1) {
+		name := content[loc[2]:loc[3]]
+		if name == marker {
+			count++
+			matchStart = loc[0]
+		}
+	}
+	require.Equal(t, 1, count, "expected exactly one step named %q, found %d", marker, count)
+
+	section := content[matchStart:]
+	if rest := content[matchStart+1:]; stepDeclRe.FindStringIndex(rest) != nil {
+		next := stepDeclRe.FindStringIndex(rest)
+		section = content[matchStart : matchStart+1+next[0]]
+	}
+	return section
+}
+
 // reusableWorkflowRef extracts the reusable workflow filename from a uses: reference.
 // Handles both "fullsend-ai/fullsend/.github/workflows/reusable-foo.yml@v0"
 // and "./.github/workflows/reusable-foo.yml".
@@ -276,6 +304,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 		"FULLSEND_GCP_WIF_PROVIDER",
 		"FULLSEND_GCP_PROJECT_ID",
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+		"OTEL_EXPORTER_OTLP_HEADERS",
 	}
 
 	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
@@ -322,20 +351,23 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 }
 
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
-// secret (#2862) is forwarded along both installation-mode chains to every
-// reusable stage workflow. TestWorkflowCallInputAlignment only enforces
-// required secrets; an omitted optional forward silently arrives empty,
-// which turns into a 401 at authenticated backends instead of failing loudly.
+// secrets (#2862, #5886) are forwarded along both installation-mode chains
+// to every reusable stage workflow. TestWorkflowCallInputAlignment only
+// enforces required secrets; an omitted optional forward silently arrives
+// empty, which turns into a 401 at authenticated backends instead of
+// failing loudly.
 func TestOTELHeadersSecretThreading(t *testing.T) {
-	const forward = "OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}"
+	forwards := map[string]string{
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS": "OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}",
+		"OTEL_EXPORTER_OTLP_HEADERS":        "OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}",
+	}
 
 	cases := []struct {
 		name    string
 		content func(t *testing.T) []byte
 	}{
-		// per-repo chain: shim → reusable-dispatch (covers all inlined stages)
+		// per-repo chain: shim → reusable-dispatch
 		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
-		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
 		// per-org chain: thin caller → reusable-{stage}
 		{"reusable-triage.yml", loadRepoFile(".github/workflows/reusable-triage.yml")},
 		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
@@ -351,11 +383,94 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Contains(t, string(tc.content(t)), forward,
-				"%s must forward/inject the OTLP headers secret", tc.name)
+		for secretName, forward := range forwards {
+			t.Run(tc.name+"/"+secretName, func(t *testing.T) {
+				assert.Contains(t, string(tc.content(t)), forward,
+					"%s must forward/inject %s", tc.name, secretName)
+			})
+		}
+	}
+
+	// reusable-dispatch.yml: check each inline stage step individually so a
+	// secret missing from one stage is not masked by its presence in others.
+	t.Run("reusable-dispatch.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		stepMarkers := []string{
+			"Run triage agent",
+			"Run code agent",
+			"Run review agent",
+			"Run fix agent",
+			"Run retro agent",
+			"Run prioritize agent",
+			"Run harness agent",
+		}
+		for _, marker := range stepMarkers {
+			t.Run(marker, func(t *testing.T) {
+				section := extractStepSection(t, content, marker)
+				for secretName, forward := range forwards {
+					assert.Contains(t, section, forward,
+						"%q step must inject %s", marker, secretName)
+				}
+			})
+		}
+	})
+}
+
+// TestOTELVariableForwarding validates that OTEL variables (#5886) are
+// injected into the env: block of every agent run step. Variables are
+// auto-visible via vars. context so they don't need secrets: threading,
+// but a missing env: line means the agent process never sees the value.
+//
+// For reusable-dispatch.yml each inline stage step is checked individually
+// so a variable missing from one stage is not masked by its presence in
+// another.
+func TestOTELVariableForwarding(t *testing.T) {
+	otelVars := []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_CERTIFICATE",
+		"OTEL_RESOURCE_ATTRIBUTES",
+		"OTEL_SDK_DISABLED",
+	}
+
+	forwardLine := func(v string) string {
+		return v + ": ${{ vars." + v + " }}"
+	}
+
+	// Reusable stage workflows (single agent step each).
+	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range stages {
+		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
+			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
+			for _, v := range otelVars {
+				assert.Contains(t, content, forwardLine(v),
+					"reusable-%s.yml must inject %s into agent env", stage, v)
+			}
 		})
 	}
+
+	// reusable-dispatch.yml: check each inline stage step individually.
+	t.Run("reusable-dispatch.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		stepMarkers := []string{
+			"Run triage agent",
+			"Run code agent",
+			"Run review agent",
+			"Run fix agent",
+			"Run retro agent",
+			"Run prioritize agent",
+			"Run harness agent",
+		}
+		for _, marker := range stepMarkers {
+			t.Run(marker, func(t *testing.T) {
+				section := extractStepSection(t, content, marker)
+				for _, v := range otelVars {
+					assert.Contains(t, section, forwardLine(v),
+						"%q step must inject %s", marker, v)
+				}
+			})
+		}
+	})
 }
 
 // TestReusableDispatchStageConcurrency validates per-role cancel-in-progress groups
@@ -601,14 +716,7 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
 			marker := fmt.Sprintf("Run %s agent", stage)
-			idx := strings.Index(s, marker)
-			require.NotEqual(t, -1, idx,
-				"workflow must contain %q step", marker)
-			section := s[idx:]
-			nextStep := strings.Index(section, "\n      - name:")
-			if nextStep > 0 {
-				section = section[:nextStep]
-			}
+			section := extractStepSection(t, s, marker)
 			assert.Contains(t, section, "pr-head-sha:",
 				"%s agent step must pass pr-head-sha to action.yml", stage)
 			assert.Contains(t, section, ".pull_request.head.sha",
