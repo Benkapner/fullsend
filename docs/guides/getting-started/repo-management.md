@@ -134,8 +134,11 @@ Install runs in three phases:
    drift (synced automatically) and scaffold ref drift (upgraded
    automatically).
 
-> **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
-> enrollment) must be provisioned separately before running install.
+> **Prerequisite:** For GitHub repos and GitLab repos using WIF mode
+> (`--inference-project`), GCP infrastructure (WIF pools/providers,
+> mint enrollment) must be provisioned separately before running
+> install. GitLab repos can be installed without GCP infrastructure
+> when `--inference-project` is omitted (variable mode).
 > See `fullsend inference provision` and `fullsend mint enroll`.
 
 > **Note:** When your token does not have direct push access to a target

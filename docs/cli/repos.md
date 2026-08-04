@@ -99,6 +99,16 @@ Runs in three phases:
 > provider resource names deterministically. The `--inference-project` flag
 > (GCP project ID) is also required for GitHub repos and is written as the
 > `FULLSEND_GCP_PROJECT_ID` repo secret.
+>
+> For **GitLab repos**, inference credentials are optional. When
+> `--inference-project` is provided, `repos install` sets
+> `FULLSEND_CREDENTIAL_MODE=wif` and writes inference secrets
+> (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`) and variables
+> (`FULLSEND_GCP_REGION`, `FULLSEND_SA`). GitLab uses a shared
+> `gitlab-oidc` WIF provider (scoped via attribute conditions) instead of
+> per-repo providers. Without `--inference-project`, GitLab repos use
+> `FULLSEND_CREDENTIAL_MODE=variable` (no inference, forge token from
+> CI/CD variable).
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -119,8 +129,8 @@ When repos are specified as positional arguments, only those repos are processed
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
-| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub repos) |
-| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub repos) |
+| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub, optional for GitLab) |
+| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub; required for GitLab when `--inference-project` is set) |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; falls back to `defaults.forge` if set. |
 | `--force` | `false` | Allow scaffold ref downgrades |
 | `--inference-region` | | Per-repo GCP inference region override (install-time only, not stored in the manifest) |

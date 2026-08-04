@@ -356,6 +356,9 @@ func newInstalledFakeGitLabClient(repos ...string) *forge.FakeClient {
 			client.VariableValues[r+"/"+v] = "test-value"
 			client.VariablesExist[r+"/"+v] = true
 		}
+		for _, s := range gitlabUninstallSecrets {
+			client.Secrets[r+"/"+s] = true
+		}
 		for _, p := range gitlabScaffoldPaths {
 			client.FileContents[r+"/"+p] = []byte("content")
 		}
@@ -404,8 +407,8 @@ func TestUninstall_GitLabRepo(t *testing.T) {
 	if r.VarsDeleted != len(gitlabUninstallVars) {
 		t.Errorf("VarsDeleted = %d, want %d", r.VarsDeleted, len(gitlabUninstallVars))
 	}
-	if r.SecretsDeleted != 0 {
-		t.Errorf("SecretsDeleted = %d, want 0 (GitLab has no separate secrets)", r.SecretsDeleted)
+	if r.SecretsDeleted != len(gitlabUninstallSecrets) {
+		t.Errorf("SecretsDeleted = %d, want %d", r.SecretsDeleted, len(gitlabUninstallSecrets))
 	}
 
 	// Verify GitLab scaffold paths were deleted, not GitHub paths.

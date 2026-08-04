@@ -39,7 +39,8 @@ agent:
       # Credential retrieval — mode selected at install time
       if [ "${FULLSEND_CREDENTIAL_MODE:-}" = "wif" ]; then
         OIDC_TOKEN_FILE=$(mktemp)
-        trap 'rm -f "${OIDC_TOKEN_FILE}"' EXIT
+        CLEANUP_FILES=("${OIDC_TOKEN_FILE}")
+        trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
         echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
         gcloud auth login --cred-file=<(cat <<CRED
       {
@@ -55,6 +56,29 @@ agent:
         export FULLSEND_FORGE_TOKEN=$(gcloud secrets versions access latest \
           --secret="${FULLSEND_BOT_TOKEN_SECRET}" \
           --project="${FULLSEND_GCP_PROJECT_ID}")
+
+        # Inference credential setup — write a file-based credential config
+        # for Vertex AI so GOOGLE_APPLICATION_CREDENTIALS is available in the
+        # sandbox. Reuses the same OIDC token and SA as forge token WIF but
+        # with the inference-specific WIF provider. GitLab id_tokens last the
+        # full job duration (~1 hour), so no OIDC refresh loop is needed
+        # (unlike GitHub's 5-min expiry tokens).
+        if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
+          GCP_CRED_CONFIG_FILE=$(mktemp)
+          CLEANUP_FILES+=("${GCP_CRED_CONFIG_FILE}")
+          cat > "${GCP_CRED_CONFIG_FILE}" <<INFERENCECRED
+      {
+        "type": "external_account",
+        "audience": "//iam.googleapis.com/${FULLSEND_GCP_WIF_PROVIDER}",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+        "token_url": "https://sts.googleapis.com/v1/token",
+        "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
+        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
+      }
+      INFERENCECRED
+          export GOOGLE_APPLICATION_CREDENTIALS="${GCP_CRED_CONFIG_FILE}"
+          export ANTHROPIC_VERTEX_PROJECT_ID="${FULLSEND_GCP_PROJECT_ID}"
+        fi
       elif [ "${FULLSEND_CREDENTIAL_MODE:-}" != "variable" ]; then
         echo "ERROR: FULLSEND_CREDENTIAL_MODE must be 'wif' or 'variable', got '${FULLSEND_CREDENTIAL_MODE:-}'"
         exit 1
@@ -63,6 +87,11 @@ agent:
       if [ -z "${FULLSEND_FORGE_TOKEN:-}" ]; then
         echo "ERROR: FULLSEND_FORGE_TOKEN is not set after credential retrieval"
         exit 1
+      fi
+
+      # Inference region — set when configured at install time
+      if [ -n "${FULLSEND_GCP_REGION:-}" ]; then
+        export CLOUD_ML_REGION="${FULLSEND_GCP_REGION}"
       fi
 
       # Bot identity verification (#5572 mitigation #1) — uses the
