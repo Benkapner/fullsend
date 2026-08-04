@@ -78,7 +78,7 @@ The enforcement mechanism is implementation-specific:
   `routeSlashCommand` for `code` and `fix` stages.
 - **CEL triggers** (target state per [ADR 0061](0061-harness-cel-dispatch.md)):
   harness `trigger` expressions encode the entity-kind constraint
-  (e.g., `event.entity.kind == "work_item" && !has(event.state.change_proposal)`
+  (e.g., `event.entity.kind == "work_item" && !has(event.entity.linked_change_proposal)`
   for the code agent).
 
 ## Consequences
