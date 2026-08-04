@@ -27,7 +27,7 @@ from typing import Any, NoReturn, Protocol
 # --- Shared regex / link-parsing helpers (copied from skills/topissues/scripts/topissues.py) ---
 
 PR_ISSUE_RE = re.compile(
-    r"\b(?:closes|fixes|resolves|partial-fix)\s+#(\d+)\b",
+    r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|partial-fix)\s+#(\d+)\b",
     re.IGNORECASE,
 )
 
@@ -1001,19 +1001,21 @@ def classify_pr(
                 suggested_actions=["Inspect PR merge readiness on GitHub"],
             )
 
-    if checks_pending:
-        return Classification(
-            status="waiting_ci",
-            reason="Commit checks are still running",
-            eliminated=True,
-        )
-
+    # Drafts surface as human_work even while CI is still running — authors need
+    # to see their own draft rather than having it hide under waiting_ci.
     if item.get("is_draft"):
         return Classification(
             status="human_work",
             reason="Draft PR; mark ready for review when done",
             eliminated=False,
             suggested_actions=["Mark ready for review when complete"],
+        )
+
+    if checks_pending:
+        return Classification(
+            status="waiting_ci",
+            reason="Commit checks are still running",
+            eliminated=True,
         )
 
     if has_newer_code_than_review(item, comments):
@@ -1412,7 +1414,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 ISSUE_NODE_ID_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    issue(number: $number) { id }
+    issue(number: $number) { id state }
   }
 }
 """
@@ -2064,6 +2066,13 @@ def link_blocker(
             "blocker": format_ref(blk_repo, blk_number),
             "action": "error",
             "detail": "blocker ref is not an Issue (GitHub blocked-by is issue-only)",
+        }
+    if blocker_issue.get("state") != "OPEN":
+        return {
+            "dependent": format_ref(dep_repo, dep_number),
+            "blocker": format_ref(blk_repo, blk_number),
+            "action": "error",
+            "detail": "blocker Issue is not open",
         }
 
     mutation = gh_graphql_or_none(

@@ -6,11 +6,12 @@ allowed-tools: Bash(python3 skills/nextwork/scripts/nextwork.py:*)
 
 Follow skill **nextwork**.
 
-From the repository root, run a **read-only** first pass (strip `--apply` and
-`--decisions-only` from `$ARGUMENTS` if present — those run only after prose
-blockers are persisted):
+From the repository root, run a **read-only** first pass. Pass `$ARGUMENTS`
+through unchanged; from those arguments, drop any `--apply` /
+`--decisions-only` before running this command (those flags run only after
+prose blockers are persisted):
 
-    python3 skills/nextwork/scripts/nextwork.py $ARGUMENTS_WITHOUT_APPLY --format json --include-text
+    python3 skills/nextwork/scripts/nextwork.py $ARGUMENTS --format json --include-text
 
 Then follow the skill loop in [skills/nextwork/SKILL.md](../skills/nextwork/SKILL.md):
 mine prose-only dependencies from `body`/`comments`, persist confident ones

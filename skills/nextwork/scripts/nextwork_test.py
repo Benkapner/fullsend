@@ -327,6 +327,11 @@ class TestParsePrLinks(unittest.TestCase):
         body = "This closes #42 and partial-fix #43"
         self.assertEqual(parse_pr_links(body, [44]), {42, 43, 44})
 
+    def test_alternate_verb_forms(self):
+        self.assertEqual(parse_pr_links("Fix #42", []), {42})
+        self.assertEqual(parse_pr_links("Closed #43", []), {43})
+        self.assertEqual(parse_pr_links("Resolved #44", []), {44})
+
     def test_ignores_bare_hash_mentions(self):
         self.assertEqual(parse_pr_links("See also #99 for context", []), set())
 
@@ -580,7 +585,8 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertEqual(result.status, "waiting_triage")
 
     def test_completed_triage_clears_recent_fs_triage_launch(self):
-        # Regression for #5440: a fresh /fs-triage must not stay waiting_triage
+        # A fresh /fs-triage must not stay waiting_triage after a successful
+        # terminal Triage status.
         # after a successful terminal Triage status that follows it.
         item = make_issue(
             labels=["triaged", "feature"],
@@ -1057,7 +1063,7 @@ class TestClassifyPr(unittest.TestCase):
         self.assertFalse(result.eliminated)
 
     def test_ready_for_merge_with_unresolved_threads(self):
-        # Mirrors #5328: ready-for-merge label but open review conversations.
+        # ready-for-merge label but open review conversations.
         item = make_pr(
             labels=["ready-for-merge"],
             review_decision=None,
@@ -1113,7 +1119,7 @@ class TestClassifyPr(unittest.TestCase):
         self.assertTrue(result.eliminated)
 
     def test_ready_for_merge_with_inflight_review_comment(self):
-        # Mirrors #5488: stale ready-for-merge while review agent has Started.
+        # Stale ready-for-merge while review agent has Started.
         item = make_pr(
             labels=["ready-for-merge", "ready-for-review"],
             review_decision="REVIEW_REQUIRED",
@@ -1262,6 +1268,12 @@ class TestClassifyPr(unittest.TestCase):
 
     def test_draft_pr(self):
         item = make_pr(is_draft=True)
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "human_work")
+        self.assertFalse(result.eliminated)
+
+    def test_draft_pr_with_pending_checks_is_human_work(self):
+        item = make_pr(is_draft=True, checks_state="PENDING")
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "human_work")
         self.assertFalse(result.eliminated)
@@ -1829,7 +1841,7 @@ class TestLinkBlocker(unittest.TestCase):
     def test_creates_new_link(self, mock_gql):
         mock_gql.side_effect = [
             {"repository": {"issue": {"id": "I_DEP", "state": "OPEN", "blockedBy": {"nodes": []}}}},
-            {"repository": {"issue": {"id": "I_BLK"}}},
+            {"repository": {"issue": {"id": "I_BLK", "state": "OPEN"}}},
             {"addBlockedBy": {"issue": {"number": 1}}},
         ]
         result = link_blocker(("acme/widget", 1), ("acme/widget", 2))
@@ -1879,6 +1891,16 @@ class TestLinkBlocker(unittest.TestCase):
         result = link_blocker(("acme/widget", 1), ("acme/widget", 404))
         self.assertEqual(result["action"], "error")
         self.assertIn("issue-only", result["detail"])
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_blocker_closed_errors(self, mock_gql):
+        mock_gql.side_effect = [
+            {"repository": {"issue": {"id": "I_DEP", "state": "OPEN", "blockedBy": {"nodes": []}}}},
+            {"repository": {"issue": {"id": "I_BLK", "state": "CLOSED"}}},
+        ]
+        result = link_blocker(("acme/widget", 1), ("acme/widget", 2))
+        self.assertEqual(result["action"], "error")
+        self.assertIn("blocker Issue is not open", result["detail"])
 
     def test_self_blocker_errors(self):
         result = link_blocker(("acme/widget", 5), ("acme/widget", 5))

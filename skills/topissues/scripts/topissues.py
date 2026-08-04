@@ -15,7 +15,7 @@ from typing import Any
 
 RICE_SCORE_FIELD = "RICE Score"
 PR_ISSUE_RE = re.compile(
-    r"\b(?:closes|fixes|resolves|partial-fix)\s+#(\d+)\b",
+    r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|partial-fix)\s+#(\d+)\b",
     re.IGNORECASE,
 )
 
