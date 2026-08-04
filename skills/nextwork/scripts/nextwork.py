@@ -1447,7 +1447,14 @@ def normalize_item(repo: str, node: dict[str, Any], *, quiet: bool = False) -> d
     labels = [n["name"] for n in node.get("labels", {}).get("nodes", [])]
     assignees = [n["login"] for n in node.get("assignees", {}).get("nodes", [])]
     comment_nodes = node.get("comments", {}).get("nodes", [])
-    _warn_page_cap("comments", repo, node["number"], len(comment_nodes), COMMENTS_PAGE_SIZE, quiet=quiet)
+    _warn_page_cap(
+        "comments",
+        repo,
+        node["number"],
+        len(comment_nodes),
+        COMMENTS_PAGE_SIZE,
+        quiet=quiet,
+    )
     comments = [
         {
             "author": (c.get("author") or {}).get("login"),
@@ -1642,9 +1649,7 @@ class GhFetcher:
             self._default_branch_by_repo[repo] = branch
         return self._default_branch_by_repo[repo]
 
-    def is_in_merge_queue(
-        self, repo: str, number: int, *, base_branch: str | None = None
-    ) -> bool:
+    def is_in_merge_queue(self, repo: str, number: int, *, base_branch: str | None = None) -> bool:
         branch = base_branch or self._default_branch(repo)
         if not branch:
             return False
@@ -1772,7 +1777,10 @@ def build_queue(
                 }
             )
             if not quiet:
-                print(f"warning: failed to fetch {exc.repo}#{exc.number}: {exc.detail}", file=sys.stderr)
+                print(
+                    f"warning: failed to fetch {exc.repo}#{exc.number}: {exc.detail}",
+                    file=sys.stderr,
+                )
             continue
         if item is None or item["state"] != "OPEN":
             continue
