@@ -351,9 +351,45 @@ func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, ins
 	return varResp.Value, true, nil
 }
 
+// GetRepoVariable reads a repo-level Actions variable using an installation token.
+func GetRepoVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, installationToken, owner, repo, name string) (value string, exists bool, err error) {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/actions/variables/%s", githubBaseURL, owner, repo, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("creating repo variable request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+installationToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("getting repo variable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", false, fmt.Errorf("getting repo variable %s on %s/%s returned status %d", name, owner, repo, resp.StatusCode)
+	}
+
+	var varResp orgVariableResponse
+	if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+		return "", false, fmt.Errorf("decoding repo variable: %w", err)
+	}
+	return varResp.Value, true, nil
+}
+
 // foreignPolicyPermissions are requested when reading FULLSEND_FOREIGN_* org variables.
 var foreignPolicyPermissions = map[string]string{
 	"organization_actions_variables": "read",
+}
+
+// repoForeignPolicyPermissions are requested when reading FULLSEND_FOREIGN_* repo variables.
+var repoForeignPolicyPermissions = map[string]string{
+	"actions_variables": "read",
 }
 
 // createInstallationTokenWithPermissions creates an installation access token with explicit permissions.
@@ -409,6 +445,26 @@ func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseUR
 	}
 
 	value, exists, err := GetOrgVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, ForeignVariableName(role))
+	if err != nil {
+		return nil, err
+	}
+	if !exists || strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	return ParseForeignAllowlist(value), nil
+}
+
+// ReadForeignAllowlistFromRepo reads FULLSEND_FOREIGN_<role>_REPOS from a
+// specific target repository. This is the repo-level counterpart of
+// ReadForeignAllowlist, enabling per-repo foreign authorization grants.
+func ReadForeignAllowlistFromRepo(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, targetRepo, role string) ([]string, error) {
+	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
+		repoForeignPolicyPermissions, []string{targetRepo})
+	if err != nil {
+		return nil, fmt.Errorf("creating repo policy check token: %w", err)
+	}
+
+	value, exists, err := GetRepoVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, targetRepo, ForeignVariableName(role))
 	if err != nil {
 		return nil, err
 	}

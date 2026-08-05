@@ -53,8 +53,6 @@ func TestValidateReposScope(t *testing.T) {
 	const emptyDeny = "same-org mint requires non-empty repos"
 	const perRepoDeny = "per-repo mint requires repos to be exactly the requesting repository"
 	const perOrgDeny = "repos scope not allowed for per-org caller"
-	const foreignDeny = "foreign mint requires empty repos"
-
 	tests := []struct {
 		name           string
 		foreign        bool
@@ -65,7 +63,8 @@ func TestValidateReposScope(t *testing.T) {
 		wantShape      string
 	}{
 		{"foreign empty", true, "fullsend-ai/fullsend", nil, false, "", ""},
-		{"foreign non-empty", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, foreignDeny, ""},
+		{"foreign non-empty allowed", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, "", ""},
+		{"foreign non-empty multi", true, "fullsend-ai/fullsend", []string{"a", "b"}, true, "", ""},
 		{"same self", false, "acme/api", []string{"api"}, false, "", ""},
 		{"same empty per-org", false, "acme/api", nil, false, emptyDeny, ""},
 		{"same empty per-repo", false, "acme/api", nil, true, emptyDeny, ""},

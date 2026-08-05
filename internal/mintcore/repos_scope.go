@@ -55,9 +55,9 @@ func repositoryBareName(repository string) string {
 // On success, shape is non-empty only when an org-mode exception matched.
 func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, perRepo bool) (shape string, err error) {
 	if isTargetForeign {
-		if len(repos) != 0 {
-			return "", fmt.Errorf("foreign mint requires empty repos")
-		}
+		// Empty repos → installation-wide (org-level FOREIGN grant).
+		// Non-empty repos → repo-scoped (repo-level FOREIGN grant
+		// validated later in mintTokenCrossOrg).
 		return "", nil
 	}
 
