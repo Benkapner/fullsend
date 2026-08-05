@@ -237,7 +237,11 @@ like production dispatch: first whitespace token of the first comment line.
   GraphQL pages (~500 PRs) per repo; beyond that, some links may be missed.
 - Item GraphQL fetches use soft page caps (not full pagination): last 50
   comments, first 20 `blockedBy`, first 50 `subIssues`, first 50
-  `reviewThreads`. A full page emits a stderr warning; classifications that
+  `reviewThreads`, last 20 comments per review thread (any non-bot author in
+  that window marks the thread as needing a human decision). Issue
+  `blockedBy`/`subIssues` are fetched in a separate query so a schema gap
+  degrades that axis instead of failing the whole item. A full page emits a
+  stderr warning; classifications that
   depend on dropped rows (launch signals, blockers, open children, unresolved
   threads) may be incomplete. `subIssuesSummary` still gates `close_or_plan`
   when open children fall past the first sub-issue page.

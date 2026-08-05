@@ -404,7 +404,14 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertEqual(item["unresolved_review_threads"], 1)
         self.assertEqual(
             item["unresolved_threads"],
-            [{"author": "fullsend-ai-review[bot]", "created_at": "2024-01-02T01:00:00Z"}],
+            [
+                {
+                    "author": "fullsend-ai-review[bot]",
+                    "authors": ["fullsend-ai-review[bot]"],
+                    "created_at": "2024-01-02T01:00:00Z",
+                    "bot_only": True,
+                }
+            ],
         )
         self.assertEqual(item["checks_state"], "SUCCESS")
         self.assertEqual(item["head_committed_at"], "2024-01-02T00:30:00Z")
@@ -413,6 +420,21 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertFalse(item["in_merge_queue"])
         self.assertEqual(item["base_ref_name"], "main")
         self.assertEqual(item["blockers"], [])
+
+    def test_pull_node_bot_thread_with_human_reply(self):
+        node = load_fixture("pr_node_sample.json")
+        node["reviewThreads"]["nodes"][1]["comments"]["nodes"].append(
+            {
+                "author": {"login": "carol"},
+                "createdAt": "2024-01-02T02:00:00Z",
+            }
+        )
+        item = normalize_item("acme/widget", node, quiet=True)
+        self.assertEqual(item["unresolved_review_threads"], 1)
+        thread = item["unresolved_threads"][0]
+        self.assertFalse(thread["bot_only"])
+        self.assertEqual(thread["authors"], ["fullsend-ai-review[bot]", "carol"])
+        self.assertEqual(thread["created_at"], "2024-01-02T01:00:00Z")
 
 
 class TestClassifyIssue(unittest.TestCase):
@@ -1165,6 +1187,24 @@ class TestClassifyPr(unittest.TestCase):
         self.assertEqual(result.status, "waiting_fix")
         self.assertTrue(result.eliminated)
 
+    def test_bot_thread_with_human_reply_needs_decision(self):
+        item = make_pr(
+            author="fullsend-ai-coder[bot]",
+            review_decision="CHANGES_REQUESTED",
+            updated_at="2024-01-09T23:00:00Z",
+            unresolved_threads=[
+                {
+                    "author": "fullsend-ai-review[bot]",
+                    "authors": ["fullsend-ai-review[bot]", "carol"],
+                    "created_at": "2024-01-09T23:00:00Z",
+                    "bot_only": False,
+                }
+            ],
+        )
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_review_decision")
+        self.assertFalse(result.eliminated)
+
     def test_trigger_fix_stale_bot_author(self):
         item = make_pr(
             author="fullsend-ai-coder[bot]",
@@ -1781,33 +1821,64 @@ class TestTakeOver(unittest.TestCase):
 class TestGhFetcher(unittest.TestCase):
     @patch("nextwork.gh_graphql_or_none")
     def test_fetch_item_normalizes_issue(self, mock_gql):
-        mock_gql.return_value = {
-            "repository": {
-                "issueOrPullRequest": {
-                    "__typename": "Issue",
-                    "number": 7,
-                    "title": "Ship it",
-                    "url": "https://github.com/acme/widget/issues/7",
-                    "state": "OPEN",
-                    "author": {"login": "alice"},
-                    "assignees": {"nodes": []},
-                    "labels": {"nodes": [{"name": "triaged"}]},
-                    "createdAt": "2024-01-01T00:00:00Z",
-                    "updatedAt": "2024-01-09T00:00:00Z",
-                    "body": "hello",
-                    "comments": {"nodes": []},
-                    "blockedBy": {"nodes": []},
-                    "subIssuesSummary": {"total": 0, "completed": 0},
-                    "subIssues": {"nodes": []},
-                }
-            }
+        issue_node = {
+            "__typename": "Issue",
+            "number": 7,
+            "title": "Ship it",
+            "url": "https://github.com/acme/widget/issues/7",
+            "state": "OPEN",
+            "author": {"login": "alice"},
+            "assignees": {"nodes": []},
+            "labels": {"nodes": [{"name": "triaged"}]},
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-09T00:00:00Z",
+            "body": "hello",
+            "comments": {"nodes": []},
         }
+        deps_node = {
+            "blockedBy": {"nodes": []},
+            "subIssuesSummary": {"total": 0, "completed": 0},
+            "subIssues": {"nodes": []},
+        }
+        mock_gql.side_effect = [
+            {"repository": {"issueOrPullRequest": issue_node}},
+            {"repository": {"issue": deps_node}},
+        ]
         item = GhFetcher(quiet=True).fetch_item("acme/widget", 7)
         self.assertIsNotNone(item)
         assert item is not None
         self.assertEqual(item["kind"], "issue")
         self.assertEqual(item["number"], 7)
         self.assertEqual(item["labels"], ["triaged"])
+        self.assertEqual(mock_gql.call_count, 2)
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_fetch_item_continues_when_dependencies_fail(self, mock_gql):
+        issue_node = {
+            "__typename": "Issue",
+            "number": 7,
+            "title": "Ship it",
+            "url": "https://github.com/acme/widget/issues/7",
+            "state": "OPEN",
+            "author": {"login": "alice"},
+            "assignees": {"nodes": []},
+            "labels": {"nodes": [{"name": "triaged"}]},
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-09T00:00:00Z",
+            "body": "hello",
+            "comments": {"nodes": []},
+        }
+        mock_gql.side_effect = [
+            {"repository": {"issueOrPullRequest": issue_node}},
+            None,  # ISSUE_DEPENDENCIES_QUERY fails (schema gap)
+        ]
+        item = GhFetcher(quiet=True).fetch_item("acme/widget", 7)
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item["kind"], "issue")
+        self.assertEqual(item["blockers"], [])
+        self.assertEqual(item["open_sub_issues"], [])
+        self.assertEqual(item["sub_issues_total"], 0)
 
     @patch("nextwork.gh_graphql_or_none", return_value=None)
     def test_fetch_item_raises_on_gh_failure(self, _mock_gql):

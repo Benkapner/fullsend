@@ -76,6 +76,8 @@ COMMENTS_PAGE_SIZE = 50
 BLOCKERS_PAGE_SIZE = 20
 SUB_ISSUES_PAGE_SIZE = 50
 REVIEW_THREADS_PAGE_SIZE = 50
+# Comments scanned per unresolved review thread when detecting human replies.
+REVIEW_THREAD_COMMENTS_PAGE_SIZE = 20
 
 
 # ------------------------------- Ref parsing -------------------------------
@@ -272,6 +274,18 @@ FULLSEND_AGENT_BOTS = frozenset(
         PRIORITIZE_BOT_LOGIN,
     }
 )
+
+
+def thread_is_bot_only(thread: dict[str, Any]) -> bool:
+    """True when an unresolved review thread has no human comments (fix-eligible)."""
+    if "bot_only" in thread:
+        return bool(thread["bot_only"])
+    authors = thread.get("authors")
+    if authors is not None:
+        return bool(authors) and all(a == REVIEW_BOT_LOGIN for a in authors)
+    return thread.get("author") == REVIEW_BOT_LOGIN
+
+
 TRIAGE_STALE_HOURS = 3 * 24
 # Post-triage conversation only invalidates after this age (avoids noise right after triage).
 TRIAGE_COMMENT_GRACE_HOURS = 6.0
@@ -943,8 +957,7 @@ def classify_pr(
     merge_ready_states = {"CLEAN", "UNSTABLE"}
 
     if unresolved_count > 0:
-        authors = [t.get("author") for t in unresolved]
-        if authors and all(a == REVIEW_BOT_LOGIN for a in authors):
+        if all(thread_is_bot_only(t) for t in unresolved):
             return _classify_fix_from_threads(item, comments, unresolved, stale_hours, now)
         return Classification(
             status="needs_review_decision",
@@ -1293,13 +1306,6 @@ query($owner: String!, $name: String!, $number: Int!) {
         comments(last: 50) {
           nodes { author { login } authorAssociation body createdAt }
         }
-        blockedBy(first: 20) {
-          nodes { number state repository { nameWithOwner } }
-        }
-        subIssuesSummary { total completed }
-        subIssues(first: 50) {
-          nodes { number state title repository { nameWithOwner } }
-        }
       }
       ... on PullRequest {
         number
@@ -1326,7 +1332,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         reviewThreads(first: 50) {
           nodes {
             isResolved
-            comments(first: 1) {
+            comments(last: 20) {
               nodes { author { login } createdAt }
             }
           }
@@ -1339,6 +1345,24 @@ query($owner: String!, $name: String!, $number: Int!) {
             }
           }
         }
+      }
+    }
+  }
+}
+"""
+
+# Issue dependencies / sub-issues — fetched separately so a schema gap degrades
+# one axis instead of failing the whole ITEM_QUERY (and thus the item).
+ISSUE_DEPENDENCIES_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      blockedBy(first: 20) {
+        nodes { number state repository { nameWithOwner } }
+      }
+      subIssuesSummary { total completed }
+      subIssues(first: 50) {
+        nodes { number state title repository { nameWithOwner } }
       }
     }
   }
@@ -1492,36 +1516,7 @@ def normalize_item(repo: str, node: dict[str, Any], *, quiet: bool = False) -> d
         "linked_prs": [],
     }
     if kind == "issue":
-        blocked_nodes = (node.get("blockedBy") or {}).get("nodes") or []
-        _warn_page_cap(
-            "blockedBy", repo, node["number"], len(blocked_nodes), BLOCKERS_PAGE_SIZE, quiet=quiet
-        )
-        item["blockers"] = parse_open_blockers(node.get("blockedBy"))
-        summary = node.get("subIssuesSummary") or {}
-        item["sub_issues_total"] = int(summary.get("total") or 0)
-        item["sub_issues_completed"] = int(summary.get("completed") or 0)
-        child_nodes = (node.get("subIssues") or {}).get("nodes") or []
-        _warn_page_cap(
-            "subIssues",
-            repo,
-            node["number"],
-            len(child_nodes),
-            SUB_ISSUES_PAGE_SIZE,
-            quiet=quiet,
-        )
-        open_subs: list[dict[str, Any]] = []
-        for child in child_nodes:
-            if child.get("state") != "OPEN":
-                continue
-            child_repo = (child.get("repository") or {}).get("nameWithOwner") or repo
-            open_subs.append(
-                {
-                    "repo": child_repo,
-                    "number": child["number"],
-                    "title": child.get("title") or "",
-                }
-            )
-        item["open_sub_issues"] = open_subs
+        apply_issue_dependencies(item, node, quiet=quiet)
     else:
         item["is_draft"] = node.get("isDraft", False)
         item["base_ref_name"] = node.get("baseRefName") or ""
@@ -1549,13 +1544,30 @@ def normalize_item(repo: str, node: dict[str, Any], *, quiet: bool = False) -> d
         for t in threads:
             if t.get("isResolved") is not False:
                 continue
-            first_comments = (t.get("comments") or {}).get("nodes") or []
-            author = None
-            created_at = None
-            if first_comments:
-                author = (first_comments[0].get("author") or {}).get("login")
-                created_at = first_comments[0].get("createdAt")
-            unresolved_threads.append({"author": author, "created_at": created_at})
+            comment_nodes = (t.get("comments") or {}).get("nodes") or []
+            _warn_page_cap(
+                "reviewThread.comments",
+                repo,
+                node["number"],
+                len(comment_nodes),
+                REVIEW_THREAD_COMMENTS_PAGE_SIZE,
+                quiet=quiet,
+            )
+            authors = [
+                login for c in comment_nodes if (login := (c.get("author") or {}).get("login"))
+            ]
+            created_ats = [c.get("createdAt") for c in comment_nodes if c.get("createdAt")]
+            # Prefer earliest comment time as the thread launch clock.
+            created_at = min(created_ats, key=created_at_key) if created_ats else None
+            bot_only = bool(authors) and all(a == REVIEW_BOT_LOGIN for a in authors)
+            unresolved_threads.append(
+                {
+                    "author": authors[0] if authors else None,
+                    "authors": authors,
+                    "created_at": created_at,
+                    "bot_only": bot_only,
+                }
+            )
         item["unresolved_threads"] = unresolved_threads
         item["unresolved_review_threads"] = len(unresolved_threads)
         checks_state = None
@@ -1571,6 +1583,42 @@ def normalize_item(repo: str, node: dict[str, Any], *, quiet: bool = False) -> d
         item["head_committed_at"] = head_committed_at
         item["in_merge_queue"] = False
     return item
+
+
+def apply_issue_dependencies(
+    item: dict[str, Any], node: dict[str, Any], *, quiet: bool = False
+) -> None:
+    """Merge blockedBy / sub-issues fields from an Issue GraphQL node into ``item``."""
+    repo = item["repo"]
+    number = item["number"]
+    blocked_nodes = (node.get("blockedBy") or {}).get("nodes") or []
+    _warn_page_cap("blockedBy", repo, number, len(blocked_nodes), BLOCKERS_PAGE_SIZE, quiet=quiet)
+    item["blockers"] = parse_open_blockers(node.get("blockedBy"))
+    summary = node.get("subIssuesSummary") or {}
+    item["sub_issues_total"] = int(summary.get("total") or 0)
+    item["sub_issues_completed"] = int(summary.get("completed") or 0)
+    child_nodes = (node.get("subIssues") or {}).get("nodes") or []
+    _warn_page_cap(
+        "subIssues",
+        repo,
+        number,
+        len(child_nodes),
+        SUB_ISSUES_PAGE_SIZE,
+        quiet=quiet,
+    )
+    open_subs: list[dict[str, Any]] = []
+    for child in child_nodes:
+        if child.get("state") != "OPEN":
+            continue
+        child_repo = (child.get("repository") or {}).get("nameWithOwner") or repo
+        open_subs.append(
+            {
+                "repo": child_repo,
+                "number": child["number"],
+                "title": child.get("title") or "",
+            }
+        )
+    item["open_sub_issues"] = open_subs
 
 
 class ItemFetcher(Protocol):
@@ -1607,7 +1655,32 @@ class GhFetcher:
         node = (data.get("repository") or {}).get("issueOrPullRequest")
         if node is None:
             return None
-        return normalize_item(repo, node, quiet=self.quiet)
+        item = normalize_item(repo, node, quiet=self.quiet)
+        if item["kind"] == "issue":
+            self._enrich_issue_dependencies(item)
+        return item
+
+    def _enrich_issue_dependencies(self, item: dict[str, Any]) -> None:
+        """Fetch blockedBy/sub-issues separately; leave empty on schema/API failure."""
+        owner, name = item["repo"].split("/", 1)
+        data = gh_graphql_or_none(
+            ISSUE_DEPENDENCIES_QUERY,
+            {"owner": owner, "name": name, "number": item["number"]},
+            quiet=self.quiet,
+        )
+        if data is None:
+            if not self.quiet:
+                print(
+                    f"warning: issue dependencies unavailable for "
+                    f"{format_ref(item['repo'], item['number'])}; "
+                    "continuing without blockedBy/sub-issues",
+                    file=sys.stderr,
+                )
+            return
+        issue = (data.get("repository") or {}).get("issue")
+        if issue is None:
+            return
+        apply_issue_dependencies(item, issue, quiet=self.quiet)
 
     def _pulls_for_linking(self, repo: str) -> list[dict[str, Any]]:
         if repo not in self._pulls_by_repo:
