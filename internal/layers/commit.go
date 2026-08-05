@@ -245,6 +245,8 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile) (bool, error) {
 
+	isCrossRepo := !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo)
+
 	// Close stale scaffold PRs from a different install mode before
 	// creating or updating our own. This prevents merging a PR that
 	// references infrastructure from a mode that has been torn down.
@@ -252,7 +254,7 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	// Only run in same-repo mode (target == upstream). In the fork path
 	// the caller's token likely lacks permission to close upstream PRs,
 	// which would produce unnecessary 403 warnings.
-	if strings.EqualFold(targetOwner, upstreamOwner) && strings.EqualFold(targetRepo, upstreamRepo) {
+	if !isCrossRepo {
 		user, userErr := client.GetAuthenticatedUser(ctx)
 		if userErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not identify user for stale PR cleanup: %v", userErr))
@@ -261,7 +263,23 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 		}
 	}
 
-	if branchErr := client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch); branchErr != nil {
+	var branchErr error
+	if isCrossRepo {
+		// Cross-fork: create the scaffold branch from the upstream's HEAD so
+		// the PR diff only contains scaffold changes, even if the fork's
+		// default branch is behind upstream.
+		upstreamSHA, shaErr := client.GetBranchRef(ctx, upstreamOwner, upstreamRepo, defaultBranch)
+		if shaErr != nil {
+			printer.StepFail("Failed to resolve upstream branch")
+			return false, fmt.Errorf("getting upstream branch ref for %s/%s@%s: %w",
+				upstreamOwner, upstreamRepo, defaultBranch, shaErr)
+		}
+		branchErr = client.CreateBranchFromSHA(ctx, targetOwner, targetRepo, scaffoldBranch, upstreamSHA)
+	} else {
+		branchErr = client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch)
+	}
+
+	if branchErr != nil {
 		if forge.IsForbidden(branchErr) {
 			printer.StepFail("Insufficient permissions to push to repository")
 			return false, fmt.Errorf("cannot push to %s/%s (403 forbidden); re-run with the fork option or check your token scopes: %w",

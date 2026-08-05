@@ -598,6 +598,55 @@ func TestCreateBranch_Forbidden(t *testing.T) {
 	assert.True(t, forge.IsForbidden(err), "CreateBranch 403 should wrap ErrForbidden")
 }
 
+func TestCreateBranchFromSHA(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/git/refs", r.URL.Path)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "refs/heads/feature-branch", body["ref"])
+		assert.Equal(t, "abc123sha", body["sha"])
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.NoError(t, err)
+}
+
+func TestCreateBranchFromSHA_Forbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Resource not accessible by integration",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsForbidden(err), "CreateBranchFromSHA 403 should wrap ErrForbidden")
+}
+
+func TestCreateBranchFromSHA_GenericError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Reference already exists",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create branch feature-branch from SHA")
+	assert.False(t, forge.IsForbidden(err), "non-403 error should not be ErrForbidden")
+}
+
 func TestGetPullRequestInfo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
