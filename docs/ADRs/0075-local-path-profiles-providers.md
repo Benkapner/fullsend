@@ -1,5 +1,5 @@
 ---
-title: "74. Local-path support for profiles and providers"
+title: "75. Local-path support for profiles and providers"
 status: Accepted
 supersedes:
   - "0070"
@@ -15,7 +15,7 @@ topics:
   - remote-resources
 ---
 
-# 74. Local-path support for profiles and providers
+# 75. Local-path support for profiles and providers
 
 Date: 2026-07-17
 

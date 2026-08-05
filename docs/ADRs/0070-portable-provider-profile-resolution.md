@@ -19,7 +19,7 @@ Date: 2026-07-03
 
 ## Status
 
-Superseded by [ADR 0074](0074-local-path-profiles-providers.md)
+Superseded by [ADR 0075](0075-local-path-profiles-providers.md)
 
 ## Context
 

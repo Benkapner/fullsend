@@ -144,7 +144,7 @@ repo baseline and overrides)
   the harness, enabling portable base harnesses that carry their own
   provider/profile dependencies. URL-resolved providers are validated against
   `allowed_remote_resources` and merged with local definitions at resolution
-  time ([ADR 0074](ADRs/0074-local-path-profiles-providers.md)).
+  time ([ADR 0075](ADRs/0075-local-path-profiles-providers.md)).
 - Run-stage-scoped privilege levels: a `privilege_levels` field in harness config
   maps run-stages (`pre_script`, `runtime`, `post_script`) to named mint
   privilege levels. A `default` key covers unspecified run-stages. When omitted,
