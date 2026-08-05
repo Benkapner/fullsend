@@ -595,8 +595,8 @@ forge-specific artifact. The harness and agent definition are portable.
 
 - **Bidirectional composition.** The `base:` merge semantics had an
   inverse (`DiffHarness`, removed with the scaffold agent extraction)
-  used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
-  `migrate-customizations` command.
+  formerly used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command *(now removed)*.
 
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the

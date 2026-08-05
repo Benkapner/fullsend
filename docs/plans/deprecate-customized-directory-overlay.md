@@ -217,8 +217,8 @@ directories. The scaffold embed no longer contains them.
 - Remove all references to `customized/` directories.
 - Add examples of thin harness wrappers with `base:` URLs.
 - Add migration guidance for users who had files in `customized/`.
-- Reference the `fullsend agent migrate-customizations` CLI command
-  that automates the conversion and delivers changes via PR.
+- *(The `fullsend agent migrate-customizations` CLI command has been
+  removed — the overlay mechanism no longer exists.)*
 
 **`docs/agents/triage.md`, `docs/agents/review.md`:**
 
