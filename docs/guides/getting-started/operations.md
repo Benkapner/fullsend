@@ -198,6 +198,23 @@ The composite action accepts four optional inputs for status notifications:
 
 All reusable workflows pass these inputs automatically.
 
+### GitLab CI
+
+On GitLab CI, the agent reads status notification context from standard CI/CD environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `GITLAB_TOKEN` | **Required.** Project or group access token with API scope. |
+| `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. |
+| `CI_COMMIT_SHA` | Commit SHA shown in the status comment. |
+| `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
+| `CI_PIPELINE_ID` | Used as the run ID for status comment markers. |
+| `CI_MERGE_REQUEST_IID` | When set, status comments target the merge request notes API instead of issues. |
+| `FULLSEND_GITLAB_URL` | Override for `GITLAB_API_URL` and `CI_SERVER_URL` (e.g., for self-hosted instances). |
+| `FULLSEND_NOTE_TARGET` | Set to `merge_requests` to force MR note targeting when `CI_MERGE_REQUEST_IID` is unavailable (e.g., child pipelines, scheduled jobs). |
+
+`GITLAB_TOKEN` should be configured as a CI/CD variable with the **Masked** and **Protected** flags enabled in your GitLab project or group settings. Unlike GitHub (where tokens are minted at runtime and masked via `::add-mask::`), GitLab uses pre-provisioned tokens and relies on the runner-level masking configuration.
+
 ## See Also
 
 - [Getting Started](../getting-started/) — Standard per-repo installation

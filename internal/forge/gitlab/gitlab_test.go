@@ -1450,3 +1450,76 @@ func TestTransportRetry_SkipsNonIdempotent(t *testing.T) {
 	require.Error(t, err)
 	assert.EqualValues(t, 1, attempts.Load(), "POST should not retry on transport error")
 }
+
+// ---------- WithNoteTarget tests ----------
+
+func TestWithNoteTarget_Default(t *testing.T) {
+	c, err := New("tok")
+	require.NoError(t, err)
+	assert.Equal(t, "issues", c.noteTarget)
+}
+
+func TestWithNoteTarget_MergeRequests(t *testing.T) {
+	c, err := New("tok", WithNoteTarget("merge_requests"))
+	require.NoError(t, err)
+	assert.Equal(t, "merge_requests", c.noteTarget)
+}
+
+func TestWithNoteTarget_RejectsInvalid(t *testing.T) {
+	_, err := New("tok", WithNoteTarget("invalid"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid note target")
+}
+
+func TestCreateIssueComment_MRNoteTarget(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests/42/notes", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         101,
+			"body":       "hello MR",
+			"created_at": "2025-01-01T00:00:00Z",
+			"author":     map[string]string{"username": "bot"},
+		})
+	})
+
+	comment, err := client.CreateIssueComment(ctx, "own", "repo", 42, "hello MR")
+	require.NoError(t, err)
+	assert.Equal(t, 101, comment.ID)
+	assert.Contains(t, comment.HTMLURL, "/-/merge_requests/42#note_101")
+}
+
+func TestListIssueComments_MRNoteTarget(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests/7/notes", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "note1", "created_at": "2025-01-01T00:00:00Z", "author": map[string]string{"username": "u1"}},
+		})
+	})
+
+	comments, err := client.ListIssueComments(ctx, "own", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].HTMLURL, "/-/merge_requests/7#note_1")
+}
+
+func TestDeleteIssueComment_MRNoteTarget_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	err := client.DeleteIssueComment(ctx, "own", "repo", 999)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not find merge request containing this note")
+}

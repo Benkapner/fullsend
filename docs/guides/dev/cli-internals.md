@@ -116,7 +116,8 @@ fullsend
     ├── --sha <string>                       #   Commit SHA (optional)
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
-    └── --role <string>                      #   Agent role for minting (required with --mint-url)
+    ├── --role <string>                      #   Agent role for minting (required with --mint-url)
+    └── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 ```
 
 ### Command Decomposition
