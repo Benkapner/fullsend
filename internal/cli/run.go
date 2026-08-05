@@ -705,7 +705,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script — and can report cancellation/failure even when the
 	// sandbox never starts. See #1859.
 	if sOpts.statusRepo != "" && sOpts.statusNum > 0 {
-		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, sOpts, printer)
+		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, forgePlatform, sOpts, printer)
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
@@ -3096,20 +3096,18 @@ func titleCase(s string) string {
 // setupStatusNotifier creates a status comment notifier. The role parameter
 // accepts either a raw harness role (e.g. "code") or a canonical role
 // (e.g. "coder"); it is resolved via resolveRole internally.
-func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+//
+// The forgePlatform parameter selects the forge-specific code path:
+//   - "gitlab": uses GITLAB_TOKEN directly, reads CI_COMMIT_SHA and
+//     CI_PIPELINE_ID, constructs a GitLab client
+//   - default (including "github" and ""): uses mint URL, reads
+//     GITHUB_SHA and GITHUB_RUN_ID, constructs a GitHub client
+func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
 	}
 	owner, repo := parts[0], parts[1]
-
-	mintURL := sOpts.mintURL
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
-	if mintURL == "" {
-		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
-	}
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
@@ -3122,6 +3120,24 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 		if ocr, ok := orgCfg.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
 			notifyCfg = *ocr.StatusNotifications()
 		}
+	}
+
+	if forgePlatform == "gitlab" {
+		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
+	}
+	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
+}
+
+// setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
+// a fresh token via the mint service for each API call and reads SHA/run ID
+// from GitHub Actions environment variables.
+func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	mintURL := sOpts.mintURL
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	}
+	if mintURL == "" {
+		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -3160,6 +3176,38 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
 		}
 		return gh.New(result.Token), nil
+	})
+
+	return n, nil
+}
+
+// setupStatusNotifierGitLab creates a status notifier for GitLab. It uses
+// GITLAB_TOKEN directly (no mint service required) and reads SHA/run ID
+// from GitLab CI environment variables. Unlike the GitHub path, no token
+// format validation or CI log masking is performed: GitLab uses
+// pre-provisioned PATs (not minted tokens with a known prefix), and GitLab
+// CI auto-masks variables that have the "masked" flag set at the runner level.
+func setupStatusNotifierGitLab(notifyCfg config.StatusNotificationConfig, owner, repo string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	client, err := newGitLabClientFromEnv("status comments")
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer CI_MERGE_REQUEST_SOURCE_BRANCH_SHA for merged-results pipelines
+	// where CI_COMMIT_SHA points to the merged ref, not the source branch.
+	sha := os.Getenv("CI_COMMIT_SHA")
+	if mrSHA := os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"); mrSHA != "" {
+		sha = mrSHA
+	}
+
+	runID := os.Getenv("CI_PIPELINE_ID")
+	if runID == "" {
+		runID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+
+	n := statuscomment.New(client, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	n.SetWarnFunc(func(format string, args ...any) {
+		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 
 	return n, nil

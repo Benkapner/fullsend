@@ -252,6 +252,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
+| `--forge` | Forge platform (`github` or `gitlab`); auto-detected from CI env vars when omitted |
 
 Example:
 
@@ -265,6 +266,8 @@ fullsend run triage \
   --status-number 42 \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
+
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent reads `GITLAB_TOKEN` from the environment and does not require the mint service. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables.
 
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
