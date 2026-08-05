@@ -208,12 +208,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+		isDualEnrolled := false
 		if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
 			ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+			isDualEnrolled = true
 			isPerRepo = false
 		}
-		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles); err != nil {
-			log.Printf("workflow ref validation failed for /v1/status: %v", err)
+		wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
+		if wfErr != nil && isDualEnrolled {
+			wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
+		}
+		if wfErr != nil {
+			log.Printf("workflow ref validation failed for /v1/status: %v", wfErr)
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
@@ -300,17 +306,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// PER_REPO_WIF_REPOS (not via wildcard public mint) and their
 	// owner org is also in ALLOWED_ORGS, use per-org scope treatment
 	// — per-org shapes are a superset of per-repo self-only scope.
+	// Workflow ref validation accepts sources from EITHER mode:
+	// per-repo (workflowHostRepos) or per-org ({org}/.fullsend, upstream).
 	// Note: when ALLOWED_ORGS=* with specific PER_REPO_WIF_REPOS
 	// entries, per-repo callers are upgraded to per-org scope; this
 	// is consistent because all non-per-repo callers from any org
 	// already receive per-org treatment in that configuration.
+	isDualEnrolled := false
 	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
 		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
-		log.Printf("dual-enrollment: upgrading %s from per-repo to per-org scope", claims.Repository)
+		isDualEnrolled = true
+		log.Printf("dual-enrollment: %s matches both per-repo and per-org — accepting workflow refs from either mode", claims.Repository)
 		isPerRepo = false
 	}
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles); err != nil {
-		log.Printf("workflow ref validation failed: %v", err)
+	wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
+	if wfErr != nil && isDualEnrolled {
+		// Per-org validation failed; try per-repo validation since
+		// dual-enrolled callers accept workflows from either mode.
+		wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
+	}
+	if wfErr != nil {
+		log.Printf("workflow ref validation failed: %v", wfErr)
 		writeError(w, http.StatusUnauthorized, "authentication failed")
 		return
 	}

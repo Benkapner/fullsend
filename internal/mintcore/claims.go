@@ -160,6 +160,11 @@ func ValidateOrgAllowed(org string, allowedOrgs []string) error {
 // caller's own org .fullsend config repo or the upstream repo. These are
 // hard-wired — no separate allow-list is consulted. The workflow basename
 // must be in allowedWorkflowFiles.
+//
+// For dual-enrolled callers (both per-repo and per-org), the handler
+// calls this function twice — once in per-org mode, then falling back to
+// per-repo mode if per-org fails. This accepts workflows from either
+// source: {org}/.fullsend / upstream OR workflowHostRepos / upstream.
 func ValidateWorkflowRef(ref, repository string, isPerRepo bool, workflowHostRepos map[string]bool, allowedWorkflowFiles []string) error {
 	if ref == "" {
 		return fmt.Errorf("missing job_workflow_ref claim")

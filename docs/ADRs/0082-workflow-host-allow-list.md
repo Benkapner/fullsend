@@ -69,6 +69,19 @@ have their `job_workflow_ref` hard-wired to two sources:
 No separate allow-list is consulted. This matches the operational model
 where per-org installs rely on `{org}/.fullsend` as their workflow host.
 
+### Dual enrollment
+
+When a caller is both an enrolled repo (`PER_REPO_WIF_REPOS`) and its
+org is an enrolled org (`ALLOWED_ORGS`), **both** workflow-ref validation
+modes apply. The workflow may come from:
+- Per-repo sources: any repo in `WORKFLOW_HOST_REPOS` (plus upstream)
+- Per-org sources: `{org}/.fullsend` config repo (plus upstream)
+
+The handler tries per-org validation first, then falls back to per-repo
+validation. If either succeeds, the workflow ref is accepted. Scope
+treatment uses per-org mode (the superset) — dual enrollment only
+expands the set of accepted workflow hosts.
+
 ### Public mode
 
 Public mode (`PER_REPO_WIF_REPOS=*`) uses the same per-repo validation

@@ -330,7 +330,7 @@ Org-scoped unenroll removes the org from mint env vars and the shared WIF provid
 
 ## Managing workflow hosts
 
-`fullsend mint workflow-host` manages the `WORKFLOW_HOST_REPOS` environment variable, which controls which repositories may host workflows that call the mint for per-repo callers. Per-org callers are not affected — they hard-wire to `{org}/.fullsend` and the upstream `fullsend-ai/fullsend` repo.
+`fullsend mint workflow-host` manages the `WORKFLOW_HOST_REPOS` environment variable, which controls which repositories may host workflows that call the mint for per-repo callers. Per-org-only callers are not affected — they hard-wire to `{org}/.fullsend` and the upstream `fullsend-ai/fullsend` repo. Dual-enrolled callers (listed in both `PER_REPO_WIF_REPOS` and `ALLOWED_ORGS`) accept workflows from **either** per-repo sources (`WORKFLOW_HOST_REPOS`) or per-org sources (`{org}/.fullsend`, upstream).
 
 When `WORKFLOW_HOST_REPOS` is not set, it defaults to `fullsend-ai/fullsend`.
 

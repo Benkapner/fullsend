@@ -100,6 +100,7 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 - **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames (use `*` to allow any basename)
 - **job_workflow_ref validation (per-org callers)**: `{org}/.fullsend` config repo or `fullsend-ai/fullsend` upstream reusables
 - **job_workflow_ref validation (per-repo callers)**: Only repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`)
+- **job_workflow_ref validation (dual-enrolled callers)**: Callers matching both `PER_REPO_WIF_REPOS` and `ALLOWED_ORGS` accept workflows from **either** per-org sources (`{org}/.fullsend`, upstream) or per-repo sources (`WORKFLOW_HOST_REPOS`, upstream)
 - **WORKFLOW_HOST_REPOS**: Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Managed via `fullsend mint workflow-host add|remove|list`. Defaults to `fullsend-ai/fullsend` when unset.
 - **PER_REPO_WIF_REPOS**: Repos using dedicated WIF providers (repo-scoped isolation)
 
