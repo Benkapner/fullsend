@@ -3728,6 +3728,360 @@ func TestResolveBaseResources_RejectsTraversalInSkill(t *testing.T) {
 	assert.Contains(t, err.Error(), "skills[0]")
 }
 
+func TestLoadWithBase_URLBase_ForgeSkillsFetchedFromBase(t *testing.T) {
+	skillContent := []byte("# GitLab skill\nThis is a GitLab-specific skill.")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  gitlab:
+    skills:
+      - skills/issue-labels/gitlab
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/skills/issue-labels/gitlab/SKILL.md": skillContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	// The test server URL is not a raw.githubusercontent.com URL, so skill
+	// directory resolution errors out (same as TestLoadWithBase_URLBase_SkillFetchedAndCachedAsDir).
+	// This confirms resolveBaseResources now iterates forge-level skills.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+	assert.Contains(t, err.Error(), "forge.gitlab.skills[0]")
+}
+
+func TestLoadWithBase_URLBase_ForgeSkillsOfflineCacheHit(t *testing.T) {
+	skillContent := []byte("# GitLab cached skill")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  gitlab:
+    skills:
+      - skills/issue-labels/gitlab
+`)
+	hash := computeHash(baseContent)
+
+	// Pre-populate base in cache
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	// Pre-populate agent resource
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	// Pre-populate the forge skill in cache
+	skillFileURL := "https://example.com/skills/issue-labels/gitlab/SKILL.md"
+	require.NoError(t, fetch.CachePut(cacheDir, skillFileURL, skillContent))
+	skillFileHash := fetch.ComputeSHA256(skillContent)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, skillFileHash))
+
+	files := map[string][]byte{"SKILL.md": skillContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, skillFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, treeHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	// Forge skill resolved from cache and merged into h.Skills via ResolveForge
+	require.NotEmpty(t, h.Skills)
+	assert.True(t, filepath.IsAbs(h.Skills[len(h.Skills)-1]),
+		"forge skill should be resolved to absolute cache path")
+
+	// Verify content from cache
+	skillMD := filepath.Join(h.Skills[len(h.Skills)-1], "SKILL.md")
+	content, err := os.ReadFile(skillMD)
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, content)
+
+	// 1 base + 1 agent + 1 forge skill, all cache hits
+	var foundForgeSkill bool
+	for _, d := range deps {
+		if d.Field == "forge.gitlab.skills[0]" {
+			foundForgeSkill = true
+			assert.True(t, d.CacheHit)
+			assert.Equal(t, "directory", d.Type)
+		}
+	}
+	assert.True(t, foundForgeSkill, "forge.gitlab.skills[0] should appear in deps")
+}
+
+func TestLoadWithBase_URLBase_ForgeHostFilesFetchedFromBase(t *testing.T) {
+	envContent := []byte("GITLAB_TOKEN=${GITLAB_TOKEN}\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  gitlab:
+    host_files:
+      - src: env/gitlab/triage.env
+        dest: /run/env/forge.env
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/env/gitlab/triage.env": envContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Forge host_files resolved and merged into h.HostFiles via ResolveForge
+	require.NotEmpty(t, h.HostFiles)
+	var found bool
+	for _, hf := range h.HostFiles {
+		if hf.Dest == "/run/env/forge.env" {
+			found = true
+			assert.True(t, filepath.IsAbs(hf.Src),
+				"forge host_file src should be resolved to absolute cache path")
+			// Verify content
+			data, err := os.ReadFile(hf.Src)
+			require.NoError(t, err)
+			assert.Equal(t, envContent, data)
+		}
+	}
+	assert.True(t, found, "forge host_file with dest /run/env/forge.env should exist")
+
+	// Verify the forge host_file was fetched as a dependency
+	var foundDep bool
+	for _, d := range deps {
+		if d.Field == "forge.gitlab.host_files[0].src" {
+			foundDep = true
+			assert.Equal(t, "resource", d.Type)
+		}
+	}
+	assert.True(t, foundDep, "forge.gitlab.host_files[0].src should appear in deps")
+}
+
+func TestLoadWithBase_ForgeHostFilesBlockMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    host_files:
+      - src: env/github/base.env
+        dest: /run/env/forge.env
+  gitlab:
+    host_files:
+      - src: env/gitlab/base.env
+        dest: /run/env/forge.env
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github:
+    host_files:
+      - src: env/github/child.env
+        dest: /run/env/forge.env
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+
+	// GitHub forge merged (child overrides base by dest), then resolved
+	require.Len(t, h.HostFiles, 1)
+	assert.Equal(t, "env/github/child.env", h.HostFiles[0].Src)
+	assert.Equal(t, "/run/env/forge.env", h.HostFiles[0].Dest)
+}
+
+func TestMergeForgeConfigInto_HostFilesInherited(t *testing.T) {
+	base := &ForgeConfig{
+		HostFiles: []HostFile{
+			{Src: "env/base.env", Dest: "/run/env/forge.env"},
+		},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.Len(t, child.HostFiles, 1)
+	assert.Equal(t, "env/base.env", child.HostFiles[0].Src)
+}
+
+func TestMergeForgeConfigInto_HostFilesOverriddenByChild(t *testing.T) {
+	base := &ForgeConfig{
+		HostFiles: []HostFile{
+			{Src: "env/base.env", Dest: "/run/env/forge.env"},
+		},
+	}
+	child := &ForgeConfig{
+		HostFiles: []HostFile{
+			{Src: "env/child.env", Dest: "/run/env/forge.env"},
+		},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.Len(t, child.HostFiles, 1)
+	assert.Equal(t, "env/child.env", child.HostFiles[0].Src)
+}
+
+func TestLoadWithBase_URLBase_ForgeSkillPathTraversal(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+forge:
+  gitlab:
+    skills:
+      - ../../../etc/shadow
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(baseContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   fpolicy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestLoadWithBase_URLBase_ForgeHostFilePathTraversal(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+forge:
+  gitlab:
+    host_files:
+      - src: ../../../etc/shadow
+        dest: /run/secret
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(baseContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   fpolicy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
 func TestLoadWithBase_URLBase_ResourceNotInAllowlist(t *testing.T) {
 	baseContent := []byte(`
 agent: agents/triage.md
@@ -5677,4 +6031,102 @@ host_files:
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving URL-sourced host_files after base composition")
+}
+
+func TestResolveBaseResources_ForgeNilEntry(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": nil,
+		},
+	}
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseResources_ForgeSkillSkipsURLAndEmpty(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("d", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				Skills: []string{"", "https://example.com/skills/remote", cachePath},
+			},
+		},
+	}
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "", base.Forge["gitlab"].Skills[0])
+	assert.Equal(t, "https://example.com/skills/remote", base.Forge["gitlab"].Skills[1])
+	assert.Equal(t, cachePath, base.Forge["gitlab"].Skills[2])
+}
+
+func TestResolveBaseHostFiles_ForgeNilEntry(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": nil,
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseHostFiles_ForgeSkipsURLEnvVarEmptyAndCache(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("e", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				HostFiles: []HostFile{
+					{Src: "", Dest: "/sandbox/empty"},
+					{Src: "${HOME}/.config", Dest: "/sandbox/config"},
+					{Src: "https://example.com/file.env", Dest: "/sandbox/remote"},
+					{Src: cachePath, Dest: "/sandbox/cached"},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "", base.Forge["gitlab"].HostFiles[0].Src)
+	assert.Equal(t, "${HOME}/.config", base.Forge["gitlab"].HostFiles[1].Src)
+	assert.Equal(t, "https://example.com/file.env", base.Forge["gitlab"].HostFiles[2].Src)
+	assert.Equal(t, cachePath, base.Forge["gitlab"].HostFiles[3].Src)
+}
+
+func TestResolveBaseHostFiles_ForgeFetchError(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	baseURL := server.URL + "/base.yaml#sha256=abc"
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				HostFiles: []HostFile{
+					{Src: "env/test.env", Dest: "/sandbox/.env"},
+				},
+			},
+		},
+	}
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, err := resolveBaseHostFiles(context.Background(), base, baseURL, []string{server.URL + "/"}, ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fpolicy,
+	})
+	require.Error(t, err)
 }

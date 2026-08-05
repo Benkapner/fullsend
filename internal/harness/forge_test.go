@@ -614,6 +614,169 @@ forge:
 	assert.Equal(t, map[string]string{"GITHUB_PR_URL": "${GITHUB_PR_URL}"}, h.Forge["github"].Env.Sandbox)
 }
 
+func TestResolveForge_HostFilesMerge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		HostFiles: []HostFile{
+			{Src: "env/common.env", Dest: "/run/env/common.env"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{
+					{Src: "env/github/triage.env", Dest: "/run/env/forge.env"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.Len(t, h.HostFiles, 2)
+	assert.Equal(t, "env/common.env", h.HostFiles[0].Src)
+	assert.Equal(t, "/run/env/common.env", h.HostFiles[0].Dest)
+	assert.Equal(t, "env/github/triage.env", h.HostFiles[1].Src)
+	assert.Equal(t, "/run/env/forge.env", h.HostFiles[1].Dest)
+}
+
+func TestResolveForge_HostFilesOverrideSameDest(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		HostFiles: []HostFile{
+			{Src: "env/default.env", Dest: "/run/env/forge.env"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				HostFiles: []HostFile{
+					{Src: "env/gitlab/triage.env", Dest: "/run/env/forge.env"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("gitlab"))
+	require.Len(t, h.HostFiles, 1)
+	assert.Equal(t, "env/gitlab/triage.env", h.HostFiles[0].Src)
+	assert.Equal(t, "/run/env/forge.env", h.HostFiles[0].Dest)
+}
+
+func TestResolveForge_HostFilesNilInherits(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		HostFiles: []HostFile{
+			{Src: "env/common.env", Dest: "/run/env/common.env"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.Len(t, h.HostFiles, 1)
+	assert.Equal(t, "env/common.env", h.HostFiles[0].Src)
+}
+
+func TestResolveForge_HostFilesNilTopLevel(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{
+					{Src: "env/github.env", Dest: "/run/env/github.env"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.Len(t, h.HostFiles, 1)
+	assert.Equal(t, "env/github.env", h.HostFiles[0].Src)
+}
+
+func TestValidate_ForgeHostFileMissingSrc(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{
+					{Dest: "/run/env/forge.env"},
+				},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.github.host_files[0]: src is required")
+}
+
+func TestValidate_ForgeHostFileMissingDest(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{
+					{Src: "env/github.env"},
+				},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.github.host_files[0]: dest is required")
+}
+
+func TestValidate_ForgeHostFileSrcURL(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{
+					{Src: "https://evil.com/env.file", Dest: "/run/env"},
+				},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.github.host_files[0].src must be a local path")
+}
+
+func TestValidate_ForgeHostFileValid(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{
+					{Src: "env/github/triage.env", Dest: "/run/env/forge.env"},
+				},
+			},
+		},
+	}
+	require.NoError(t, h.Validate())
+}
+
+func TestForgeConfig_HostFilesParsesFromYAML(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+forge:
+  gitlab:
+    host_files:
+      - src: env/gitlab/triage.env
+        dest: /run/env/forge.env
+        optional: true
+`
+	h, err := parseRaw([]byte(content))
+	require.NoError(t, err)
+	require.NotNil(t, h.Forge["gitlab"])
+	require.Len(t, h.Forge["gitlab"].HostFiles, 1)
+	assert.Equal(t, "env/gitlab/triage.env", h.Forge["gitlab"].HostFiles[0].Src)
+	assert.Equal(t, "/run/env/forge.env", h.Forge["gitlab"].HostFiles[0].Dest)
+	assert.True(t, h.Forge["gitlab"].HostFiles[0].Optional)
+}
+
 func TestForgeConfig_PolicyParsesFromYAML(t *testing.T) {
 	content := `
 agent: agents/test.md
