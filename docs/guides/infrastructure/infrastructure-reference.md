@@ -4,7 +4,7 @@ This guide provides implementation details for fullsend's infrastructure compone
 
 ## Token Mint (OIDC)
 
-> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint token`
+> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint workflow-host`, `fullsend mint token`
 
 The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens. This eliminates long-lived PATs from the system. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker) — see `fullsend mint deploy --platform`.
 
@@ -98,7 +98,9 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 
 - **ALLOWED_ORGS**: Only listed orgs may mint tokens
 - **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames (use `*` to allow any basename)
-- **job_workflow_ref validation**: `.fullsend` config repo, `fullsend-ai/fullsend` upstream reusables, or registered per-repo workflows (`PER_REPO_WIF_REPOS`)
+- **job_workflow_ref validation (per-org callers)**: `{org}/.fullsend` config repo or `fullsend-ai/fullsend` upstream reusables
+- **job_workflow_ref validation (per-repo callers)**: Only repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`)
+- **WORKFLOW_HOST_REPOS**: Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Managed via `fullsend mint workflow-host add|remove|list`. Defaults to `fullsend-ai/fullsend` when unset.
 - **PER_REPO_WIF_REPOS**: Repos using dedicated WIF providers (repo-scoped isolation)
 
 **Public mint**: `ALLOWED_ORGS` is `*`.

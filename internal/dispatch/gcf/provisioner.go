@@ -1720,11 +1720,21 @@ func (p *Provisioner) RemoveWorkflowHostRepo(ctx context.Context, repo string) e
 
 	existing := trafficEnvVars["WORKFLOW_HOST_REPOS"]
 	var filtered []string
+	found := false
 	for _, entry := range strings.Split(existing, ",") {
 		entry = strings.TrimSpace(entry)
-		if entry != "" && strings.ToLower(entry) != repo {
+		if entry == "" {
+			continue
+		}
+		if strings.ToLower(entry) == repo {
+			found = true
+		} else {
 			filtered = append(filtered, entry)
 		}
+	}
+
+	if !found {
+		return nil
 	}
 
 	updated := make(map[string]string, len(trafficEnvVars))

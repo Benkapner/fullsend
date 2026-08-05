@@ -9,6 +9,9 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
 | `mint unenroll` | Remove an org or repo from the mint |
+| `mint workflow-host add` | Add a repo to the workflow-host allow-list |
+| `mint workflow-host remove` | Remove a repo from the workflow-host allow-list |
+| `mint workflow-host list` | List the workflow-host allow-list |
 | `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
@@ -324,6 +327,42 @@ Org-scoped unenroll removes the org from mint env vars and the shared WIF provid
 | `--delete-provider` | `false` | Permanently delete WIF provider (repo-scoped only) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation (for automation) |
+
+## Managing workflow hosts
+
+`fullsend mint workflow-host` manages the `WORKFLOW_HOST_REPOS` environment variable, which controls which repositories may host workflows that call the mint for per-repo callers. Per-org callers are not affected — they hard-wire to `{org}/.fullsend` and the upstream `fullsend-ai/fullsend` repo.
+
+When `WORKFLOW_HOST_REPOS` is not set, it defaults to `fullsend-ai/fullsend`.
+
+### Adding a workflow host
+
+```bash
+fullsend mint workflow-host add acme-corp/my-workflows --project="$GCP_PROJECT"
+```
+
+Idempotent — skips repos already listed.
+
+### Removing a workflow host
+
+```bash
+fullsend mint workflow-host remove acme-corp/my-workflows --project="$GCP_PROJECT"
+```
+
+### Listing workflow hosts
+
+```bash
+fullsend mint workflow-host list --project="$GCP_PROJECT"
+```
+
+Read-only — makes no changes.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project` | | GCP project ID (required) |
+| `--region` | `us-central1` | Cloud region for the mint service |
+| `--dry-run` | `false` | Preview changes without making them (`add` and `remove` only) |
 
 ## Checking mint status
 
