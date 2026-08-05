@@ -869,7 +869,10 @@ def _classify_fix_from_threads(
             status="needs_review_decision",
             reason="Unresolved review-bot threads but fullsend-no-fix is set",
             eliminated=False,
-            suggested_actions=["Resolve threads or remove fullsend-no-fix to allow /fs-fix"],
+            suggested_actions=[
+                "comment:/fs-fix (fullsend-no-fix only blocks automatic bot runs), "
+                "or resolve threads yourself"
+            ],
         )
     cmd_at = latest_fs_command_at(comments, "/fs-fix")
     thread_times = [
@@ -2244,6 +2247,7 @@ def format_markdown_output(
     show_blocked: bool,
     link_results: list[dict[str, Any]] | None = None,
     take_over_results: list[dict[str, Any]] | None = None,
+    truncated_remaining: int = 0,
 ) -> str:
     do_now = [i for i in items if not i["eliminated"]]
     waiting = [i for i in items if i["eliminated"] and i["status"].startswith(WAITING_PREFIX)]
@@ -2297,6 +2301,13 @@ def format_markdown_output(
         f"_Generated {ts} · {repo} · user {user} · stale-hours {stale_hours:g} · "
         f"{len(do_now)} actionable, {len(items) - len(do_now)} waiting/blocked/elsewhere_"
     )
+    if truncated_remaining:
+        lines.append("")
+        lines.append(
+            f"_Queue truncated at `--max-visits`; {truncated_remaining} remaining "
+            "seed/blocker(s) not classified. Re-run with a higher `--max-visits` "
+            "or seed specific refs._"
+        )
     return "\n".join(lines)
 
 
@@ -2349,6 +2360,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Persist a real GitHub blockedBy link (repeatable). Idempotent if already linked.",
     )
     parser.add_argument(
+        "--confirmed",
+        action="store_true",
+        help=(
+            "Required with --apply / --take-over / --link-blocker: acknowledges that "
+            "GitHub mutations will run (skill/CLI confirmation gate)"
+        ),
+    )
+    parser.add_argument(
         "--decisions-only",
         action="store_true",
         help="Filter output to non-trivial decisions only (hides waiting/blocked/trivial items)",
@@ -2395,6 +2414,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         sys.exit(2)
     if args.max_visits < 1:
         print("error: --max-visits must be at least 1", file=sys.stderr)
+        sys.exit(2)
+    mutating = args.apply or bool(args.take_over) or bool(args.link_blocker)
+    if mutating and not args.confirmed:
+        print(
+            "error: --apply / --take-over / --link-blocker require --confirmed "
+            "(defense-in-depth confirmation gate)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.confirmed and not mutating:
+        print(
+            "error: --confirmed is only valid with --apply / --take-over / --link-blocker",
+            file=sys.stderr,
+        )
         sys.exit(2)
     return args
 
@@ -2499,6 +2532,7 @@ def main(argv: list[str] | None = None) -> None:
                 show_blocked=args.show_blocked,
                 link_results=link_results,
                 take_over_results=take_over_results,
+                truncated_remaining=truncated_remaining,
             )
         )
     mutation_error = any(

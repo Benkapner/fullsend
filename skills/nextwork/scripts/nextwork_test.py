@@ -1219,6 +1219,11 @@ class TestClassifyPr(unittest.TestCase):
         )
         result = classify_pr(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_review_decision")
+        self.assertEqual(len(result.suggested_actions), 1)
+        suggestion = result.suggested_actions[0]
+        self.assertIn("comment:/fs-fix", suggestion)
+        self.assertIn("only blocks automatic", suggestion)
+        self.assertNotIn("remove fullsend-no-fix", suggestion)
 
     def test_waiting_ci(self):
         item = make_pr(checks_state="PENDING")
@@ -2033,6 +2038,19 @@ class TestFormatOutputs(unittest.TestCase):
         self.assertIn("acme/widget#3", out)
         self.assertIn("assigned to alice", out)
 
+    def test_markdown_shows_queue_truncation(self):
+        out = format_markdown_output(
+            self.items,
+            "acme/widget",
+            "alice",
+            6,
+            [],
+            show_blocked=False,
+            truncated_remaining=7,
+        )
+        self.assertIn("Queue truncated", out)
+        self.assertIn("7 remaining", out)
+
     def test_decision_statuses_disjoint_from_trivial(self):
         from nextwork import TRIVIAL_STATUSES
 
@@ -2095,6 +2113,31 @@ class TestParseArgs(unittest.TestCase):
     def test_accepts_triage_stale_hours(self):
         args = parse_args(["--triage-stale-hours", "24"])
         self.assertEqual(args.triage_stale_hours, 24)
+
+    def test_apply_requires_confirmed(self):
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--apply"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_take_over_requires_confirmed(self):
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--take-over", "acme/widget#1"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_link_blocker_requires_confirmed(self):
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--link-blocker", "acme/widget#1=acme/widget#2"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_confirmed_alone_rejected(self):
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--confirmed"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_apply_with_confirmed_ok(self):
+        args = parse_args(["--apply", "--confirmed"])
+        self.assertTrue(args.apply)
+        self.assertTrue(args.confirmed)
 
 
 class TestMaybeCheckMergeQueue(unittest.TestCase):
