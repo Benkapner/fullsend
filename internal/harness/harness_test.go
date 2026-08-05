@@ -865,6 +865,79 @@ func TestResolveRelativeTo_URLsUnchanged(t *testing.T) {
 	assert.Equal(t, "/base/dir/skills/local-skill", h.Skills[0])
 }
 
+func TestResolveRelativeTo_Profiles(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/network.yaml"},
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "/base/dir/profiles/network.yaml", h.OpenShellProfiles()[0])
+}
+
+func TestResolveRelativeTo_ProfilesUnchanged(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+	}{
+		{"absolute path", "/abs/cache/profiles/network.yaml"},
+		{"URL", "https://example.com/profiles/net.yaml#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Harness{
+				Agent:     "agents/test.md",
+				OpenShell: &OpenShellConfig{Profiles: []string{tt.profile}},
+			}
+			require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+			assert.Equal(t, tt.profile, h.OpenShellProfiles()[0])
+		})
+	}
+}
+
+func TestResolveRelativeTo_ProfileProviderTraversalRejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		harness Harness
+	}{
+		{
+			"profile traversal",
+			Harness{Agent: "agents/test.md", OpenShell: &OpenShellConfig{Profiles: []string{"../escape/profiles/net.yaml"}}},
+		},
+		{
+			"provider traversal",
+			Harness{Agent: "agents/test.md", Providers: []string{"../escape/providers/evil.yaml"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.harness.ResolveRelativeTo("/base/dir")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "resolves outside")
+		})
+	}
+}
+
+func TestResolveRelativeTo_Providers(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Providers: []string{
+			"providers/custom.yaml",
+			"fullsend-github",
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	// File path gets resolved
+	assert.Equal(t, "/base/dir/providers/custom.yaml", h.Providers[0])
+	// Bare provider name stays unchanged
+	assert.Equal(t, "fullsend-github", h.Providers[1])
+}
+
 func TestValidateFilesExist_MissingPlugin(t *testing.T) {
 	dir := t.TempDir()
 	agentFile := filepath.Join(dir, "agent.md")
@@ -933,6 +1006,18 @@ validation_loop:
 	require.NoError(t, err)
 	require.NotNil(t, h.ValidationLoop)
 	assert.Empty(t, h.ValidationLoop.PreflightCheck)
+}
+
+func TestValidateFilesExist_BareProviderNameSkipped(t *testing.T) {
+	dir := t.TempDir()
+	agentFile := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
+
+	h := &Harness{
+		Agent:     agentFile,
+		Providers: []string{"fullsend-github"},
+	}
+	require.NoError(t, h.ValidateFilesExist())
 }
 
 // --- AllowedRemoteResources tests ---
@@ -1289,6 +1374,11 @@ func TestHasURLReferences(t *testing.T) {
 		{
 			name: "local provider only",
 			h:    Harness{Agent: "agents/test.md", Providers: []string{"my-provider"}},
+			want: false,
+		},
+		{
+			name: "local profile only",
+			h:    Harness{Agent: "agents/test.md", OpenShell: &OpenShellConfig{Profiles: []string{"/cache/profiles/net.yaml"}}},
 			want: false,
 		},
 	}
@@ -1796,6 +1886,8 @@ env:
 }
 
 func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
+	// Profiles can now be local paths (resolved from base composition) or URLs with hashes.
+	// This test verifies that local profile paths are accepted.
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
@@ -1804,8 +1896,7 @@ func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
 		},
 	}
 	err := h.ValidateResourceTypes()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell.profiles[0] must be a URL")
+	require.NoError(t, err)
 }
 
 func TestValidateResourceTypes_ProfilesRequireIntegrityHash(t *testing.T) {
@@ -1829,6 +1920,31 @@ func TestValidateResourceTypes_ProfilesValidURL(t *testing.T) {
 			Profiles: []string{
 				"https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_ProfilesRequireYAMLExtension(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/mycustomprofile"},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must have a .yaml or .yml extension")
+}
+
+func TestValidateResourceTypes_ProfilesYMLExtensionAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/mycustomprofile.yml"},
 		},
 	}
 	err := h.ValidateResourceTypes()

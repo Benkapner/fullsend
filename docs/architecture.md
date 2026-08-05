@@ -140,11 +140,11 @@ repo baseline and overrides)
   `fullsend dispatch` matches events to harnesses via input/output drivers
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
 - Portable provider and profile resolution: provider and profile definitions
-  can be URL-referenced in the harness (sha256-pinned), enabling portable
-  base harnesses that carry their own provider/profile dependencies.
-  URL-resolved providers are validated against `allowed_remote_resources`
-  and merged with local definitions at resolution time
-  ([ADR 0070](ADRs/0070-portable-provider-profile-resolution.md)).
+  can be URL-referenced (sha256-pinned) or specified as local file paths in
+  the harness, enabling portable base harnesses that carry their own
+  provider/profile dependencies. URL-resolved providers are validated against
+  `allowed_remote_resources` and merged with local definitions at resolution
+  time ([ADR 0075](ADRs/0075-local-path-profiles-providers.md)).
 - Run-stage-scoped privilege levels: a `privilege_levels` field in harness config
   maps run-stages (`pre_script`, `runtime`, `post_script`) to named mint
   privilege levels. A `default` key covers unspecified run-stages. When omitted,

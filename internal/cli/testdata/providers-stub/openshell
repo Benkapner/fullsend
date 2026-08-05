@@ -14,7 +14,23 @@ case "$1" in
     ;;
   provider)
     case "$2" in
-      profile|create|update)
+      profile)
+        # Validate --file argument has .yaml/.yml extension when present.
+        prev=""
+        for arg in "$@"; do
+          case "$prev" in
+            --file)
+              case "$arg" in
+                *.yaml|*.yml) ;;
+                *) echo "openshell stub: --file must end in .yaml or .yml, got: $arg" >&2; exit 1 ;;
+              esac
+              ;;
+          esac
+          prev="$arg"
+        done
+        exit 0
+        ;;
+      create|update)
         exit 0
         ;;
     esac

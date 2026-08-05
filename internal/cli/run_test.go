@@ -4876,11 +4876,12 @@ func TestSandboxProviderNames_ExcludesUndeclaredDirectoryProviders(t *testing.T)
 
 func TestCheckProviderProfileIntegrity(t *testing.T) {
 	tests := []struct {
-		name      string
-		providers []resolve.ResolvedProvider
-		profiles  []resolve.ResolvedProfile
-		wantWarn  bool
-		wantErr   bool
+		name          string
+		providers     []resolve.ResolvedProvider
+		profiles      []resolve.ResolvedProfile
+		dirProfileIDs []string
+		wantWarn      bool
+		wantErr       bool
 	}{
 		{
 			name:      "no providers",
@@ -4890,7 +4891,7 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "providers without profiles warns",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}, FromURL: true},
 			},
 			profiles: nil,
 			wantWarn: true,
@@ -4898,43 +4899,81 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "all providers match profiles",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
-				{ID: "openai"},
+				{ID: "anthropic", FromURL: true},
+				{ID: "openai", FromURL: true},
 			},
 		},
 		{
 			name: "provider references unknown profile",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
 		},
 		{
 			name: "multiple mismatches reported together",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
+		},
+		{
+			name: "local provider matched by directory profile",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles:      nil,
+			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "local provider unmatched errors",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "nonexistent"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "mixed URL and local providers all checked",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "url-p", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "local provider matched by harness profile",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "anthropic"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", LocalPath: "/tmp/anthropic.yaml"},
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles)
+			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles, tt.dirProfileIDs)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "gateway-resident")
+				assert.Contains(t, err.Error(), "unknown profile types")
 				if tt.name == "multiple mismatches reported together" {
 					assert.Contains(t, err.Error(), "missing-a")
 					assert.Contains(t, err.Error(), "missing-b")

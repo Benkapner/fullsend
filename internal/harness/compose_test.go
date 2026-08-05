@@ -1333,7 +1333,6 @@ forge:
 
 	assert.Equal(t, "policies/child-gitlab.yaml", h.Policy)
 }
-
 func TestLoadWithBase_InvalidForgeAfterMerge(t *testing.T) {
 	dir := t.TempDir()
 
@@ -6129,4 +6128,404 @@ func TestResolveBaseHostFiles_ForgeFetchError(t *testing.T) {
 		FetchPolicy:   fpolicy,
 	})
 	require.Error(t, err)
+}
+
+// --- Tests for resolveBaseProfiles ---
+
+func TestResolveBaseProfiles_EmptyProfiles(t *testing.T) {
+	base := &Harness{}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_NilOpenShell(t *testing.T) {
+	base := &Harness{OpenShell: nil}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_SkipsURLs(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/net.yaml#sha256=abc"},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "https://example.com/profiles/net.yaml#sha256=abc", base.OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_SkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("c", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{cachePath},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_SkipsEmpty(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{""},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"../../etc/passwd"},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "openshell.profiles[0]")
+}
+
+func TestResolveBaseProfiles_RejectsNullBytes(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/net\x00.yaml"},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain null bytes")
+}
+
+func TestResolveBaseProfiles_InvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/net.yaml"},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// --- Tests for resolveBaseProviders ---
+
+func TestResolveBaseProviders_EmptyProviders(t *testing.T) {
+	base := &Harness{}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_SkipsBareNames(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"my-provider"},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "my-provider", base.Providers[0])
+}
+
+func TestResolveBaseProviders_SkipsURLs(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"https://example.com/providers/custom.yaml#sha256=abc"},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_SkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("d", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Providers: []string{cachePath},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.Providers[0])
+}
+
+func TestResolveBaseProviders_SkipsEmpty(t *testing.T) {
+	base := &Harness{
+		Providers: []string{""},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"../../etc/passwd.yaml"},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "providers[0]")
+}
+
+func TestResolveBaseProviders_InvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"providers/custom.yaml"},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// --- Integration tests for profiles/providers through LoadWithBase ---
+
+func TestLoadWithBase_URLBase_ProfilesFetched(t *testing.T) {
+	profileContent := []byte("id: claude-code\nnetwork:\n  egress:\n    - host: api.example.com\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+openshell:
+  profiles:
+  - profiles/claude-code.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/profiles/claude-code.yaml": profileContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.OpenShellProfiles(), 1)
+	assert.True(t, filepath.IsAbs(h.OpenShellProfiles()[0]), "profile should be resolved to absolute cache path")
+	assert.False(t, IsURL(h.OpenShellProfiles()[0]), "profile should not be a URL")
+
+	content, err := os.ReadFile(h.OpenShellProfiles()[0])
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, content)
+
+	profileDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "openshell.profiles[") {
+			profileDeps = append(profileDeps, d)
+		}
+	}
+	assert.Len(t, profileDeps, 1)
+	assert.Equal(t, "resource", profileDeps[0].Type)
+}
+
+func TestLoadWithBase_URLBase_ProvidersFetched(t *testing.T) {
+	providerContent := []byte("name: custom-provider\ntype: custom\ncredentials:\n  KEY: ${API_KEY}\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+providers:
+  - providers/custom-provider.yaml
+  - bare-name
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/providers/custom-provider.yaml": providerContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Providers, 2)
+	assert.True(t, filepath.IsAbs(h.Providers[0]), "provider path should be resolved to absolute cache path")
+	assert.Equal(t, "bare-name", h.Providers[1], "bare provider name should be unchanged")
+
+	content, err := os.ReadFile(h.Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, content)
+
+	providerDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "providers[") {
+			providerDeps = append(providerDeps, d)
+		}
+	}
+	assert.Len(t, providerDeps, 1)
+	assert.Equal(t, "resource", providerDeps[0].Type)
+}
+
+// --- SourceURL tests for profiles/providers ---
+
+func TestLoadWithBase_SourceURL_Profiles(t *testing.T) {
+	profileContent := []byte("id: network-profile\nnetwork:\n  egress:\n    - host: example.com\n")
+	agentContent := []byte("# agent definition")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	absCachePath, err := fetch.CachePath(cacheDir, strings.Repeat("a", 64))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(absCachePath), 0o755))
+	require.NoError(t, os.WriteFile(absCachePath, []byte("cached profile"), 0o644))
+
+	harnessContent := []byte(fmt.Sprintf(`
+role: triage
+slug: triage
+agent: agents/triage.md
+openshell:
+  profiles:
+  - profiles/network.yaml
+  - %s
+`, absCachePath))
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/profiles/network.yaml":
+			w.Write(profileContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.OpenShellProfiles(), 2)
+	assert.True(t, filepath.IsAbs(h.OpenShellProfiles()[0]),
+		"relative profile should be resolved to absolute cache path, got %s", h.OpenShellProfiles()[0])
+
+	gotContent, err := os.ReadFile(h.OpenShellProfiles()[0])
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, gotContent)
+
+	assert.Equal(t, absCachePath, h.OpenShellProfiles()[1],
+		"already-cached absolute path should be left unchanged")
+
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["openshell.profiles[0]"], "should have profile dep")
+}
+
+func TestLoadWithBase_SourceURL_Providers(t *testing.T) {
+	providerContent := []byte("name: src-provider\ntype: custom\ncredentials:\n  KEY: ${API_KEY}\n")
+	agentContent := []byte("# agent definition")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+providers:
+  - providers/src-provider.yaml
+  - my-bare-provider
+`)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/providers/src-provider.yaml":
+			w.Write(providerContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Providers, 2)
+	assert.True(t, filepath.IsAbs(h.Providers[0]),
+		"relative provider path should be resolved to absolute cache path, got %s", h.Providers[0])
+	assert.Equal(t, "my-bare-provider", h.Providers[1],
+		"bare provider name should be left unchanged")
+
+	gotContent, err := os.ReadFile(h.Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, gotContent)
+
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["providers[0]"], "should have provider dep")
 }
