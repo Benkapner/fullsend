@@ -224,7 +224,7 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (deleting workflow files, variables, and secrets), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
-GCP WIF cleanup is handled separately via `inference deprovision`.
+GCP WIF pool/provider cleanup is handled separately via `inference deprovision`. For GitLab WIF-mode repos, `repos uninstall` performs best-effort deletion of the bot token Secret Manager secret.
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
 
