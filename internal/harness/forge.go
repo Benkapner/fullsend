@@ -8,7 +8,7 @@ import (
 
 // ForgeConfig holds platform-specific harness configuration.
 // This is purely declarative YAML config — it selects which
-// scripts, skills, and env vars to use per platform. It is
+// scripts, skills, host files, and env vars to use per platform. It is
 // distinct from the forge.Client interface (internal/forge/),
 // which is the runtime abstraction for forge API operations.
 type ForgeConfig struct {
@@ -16,6 +16,7 @@ type ForgeConfig struct {
 	PostScript     string            `yaml:"post_script,omitempty"`
 	Policy         string            `yaml:"policy,omitempty"`
 	Skills         []string          `yaml:"skills,omitempty"`
+	HostFiles      []HostFile        `yaml:"host_files,omitempty"`
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
 	Env            *EnvConfig        `yaml:"env,omitempty"`
@@ -69,6 +70,17 @@ func (h *Harness) validateForge() error {
 				}
 			}
 		}
+		for i, hf := range fc.HostFiles {
+			if hf.Src == "" {
+				return fmt.Errorf("forge.%s.host_files[%d]: src is required", key, i)
+			}
+			if hf.Dest == "" {
+				return fmt.Errorf("forge.%s.host_files[%d]: dest is required", key, i)
+			}
+			if IsURL(hf.Src) {
+				return fmt.Errorf("forge.%s.host_files[%d].src must be a local path, not a URL", key, i)
+			}
+		}
 		if fc.ValidationLoop != nil {
 			if fc.ValidationLoop.Script == "" {
 				return fmt.Errorf("forge.%s.validation_loop.script is required when validation_loop is set", key)
@@ -117,6 +129,7 @@ func (h *Harness) ResolveForge(platform string) error {
 // Merge rules per ADR-0045:
 //   - Scalars: forge overrides if non-empty
 //   - Skills: top-level + forge (concatenated)
+//   - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
 //   - RunnerEnv: top-level merged with forge; forge keys win
 //   - ValidationLoop: forge replaces entirely if non-nil
 func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
@@ -132,6 +145,10 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 
 	if fc.Skills != nil {
 		h.Skills = mergeSkills(h.Skills, fc.Skills)
+	}
+
+	if fc.HostFiles != nil {
+		h.HostFiles = mergeHostFiles(h.HostFiles, fc.HostFiles)
 	}
 
 	if fc.RunnerEnv != nil {

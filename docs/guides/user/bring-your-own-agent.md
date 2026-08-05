@@ -188,7 +188,7 @@ Key patterns to note:
 - **`policy: policies/triage.yaml`** is a per-agent policy that includes filesystem, landlock, process, and network rules (via inline `network_policies`). This agent predates the provider-based pattern — new agents can use `providers:` instead (see [Minimum viable agent](#minimum-viable-agent)).
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
-- **`forge.github`** scopes scripts and env vars to GitHub. When running on GitLab, a `forge.gitlab` block would take effect instead.
+- **`forge.github`** scopes scripts, skills, host_files, and env vars to GitHub. When running on GitLab, a `forge.gitlab` block would take effect instead.
 - **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Remote references](#referencing-resources-local-vs-remote)) or copy it locally.
 
 ## Harness field reference
@@ -220,7 +220,7 @@ providers:                           # Network access via provider profiles
 skills:
   - skills/my-skill                  # Local path or URL with #sha256=...
 plugins:
-  - plugins/gopls-lsp
+  - plugins/gopls-lsp                # Local path or URL with #sha256=...
 openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
@@ -278,6 +278,9 @@ forge:
     pre_script: scripts/pre-gh.sh
     post_script: scripts/post-gh.sh
     skills: [skills/github-specific]  # Concatenated with top-level
+    host_files:                        # Forge-specific host files
+      - src: env/github.env
+        dest: /run/secrets/forge.env
     env:
       runner:
         GH_TOKEN: "${GH_TOKEN}"

@@ -41,6 +41,8 @@ fullsend repos install -f repos.yaml "$OWNER/$REPO" \
 | `FULLSEND_CREDENTIAL_MODE` | CI/CD variable | Credential retrieval mode | `wif` or `variable` |
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
 | `FULLSEND_SA` | CI/CD variable | Service account email for WIF impersonation | `fullsend-mint@project.iam.gserviceaccount.com` |
+| `FULLSEND_WIF_PROVIDER` | CI/CD variable | Full WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
+| `FULLSEND_BOT_TOKEN_SECRET` | CI/CD variable | Secret Manager secret ID for bot PAT (WIF mode only) | `fullsend-bot-token-group--project` |
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference (WIF mode only) | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
 
@@ -80,6 +82,7 @@ To remove fullsend from a single repository:
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
 4. Delete fullsend pipeline schedules
+5. For WIF-mode repos: delete the bot token Secret Manager secret (named `fullsend-bot-token-<owner>--<repo>`) from the GCP project
 
 If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of GitHub step 3. See the [standalone commands](#standalone-commands) table for details.
 
@@ -127,9 +130,9 @@ When using the split-responsibility workflow, each standalone command requires a
 | IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | | | x | x | |
-| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | \*\* | | |
+| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | | | |
 | `roles/iam.serviceAccountAdmin` | | | | x | | | | | |
-| `roles/secretmanager.admin` | | | | \* | \*\*\* | \*\*\*\* | | | |
+| `roles/secretmanager.admin` | | | | \* | \*\* | \*\*\* | | | |
 | `roles/cloudfunctions.developer` | | | | x | | | | | |
 | `roles/cloudfunctions.viewer` | | | | | x | x | x | x | x |
 | `roles/run.admin` | | | | x | x | x | x | x | |
@@ -138,15 +141,15 @@ When using the split-responsibility workflow, each standalone command requires a
 
 \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
-\*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
+\*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
 
-\*\*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
-
-\*\*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
+\*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
 
 § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
 
 † All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
+
+Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 
 Required GCP APIs also differ by command group:
 

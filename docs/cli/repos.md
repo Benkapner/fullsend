@@ -141,7 +141,7 @@ When repos are specified as positional arguments, only those repos are processed
 
 ### GitLab bot token
 
-For GitLab repos, `repos install` automatically creates a project access token and stores it as the `FULLSEND_FORGE_TOKEN` CI/CD variable. This requires GitLab Premium or Ultimate.
+For GitLab repos, `repos install` automatically creates a project access token. In variable mode (no `--inference-project`), it is stored as the `FULLSEND_FORGE_TOKEN` CI/CD variable. In WIF mode (with `--inference-project`), it is stored in GCP Secret Manager and `FULLSEND_BOT_TOKEN_SECRET` is set as a protected CI/CD variable pointing to the secret name. Creating project access tokens requires GitLab Premium or Ultimate.
 
 On free-tier or Community Edition instances where project access tokens are not available, pass `--gitlab-bot-token` with a personal access token (PAT) that has `api` scope:
 
@@ -224,7 +224,7 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (deleting workflow files, variables, and secrets), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
-GCP WIF cleanup is handled separately via `inference deprovision`.
+GCP WIF pool/provider cleanup is handled separately via `inference deprovision`. For GitLab WIF-mode repos, `repos uninstall` performs best-effort deletion of the bot token Secret Manager secret.
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
 

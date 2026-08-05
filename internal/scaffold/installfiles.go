@@ -40,22 +40,7 @@ func CollectInstallFiles(opts CollectInstallFilesOptions) (InstallFiles, error) 
 		return nil, err
 	}
 
-	for _, dir := range customizedDirsForPrefix(opts.PathPrefix) {
-		files = append(files, InstallFile{
-			Path:    dir + "/.gitkeep",
-			Content: []byte(""),
-			Mode:    "100644",
-		})
-	}
-
 	return files, nil
-}
-
-func customizedDirsForPrefix(prefix string) []string {
-	if prefix == ".fullsend/" {
-		return PerRepoCustomizedDirs()
-	}
-	return CustomizedDirs()
 }
 
 // CollectPerRepoInstallFiles gathers files for per-repo installation.
@@ -76,14 +61,6 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 		Content: PrependManagedHeader(".github/workflows/fullsend.yaml", shimRendered),
 		Mode:    "100644",
 	}}
-
-	for _, dir := range PerRepoCustomizedDirs() {
-		files = append(files, InstallFile{
-			Path:    dir + "/.gitkeep",
-			Content: []byte(""),
-			Mode:    "100644",
-		})
-	}
 
 	return files, nil
 }

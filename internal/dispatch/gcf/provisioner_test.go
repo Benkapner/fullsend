@@ -2064,6 +2064,110 @@ func TestProvisionWIF_OrgScoped_GetProviderError_FailsToPreventClobber(t *testin
 	assert.Contains(t, err.Error(), "reading existing WIF provider for merge")
 }
 
+// --- ProvisionRepoWIFProvider tests ---
+
+func TestProvisionRepoWIFProvider_DoesNotGrantVertexAIAccess(t *testing.T) {
+	fake := newFakeGCFClient()
+	// No GitHubOrgs: repo-scoped provisioning derives everything from Repo.
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+		Repo:      "acme/widget",
+	}, fake)
+
+	wifPath, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.NoError(t, err)
+
+	// WIF provider should be created.
+	assert.Contains(t, fake.calls, "GetProjectNumber")
+	assert.Contains(t, fake.calls, "CreateWIFPool")
+	assert.Contains(t, fake.calls, "CreateWIFProvider")
+	assert.Equal(t, "gh-acme-widget", fake.lastWIFProviderID)
+	assert.Equal(t, "assertion.repository == 'acme/widget'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Contains(t, wifPath, "gh-acme-widget")
+
+	// Must NOT grant roles/aiplatform.user — this is the core assertion.
+	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
+	assert.Empty(t, fake.projectIAMBindings)
+}
+
+func TestProvisionRepoWIFProvider_MissingRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+	}, fake)
+
+	_, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "repo is required")
+}
+
+func TestProvisionRepoWIFProvider_PreservesRepoCase(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+		Repo:      "Acme/Widget",
+	}, fake)
+
+	_, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "assertion.repository == 'Acme/Widget'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Equal(t, "gh-acme-widget", fake.lastWIFProviderID, "provider ID should be lowercased")
+}
+
+func TestProvisionRepoWIFProvider_Errors(t *testing.T) {
+	tests := []struct {
+		name      string
+		projectID string
+		repo      string
+		errs      map[string]error
+		wantErr   string
+	}{
+		{name: "missing project ID", projectID: "", repo: "acme/widget", wantErr: "GCP project ID is required"},
+		{name: "invalid project ID", projectID: "Invalid_Project", repo: "acme/widget", wantErr: "invalid GCP project ID"},
+		{name: "get project number fails", projectID: "my-project", repo: "acme/widget",
+			errs: map[string]error{"GetProjectNumber": fmt.Errorf("forbidden")}, wantErr: "getting project number"},
+		{name: "create WIF pool fails", projectID: "my-project", repo: "acme/widget",
+			errs: map[string]error{"CreateWIFPool": fmt.Errorf("denied")}, wantErr: "creating WIF pool"},
+		{name: "create WIF provider fails", projectID: "my-project", repo: "acme/widget",
+			errs: map[string]error{"CreateWIFProvider": fmt.Errorf("denied")}, wantErr: "creating WIF provider"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			for k, v := range tt.errs {
+				fake.errs[k] = v
+			}
+			p := NewProvisioner(Config{ProjectID: tt.projectID, Repo: tt.repo}, fake)
+
+			_, err := p.ProvisionRepoWIFProvider(context.Background())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, fake.projectIAMBindings)
+		})
+	}
+}
+
+func TestProvisionWIF_RepoScoped_StillGrantsVertexAI(t *testing.T) {
+	// Ensure that ProvisionWIF (used by inference provision) still grants
+	// roles/aiplatform.user for repo-scoped calls. Only mint enrollment
+	// (via ProvisionRepoWIFProvider) should skip the grant.
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "SetProjectIAMBinding")
+	require.Len(t, fake.projectIAMBindings, 1)
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/widget")
+	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[0].Role)
+}
+
 func TestParseConditionOrgs(t *testing.T) {
 	tests := []struct {
 		name      string

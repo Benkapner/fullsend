@@ -28,7 +28,7 @@ type foreignCacheEntry struct {
 type mintRequest struct {
 	Role      string   `json:"role"`
 	TargetOrg string   `json:"target_org,omitempty"`
-	Repos     []string `json:"repos,omitempty"`
+	Repos     []string `json:"repos"`
 }
 
 // mintResponse is returned on success.
@@ -229,6 +229,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Repos) == 0 {
+		writeError(w, http.StatusBadRequest, "repos is required")
+		return
+	}
+
 	req.Repos = normalizeMintRepos(req.Repos)
 
 	if len(req.Repos) > maxRepos {
@@ -277,6 +282,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
 	isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+	// Dual enrollment: if the caller is explicitly listed in
+	// PER_REPO_WIF_REPOS (not via wildcard public mint) and their
+	// owner org is also in ALLOWED_ORGS, use per-org scope treatment
+	// — per-org shapes are a superset of per-repo self-only scope.
+	// Note: when ALLOWED_ORGS=* with specific PER_REPO_WIF_REPOS
+	// entries, per-repo callers are upgraded to per-org scope; this
+	// is consistent because all non-per-repo callers from any org
+	// already receive per-org treatment in that configuration.
+	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
+		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+		log.Printf("dual-enrollment: upgrading %s from per-repo to per-org scope", claims.Repository)
+		isPerRepo = false
+	}
 	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
@@ -288,7 +306,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Repos) == 0 {
-		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
+		log.Printf("WARNING: repos=[\"*\"] normalized to installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
 			targetOrg, req.Role, callerOrg, claims.Repository)
 	}
 
@@ -317,7 +335,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("granted scope: repos=%v permissions=%v repo_selection=%s",
 			granted.Repos, granted.Permissions, granted.RepoSelection)
 		if len(req.Repos) == 0 {
-			log.Printf("WARNING: installation-wide token granted for target_org=%s role=%s repo_selection=%s",
+			log.Printf("WARNING: repos=[\"*\"] installation-wide token granted for target_org=%s role=%s repo_selection=%s",
 				targetOrg, req.Role, granted.RepoSelection)
 		} else if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)

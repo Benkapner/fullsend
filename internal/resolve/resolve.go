@@ -150,11 +150,11 @@ type resolveState struct {
 }
 
 // ResolveHarness resolves URL-referenced declarative fields (Agent, Policy,
-// Skills, Profiles, Providers) in the harness to local cache paths. Local paths
-// are left unchanged. The harness is modified in place: URL fields are replaced
-// with cache paths, and h.Skills may grow to include transitively resolved skill
-// dependencies. Returns a ResolveResult containing all resolved dependencies,
-// profiles, and providers.
+// Skills, Plugins, Profiles, Providers) in the harness to local cache paths.
+// Local paths are left unchanged. The harness is modified in place: URL fields
+// are replaced with cache paths, and h.Skills may grow to include transitively
+// resolved skill dependencies. Returns a ResolveResult containing all resolved
+// dependencies, profiles, and providers.
 //
 // Skills are directories: when a skill field is a URL, the resolver uses
 // git sparse checkout (via TreeFetcher / gitfetch.FetchTree) to fetch the
@@ -239,6 +239,56 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		}
 	}
 	h.Skills = filtered
+
+	// Resolve plugins — same directory fetch as skills, but without
+	// transitive dependency resolution (plugins have no SKILL.md frontmatter).
+	for i, p := range h.Plugins {
+		if harness.IsURL(p) {
+			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("plugins[%d]", i), p, h, opts, state, false, 0)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("resolving plugins[%d]: %w", i, err)
+			}
+
+			// Validate the plugin basename from the forge URL path, not
+			// from the post-symlink local path. CacheNamedSymlink falls
+			// back to "tree" for empty/reserved path components, which
+			// would silently pass ValidPluginBasename. Checking the URL
+			// path catches repo-root URLs (Path=="") and reserved names.
+			forgeInfo, parseErr := forge.ParseForgeURL(dep.URL)
+			if parseErr == nil {
+				urlBase := filepath.Base(forgeInfo.Path)
+				if forgeInfo.Path == "" || !harness.ValidPluginBasename(urlBase) {
+					return ResolveResult{}, fmt.Errorf("plugins[%d]: URL path %q does not end in a valid plugin basename (allowed: a-z, A-Z, 0-9, _, -)", i, forgeInfo.Path)
+				}
+			}
+
+			// Always assign — plugins have no transitive re-append, so
+			// blanking the slot (as skills do for dedup) would drop the plugin.
+			h.Plugins[i] = localPath
+			state.appendDependency(dep)
+
+			// Make plugin files executable. The cache writes all files
+			// as 0600 (via atomicWrite), but plugins may contain scripts
+			// or MCP server binaries that need the executable bit.
+			// NOTE: this mutates the shared content-addressed cache — files
+			// in the same tree referenced as skills will also become 0755.
+			if err := chmodPluginDir(h.Plugins[i]); err != nil {
+				return ResolveResult{}, fmt.Errorf("setting plugin permissions for plugins[%d]: %w", i, err)
+			}
+		}
+	}
+
+	// De-duplicate plugins by resolved path (e.g. two slots referencing
+	// the same URL resolve to identical local paths).
+	seen := make(map[string]bool, len(h.Plugins))
+	deduped := h.Plugins[:0]
+	for _, p := range h.Plugins {
+		if !seen[p] {
+			seen[p] = true
+			deduped = append(deduped, p)
+		}
+	}
+	h.Plugins = deduped
 
 	// Resolve profiles (all entries must be URLs — enforced by
 	// ValidateResourceTypes at load time).
@@ -483,7 +533,7 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 
 	forgeInfo, err := forge.ParseForgeURL(cleanURL)
 	if err != nil {
-		return Dependency{}, "", fmt.Errorf("%s: skill URLs must be hosted on a supported forge: %w", field, err)
+		return Dependency{}, "", fmt.Errorf("%s: URLs must be hosted on a supported forge: %w", field, err)
 	}
 	if forgeInfo.Forge != "github" {
 		return Dependency{}, "", fmt.Errorf("%s: forge %q is recognized but fetch support has not landed yet", field, forgeInfo.Forge)
@@ -533,11 +583,11 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 		fetchedAt = dirEntry.FetchTime
 	}
 
-	// Create a symlink named after the skill directory so downstream consumers
-	// (sandbox upload, logging) see the real skill name instead of "tree".
+	// Create a symlink named after the directory so downstream consumers
+	// (sandbox upload, logging) see the real name instead of "tree".
 	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
 	if err != nil {
-		return Dependency{}, "", fmt.Errorf("naming cached skill for %s: %w", field, err)
+		return Dependency{}, "", fmt.Errorf("naming cached directory for %s: %w", field, err)
 	}
 
 	if opts.AuditLogPath != "" {
@@ -637,4 +687,27 @@ func resolveSkillTransitiveDeps(ctx context.Context, parentURL, skillDirPath str
 	}
 
 	return nil
+}
+
+// chmodPluginDir sets all regular files in dir to 0755 so that scripts
+// and MCP server binaries within a fetched plugin directory are
+// executable. Uses 0755 for consistency with pre_script/post_script
+// permission handling in lock.go.
+//
+// WARNING: this mutates the shared content-addressed cache. Files in
+// the same tree referenced as skills from another harness field will
+// also become 0755. This is acceptable because making declarative
+// files (markdown, JSON) executable is harmless, and the SHA-256
+// integrity pin constrains content, not permissions.
+func chmodPluginDir(dir string) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	return filepath.Walk(resolved, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		return os.Chmod(path, 0o755)
+	})
 }

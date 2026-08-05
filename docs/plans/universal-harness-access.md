@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-Harnesses, agents, skills, and policies are currently local-only resources resolved via relative paths within a `.fullsend` directory structure. This creates barriers to sharing, composition, and decentralized evolution of agent capabilities.
+Harnesses, agents, skills, plugins, and policies are currently local-only resources resolved via relative paths within a `.fullsend` directory structure. This creates barriers to sharing, composition, and decentralized evolution of agent capabilities.
 
 **Goal:** Make harnesses and all resources they reference universally accessible via HTTP(S) URLs, absolute paths, or relative paths, with transitive closure applying to all dependencies.
 
@@ -82,7 +82,7 @@ pre_script: scripts/pre-code.sh  # scripts must be local (security)
 | API server scripts | ❌ No | Executable; must be local |
 | Validation scripts | ❌ No | Executable; must be local |
 
-**Principle:** Declarative resources (agent definitions, skills, policies, schemas) can be remote. Executable resources (scripts, binaries) must be local to preserve auditability and prevent direct code execution from untrusted sources.
+**Principle:** Declarative resources (agent definitions, skills, plugins, policies, schemas) can be remote. Executable resources (scripts, binaries) must be local to preserve auditability and prevent direct code execution from untrusted sources.
 
 **Trade-off:** This means the `.fullsend` repository will still contain local copies of pre/post scripts, validation scripts, and other executable resources. For organizations with many scripts, updates to upstream scripts will still produce "wall of text" diffs when the local copies are updated.
 
@@ -260,7 +260,7 @@ The URL fetch mechanism must prevent Server-Side Request Forgery attacks.
 
 ### Security Scanning for Remote Resources
 
-All remote resources (agents, skills, policies) pass through the same security scanners as local resources:
+All remote resources (agents, skills, policies) pass through the same security scanners as local resources. For plugins, only `plugin.json` and `.lsp.json` are scanned; other plugin content (commands, hooks) is not currently covered by the injection scanner:
 
 - **Unicode normalization** (detect homoglyph attacks)
 - **Context injection detection** (adversarial prompt patterns)
@@ -1061,8 +1061,13 @@ type ResolveOpts struct {
 }
 
 // ResolveHarness resolves URL-referenced declarative fields (Agent, Policy,
-// Skills) in the harness to local cache paths. Local paths are left unchanged.
+// Skills, Plugins) in the harness to local cache paths. Local paths are left unchanged.
 // The harness is modified in place. Transitive deps supported via MaxDepth.
+//
+// Limitation: Plugins are resolved with recurse=false (no transitive dependency
+// resolution). Plugins currently have no SKILL.md-equivalent frontmatter to
+// declare dependencies. If plugin.json grows dependency declarations
+// in the future, this should be revisited.
 func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) ([]Dependency, error) {
     var deps []Dependency
 
@@ -1340,7 +1345,7 @@ deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
 
 - Implement URL detection, fetch, cache, SSRF protection
 - **Mandatory hash pinning:** All URLs must include `#sha256=...` fragments. URLs without hashes are rejected.
-- Support URLs for agents, skills, policies (declarative resources only)
+- Support URLs for agents, skills, plugins, policies (declarative resources only)
 - Require all URL references to be declared in `allowed_remote_resources`
 - No runtime fetch—all resources resolved at harness load time
 - **No transitive dependency resolution** (skills/policies cannot themselves reference URL-based dependencies)
@@ -1512,7 +1517,7 @@ If a skill references `policy: rust-sandbox@v2` (a name+version, not a URL), how
 
 ## Conclusion
 
-Universal harness access enables a composable, shareable ecosystem of agents, skills, and policies while introducing significant security challenges. The proposed design balances flexibility (URLs, transitive closure, runtime fetch) with security (SSRF protection, integrity hashing, stricter scanning for remote resources).
+Universal harness access enables a composable, shareable ecosystem of agents, skills, plugins, and policies while introducing significant security challenges. The proposed design balances flexibility (URLs, transitive closure, runtime fetch) with security (SSRF protection, integrity hashing, stricter scanning for remote resources).
 
 **Key principles:**
 

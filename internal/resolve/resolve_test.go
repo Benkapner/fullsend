@@ -1633,6 +1633,141 @@ credentials:
 	assert.Contains(t, err.Error(), "invalid characters")
 }
 
+func TestResolveHarness_PluginDirFetchAndCache(t *testing.T) {
+	manifestJSON := []byte(`{"name": "gopls-lsp", "version": "1.0.0"}`)
+	initSh := []byte("#!/bin/bash\necho init")
+
+	reg := newSkillRegistry()
+	treeHash := reg.register("plugins/gopls-lsp", map[string][]byte{
+		"plugin.json":     manifestJSON,
+		"scripts/init.sh": initSh,
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{forgeSkillURL("plugins/gopls-lsp", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, "directory", result.Deps[0].Type)
+	assert.Equal(t, "plugins[0]", result.Deps[0].Field)
+	assert.Equal(t, treeHash, result.Deps[0].SHA256)
+	assert.False(t, result.Deps[0].CacheHit)
+
+	// Verify h.Plugins[0] is a local directory path (not a URL) whose
+	// basename is the plugin directory name from the URL.
+	assert.False(t, harness.IsURL(h.Plugins[0]))
+	info, err := os.Stat(h.Plugins[0])
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]),
+		"plugin path basename should be the plugin directory name from the URL")
+
+	// Verify files are inside the cached directory.
+	got, err := os.ReadFile(filepath.Join(h.Plugins[0], "plugin.json"))
+	require.NoError(t, err)
+	assert.Equal(t, manifestJSON, got)
+
+	gotInit, err := os.ReadFile(filepath.Join(h.Plugins[0], "scripts", "init.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, initSh, gotInit)
+}
+
+func TestResolveHarness_PluginLocalPassThrough(t *testing.T) {
+	h := &harness.Harness{
+		Agent:   "/abs/path/agents/test.md",
+		Plugins: []string{"/abs/path/plugins/gopls-lsp"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Deps)
+	assert.Equal(t, "/abs/path/plugins/gopls-lsp", h.Plugins[0])
+}
+
+func TestResolveHarness_PluginMixedLocalAndURL(t *testing.T) {
+	reg := newSkillRegistry()
+	pluginHash := reg.register("plugins/remote-plugin", map[string][]byte{
+		"plugin.json": []byte(`{"name": "remote-plugin"}`),
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent: "/local/agents/test.md",
+		Plugins: []string{
+			"/local/plugins/local-plugin",
+			forgeSkillURL("plugins/remote-plugin", pluginHash),
+		},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+
+	// Local plugin unchanged.
+	assert.Equal(t, "/local/plugins/local-plugin", h.Plugins[0])
+	// Remote plugin resolved to a local directory path.
+	assert.False(t, harness.IsURL(h.Plugins[1]))
+	assert.Equal(t, "remote-plugin", filepath.Base(h.Plugins[1]))
+}
+
+func TestResolveHarness_PluginHashMismatch(t *testing.T) {
+	reg := newSkillRegistry()
+	reg.register("plugins/tampered", map[string][]byte{
+		"plugin.json": []byte("wrong content"),
+	})
+
+	wrongHash := fetch.ComputeTreeHash(map[string][]byte{
+		"plugin.json": []byte("expected content"),
+	})
+
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{forgeSkillURL("plugins/tampered", wrongHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity check failed")
+}
+
+func TestResolveHarness_PluginNonForgeURLRejected(t *testing.T) {
+	srv, fetchPolicy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("plugin content"))
+	}))
+
+	fakeHash := strings.Repeat("a", 64)
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{fmt.Sprintf("%s/plugins/gopls-lsp#sha256=%s", srv.URL, fakeHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fetchPolicy,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "supported forge")
+}
+
 func TestResolveHarness_LocalProvidersUnchanged(t *testing.T) {
 	h := &harness.Harness{
 		Agent:     "agents/test.md",
@@ -1698,6 +1833,107 @@ func TestWarnLiteralCredentials(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResolveHarness_PluginSharedURLWithSkill verifies that a plugin sharing a
+// URL with an already-resolved skill is NOT silently dropped. Both fields
+// should resolve to the same local cache path.
+func TestResolveHarness_PluginSharedURLWithSkill(t *testing.T) {
+	reg := newSkillRegistry()
+	sharedMD := []byte("---\nname: shared\n---\n# Shared resource")
+	files := map[string][]byte{"SKILL.md": sharedMD}
+	treeHash := reg.register("resources/shared", files)
+
+	root := t.TempDir()
+	sharedURL := forgeSkillURL("resources/shared", treeHash)
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Skills:                 []string{sharedURL},
+		Plugins:                []string{sharedURL},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+
+	// The URL should appear exactly once in deps (deduplicated).
+	require.Len(t, result.Deps, 1)
+
+	// Both skills and plugins should have one entry each — the plugin
+	// must NOT be dropped just because the skill was resolved first.
+	require.Len(t, h.Skills, 1, "skill should be preserved")
+	require.Len(t, h.Plugins, 1, "plugin must not be silently dropped when sharing a URL with a skill")
+
+	// Both should point to valid local directories.
+	assert.False(t, harness.IsURL(h.Skills[0]))
+	assert.False(t, harness.IsURL(h.Plugins[0]))
+}
+
+// TestResolveHarness_PluginRepoRootURLRejected verifies that a plugin URL
+// pointing to the repo root (no path after the ref) is rejected, because
+// the URL path doesn't resolve to a valid plugin basename.
+func TestResolveHarness_PluginRepoRootURLRejected(t *testing.T) {
+	reg := newSkillRegistry()
+	files := map[string][]byte{"plugin.json": []byte(`{"name": "root-plugin"}`)}
+	// Register under empty path to simulate a repo-root reference.
+	// The URL will be https://github.com/org/repo/tree/main (no trailing path).
+	treeHash := reg.register("", files)
+
+	// Build a URL with no path after the ref: .../tree/main
+	// ParseForgeURL produces Path="" for this.
+	repoRootURL := fmt.Sprintf("https://github.com/%s/%s/tree/%s#sha256=%s",
+		testForgeOwner, testForgeRepo, testForgeRef, treeHash)
+
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{repoRootURL},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "valid plugin basename")
+}
+
+// TestResolveHarness_PluginDirExecutablePermissions verifies that files in a
+// URL-fetched plugin directory have executable permissions (0755) after
+// resolution, not the cache default of 0600.
+func TestResolveHarness_PluginDirExecutablePermissions(t *testing.T) {
+	initSh := []byte("#!/bin/bash\necho init")
+	manifestJSON := []byte(`{"name": "exec-plugin"}`)
+
+	reg := newSkillRegistry()
+	treeHash := reg.register("plugins/exec-plugin", map[string][]byte{
+		"plugin.json":     manifestJSON,
+		"scripts/init.sh": initSh,
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{forgeSkillURL("plugins/exec-plugin", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, h.Plugins, 1)
+
+	// Verify the script file has executable permissions.
+	scriptPath := filepath.Join(h.Plugins[0], "scripts", "init.sh")
+	info, err := os.Stat(scriptPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o100 != 0,
+		"plugin script should have executable permission, got %s", info.Mode())
 }
 
 func TestParseProfileID(t *testing.T) {

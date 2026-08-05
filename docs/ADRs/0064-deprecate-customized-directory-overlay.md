@@ -42,7 +42,7 @@ customization scenario the overlay handled, with better ergonomics:
   merges).
 
 - [ADR 0038](0038-universal-harness-access.md) added URL-based references
-  for declarative resources (agents, skills, policies, schemas). Resources
+  for declarative resources (agents, skills, plugins, policies, schemas). Resources
   can be referenced from any trusted source without copying them into a
   local directory.
 

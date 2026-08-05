@@ -2,7 +2,7 @@
 
 ## Context
 
-ADR-0038 makes harness declarative resources (agents, skills, policies) referenceable via HTTPS URLs with mandatory SHA256 integrity hashes, enabling community sharing and cross-org composition. Executable resources (scripts) remain local-only for security. The ADR is at `docs/ADRs/0038-universal-harness-access.md` with a detailed design at `docs/plans/universal-harness-access.md`.
+ADR-0038 makes harness declarative resources (agents, skills, plugins, policies) referenceable via HTTPS URLs with mandatory SHA256 integrity hashes, enabling community sharing and cross-org composition. Executable resources (scripts) remain local-only for security. The ADR is at `docs/ADRs/0038-universal-harness-access.md` with a detailed design at `docs/plans/universal-harness-access.md`.
 
 This plan covers **Phase 1 (MVP)**: read-only, single-level URL support. No transitive resolution, no lock files, no runtime fetching. Existing harnesses with only local paths continue to work identically — zero behavioral change.
 
@@ -103,7 +103,7 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 **Modify `internal/harness/harness.go`:**
 - Add `AllowedRemoteResources []string` with `yaml:"allowed_remote_resources,omitempty"` to `Harness` struct (after existing fields)
 - Add `ValidateAllowedRemoteResources(orgAllowlist []string) error` — new method (does NOT modify existing `Validate()` to preserve `Load()` behavior). Validates entries are HTTPS URLs with trailing `/`, validates harness entries are subset of org allowlist.
-- Add `ValidateResourceTypes() error` — new method. Rejects URLs in executable fields (PreScript, PostScript, ValidationLoop.Script, HostFiles[].Src, APIServers). Requires integrity hash on URLs in declarative fields (Agent, Policy, Skills). Validates that skill URLs are from supported forges (GitHub, GitLab) since skills are directories that require forge API access. Uses `IsURL`/`ParseIntegrityHash` from PR 1.
+- Add `ValidateResourceTypes() error` — new method. Rejects URLs in executable fields (PreScript, PostScript, ValidationLoop.Script, HostFiles[].Src, APIServers). Requires integrity hash on URLs in declarative fields (Agent, Policy, Skills, Plugins). Validates that skill and plugin URLs are from supported forges (GitHub, GitLab) since they are directories that require forge API access; rejects `/blob/` (single-file) URLs for plugins. Uses `IsURL`/`ParseIntegrityHash` from PR 1. Note: plugin transitive dependency resolution is intentionally disabled (`recurse=false`) — plugins have no SKILL.md-equivalent frontmatter to declare dependencies. Revisit if `plugin.json` grows dependency declarations.
 - Add `MatchesAllowedPrefix(rawURL string) bool` — URL canonicalization, double-encoding rejection, prefix matching against `AllowedRemoteResources`
 
 **Modify `internal/config/config.go`:**

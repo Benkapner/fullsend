@@ -8,7 +8,7 @@ Phase 2 removes this limitation. URL-referenced skills can declare `dependencies
 
 Design details are in `docs/plans/universal-harness-access.md` (sections "Transitive Closure", "Relative Path Resolution for URL-Referenced Resources", and "Dependency Graph and Resolution"). The ADR is at `docs/ADRs/0038-universal-harness-access.md`.
 
-> **Scope note:** The design doc envisions transitive resolution for all resource types (agents reference skills, skills reference policies, policies reference schemas). Phase 2 limits transitive resolution to skills only — agent and policy resources are treated as leaf nodes. Extending to other resource types is deferred to a future phase if needed.
+> **Scope note:** The design doc envisions transitive resolution for all resource types (agents reference skills, skills reference policies, policies reference schemas). Phase 2 limits transitive resolution to skills only — agent, policy, and plugin resources are treated as leaf nodes (plugins have no SKILL.md-equivalent frontmatter to declare dependencies). Extending to other resource types is deferred to a future phase if needed.
 
 ## PR Dependency Graph
 

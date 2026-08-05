@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -349,9 +350,13 @@ func installVarsForForge(cfg InstallConfig, mintURL, wifProvider string) (map[st
 
 func installProtectedVarsForForge(cfg InstallConfig) map[string]string {
 	if cfg.Forge == ForgeGitLab && cfg.InferenceProject != "" {
-		return map[string]string{
-			"FULLSEND_SA": "fullsend-mint@" + cfg.InferenceProject + ".iam.gserviceaccount.com",
+		vars := map[string]string{
+			"FULLSEND_SA": gcf.MintServiceAccountEmail(cfg.InferenceProject),
 		}
+		if cfg.WIFProvider != "" {
+			vars["FULLSEND_WIF_PROVIDER"] = cfg.WIFProvider
+		}
+		return vars
 	}
 	return nil
 }
