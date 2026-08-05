@@ -26,9 +26,10 @@ Level 1 requires nothing. To enable OTLP export (Level 2 and Level 3) you need:
 - **Network reachability** from where runs execute (your machine or CI runners)
   to the backend endpoint.
 - For a backend behind a **private CA** (e.g. an internal MLflow): the CA
-  certificate bundle, pointed to by `OTEL_EXPORTER_OTLP_CERTIFICATE`. Local
-  and bring-your-own-workflow runs only — the managed workflows do not yet
-  pass a CA bundle through.
+  certificate bundle, pointed to by `OTEL_EXPORTER_OTLP_CERTIFICATE`. In
+  managed workflows the PEM file must be present in the repository checkout
+  (e.g. `.fullsend/otel-ca.pem`) because the runner has no other persistent
+  filesystem; bring-your-own-workflow runs can use any local path.
 
 ## Disabling telemetry
 
@@ -229,14 +230,25 @@ that hosts the fullsend caller workflows:
 2. Actions **secret** `OTEL_EXPORTER_OTLP_TRACES_HEADERS` — the complete
    header string, auth and routing included (e.g.
    `Authorization=Bearer%20<token>,x-mlflow-experiment-id=42`).
-3. Optional: Actions **variable** `OTEL_RESOURCE_ATTRIBUTES` — static
+3. Optional: Actions **secret** `OTEL_EXPORTER_OTLP_HEADERS` — generic
+   (non-signal-specific) OTLP headers. Same format as the traces variant.
+   Useful when a single header set covers all signals.
+4. Optional: Actions **variable** `OTEL_EXPORTER_OTLP_CERTIFICATE` — path
+   to a PEM CA bundle for backends behind a private CA. The path must
+   resolve on the runner; commit the bundle into the config repo (e.g.
+   `.fullsend/otel-ca.pem`) and set the variable to that checkout-relative
+   path.
+5. Optional: Actions **variable** `OTEL_RESOURCE_ATTRIBUTES` — static
    `k=v,k=v` trace tags. The value is used verbatim: `${{ github.* }}`
    expressions evaluate only in workflow YAML, not in variables.
+6. Optional: Actions **variable** `OTEL_SDK_DISABLED` — set to `true` to
+   disable all telemetry, including the local file exporter.
 
 Installations scaffolded before OTEL support was added must also forward the
-secret (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` under `secrets:`) until the
-scaffold is re-synced: in the `.fullsend` repo's stage workflows (per-org),
-or in the fullsend shim workflow's dispatch job (per-repo).
+secrets (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
+`OTEL_EXPORTER_OTLP_HEADERS` under `secrets:`) until the scaffold is
+re-synced: in the `.fullsend` repo's stage workflows (per-org), or in the
+fullsend shim workflow's dispatch job (per-repo).
 
 ### Bring your own workflow
 
