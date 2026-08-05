@@ -3870,3 +3870,308 @@ func TestDiscoverMint_FallsBackToCloudRunOnCFForbidden(t *testing.T) {
 	assert.Contains(t, fake.calls, "GetCloudRunServiceURI")
 	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
 }
+
+// --- AddWorkflowHostRepo tests ---
+
+func TestAddWorkflowHostRepo_AddsNewRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "acme-corp/my-workflows")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Equal(t, "acme-corp/my-workflows", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+}
+
+func TestAddWorkflowHostRepo_AppendsToExisting(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme-corp/first-repo",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "acme-corp/second-repo")
+	require.NoError(t, err)
+	assert.Equal(t, "acme-corp/first-repo,acme-corp/second-repo", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+}
+
+func TestAddWorkflowHostRepo_Idempotent(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme-corp/my-workflows",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "acme-corp/my-workflows")
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestAddWorkflowHostRepo_IdempotentCaseInsensitive(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "Acme-Corp/My-Workflows",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "acme-corp/my-workflows")
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestAddWorkflowHostRepo_LowercasesRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "Acme-Corp/My-Workflows")
+	require.NoError(t, err)
+	assert.Equal(t, "acme-corp/my-workflows", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+}
+
+func TestAddWorkflowHostRepo_RejectsInvalidFormat(t *testing.T) {
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, newFakeGCFClient())
+
+	tests := []struct {
+		name, repo string
+	}{
+		{"no slash", "just-a-name"},
+		{"empty owner", "/repo"},
+		{"empty repo", "owner/"},
+		{"comma injection", "legit/repo,evil/repo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := p.AddWorkflowHostRepo(context.Background(), tt.repo)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestAddWorkflowHostRepo_GetTrafficEnvVarsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "acme-corp/my-workflows")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
+}
+
+func TestAddWorkflowHostRepo_PartialFailureSurfacesRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00120-abc"
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "acme-corp/my-workflows")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revision fullsend-mint-00120-abc created but traffic routing may have failed")
+	assert.Contains(t, err.Error(), "traffic routing failed")
+}
+
+func TestAddWorkflowHostRepo_UpdateFailsNoRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "acme-corp/my-workflows")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating WORKFLOW_HOST_REPOS")
+	assert.NotContains(t, err.Error(), "revision")
+}
+
+func TestAddWorkflowHostRepo_ReadsFromTrafficServingRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		// Template has stale/empty data.
+		EnvVars: map[string]string{},
+	}
+	// Traffic-serving revision has existing repos.
+	fake.trafficEnvVars = map[string]string{
+		"WORKFLOW_HOST_REPOS": "existing-org/existing-repo",
+		"ALLOWED_ORGS":        "existing-org",
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.AddWorkflowHostRepo(context.Background(), "new-org/new-repo")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
+	// Must preserve existing repos from traffic-serving revision.
+	assert.Equal(t, "existing-org/existing-repo,new-org/new-repo", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+	// Must also preserve other env vars from traffic-serving revision.
+	assert.Equal(t, "existing-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+// --- RemoveWorkflowHostRepo tests ---
+
+func TestRemoveWorkflowHostRepo_RemovesRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme/first,acme/second",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/first")
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Equal(t, "acme/second", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+}
+
+func TestRemoveWorkflowHostRepo_LastRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme/only",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/only")
+	require.NoError(t, err)
+
+	assert.Equal(t, "", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+}
+
+func TestRemoveWorkflowHostRepo_NotFound(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme/other",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/missing")
+	require.NoError(t, err)
+	// Should not call UpdateServiceEnvVars when repo is not found.
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestRemoveWorkflowHostRepo_LowercasesRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme/widget",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "Acme/Widget")
+	require.NoError(t, err)
+
+	assert.Equal(t, "", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+}
+
+func TestRemoveWorkflowHostRepo_GetTrafficEnvVarsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
+}
+
+func TestRemoveWorkflowHostRepo_ReadsFromTrafficServingRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		// Template has stale/empty data.
+		EnvVars: map[string]string{},
+	}
+	// Traffic-serving revision has the real data.
+	fake.trafficEnvVars = map[string]string{
+		"WORKFLOW_HOST_REPOS": "acme/keep-repo,acme/remove-repo",
+		"ALLOWED_ORGS":        "acme",
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/remove-repo")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
+	assert.Equal(t, "acme/keep-repo", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+	// Must preserve other env vars from traffic-serving revision.
+	assert.Equal(t, "acme", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestRemoveWorkflowHostRepo_PartialFailureSurfacesRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme/first,acme/second",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00121-xyz"
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/first")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revision fullsend-mint-00121-xyz created but traffic routing may have failed")
+	assert.Contains(t, err.Error(), "traffic routing failed")
+}
+
+func TestRemoveWorkflowHostRepo_UpdateFailsNoRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme/repo",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "removing repo from WORKFLOW_HOST_REPOS")
+	assert.NotContains(t, err.Error(), "revision")
+}
+
+func TestRemoveWorkflowHostRepo_EmptyExistingList(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	err := p.RemoveWorkflowHostRepo(context.Background(), "acme/repo")
+	require.NoError(t, err)
+	// Should not call UpdateServiceEnvVars since repo is not in empty list.
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}

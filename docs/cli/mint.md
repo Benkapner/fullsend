@@ -15,6 +15,9 @@ Deploy and manage the OIDC token mint service. The mint exchanges GitHub Actions
 | `fullsend mint remove-role <role>` | Remove a role from the mint |
 | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint |
 | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| `fullsend mint workflow-host add <owner/repo>` | Add a repo to the workflow-host allow-list |
+| `fullsend mint workflow-host remove <owner/repo>` | Remove a repo from the workflow-host allow-list |
+| `fullsend mint workflow-host list` | List the workflow-host allow-list |
 | `fullsend mint status [org]` | Inspect mint state and PEM health |
 | `fullsend mint token` | Mint a short-lived token via OIDC (for testing) |
 
@@ -157,6 +160,44 @@ fullsend mint unenroll <org|owner/repo> \
   --project "<GCP_PROJECT>" \
   --region "us-central1"
 ```
+
+## `mint workflow-host`
+
+Manages the `WORKFLOW_HOST_REPOS` allow-list that controls which repositories may host workflows calling the mint for per-repo callers. Per-org callers are not affected.
+
+### `mint workflow-host add`
+
+```bash
+fullsend mint workflow-host add <owner/repo> \
+  --project "<GCP_PROJECT>" \
+  --region "us-central1"
+```
+
+Idempotent — skips repos already listed.
+
+### `mint workflow-host remove`
+
+```bash
+fullsend mint workflow-host remove <owner/repo> \
+  --project "<GCP_PROJECT>" \
+  --region "us-central1"
+```
+
+### `mint workflow-host list`
+
+```bash
+fullsend mint workflow-host list \
+  --project "<GCP_PROJECT>" \
+  --region "us-central1"
+```
+
+Read-only — makes no changes.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project` | | GCP project ID (required) |
+| `--region` | `us-central1` | Cloud region for the mint service |
+| `--dry-run` | `false` | Preview changes without making them (`add` and `remove` only) |
 
 ## `mint status`
 

@@ -116,6 +116,7 @@ The standalone mint is configured entirely through environment variables:
 | `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://fullsend-mint-gljhbkcloq-uc.a.run.app` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `PER_REPO_WIF_REPOS` | Comma-separated repos with per-repo WIF treatment. Use `*` for public mint mode (all repos get per-repo treatment). Per-repo callers can only mint to their own repo scope. Callers not in this list fall through to per-org (`ALLOWED_ORGS`) and get org-mode repos shapes. | `myorg/private-repo` |
+| `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Per-org callers are not affected (they hard-wire to `{org}/.fullsend` and upstream). Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
 
 ### Public mint mode
@@ -123,8 +124,8 @@ The standalone mint is configured entirely through environment variables:
 Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
 - Any org may request tokens (installation lookup still scopes tokens to the requesting org)
-- `job_workflow_ref` must reference `fullsend-ai/fullsend/.github/workflows/` only
-- Set `PER_REPO_WIF_REPOS=*` alongside `ALLOWED_ORGS=*`; the basename gate (`ALLOWED_WORKFLOW_FILES`) is not applied
+- `job_workflow_ref` validation uses the same per-repo path: only repos in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`) are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
+- Set `PER_REPO_WIF_REPOS=*` alongside `ALLOWED_ORGS=*`
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy

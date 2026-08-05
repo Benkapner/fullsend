@@ -859,7 +859,11 @@ func TestHandler_ReposScope_PerRepoDenied(t *testing.T) {
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
 		pems: map[string][]byte{"coder": pemData},
 	})
-	token := env.signToken(t, nil) // test-org/test-repo (default from signToken)
+	// Use upstream workflow ref so workflow host validation passes;
+	// the test exercises repos scope denial, not workflow host denial.
+	token := env.signToken(t, map[string]interface{}{
+		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/code.yml@refs/heads/main",
+	})
 
 	body := `{"role":"coder","repos":["api"]}`
 	rec := httptest.NewRecorder()
@@ -994,6 +998,100 @@ func TestHandler_ReposScope_DualEnrollmentWildcardOrgs(t *testing.T) {
 	env.handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for disallowed per-org shape with wildcard orgs, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_DualEnrollment_WorkflowRefAcceptsBothModes(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	// Dual enrollment: repo in PER_REPO_WIF_REPOS AND org in ALLOWED_ORGS.
+	// Workflow ref validation should accept sources from EITHER mode:
+	// per-repo (workflowHostRepos) or per-org ({org}/.fullsend, upstream).
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/test-repo")
+	t.Setenv("ALLOWED_ORGS", "test-org")
+	t.Setenv("WORKFLOW_HOST_REPOS", "test-org/custom-workflows")
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/installation") && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 1, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_dual_wf",
+				ExpiresAt: "2026-08-05T12:00:00Z",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+
+	tests := []struct {
+		name        string
+		workflowRef string
+		wantOK      bool
+	}{
+		{
+			"per-org source: .fullsend repo",
+			"test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+			true,
+		},
+		{
+			"per-repo source: workflow host repo",
+			"test-org/custom-workflows/.github/workflows/code.yml@refs/heads/main",
+			true,
+		},
+		{
+			"upstream always accepted",
+			"fullsend-ai/fullsend/.github/workflows/code.yml@refs/heads/main",
+			true,
+		},
+		{
+			"unlisted repo rejected",
+			"test-org/random-repo/.github/workflows/code.yml@refs/heads/main",
+			false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestOIDCEnv(t, &fakePEMAccessor{
+				pems: map[string][]byte{"coder": pemData},
+			})
+			env.handler.workflowHostRepos = map[string]bool{"test-org/custom-workflows": true}
+			env.handler.githubBaseURL = github.URL
+
+			token := env.signToken(t, map[string]interface{}{
+				"job_workflow_ref": tc.workflowRef,
+			})
+
+			body := `{"role":"coder","repos":["test-repo"]}`
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			env.handler.ServeHTTP(rec, req)
+
+			if tc.wantOK {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("expected 200 for dual-enrolled caller with %s, got %d: %s",
+						tc.name, rec.Code, rec.Body.String())
+				}
+			} else {
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("expected 401 for dual-enrolled caller with %s, got %d: %s",
+						tc.name, rec.Code, rec.Body.String())
+				}
+			}
+		})
 	}
 }
 
@@ -2118,7 +2216,9 @@ func TestHandler_RestrictedWorkflowFiles(t *testing.T) {
 
 func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
+	// Clear ALLOWED_ORGS to prevent dual-enrollment upgrading to per-org mode.
+	// This test exercises per-repo workflow host validation.
+	t.Setenv("ALLOWED_ORGS", "")
 	t.Setenv("PER_REPO_WIF_REPOS", "test-org/custom-repo")
 
 	pemData, err := generateTestRSAKey()
@@ -2136,6 +2236,7 @@ func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	})
 	env.handler.allowedWorkflowFiles = []string{"ci.yml", "dispatch.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/custom-repo": true}
+	env.handler.workflowHostRepos = map[string]bool{"test-org/custom-repo": true}
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2254,6 +2355,8 @@ func TestHandler_PublicMintMode(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "*")
 	// Public mode is now * in PER_REPO_WIF_REPOS.
+	// Public mode uses the same per-repo path with workflowHostRepos
+	// and basename allowlist (ADR 0082 §2 revised 2026-08-05).
 	t.Setenv("PER_REPO_WIF_REPOS", "*")
 
 	pemData, err := generateTestRSAKey()
@@ -2292,10 +2395,12 @@ func TestHandler_PublicMintMode(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
+	// Use dispatch.yml which is in the allowed workflow files list;
+	// public mode now enforces the basename allowlist.
 	token := env.signToken(t, map[string]interface{}{
 		"repository":       "other-org/some-repo",
 		"repository_owner": "other-org",
-		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@refs/tags/v1.0.0",
+		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/tags/v1.0.0",
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token",
@@ -2454,7 +2559,8 @@ func TestHandler_PerRepoUnregistered(t *testing.T) {
 
 func TestHandler_PerRepoMixedCase(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
+	// Clear ALLOWED_ORGS to prevent dual-enrollment upgrading to per-org mode.
+	t.Setenv("ALLOWED_ORGS", "")
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -2471,6 +2577,7 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 	})
 	env.handler.allowedWorkflowFiles = []string{"ci.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/my-repo": true}
+	env.handler.workflowHostRepos = map[string]bool{"test-org/my-repo": true}
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2510,7 +2617,8 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 }
 
 func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
-	t.Setenv("ALLOWED_ORGS", "test-org")
+	// Clear ALLOWED_ORGS to prevent dual-enrollment upgrading to per-org mode.
+	t.Setenv("ALLOWED_ORGS", "")
 	t.Setenv("ALLOWED_ROLES", "coder")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
@@ -2547,6 +2655,7 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	}, verifier)
 	h.allowedWorkflowFiles = []string{"ci.yml", "dispatch.yml"}
 	h.perRepoWIFRepos = map[string]bool{"test-org/custom-repo": true}
+	h.workflowHostRepos = map[string]bool{"test-org/custom-repo": true}
 
 	buildToken := func(repo, workflowRef string) string {
 		now := time.Now()
