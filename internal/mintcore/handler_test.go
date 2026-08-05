@@ -2261,6 +2261,8 @@ func TestHandler_PublicMintMode(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "*")
 	// Public mode is now * in PER_REPO_WIF_REPOS.
+	// Public mode uses the same per-repo path with workflowHostRepos
+	// and basename allowlist (ADR 0082 §2 revised 2026-08-05).
 	t.Setenv("PER_REPO_WIF_REPOS", "*")
 
 	pemData, err := generateTestRSAKey()
@@ -2299,10 +2301,12 @@ func TestHandler_PublicMintMode(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
+	// Use dispatch.yml which is in the allowed workflow files list;
+	// public mode now enforces the basename allowlist.
 	token := env.signToken(t, map[string]interface{}{
 		"repository":       "other-org/some-repo",
 		"repository_owner": "other-org",
-		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@refs/tags/v1.0.0",
+		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/tags/v1.0.0",
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token",

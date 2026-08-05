@@ -71,8 +71,15 @@ where per-org installs rely on `{org}/.fullsend` as their workflow host.
 
 ### Public mode
 
-Public mode (`PER_REPO_WIF_REPOS=*`) continues to accept only upstream
-`fullsend-ai/fullsend` workflows. `WORKFLOW_HOST_REPOS` is ignored.
+Public mode (`PER_REPO_WIF_REPOS=*`) uses the same per-repo validation
+path — `WORKFLOW_HOST_REPOS` and the `ALLOWED_WORKFLOW_FILES` basename
+gate both apply. The only difference between public and tight per-repo
+mode is caller enrollment: `PER_REPO_WIF_REPOS=*` means every repo is
+accepted as a caller without explicit listing.
+
+*Revised 2026-08-05: removed public-mode special-case; public mode now
+goes through the standard per-repo workflow-host and basename validation
+rather than hard-wiring to upstream-only with no basename gate.*
 
 ### CLI and status surfaces
 

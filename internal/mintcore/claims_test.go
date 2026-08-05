@@ -129,7 +129,7 @@ func TestValidateWorkflowRef_PerOrg(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, false, nil, nil, allowedFiles)
+			err := ValidateWorkflowRef(tt.ref, tt.repository, false, nil, allowedFiles)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
@@ -185,7 +185,7 @@ func TestValidateWorkflowRef_PerRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, true, nil, workflowHosts, allowedFiles)
+			err := ValidateWorkflowRef(tt.ref, tt.repository, true, workflowHosts, allowedFiles)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
@@ -202,14 +202,14 @@ func TestValidateWorkflowRef_PerRepo_DefaultHost(t *testing.T) {
 	err := ValidateWorkflowRef(
 		"fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/heads/main",
 		"myorg/my-repo",
-		true, nil, defaultHosts, []string{"*"},
+		true, defaultHosts, []string{"*"},
 	)
 	assert.NoError(t, err)
 
 	err = ValidateWorkflowRef(
 		"myorg/my-repo/.github/workflows/dispatch.yml@refs/heads/main",
 		"myorg/my-repo",
-		true, nil, defaultHosts, []string{"*"},
+		true, defaultHosts, []string{"*"},
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not reference an allowed workflow host repo")
@@ -219,7 +219,7 @@ func TestValidateWorkflowRef_Wildcard(t *testing.T) {
 	err := ValidateWorkflowRef(
 		"myorg/.fullsend/.github/workflows/anything.yml@refs/heads/main",
 		"myorg/.fullsend",
-		false, nil, nil, []string{"*"},
+		false, nil, []string{"*"},
 	)
 	assert.NoError(t, err)
 }
@@ -304,8 +304,10 @@ func TestIsPublicMintRepos(t *testing.T) {
 }
 
 func TestValidateWorkflowRef_PublicMode(t *testing.T) {
-	// Public mode is expressed as "*" in PER_REPO_WIF_REPOS.
-	perRepo := map[string]bool{"*": true}
+	// Public mode (PER_REPO_WIF_REPOS=*) is no longer special-cased.
+	// It behaves like per-repo mode: workflow host repos and basename
+	// allowlist apply. See ADR 0082 §2 (revised 2026-08-05).
+	defaultHosts := map[string]bool{"fullsend-ai/fullsend": true}
 
 	tests := []struct {
 		name       string
@@ -314,34 +316,40 @@ func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 		wantErr    string
 	}{
 		{
-			"upstream workflow main",
-			"fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@refs/heads/main",
+			"upstream workflow with allowed basename",
+			"fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/heads/main",
 			"myorg/my-repo",
 			"",
 		},
 		{
 			"upstream workflow tag",
-			"fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@refs/tags/v1.0.0",
+			"fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/tags/v1.0.0",
 			"myorg/my-repo",
 			"",
 		},
 		{
 			"upstream workflow sha",
-			"fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@abc123def456",
+			"fullsend-ai/fullsend/.github/workflows/dispatch.yml@abc123def456",
 			"myorg/my-repo",
 			"",
 		},
 		{
-			"legacy fullsend config repo",
-			"myorg/.fullsend/.github/workflows/dispatch.yml@refs/heads/main",
-			"myorg/.fullsend",
-			"public mint mode",
+			"upstream workflow disallowed basename",
+			"fullsend-ai/fullsend/.github/workflows/custom.yml@refs/heads/main",
+			"myorg/my-repo",
+			"not in allowed list",
 		},
 		{
-			"per-repo self workflow",
-			"myorg/my-repo/.github/workflows/triage.yml@refs/heads/main",
+			"legacy fullsend config repo not in host list",
+			"myorg/.fullsend/.github/workflows/dispatch.yml@refs/heads/main",
+			"myorg/.fullsend",
+			"does not reference an allowed workflow host repo",
+		},
+		{
+			"per-repo self workflow not in host list",
+			"myorg/my-repo/.github/workflows/dispatch.yml@refs/heads/main",
 			"myorg/my-repo",
-			"public mint mode",
+			"does not reference an allowed workflow host repo",
 		},
 		{
 			"non-workflow path",
@@ -353,20 +361,13 @@ func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 			"empty workflow filename",
 			"fullsend-ai/fullsend/.github/workflows/@refs/heads/main",
 			"myorg/my-repo",
-			"does not reference a workflow file",
-		},
-		{
-			"basename not in allowlist still passes",
-			"fullsend-ai/fullsend/.github/workflows/custom.yml@refs/heads/main",
-			"myorg/my-repo",
-			"",
+			"not in allowed list",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// isPerRepo and workflowHostRepos are irrelevant in public mode.
-			err := ValidateWorkflowRef(tt.ref, tt.repository, true, perRepo, nil, []string{"dispatch.yml"})
+			err := ValidateWorkflowRef(tt.ref, tt.repository, true, defaultHosts, []string{"dispatch.yml"})
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {

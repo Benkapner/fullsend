@@ -145,43 +145,27 @@ func ValidateOrgAllowed(org string, allowedOrgs []string) error {
 // ValidateWorkflowRef checks that a job_workflow_ref claim references an
 // allowed workflow host and basename.
 //
-// In public mint mode (PER_REPO_WIF_REPOS contains *), only upstream
-// fullsend-ai/fullsend workflows are accepted and the basename allowlist
-// is skipped.
-//
-// In per-repo mode (isPerRepo=true), the workflow must be hosted by a repo
-// in workflowHostRepos. The upstream repo (fullsend-ai/fullsend) is always
+// In per-repo mode (isPerRepo=true), including public mint mode
+// (PER_REPO_WIF_REPOS=*), the workflow must be hosted by a repo in
+// workflowHostRepos. The upstream repo (fullsend-ai/fullsend) is always
 // accepted regardless of the workflowHostRepos contents. The workflow
 // basename must be in allowedWorkflowFiles.
+//
+// Public mode is not special-cased — it uses the same per-repo path.
+// The only difference between public and tight per-repo mode is caller
+// enrollment (PER_REPO_WIF_REPOS=* accepts all requesting repos).
+// See ADR 0082 §2 (revised 2026-08-05).
 //
 // In per-org mode (isPerRepo=false), the workflow must come from the
 // caller's own org .fullsend config repo or the upstream repo. These are
 // hard-wired — no separate allow-list is consulted. The workflow basename
 // must be in allowedWorkflowFiles.
-func ValidateWorkflowRef(ref, repository string, isPerRepo bool, perRepoWIFRepos map[string]bool, workflowHostRepos map[string]bool, allowedWorkflowFiles []string) error {
+func ValidateWorkflowRef(ref, repository string, isPerRepo bool, workflowHostRepos map[string]bool, allowedWorkflowFiles []string) error {
 	if ref == "" {
 		return fmt.Errorf("missing job_workflow_ref claim")
 	}
 
 	lowerRef := strings.ToLower(ref)
-
-	if IsPublicMintRepos(perRepoWIFRepos) {
-		if !strings.HasPrefix(lowerRef, upstreamRepoPrefix) {
-			return fmt.Errorf("job_workflow_ref must reference fullsend-ai/fullsend upstream workflows in public mint mode")
-		}
-		relPath := strings.TrimPrefix(lowerRef, upstreamRepoPrefix)
-		if atIdx := strings.Index(relPath, "@"); atIdx > 0 {
-			relPath = relPath[:atIdx]
-		}
-		if !strings.HasPrefix(relPath, ".github/workflows/") {
-			return fmt.Errorf("job_workflow_ref does not reference a workflow file")
-		}
-		workflowFile := strings.TrimPrefix(relPath, ".github/workflows/")
-		if workflowFile == "" || strings.Contains(workflowFile, "/") {
-			return fmt.Errorf("job_workflow_ref does not reference a workflow file")
-		}
-		return nil
-	}
 
 	var relPath string
 	matched := false

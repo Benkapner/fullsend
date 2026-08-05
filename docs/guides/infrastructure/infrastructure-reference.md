@@ -39,8 +39,8 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  │     ├─ Extract repository_owner → ALLOWED_ORGS check     │   │
 │  │     │   (explicit org list, or * for public mint mode)   │   │
 │  │     └─ Validate job_workflow_ref provenance              │   │
-│  │        (tight: .fullsend / upstream / per-repo;          │   │
-│  │         public: upstream fullsend-ai/fullsend only)      │   │
+│  │        (per-org: .fullsend / upstream;                   │   │
+│  │         per-repo/public: WORKFLOW_HOST_REPOS)            │   │
 │  │                                                          │   │
 │  │  2. STS Token Exchange                                   │   │
 │  │     ├─ POST securitytoken.googleapis.com                 │   │
@@ -106,9 +106,9 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 **Public mint**: `ALLOWED_ORGS` is `*`.
 
 - **ALLOWED_ORGS**: Any org may mint (cross-org isolation still enforced at installation lookup)
-- **job_workflow_ref validation**: Only `fullsend-ai/fullsend/.github/workflows/` (any ref — tag, branch, or SHA)
-- **PER_REPO_WIF_REPOS**: Leave unset or empty (GCF mint: all repos use `WIF_PROVIDER_NAME`)
-- **ALLOWED_WORKFLOW_FILES**: Basename gate is not applied in public mode
+- **job_workflow_ref validation**: Same as per-repo callers — only repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
+- **PER_REPO_WIF_REPOS**: Set to `*` for public mode (GCF mint: all repos use `WIF_PROVIDER_NAME`)
+- **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (org registration is unnecessary); **mint unenroll** for individual orgs is rejected
 
 **GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `ALLOWED_ORGS=*` and permissive WIF together; tight-mode `mint deploy` (default) and `mint enroll` continue to use org-scoped WIF. Redeploys must match the mint mode (`--public` for public, omit for tight).
