@@ -286,6 +286,7 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
+            { text: "Archived roadmaps", link: "/archived-roadmap" },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",
