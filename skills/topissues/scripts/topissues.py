@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 RICE_SCORE_FIELD = "RICE Score"
+# Keep in sync with skills/nextwork/scripts/nextwork.py (copied helpers there).
 PR_ISSUE_RE = re.compile(
     r"\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|partial-fix)\s+#(\d+)\b",
     re.IGNORECASE,

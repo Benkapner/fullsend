@@ -1089,15 +1089,22 @@ def annotate_unassigned_assign_self(
 
 
 def annotate_orphaned_blocked_label(
-    classification: Classification, item: dict[str, Any]
+    classification: Classification, item: dict[str, Any], user: str
 ) -> Classification:
     """If an Issue is labeled blocked but has no open structured blockers, suggest removal.
 
     PRs never get ``remove-label:blocked``: GitHub has no PR-side ``blockedBy``, so
     the label is the only way to mark a PR blocked and ``--link-blocker`` cannot
     replace it.
+
+    Ownership: only suggest when the issue is unassigned or ``user`` is among
+    assignees — never strip someone else's orphaned ``blocked`` label while
+    walking a dependency chain.
     """
     if item.get("kind") != "issue":
+        return classification
+    assignees = item.get("assignees") or []
+    if assignees and user not in assignees:
         return classification
     labels = item.get("labels") or []
     blockers = item.get("blockers") or []
@@ -1133,7 +1140,7 @@ def classify_item(
     if classification is None:
         return None
     classification = annotate_unassigned_assign_self(classification, item)
-    return annotate_orphaned_blocked_label(classification, item)
+    return annotate_orphaned_blocked_label(classification, item, user)
 
 
 # ------------------------------- gh CLI plumbing -------------------------------
@@ -1613,11 +1620,14 @@ class GhFetcher:
                 )
                 if data is None:
                     break
-                conn = data["repository"]["pullRequests"]
-                nodes.extend(conn["nodes"])
+                repo_data = data.get("repository") or {}
+                conn = repo_data.get("pullRequests")
+                if conn is None:
+                    break
+                nodes.extend(conn.get("nodes") or [])
                 pages += 1
-                page = conn["pageInfo"]
-                if not page["hasNextPage"]:
+                page = conn.get("pageInfo") or {}
+                if not page.get("hasNextPage"):
                     break
                 if pages >= MAX_OPEN_PR_PAGES_FOR_LINKING:
                     if not self.quiet:
@@ -1628,7 +1638,7 @@ class GhFetcher:
                             file=sys.stderr,
                         )
                     break
-                cursor = page["endCursor"]
+                cursor = page.get("endCursor")
             self._pulls_by_repo[repo] = nodes
         return self._pulls_by_repo[repo]
 
@@ -1921,32 +1931,35 @@ def apply_trivial_actions(
             else:
                 applied.append({**base, "action": f"comment:{command}"})
 
-        # Orphaned blocked label — trivial side-action for any primary status.
+        # Orphaned blocked label — trivial side-action for any primary status,
+        # but only on issues the current user owns (or that are unassigned).
         if REMOVE_BLOCKED_LABEL in suggested:
-            if (
-                run_gh_soft(
-                    [
-                        sub,
-                        "edit",
-                        str(item["number"]),
-                        "--repo",
-                        item["repo"],
-                        "--remove-label",
-                        "blocked",
-                    ],
-                    quiet=quiet,
-                )
-                is None
-            ):
-                applied.append(
-                    {
-                        **base,
-                        "action": "error",
-                        "detail": f"failed {REMOVE_BLOCKED_LABEL}",
-                    }
-                )
-            else:
-                applied.append({**base, "action": REMOVE_BLOCKED_LABEL})
+            assignees = item.get("assignees") or []
+            if not assignees or user in assignees:
+                if (
+                    run_gh_soft(
+                        [
+                            sub,
+                            "edit",
+                            str(item["number"]),
+                            "--repo",
+                            item["repo"],
+                            "--remove-label",
+                            "blocked",
+                        ],
+                        quiet=quiet,
+                    )
+                    is None
+                ):
+                    applied.append(
+                        {
+                            **base,
+                            "action": "error",
+                            "detail": f"failed {REMOVE_BLOCKED_LABEL}",
+                        }
+                    )
+                else:
+                    applied.append({**base, "action": REMOVE_BLOCKED_LABEL})
     return applied
 
 
@@ -2202,6 +2215,25 @@ def _format_item_line(item: dict[str, Any]) -> str:
     return f"- {link} {title} — _{item['status']}_: {item['reason']}"
 
 
+def _format_mutation_line(entry: dict[str, Any]) -> str:
+    """One markdown bullet for an apply / link / take-over result row."""
+    action = entry.get("action") or "?"
+    detail = entry.get("detail")
+    if "dependent" in entry and "blocker" in entry:
+        line = f"- {entry['dependent']} ← {entry['blocker']}: {action}"
+    elif "ref" in entry:
+        line = f"- {entry['ref']}: {action}"
+    else:
+        kind = entry.get("kind") or "item"
+        number = entry.get("number")
+        repo = entry.get("repo") or "?"
+        ref = f"{kind}#{number}" if number is not None else kind
+        line = f"- {ref} ({repo}): {action}"
+    if detail:
+        line = f"{line} — {detail}"
+    return line
+
+
 def format_markdown_output(
     items: list[dict[str, Any]],
     repo: str,
@@ -2210,6 +2242,8 @@ def format_markdown_output(
     applied: list[dict[str, Any]],
     *,
     show_blocked: bool,
+    link_results: list[dict[str, Any]] | None = None,
+    take_over_results: list[dict[str, Any]] | None = None,
 ) -> str:
     do_now = [i for i in items if not i["eliminated"]]
     waiting = [i for i in items if i["eliminated"] and i["status"].startswith(WAITING_PREFIX)]
@@ -2241,9 +2275,21 @@ def format_markdown_output(
         lines.append("## Applied")
         lines.append("")
         for action in applied:
-            lines.append(
-                f"- {action['kind']}#{action['number']} ({action['repo']}): {action['action']}"
-            )
+            lines.append(_format_mutation_line(action))
+        lines.append("")
+
+    if link_results:
+        lines.append("## Link blockers")
+        lines.append("")
+        for entry in link_results:
+            lines.append(_format_mutation_line(entry))
+        lines.append("")
+
+    if take_over_results:
+        lines.append("## Take-over")
+        lines.append("")
+        for entry in take_over_results:
+            lines.append(_format_mutation_line(entry))
         lines.append("")
 
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -2445,10 +2491,20 @@ def main(argv: list[str] | None = None) -> None:
     else:
         print(
             format_markdown_output(
-                items, repo, user, args.stale_hours, applied, show_blocked=args.show_blocked
+                items,
+                repo,
+                user,
+                args.stale_hours,
+                applied,
+                show_blocked=args.show_blocked,
+                link_results=link_results,
+                take_over_results=take_over_results,
             )
         )
-    if fetch_errors:
+    mutation_error = any(
+        r.get("action") == "error" for r in (*applied, *link_results, *take_over_results)
+    )
+    if fetch_errors or mutation_error:
         sys.exit(3)
 
 

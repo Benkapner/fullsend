@@ -445,6 +445,13 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertFalse(result.eliminated)
         self.assertIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
 
+    def test_orphaned_blocked_not_suggested_for_assigned_elsewhere(self):
+        item = make_issue(labels=["blocked"], assignees=["bob"])
+        result = classify_item(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "assigned_elsewhere")
+        self.assertTrue(result.eliminated)
+        self.assertNotIn(REMOVE_BLOCKED_LABEL, result.suggested_actions)
+
     def test_assigned_elsewhere(self):
         item = make_issue(assignees=["bob"])
         result = classify_issue(item, "alice", 6, NOW)
@@ -1569,6 +1576,7 @@ class TestApplyTrivialActions(unittest.TestCase):
                 "number": 5,
                 "status": "waiting_code",
                 "eliminated": True,
+                "assignees": ["alice"],
                 "suggested_actions": [REMOVE_BLOCKED_LABEL],
             }
         ]
@@ -1581,6 +1589,23 @@ class TestApplyTrivialActions(unittest.TestCase):
         )
 
     @patch("nextwork.run_gh_soft", return_value="")
+    def test_skips_remove_blocked_for_assigned_elsewhere(self, mock_run_gh_soft):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 5,
+                "status": "assigned_elsewhere",
+                "eliminated": True,
+                "assignees": ["bob"],
+                "suggested_actions": [REMOVE_BLOCKED_LABEL],
+            }
+        ]
+        applied = apply_trivial_actions(items, "alice")
+        self.assertEqual(applied, [])
+        mock_run_gh_soft.assert_not_called()
+
+    @patch("nextwork.run_gh_soft", return_value="")
     def test_apply_both_primary_and_remove_blocked(self, mock_run_gh_soft):
         items = [
             {
@@ -1589,6 +1614,7 @@ class TestApplyTrivialActions(unittest.TestCase):
                 "number": 99,
                 "status": "needs_assign",
                 "eliminated": False,
+                "assignees": [],
                 "suggested_actions": [ASSIGN_SELF, REMOVE_BLOCKED_LABEL],
             }
         ]
@@ -1979,6 +2005,33 @@ class TestFormatOutputs(unittest.TestCase):
         out = format_markdown_output(self.items, "acme/widget", "alice", 6, [], show_blocked=True)
         self.assertIn("## Blocked", out)
         self.assertIn("Blocked item", out)
+
+    def test_markdown_shows_link_and_take_over_results(self):
+        link_results = [
+            {
+                "dependent": "acme/widget#1",
+                "blocker": "acme/widget#2",
+                "action": "linked",
+            }
+        ]
+        take_over_results = [
+            {"ref": "acme/widget#3", "action": "assigned", "detail": "assigned to alice"}
+        ]
+        out = format_markdown_output(
+            self.items,
+            "acme/widget",
+            "alice",
+            6,
+            [],
+            show_blocked=False,
+            link_results=link_results,
+            take_over_results=take_over_results,
+        )
+        self.assertIn("## Link blockers", out)
+        self.assertIn("linked", out)
+        self.assertIn("## Take-over", out)
+        self.assertIn("acme/widget#3", out)
+        self.assertIn("assigned to alice", out)
 
     def test_decision_statuses_disjoint_from_trivial(self):
         from nextwork import TRIVIAL_STATUSES

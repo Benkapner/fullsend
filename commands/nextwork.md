@@ -8,7 +8,8 @@ Follow skill **nextwork**.
 
 From the repository root, run a **read-only** first pass. Pass `$ARGUMENTS`
 through unchanged; from those arguments, drop any `--apply` /
-`--decisions-only` before running this command (those flags run only after
+`--decisions-only` / `--take-over` (and its value) / `--link-blocker` (and its
+value) before running this command (those flags run only after confirmation /
 prose blockers are persisted):
 
     python3 skills/nextwork/scripts/nextwork.py $ARGUMENTS --format json --include-text
