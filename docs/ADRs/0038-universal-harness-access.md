@@ -24,7 +24,9 @@ Accepted
 
 *Extended by [ADR 0070](0070-portable-provider-profile-resolution.md), which
 adds URL support to `providers` and introduces `openshell.profiles` — extending
-portable resolution to provider and profile definitions.*
+portable resolution to provider and profile definitions. Superseded by
+[ADR 0075](0075-local-path-profiles-providers.md), which extends resolution to
+local filesystem paths.*
 
 ## Context
 

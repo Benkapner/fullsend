@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/resolve"
 )
 
 func TestEnsureAvailable_OpenshellNotInPath(t *testing.T) {
@@ -200,18 +202,18 @@ func TestImportProfiles_MissingIDField(t *testing.T) {
 	assert.Contains(t, err.Error(), "profile has no id field")
 }
 
-func TestProfileIDFromFile(t *testing.T) {
+func TestCollectProfileIDs_FromSandbox(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "test.yaml"), []byte("id: actual-id\nname: something"), 0o644))
-	id, err := profileIDFromFile(filepath.Join(dir, "test.yaml"))
+	ids, err := resolve.CollectProfileIDs(dir)
 	require.NoError(t, err)
-	assert.Equal(t, "actual-id", id)
+	assert.Equal(t, []string{"actual-id"}, ids)
 }
 
-func TestProfileIDFromFile_MissingID(t *testing.T) {
+func TestCollectProfileIDs_MissingID(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "test.yaml"), []byte("name: something"), 0o644))
-	_, err := profileIDFromFile(filepath.Join(dir, "test.yaml"))
+	_, err := resolve.CollectProfileIDs(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no id field")
 }

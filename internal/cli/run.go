@@ -779,7 +779,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Dedupe URL-resolved providers (last-wins) so shadowed entries from
 	// base composition don't trigger false integrity errors.
 	result.Providers = dedupResolvedProviders(result.Providers)
-	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
+	dirProfileIDs, err := resolve.CollectProfileIDs(filepath.Join(absFullsendDir, "profiles"))
+	if err != nil {
+		return fmt.Errorf("scanning profiles directory: %w", err)
+	}
+	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles, dirProfileIDs); intErr != nil {
 		printer.StepFail("Provider references unknown profile type")
 		return intErr
 	} else if w != "" {
@@ -3744,40 +3748,34 @@ func forceRemoveAll(path string) error {
 	return os.RemoveAll(path)
 }
 
-// checkProviderProfileIntegrity validates that every URL-resolved provider
-// references a profile id that was also URL-resolved. Local-path providers
-// are skipped because their profile types may be gateway-resident.
-// Returns an error describing the first mismatch, or nil if all references
-// are valid. Returns a non-empty warning string (no error) when URL-resolved
-// providers exist but no URL-resolved profiles were resolved.
-func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile) (warning string, err error) {
-	var urlProviders []resolve.ResolvedProvider
-	for _, rp := range providers {
-		if rp.FromURL {
-			urlProviders = append(urlProviders, rp)
-		}
-	}
-	if len(urlProviders) == 0 {
+// checkProviderProfileIntegrity validates that every provider references a
+// known profile type. Profile types are collected from three sources:
+// harness-resolved profiles (URL and local-path), and directory profiles
+// (from the profiles/ directory). Returns an error describing the first
+// mismatch, or nil if all references are valid.
+func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile, dirProfileIDs []string) (warning string, err error) {
+	if len(providers) == 0 {
 		return "", nil
 	}
-	profileIDs := make(map[string]bool, len(profiles))
+	profileIDs := make(map[string]bool, len(profiles)+len(dirProfileIDs))
 	for _, rp := range profiles {
-		if rp.FromURL {
-			profileIDs[rp.ID] = true
-		}
+		profileIDs[rp.ID] = true
+	}
+	for _, id := range dirProfileIDs {
+		profileIDs[id] = true
 	}
 	if len(profileIDs) == 0 {
-		return "URL-resolved providers present but no URL-resolved profiles — referential integrity not verified", nil
+		return "providers present but no profiles resolved — referential integrity not verified", nil
 	}
 	var mismatches []string
-	for _, rp := range urlProviders {
+	for _, rp := range providers {
 		if !profileIDs[rp.Def.Type] {
 			mismatches = append(mismatches, fmt.Sprintf("%q (type %q)", rp.Def.Name, rp.Def.Type))
 		}
 	}
 	if len(mismatches) > 0 {
 		return "", fmt.Errorf(
-			"providers reference unknown openshell.profiles types: %s — if these profiles are gateway-resident, move the providers to a local providers/ directory instead",
+			"providers reference unknown profile types: %s",
 			strings.Join(mismatches, ", "))
 	}
 	return "", nil

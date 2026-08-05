@@ -91,6 +91,34 @@ func ParseProfileID(data []byte) (string, error) {
 	return prof.ID, nil
 }
 
+// CollectProfileIDs scans a profiles directory and returns the id from each
+// YAML file. Returns nil (not an error) if the directory does not exist.
+func CollectProfileIDs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading profiles directory %s: %w", dir, err)
+	}
+	var ids []string
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("reading profile %s: %w", e.Name(), err)
+		}
+		id, err := ParseProfileID(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing profile %s: %w", e.Name(), err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // envVarPattern requires the entire value to be a single ${VAR} reference.
 // Compound expressions like "${HOST}:${PORT}" are intentionally flagged —
 // credential values in URL-fetched providers should be a single env var
@@ -120,7 +148,7 @@ func WarnLiteralCredentials(providerName string, creds map[string]string) string
 func parseProviderDef(content []byte, index int, source string) (harness.ProviderDef, string, error) {
 	var def harness.ProviderDef
 	if err := yaml.Unmarshal(content, &def); err != nil {
-		return harness.ProviderDef{}, "", fmt.Errorf("parsing provider from %s: %w", source, err)
+		return harness.ProviderDef{}, "", fmt.Errorf("parsing provider %s: %w", source, err)
 	}
 	if def.Name == "" {
 		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider name is required in %s", index, source)
@@ -391,6 +419,9 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		} else {
 			localPath = p
 
+			if !filepath.IsAbs(localPath) {
+				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: non-URL profile %q must be an absolute path", i, p)
+			}
 			if !isContainedPath(localPath, opts.WorkspaceRoot) {
 				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: path %q is outside workspace root", i, localPath)
 			}

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1996,6 +1997,45 @@ func TestParseProfileID(t *testing.T) {
 			assert.Equal(t, tt.wantID, id)
 		})
 	}
+}
+
+func TestCollectProfileIDs(t *testing.T) {
+	t.Run("returns IDs from YAML files", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: alpha\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "b.yml"), []byte("id: beta\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not a profile"), 0o644)
+
+		ids, err := CollectProfileIDs(dir)
+		require.NoError(t, err)
+		sort.Strings(ids)
+		assert.Equal(t, []string{"alpha", "beta"}, ids)
+	})
+
+	t.Run("returns nil for missing directory", func(t *testing.T) {
+		ids, err := CollectProfileIDs(filepath.Join(t.TempDir(), "nonexistent"))
+		require.NoError(t, err)
+		assert.Nil(t, ids)
+	})
+
+	t.Run("returns error for invalid YAML", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(":::"), 0o644)
+
+		_, err := CollectProfileIDs(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bad.yaml")
+	})
+
+	t.Run("skips subdirectories", func(t *testing.T) {
+		dir := t.TempDir()
+		os.MkdirAll(filepath.Join(dir, "subdir.yaml"), 0o755)
+		os.WriteFile(filepath.Join(dir, "valid.yaml"), []byte("id: gamma\n"), 0o644)
+
+		ids, err := CollectProfileIDs(dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"gamma"}, ids)
+	})
 }
 
 func TestResolveHarness_LocalProfile(t *testing.T) {

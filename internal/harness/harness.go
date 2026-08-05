@@ -961,8 +961,10 @@ func (h *Harness) HasURLReferences() bool {
 			return true
 		}
 	}
-	if len(h.OpenShellProfiles()) > 0 { // profiles are always URLs (enforced by ValidateResourceTypes)
-		return true
+	for _, p := range h.OpenShellProfiles() {
+		if IsURL(p) {
+			return true
+		}
 	}
 	for _, p := range h.Providers {
 		if IsURL(p) {
