@@ -1582,14 +1582,7 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	printer.Header("Workflow Host Repos")
 	var workflowHostRepos []string
 	if trafficEnv != nil {
-		raw := trafficEnv["WORKFLOW_HOST_REPOS"]
-		if raw != "" {
-			for _, entry := range strings.Split(raw, ",") {
-				if trimmed := strings.TrimSpace(entry); trimmed != "" {
-					workflowHostRepos = append(workflowHostRepos, trimmed)
-				}
-			}
-		}
+		workflowHostRepos = mintcore.SplitCSV(trafficEnv["WORKFLOW_HOST_REPOS"])
 	}
 	if len(workflowHostRepos) == 0 {
 		printer.StepInfo("  (default: fullsend-ai/fullsend)")
@@ -1878,15 +1871,7 @@ Required IAM roles on the mint project:
 				return fmt.Errorf("reading mint env vars: %w", err)
 			}
 
-			raw := trafficEnv["WORKFLOW_HOST_REPOS"]
-			var repos []string
-			if raw != "" {
-				for _, entry := range strings.Split(raw, ",") {
-					if trimmed := strings.TrimSpace(entry); trimmed != "" {
-						repos = append(repos, trimmed)
-					}
-				}
-			}
+			repos := mintcore.SplitCSV(trafficEnv["WORKFLOW_HOST_REPOS"])
 
 			printer.Blank()
 			if len(repos) == 0 {

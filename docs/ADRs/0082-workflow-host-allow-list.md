@@ -77,10 +77,6 @@ gate both apply. The only difference between public and tight per-repo
 mode is caller enrollment: `PER_REPO_WIF_REPOS=*` means every repo is
 accepted as a caller without explicit listing.
 
-*Revised 2026-08-05: removed public-mode special-case; public mode now
-goes through the standard per-repo workflow-host and basename validation
-rather than hard-wiring to upstream-only with no basename gate.*
-
 ### CLI and status surfaces
 
 - `fullsend mint workflow-host add|remove|list` manages the
