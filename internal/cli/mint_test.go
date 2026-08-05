@@ -2723,3 +2723,272 @@ func TestResolveAddRoleFromExistingSecret_CheckFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking PEM secret")
 }
+
+// --- workflow-host subcommand tests ---
+
+func TestMintCommand_HasWorkflowHostSubcommand(t *testing.T) {
+	cmd := newMintCmd()
+	names := make(map[string]bool)
+	for _, sub := range cmd.Commands() {
+		names[sub.Use] = true
+	}
+	assert.True(t, names["workflow-host"], "expected workflow-host subcommand")
+}
+
+func TestMintWorkflowHostCmd_HasSubcommands(t *testing.T) {
+	cmd := newMintWorkflowHostCmd()
+	names := make(map[string]bool)
+	for _, sub := range cmd.Commands() {
+		names[sub.Use] = true
+	}
+	assert.True(t, names["add <owner/repo>"], "expected add subcommand")
+	assert.True(t, names["remove <owner/repo>"], "expected remove subcommand")
+	assert.True(t, names["list"], "expected list subcommand")
+}
+
+func TestMintWorkflowHostAddCmd_Flags(t *testing.T) {
+	cmd := newMintWorkflowHostAddCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("project"))
+	assert.NotNil(t, cmd.Flags().Lookup("region"))
+	assert.NotNil(t, cmd.Flags().Lookup("dry-run"))
+}
+
+func TestMintWorkflowHostAddCmd_RequiresArg(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "add"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
+}
+
+func TestMintWorkflowHostAddCmd_RequiresProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "add", "acme/repo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintWorkflowHostAddCmd_InvalidProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "add", "acme/repo", "--project=BAD"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP project ID")
+}
+
+func TestMintWorkflowHostAddCmd_InvalidRepoFormat(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "add", "just-a-name", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo format")
+}
+
+func TestMintWorkflowHostAddCmd_DryRun(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "add", "acme/workflows", "--project=my-test-proj1", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintWorkflowHostAddCmd_Success(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "add", "acme/workflows", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintWorkflowHostAddCmd_MintNotFound(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeErrors(map[string]error{
+			"GetFunction":           gcf.ErrFunctionNotFound,
+			"GetCloudRunServiceURI": fmt.Errorf("not found"),
+		}),
+	))
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "add", "acme/workflows", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint not found")
+}
+
+func TestMintWorkflowHostRemoveCmd_Flags(t *testing.T) {
+	cmd := newMintWorkflowHostRemoveCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("project"))
+	assert.NotNil(t, cmd.Flags().Lookup("region"))
+	assert.NotNil(t, cmd.Flags().Lookup("dry-run"))
+}
+
+func TestMintWorkflowHostRemoveCmd_RequiresArg(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "remove"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
+}
+
+func TestMintWorkflowHostRemoveCmd_RequiresProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "remove", "acme/repo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintWorkflowHostRemoveCmd_InvalidProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "remove", "acme/repo", "--project=BAD"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP project ID")
+}
+
+func TestMintWorkflowHostRemoveCmd_InvalidRepoFormat(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "remove", "just-a-name", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo format")
+}
+
+func TestMintWorkflowHostRemoveCmd_DryRun(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "remove", "acme/workflows", "--project=my-test-proj1", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintWorkflowHostRemoveCmd_Success(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "remove", "acme/workflows", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintWorkflowHostRemoveCmd_MintNotFound(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeErrors(map[string]error{
+			"GetFunction":           gcf.ErrFunctionNotFound,
+			"GetCloudRunServiceURI": fmt.Errorf("not found"),
+		}),
+	))
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "remove", "acme/workflows", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint not found")
+}
+
+func TestMintWorkflowHostListCmd_Flags(t *testing.T) {
+	cmd := newMintWorkflowHostListCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("project"))
+	assert.NotNil(t, cmd.Flags().Lookup("region"))
+}
+
+func TestMintWorkflowHostListCmd_RequiresProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "list"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintWorkflowHostListCmd_InvalidProject(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "list", "--project=BAD"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP project ID")
+}
+
+func TestMintWorkflowHostListCmd_ShowsDefault(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "list", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintWorkflowHostListCmd_ShowsConfiguredRepos(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":        `{"coder":"100"}`,
+			"WORKFLOW_HOST_REPOS": "acme/workflows,other/repo",
+		}),
+	)
+	withMintGCFClient(t, client)
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "list", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintWorkflowHostListCmd_MintNotFound(t *testing.T) {
+	withMintGCFClient(t, gcf.NewFakeGCFClient(
+		gcf.WithFakeErrors(map[string]error{
+			"GetFunction":           gcf.ErrFunctionNotFound,
+			"GetCloudRunServiceURI": fmt.Errorf("not found"),
+		}),
+	))
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "workflow-host", "list", "--project=my-test-proj1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint not found")
+}
+
+func TestRunMintStatus_ShowsWorkflowHostRepos(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "test-org",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":        `{"coder":"100"}`,
+			"ALLOWED_ORGS":        "test-org",
+			"WORKFLOW_HOST_REPOS": "acme/custom-workflows",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:   "fullsend-mint-00001",
+			TrafficPercent:         100,
+			TemplateMatchesTraffic: true,
+			TrafficEnvVars: map[string]string{
+				"ROLE_APP_IDS":        `{"coder":"100"}`,
+				"ALLOWED_ORGS":        "test-org",
+				"WORKFLOW_HOST_REPOS": "acme/custom-workflows",
+			},
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-coder-app-pem": true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Workflow Host Repos")
+	assert.Contains(t, out.String(), "acme/custom-workflows")
+}
+
+func TestRunMintStatus_ShowsDefaultWorkflowHostRepos(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Workflow Host Repos")
+	assert.Contains(t, out.String(), "fullsend-ai/fullsend")
+}
