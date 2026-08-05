@@ -77,6 +77,11 @@ gate both apply. The only difference between public and tight per-repo
 mode is caller enrollment: `PER_REPO_WIF_REPOS=*` means every repo is
 accepted as a caller without explicit listing.
 
+> **Note:** [ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md)
+> dropped the basename gate for public mode ("Basename gate: that restriction
+> was dropped"). This ADR supersedes that exception: public mode now
+> applies `ALLOWED_WORKFLOW_FILES` via the shared per-repo validation path.
+
 ### CLI and status surfaces
 
 - `fullsend mint workflow-host add|remove|list` manages the
@@ -101,3 +106,10 @@ accepted as a caller without explicit listing.
   was already restricted to `.fullsend` and upstream.
 - The default `WORKFLOW_HOST_REPOS` value (`fullsend-ai/fullsend`) matches
   the previous behavior for callers using upstream workflows.
+
+### Related ADRs
+
+| Topic | ADR |
+|-------|-----|
+| Simplified mint authorization policy | [0078](0078-simplified-mint-authorization-policy.md) |
+| Public mint mode (basename gate exception superseded above) | [0059](0059-public-mint-mode-with-wildcard-allowlists.md) |

@@ -1682,9 +1682,9 @@ func (p *Provisioner) AddWorkflowHostRepo(ctx context.Context, repo string) erro
 	}
 
 	repo = strings.ToLower(repo)
-	existing := trafficEnvVars["WORKFLOW_HOST_REPOS"]
-	for _, entry := range strings.Split(existing, ",") {
-		if strings.ToLower(strings.TrimSpace(entry)) == repo {
+	entries := mintcore.SplitCSV(trafficEnvVars["WORKFLOW_HOST_REPOS"])
+	for _, entry := range entries {
+		if strings.ToLower(entry) == repo {
 			return nil
 		}
 	}
@@ -1693,11 +1693,8 @@ func (p *Provisioner) AddWorkflowHostRepo(ctx context.Context, repo string) erro
 	for k, v := range trafficEnvVars {
 		updated[k] = v
 	}
-	if existing == "" {
-		updated["WORKFLOW_HOST_REPOS"] = repo
-	} else {
-		updated["WORKFLOW_HOST_REPOS"] = existing + "," + repo
-	}
+	entries = append(entries, repo)
+	updated["WORKFLOW_HOST_REPOS"] = strings.Join(entries, ",")
 
 	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
 	if err != nil {

@@ -152,6 +152,39 @@ func TestNewHandlerFromConfig_PerRepoWIFReposCSV(t *testing.T) {
 	}
 }
 
+func TestNewHandlerFromConfig_WorkflowHostReposCSV(t *testing.T) {
+	roleAppIDs := `{"coder":"200"}`
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "org", "*", "acme/workflows, Acme/Other", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	if err != nil {
+		t.Fatalf("NewHandlerFromConfig: %v", err)
+	}
+	// Verify workflowHostRepos was parsed and lowercased.
+	if !h.workflowHostRepos["acme/workflows"] {
+		t.Fatal("expected acme/workflows in workflowHostRepos")
+	}
+	if !h.workflowHostRepos["acme/other"] {
+		t.Fatal("expected acme/other (lowercased) in workflowHostRepos")
+	}
+	if len(h.workflowHostRepos) != 2 {
+		t.Fatalf("expected 2 entries in workflowHostRepos, got %d", len(h.workflowHostRepos))
+	}
+}
+
+func TestNewHandlerFromConfig_WorkflowHostReposCSV_DefaultFallback(t *testing.T) {
+	roleAppIDs := `{"coder":"200"}`
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "org", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	if err != nil {
+		t.Fatalf("NewHandlerFromConfig: %v", err)
+	}
+	// Empty workflowHostReposCSV should default to fullsend-ai/fullsend.
+	if !h.workflowHostRepos["fullsend-ai/fullsend"] {
+		t.Fatal("expected fullsend-ai/fullsend as default in workflowHostRepos")
+	}
+	if len(h.workflowHostRepos) != 1 {
+		t.Fatalf("expected 1 entry in workflowHostRepos, got %d", len(h.workflowHostRepos))
+	}
+}
+
 func TestNewHandlerFromConfig_ServeHTTPWorks(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
 	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
