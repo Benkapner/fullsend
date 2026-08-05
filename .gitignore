@@ -24,3 +24,6 @@ bin/
 eval/runs/
 docs/plans/
 docs/superpowers/
+docs/.vitepress/cache/
+docs/.vitepress/.temp/
+docs/.vitepress/dist/
