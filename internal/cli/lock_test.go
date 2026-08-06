@@ -1895,6 +1895,53 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 	assert.Equal(t, "shared-dir", filepath.Base(h.Plugins[0]))
 }
 
+func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
+	// Base-composed plugins use raw.githubusercontent.com URLs ending in
+	// /plugin.json. resolveFromLock must parse these via ParseRawContentURL
+	// (not ParseForgeURL, which rejects non-github.com hosts) to extract
+	// the plugin directory name.
+	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
+	pluginFiles := map[string][]byte{
+		"plugin.json": manifestJSON,
+	}
+	treeHash := fetch.ComputeTreeHash(pluginFiles)
+
+	root := t.TempDir()
+	pluginFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/plugins/gopls-lsp/plugin.json"
+	_, err := fetch.CachePutDir(root, pluginFileURL, pluginFiles)
+	require.NoError(t, err)
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "plugins[0]",
+				URL:    pluginFileURL,
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "plugin.json", SHA256: fetch.ComputeSHA256(manifestJSON)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Plugins:                []string{"plugins/gopls-lsp"},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]),
+		"plugin basename must be derived from the URL directory, not the marker file")
+	assert.False(t, harness.IsURL(h.Plugins[0]))
+	assert.FileExists(t, filepath.Join(h.Plugins[0], "plugin.json"))
+}
+
 func TestResolveFromLock_LocalPathsSurviveStrip(t *testing.T) {
 	// When a harness has URL resources (with lock deps) AND local-path
 	// profiles/providers (without lock deps), the lock strip must keep the

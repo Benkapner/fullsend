@@ -763,6 +763,15 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 							return resolve.ResolveResult{}, fmt.Errorf("%s: URL must point to a directory inside the repo, not the repo root", lockDep.Field)
 						}
 						dirName = filepath.Base(forgeInfo.Path)
+					} else if rawInfo, rawErr := forge.ParseRawContentURL(lockDep.URL); rawErr == nil {
+						// Base-composed plugins use raw.githubusercontent.com
+						// URLs ending in /plugin.json (the marker file). Strip
+						// the marker to get the plugin directory name.
+						pluginDir := path.Dir(rawInfo.Path)
+						if pluginDir == "" || pluginDir == "." {
+							return resolve.ResolveResult{}, fmt.Errorf("%s: URL must point to a file inside a plugin directory, not the repo root", lockDep.Field)
+						}
+						dirName = filepath.Base(pluginDir)
 					}
 					if !harness.ValidPluginBasename(dirName) {
 						return resolve.ResolveResult{}, fmt.Errorf("%s: cached basename %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", lockDep.Field, dirName)
