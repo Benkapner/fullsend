@@ -1,6 +1,7 @@
 package mintcore
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -103,5 +104,16 @@ func TestValidateReposScope(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErrSubstr)
 			}
 		})
+	}
+}
+
+func TestValidateReposScope_PerRepoSentinel(t *testing.T) {
+	t.Parallel()
+	_, err := validateReposScope(false, "acme/api", []string{"other"}, true)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, errPerRepoCrossRepo) {
+		t.Fatalf("expected errPerRepoCrossRepo sentinel, got %v", err)
 	}
 }

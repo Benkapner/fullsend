@@ -1,9 +1,15 @@
 package mintcore
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// errPerRepoCrossRepo is a sentinel returned when a per-repo caller
+// requests repos beyond its own repository. The handler checks this
+// sentinel to decide whether to try repo-level FOREIGN grants.
+var errPerRepoCrossRepo = errors.New("per-repo mint requires repos to be exactly the requesting repository")
 
 // Org-mode shape labels returned by validateReposScope when a per-org caller
 // uses a broader-than-self same-org repos list. Empty means the default path
@@ -76,7 +82,7 @@ func validateReposScope(isTargetForeign bool, requestingRepo string, repos []str
 	}
 
 	if perRepo {
-		return "", fmt.Errorf("per-repo mint requires repos to be exactly the requesting repository")
+		return "", errPerRepoCrossRepo
 	}
 
 	// Per-org callers get org-mode shapes.
