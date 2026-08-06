@@ -108,7 +108,7 @@ func TestForgeClient_UpdateComment(t *testing.T) {
 		t.Fatalf("CreateComment returned error: %v", err)
 	}
 
-	if err := c.UpdateComment(ctx, "acme/widgets", created.ID, "updated"); err != nil {
+	if err := c.UpdateComment(ctx, "acme/widgets", 42, created.ID, "updated"); err != nil {
 		t.Fatalf("UpdateComment returned error: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestForgeClient_UpdateComment_InvalidID(t *testing.T) {
 	fc := forge.NewFakeClient()
 	c := NewForgeClient(fc)
 
-	err := c.UpdateComment(context.Background(), "acme/widgets", "not-a-number", "updated")
+	err := c.UpdateComment(context.Background(), "acme/widgets", 42, "not-a-number", "updated")
 	if err == nil {
 		t.Fatal("UpdateComment with non-numeric ID should return an error")
 	}
@@ -142,7 +142,9 @@ func (staticClient) ListComments(_ context.Context, _ string, _ int) ([]Comment,
 func (staticClient) CreateComment(_ context.Context, _ string, _ int, _ string) (*Comment, error) {
 	return nil, nil
 }
-func (staticClient) UpdateComment(_ context.Context, _ string, _ string, _ string) error { return nil }
+func (staticClient) UpdateComment(_ context.Context, _ string, _ int, _ string, _ string) error {
+	return nil
+}
 
 var _ Client = staticClient{}
 var _ Client = (*ForgeClient)(nil)

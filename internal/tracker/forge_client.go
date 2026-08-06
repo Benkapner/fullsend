@@ -65,8 +65,11 @@ func (c *ForgeClient) CreateComment(ctx context.Context, project string, number 
 	return &result, nil
 }
 
-// UpdateComment implements Client.
-func (c *ForgeClient) UpdateComment(ctx context.Context, project string, commentID string, body string) error {
+// UpdateComment implements Client. number is unused: forge.Client's
+// UpdateIssueComment identifies the comment by ID alone (GitHub/GitLab
+// comment IDs are globally unique within the repo), unlike Jira which
+// needs the issue key too.
+func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body string) error {
 	owner, repo := splitProject(project)
 	id, err := strconv.Atoi(commentID)
 	if err != nil {
