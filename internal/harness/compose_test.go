@@ -6529,3 +6529,202 @@ providers:
 	}
 	assert.True(t, fieldNames["providers[0]"], "should have provider dep")
 }
+
+func TestLoadWithBase_URLBase_PluginFetchedAsDir(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+plugins:
+  - plugins/gopls-lsp
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/plugins/gopls-lsp/plugin.json": []byte(`{"name":"gopls-lsp"}`),
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+}
+
+func TestLoadWithBase_URLBase_PluginOfflineCacheHit(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+plugins:
+  - plugins/gopls-lsp
+`)
+	hash := computeHash(baseContent)
+
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0]))
+
+	cachedPlugin := filepath.Join(h.Plugins[0], "plugin.json")
+	content, err := os.ReadFile(cachedPlugin)
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, content)
+
+	assert.True(t, deps[len(deps)-1].CacheHit, "plugin should be cache hit")
+	assert.Equal(t, "directory", deps[len(deps)-1].Type)
+}
+
+func TestLoadWithBase_SourceURL_Plugins(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	harnessContent := []byte(`
+role: test
+slug: test
+agent: agents/triage.md
+plugins:
+  - plugins/gopls-lsp
+`)
+
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	sourceURL := "https://example.com/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0]),
+		"plugin should be resolved to cache path, got %s", h.Plugins[0])
+
+	cachedPlugin := filepath.Join(h.Plugins[0], "plugin.json")
+	content, err := os.ReadFile(cachedPlugin)
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, content)
+
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["plugins[0]"], "should have plugin dep")
+}
+
+// Regression test for the bug where a harness fetched from a remote source
+// (e.g. fullsend-ai/agents) had relative plugin paths that were not resolved
+// against the source URL. ResolveRelativeTo would resolve them against the
+// target repo's .fullsend dir (where the plugin doesn't exist), and
+// ValidateFilesExist would fail with "no such file or directory".
+func TestLoadWithBase_SourceURL_PluginPassesValidateFilesExist(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	fullsendDir := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.MkdirAll(fullsendDir, 0o755))
+
+	harnessContent := []byte(`
+role: test
+slug: test
+agent: agents/triage.md
+plugins:
+  - plugins/gopls-lsp
+`)
+
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		SourceURL:     "https://example.com/harness/triage.yaml",
+	})
+	require.NoError(t, err)
+
+	// Simulate what run.go does: ResolveRelativeTo then ValidateFilesExist.
+	// Without the fix, ResolveRelativeTo would resolve "plugins/gopls-lsp"
+	// against fullsendDir (where it does not exist) and ValidateFilesExist
+	// would fail.
+	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
+	require.NoError(t, h.ValidateFilesExist(),
+		"plugin path should have been resolved to a cache path, not left as a relative path")
+}
