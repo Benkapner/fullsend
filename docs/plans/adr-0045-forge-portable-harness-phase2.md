@@ -114,7 +114,7 @@ PRs 1, 2, 3, 5 can start in parallel. PR 4 depends on PR 3 (needs the base URL b
 
 **Scope:** Restructure all scaffold harness templates to use `forge.github:` blocks for platform-specific fields. The templates remain functionally identical when loaded with `--forge github` (which is the only supported platform today). This is a pure template change -- no Go code changes.
 
-**Design note:** The `forge.github:` blocks contain `pre_script`, `post_script`, and `runner_env` entries that are GitHub-specific. Platform-neutral `runner_env` keys (e.g., `FULLSEND_OUTPUT_SCHEMA`, `FULLSEND_OUTPUT_FILE`, `TARGET_BRANCH`) remain at the top level as shared defaults, merged with the forge-specific keys at runtime via the Phase 1 `ResolveForge` logic. The `skills` field stays at the top level because skills are agent instructions, not forge API integrations (even skills that reference `gh` CLI are invoked inside the sandbox where the CLI is pre-installed regardless of forge).
+**Design note:** The `forge.github:` blocks contain `pre_script`, `post_script`, and `runner_env` entries that are GitHub-specific. Platform-neutral `runner_env` keys (e.g., `FULLSEND_OUTPUT_SCHEMA`, `FULLSEND_OUTPUT_FILE`, `TARGET_BRANCH`) remain at the top level as shared defaults, merged with the forge-specific keys at runtime via the Phase 1 `ResolveForge` logic. The `skills` field stays at the top level because skills are agent instructions, not forge API integrations (even skills that reference `gh` CLI are invoked inside the sandbox where the CLI is pre-installed regardless of forge). Note: `host_files` can also appear under `forge.<platform>.host_files` (added in #5917); any forge-specific host files are merged with top-level entries at runtime.
 
 ### Per-template changes
 
@@ -122,37 +122,37 @@ PRs 1, 2, 3, 5 can start in parallel. PR 4 depends on PR 3 (needs the base URL b
 - Move to `forge.github:`: `pre_script`, `post_script`
 - Move to `forge.github.runner_env:`: `GITHUB_ISSUE_URL`, `GH_TOKEN`
 - Keep at top level `runner_env:`: `FULLSEND_OUTPUT_SCHEMA`
-- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `host_files`, `timeout_minutes`, `validation_loop`
+- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `timeout_minutes`, `validation_loop`
 
 **`internal/scaffold/fullsend-repo/harness/code.yaml`:**
 - Move to `forge.github:`: `pre_script`, `post_script`
 - Move to `forge.github.runner_env:`: `REPO_FULL_NAME`, `ISSUE_NUMBER`, `REPO_DIR` (value `${GITHUB_WORKSPACE}/target-repo`)
 - `PUSH_TOKEN`, `PUSH_TOKEN_SOURCE`: auto-minted by `mintAgentToken()` when `--mint-url` is provided- Keep at top level `runner_env:`: `TARGET_BRANCH`
-- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `plugins`, `host_files`, `timeout_minutes`
+- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `plugins`, `timeout_minutes`
 
 **`internal/scaffold/fullsend-repo/harness/review.yaml`:**
 - Move to `forge.github:`: `pre_script`, `post_script`
 - Move to `forge.github.runner_env:`: `REPO_FULL_NAME`, `PR_NUMBER`, `GITHUB_PR_URL`
 - `REVIEW_TOKEN`: auto-minted by `mintAgentToken()` when `--mint-url` is provided- Keep at top level `runner_env:`: `FULLSEND_OUTPUT_SCHEMA`
-- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `host_files`, `timeout_minutes`, `validation_loop`
+- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `timeout_minutes`, `validation_loop`
 
 **`internal/scaffold/fullsend-repo/harness/fix.yaml`:**
 - Move to `forge.github:`: `pre_script`, `post_script`
 - Move to `forge.github.runner_env:`: `REPO_FULL_NAME`, `PR_NUMBER`, `REPO_DIR` (value `${GITHUB_WORKSPACE}/target-repo`)
 - `PUSH_TOKEN`, `PUSH_TOKEN_SOURCE`: auto-minted by `mintAgentToken()` when `--mint-url` is provided- Keep at top level `runner_env:`: `TARGET_BRANCH`, `TRIGGER_SOURCE`, `HUMAN_INSTRUCTION`, `FIX_ITERATION`, `REVIEW_BODY_FILE`, `PRE_AGENT_HEAD`, `FULLSEND_OUTPUT_SCHEMA`, `FULLSEND_OUTPUT_FILE`
-- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `host_files`, `timeout_minutes`, `validation_loop`
+- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `timeout_minutes`, `validation_loop`
 
 **`internal/scaffold/fullsend-repo/harness/retro.yaml`:**
 - Move to `forge.github:`: `pre_script`, `post_script`
 - Move to `forge.github.runner_env:`: `ORIGINATING_URL`, `REPO_FULL_NAME`, `GH_TOKEN`
 - Keep at top level `runner_env:`: `FULLSEND_OUTPUT_SCHEMA`
-- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `host_files`, `timeout_minutes`, `validation_loop`
+- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `timeout_minutes`, `validation_loop`
 
 **`internal/scaffold/fullsend-repo/harness/prioritize.yaml`:**
 - Move to `forge.github:`: `pre_script`, `post_script`
 - Move to `forge.github.runner_env:`: `GITHUB_ISSUE_URL`, `GH_TOKEN`, `ORG`, `PROJECT_NUMBER`
 - Keep at top level `runner_env:`: `FULLSEND_OUTPUT_SCHEMA`
-- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `host_files`, `timeout_minutes`
+- Keep at top level: `agent`, `doc`, `model`, `image`, `policy`, `role`, `slug`, `skills`, `timeout_minutes`
 
 ### Test updates
 

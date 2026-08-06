@@ -128,6 +128,18 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 				return nil, nil, fmt.Errorf("resolving URL-sourced host_files: %w", err)
 			}
 			deps = append(deps, hostFileDeps...)
+
+			profileDeps, err := resolveBaseProfiles(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced profiles: %w", err)
+			}
+			deps = append(deps, profileDeps...)
+
+			providerDeps, err := resolveBaseProviders(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced providers: %w", err)
+			}
+			deps = append(deps, providerDeps...)
 		}
 
 		if err := child.validateForge(); err != nil {
@@ -184,9 +196,9 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	// ResolveRelativeTo, missing companion files (sub-agents/,
 	// meta-prompt.md) that only exist at the source URL. See #5305.
 	//
-	// All three resolve functions skip absolute paths and URLs, so they
-	// are safe to call on the merged harness where base-inherited fields
-	// are already resolved to cache paths.
+	// All resolve functions skip cache paths and URLs, so they are safe
+	// to call on the merged harness where base-inherited fields are
+	// already resolved to cache paths.
 	if opts.SourceURL != "" {
 		scriptDeps, err := resolveBaseScripts(ctx, child, opts.SourceURL, allowlist, opts)
 		if err != nil {
@@ -205,6 +217,18 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced host_files after base composition: %w", err)
 		}
 		deps = append(deps, hostFileDeps...)
+
+		profileDeps, err := resolveBaseProfiles(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced profiles after base composition: %w", err)
+		}
+		deps = append(deps, profileDeps...)
+
+		providerDeps, err := resolveBaseProviders(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced providers after base composition: %w", err)
+		}
+		deps = append(deps, providerDeps...)
 	}
 
 	// ResolveForge once on the merged result
@@ -295,6 +319,18 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("resolving base host_files from %s: %w", cleanURL, err)
 		}
 		deps = append(deps, hostFileDeps...)
+
+		profileDeps, err := resolveBaseProfiles(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base profiles from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, profileDeps...)
+
+		providerDeps, err := resolveBaseProviders(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base providers from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, providerDeps...)
 
 		baseDir = childDir
 	} else {
@@ -823,6 +859,30 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 		deps = append(deps, dep)
 	}
 
+	// Forge-specific skills: same fetch treatment as top-level skills.
+	// resolveBaseScripts already handles forge scripts and forge policy;
+	// skills are directories (fetched via fetchBaseSkill) and belong here.
+	for platform, fc := range base.Forge {
+		if fc == nil {
+			continue
+		}
+		for i, skill := range fc.Skills {
+			if skill == "" || IsURL(skill) || isFullsendCachePath(skill, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.skills[%d]", platform, i)
+			if err := validateBaseRelPath(fieldName, skill); err != nil {
+				return nil, err
+			}
+			dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill, allowlist, opts)
+			if err != nil {
+				return nil, err
+			}
+			fc.Skills[i] = localDir
+			deps = append(deps, dep)
+		}
+	}
+
 	return deps, nil
 }
 
@@ -858,6 +918,106 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 			return nil, err
 		}
 		base.HostFiles[i].Src = cachePath
+		deps = append(deps, dep)
+	}
+
+	// Forge-specific host_files: same fetch treatment as top-level
+	// host_files. Entries with ${VAR} expansion are left unchanged
+	// (resolved at bootstrap time on the host).
+	for platform, fc := range base.Forge {
+		if fc == nil {
+			continue
+		}
+		for i := range fc.HostFiles {
+			src := fc.HostFiles[i].Src
+			if src == "" || strings.Contains(src, "${") || IsURL(src) || isFullsendCachePath(src, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.host_files[%d].src", platform, i)
+			if err := validateBaseRelPath(fieldName, src); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, src, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.HostFiles[i].Src = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
+	return deps, nil
+}
+
+// resolveBaseProfiles fetches profile files with relative paths from a
+// URL-referenced base harness. For each openshell.profiles entry that is a
+// non-empty relative path (not a URL or already-cached path), the file is
+// fetched from the base URL's directory, cached content-addressed, and the
+// entry is rewritten to the local cache path.
+func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	if base.OpenShell == nil || len(base.OpenShell.Profiles) == 0 {
+		return nil, nil
+	}
+
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	for i, p := range base.OpenShell.Profiles {
+		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+			continue
+		}
+		fieldName := fmt.Sprintf("openshell.profiles[%d]", i)
+		if err := validateBaseRelPath(fieldName, p); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		base.OpenShell.Profiles[i] = cachePath
+		deps = append(deps, dep)
+	}
+
+	return deps, nil
+}
+
+// resolveBaseProviders fetches provider files with relative paths from a
+// URL-referenced base harness. For each providers entry that is a non-empty
+// relative path (not a URL, already-cached path, or bare provider name),
+// the file is fetched from the base URL's directory, cached
+// content-addressed, and the entry is rewritten to the local cache path.
+func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	if len(base.Providers) == 0 {
+		return nil, nil
+	}
+
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	for i, p := range base.Providers {
+		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+			continue
+		}
+		if !IsProviderPath(p) {
+			continue
+		}
+		fieldName := fmt.Sprintf("providers[%d]", i)
+		if err := validateBaseRelPath(fieldName, p); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		base.Providers[i] = cachePath
 		deps = append(deps, dep)
 	}
 
@@ -1486,8 +1646,8 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 }
 
 // mergeForgeConfigInto merges base ForgeConfig fields into child.
-// Similar to mergeForgeConfig in forge.go but prepends base skills
-// (base + child order) rather than appending forge skills to harness skills.
+// Similar to mergeForgeConfig in forge.go but prepends base skills and host files
+// (base + child order) rather than appending forge values to harness values.
 func mergeForgeConfigInto(base, child *ForgeConfig) {
 	if base == nil {
 		return
@@ -1507,6 +1667,11 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 	// Skills: base + child with child-overrides-base-by-basename
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
+	}
+
+	// HostFiles: concatenated with last-writer-wins dedup by Dest
+	if base.HostFiles != nil {
+		child.HostFiles = mergeHostFiles(base.HostFiles, child.HostFiles)
 	}
 
 	// RunnerEnv: merge, child keys win

@@ -258,7 +258,7 @@ compatibility.
 | `agent`            | Agent definitions are forge-agnostic               |
 | `model`            | Model selection is independent of forge             |
 | `image`            | Container images are platform-neutral              |
-| `host_files`       | File delivery is a runner concern, not forge        |
+| `host_files`       | File delivery is a runner concern, not forge (note: forge-specific `host_files` added in #5917) |
 | `providers`        | OpenShell providers are forge-agnostic             |
 | `api_servers`      | REST proxies abstract forge details                |
 | `plugins`          | MCP plugins are forge-agnostic; can be local paths or URLs (ADR-0038) |
@@ -465,7 +465,7 @@ operational config file.
 ```go
 // ForgeConfig holds platform-specific harness configuration.
 // This is purely declarative YAML config — it selects which
-// scripts, skills, and env vars to use per platform. It is
+// scripts, skills, host files, and env vars to use per platform. It is
 // distinct from the forge.Client interface (internal/forge/),
 // which is the runtime abstraction for forge API operations.
 type ForgeConfig struct {
@@ -473,6 +473,7 @@ type ForgeConfig struct {
     PostScript     string            `yaml:"post_script,omitempty"`
     Policy         string            `yaml:"policy,omitempty"`
     Skills         []string          `yaml:"skills,omitempty"`
+    HostFiles      []HostFile        `yaml:"host_files,omitempty"` // added in #5917
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
 }
@@ -594,8 +595,8 @@ forge-specific artifact. The harness and agent definition are portable.
 
 - **Bidirectional composition.** The `base:` merge semantics had an
   inverse (`DiffHarness`, removed with the scaffold agent extraction)
-  used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
-  `migrate-customizations` command.
+  formerly used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command *(now removed)*.
 
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the

@@ -188,7 +188,7 @@ Key patterns to note:
 - **`policy: policies/triage.yaml`** is a per-agent policy that includes filesystem, landlock, process, and network rules (via inline `network_policies`). This agent predates the provider-based pattern — new agents can use `providers:` instead (see [Minimum viable agent](#minimum-viable-agent)).
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
-- **`forge.github`** scopes scripts and env vars to GitHub. When running on GitLab, a `forge.gitlab` block would take effect instead.
+- **`forge.github`** scopes scripts, skills, host_files, and env vars to GitHub. When running on GitLab, a `forge.gitlab` block would take effect instead.
 - **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Remote references](#referencing-resources-local-vs-remote)) or copy it locally.
 
 ## Harness field reference
@@ -278,6 +278,9 @@ forge:
     pre_script: scripts/pre-gh.sh
     post_script: scripts/post-gh.sh
     skills: [skills/github-specific]  # Concatenated with top-level
+    host_files:                        # Forge-specific host files
+      - src: env/github.env
+        dest: /run/secrets/forge.env
     env:
       runner:
         GH_TOKEN: "${GH_TOKEN}"
@@ -542,32 +545,6 @@ repos:
 - On name collision, config-registered agents take precedence over built-in agents.
 - Individual agents can be disabled with `enabled: false` — see [Disabling Agents](customizing-agents.md#disabling-agents).
 - Per-repo config is read from the **base branch**, not from PR branches.
-
-## Migrating from `customized/`
-
-The `customized/` directory overlay is deprecated in favor of the `base:` composition and config-driven registration described in this guide.
-
-If you have existing files in `customized/`, the `fullsend agent migrate-customizations` command automates the conversion to config-driven agents.
-
-Preview what would change:
-```bash
-fullsend agent migrate-customizations --fullsend-dir .fullsend --dry-run
-```
-
-Run the migration (creates a PR with the changes):
-```bash
-fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
-```
-
-The tool classifies each override and takes the appropriate action:
-
-| Override type | Detection | Action |
-|---------------|-----------|--------|
-| Dead | Agent already registered in config | Delete `customized/` files |
-| Custom | Not in upstream scaffold | Move files to regular directories, register local path in config |
-| Modified | Standard scaffold agent, not yet in config | Generate a `base:` composition harness with the minimal diff, register in config |
-
-For modified agents, the migration produces exactly the kind of thin `base:` harness shown in [Configuring existing agents](#configuring-existing-agents) — only the fields that differ from upstream are included.
 
 ## Advanced: custom identity
 

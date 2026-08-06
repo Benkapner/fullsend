@@ -4,8 +4,6 @@
 > deprecated. For new custom agents, register them in `config.yaml` with a
 > local `source:` path instead. See
 > [Bring Your Own Agent](bring-your-own-agent.md) for the recommended approach.
-> Run `fullsend agent migrate-customizations --dry-run` to preview migrating
-> existing customizations.
 
 This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.
@@ -639,7 +637,7 @@ jobs:
 | Agent crashes immediately (0s runtime) | Sandbox can't authenticate to Vertex AI. Verify `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, and that `prepare-sandbox-credentials.sh` ran after the WIF auth step. |
 | "Harness file not found" | The fullsend CLI looks for `.fullsend/harness/my-agent.yaml`, not `customized/`. Verify the "Prepare workspace" step is layering files correctly. |
 | Agent can't find input files | Ensure pre-script output paths match `host_files` entries in the harness. |
-| Network policy blocks requests | Check `openshell-sandbox.log` in artifacts for `BLOCKED` entries. Add the endpoint to the policy. |
+| Network policy blocks requests | Check `openshell-sandbox.log` in artifacts for `DENIED` entries. Add the endpoint to the policy. |
 | Schema validation fails twice | Check the agent transcript in artifacts to see what it produced vs. what the schema expected. |
 
 ## File checklist

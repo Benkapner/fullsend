@@ -167,7 +167,7 @@ mint-cf-worker-test: wasm-stage
 	@echo "==> Worker smoke tests passed"
 
 lint-md-links:
-	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
+	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md '**/*.md'
 
 define run-timed
 	@start=$$(date +%s); \
@@ -182,6 +182,7 @@ script-test:
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
+	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 
 test: lint-all go-test script-test lint-eval-cases

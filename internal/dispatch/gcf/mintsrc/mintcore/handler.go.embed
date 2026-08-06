@@ -42,10 +42,11 @@ type mintResponse struct {
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 type statusResponse struct {
-	Org     string   `json:"org"`
-	Roles   []string `json:"roles"`
-	Version string   `json:"version,omitempty"`
-	Commit  string   `json:"commit,omitempty"`
+	Org               string   `json:"org"`
+	Roles             []string `json:"roles"`
+	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
+	Version           string   `json:"version,omitempty"`
+	Commit            string   `json:"commit,omitempty"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
@@ -74,6 +75,11 @@ type Handler struct {
 
 	// allowedWorkflowFiles lists the workflow basenames permitted to call the mint.
 	allowedWorkflowFiles []string
+
+	// workflowHostRepos lists the repos whose workflows are trusted to
+	// call the mint in per-repo mode. Defaults to fullsend-ai/fullsend.
+	// Per-org callers hard-wire to {org}/.fullsend and upstream instead.
+	workflowHostRepos map[string]bool
 }
 
 type foreignInflight struct {
@@ -97,6 +103,14 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
+	workflowHostRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(os.Getenv("WORKFLOW_HOST_REPOS")) {
+		workflowHostRepos[strings.ToLower(entry)] = true
+	}
+	if len(workflowHostRepos) == 0 {
+		workflowHostRepos["fullsend-ai/fullsend"] = true
+	}
+
 	h := &Handler{
 		httpClient:           httpClient,
 		pemAccessor:          pemAccessor,
@@ -108,6 +122,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		perRepoWIFRepos:      perRepoWIFRepos,
 		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
 		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
+		workflowHostRepos:    workflowHostRepos,
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -192,8 +207,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
-		if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
-			log.Printf("workflow ref validation failed for /v1/status: %v", err)
+		isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+		isDualEnrolled := false
+		if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
+			ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+			isDualEnrolled = true
+			isPerRepo = false
+		}
+		wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
+		if wfErr != nil && isDualEnrolled {
+			wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
+		}
+		if wfErr != nil {
+			log.Printf("workflow ref validation failed for /v1/status: %v", wfErr)
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
@@ -268,12 +294,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "authentication failed")
 		return
 	}
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, h.perRepoWIFRepos, h.allowedWorkflowFiles); err != nil {
-		log.Printf("workflow ref validation failed: %v", err)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
-	}
-
 	callerOrg := strings.ToLower(claims.RepositoryOwner)
 	targetOrg := strings.ToLower(strings.TrimSpace(req.TargetOrg))
 	if targetOrg == "" {
@@ -286,22 +306,53 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// PER_REPO_WIF_REPOS (not via wildcard public mint) and their
 	// owner org is also in ALLOWED_ORGS, use per-org scope treatment
 	// — per-org shapes are a superset of per-repo self-only scope.
+	// Workflow ref validation accepts sources from EITHER mode:
+	// per-repo (workflowHostRepos) or per-org ({org}/.fullsend, upstream).
 	// Note: when ALLOWED_ORGS=* with specific PER_REPO_WIF_REPOS
 	// entries, per-repo callers are upgraded to per-org scope; this
 	// is consistent because all non-per-repo callers from any org
 	// already receive per-org treatment in that configuration.
+	isDualEnrolled := false
 	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
 		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
-		log.Printf("dual-enrollment: upgrading %s from per-repo to per-org scope", claims.Repository)
+		isDualEnrolled = true
+		log.Printf("dual-enrollment: %s matches both per-repo and per-org — accepting workflow refs from either mode", claims.Repository)
 		isPerRepo = false
 	}
-	shape, err := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
-	if err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+	wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
+	if wfErr != nil && isDualEnrolled {
+		// Per-org validation failed; try per-repo validation since
+		// dual-enrolled callers accept workflows from either mode.
+		wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
+	}
+	if wfErr != nil {
+		log.Printf("workflow ref validation failed: %v", wfErr)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
+	if scopeErr != nil && !isTargetForeign {
+		// Same-org scope denied. For per-repo callers requesting repos
+		// beyond their own (specific per-repo denial), check repo-level
+		// FOREIGN grants. Only override the per-repo cross-repo denial;
+		// other denial reasons (empty repos, org-mode shape violations)
+		// must not be overridden.
+		if isPerRepo && len(req.Repos) > 0 && errors.Is(scopeErr, errPerRepoCrossRepo) {
+			if fErr := h.checkRepoForeignGrants(ctx, claims, callerOrg, req.Role, req.Repos); fErr == nil {
+				log.Printf("intra-org repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
+					claims.Repository, callerOrg, req.Repos, req.Role)
+				scopeErr = nil
+			} else {
+				log.Printf("intra-org repo-level foreign grant check failed: %v", fErr)
+			}
+		}
+	}
+	if scopeErr != nil {
+		writeError(w, http.StatusForbidden, scopeErr.Error())
 		return
 	}
 	if shape != "" {
-		log.Printf("org-mode repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
+		log.Printf("repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
 			shape, req.Repos, claims.Repository, targetOrg, req.Role)
 	}
 
@@ -396,14 +447,22 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	org := strings.ToLower(claims.RepositoryOwner)
 	roles := append([]string(nil), h.allowedRoles...)
 
+	// Build sorted workflow host repos list for the status response.
+	var hostRepos []string
+	for repo := range h.workflowHostRepos {
+		hostRepos = append(hostRepos, repo)
+	}
+	sort.Strings(hostRepos)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:     org,
-		Roles:   roles,
-		Version: Version,
-		Commit:  Commit,
+		Org:               org,
+		Roles:             roles,
+		WorkflowHostRepos: hostRepos,
+		Version:           Version,
+		Commit:            Commit,
 	}); err != nil {
 		log.Printf("encoding status response: %v", err)
 	}
@@ -454,18 +513,29 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 }
 
 func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) (string, string, *GrantedScope, error) {
+	// Specific repos requested → authorize exclusively via per-repo
+	// FOREIGN grants. Org-level FOREIGN is not consulted for repo-scoped
+	// requests; it authorizes only installation-wide tokens.
+	if len(repos) > 0 {
+		if err := h.checkRepoForeignGrants(ctx, claims, targetOrg, role, repos); err != nil {
+			log.Printf("repo-level foreign grant check failed: %v", err)
+			return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target repos"}
+		}
+		log.Printf("repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
+			claims.Repository, targetOrg, repos, role)
+		return h.mintToken(ctx, targetOrg, role, repos)
+	}
+
+	// Installation-wide (empty repos) → org-level FOREIGN check only.
 	allowlist, err := h.loadForeignAllowlist(ctx, targetOrg, role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
-	if len(allowlist) == 0 {
-		return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
-	}
-	if !CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
-		return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+	if CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
+		return h.mintToken(ctx, targetOrg, role, repos)
 	}
 
-	return h.mintToken(ctx, targetOrg, role, repos)
+	return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
 }
 
 func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {
@@ -538,6 +608,110 @@ func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role str
 	}
 
 	allowlist, err := ReadForeignAllowlist(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, role)
+	if err != nil {
+		return nil, err
+	}
+
+	return allowlist, nil
+}
+
+// checkRepoForeignGrants verifies that every repo in repos has a repo-level
+// FULLSEND_FOREIGN_<role>_REPOS variable that authorizes the caller.
+//
+// This function serves two distinct authorization paths:
+//   - Cross-org primary authorization: called from mintTokenCrossOrg when
+//     a foreign request carries specific repos (repo-scoped FOREIGN grant).
+//   - Intra-org fallback: called from the main handler when a per-repo
+//     caller requests repos beyond its own repository within the same org
+//     (errPerRepoCrossRepo), allowing cross-repo access via repo-level grants.
+func (h *Handler) checkRepoForeignGrants(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) error {
+	for _, repo := range repos {
+		allowlist, err := h.loadRepoForeignAllowlist(ctx, targetOrg, repo, role)
+		if err != nil {
+			return fmt.Errorf("checking repo-level foreign grant on %s/%s: %v", targetOrg, repo, err)
+		}
+		if !CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
+			return fmt.Errorf("caller %s not authorized by repo-level foreign grant on %s/%s", claims.Repository, targetOrg, repo)
+		}
+	}
+	return nil
+}
+
+// loadRepoForeignAllowlist loads the repo-level FOREIGN allowlist for a
+// specific target repo, with in-memory caching and inflight dedup (same
+// pattern as loadForeignAllowlist for org-level).
+func (h *Handler) loadRepoForeignAllowlist(ctx context.Context, targetOrg, targetRepo, role string) ([]string, error) {
+	key := repoForeignCacheKey(targetOrg, targetRepo, role)
+
+	h.foreignCacheMu.Lock()
+	if entry, ok := h.foreignCache[key]; ok && time.Since(entry.fetchedAt) < h.foreignCacheTTL {
+		allowlist := append([]string(nil), entry.allowlist...)
+		h.foreignCacheMu.Unlock()
+		return allowlist, nil
+	}
+	if inflight, ok := h.foreignInflight[key]; ok {
+		h.foreignCacheMu.Unlock()
+		inflight.wg.Wait()
+		if inflight.err != nil {
+			return nil, inflight.err
+		}
+		return append([]string(nil), inflight.allowlist...), nil
+	}
+	inflight := &foreignInflight{}
+	inflight.wg.Add(1)
+	h.foreignInflight[key] = inflight
+	h.foreignCacheMu.Unlock()
+
+	allowlist, err := h.fetchRepoForeignAllowlist(ctx, targetOrg, targetRepo, role)
+
+	h.foreignCacheMu.Lock()
+	delete(h.foreignInflight, key)
+	if err == nil {
+		h.foreignCache[key] = foreignCacheEntry{
+			allowlist: append([]string(nil), allowlist...),
+			fetchedAt: time.Now(),
+		}
+	}
+	inflight.allowlist = allowlist
+	inflight.err = err
+	inflight.wg.Done()
+	h.foreignCacheMu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+	return allowlist, nil
+}
+
+// fetchRepoForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from a
+// specific target repo's repo-level Actions variables.
+func (h *Handler) fetchRepoForeignAllowlist(ctx context.Context, targetOrg, targetRepo, role string) ([]string, error) {
+	appID, err := h.lookupRoleAppID(role)
+	if err != nil {
+		return nil, fmt.Errorf("looking up app ID for role %s: %v", role, err)
+	}
+
+	pemData, err := h.pemAccessor.AccessPEM(ctx, role)
+	if err != nil {
+		return nil, fmt.Errorf("reading PEM secret for role %s: %v", role, err)
+	}
+	defer func() {
+		for i := range pemData {
+			pemData[i] = 0
+		}
+	}()
+
+	jwt, err := GenerateAppJWT(appID, pemData)
+	if err != nil {
+		return nil, fmt.Errorf("generating app JWT: %v", err)
+	}
+
+	installationID, err := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, targetOrg, targetRepo)
+	if err != nil {
+		return nil, fmt.Errorf("finding repo installation on %s/%s: %v", targetOrg, targetRepo, err)
+	}
+
+	allowlist, err := ReadForeignAllowlistFromRepo(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, targetRepo, role)
 	if err != nil {
 		return nil, err
 	}

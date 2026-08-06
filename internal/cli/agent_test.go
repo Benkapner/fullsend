@@ -1201,7 +1201,7 @@ allowed_remote_resources:
 
 func TestNewAgentCmd_HasSubcommands(t *testing.T) {
 	cmd := newAgentCmd()
-	assert.Len(t, cmd.Commands(), 5)
+	assert.Len(t, cmd.Commands(), 4)
 	names := make([]string, len(cmd.Commands()))
 	for i, c := range cmd.Commands() {
 		names[i] = c.Name()
@@ -1210,5 +1210,5 @@ func TestNewAgentCmd_HasSubcommands(t *testing.T) {
 	assert.Contains(t, names, "list")
 	assert.Contains(t, names, "update")
 	assert.Contains(t, names, "remove")
-	assert.Contains(t, names, "migrate-customizations")
+	assert.NotContains(t, names, "migrate-customizations", "should not exist — removed per ADR-0064")
 }

@@ -1895,6 +1895,50 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 	assert.Equal(t, "shared-dir", filepath.Base(h.Plugins[0]))
 }
 
+func TestResolveFromLock_LocalPathsSurviveStrip(t *testing.T) {
+	// When a harness has URL resources (with lock deps) AND local-path
+	// profiles/providers (without lock deps), the lock strip must keep the
+	// local-path entries so the second ResolveHarness pass can process them.
+	skillContent := []byte("id: my-skill\nname: My Skill\n")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/my.yaml", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "skills[0]",
+				URL:    "https://example.com/skills/my.yaml",
+				SHA256: skillHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:  "agents/code.md",
+		Skills: []string{"https://example.com/skills/my.yaml#sha256=" + skillHash},
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"/workspace/.fullsend/profiles/claude-code.yaml"},
+		},
+		Providers:              []string{"local-bare-name", "/workspace/.fullsend/providers/custom.yaml"},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+
+	// Local-path profile must survive the strip.
+	require.Len(t, h.OpenShell.Profiles, 1)
+	assert.Equal(t, "/workspace/.fullsend/profiles/claude-code.yaml", h.OpenShell.Profiles[0])
+
+	// Bare name AND local-path provider must survive; URL was stripped.
+	require.Len(t, h.Providers, 2)
+	assert.Equal(t, "local-bare-name", h.Providers[0])
+	assert.Equal(t, "/workspace/.fullsend/providers/custom.yaml", h.Providers[1])
+}
+
 func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
 	profileContent := []byte("id: anthropic\nname: Anthropic\n")
 	profileHash := fetch.ComputeSHA256(profileContent)

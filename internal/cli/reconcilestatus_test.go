@@ -14,6 +14,15 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 )
 
+// gitlabNoteServer returns an httptest.Server that handles GitLab note API calls
+// for reconcile-status tests.
+func gitlabNoteServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+}
+
 func TestNewReconcileStatusCmd_RequiredFlags(t *testing.T) {
 	cmd := newReconcileStatusCmd()
 
@@ -195,4 +204,111 @@ func TestNewReconcileStatusCmd_RejectsMalformedToken(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected characters")
+}
+
+func TestNewReconcileStatusCmd_HasForgeFlag(t *testing.T) {
+	cmd := newReconcileStatusCmd()
+
+	f := cmd.Flags().Lookup("forge")
+	require.NotNil(t, f, "reconcile-status command should have --forge flag")
+	assert.Equal(t, "", f.DefValue)
+}
+
+func TestNewReconcileStatusCmd_GitLabSuccess(t *testing.T) {
+	srv := gitlabNoteServer()
+	defer srv.Close()
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_SERVER_URL", srv.URL)
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--forge", "gitlab",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestNewReconcileStatusCmd_GitLabCancelled(t *testing.T) {
+	srv := gitlabNoteServer()
+	defer srv.Close()
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_SERVER_URL", srv.URL)
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--reason", "cancelled",
+		"--forge", "gitlab",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestNewReconcileStatusCmd_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--forge", "gitlab",
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestNewReconcileStatusCmd_GitLabCustomBaseURL(t *testing.T) {
+	srv := gitlabNoteServer()
+	defer srv.Close()
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("FULLSEND_GITLAB_URL", srv.URL)
+	t.Setenv("CI_SERVER_URL", "https://should-not-be-used.example.com")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--forge", "gitlab",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestNewReconcileStatusCmd_GitLabNoMintRequired(t *testing.T) {
+	srv := gitlabNoteServer()
+	defer srv.Close()
+
+	// GitLab path should succeed without --mint-url or --role.
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_SERVER_URL", srv.URL)
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--forge", "gitlab",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
 }

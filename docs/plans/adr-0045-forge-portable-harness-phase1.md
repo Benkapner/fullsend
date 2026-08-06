@@ -45,11 +45,12 @@ PRs 1, 2, 7 can start in parallel. PR 4 depends on PRs 1, 2, and 3 (`loadRaw` fo
 **Scope:** New struct, merge function, validation. No callers in the load pipeline — pure library code.
 
 **Create `internal/harness/forge.go`:**
-- `ForgeConfig` struct with `PreScript`, `PostScript`, `Policy`, `Skills`, `ValidationLoop`, `RunnerEnv`
+- `ForgeConfig` struct with `PreScript`, `PostScript`, `Policy`, `Skills`, `HostFiles`, `ValidationLoop`, `RunnerEnv`
 - `validForgeKeys = map[string]bool{"github": true, "gitlab": true}`
 - `(h *Harness) ResolveForge(platform string) error` — merges forge overrides into harness in place per ADR rules:
   - Scalars: forge overrides if non-empty
   - Skills: merged with deduplication by basename (forge overrides top-level)
+  - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
   - RunnerEnv: top-level + forge map, forge wins on key conflict
   - ValidationLoop: forge replaces entirely if non-nil
   - Sets `h.Forge = nil` after merge (consumed)

@@ -698,6 +698,7 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"GetFileContent", func(fc *FakeClient) error { _, err := fc.GetFileContent(ctx, "o", "r", "p"); return err }},
 		{"CreateBranch", func(fc *FakeClient) error { return fc.CreateBranch(ctx, "o", "r", "b") }},
+		{"CreateBranchFromSHA", func(fc *FakeClient) error { return fc.CreateBranchFromSHA(ctx, "o", "r", "b", "sha") }},
 		{"DeleteRef", func(fc *FakeClient) error { return fc.DeleteRef(ctx, "o", "r", "heads/b") }},
 		{"CreateFileOnBranch", func(fc *FakeClient) error { return fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", nil) }},
 		{"CreateChangeProposal", func(fc *FakeClient) error {
@@ -841,6 +842,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", []byte("data"))
 			_, _ = fc.GetFileContent(ctx, "o", "r", "file.txt")
 			_ = fc.CreateBranch(ctx, "o", "r", "b")
+			_ = fc.CreateBranchFromSHA(ctx, "o", "r", "sha-branch", "abc123")
 			_ = fc.DeleteRef(ctx, "o", "r", "heads/b")
 			_ = fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data"))
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
@@ -944,6 +946,61 @@ func TestFakeClient_CreateFork(t *testing.T) {
 		}
 		_, _, err := fc.CreateFork(ctx, "upstream", "repo")
 		require.Error(t, err)
+	})
+}
+
+func TestFakeClient_CreateBranchFromSHA(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("records both CreatedBranches and CreatedBranchSHAs", func(t *testing.T) {
+		fc := NewFakeClient()
+		err := fc.CreateBranchFromSHA(ctx, "owner", "repo", "feature", "abc123sha")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"owner/repo/feature"}, fc.CreatedBranches)
+		require.Len(t, fc.CreatedBranchSHAs, 1)
+		assert.Equal(t, BranchSHARecord{
+			Owner: "owner", Repo: "repo", Branch: "feature", SHA: "abc123sha",
+		}, fc.CreatedBranchSHAs[0])
+	})
+
+	t.Run("returns per-repo error", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.CreateBranchErrors = map[string]error{
+			"owner/repo": ErrForbidden,
+		}
+		err := fc.CreateBranchFromSHA(ctx, "owner", "repo", "feature", "sha")
+		require.Error(t, err)
+		assert.True(t, IsForbidden(err))
+		assert.Empty(t, fc.CreatedBranchSHAs, "should not record on error")
+	})
+
+	t.Run("per-repo error takes precedence over generic", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.CreateBranchErrors = map[string]error{
+			"owner/repo": ErrForbidden,
+		}
+		fc.Errors["CreateBranchFromSHA"] = ErrAlreadyExists
+		err := fc.CreateBranchFromSHA(ctx, "owner", "repo", "feature", "sha")
+		require.Error(t, err)
+		assert.True(t, IsForbidden(err), "per-repo error should take precedence")
+	})
+
+	t.Run("falls through to generic error", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.Errors["CreateBranchFromSHA"] = ErrAlreadyExists
+		err := fc.CreateBranchFromSHA(ctx, "owner", "repo", "feature", "sha")
+		require.Error(t, err)
+		assert.True(t, IsAlreadyExists(err))
+	})
+
+	t.Run("no per-repo match falls through", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.CreateBranchErrors = map[string]error{
+			"other/repo": ErrForbidden,
+		}
+		err := fc.CreateBranchFromSHA(ctx, "owner", "repo", "feature", "abc123")
+		require.NoError(t, err)
+		require.Len(t, fc.CreatedBranchSHAs, 1)
 	})
 }
 

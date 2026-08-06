@@ -118,6 +118,16 @@ type GCFClient interface {
 
 	// IAM bindings
 	SetSecretIAMBinding(ctx context.Context, resource, member, role string) error
+	// ReplaceSecretIAMBinding sets the IAM binding for a role on a Secret
+	// Manager resource, replacing all existing members for that role with
+	// the specified member. This is destructive: any other members bound
+	// to the same role on the resource are removed. Use this instead of
+	// SetSecretIAMBinding when re-install with a different service account
+	// should revoke the old account's access.
+	ReplaceSecretIAMBinding(ctx context.Context, resource, member, role string) error
+	// SetProjectIAMBinding adds an IAM binding on a Cloud Resource Manager
+	// project. This is intentionally additive (unlike ReplaceSecretIAMBinding)
+	// because project-level roles may have multiple legitimate members.
 	SetProjectIAMBinding(ctx context.Context, projectID, member, role string) error
 
 	// Cloud Run IAM (for function invoker policy)
@@ -709,7 +719,23 @@ func (c *LiveGCFClient) DeleteWIFProvider(ctx context.Context, projectNumber, po
 
 // SetSecretIAMBinding sets an IAM binding on a Secret Manager resource.
 // Uses read-modify-write with retry on 409 Conflict (etag mismatch).
+// The member is added to the existing binding for the role (additive).
 func (c *LiveGCFClient) SetSecretIAMBinding(ctx context.Context, resource, member, role string) error {
+	return c.setSecretIAMBindingWithMode(ctx, resource, member, role, false)
+}
+
+// ReplaceSecretIAMBinding sets the IAM binding for a role on a Secret
+// Manager resource, replacing all existing members for that role with
+// the specified member. This is destructive: any other members bound
+// to the same role are silently removed. Safe for fullsend-managed bot
+// token secrets which have a single expected accessor.
+func (c *LiveGCFClient) ReplaceSecretIAMBinding(ctx context.Context, resource, member, role string) error {
+	return c.setSecretIAMBindingWithMode(ctx, resource, member, role, true)
+}
+
+// setSecretIAMBindingWithMode is the shared implementation for both additive
+// (replace=false) and replace (replace=true) Secret Manager IAM operations.
+func (c *LiveGCFClient) setSecretIAMBindingWithMode(ctx context.Context, resource, member, role string, replace bool) error {
 	if !secretResourcePattern.MatchString(resource) {
 		return fmt.Errorf("invalid secret resource path %q", resource)
 	}
@@ -718,7 +744,7 @@ func (c *LiveGCFClient) SetSecretIAMBinding(ctx context.Context, resource, membe
 	setURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:setIamPolicy", resource)
 
 	for attempt := range maxRetries {
-		err := c.trySetIAMBinding(ctx, http.MethodGet, "", getURL, setURL, member, role)
+		err := c.trySetIAMBinding(ctx, http.MethodGet, "", getURL, setURL, member, role, replace)
 		if err == nil {
 			return nil
 		}
@@ -778,7 +804,7 @@ func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, mem
 		url.PathEscape(projectID))
 
 	for attempt := range maxRetries {
-		err := c.trySetIAMBinding(ctx, http.MethodPost, "{}", getURL, setURL, member, role)
+		err := c.trySetIAMBinding(ctx, http.MethodPost, "{}", getURL, setURL, member, role, false)
 		if err == nil {
 			return nil
 		}
@@ -797,7 +823,9 @@ func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, mem
 // trySetIAMBinding performs a single read-modify-write IAM policy update.
 // getMethod/getBody control the getIamPolicy request (GET+"" for Secret Manager,
 // POST+"{}" for Cloud Resource Manager). setIamPolicy always uses POST.
-func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody, getURL, setURL, member, role string) error {
+// When replace is true, all existing members for the role are replaced with
+// the specified member instead of appending.
+func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody, getURL, setURL, member, role string, replace bool) error {
 	resp, err := c.Client.DoRequest(ctx, getMethod, getURL, getBody)
 	if err != nil {
 		return fmt.Errorf("getting IAM policy: %w", err)
@@ -825,13 +853,19 @@ func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody
 		if binding["role"] != role {
 			continue
 		}
-		members, _ := binding["members"].([]interface{})
-		for _, m := range members {
-			if m == member {
-				return nil
+		if replace {
+			// Replace mode: set members to only the specified member.
+			binding["members"] = []string{member}
+		} else {
+			// Additive mode: append the member if not already present.
+			members, _ := binding["members"].([]interface{})
+			for _, m := range members {
+				if m == member {
+					return nil
+				}
 			}
+			binding["members"] = append(members, member)
 		}
-		binding["members"] = append(members, member)
 		found = true
 		break
 	}

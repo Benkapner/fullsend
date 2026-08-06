@@ -422,9 +422,8 @@ have been deleted in their respective extraction phases.
 **Files:** `internal/scaffold/baseurl.go`,
 ~~`internal/layers/harnesswrappers.go`~~ *(removed — PR #5425)*
 
-`HarnessNames()` is still used by `migrate.go` for
-`fullsend agent migrate-customizations` — retained until that
-command is removed.
+`HarnessNames()` is no longer used by the CLI —
+`fullsend agent migrate-customizations` has been removed (#5864).
 ~~`HarnessWrappersLayer` is no longer needed — all agents are resolved
 at runtime from config. Remove the layer and its `harnessesForRole()`
 helper.~~ *(completed — PR #5425)*
@@ -462,6 +461,6 @@ follow-up tracked by a GitHub issue, filed once all first-party
 agents have been extracted from the scaffold.
 
 **Related:** `fullsend agent migrate-customizations` (implemented in
-ADR-0064 / PR #2932) migrated existing `customized/` overrides into
-config-driven agents. The `DiffHarness`-based composition path was
-removed when agents moved to `fullsend-ai/agents` (PR #5552).
+ADR-0064 / PR #2932, removed in #5864) migrated existing `customized/`
+overrides into config-driven agents. The `DiffHarness`-based composition
+path was removed when agents moved to `fullsend-ai/agents` (PR #5552).

@@ -843,7 +843,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			}
 			localPath = namedPath
 			dep.LocalPath = namedPath
-			profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: localPath})
+			profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: localPath, FromURL: true})
 		} else if strings.HasPrefix(lockDep.Field, "providers[") {
 			var def harness.ProviderDef
 			if err := yaml.Unmarshal(cachedContent, &def); err != nil {
@@ -864,7 +864,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			if w := resolve.WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
 				dep.Warning = w
 			}
-			providers = append(providers, resolve.ResolvedProvider{Def: def, LocalPath: localPath})
+			providers = append(providers, resolve.ResolvedProvider{Def: def, LocalPath: localPath, FromURL: true})
 		}
 		deps = append(deps, dep)
 	}
@@ -1023,8 +1023,11 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 
-	// Strip URL entries from providers — URL-resolved providers are now in
-	// the ResolvedProvider list, mirroring resolve.ResolveHarness behavior.
+	// Strip URL entries from providers and profiles — URL-resolved entries
+	// are in the ResolvedProvider/ResolvedProfile lists from lock deps.
+	// Keep path entries (both absolute from base composition and local from
+	// ResolveRelativeTo) so the second ResolveHarness pass can process them;
+	// duplicates from lock deps are handled by dedup in run.go.
 	remainingProviders := h.Providers[:0]
 	for _, p := range h.Providers {
 		if !harness.IsURL(p) {
@@ -1033,7 +1036,13 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	}
 	h.Providers = remainingProviders
 	if h.OpenShell != nil {
-		h.OpenShell.Profiles = nil
+		remaining := h.OpenShell.Profiles[:0]
+		for _, p := range h.OpenShell.Profiles {
+			if !harness.IsURL(p) {
+				remaining = append(remaining, p)
+			}
+		}
+		h.OpenShell.Profiles = remaining
 	}
 
 	return resolve.ResolveResult{

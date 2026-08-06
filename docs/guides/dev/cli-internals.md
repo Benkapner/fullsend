@@ -76,11 +76,7 @@ fullsend
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
-│   ├── remove       <name>                   # Unregister agent from config
-│   └── migrate-customizations               # Migrate customized/ → config agents
-│       ├── --fullsend-dir <dir>             #   .fullsend configuration directory
-│       ├── --repo <owner/repo>              #   Target repo for migration PR
-│       └── --dry-run                        #   Preview changes without PR
+│   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory
@@ -120,27 +116,9 @@ fullsend
     ├── --sha <string>                       #   Commit SHA (optional)
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
-    └── --role <string>                      #   Agent role for minting (required with --mint-url)
+    ├── --role <string>                      #   Agent role for minting (required with --mint-url)
+    └── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 ```
-
-### Migrate Customizations
-
-The `fullsend agent migrate-customizations` command converts `customized/` directory overlays (deprecated by [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md)) into config-driven agents with `base:` composition harnesses. It scans the local `customized/` directory, classifies each override, and delivers changes via PR:
-
-```bash
-# Preview what would change (no PR created)
-fullsend agent migrate-customizations --fullsend-dir .fullsend --dry-run
-
-# Create a migration PR
-fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
-```
-
-Migration actions per agent:
-
-| Override type | Detection | Action |
-|---------------|-----------|--------|
-| Dead | Agent already registered in config | Delete customized files |
-| Custom | Not in config | Move files, register local path in config |
 
 ### Command Decomposition
 
@@ -149,7 +127,7 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 | Install Phase | Standalone Command | Required Access |
 |---------------|--------------------|-----------------|
 | Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin` |
-| Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin`; per-repo mode also needs `roles/resourcemanager.projectIamAdmin` |
+| Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin` |
 | Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 
@@ -246,8 +224,8 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
-│  │  Both modes: write workflow files (customized/ deprecated  │ │
-│  │  by ADR-0064; use migrate-customizations to convert)       │ │
+│  │  Both modes: write workflow files (customized/ removed      │ │
+│  │  per ADR-0064; use config-driven agents instead)           │ │
 │  │  CommitScaffoldFiles() delivery modes:                     │ │
 │  │    Default (PR):  create feature branch → commit → open PR │ │
 │  │    --direct:      try CommitFiles (default branch)         │ │
@@ -370,7 +348,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
 │  │ ImportProfile()   │ Import openshell provider profiles       │
-│  │                   │ (from URL-resolved openshell.profiles)   │
+│  │                   │ (from resolved openshell.profiles)       │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -662,7 +640,6 @@ var executableFiles = map[string]struct{}{
 |------|-------|---------|
 | `internal/cli/root.go` | ~34 | CLI entry point, command registration |
 | `internal/cli/admin.go` | ~2415 | Install/uninstall/analyze/enable/disable |
-| `internal/cli/migrate.go` | ~520 | Migrate customized/ overrides to config-driven agents |
 | `internal/cli/mint.go` | ~1022 | Mint deploy/enroll/unenroll/status |
 | `internal/cli/inference.go` | ~408 | Inference WIF provision/status |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |

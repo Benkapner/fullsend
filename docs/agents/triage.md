@@ -102,8 +102,7 @@ You can also overload it at the org level in your `.fullsend` config repo at
 the upstream default — no other configuration needed.
 
 > **Deprecated (ADR-0064):** The `customized/` overlay is deprecated. Use
-> config-driven agent registration instead. Run `fullsend agent migrate-customizations`
-> to migrate existing overrides.
+> config-driven agent registration instead.
 
 Here's an example that encodes domain-specific labeling rules:
 
