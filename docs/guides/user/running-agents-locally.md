@@ -450,11 +450,10 @@ request, process launch, and policy evaluation that occurred inside the
 sandbox. Each event records whether the connection was allowed or denied
 and which policy rule applied.
 
-Look for `DENIED` or `BLOCKED` entries to find connections your policy
-rejected:
+Look for `DENIED` entries to find connections your policy rejected:
 
 ```bash
-grep -i "DENIED\|BLOCKED" <run-dir>/logs/openshell-sandbox.log
+grep -i DENIED <run-dir>/logs/openshell-sandbox.log
 ```
 
 Each denied entry includes the destination host, port, and the binary that
@@ -491,7 +490,7 @@ or gateway routing issues).
 3. **Inspect the sandbox log for denied connections:**
 
    ```bash
-   grep -i "DENIED\|BLOCKED" <run-dir>/logs/openshell-sandbox.log
+   grep -i DENIED <run-dir>/logs/openshell-sandbox.log
    ```
 
    If the [analyze-transcript](https://github.com/fullsend-ai/fullsend/tree/main/skills/analyze-transcript)
