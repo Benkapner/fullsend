@@ -333,7 +333,7 @@ ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#1-webhook--dis
 
 ### 2. Slash-command parser + ACL
 
-Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each.
+Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each. Commands are restricted to the entity context where their agent's inputs exist — `/fs-code` dispatches only from issues (no associated PR), `/fs-fix` and `/fs-review` only from PRs ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md)).
 ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#2-slash-command-parser--acl).
 
 ### 3. Label state machine guard
