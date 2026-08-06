@@ -1067,7 +1067,7 @@ func resolveBasePlugins(ctx context.Context, base *Harness, baseURL string, allo
 		if err := validateBaseRelPath(fieldName, p); err != nil {
 			return nil, err
 		}
-		if base := filepath.Base(p); !ValidPluginBasename(base) {
+		if baseName := filepath.Base(p); !ValidPluginBasename(baseName) {
 			return nil, fmt.Errorf("base %s path %q does not end in a valid plugin basename (allowed: a-z, A-Z, 0-9, _, -)", fieldName, p)
 		}
 		dep, localDir, err := fetchBasePlugin(ctx, fieldName, baseURLDir, p, allowlist, opts)

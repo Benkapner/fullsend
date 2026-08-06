@@ -884,6 +884,9 @@ func (h *Harness) ValidateResourceTypes() error {
 			if info.PathType == "blob" {
 				return fmt.Errorf("skills[%d] URL must use /tree/ (directory), not /blob/ (single file) — skills are directories", i)
 			}
+			if info.Path == "" {
+				return fmt.Errorf("skills[%d] URL must point to a directory inside the repo, not the repo root", i)
+			}
 		}
 	}
 	for i, p := range h.Plugins {
