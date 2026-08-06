@@ -32,7 +32,7 @@ func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) 
 	}
 	issue, err := c.forge.GetIssue(ctx, owner, repo, number)
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	return &Issue{
 		Number: issue.Number,
@@ -51,7 +51,7 @@ func (c *ForgeClient) ListComments(ctx context.Context, project string, number i
 	}
 	comments, err := c.forge.ListIssueComments(ctx, owner, repo, number)
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	result := make([]Comment, len(comments))
 	for i, fc := range comments {
@@ -68,7 +68,7 @@ func (c *ForgeClient) CreateComment(ctx context.Context, project string, number 
 	}
 	comment, err := c.forge.CreateIssueComment(ctx, owner, repo, number, body)
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	result := fromForgeComment(*comment)
 	return &result, nil
@@ -87,7 +87,19 @@ func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number 
 	if err != nil {
 		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
 	}
-	return c.forge.UpdateIssueComment(ctx, owner, repo, id, body)
+	return wrapNotFound(c.forge.UpdateIssueComment(ctx, owner, repo, id, body))
+}
+
+// wrapNotFound translates a forge.ErrNotFound-satisfying error into one
+// that also satisfies tracker.ErrNotFound, so ForgeClient upholds the
+// Client interface's NotFound contract without leaking forge as part of
+// tracker.Client's error surface. Non-NotFound errors, including nil,
+// pass through unchanged.
+func wrapNotFound(err error) error {
+	if !forge.IsNotFound(err) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrNotFound, err)
 }
 
 func fromForgeComment(c forge.IssueComment) Comment {

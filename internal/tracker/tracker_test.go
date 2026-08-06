@@ -83,8 +83,11 @@ func TestForgeClient_GetIssue_NotFound(t *testing.T) {
 	fc := forge.NewFakeClient()
 	c := NewForgeClient(fc)
 	_, err := c.GetIssue(context.Background(), "acme/widgets", 99)
+	if !IsNotFound(err) {
+		t.Errorf("GetIssue error = %v, want tracker.ErrNotFound", err)
+	}
 	if !forge.IsNotFound(err) {
-		t.Errorf("GetIssue error = %v, want forge.ErrNotFound", err)
+		t.Errorf("GetIssue error = %v, want it to still satisfy forge.ErrNotFound", err)
 	}
 }
 

@@ -15,7 +15,23 @@
 // forge.Client (see ForgeClient). Nothing calls tracker.Client yet.
 package tracker
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNotFound indicates a requested issue or comment was not found.
+// Implementations of Client must return an error satisfying errors.Is(err,
+// ErrNotFound) — checkable via IsNotFound — for missing resources, rather
+// than requiring callers to reach into a specific tracker backend (e.g.
+// forge.ErrNotFound) to detect this case.
+var ErrNotFound = errors.New("not found")
+
+// IsNotFound reports whether err indicates a requested issue or comment
+// was not found.
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}
 
 // Issue represents an issue's content, independent of the tracker backend.
 type Issue struct {
@@ -44,6 +60,9 @@ type Comment struct {
 // Client abstracts issue-content read/write operations across trackers
 // (GitHub, GitLab, and eventually Jira). Project identifies the issue's
 // container: "owner/repo" for GitHub/GitLab, a Jira project key for Jira.
+//
+// Implementations must return an error satisfying IsNotFound when the
+// requested issue or comment doesn't exist.
 type Client interface {
 	GetIssue(ctx context.Context, project string, number int) (*Issue, error)
 	ListComments(ctx context.Context, project string, number int) ([]Comment, error)
