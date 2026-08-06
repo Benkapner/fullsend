@@ -22,4 +22,5 @@ bin/
 !.env.example
 .transcripts/
 eval/runs/
-docs/superpowers/plans/*.md
+docs/plans/
+docs/superpowers/
