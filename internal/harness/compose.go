@@ -1554,12 +1554,9 @@ func fetchBasePlugin(ctx context.Context, field, baseURLDir, pluginPath string, 
 	}
 
 	if opts.FetchPolicy.Offline {
-		if staleFallback != nil {
-			if cErr := ChmodPluginDir(staleFallbackPath); cErr != nil {
-				return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, cErr)
-			}
-			return *staleFallback, staleFallbackPath, nil
-		}
+		// staleFallback is only set when Offline=false (line above), so it
+		// is always nil here; skip the nil guard and go straight to the
+		// cache-miss error.
 		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, pluginFileURL)
 	}
 

@@ -7034,3 +7034,247 @@ func TestResolveBasePlugins_InvalidBaseURL(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
+
+func TestResolveBasePlugins_PathTraversal(t *testing.T) {
+	base := &Harness{Plugins: []string{"../../../etc/shadow"}}
+	_, err := resolveBasePlugins(context.Background(), base,
+		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
+		[]string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestResolveBasePlugins_SkipsEmptyURLAndCache(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	base := &Harness{Plugins: []string{
+		"",
+		"https://example.com/plugin",
+		filepath.Join(cacheDir, ".fullsend-cache/sha256/abc/my-plugin"),
+	}}
+	deps, err := resolveBasePlugins(context.Background(), base,
+		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
+		nil, ComposeOpts{WorkspaceRoot: cacheDir})
+	require.NoError(t, err)
+	assert.Empty(t, deps, "empty, URL, and cache paths should be skipped")
+}
+
+func TestFetchBasePluginDir_NarrowAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+	})
+
+	narrowAllowlist := []string{
+		"https://raw.githubusercontent.com/org/repo/ref1/plugins/gopls-lsp/plugin.json",
+	}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref1/plugins/gopls-lsp",
+		"https://raw.githubusercontent.com/org/repo/ref1/plugins/gopls-lsp/plugin.json",
+		"plugins/gopls-lsp", "org/repo", narrowAllowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin directory URL")
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestFetchBasePluginDir_FetchErrorWithToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+			GitToken:      "ghp_test123",
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching plugin directory")
+	assert.NotContains(t, err.Error(), "hint:")
+}
+
+func TestFetchBasePluginDir_FetchErrorNoToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hint:")
+}
+
+func TestLoadWithBase_SourceURL_PluginPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Pre-populate agent in cache so resolveBaseResources succeeds
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	path := writeTestHarness(t, dir, "triage.yaml", `
+role: test
+slug: test
+agent: agents/triage.md
+plugins:
+  - ../../../etc/shadow
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		SourceURL:     "https://example.com/harness/triage.yaml",
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced plugins")
+}
+
+func TestLoadWithBase_URLBase_PluginPathTraversalAfterMerge(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+`)
+	hash := computeHash(baseContent)
+
+	// Pre-populate agent + base in cache
+	agentRes := []byte("# test agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/base.yaml", baseContent))
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/remote.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/remote.md", fetch.ComputeSHA256(agentRes)))
+
+	baseURL := "https://example.com/base.yaml#sha256=" + hash
+
+	// The child harness is loaded from a SourceURL and has a path-traversal plugin.
+	// The base is clean, but after merge, the child's plugin remains.
+	// resolveBasePlugins is called on the merged harness with the SourceURL.
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+plugins:
+  - ../../../etc/shadow
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		SourceURL:     "https://example.com/harness/child.yaml",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced plugins after base composition")
+}
+
+func TestChmodPluginDir_NonexistentSymlink(t *testing.T) {
+	err := ChmodPluginDir(filepath.Join(t.TempDir(), "nonexistent-link"))
+	require.Error(t, err)
+}
+
+func TestLoadWithBase_URLBase_PluginInChainedBase(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	grandparentContent := []byte(`
+agent: agents/grandparent.md
+role: test
+model: opus
+plugins:
+  - plugins/gopls-lsp
+`)
+	grandparentHash := computeHash(grandparentContent)
+
+	parentContent := []byte(`
+agent: agents/parent.md
+role: test
+base: https://example.com/grandparent.yaml#sha256=` + grandparentHash + `
+`)
+	parentHash := computeHash(parentContent)
+
+	// Pre-populate cache: parent harness
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/parent.yaml", parentContent))
+	// Pre-populate cache: grandparent harness
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/grandparent.yaml", grandparentContent))
+	// Pre-populate cache: agent resources
+	agentRes := []byte("# test agent")
+	for _, agentURL := range []string{
+		"https://example.com/agents/grandparent.md",
+		"https://example.com/agents/parent.md",
+	} {
+		require.NoError(t, fetch.CachePut(cacheDir, agentURL, agentRes))
+		require.NoError(t, urlIndexPut(cacheDir, agentURL, fetch.ComputeSHA256(agentRes)))
+	}
+	// Pre-populate cache: plugin directory
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	baseURL := "https://example.com/parent.yaml#sha256=" + parentHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "agents/child.md", h.Agent)
+	assert.Equal(t, "opus", h.Model)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0]),
+		"plugin should be resolved to cache path, got %s", h.Plugins[0])
+
+	pluginJSON, err := os.ReadFile(filepath.Join(h.Plugins[0], "plugin.json"))
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, pluginJSON)
+
+	var foundPlugin bool
+	for _, d := range deps {
+		if d.Field == "plugins[0]" {
+			foundPlugin = true
+			assert.Equal(t, "directory", d.Type)
+		}
+	}
+	assert.True(t, foundPlugin, "should have plugin dependency")
+}
