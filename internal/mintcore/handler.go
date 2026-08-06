@@ -333,8 +333,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
 	if scopeErr != nil && !isTargetForeign {
 		// Same-org scope denied. For per-repo callers requesting repos
-		// beyond their own, check repo-level FOREIGN grants.
-		if isPerRepo && len(req.Repos) > 0 {
+		// beyond their own (specific per-repo denial), check repo-level
+		// FOREIGN grants. Only override the per-repo cross-repo denial;
+		// other denial reasons (empty repos, org-mode shape violations)
+		// must not be overridden.
+		if isPerRepo && len(req.Repos) > 0 && strings.Contains(scopeErr.Error(), "per-repo mint requires repos") {
 			if fErr := h.checkRepoForeignGrants(ctx, claims, callerOrg, req.Role, req.Repos); fErr == nil {
 				log.Printf("intra-org repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
 					claims.Repository, callerOrg, req.Repos, req.Role)

@@ -42,7 +42,12 @@ func repositoryBareName(repository string) string {
 
 // validateReposScope enforces mint repos authorization after OIDC verification.
 //
-// Foreign (cross-org) requests may only omit repos (or use "*" → empty).
+// INVARIANT: For foreign (cross-org) requests, this function returns nil
+// unconditionally. Callers MUST invoke mintTokenCrossOrg for foreign
+// requests with non-empty repos to perform repo-level FOREIGN grant
+// authorization. Without that follow-up check, foreign requests with
+// specific repos would bypass authorization entirely.
+//
 // Same-org requests differ based on whether the caller is per-repo or per-org:
 //
 //   - Per-repo callers (perRepo=true): must list exactly the requesting

@@ -3596,3 +3596,64 @@ func TestHandler_RepoLevelForeignGrant_ScopeRestriction(t *testing.T) {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestHandler_OrgLevelForeignDoesNotAuthorizeRepoScoped verifies the disjoint
+// authorization boundary from ADR 0083: an org-level FOREIGN grant does NOT
+// authorize cross-org requests with specific repos when no repo-level grant
+// exists on the target repo.
+func TestHandler_OrgLevelForeignDoesNotAuthorizeRepoScoped(t *testing.T) {
+	t.Setenv("ALLOWED_ORGS", "test-org,fullsend-ai")
+	t.Setenv("ROLE_APP_IDS", `{"coder":"400"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{pems: map[string][]byte{"coder": pemData}})
+	token := env.signToken(t, map[string]interface{}{
+		"repository":       "fullsend-ai/fullsend",
+		"repository_owner": "fullsend-ai",
+		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/code.yml@refs/heads/main",
+	})
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		// Repo-level lookup for target-repo: no FOREIGN variable set.
+		case r.URL.Path == "/repos/target-org/target-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 801, Account: struct {
+					Login string `json:"login"`
+				}{Login: "target-org"},
+			})
+		case r.URL.Path == "/app/installations/801/access_tokens" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_repo_policy"})
+		case r.URL.Path == "/repos/target-org/target-repo/actions/variables/FULLSEND_FOREIGN_CODER_REPOS" && r.Method == http.MethodGet:
+			// No repo-level variable — 404.
+			w.WriteHeader(http.StatusNotFound)
+		// Org-level endpoints should NOT be called for repo-scoped requests.
+		case r.URL.Path == "/orgs/target-org/installation":
+			t.Errorf("org-level installation lookup should not be called for repo-scoped request")
+			w.WriteHeader(http.StatusNotFound)
+		case strings.HasPrefix(r.URL.Path, "/orgs/target-org/actions/variables/"):
+			t.Errorf("org-level variable lookup should not be called for repo-scoped request")
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder","target_org":"target-org","repos":["target-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (org-level FOREIGN should not authorize repo-scoped request), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
