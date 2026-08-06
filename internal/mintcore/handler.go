@@ -352,7 +352,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if shape != "" {
-		log.Printf("org-mode repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
+		log.Printf("repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
 			shape, req.Repos, claims.Repository, targetOrg, req.Role)
 	}
 
@@ -617,6 +617,13 @@ func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role str
 
 // checkRepoForeignGrants verifies that every repo in repos has a repo-level
 // FULLSEND_FOREIGN_<role>_REPOS variable that authorizes the caller.
+//
+// This function serves two distinct authorization paths:
+//   - Cross-org primary authorization: called from mintTokenCrossOrg when
+//     a foreign request carries specific repos (repo-scoped FOREIGN grant).
+//   - Intra-org fallback: called from the main handler when a per-repo
+//     caller requests repos beyond its own repository within the same org
+//     (errPerRepoCrossRepo), allowing cross-repo access via repo-level grants.
 func (h *Handler) checkRepoForeignGrants(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) error {
 	for _, repo := range repos {
 		allowlist, err := h.loadRepoForeignAllowlist(ctx, targetOrg, repo, role)

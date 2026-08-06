@@ -64,8 +64,8 @@ func TestValidateReposScope(t *testing.T) {
 		wantShape      string
 	}{
 		{"foreign empty", true, "fullsend-ai/fullsend", nil, false, "", ""},
-		{"foreign non-empty allowed", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, "", ""},
-		{"foreign non-empty multi", true, "fullsend-ai/fullsend", []string{"a", "b"}, true, "", ""},
+		{"foreign non-empty allowed", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, "", reposScopeShapeForeignRepoScoped},
+		{"foreign non-empty multi", true, "fullsend-ai/fullsend", []string{"a", "b"}, true, "", reposScopeShapeForeignRepoScoped},
 		{"same self", false, "acme/api", []string{"api"}, false, "", ""},
 		{"same empty per-org", false, "acme/api", nil, false, emptyDeny, ""},
 		{"same empty per-repo", false, "acme/api", nil, true, emptyDeny, ""},
