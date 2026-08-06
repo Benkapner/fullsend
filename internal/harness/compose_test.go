@@ -6814,3 +6814,223 @@ func TestFetchBasePluginDir_FetchError(t *testing.T) {
 	assert.Contains(t, err.Error(), "fetching plugin directory")
 	assert.Contains(t, err.Error(), "network timeout")
 }
+
+func TestFetchBasePlugin_AllowlistRejection(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/other/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestFetchBasePlugin_FreshFetch(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+	})
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit)
+	assert.Equal(t, "directory", dep.Type)
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_FullCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	files := map[string][]byte{"plugin.json": []byte(`{"name":"gopls-lsp"}`)}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, treeHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Equal(t, "directory", dep.Type)
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_StaleCacheInvalidation(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+		"bin/gopls":   []byte("#!/bin/sh"),
+	})
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit, "stale cache should be bypassed")
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+	assert.FileExists(t, filepath.Join(localDir, "bin", "gopls"))
+
+	dep2, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep2.CacheHit, "re-fetched entry should be cached")
+}
+
+func TestFetchBasePlugin_StaleCacheOfflineServesStale(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_StaleCacheTransientFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}
+	}
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Contains(t, dep.Warning, "using stale cached content")
+	assert.Contains(t, dep.Warning, "connection refused")
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_StaleCacheNonTransientError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("authentication failed: 401 Unauthorized")
+	}
+
+	_, _, err = fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+}
+
+func TestFetchBasePlugin_OfflineNoCacheError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in cache and offline mode is enabled")
+}
+
+func TestFetchBasePlugin_PartialIndexHit_RefetchesViaTreeFetcher(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	pluginFileURL := "https://raw.githubusercontent.com/org/repo/ref/plugins/gopls-lsp/plugin.json"
+	content := []byte(`{"name":"gopls-lsp"}`)
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, content))
+	fileHash := fetch.ComputeSHA256(content)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, fileHash))
+	// Deliberately omit the "plugin:" tree hash entry to trigger partial index hit
+
+	fetcher := fakeTreeFetcher(map[string][]byte{"plugin.json": content})
+
+	dep, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit)
+}
+
+func TestResolveBasePlugins_InvalidBaseURL(t *testing.T) {
+	base := &Harness{Plugins: []string{"plugins/test"}}
+	_, err := resolveBasePlugins(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}

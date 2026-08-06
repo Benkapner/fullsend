@@ -191,7 +191,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	child.Base = ""
 
 	// When the harness was fetched from a URL, the child may still have
-	// relative resource paths (skills, plugins, agent, policy, host_files, scripts)
+	// relative resource paths (agent, policy, skills, plugins, host_files, scripts, profiles, providers)
 	// that originated in the child harness — not the base. After merge,
 	// base resources are absolute cache paths but the child's own relative
 	// paths remain unresolved. Resolve them against the SourceURL now,
