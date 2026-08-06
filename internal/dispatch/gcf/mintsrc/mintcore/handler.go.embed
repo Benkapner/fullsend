@@ -339,6 +339,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Printf("intra-org repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
 					claims.Repository, callerOrg, req.Repos, req.Role)
 				scopeErr = nil
+			} else {
+				log.Printf("intra-org repo-level foreign grant check failed: %v", fErr)
 			}
 		}
 	}
@@ -508,23 +510,26 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 }
 
 func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) (string, string, *GrantedScope, error) {
-	// Org-level FOREIGN check (covers installation-wide and repo-scoped requests).
+	// Specific repos requested → authorize exclusively via per-repo
+	// FOREIGN grants. Org-level FOREIGN is not consulted for repo-scoped
+	// requests; it authorizes only installation-wide tokens.
+	if len(repos) > 0 {
+		if err := h.checkRepoForeignGrants(ctx, claims, targetOrg, role, repos); err != nil {
+			log.Printf("repo-level foreign grant check failed: %v", err)
+			return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target repos"}
+		}
+		log.Printf("repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
+			claims.Repository, targetOrg, repos, role)
+		return h.mintToken(ctx, targetOrg, role, repos)
+	}
+
+	// Installation-wide (empty repos) → org-level FOREIGN check only.
 	allowlist, err := h.loadForeignAllowlist(ctx, targetOrg, role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
 	if CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
 		return h.mintToken(ctx, targetOrg, role, repos)
-	}
-
-	// Org-level denied or empty. If specific repos are requested, try
-	// repo-level FOREIGN grants on each target repo (union semantics).
-	if len(repos) > 0 {
-		if err := h.checkRepoForeignGrants(ctx, claims, targetOrg, role, repos); err == nil {
-			log.Printf("repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
-				claims.Repository, targetOrg, repos, role)
-			return h.mintToken(ctx, targetOrg, role, repos)
-		}
 	}
 
 	return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
@@ -613,7 +618,7 @@ func (h *Handler) checkRepoForeignGrants(ctx context.Context, claims *Claims, ta
 	for _, repo := range repos {
 		allowlist, err := h.loadRepoForeignAllowlist(ctx, targetOrg, repo, role)
 		if err != nil {
-			return fmt.Errorf("checking repo-level foreign grant on %s/%s: %w", targetOrg, repo, err)
+			return fmt.Errorf("checking repo-level foreign grant on %s/%s: %v", targetOrg, repo, err)
 		}
 		if !CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
 			return fmt.Errorf("caller %s not authorized by repo-level foreign grant on %s/%s", claims.Repository, targetOrg, repo)

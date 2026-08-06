@@ -49,8 +49,8 @@ func foreignCacheKey(targetOrg, role string) string {
 	return strings.ToLower(targetOrg) + "/" + strings.ToLower(role)
 }
 
-// repoForeignCacheKey builds a cache key for target org + repo + role
-// repo-level policy lookups, distinct from the org-level foreignCacheKey.
+// repoForeignCacheKey builds a cache key for repo-level policy lookups
+// (target org + repo + role), distinct from the org-level foreignCacheKey.
 func repoForeignCacheKey(targetOrg, targetRepo, role string) string {
 	return strings.ToLower(targetOrg) + "/" + strings.ToLower(targetRepo) + "/" + strings.ToLower(role)
 }

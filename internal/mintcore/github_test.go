@@ -347,7 +347,7 @@ func TestFindOrgInstallation_OrgMismatch(t *testing.T) {
 func TestGetOrgVariable(t *testing.T) {
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/orgs/pool-org/actions/variables/FULLSEND_FOREIGN_E2E_REPOS", r.URL.Path)
-		json.NewEncoder(w).Encode(orgVariableResponse{
+		json.NewEncoder(w).Encode(variableResponse{
 			Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 			Value: "fullsend-ai/fullsend",
 		})
@@ -380,7 +380,7 @@ func TestReadForeignAllowlist(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_policy"})
 		case r.URL.Path == "/orgs/pool-org/actions/variables/FULLSEND_FOREIGN_E2E_REPOS":
-			json.NewEncoder(w).Encode(orgVariableResponse{
+			json.NewEncoder(w).Encode(variableResponse{
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend, fullsend-ai",
 			})
@@ -441,7 +441,7 @@ func TestGetOrgVariable_ErrorStatus(t *testing.T) {
 func TestGetRepoVariable(t *testing.T) {
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/target-org/target-repo/actions/variables/MY_VAR" && r.Method == http.MethodGet {
-			json.NewEncoder(w).Encode(orgVariableResponse{
+			json.NewEncoder(w).Encode(variableResponse{
 				Name:  "MY_VAR",
 				Value: "hello",
 			})
@@ -489,7 +489,7 @@ func TestReadForeignAllowlistFromRepo(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_repo_policy"})
 		case r.URL.Path == "/repos/pool-org/target-repo/actions/variables/FULLSEND_FOREIGN_E2E_REPOS":
-			json.NewEncoder(w).Encode(orgVariableResponse{
+			json.NewEncoder(w).Encode(variableResponse{
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend, caller-org",
 			})

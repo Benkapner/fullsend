@@ -314,8 +314,9 @@ func FindOrgInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL
 	return inst.ID, nil
 }
 
-// orgVariableResponse is the response from GET /orgs/{org}/actions/variables/{name}.
-type orgVariableResponse struct {
+// variableResponse is the JSON shape for GET /orgs/{org}/actions/variables/{name}
+// and GET /repos/{owner}/{repo}/actions/variables/{name} (identical schema).
+type variableResponse struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
@@ -344,7 +345,7 @@ func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, ins
 		return "", false, fmt.Errorf("getting org variable %s returned status %d", name, resp.StatusCode)
 	}
 
-	var varResp orgVariableResponse
+	var varResp variableResponse
 	if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
 		return "", false, fmt.Errorf("decoding org variable: %w", err)
 	}
@@ -375,7 +376,7 @@ func GetRepoVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, in
 		return "", false, fmt.Errorf("getting repo variable %s on %s/%s returned status %d", name, owner, repo, resp.StatusCode)
 	}
 
-	var varResp orgVariableResponse
+	var varResp variableResponse
 	if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
 		return "", false, fmt.Errorf("decoding repo variable: %w", err)
 	}

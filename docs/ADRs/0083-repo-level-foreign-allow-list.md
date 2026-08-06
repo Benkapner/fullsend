@@ -59,34 +59,26 @@ repository. The variable format is unchanged: comma-separated list of
 ### Cross-org with specific repos
 
 When a cross-org request specifies non-empty `repos` (e.g.,
-`repos: ["target-repo"]`), the handler checks repo-level FOREIGN variables
-on each requested repository:
+`repos: ["target-repo"]`), the handler authorizes **exclusively** via
+per-repo FOREIGN grants — the org-level variable is not consulted:
 
-1. Check the **org-level** `FULLSEND_FOREIGN_<ROLE>_REPOS` on the target org
-   (existing behavior).
-2. If the caller is authorized by the org-level variable, mint proceeds for
-   the requested repos (org-level grant covers all repos in the org).
-3. If the org-level variable is missing, empty, or does not authorize the
-   caller, check the **repo-level** `FULLSEND_FOREIGN_<ROLE>_REPOS` on each
-   requested repo.
-4. If **all** requested repos individually authorize the caller via their
+1. Check the **repo-level** `FULLSEND_FOREIGN_<ROLE>_REPOS` on each
+   requested repository.
+2. If **all** requested repos individually authorize the caller via their
    repo-level variables, mint proceeds scoped to those repos only.
-5. If any requested repo does not authorize the caller, the request is denied.
+3. If any requested repo does not authorize the caller, the request is denied.
 
 Cross-org requests with `repos: ["*"]` (installation-wide) continue to use
 only the org-level variable, unchanged from ADR 0060.
 
-### Union semantics
+### Authorization boundary
 
-A caller is authorized if **either** the org-level or repo-level variable
-grants access. This is union semantics:
+Org-level and repo-level FOREIGN grants serve distinct scopes:
 
-- Org-level grant → authorized for any repos in the target org (including
-  installation-wide).
-- Repo-level grant → authorized only for the specific repos that set the
-  variable.
-- Both set → the org-level grant takes precedence for efficiency (no
-  per-repo lookups needed).
+- **Org-level grant** → authorizes only installation-wide tokens
+  (`repos: ["*"]`). Not consulted for repo-scoped requests.
+- **Repo-level grant** → authorizes only the specific repos that set the
+  variable. Not consulted for installation-wide requests.
 
 ### Intra-org cross-repo grants
 
