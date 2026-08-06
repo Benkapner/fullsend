@@ -1543,6 +1543,9 @@ func fetchBasePlugin(ctx context.Context, field, baseURLDir, pluginPath string, 
 					if aErr := auditBaseFetch(opts, pluginFileURL, treeHash, allowedBy, true, entry.FetchTime, "plugin"); aErr != nil {
 						return Dependency{}, "", aErr
 					}
+					if cErr := ChmodPluginDir(treePath); cErr != nil {
+						return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, cErr)
+					}
 					return cachedDep, treePath, nil
 				}
 			}
@@ -1552,6 +1555,9 @@ func fetchBasePlugin(ctx context.Context, field, baseURLDir, pluginPath string, 
 
 	if opts.FetchPolicy.Offline {
 		if staleFallback != nil {
+			if cErr := ChmodPluginDir(staleFallbackPath); cErr != nil {
+				return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, cErr)
+			}
 			return *staleFallback, staleFallbackPath, nil
 		}
 		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, pluginFileURL)
@@ -1563,6 +1569,9 @@ func fetchBasePlugin(ctx context.Context, field, baseURLDir, pluginPath string, 
 			return Dependency{}, "", err
 		}
 		staleFallback.Warning = fmt.Sprintf("using stale cached content (re-fetch failed: %s)", err)
+		if cErr := ChmodPluginDir(staleFallbackPath); cErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, cErr)
+		}
 		return *staleFallback, staleFallbackPath, nil
 	}
 	return dep, dirPath, err
@@ -1624,19 +1633,8 @@ func fetchBasePluginDir(ctx context.Context, field, pluginDirURL, pluginFileURL,
 		return Dependency{}, "", aErr
 	}
 
-	// Make plugin files executable -- plugins may contain scripts or MCP
-	// server binaries that need the execute bit.
-	resolved, resolveErr := filepath.EvalSymlinks(treePath)
-	if resolveErr != nil {
-		return Dependency{}, "", fmt.Errorf("base %s: resolving plugin symlink: %w", field, resolveErr)
-	}
-	if walkErr := filepath.Walk(resolved, func(p string, info os.FileInfo, wErr error) error {
-		if wErr != nil || info.IsDir() {
-			return wErr
-		}
-		return os.Chmod(p, 0o755)
-	}); walkErr != nil {
-		return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, walkErr)
+	if err := ChmodPluginDir(treePath); err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, err)
 	}
 
 	return Dependency{

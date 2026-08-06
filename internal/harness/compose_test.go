@@ -6728,3 +6728,89 @@ plugins:
 	require.NoError(t, h.ValidateFilesExist(),
 		"plugin path should have been resolved to a cache path, not left as a relative path")
 }
+
+func TestFetchBasePluginDir_FullDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+		"bin/gopls":   []byte("#!/bin/sh\nexec gopls"),
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/fullsend-ai/agents/"}
+
+	dep, localDir, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "fullsend-ai/agents", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, localDir)
+	assert.Equal(t, "directory", dep.Type)
+	assert.Empty(t, dep.Warning)
+	assert.False(t, dep.CacheHit)
+	assert.Equal(t, "gopls-lsp", filepath.Base(localDir))
+
+	pluginJSON, err := os.ReadFile(filepath.Join(localDir, "plugin.json"))
+	require.NoError(t, err)
+	assert.Equal(t, `{"name":"gopls-lsp"}`, string(pluginJSON))
+
+	binGopls, err := os.ReadFile(filepath.Join(localDir, "bin", "gopls"))
+	require.NoError(t, err)
+	assert.Equal(t, "#!/bin/sh\nexec gopls", string(binGopls))
+
+	info, err := os.Stat(filepath.Join(localDir, "bin", "gopls"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(),
+		"plugin files should be chmod 0755")
+}
+
+func TestFetchBasePluginDir_NoPluginJSON(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"bin/gopls": []byte("#!/bin/sh"),
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no plugin.json")
+}
+
+func TestFetchBasePluginDir_FetchError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("network timeout")
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching plugin directory")
+	assert.Contains(t, err.Error(), "network timeout")
+}
