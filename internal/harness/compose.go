@@ -191,7 +191,8 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	child.Base = ""
 
 	// When the harness was fetched from a URL, the child may still have
-	// relative resource paths (agent, policy, skills, plugins, host_files, scripts, profiles, providers)
+	// relative resource paths (including scripts, agent, policy, skills,
+	// host_files, profiles, providers, and plugins)
 	// that originated in the child harness — not the base. After merge,
 	// base resources are absolute cache paths but the child's own relative
 	// paths remain unresolved. Resolve them against the SourceURL now,
@@ -1043,9 +1044,9 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 }
 
 // resolveBasePlugins fetches plugin directories with relative paths from a
-// URL-referenced base harness, the same way resolveBaseResources handles
-// skills. Plugins are directories (fetched via fetchBasePlugin) that use
-// plugin.json as their marker file instead of SKILL.md.
+// URL-referenced base harness, following the same pattern as
+// resolveBaseResources. Plugins are directories (fetched via fetchBasePlugin)
+// that use plugin.json as their marker file instead of SKILL.md.
 func resolveBasePlugins(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	if len(base.Plugins) == 0 {
 		return nil, nil
@@ -1065,6 +1066,9 @@ func resolveBasePlugins(ctx context.Context, base *Harness, baseURL string, allo
 		fieldName := fmt.Sprintf("plugins[%d]", i)
 		if err := validateBaseRelPath(fieldName, p); err != nil {
 			return nil, err
+		}
+		if base := filepath.Base(p); !ValidPluginBasename(base) {
+			return nil, fmt.Errorf("base %s path %q does not end in a valid plugin basename (allowed: a-z, A-Z, 0-9, _, -)", fieldName, p)
 		}
 		dep, localDir, err := fetchBasePlugin(ctx, fieldName, baseURLDir, p, allowlist, opts)
 		if err != nil {

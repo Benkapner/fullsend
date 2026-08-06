@@ -7044,6 +7044,15 @@ func TestResolveBasePlugins_PathTraversal(t *testing.T) {
 	assert.Contains(t, err.Error(), "path traversal")
 }
 
+func TestResolveBasePlugins_InvalidBasename(t *testing.T) {
+	base := &Harness{Plugins: []string{"plugins/bad name"}}
+	_, err := resolveBasePlugins(context.Background(), base,
+		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
+		[]string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "valid plugin basename")
+}
+
 func TestResolveBasePlugins_SkipsEmptyURLAndCache(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
