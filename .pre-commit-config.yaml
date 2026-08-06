@@ -165,6 +165,7 @@ repos:
         entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md
         language: system
         files: '\.md$'
+        exclude: '^\.'
         pass_filenames: true
 
       - id: lint-workflow-size
