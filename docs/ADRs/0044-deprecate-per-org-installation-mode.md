@@ -118,7 +118,7 @@ way, without a shared config repo.
 
 [ADR 0038](0038-universal-harness-access.md) complements this by making
 the `.fullsend` config repo unnecessary as a resource distribution point.
-Harness resources (agents, skills, policies) can be referenced by URL
+Harness resources (agents, skills, plugins, policies) can be referenced by URL
 with mandatory SHA256 integrity hashes rather than requiring local copies
 in the `.fullsend` directory structure. A per-repo harness can reference
 `https://raw.githubusercontent.com/fullsend-ai/library/.../agents/code.md#sha256=abc123...`

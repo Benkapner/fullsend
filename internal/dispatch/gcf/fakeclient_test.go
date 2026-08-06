@@ -52,10 +52,12 @@ func TestNewFakeGCFClient_OptionsAndMethods(t *testing.T) {
 	require.Error(t, err)
 	require.NoError(t, client.EnableSecretVersion(ctx, "p", "fullsend-coder-app-pem"))
 	require.NoError(t, client.DeleteSecret(ctx, "p", "new-secret"))
+	assert.Equal(t, []string{"new-secret"}, DeletedSecretIDs(client))
 
 	require.NoError(t, client.DisableWIFProvider(ctx, "p", "pool", "prov"))
 	require.NoError(t, client.DeleteWIFProvider(ctx, "p", "pool", "prov"))
 	require.NoError(t, client.SetSecretIAMBinding(ctx, "p", "s", "m"))
+	require.NoError(t, client.ReplaceSecretIAMBinding(ctx, "p", "s", "m"))
 	require.NoError(t, client.SetProjectIAMBinding(ctx, "p", "m", "r"))
 	require.NoError(t, client.SetCloudRunInvoker(ctx, "p", "s", "m"))
 

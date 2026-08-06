@@ -10,7 +10,7 @@ ADR: `docs/ADRs/0045-forge-portable-harness-schema.md`
 
 ### Relationship to ADR-0038 (Universal Harness Access)
 
-ADR-0038 makes harness *resources* (agents, skills, policies) URL-addressable. ADR-0045 makes *the harness itself* portable via `base` composition and `forge:` sections. The two complement each other:
+ADR-0038 makes harness *resources* (agents, skills, plugins, policies) URL-addressable. ADR-0045 makes *the harness itself* portable via `base` composition and `forge:` sections. The two complement each other:
 
 - **Shared infrastructure:** `base` URL resolution reuses the same `internal/fetch` (SSRF-hardened fetcher, content-addressed cache, audit logging) and `internal/resolve` (integrity hashing, allowlist checking) packages that ADR-0038 built. `base` is treated as a declarative resource — the same rules apply (HTTPS-only, mandatory `#sha256=...`, `allowed_remote_resources` prefix check).
 - **Lock file integration:** ADR-0038 Phase 3 (`internal/lock/`, `fullsend lock` CLI — shipped, PR #2082) pins resolved URLs in `lock.yaml`. The `base` field is a URL-referenced resource and must participate in the lock file. PR 4 adds `base` as a new `DependencyEntry.Field` value (`"base"`) so `fullsend lock` records it alongside agent/skill/policy deps.
@@ -45,11 +45,12 @@ PRs 1, 2, 7 can start in parallel. PR 4 depends on PRs 1, 2, and 3 (`loadRaw` fo
 **Scope:** New struct, merge function, validation. No callers in the load pipeline — pure library code.
 
 **Create `internal/harness/forge.go`:**
-- `ForgeConfig` struct with `PreScript`, `PostScript`, `Policy`, `Skills`, `ValidationLoop`, `RunnerEnv`
+- `ForgeConfig` struct with `PreScript`, `PostScript`, `Policy`, `Skills`, `HostFiles`, `ValidationLoop`, `RunnerEnv`
 - `validForgeKeys = map[string]bool{"github": true, "gitlab": true}`
 - `(h *Harness) ResolveForge(platform string) error` — merges forge overrides into harness in place per ADR rules:
   - Scalars: forge overrides if non-empty
   - Skills: merged with deduplication by basename (forge overrides top-level)
+  - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
   - RunnerEnv: top-level + forge map, forge wins on key conflict
   - ValidationLoop: forge replaces entirely if non-nil
   - Sets `h.Forge = nil` after merge (consumed)
@@ -212,7 +213,7 @@ For **lock file integration**, `base` URLs are recorded as `DependencyEntry` ent
 
 **Modify `internal/cli/lock.go`:**
 - Same pipeline ordering for `fullsend lock`: `LoadWithBase` (merge base chain, `ResolveForge` once on merged result) → `ResolveRelativeTo` → `resolve.ResolveHarness`. The lock file records dependencies from both the base chain and the resource resolution.
-- Fix `HasURLReferences()` short-circuit: move the check after `LoadWithBase` and change the condition to `!h.HasURLReferences() && len(baseDeps) == 0`. Without this, a harness whose only remote references are in `base` (all agent/policy/skills are local paths) would skip lock file generation, losing the base dependency entries. `HasURLReferences()` only checks Agent/Policy/Skills — it has no knowledge of `base` (which is already consumed by `LoadWithBase`).
+- Fix `HasURLReferences()` short-circuit: move the check after `LoadWithBase` and change the condition to `!h.HasURLReferences() && len(baseDeps) == 0`. Without this, a harness whose only remote references are in `base` (all agent/policy/skills are local paths) would skip lock file generation, losing the base dependency entries. `HasURLReferences()` only checks Agent/Policy/Skills/Plugins — it has no knowledge of `base` (which is already consumed by `LoadWithBase`).
 
 **Create `internal/harness/integration_test.go`:**
 - End-to-end: YAML with base + forge + role/slug → LoadWithBase → verify correct merged state (forge maps merged across base chain before consumption)

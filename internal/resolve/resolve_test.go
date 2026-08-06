@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1633,6 +1634,141 @@ credentials:
 	assert.Contains(t, err.Error(), "invalid characters")
 }
 
+func TestResolveHarness_PluginDirFetchAndCache(t *testing.T) {
+	manifestJSON := []byte(`{"name": "gopls-lsp", "version": "1.0.0"}`)
+	initSh := []byte("#!/bin/bash\necho init")
+
+	reg := newSkillRegistry()
+	treeHash := reg.register("plugins/gopls-lsp", map[string][]byte{
+		"plugin.json":     manifestJSON,
+		"scripts/init.sh": initSh,
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{forgeSkillURL("plugins/gopls-lsp", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, "directory", result.Deps[0].Type)
+	assert.Equal(t, "plugins[0]", result.Deps[0].Field)
+	assert.Equal(t, treeHash, result.Deps[0].SHA256)
+	assert.False(t, result.Deps[0].CacheHit)
+
+	// Verify h.Plugins[0] is a local directory path (not a URL) whose
+	// basename is the plugin directory name from the URL.
+	assert.False(t, harness.IsURL(h.Plugins[0]))
+	info, err := os.Stat(h.Plugins[0])
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]),
+		"plugin path basename should be the plugin directory name from the URL")
+
+	// Verify files are inside the cached directory.
+	got, err := os.ReadFile(filepath.Join(h.Plugins[0], "plugin.json"))
+	require.NoError(t, err)
+	assert.Equal(t, manifestJSON, got)
+
+	gotInit, err := os.ReadFile(filepath.Join(h.Plugins[0], "scripts", "init.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, initSh, gotInit)
+}
+
+func TestResolveHarness_PluginLocalPassThrough(t *testing.T) {
+	h := &harness.Harness{
+		Agent:   "/abs/path/agents/test.md",
+		Plugins: []string{"/abs/path/plugins/gopls-lsp"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Deps)
+	assert.Equal(t, "/abs/path/plugins/gopls-lsp", h.Plugins[0])
+}
+
+func TestResolveHarness_PluginMixedLocalAndURL(t *testing.T) {
+	reg := newSkillRegistry()
+	pluginHash := reg.register("plugins/remote-plugin", map[string][]byte{
+		"plugin.json": []byte(`{"name": "remote-plugin"}`),
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent: "/local/agents/test.md",
+		Plugins: []string{
+			"/local/plugins/local-plugin",
+			forgeSkillURL("plugins/remote-plugin", pluginHash),
+		},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+
+	// Local plugin unchanged.
+	assert.Equal(t, "/local/plugins/local-plugin", h.Plugins[0])
+	// Remote plugin resolved to a local directory path.
+	assert.False(t, harness.IsURL(h.Plugins[1]))
+	assert.Equal(t, "remote-plugin", filepath.Base(h.Plugins[1]))
+}
+
+func TestResolveHarness_PluginHashMismatch(t *testing.T) {
+	reg := newSkillRegistry()
+	reg.register("plugins/tampered", map[string][]byte{
+		"plugin.json": []byte("wrong content"),
+	})
+
+	wrongHash := fetch.ComputeTreeHash(map[string][]byte{
+		"plugin.json": []byte("expected content"),
+	})
+
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{forgeSkillURL("plugins/tampered", wrongHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity check failed")
+}
+
+func TestResolveHarness_PluginNonForgeURLRejected(t *testing.T) {
+	srv, fetchPolicy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("plugin content"))
+	}))
+
+	fakeHash := strings.Repeat("a", 64)
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{fmt.Sprintf("%s/plugins/gopls-lsp#sha256=%s", srv.URL, fakeHash)},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fetchPolicy,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "supported forge")
+}
+
 func TestResolveHarness_LocalProvidersUnchanged(t *testing.T) {
 	h := &harness.Harness{
 		Agent:     "agents/test.md",
@@ -1700,6 +1836,107 @@ func TestWarnLiteralCredentials(t *testing.T) {
 	}
 }
 
+// TestResolveHarness_PluginSharedURLWithSkill verifies that a plugin sharing a
+// URL with an already-resolved skill is NOT silently dropped. Both fields
+// should resolve to the same local cache path.
+func TestResolveHarness_PluginSharedURLWithSkill(t *testing.T) {
+	reg := newSkillRegistry()
+	sharedMD := []byte("---\nname: shared\n---\n# Shared resource")
+	files := map[string][]byte{"SKILL.md": sharedMD}
+	treeHash := reg.register("resources/shared", files)
+
+	root := t.TempDir()
+	sharedURL := forgeSkillURL("resources/shared", treeHash)
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Skills:                 []string{sharedURL},
+		Plugins:                []string{sharedURL},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+
+	// The URL should appear exactly once in deps (deduplicated).
+	require.Len(t, result.Deps, 1)
+
+	// Both skills and plugins should have one entry each — the plugin
+	// must NOT be dropped just because the skill was resolved first.
+	require.Len(t, h.Skills, 1, "skill should be preserved")
+	require.Len(t, h.Plugins, 1, "plugin must not be silently dropped when sharing a URL with a skill")
+
+	// Both should point to valid local directories.
+	assert.False(t, harness.IsURL(h.Skills[0]))
+	assert.False(t, harness.IsURL(h.Plugins[0]))
+}
+
+// TestResolveHarness_PluginRepoRootURLRejected verifies that a plugin URL
+// pointing to the repo root (no path after the ref) is rejected, because
+// the URL path doesn't resolve to a valid plugin basename.
+func TestResolveHarness_PluginRepoRootURLRejected(t *testing.T) {
+	reg := newSkillRegistry()
+	files := map[string][]byte{"plugin.json": []byte(`{"name": "root-plugin"}`)}
+	// Register under empty path to simulate a repo-root reference.
+	// The URL will be https://github.com/org/repo/tree/main (no trailing path).
+	treeHash := reg.register("", files)
+
+	// Build a URL with no path after the ref: .../tree/main
+	// ParseForgeURL produces Path="" for this.
+	repoRootURL := fmt.Sprintf("https://github.com/%s/%s/tree/%s#sha256=%s",
+		testForgeOwner, testForgeRepo, testForgeRef, treeHash)
+
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{repoRootURL},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "valid plugin basename")
+}
+
+// TestResolveHarness_PluginDirExecutablePermissions verifies that files in a
+// URL-fetched plugin directory have executable permissions (0755) after
+// resolution, not the cache default of 0600.
+func TestResolveHarness_PluginDirExecutablePermissions(t *testing.T) {
+	initSh := []byte("#!/bin/bash\necho init")
+	manifestJSON := []byte(`{"name": "exec-plugin"}`)
+
+	reg := newSkillRegistry()
+	treeHash := reg.register("plugins/exec-plugin", map[string][]byte{
+		"plugin.json":     manifestJSON,
+		"scripts/init.sh": initSh,
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent:                  "/local/agents/test.md",
+		Plugins:                []string{forgeSkillURL("plugins/exec-plugin", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, h.Plugins, 1)
+
+	// Verify the script file has executable permissions.
+	scriptPath := filepath.Join(h.Plugins[0], "scripts", "init.sh")
+	info, err := os.Stat(scriptPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&0o100 != 0,
+		"plugin script should have executable permission, got %s", info.Mode())
+}
+
 func TestParseProfileID(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1760,4 +1997,457 @@ func TestParseProfileID(t *testing.T) {
 			assert.Equal(t, tt.wantID, id)
 		})
 	}
+}
+
+func TestCollectProfileIDs(t *testing.T) {
+	t.Run("returns IDs from YAML files", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: alpha\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "b.yml"), []byte("id: beta\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not a profile"), 0o644)
+
+		ids, err := CollectProfileIDs(dir)
+		require.NoError(t, err)
+		sort.Strings(ids)
+		assert.Equal(t, []string{"alpha", "beta"}, ids)
+	})
+
+	t.Run("returns nil for missing directory", func(t *testing.T) {
+		ids, err := CollectProfileIDs(filepath.Join(t.TempDir(), "nonexistent"))
+		require.NoError(t, err)
+		assert.Nil(t, ids)
+	})
+
+	t.Run("returns error for invalid YAML", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(":::"), 0o644)
+
+		_, err := CollectProfileIDs(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bad.yaml")
+	})
+
+	t.Run("skips subdirectories", func(t *testing.T) {
+		dir := t.TempDir()
+		os.MkdirAll(filepath.Join(dir, "subdir.yaml"), 0o755)
+		os.WriteFile(filepath.Join(dir, "valid.yaml"), []byte("id: gamma\n"), 0o644)
+
+		ids, err := CollectProfileIDs(dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"gamma"}, ids)
+	})
+}
+
+func TestResolveHarness_LocalProfile(t *testing.T) {
+	root := t.TempDir()
+
+	profileContent := []byte("id: test-profile\nnetwork:\n  egress:\n    - host: example.com\n")
+	profilePath := filepath.Join(root, "profiles", "test-profile.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(profilePath), 0755))
+	require.NoError(t, os.WriteFile(profilePath, profileContent, 0644))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Profiles, 1)
+	assert.Equal(t, "test-profile", result.Profiles[0].ID)
+	assert.Equal(t, profilePath, result.Profiles[0].LocalPath)
+
+	// Profiles slice should be cleared after resolution
+	assert.Nil(t, h.OpenShell.Profiles)
+}
+
+func TestResolveHarness_LocalAbsProvider(t *testing.T) {
+	root := t.TempDir()
+
+	providerContent := []byte("name: test-provider\ntype: custom\ncredentials:\n  TEST_KEY: \"\"\n")
+	providerPath := filepath.Join(root, "providers", "test-provider.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(providerPath), 0755))
+	require.NoError(t, os.WriteFile(providerPath, providerContent, 0644))
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{providerPath, "bare-provider-name"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	// Absolute path provider resolved
+	require.Len(t, result.Providers, 1)
+	assert.Equal(t, "test-provider", result.Providers[0].Def.Name)
+	assert.Equal(t, "custom", result.Providers[0].Def.Type)
+	assert.Equal(t, providerPath, result.Providers[0].LocalPath)
+
+	// Bare provider name kept in h.Providers
+	require.Len(t, h.Providers, 1)
+	assert.Equal(t, "bare-provider-name", h.Providers[0])
+}
+
+func TestParseProviderDef(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			"valid",
+			"name: my-provider\ntype: custom\n",
+			"",
+		},
+		{
+			"missing name",
+			"type: custom\n",
+			"provider name is required",
+		},
+		{
+			"missing type",
+			"name: my-provider\n",
+			"provider type is required",
+		},
+		{
+			"invalid name chars",
+			"name: my.provider\ntype: custom\n",
+			"invalid characters",
+		},
+		{
+			"invalid type chars",
+			"name: my-provider\ntype: my.type\n",
+			"invalid characters",
+		},
+		{
+			"invalid yaml",
+			":::not yaml",
+			"parsing provider",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			def, _, err := parseProviderDef([]byte(tt.content), 0, "test-source")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, "my-provider", def.Name)
+				assert.Equal(t, "custom", def.Type)
+			}
+		})
+	}
+}
+
+func TestParseProviderDef_CredentialWarning(t *testing.T) {
+	content := []byte("name: my-provider\ntype: custom\ncredentials:\n  API_KEY: hardcoded-secret\n")
+	_, w, err := parseProviderDef(content, 0, "test-source")
+	require.NoError(t, err)
+	assert.Contains(t, w, "API_KEY")
+	assert.Contains(t, w, "do not look like ${VAR} references")
+}
+
+func TestResolveHarness_LocalProviderWarnings(t *testing.T) {
+	root := t.TempDir()
+
+	providerContent := []byte("name: leaky\ntype: custom\ncredentials:\n  SECRET: hardcoded-value\n")
+	providerPath := filepath.Join(root, "providers", "leaky.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(providerPath), 0755))
+	require.NoError(t, os.WriteFile(providerPath, providerContent, 0644))
+
+	h := &harness.Harness{
+		Agent:     "/abs/agents/test.md",
+		Providers: []string{providerPath},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Providers, 1)
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "SECRET")
+}
+
+func TestIsContainedPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		root string
+		want bool
+	}{
+		{"under root", "/workspace/.fullsend/profiles/net.yaml", "/workspace/.fullsend", true},
+		{"at root", "/workspace/.fullsend", "/workspace/.fullsend", true},
+		{"outside root", "/etc/passwd", "/workspace/.fullsend", false},
+		{"traversal", "/workspace/.fullsend/../../etc/passwd", "/workspace/.fullsend", false},
+		{"empty root", "/any/path", "", false},
+		{"sibling prefix", "/workspace/.fullsend-other/file", "/workspace/.fullsend", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isContainedPath(tt.path, tt.root))
+		})
+	}
+}
+
+func TestIsContainedPath_SymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	// Create a real file outside the workspace root.
+	outsideFile := filepath.Join(outside, "secret.yaml")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o644))
+
+	// Create a symlink inside root that points outside.
+	symlink := filepath.Join(root, "escape.yaml")
+	require.NoError(t, os.Symlink(outsideFile, symlink))
+
+	// Syntactically the symlink is under root, but it resolves outside.
+	assert.False(t, isContainedPath(symlink, root),
+		"symlink pointing outside workspace root must be rejected")
+
+	// A real file under root should still pass.
+	realFile := filepath.Join(root, "legit.yaml")
+	require.NoError(t, os.WriteFile(realFile, []byte("ok"), 0o644))
+	assert.True(t, isContainedPath(realFile, root))
+}
+
+func TestResolveHarness_LocalProfile_CachePathGetsYAMLExtension(t *testing.T) {
+	root := t.TempDir()
+
+	profileContent := []byte("id: claude-code\nnetwork:\n  egress:\n    - host: api.example.com\n")
+
+	// Simulate fetchBaseFile's cache layout: content stored as extensionless
+	// "content" file inside a hash-based cache directory.
+	require.NoError(t, fetch.CachePut(root, "https://example.com/profiles/claude-code.yaml", profileContent))
+	hash := fetch.ComputeSHA256(profileContent)
+	cachePath, err := fetch.CachePath(root, hash)
+	require.NoError(t, err)
+	contentPath := filepath.Join(cachePath, "content")
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{contentPath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Profiles, 1)
+	assert.Equal(t, "claude-code", result.Profiles[0].ID)
+	assert.True(t, strings.HasSuffix(result.Profiles[0].LocalPath, ".yaml"),
+		"cache-sourced profile should get .yaml extension, got %s", result.Profiles[0].LocalPath)
+	assert.NotEqual(t, contentPath, result.Profiles[0].LocalPath,
+		"extensionless cache path should have been renamed")
+
+	// Verify the symlinked file has the right content
+	got, err := os.ReadFile(result.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, got)
+}
+
+func TestResolveHarness_LocalProfile_SymlinkEscapeRejected(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	// Create a valid profile outside workspace root.
+	outsideProfile := filepath.Join(outside, "evil.yaml")
+	require.NoError(t, os.WriteFile(outsideProfile,
+		[]byte("id: evil\nnetwork:\n  egress:\n    - host: evil.com\n"), 0o644))
+
+	// Create a symlink inside root pointing to the outside profile.
+	profilesDir := filepath.Join(root, "profiles")
+	require.NoError(t, os.MkdirAll(profilesDir, 0o755))
+	symlink := filepath.Join(profilesDir, "escape.yaml")
+	require.NoError(t, os.Symlink(outsideProfile, symlink))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{symlink},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside workspace root")
+}
+
+func TestResolveHarness_LocalProfile_YAMLExtensionUnchanged(t *testing.T) {
+	root := t.TempDir()
+
+	profileContent := []byte("id: test-profile\nnetwork:\n  egress:\n    - host: example.com\n")
+	profilePath := filepath.Join(root, "profiles", "test-profile.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(profilePath), 0755))
+	require.NoError(t, os.WriteFile(profilePath, profileContent, 0644))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Profiles, 1)
+	assert.Equal(t, profilePath, result.Profiles[0].LocalPath,
+		"profile with .yaml extension should keep its original path")
+}
+
+func TestResolveHarness_LocalProfile_ExtensionlessNonCacheNoSideEffect(t *testing.T) {
+	root := t.TempDir()
+
+	// Create a local extensionless profile in the user's "repo" (not cache).
+	profileDir := filepath.Join(root, "profiles")
+	require.NoError(t, os.MkdirAll(profileDir, 0o755))
+	profilePath := filepath.Join(profileDir, "mycustomprofile")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-custom\nnetwork:\n  egress:\n    - host: example.com\n"), 0o644))
+
+	dirBefore, err := os.ReadDir(profileDir)
+	require.NoError(t, err)
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Profiles, 1)
+
+	// The original path should be kept as-is (no symlink rename).
+	assert.Equal(t, profilePath, result.Profiles[0].LocalPath,
+		"non-cache extensionless profile should not be renamed")
+
+	// No new files should appear in the directory.
+	dirAfter, err := os.ReadDir(profileDir)
+	require.NoError(t, err)
+	assert.Equal(t, len(dirBefore), len(dirAfter),
+		"no stray symlink should be created next to a non-cache local profile")
+}
+
+func TestResolveHarness_LocalProfileReadError(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{filepath.Join(root, "nonexistent", "profile.yaml")},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading profile")
+}
+
+func TestResolveHarness_LocalProfileBadID(t *testing.T) {
+	root := t.TempDir()
+
+	profilePath := filepath.Join(root, "profiles", "bad.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(profilePath), 0755))
+	require.NoError(t, os.WriteFile(profilePath, []byte("network:\n  egress: []\n"), 0644))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell.profiles[0]")
+}
+
+func TestResolveHarness_LocalProviderReadError(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{filepath.Join(root, "nonexistent", "provider.yaml")},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading provider")
+}
+
+func TestResolveHarness_LocalProviderParseError(t *testing.T) {
+	root := t.TempDir()
+
+	providerPath := filepath.Join(root, "providers", "bad.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(providerPath), 0755))
+	require.NoError(t, os.WriteFile(providerPath, []byte("name: valid\n"), 0644))
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{providerPath},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider type is required")
+}
+
+func TestResolveHarness_ProfileOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"/etc/not-in-workspace/profile.yaml"},
+		},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside workspace root")
+}
+
+func TestResolveHarness_ProviderOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{"/etc/not-in-workspace/provider.yaml"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside workspace root")
 }

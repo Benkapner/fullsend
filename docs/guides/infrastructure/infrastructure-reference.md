@@ -4,7 +4,7 @@ This guide provides implementation details for fullsend's infrastructure compone
 
 ## Token Mint (OIDC)
 
-> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint token`
+> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint workflow-host`, `fullsend mint token`
 
 The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens. This eliminates long-lived PATs from the system. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker) — see `fullsend mint deploy --platform`.
 
@@ -39,8 +39,8 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  │     ├─ Extract repository_owner → ALLOWED_ORGS check     │   │
 │  │     │   (explicit org list, or * for public mint mode)   │   │
 │  │     └─ Validate job_workflow_ref provenance              │   │
-│  │        (tight: .fullsend / upstream / per-repo;          │   │
-│  │         public: upstream fullsend-ai/fullsend only)      │   │
+│  │        (per-org: .fullsend / upstream;                   │   │
+│  │         per-repo/public: WORKFLOW_HOST_REPOS)            │   │
 │  │                                                          │   │
 │  │  2. STS Token Exchange                                   │   │
 │  │     ├─ POST securitytoken.googleapis.com                 │   │
@@ -98,15 +98,18 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 
 - **ALLOWED_ORGS**: Only listed orgs may mint tokens
 - **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames (use `*` to allow any basename)
-- **job_workflow_ref validation**: `.fullsend` config repo, `fullsend-ai/fullsend` upstream reusables, or registered per-repo workflows (`PER_REPO_WIF_REPOS`)
+- **job_workflow_ref validation (per-org callers)**: `{org}/.fullsend` config repo or `fullsend-ai/fullsend` upstream reusables
+- **job_workflow_ref validation (per-repo callers)**: Only repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`)
+- **job_workflow_ref validation (dual-enrolled callers)**: Callers matching both `PER_REPO_WIF_REPOS` and `ALLOWED_ORGS` accept workflows from **either** per-org sources (`{org}/.fullsend`, upstream) or per-repo sources (`WORKFLOW_HOST_REPOS`, upstream)
+- **WORKFLOW_HOST_REPOS**: Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Managed via `fullsend mint workflow-host add|remove|list`. Defaults to `fullsend-ai/fullsend` when unset.
 - **PER_REPO_WIF_REPOS**: Repos using dedicated WIF providers (repo-scoped isolation)
 
 **Public mint**: `ALLOWED_ORGS` is `*`.
 
 - **ALLOWED_ORGS**: Any org may mint (cross-org isolation still enforced at installation lookup)
-- **job_workflow_ref validation**: Only `fullsend-ai/fullsend/.github/workflows/` (any ref — tag, branch, or SHA)
-- **PER_REPO_WIF_REPOS**: Leave unset or empty (GCF mint: all repos use `WIF_PROVIDER_NAME`)
-- **ALLOWED_WORKFLOW_FILES**: Basename gate is not applied in public mode
+- **job_workflow_ref validation**: Same as per-repo callers — only repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
+- **PER_REPO_WIF_REPOS**: Set to `*` for public mode (GCF mint: all repos use `WIF_PROVIDER_NAME`)
+- **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (org registration is unnecessary); **mint unenroll** for individual orgs is rejected
 
 **GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `ALLOWED_ORGS=*` and permissive WIF together; tight-mode `mint deploy` (default) and `mint enroll` continue to use org-scoped WIF. Redeploys must match the mint mode (`--public` for public, omit for tight).
@@ -245,7 +248,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 #### GitLab
 
 **Target repo CI/CD variables (protected):**
-- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity
+- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity (variable mode only)
 - `FULLSEND_CREDENTIAL_MODE` — Set to `"variable"` or `"wif"` (when `--inference-project` is provided)
 - `FULLSEND_FORGE` — Set to `"gitlab"`
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to `"true"`)
@@ -258,6 +261,8 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
 - `FULLSEND_SA` — Service account email for WIF impersonation
+- `FULLSEND_WIF_PROVIDER` — Full WIF provider resource name (protected CI/CD variable)
+- `FULLSEND_BOT_TOKEN_SECRET` — Secret Manager secret ID for the bot PAT (protected CI/CD variable; the scaffold retrieves the PAT at runtime via OIDC/WIF)
 
 ### Secrets Layer Behavior
 

@@ -41,6 +41,8 @@ fullsend repos install -f repos.yaml "$OWNER/$REPO" \
 | `FULLSEND_CREDENTIAL_MODE` | CI/CD variable | Credential retrieval mode | `wif` or `variable` |
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
 | `FULLSEND_SA` | CI/CD variable | Service account email for WIF impersonation | `fullsend-mint@project.iam.gserviceaccount.com` |
+| `FULLSEND_WIF_PROVIDER` | CI/CD variable | Full WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
+| `FULLSEND_BOT_TOKEN_SECRET` | CI/CD variable | Secret Manager secret ID for bot PAT (WIF mode only) | `fullsend-bot-token-group--project` |
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference (WIF mode only) | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
 
@@ -80,6 +82,7 @@ To remove fullsend from a single repository:
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
 4. Delete fullsend pipeline schedules
+5. For WIF-mode repos: delete the bot token Secret Manager secret (named `fullsend-bot-token-<owner>--<repo>`) from the GCP project
 
 If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of GitHub step 3. See the [standalone commands](#standalone-commands) table for details.
 
@@ -116,7 +119,6 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Developer | `fullsend agent list` | List registered agents and their sources |
 | Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
 | Developer | `fullsend agent remove <name>` | Unregister an agent from config |
-| Developer | `fullsend agent migrate-customizations` | Migrate `customized/` overlays to config-driven agents via PR |
 
 The typical handoff: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`.
 
@@ -127,9 +129,9 @@ When using the split-responsibility workflow, each standalone command requires a
 | IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
 |----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | | | x | x | |
-| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | \*\* | | |
+| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | | | |
 | `roles/iam.serviceAccountAdmin` | | | | x | | | | | |
-| `roles/secretmanager.admin` | | | | \* | \*\*\* | \*\*\*\* | | | |
+| `roles/secretmanager.admin` | | | | \* | \*\* | \*\*\* | | | |
 | `roles/cloudfunctions.developer` | | | | x | | | | | |
 | `roles/cloudfunctions.viewer` | | | | | x | x | x | x | x |
 | `roles/run.admin` | | | | x | x | x | x | x | |
@@ -138,15 +140,15 @@ When using the split-responsibility workflow, each standalone command requires a
 
 \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
-\*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
+\*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
 
-\*\*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
-
-\*\*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
+\*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
 
 § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
 
 † All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
+
+Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 
 Required GCP APIs also differ by command group:
 
@@ -195,6 +197,23 @@ The composite action accepts four optional inputs for status notifications:
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 
 All reusable workflows pass these inputs automatically.
+
+### GitLab CI
+
+On GitLab CI, the agent reads status notification context from standard CI/CD environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `GITLAB_TOKEN` | **Required.** Project or group access token with API scope. |
+| `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. |
+| `CI_COMMIT_SHA` | Commit SHA shown in the status comment. |
+| `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
+| `CI_PIPELINE_ID` | Used as the run ID for status comment markers. |
+| `CI_MERGE_REQUEST_IID` | When set, status comments target the merge request notes API instead of issues. |
+| `FULLSEND_GITLAB_URL` | Override for `GITLAB_API_URL` and `CI_SERVER_URL` (e.g., for self-hosted instances). |
+| `FULLSEND_NOTE_TARGET` | Set to `merge_requests` to force MR note targeting when `CI_MERGE_REQUEST_IID` is unavailable (e.g., child pipelines, scheduled jobs). |
+
+`GITLAB_TOKEN` should be configured as a CI/CD variable with the **Masked** and **Protected** flags enabled in your GitLab project or group settings. Unlike GitHub (where tokens are minted at runtime and masked via `::add-mask::`), GitLab uses pre-provisioned tokens and relies on the runner-level masking configuration.
 
 ## See Also
 

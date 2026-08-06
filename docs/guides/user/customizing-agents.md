@@ -71,12 +71,14 @@ env:
 **Optional fields** (all have secure defaults and can be omitted):
 
 ```yaml
-providers:                       # Inference providers (local names or URLs)
+providers:                       # Inference providers (names, local paths, or URLs)
   - vertex                       # Local name: references providers/vertex.yaml
+  - providers/custom.yaml        # Local path: resolved relative to harness
   - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote URL
 
-openshell:                       # Openshell provider profiles (URL-only, with integrity hash)
+openshell:                       # Openshell provider profiles (local paths or URLs)
   profiles:
+    - profiles/claude-code.yaml    # Local path: resolved relative to harness
     - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=def..."
 
 validation_loop:                     # script is required; these sub-fields are optional
@@ -84,7 +86,7 @@ validation_loop:                     # script is required; these sub-fields are 
   schema: schemas/result.schema.json  # JSON Schema file for output validation (optional)
   feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
 
-allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/policies
+allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/plugins/policies
   - https://github.com/org/       # Omit field: first-party defaults apply automatically
                                    # Non-empty list: your entries + first-party defaults appended
                                    # Set to [] to deny all remote fetches (deny-all)
@@ -124,19 +126,21 @@ security:                        # Security is enabled by default with fail_mode
 
 Providers and openshell profiles can be referenced from remote URLs, enabling fully portable harnesses that bundle everything an agent needs.
 
-**`providers`** accepts both local provider names and HTTPS URLs with integrity hashes:
+**`providers`** accepts local provider names, local file paths, and HTTPS URLs with integrity hashes:
 
 ```yaml
 providers:
-  - vertex                       # Local: loaded from providers/vertex.yaml
+  - vertex                       # Local name: loaded from providers/vertex.yaml
+  - providers/custom.yaml        # Local path: resolved relative to harness
   - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote
 ```
 
-**`openshell.profiles`** accepts only HTTPS URLs (profiles are always remote):
+**`openshell.profiles`** accepts local paths and HTTPS URLs:
 
 ```yaml
 openshell:
   profiles:
+    - profiles/claude-code.yaml    # Local path (resolved relative to harness)
     - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=abc..."
 ```
 
@@ -155,9 +159,6 @@ Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_re
 > override only the fields that differ. See
 > [Bring Your Own Agent](bring-your-own-agent.md) for the composition model
 > and config-driven registration.
-> Run `fullsend agent migrate-customizations --dry-run` to preview the
-> migration, then `fullsend agent migrate-customizations --repo owner/repo`
-> to apply it.
 
 Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it.
 
@@ -224,7 +225,7 @@ To add a custom skill to the code agent's harness (deprecated — use `base:` co
 
 1. **Copy the full upstream harness** from `fullsend-ai/fullsend` to your customization directory:
    ```bash
-   # ⚠ Deprecated: use `fullsend agent migrate-customizations` to convert to config-driven agents
+   # ⚠ Deprecated: use config-driven agent registration instead
    curl -o .fullsend/customized/harness/code.yaml \
      https://raw.githubusercontent.com/fullsend-ai/agents/main/harness/code.yaml
    ```

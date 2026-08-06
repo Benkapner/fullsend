@@ -234,6 +234,8 @@ export default defineConfig({
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
+            { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },
+            { text: "Tracing with MLflow", link: "/guides/user/tracing-with-mlflow" },
           ],
         },
         {
@@ -257,7 +259,7 @@ export default defineConfig({
             { text: "Mint Administration", link: "/guides/infrastructure/mint-administration" },
             { text: "Standalone Mint", link: "/guides/infrastructure/standalone-mint" },
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
-            { text: "Distributed Tracing", link: "/guides/infrastructure/distributed-tracing" },
+            { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
             {
               text: "Layered Config Reference",
@@ -278,6 +280,7 @@ export default defineConfig({
                 { text: "CLI Internals", link: "/guides/dev/cli-internals" },
                 { text: "E2E Testing", link: "/guides/dev/e2e-testing" },
                 { text: "Testing Workflows", link: "/guides/dev/testing-workflows" },
+                { text: "Tracing Internals", link: "/guides/dev/tracing" },
               ],
             },
             {
@@ -286,6 +289,7 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
+            { text: "Archived roadmaps", link: "/archived-roadmap" },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",

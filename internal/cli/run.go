@@ -486,6 +486,40 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// When profiles or providers use local paths (from ResolveRelativeTo or
+	// base composition), ResolveHarness must still run to parse them into
+	// ResolvedProfile/ResolvedProvider — even without URL references.
+	// The lock-file and URL-resolution paths strip entries they consume;
+	// this pass handles whatever remains. Outputs are merged and deduped.
+	if len(h.OpenShellProfiles()) > 0 || hasLocalProviders(h) {
+		prev := result
+		var resolveErr error
+		result, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+			WorkspaceRoot: absFullsendDir,
+		})
+		if resolveErr != nil {
+			return fmt.Errorf("resolving local profiles/providers: %w", resolveErr)
+		}
+		result.Deps = append(prev.Deps, result.Deps...)
+		result.Profiles = append(prev.Profiles, result.Profiles...)
+		result.Providers = append(prev.Providers, result.Providers...)
+		result.Warnings = append(prev.Warnings, result.Warnings...)
+
+		// Strip path entries from h.Providers now that they've been resolved
+		// into ResolvedProviders. Only bare names should remain for
+		// sandboxProviderNames downstream.
+		bare := h.Providers[:0]
+		for _, p := range h.Providers {
+			if !harness.IsURL(p) && !harness.IsProviderPath(p) {
+				bare = append(bare, p)
+			}
+		}
+		h.Providers = bare
+	}
+	for _, w := range result.Warnings {
+		printer.StepWarn(w)
+	}
+
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
 		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
@@ -671,7 +705,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script — and can report cancellation/failure even when the
 	// sandbox never starts. See #1859.
 	if sOpts.statusRepo != "" && sOpts.statusNum > 0 {
-		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, sOpts, printer)
+		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, forgePlatform, sOpts, printer)
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
@@ -745,7 +779,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Dedupe URL-resolved providers (last-wins) so shadowed entries from
 	// base composition don't trigger false integrity errors.
 	result.Providers = dedupResolvedProviders(result.Providers)
-	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
+	dirProfileIDs, err := resolve.CollectProfileIDs(filepath.Join(absFullsendDir, "profiles"))
+	if err != nil {
+		return fmt.Errorf("scanning profiles directory: %w", err)
+	}
+	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles, dirProfileIDs); intErr != nil {
 		printer.StepFail("Provider references unknown profile type")
 		return intErr
 	} else if w != "" {
@@ -1859,7 +1897,7 @@ const deprecatedImplicitFetchWarning = "Harness declares allowed_remote_resource
 // should be started, and returns a deprecation warning if the harness relies
 // on the legacy implicit opt-in via allowed_remote_resources.
 func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning string) {
-	if h.HasURLSkills() || h.AllowRuntimeFetch {
+	if h.HasURLDirResources() || h.AllowRuntimeFetch {
 		return true, ""
 	}
 	if len(h.AllowedRemoteResources) > 0 {
@@ -1875,7 +1913,7 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 	cfg.TreeFetcher = treeFetcher
 	if gitToken != "" {
 		cfg.GitToken = gitToken
-	} else if h.HasURLSkills() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
+	} else if h.HasURLDirResources() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
 		if token, err := resolveToken(); err == nil {
 			cfg.GitToken = token
 		} else {
@@ -3058,20 +3096,18 @@ func titleCase(s string) string {
 // setupStatusNotifier creates a status comment notifier. The role parameter
 // accepts either a raw harness role (e.g. "code") or a canonical role
 // (e.g. "coder"); it is resolved via resolveRole internally.
-func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+//
+// The forgePlatform parameter selects the forge-specific code path:
+//   - "gitlab": uses GITLAB_TOKEN directly, reads CI_COMMIT_SHA and
+//     CI_PIPELINE_ID, constructs a GitLab client
+//   - default (including "github" and ""): uses mint URL, reads
+//     GITHUB_SHA and GITHUB_RUN_ID, constructs a GitHub client
+func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
 	}
 	owner, repo := parts[0], parts[1]
-
-	mintURL := sOpts.mintURL
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
-	if mintURL == "" {
-		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
-	}
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
@@ -3084,6 +3120,24 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 		if ocr, ok := orgCfg.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
 			notifyCfg = *ocr.StatusNotifications()
 		}
+	}
+
+	if forgePlatform == "gitlab" {
+		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
+	}
+	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
+}
+
+// setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
+// a fresh token via the mint service for each API call and reads SHA/run ID
+// from GitHub Actions environment variables.
+func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	mintURL := sOpts.mintURL
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	}
+	if mintURL == "" {
+		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -3122,6 +3176,38 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
 		}
 		return gh.New(result.Token), nil
+	})
+
+	return n, nil
+}
+
+// setupStatusNotifierGitLab creates a status notifier for GitLab. It uses
+// GITLAB_TOKEN directly (no mint service required) and reads SHA/run ID
+// from GitLab CI environment variables. Unlike the GitHub path, no token
+// format validation or CI log masking is performed: GitLab uses
+// pre-provisioned PATs (not minted tokens with a known prefix), and GitLab
+// CI auto-masks variables that have the "masked" flag set at the runner level.
+func setupStatusNotifierGitLab(notifyCfg config.StatusNotificationConfig, owner, repo string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	client, err := newGitLabClientFromEnv("status comments")
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer CI_MERGE_REQUEST_SOURCE_BRANCH_SHA for merged-results pipelines
+	// where CI_COMMIT_SHA points to the merged ref, not the source branch.
+	sha := os.Getenv("CI_COMMIT_SHA")
+	if mrSHA := os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"); mrSHA != "" {
+		sha = mrSHA
+	}
+
+	runID := os.Getenv("CI_PIPELINE_ID")
+	if runID == "" {
+		runID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+
+	n := statuscomment.New(client, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	n.SetWarnFunc(func(format string, args ...any) {
+		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 
 	return n, nil
@@ -3633,6 +3719,17 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	return allDefs, shadowed
 }
 
+// hasLocalProviders reports whether the harness has any provider entries that
+// are local file paths (not URLs and not bare provider names).
+func hasLocalProviders(h *harness.Harness) bool {
+	for _, p := range h.Providers {
+		if !harness.IsURL(p) && harness.IsProviderPath(p) {
+			return true
+		}
+	}
+	return false
+}
+
 // sandboxProviderNames returns the provider names that should be attached to
 // the sandbox: harness-declared (local) names plus URL-resolved names.
 // Directory providers not declared in the harness are excluded — they may
@@ -3699,21 +3796,24 @@ func forceRemoveAll(path string) error {
 	return os.RemoveAll(path)
 }
 
-// checkProviderProfileIntegrity validates that every URL-resolved provider
-// references a profile id that was also URL-resolved. Returns an error
-// describing the first mismatch, or nil if all references are valid.
-// Returns a non-empty warning string (no error) when providers exist but
-// no profiles were resolved.
-func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile) (warning string, err error) {
+// checkProviderProfileIntegrity validates that every provider references a
+// known profile type. Profile types are collected from three sources:
+// harness-resolved profiles (URL and local-path), and directory profiles
+// (from the profiles/ directory). Returns an error describing the first
+// mismatch, or nil if all references are valid.
+func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile, dirProfileIDs []string) (warning string, err error) {
 	if len(providers) == 0 {
 		return "", nil
 	}
-	if len(profiles) == 0 {
-		return "URL-resolved providers present but no URL-resolved profiles — referential integrity not verified", nil
-	}
-	profileIDs := make(map[string]bool, len(profiles))
+	profileIDs := make(map[string]bool, len(profiles)+len(dirProfileIDs))
 	for _, rp := range profiles {
 		profileIDs[rp.ID] = true
+	}
+	for _, id := range dirProfileIDs {
+		profileIDs[id] = true
+	}
+	if len(profileIDs) == 0 {
+		return "providers present but no profiles resolved — referential integrity not verified", nil
 	}
 	var mismatches []string
 	for _, rp := range providers {
@@ -3723,7 +3823,7 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 	}
 	if len(mismatches) > 0 {
 		return "", fmt.Errorf(
-			"providers reference unknown openshell.profiles types: %s — if these profiles are gateway-resident, move the providers to a local providers/ directory instead",
+			"providers reference unknown profile types: %s",
 			strings.Join(mismatches, ", "))
 	}
 	return "", nil

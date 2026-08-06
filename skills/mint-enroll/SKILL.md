@@ -56,8 +56,8 @@ MINT_REGION="us-central1"   # default; change if deployed elsewhere
 Verify the operator has the required IAM roles: Workload Identity Pool Admin,
 Cloud Functions Viewer, Cloud Run Admin. Secret Manager Admin is only needed
 for initial PEM bootstrap (`mint deploy --pem-dir`), not for enrollment.
-Per-repo enrollment additionally requires Project IAM Admin (to grant
-`roles/aiplatform.user` to the repo WIF principal).
+Enrollment does not grant any IAM roles; Vertex AI access for a repo is
+provisioned separately via `fullsend inference provision`.
 
 Verify credentials and that this checkout's CLI builds:
 

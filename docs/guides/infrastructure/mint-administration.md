@@ -9,6 +9,9 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
 | `mint unenroll` | Remove an org or repo from the mint |
+| `mint workflow-host add` | Add a repo to the workflow-host allow-list |
+| `mint workflow-host remove` | Remove a repo from the workflow-host allow-list |
+| `mint workflow-host list` | List the workflow-host allow-list |
 | `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
@@ -53,8 +56,8 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
   |----------|:---:|:---:|:---:|:---:|:---:|:---:|
   | `roles/iam.serviceAccountAdmin` | x | | | | | |
   | `roles/iam.workloadIdentityPoolAdmin` | x | | | x | x | |
-  | `roles/resourcemanager.projectIamAdmin` | \* | | | \*\* | | |
-  | `roles/secretmanager.admin` | \* | \*\*\* | \*\*\*\* | | | |
+  | `roles/resourcemanager.projectIamAdmin` | \* | | | | | |
+  | `roles/secretmanager.admin` | \* | \*\* | \*\*\* | | | |
   | `roles/cloudfunctions.developer` | x | | | | | |
   | `roles/cloudfunctions.viewer` | | x | x | x | x | x |
   | `roles/run.admin` | x | x | x | x | x | |
@@ -62,13 +65,13 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
   \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
-  \*\* `roles/resourcemanager.projectIamAdmin` is required for `mint enroll` only in per-repo mode (`mint enroll owner/repo`). Org-scoped enrollment does not grant IAM bindings — use `inference provision` separately.
+  \*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
 
-  \*\*\* `roles/secretmanager.admin` is required for `mint add-role` when uploading a new PEM (`--pem` or browser mode). When using `--use-existing-pem-secret`, only `roles/secretmanager.viewer` is required (see §).
-
-  \*\*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
+  \*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
 
   § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
+
+  Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 
   `roles/owner` covers all of the above for users with broad access.
 
@@ -324,6 +327,42 @@ Org-scoped unenroll removes the org from mint env vars and the shared WIF provid
 | `--delete-provider` | `false` | Permanently delete WIF provider (repo-scoped only) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation (for automation) |
+
+## Managing workflow hosts
+
+`fullsend mint workflow-host` manages the `WORKFLOW_HOST_REPOS` environment variable, which controls which repositories may host workflows that call the mint for per-repo callers. Per-org-only callers are not affected — they hard-wire to `{org}/.fullsend` and the upstream `fullsend-ai/fullsend` repo. Dual-enrolled callers (listed in both `PER_REPO_WIF_REPOS` and `ALLOWED_ORGS`) accept workflows from **either** per-repo sources (`WORKFLOW_HOST_REPOS`) or per-org sources (`{org}/.fullsend`, upstream).
+
+When `WORKFLOW_HOST_REPOS` is not set, it defaults to `fullsend-ai/fullsend`.
+
+### Adding a workflow host
+
+```bash
+fullsend mint workflow-host add acme-corp/my-workflows --project="$GCP_PROJECT"
+```
+
+Idempotent — skips repos already listed.
+
+### Removing a workflow host
+
+```bash
+fullsend mint workflow-host remove acme-corp/my-workflows --project="$GCP_PROJECT"
+```
+
+### Listing workflow hosts
+
+```bash
+fullsend mint workflow-host list --project="$GCP_PROJECT"
+```
+
+Read-only — makes no changes.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project` | | GCP project ID (required) |
+| `--region` | `us-central1` | Cloud region for the mint service |
+| `--dry-run` | `false` | Preview changes without making them (`add` and `remove` only) |
 
 ## Checking mint status
 
@@ -588,3 +627,5 @@ gcloud functions logs read fullsend-mint \
 - [Standalone Mint](standalone-mint.md) — Running the mint without GCP, with custom agent roles
 - [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details
+- [Cross-org authorization (ADR 0060)](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) — Org-level FOREIGN authorization via `FULLSEND_FOREIGN_<role>_REPOS` org variables
+- [Repo-level foreign grants (ADR 0083)](../../ADRs/0083-repo-level-foreign-allow-list.md) — Per-repo FOREIGN authorization grants; manage with `fullsend admin foreign` commands

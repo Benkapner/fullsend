@@ -3311,7 +3311,7 @@ func TestSetupStatusNotifier_MintURL(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 	assert.True(t, n.HasClientFactory(), "client factory should be set when mint URL provided")
@@ -3329,7 +3329,7 @@ func TestSetupStatusNotifier_MintURLFromEnv(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 	assert.True(t, n.HasClientFactory(), "client factory should be set from FULLSEND_MINT_URL env var")
@@ -3348,7 +3348,7 @@ func TestSetupStatusNotifier_NoMintURL(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "")
 	t.Setenv("GITHUB_TOKEN", "")
 
-	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	_, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no mint URL available")
 }
@@ -3362,7 +3362,7 @@ func TestSetupStatusNotifier_InvalidRepo(t *testing.T) {
 		statusNum:  7,
 	}
 
-	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	_, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--status-repo must be in owner/repo format")
 }
@@ -3396,7 +3396,7 @@ func TestSetupStatusNotifier_FactoryMintSuccess(t *testing.T) {
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 	t.Setenv("GITHUB_ACTIONS", "true")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
 
 	client, err := n.InvokeClientFactory(context.Background())
@@ -3422,7 +3422,7 @@ func TestSetupStatusNotifier_FactoryMintError(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.NoError(t, err)
 
 	client, err := n.InvokeClientFactory(context.Background())
@@ -3449,7 +3449,7 @@ func TestSetupStatusNotifier_FactoryRejectsMalformedToken(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "coder", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "coder", "", sOpts, printer)
 	require.NoError(t, err)
 
 	client, err := n.InvokeClientFactory(context.Background())
@@ -3498,7 +3498,7 @@ func TestSetupStatusNotifier_ConfigYAML(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 }
@@ -3515,7 +3515,7 @@ func TestSetupStatusNotifier_RunIDFallback(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 }
@@ -3537,7 +3537,106 @@ func TestSetupStatusNotifier_PRHeadSHA(t *testing.T) {
 	t.Setenv("GITHUB_EVENT_PATH", eventFile)
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_GitLab(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "abc123def456")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.example.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	// GitLab uses a static client, not a factory.
+	assert.False(t, n.HasClientFactory(), "GitLab should use a static client, not a factory")
+}
+
+func TestSetupStatusNotifier_GitLab_MergedResultsSHA(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "merged-ref-sha")
+	t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "source-branch-sha")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.example.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_GitLab_NoToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestSetupStatusNotifier_GitLab_CustomBaseURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "abc123")
+	t.Setenv("CI_PIPELINE_ID", "99")
+	t.Setenv("FULLSEND_GITLAB_URL", "https://gitlab.company.com")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.other.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_GitLab_NoMintURLNeeded(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// GitLab path should succeed without any mint URL set.
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "abc123")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.example.com")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 }
@@ -4876,11 +4975,12 @@ func TestSandboxProviderNames_ExcludesUndeclaredDirectoryProviders(t *testing.T)
 
 func TestCheckProviderProfileIntegrity(t *testing.T) {
 	tests := []struct {
-		name      string
-		providers []resolve.ResolvedProvider
-		profiles  []resolve.ResolvedProfile
-		wantWarn  bool
-		wantErr   bool
+		name          string
+		providers     []resolve.ResolvedProvider
+		profiles      []resolve.ResolvedProfile
+		dirProfileIDs []string
+		wantWarn      bool
+		wantErr       bool
 	}{
 		{
 			name:      "no providers",
@@ -4890,7 +4990,7 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "providers without profiles warns",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}, FromURL: true},
 			},
 			profiles: nil,
 			wantWarn: true,
@@ -4898,43 +4998,81 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "all providers match profiles",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
-				{ID: "openai"},
+				{ID: "anthropic", FromURL: true},
+				{ID: "openai", FromURL: true},
 			},
 		},
 		{
 			name: "provider references unknown profile",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
 		},
 		{
 			name: "multiple mismatches reported together",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
+		},
+		{
+			name: "local provider matched by directory profile",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles:      nil,
+			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "local provider unmatched errors",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "nonexistent"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "mixed URL and local providers all checked",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "url-p", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "local provider matched by harness profile",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "anthropic"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", LocalPath: "/tmp/anthropic.yaml"},
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles)
+			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles, tt.dirProfileIDs)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "gateway-resident")
+				assert.Contains(t, err.Error(), "unknown profile types")
 				if tt.name == "multiple mismatches reported together" {
 					assert.Contains(t, err.Error(), "missing-a")
 					assert.Contains(t, err.Error(), "missing-b")

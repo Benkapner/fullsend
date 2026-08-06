@@ -60,6 +60,8 @@ on:
         required: true
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
         required: false
+      OTEL_EXPORTER_OTLP_HEADERS:
+        required: false
 
 concurrency:
   group: >-
@@ -388,7 +390,10 @@ jobs:
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
+          OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
         with:
           agent: fix
           version: ${{ inputs.fullsend_version || job.workflow_sha }}

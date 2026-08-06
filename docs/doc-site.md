@@ -67,7 +67,7 @@ feasibility investigation for future implementation.
 The current approach — deprecation notices with migration guidance — is
 sufficient for the near term. The project has a small number of deprecated
 features, all with clear replacements and migration tooling
-(`fullsend agent migrate-customizations`, `env.runner` migration). Versioned
+(`env.runner` migration). Versioned
 docs add ongoing maintenance cost (per-release builds, backport burden) that
 is not yet justified.
 

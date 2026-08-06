@@ -65,8 +65,7 @@ merged additively with scaffold-discovered agents on disk; the additive
 merge and disk fallback were removed once all first-party agents were
 extracted — see PR #5425.)*
 
-A `fullsend agent` CLI subcommand (`add`, `list`, `update`, `remove`;
-plus `migrate-customizations` per [ADR 0064](0064-deprecate-customized-directory-overlay.md))
+A `fullsend agent` CLI subcommand (`add`, `list`, `update`, `remove`)
 manages entries (single-user CLI operations; no concurrency guard on
 config read/write) and auto-pins URLs to a commit SHA with an
 integrity hash. Per-repo config gains `allowed_remote_resources` so per-repo
