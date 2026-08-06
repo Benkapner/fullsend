@@ -191,7 +191,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	child.Base = ""
 
 	// When the harness was fetched from a URL, the child may still have
-	// relative resource paths (skills, agent, policy, host_files, scripts)
+	// relative resource paths (skills, plugins, agent, policy, host_files, scripts)
 	// that originated in the child harness — not the base. After merge,
 	// base resources are absolute cache paths but the child's own relative
 	// paths remain unresolved. Resolve them against the SourceURL now,
@@ -1630,12 +1630,14 @@ func fetchBasePluginDir(ctx context.Context, field, pluginDirURL, pluginFileURL,
 	if resolveErr != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: resolving plugin symlink: %w", field, resolveErr)
 	}
-	_ = filepath.Walk(resolved, func(p string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil || info.IsDir() {
-			return walkErr
+	if walkErr := filepath.Walk(resolved, func(p string, info os.FileInfo, wErr error) error {
+		if wErr != nil || info.IsDir() {
+			return wErr
 		}
 		return os.Chmod(p, 0o755)
-	})
+	}); walkErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, walkErr)
+	}
 
 	return Dependency{
 		Field:     field,
