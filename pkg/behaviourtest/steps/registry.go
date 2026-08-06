@@ -14,4 +14,5 @@ func Register(sc *godog.ScenarioContext) {
 	registerURLDispatchSteps(sc)
 	registerForkSteps(sc)
 	registerJiraPollSteps(sc)
+	registerBranchSteps(sc)
 }

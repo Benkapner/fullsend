@@ -50,10 +50,14 @@ Given a dummy agent that would:
 | Column | Meaning |
 |--------|---------|
 | `description` | Human label matched by assertion steps |
-| `op` | `read_file`, `url_get`, `write_fixture` |
+| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_file`, `assert_json`, `checkout_branch` |
 | `args` | Op-specific; see below |
 
 **`write_fixture`:** `dest_path, fixtures/...` — content lives in `e2e/behaviour/fixtures/`, embedded in the committed scenario script at `.fullsend/behaviour/current-scenario.yaml`.
+
+**`checkout_branch`:** a single regex-validated branch name. Probes the remote with `git ls-remote --exit-code`; when the ref exists it is fetched and the branch is based on `FETCH_HEAD` (so the branch carries that ref's commits), when the ref is absent the branch is based on the current `HEAD`, and any other probe failure (network, auth) fails the op instead of silently falling back. The op then records one marker commit on the branch so the applier post-script has content to push — and so a wrongful push moves the target branch tip, giving `branch ... is unchanged` assertions something to detect. Deliberately a narrow capability — not a general shell op.
+
+The `<issue>` placeholder expands to the scenario's issue number in `checkout_branch` args (only that op) and in the branch step definitions' branch names and head-branch patterns; order the `an issue` step before any step using it.
 
 ### Assertion steps
 
@@ -68,9 +72,51 @@ And the agent will output issues.out with:
   """
 ```
 
+### Branch assertion steps
+
+For scenarios that drive a run through the post-scripts to a real push,
+`pkg/behaviourtest/steps/branch.go` adds SCM-level assertions. Record a
+branch tip before the run to assert it did not move afterwards:
+
+```gherkin
+Given an open pull request on branch "agent/990000099-decoy"
+And the tip of branch "agent/990000099-decoy" is recorded
+...
+Then the pull request head branch matches "agent/<issue>-.*"
+And branch "agent/990000099-decoy" is unchanged
+```
+
+`the pull request head branch matches` asserts exactly **one** open PR
+head matches the pattern. The pattern is a Go regular expression,
+anchored on both ends by the step — a literal `.` in a branch name must
+be escaped, and a pattern that could also match a fixture branch (e.g. a
+decoy inside the `agent/` namespace) makes the step fail as ambiguous.
+
+For fail-closed paths there is a failure counterpart, asserted against
+the run conclusion plus the post-script's failure comment on the
+scenario PR:
+
+```gherkin
+Then the harness "fix" workflow fails reporting "Refusing to push"
+```
+
+Pick a stable fragment of the failure-comment contract (the category
+label headline or a fixed detail phrase). No shipped scenario uses this
+step yet — the fix stage's only dispatch route is a `changes_requested`
+review from the org review bot, which the suite cannot produce — but the
+step is unit-tested and ready for a suite-reachable fail-closed path.
+
 ### Compatibility tags
 
 Use tags only for **exceptions** when a backend cannot run a scenario yet: `@skip:gitlab`, `@skip:per-org`, `@requires:per-repo`. Untagged scenarios run everywhere applicable.
+
+`@requires:capability:<name>` gates scenarios that assert behavior only present past a dependency version (e.g. an agents-repo release). Such scenarios are skipped unless the runner declares the capability in the comma-separated `BEHAVIOUR_CAPABILITIES` env var:
+
+```bash
+BEHAVIOUR_CAPABILITIES=applier-branch-namespace make behaviour-test
+```
+
+This keeps CI green until the dependency ships; flip the capability on (locally or in the CI env) once the pinned dependency includes the behavior.
 
 ## Fixture authoring
 
@@ -101,6 +147,7 @@ Existing fixtures under `e2e/behaviour/fixtures/`:
 | `triage/sufficient.json` | `triage-result.schema.json` | Triage stage result with `action: "sufficient"` |
 | `dispatch/ok.json` | _(none — dispatch proof)_ | Lightweight proof-of-execution marker for dispatch scenarios |
 | `review/comment.json` | `review-result.schema.json` | Review stage result with `action: "comment"` |
+| `code/implemented.json` | `code-result.schema.json` | Code stage result targeting the default branch |
 
 The `dispatch/ok.json` fixture is not emitted as `output/agent-result.json` — it is used for auxiliary proof-of-execution files (e.g., `output/bash-routing-ok.json`). Scenarios that dispatch a **real agent stage** (triage, review, code, fix) must emit a schema-valid fixture to `output/agent-result.json`.
 
@@ -366,5 +413,9 @@ suiteRunner := godog.TestSuite{
 **`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
 
 **`scm.Driver.DeleteRepo` addition:** The `scm.Driver` interface now includes a `DeleteRepo(ctx context.Context, owner, repo string) error` method. `CleanupScenario` calls it to delete ephemeral fork repos after each scenario. External `scm.Driver` implementations must add this method — return `forge.ErrNotFound` when the repository does not exist.
+
+**`scm.Driver.ListOpenChangeProposals` / `scm.Driver.ListComments` additions:** `ListOpenChangeProposals(ctx, owner, repo) ([]forge.ChangeProposal, error)` returns the repository's **open** pull requests including each head branch; `ListComments(ctx, owner, repo, number) ([]forge.IssueComment, error)` returns the comments on an issue or pull request. The branch assertion steps and the scenario-cleanup namespace sweep call them. External `scm.Driver` implementations must add both methods.
+
+**`ci.Driver.WaitForFailedHarnessAgent` addition:** `WaitForFailedHarnessAgent(ctx, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)` waits for the named agent's harness run to complete with a terminal failure conclusion (artifact-first detection, job-name fallback) and errors out early when the run succeeds instead. External `ci.Driver` implementations must add this method.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.
