@@ -162,10 +162,10 @@ repos:
 
       - id: lint-md-links
         name: lint markdown links
-        entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md '**/*.md'
+        entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md
         language: system
-        pass_filenames: false
-        always_run: true
+        files: '\.md$'
+        pass_filenames: true
 
       - id: lint-workflow-size
         name: lint workflow file size
