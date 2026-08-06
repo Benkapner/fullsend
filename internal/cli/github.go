@@ -106,6 +106,22 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 				return fmt.Errorf("--config-hash requires --config")
 			}
 
+			_, _, isRepoTarget := parseTarget(cfg.target)
+			if !isRepoTarget {
+				for _, name := range []string{"config", "config-hash"} {
+					if cmd.Flags().Changed(name) {
+						return fmt.Errorf("--%s is only valid for per-repo setup (fullsend github setup <owner/repo>)", name)
+					}
+				}
+			}
+			if cfg.configPreset != "" {
+				for _, name := range []string{"runtime", "agents"} {
+					if cmd.Flags().Changed(name) {
+						return fmt.Errorf("--%s cannot be used with --config (the preset provides its own configuration)", name)
+					}
+				}
+			}
+
 			if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
 				return err
 			}
@@ -152,7 +168,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
 	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (e.g. claude, dummy)")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
-	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
+	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
 
 	return cmd
@@ -241,6 +257,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 				return hashErr
 			}
 			printer.StepDone("Preset hash validated")
+		} else if isRemotePreset(cfg.configPreset) {
+			printer.StepWarn("Remote preset fetched without --config-hash; content integrity is not verified")
+		}
+
+		if yamlErr := validatePresetYAML(presetData); yamlErr != nil {
+			printer.StepFail("Preset YAML validation failed")
+			return yamlErr
 		}
 	}
 

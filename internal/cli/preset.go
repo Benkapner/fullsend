@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -58,34 +61,66 @@ func fetchPresetLocal(path string) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("preset file %q is empty", path)
 	}
+	if len(data) > presetMaxSize {
+		return nil, fmt.Errorf("preset file %q exceeds maximum size (%d bytes)", path, presetMaxSize)
+	}
 	return data, nil
 }
 
 // fetchPresetHTTPS fetches a preset from an HTTPS URL.
-func fetchPresetHTTPS(url string) ([]byte, error) {
-	client := &http.Client{Timeout: presetFetchTimeout}
+func fetchPresetHTTPS(rawURL string) ([]byte, error) {
+	client := &http.Client{
+		Timeout: presetFetchTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("preset redirect to non-HTTPS URL %q is not allowed", req.URL.Redacted())
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
 
-	resp, err := client.Get(url) //nolint:gosec // URL is user-provided via --config flag
+	resp, err := client.Get(rawURL) //nolint:gosec // URL is user-provided via --config flag
 	if err != nil {
-		return nil, fmt.Errorf("fetching preset from %q: %w", url, err)
+		return nil, fmt.Errorf("fetching preset from %q: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching preset from %q: HTTP %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("fetching preset from %q: HTTP %d", rawURL, resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, presetMaxSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading preset from %q: %w", url, err)
+		return nil, fmt.Errorf("reading preset from %q: %w", rawURL, err)
 	}
 	if len(data) > presetMaxSize {
-		return nil, fmt.Errorf("preset from %q exceeds maximum size (%d bytes)", url, presetMaxSize)
+		return nil, fmt.Errorf("preset from %q exceeds maximum size (%d bytes)", rawURL, presetMaxSize)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("preset from %q is empty", url)
+		return nil, fmt.Errorf("preset from %q is empty", rawURL)
 	}
 	return data, nil
+}
+
+// isRemotePreset returns true if the source string is a URL (not a local path).
+func isRemotePreset(source string) bool {
+	u, err := url.Parse(source)
+	if err != nil {
+		return false
+	}
+	return u.Scheme != ""
+}
+
+// validatePresetYAML checks that data is syntactically valid YAML.
+func validatePresetYAML(data []byte) error {
+	var probe any
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("preset is not valid YAML: %w", err)
+	}
+	return nil
 }
 
 // validatePresetHash checks that the SHA-256 hash of data matches the

@@ -110,6 +110,42 @@ func TestFetchPreset_HTTPSchemeRejectsViaHTTPS(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported URL scheme")
 }
 
+func TestFetchPreset_LocalFileExceedsMaxSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.yaml")
+	data := make([]byte, presetMaxSize+1)
+	for i := range data {
+		data[i] = 'a'
+	}
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	_, err := fetchPreset(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
+func TestFetchPreset_HTTPSRedirectToHTTP_Rejected(t *testing.T) {
+	// httpTarget serves on plain HTTP.
+	httpTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("should not reach here"))
+	}))
+	defer httpTarget.Close()
+
+	// TLS server redirects to the plain HTTP target.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, httpTarget.URL+"/preset.yaml", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = srv.Client().Transport
+	defer func() { http.DefaultTransport = origTransport }()
+
+	_, err := fetchPreset(srv.URL + "/preset.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-HTTPS")
+}
+
 // --- validatePresetHash tests ---
 
 func TestValidatePresetHash_Match(t *testing.T) {
@@ -151,6 +187,28 @@ func TestValidatePresetHash_InvalidHex(t *testing.T) {
 	assert.Contains(t, err.Error(), "not valid hex")
 }
 
+// --- validatePresetYAML tests ---
+
+func TestValidatePresetYAML_Valid(t *testing.T) {
+	err := validatePresetYAML([]byte("version: \"1\"\nruntime: claude\n"))
+	require.NoError(t, err)
+}
+
+func TestValidatePresetYAML_Invalid(t *testing.T) {
+	err := validatePresetYAML([]byte(":\n  - :\n  bad: [unclosed"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid YAML")
+}
+
+// --- isRemotePreset tests ---
+
+func TestIsRemotePreset(t *testing.T) {
+	assert.True(t, isRemotePreset("https://example.com/preset.yaml"))
+	assert.True(t, isRemotePreset("http://example.com/preset.yaml"))
+	assert.False(t, isRemotePreset("/local/path/preset.yaml"))
+	assert.False(t, isRemotePreset("relative/path.yaml"))
+}
+
 // --- CLI flag integration tests ---
 
 func TestGitHubSetupCmd_ConfigFlags(t *testing.T) {
@@ -172,6 +230,53 @@ func TestGitHubSetupCmd_ConfigHashWithoutConfig(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--config-hash requires --config")
+}
+
+func TestGitHubSetupCmd_ConfigWithRuntime_Rejected(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "preset.yaml")
+	require.NoError(t, os.WriteFile(presetPath, []byte("version: \"1\"\n"), 0o644))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--config", presetPath,
+		"--runtime", "claude"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--runtime cannot be used with --config")
+}
+
+func TestGitHubSetupCmd_ConfigWithAgents_Rejected(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "preset.yaml")
+	require.NoError(t, os.WriteFile(presetPath, []byte("version: \"1\"\n"), 0o644))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--config", presetPath,
+		"--agents", "triage,review"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--agents cannot be used with --config")
+}
+
+func TestGitHubSetupCmd_ConfigInPerOrgMode_Rejected(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "preset.yaml")
+	require.NoError(t, os.WriteFile(presetPath, []byte("version: \"1\"\n"), 0o644))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme",
+		"--config", presetPath})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--config is only valid for per-repo setup")
 }
 
 func TestRunGitHubSetupPerRepo_WithPreset_DryRun(t *testing.T) {
