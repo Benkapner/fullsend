@@ -6,9 +6,10 @@
 // forge.Client already covers this surface for GitHub and GitLab, but it
 // stays scoped to git-hosting operations — Jira is explicitly not a forge
 // (it has no branches, pull requests, or CI). Keying by a single project
-// string lets a future Jira implementation use its natural issue key
-// (PROJECT-123) instead of forcing an owner/repo split that Jira doesn't
-// have.
+// string lets a future Jira implementation use its natural project key
+// (e.g. "PROJECT") instead of forcing an owner/repo split that Jira
+// doesn't have; the issue number is passed separately, as with GitHub and
+// GitLab.
 //
 // This package only defines the interface and thin adapters over
 // forge.Client (see ForgeClient). Nothing calls tracker.Client yet.
@@ -27,9 +28,11 @@ type Issue struct {
 
 // Comment represents a comment on an issue.
 //
-// ID is a string rather than an int because not every tracker uses numeric
-// comment IDs. Callers that need to update or delete a comment pass the ID
-// back verbatim via UpdateComment.
+// ID is a string for JSON round-tripping safety and to allow for
+// non-numeric IDs from a possible future tracker, even though GitHub,
+// GitLab, and Jira comment IDs are all numeric under the hood. Callers
+// that need to update a comment pass the ID back verbatim via
+// UpdateComment.
 type Comment struct {
 	ID        string
 	HTMLURL   string

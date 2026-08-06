@@ -26,7 +26,10 @@ func NewForgeClient(fc forge.Client) *ForgeClient {
 
 // GetIssue implements Client.
 func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) (*Issue, error) {
-	owner, repo := splitProject(project)
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return nil, err
+	}
 	issue, err := c.forge.GetIssue(ctx, owner, repo, number)
 	if err != nil {
 		return nil, err
@@ -42,7 +45,10 @@ func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) 
 
 // ListComments implements Client.
 func (c *ForgeClient) ListComments(ctx context.Context, project string, number int) ([]Comment, error) {
-	owner, repo := splitProject(project)
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return nil, err
+	}
 	comments, err := c.forge.ListIssueComments(ctx, owner, repo, number)
 	if err != nil {
 		return nil, err
@@ -56,7 +62,10 @@ func (c *ForgeClient) ListComments(ctx context.Context, project string, number i
 
 // CreateComment implements Client.
 func (c *ForgeClient) CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error) {
-	owner, repo := splitProject(project)
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return nil, err
+	}
 	comment, err := c.forge.CreateIssueComment(ctx, owner, repo, number, body)
 	if err != nil {
 		return nil, err
@@ -70,7 +79,10 @@ func (c *ForgeClient) CreateComment(ctx context.Context, project string, number 
 // comment IDs are globally unique within the repo), unlike Jira which
 // needs the issue key too.
 func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body string) error {
-	owner, repo := splitProject(project)
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return err
+	}
 	id, err := strconv.Atoi(commentID)
 	if err != nil {
 		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
@@ -93,10 +105,18 @@ func fromForgeComment(c forge.IssueComment) Comment {
 // ("owner/repo"), which this also handles correctly since there's only one
 // "/". GitLab projects may be nested under subgroups, hence splitting on
 // the last "/" rather than the first.
-func splitProject(project string) (owner, repo string) {
+//
+// It returns an error if project doesn't split into a non-empty owner and
+// a non-empty repo, so callers don't silently forward malformed values
+// (e.g. missing owner or repo) into forge.Client calls that require both.
+func splitProject(project string) (owner, repo string, err error) {
 	idx := strings.LastIndex(project, "/")
 	if idx < 0 {
-		return "", project
+		return "", "", fmt.Errorf("tracker: invalid project %q: expected \"owner/repo\"", project)
 	}
-	return project[:idx], project[idx+1:]
+	owner, repo = project[:idx], project[idx+1:]
+	if owner == "" || repo == "" {
+		return "", "", fmt.Errorf("tracker: invalid project %q: owner and repo must both be non-empty", project)
+	}
+	return owner, repo, nil
 }

@@ -12,13 +12,27 @@ func TestSplitProject(t *testing.T) {
 		input     string
 		wantOwner string
 		wantRepo  string
+		wantErr   bool
 	}{
-		{"org/project", "org", "project"},
-		{"group/subgroup/project", "group/subgroup", "project"},
-		{"project", "", "project"},
+		{input: "org/project", wantOwner: "org", wantRepo: "project"},
+		{input: "group/subgroup/project", wantOwner: "group/subgroup", wantRepo: "project"},
+		{input: "project", wantErr: true},
+		{input: "/repo", wantErr: true},
+		{input: "owner/", wantErr: true},
+		{input: "", wantErr: true},
 	}
 	for _, tc := range tests {
-		owner, repo := splitProject(tc.input)
+		owner, repo, err := splitProject(tc.input)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("splitProject(%q) = (%q, %q, <nil>), want error", tc.input, owner, repo)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("splitProject(%q) returned unexpected error: %v", tc.input, err)
+			continue
+		}
 		if owner != tc.wantOwner || repo != tc.wantRepo {
 			t.Errorf("splitProject(%q) = (%q, %q), want (%q, %q)",
 				tc.input, owner, repo, tc.wantOwner, tc.wantRepo)
