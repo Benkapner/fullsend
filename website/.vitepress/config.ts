@@ -318,22 +318,7 @@ export default defineConfig({
         {
           text: "Internals",
           collapsed: true,
-          items: [
-            { text: "Admin OAuth Worker", link: "/admin-oauth-worker" },
-            {
-              text: "Specifications",
-              collapsed: true,
-              items: getMarkdownFiles("superpowers/specs", "superpowers/specs"),
-            },
-            {
-              text: "Implementation Plans",
-              collapsed: true,
-              items: [
-                ...getMarkdownFiles("superpowers/plans", "superpowers/plans"),
-                ...getMarkdownFiles("plans", "plans"),
-              ],
-            },
-          ],
+          items: [{ text: "Admin OAuth Worker", link: "/admin-oauth-worker" }],
         },
       ],
     },
@@ -352,14 +337,7 @@ export default defineConfig({
           { label: "Guides", prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/"] },
           {
             label: "Design Docs",
-            prefixes: [
-              "/docs/problems/",
-              "/docs/ADRs/",
-              "/docs/superpowers/",
-              "/docs/plans/",
-              "/docs/normative/",
-              "/docs/spikes/",
-            ],
+            prefixes: ["/docs/problems/", "/docs/ADRs/", "/docs/normative/", "/docs/spikes/"],
           },
           { label: "Experiments", prefixes: ["/docs/experiments/"] },
           { label: "Contributing", prefixes: ["/docs/contributing/"] },
