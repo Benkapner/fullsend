@@ -431,6 +431,7 @@ type fakeCleanupSCM struct {
 	commitFileErr    error
 	fileContent      []byte
 	getFileErr       error
+	openPRs          []forge.ChangeProposal
 }
 
 type closedIssueRecord struct {
@@ -519,6 +520,14 @@ func (f *fakeCleanupSCM) SubmitPullRequestReview(context.Context, string, string
 
 func (f *fakeCleanupSCM) CreateRepo(context.Context, string, string, string) error {
 	return nil
+}
+
+func (f *fakeCleanupSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return f.openPRs, nil
+}
+
+func (f *fakeCleanupSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
 }
 
 func (f *fakeCleanupSCM) EnsureRepoPublic(context.Context, string, string) error {
@@ -707,3 +716,96 @@ func (f *fakeCleanupInstall) TriageWorkflowRepo() string { return f.repo }
 func (f *fakeCleanupInstall) TriageWorkflowFile() string { return "fullsend.yaml" }
 func (f *fakeCleanupInstall) AgentWorkflowFile() string  { return "reusable-triage.yml" }
 func (f *fakeCleanupInstall) AgentArtifactName() string  { return "fullsend-triage" }
+
+func TestCleanupScenario_BranchScenarioSweep(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{openPRs: []forge.ChangeProposal{
+		{Number: 71, Head: "agent/7-impl"},        // applier PR for this scenario's issue — swept
+		{Number: 72, Head: "agent/8-other-issue"}, // different issue's namespace — untouched
+	}}
+	w := &world.World{
+		RepoOwner:       "org",
+		RepoName:        "repo",
+		IssueNumber:     7,
+		SCM:             scmDriver,
+		CreatedBranches: []string{"agent/990000099-decoy"},
+		CreatedPRNumbers: []int{
+			70, // decoy PR tracked at Given time
+		},
+	}
+	CleanupScenario(w)
+
+	var closed []int
+	for _, rec := range scmDriver.closedIssues {
+		closed = append(closed, rec.number)
+	}
+	// Issue #7 itself is closed too (IssueNumber > 0 path).
+	assert.ElementsMatch(t, []int{7, 70, 71}, closed)
+
+	var deleted []string
+	for _, rec := range scmDriver.deletedBranches {
+		deleted = append(deleted, rec.branch)
+	}
+	assert.ElementsMatch(t, []string{"agent/990000099-decoy", "agent/7-impl"}, deleted)
+}
+
+func TestCleanupScenario_BranchScenarioSweep_DedupesAlreadyTrackedPR(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors the shipped "renamed into the issue namespace" scenario:
+	// the head-match assertion already tracked the applier PR before
+	// cleanup runs, so the sweep must not close/delete it a second time.
+	scmDriver := &fakeCleanupSCM{openPRs: []forge.ChangeProposal{
+		{Number: 71, Head: "agent/7-impl"},
+	}}
+	w := &world.World{
+		RepoOwner:        "org",
+		RepoName:         "repo",
+		IssueNumber:      7,
+		SCM:              scmDriver,
+		CreatedBranches:  []string{"agent/7-impl"},
+		CreatedPRNumbers: []int{71},
+	}
+	CleanupScenario(w)
+
+	closedCount := 0
+	for _, rec := range scmDriver.closedIssues {
+		if rec.number == 71 {
+			closedCount++
+		}
+	}
+	assert.Equal(t, 1, closedCount, "PR #71 must be closed exactly once")
+
+	deletedCount := 0
+	for _, rec := range scmDriver.deletedBranches {
+		if rec.branch == "agent/7-impl" {
+			deletedCount++
+		}
+	}
+	assert.Equal(t, 1, deletedCount, "branch must be deleted exactly once")
+}
+
+func TestCleanupScenario_BranchScenarioSweep_RunsWithoutBranchSteps(t *testing.T) {
+	t.Parallel()
+
+	// A code-stage scenario that dispatches without any Given branch/PR
+	// step (CreatedBranches stays nil) must still sweep the applier's
+	// namespace — the sweep is gated on IssueNumber alone.
+	scmDriver := &fakeCleanupSCM{openPRs: []forge.ChangeProposal{
+		{Number: 71, Head: "agent/7-impl"},
+	}}
+	w := &world.World{
+		RepoOwner:   "org",
+		RepoName:    "repo",
+		IssueNumber: 7,
+		SCM:         scmDriver,
+	}
+	CleanupScenario(w)
+
+	var closed []int
+	for _, rec := range scmDriver.closedIssues {
+		closed = append(closed, rec.number)
+	}
+	assert.Contains(t, closed, 71)
+}

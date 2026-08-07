@@ -545,6 +545,14 @@ func (f *fakeForkSCM) CreateRepo(context.Context, string, string, string) error 
 	return nil
 }
 
+func (f *fakeForkSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
+
 func (f *fakeForkSCM) EnsureRepoPublic(context.Context, string, string) error {
 	return nil
 }
