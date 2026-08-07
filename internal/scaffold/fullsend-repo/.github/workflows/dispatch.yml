@@ -26,7 +26,6 @@ jobs:
       actions: write
       contents: read
       id-token: write
-      issues: read
       pull-requests: read
     outputs:
       dispatched_count: ${{ steps.dispatch.outputs.dispatched_count }}
