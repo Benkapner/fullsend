@@ -67,11 +67,7 @@ type Client interface {
 	GetIssue(ctx context.Context, project string, number int) (*Issue, error)
 	ListComments(ctx context.Context, project string, number int) ([]Comment, error)
 	CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error)
-	// UpdateComment updates the comment identified by commentID on the
-	// issue (project, number). number is redundant for trackers whose
-	// comment IDs are globally unique (GitHub, GitLab), but Jira's
-	// update-comment endpoint requires the issue key alongside the
-	// comment ID, so it's part of the interface rather than left to a
-	// Jira-specific workaround.
+	// UpdateComment updates the body of commentID on the issue (project, number).
+	// number is included because Jira requires the issue key to update a comment.
 	UpdateComment(ctx context.Context, project string, number int, commentID string, body string) error
 }
