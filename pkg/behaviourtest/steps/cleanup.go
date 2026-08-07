@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,59 @@ func CleanupScenario(w *world.World) {
 		// Fork PRs are opened against the base repo, so close on base repo.
 		if err := w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, w.ForkPRNumber); err != nil {
 			worldLogf(w, "behaviour cleanup: close fork PR #%d: %v", w.ForkPRNumber, err)
+		}
+	}
+
+	// --- Branch-scenario cleanup ---
+	// Sweep applier-created PRs by namespace: a code run for this
+	// scenario's issue pushes to agent/<issue>-*, but the PR is only
+	// registered in CreatedPRNumbers when the head-match assertion ran
+	// and succeeded. Issue numbers are unique, so anything left open in
+	// the namespace would otherwise be permanent pool-repo debris. Gated
+	// on IssueNumber alone (not on CreatedBranches) so it still runs for
+	// a code-stage scenario that never seeded a decoy/seed branch.
+	if w.IssueNumber > 0 {
+		namespacePrefix := fmt.Sprintf("agent/%d-", w.IssueNumber)
+		seenPR := make(map[int]bool, len(w.CreatedPRNumbers))
+		for _, n := range w.CreatedPRNumbers {
+			seenPR[n] = true
+		}
+		if prs, err := w.SCM.ListOpenChangeProposals(ctx, w.RepoOwner, w.RepoName); err != nil {
+			worldLogf(w, "behaviour cleanup: list open PRs for namespace sweep: %v", err)
+		} else {
+			for _, pr := range prs {
+				if !strings.HasPrefix(pr.Head, namespacePrefix) || seenPR[pr.Number] {
+					continue
+				}
+				seenPR[pr.Number] = true
+				w.CreatedPRNumbers = append(w.CreatedPRNumbers, pr.Number)
+				w.CreatedBranches = append(w.CreatedBranches, pr.Head)
+			}
+		}
+	}
+
+	// Close PRs before deleting their head branches so GitHub does not
+	// auto-close them with a confusing "branch deleted" event first.
+	closedPR := make(map[int]bool, len(w.CreatedPRNumbers))
+	for _, number := range w.CreatedPRNumbers {
+		if closedPR[number] {
+			continue
+		}
+		closedPR[number] = true
+		if err := w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, number); err != nil {
+			worldLogf(w, "behaviour cleanup: close PR #%d: %v", number, err)
+		}
+	}
+	deletedBranch := make(map[string]bool, len(w.CreatedBranches))
+	for _, branch := range w.CreatedBranches {
+		if deletedBranch[branch] {
+			continue
+		}
+		deletedBranch[branch] = true
+		if err := w.SCM.DeleteBranch(ctx, w.RepoOwner, w.RepoName, branch); err != nil {
+			if !forge.IsNotFound(err) {
+				worldLogf(w, "behaviour cleanup: delete branch %s: %v", branch, err)
+			}
 		}
 	}
 
