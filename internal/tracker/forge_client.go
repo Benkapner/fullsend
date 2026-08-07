@@ -24,7 +24,8 @@ func NewForgeClient(fc forge.Client) *ForgeClient {
 	return &ForgeClient{forge: fc}
 }
 
-// GetIssue implements Client.
+// GetIssue implements Client by splitting project into owner/repo for the
+// underlying forge call.
 func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) (*Issue, error) {
 	owner, repo, err := splitProject(project)
 	if err != nil {
@@ -43,7 +44,8 @@ func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) 
 	}, nil
 }
 
-// ListComments implements Client.
+// ListComments implements Client by splitting project into owner/repo for
+// the underlying forge call.
 func (c *ForgeClient) ListComments(ctx context.Context, project string, number int) ([]Comment, error) {
 	owner, repo, err := splitProject(project)
 	if err != nil {
@@ -60,7 +62,8 @@ func (c *ForgeClient) ListComments(ctx context.Context, project string, number i
 	return result, nil
 }
 
-// CreateComment implements Client.
+// CreateComment implements Client by splitting project into owner/repo for
+// the underlying forge call.
 func (c *ForgeClient) CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error) {
 	owner, repo, err := splitProject(project)
 	if err != nil {

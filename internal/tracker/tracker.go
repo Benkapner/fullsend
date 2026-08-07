@@ -64,8 +64,11 @@ type Comment struct {
 // Implementations must return an error satisfying IsNotFound when the
 // requested issue or comment doesn't exist.
 type Client interface {
+	// GetIssue returns the issue identified by project and number.
 	GetIssue(ctx context.Context, project string, number int) (*Issue, error)
+	// ListComments returns all comments on the issue identified by project and number.
 	ListComments(ctx context.Context, project string, number int) ([]Comment, error)
+	// CreateComment adds a new comment with the given body to the issue.
 	CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error)
 	// UpdateComment updates the body of commentID on the issue (project, number).
 	// number is included because Jira requires the issue key to update a comment.
