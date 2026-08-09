@@ -1140,10 +1140,11 @@ func TestMintDeployCmd_CloudflareNoConfigFlagsOmitsEnvVars(t *testing.T) {
 	assert.False(t, hasAllowedOrgs, "ALLOWED_ORGS should not be set when --allowed-orgs is omitted")
 	assert.False(t, hasPRWR, "PER_REPO_WIF_REPOS should not be set when --per-repo-wif-repos is omitted")
 	assert.False(t, hasWHR, "WORKFLOW_HOST_REPOS should not be set when --workflow-host-repos is omitted")
-	// ALLOWED_WORKFLOW_FILES should NOT be set when --allowed-workflow-files
-	// is omitted — this preserves the existing Worker value on redeploy.
+	// On a durable deploy, ALLOWED_WORKFLOW_FILES should NOT be set when
+	// --allowed-workflow-files is omitted — preserves the existing Worker
+	// value via --keep-vars.
 	_, hasAWF := envVars["ALLOWED_WORKFLOW_FILES"]
-	assert.False(t, hasAWF, "ALLOWED_WORKFLOW_FILES should not be set when --allowed-workflow-files is omitted")
+	assert.False(t, hasAWF, "durable deploy: ALLOWED_WORKFLOW_FILES should not be set when --allowed-workflow-files is omitted")
 }
 
 func TestMintDeployCmd_CloudflareConfigFlagsWarnOnGCP(t *testing.T) {
@@ -1228,10 +1229,9 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesOmitted(t *testing.T) {
 	}
 	withMintCFWrangler(t, fake)
 
-	// When --allowed-workflow-files is omitted, ALLOWED_WORKFLOW_FILES
-	// should NOT be included in env vars. For durable deploys this
-	// preserves the existing value via --keep-vars; for preview deploys
-	// the var is simply not set (preview is self-contained).
+	// When --allowed-workflow-files is omitted on a DURABLE deploy,
+	// ALLOWED_WORKFLOW_FILES should NOT be included in env vars —
+	// the existing Worker value is preserved via --keep-vars.
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",
@@ -1245,7 +1245,96 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesOmitted(t *testing.T) {
 	envVars := fake.deployCalls[0].envVars
 	_, hasAWF := envVars["ALLOWED_WORKFLOW_FILES"]
 	assert.False(t, hasAWF,
-		"ALLOWED_WORKFLOW_FILES should not be set when flag is omitted (preserves existing Worker value)")
+		"durable deploy: ALLOWED_WORKFLOW_FILES should not be set when flag is omitted (preserves existing Worker value)")
+}
+
+func TestMintDeployCmd_CloudflarePreviewOmittedAWFDefaultsStar(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://bt-test-fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// Preview deploy without --allowed-workflow-files should default
+	// ALLOWED_WORKFLOW_FILES=* so the preview is usable out of the box.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	val, hasAWF := envVars["ALLOWED_WORKFLOW_FILES"]
+	assert.True(t, hasAWF,
+		"ALLOWED_WORKFLOW_FILES should be set on preview when flag is omitted")
+	assert.Equal(t, "*", val,
+		"ALLOWED_WORKFLOW_FILES should default to * on preview when omitted")
+}
+
+func TestMintDeployCmd_CloudflarePreviewExplicitAWFUsesValue(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://bt-test-fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// Preview deploy with explicit --allowed-workflow-files should use
+	// that value, not the * default.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test",
+		"--source-dir=" + sourceDir,
+		"--allowed-workflow-files=dispatch.yml",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "dispatch.yml", envVars["ALLOWED_WORKFLOW_FILES"],
+		"ALLOWED_WORKFLOW_FILES should use explicit value on preview")
+}
+
+func TestMintDeployCmd_CloudflarePreviewDryRunOmittedAWFShowsStar(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// Preview dry-run without --allowed-workflow-files should show
+	// ALLOWED_WORKFLOW_FILES=* and the wildcard warning.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "ALLOWED_WORKFLOW_FILES=*",
+		"preview dry-run should show ALLOWED_WORKFLOW_FILES=* when flag is omitted")
+	assert.Contains(t, stdout, "allow any workflow basename",
+		"preview dry-run should include a warning about * allowing any workflow")
 }
 
 func TestMintDeployCmd_CloudflareAllowedWorkflowFilesExplicit(t *testing.T) {
@@ -1280,10 +1369,9 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRunOmitted(t *testing.T)
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	// When --allowed-workflow-files is omitted, dry-run should NOT show
-	// ALLOWED_WORKFLOW_FILES at all. For durable deploys, the existing
-	// value is preserved via --keep-vars; for preview deploys the var
-	// is simply absent (preview is self-contained).
+	// When --allowed-workflow-files is omitted on a DURABLE dry-run,
+	// ALLOWED_WORKFLOW_FILES should NOT be shown — the existing Worker
+	// value is preserved via --keep-vars.
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",
@@ -1300,7 +1388,7 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRunOmitted(t *testing.T)
 
 	require.NoError(t, err)
 	assert.NotContains(t, stdout, "ALLOWED_WORKFLOW_FILES",
-		"dry-run should not mention ALLOWED_WORKFLOW_FILES when flag is omitted")
+		"durable dry-run should not mention ALLOWED_WORKFLOW_FILES when flag is omitted")
 }
 
 func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRunWildcard(t *testing.T) {

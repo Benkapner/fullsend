@@ -475,6 +475,9 @@ Cloudflare mode (--platform=cloudflare):
   self-contained: only the --var env vars and --secrets-file PEMs
   passed in the deploy command are applied. This prevents cross-preview
   contamination when deploying multiple preview aliases in sequence.
+  ALLOWED_WORKFLOW_FILES defaults to * on preview when omitted, so
+  previews are usable out of the box (mintcore deny-alls workflow refs
+  when the env var is unset). Pass an explicit value to restrict.
   For preview deploys, all mint configuration must be specified via
   deploy flags since separate commands (enroll, add-role) are not
   supported for preview versions. For durable deploys, configuration
@@ -567,11 +570,9 @@ Omit to preserve existing value on redeploy; set to "" to clear`)
 	cmd.Flags().StringVar(&workflowHostRepos, "workflow-host-repos", "", `comma-separated workflow host repos (Cloudflare only, sets WORKFLOW_HOST_REPOS)
 Omit to preserve existing value on redeploy; set to "" to clear`)
 	cmd.Flags().StringVar(&allowedWorkflowFiles, "allowed-workflow-files", "", `comma-separated workflow file basenames (Cloudflare only, sets ALLOWED_WORKFLOW_FILES)
-Omit to preserve existing value on redeploy; set to "" to clear.
-Use --allowed-workflow-files=* to allow any workflow basename.
-Use --allowed-workflow-files=dispatch.yml,fullsend.yml to restrict.
-First deploy: pass --allowed-workflow-files=* explicitly (mintcore
-denies all workflow basenames when the env var is unset).`)
+Durable: omit to preserve existing binding; set to "" to clear.
+Preview: defaults to * when omitted (all basenames allowed).
+Use --allowed-workflow-files=dispatch.yml,fullsend.yml to restrict.`)
 
 	return cmd
 }
@@ -749,11 +750,14 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		perRepoWIFRepos = "*"
 	}
 
-	// When --allowed-workflow-files is omitted (!Changed), do NOT set
-	// ALLOWED_WORKFLOW_FILES — this preserves the existing Worker value
-	// on redeploy (via --keep-vars). For brand-new deploys, pass
-	// --allowed-workflow-files=* explicitly to allow any workflow
-	// basename, or specify the allowed basenames.
+	// When --allowed-workflow-files is omitted (!Changed), behavior
+	// differs by deploy kind:
+	//   Preview: default to "*" (all basenames allowed) because there
+	//   is no existing value to preserve (no --keep-vars). Without
+	//   this default, mintcore sees unset ALLOWED_WORKFLOW_FILES and
+	//   deny-alls workflow refs, making the preview unusable.
+	//   Durable: do NOT set ALLOWED_WORKFLOW_FILES — this preserves
+	//   the existing Worker value on redeploy (via --keep-vars).
 
 	if workerName != "" && !cf.ValidateWorkerName(workerName) {
 		return fmt.Errorf("invalid --worker-name %q: must be 2-63 lowercase alphanumeric characters or hyphens", workerName)
@@ -814,6 +818,16 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	}
 	if allowedWorkflowFiles != "" || allowedWorkflowFilesExplicit {
 		cfEnvVars["ALLOWED_WORKFLOW_FILES"] = allowedWorkflowFiles
+	}
+
+	// Preview deploys: default ALLOWED_WORKFLOW_FILES=* when omitted.
+	// Preview versions don't use --keep-vars, so there is no existing
+	// value to preserve. Without this default, mintcore sees unset
+	// ALLOWED_WORKFLOW_FILES and deny-alls workflow refs, making the
+	// preview unusable.
+	if previewAlias != "" && !allowedWorkflowFilesExplicit {
+		cfEnvVars["ALLOWED_WORKFLOW_FILES"] = "*"
+		allowedWorkflowFiles = "*"
 	}
 
 	// Warn when ALLOWED_WORKFLOW_FILES is "*" — any workflow basename
