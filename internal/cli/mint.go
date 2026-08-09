@@ -464,13 +464,17 @@ Cloudflare mode (--platform=cloudflare):
     --public                        Set PER_REPO_WIF_REPOS=* (mutually
                                     exclusive with --per-repo-wif-repos)
 
-  Omit-vs-empty semantics for config flags on redeploy (with --keep-vars):
+  Omit-vs-empty semantics for config flags (durable deploys with --keep-vars):
     Flag omitted:    existing Worker value is preserved.
     Flag non-empty:  Worker binding set to the given value.
     Flag set to "":  Worker binding cleared (set to empty string).
   Example: --per-repo-wif-repos= clears PER_REPO_WIF_REPOS without
   requiring 'wrangler delete' first.
 
+  Preview deploys do NOT use --keep-vars. Each preview version is
+  self-contained: only the --var env vars and --secrets-file PEMs
+  passed in the deploy command are applied. This prevents cross-preview
+  contamination when deploying multiple preview aliases in sequence.
   For preview deploys, all mint configuration must be specified via
   deploy flags since separate commands (enroll, add-role) are not
   supported for preview versions. For durable deploys, configuration
@@ -790,10 +794,14 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	// wrangler via --var flags during both preview and durable deploys,
 	// providing a unified code path for mint configuration.
 	//
-	// Omit-vs-empty semantics (with --keep-vars):
+	// Omit-vs-empty semantics (durable deploys with --keep-vars):
 	//   Flag omitted:    var not included → existing Worker value preserved.
 	//   Flag non-empty:  var set to that value.
 	//   Flag set to "":  var set to empty string → clears existing binding.
+	//
+	// Preview deploys do NOT use --keep-vars — each preview is
+	// self-contained. "Flag omitted" means the var is not set at all
+	// (not preserved from a prior version).
 	cfEnvVars := make(map[string]string)
 	if allowedOrgs != "" || allowedOrgsExplicit {
 		cfEnvVars["ALLOWED_ORGS"] = allowedOrgs

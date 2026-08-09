@@ -271,10 +271,13 @@ func TestProvisioner_Provision_OmitsEmptyVersion(t *testing.T) {
 	assert.False(t, hasCommit, "FULLSEND_COMMIT should not be set when empty")
 }
 
-func TestProvisioner_Provision_KeepVarsAlwaysPassed(t *testing.T) {
+func TestProvisioner_Provision_DeployModePassing(t *testing.T) {
 	stubWASMBuild(t)
-	// Verify that Deploy is called for both durable and preview modes.
-	// --keep-vars is handled inside LiveWranglerRunner.deployDurable.
+	// Verify that Deploy is called for both durable and preview modes
+	// with the correct preview alias. --keep-vars behavior differs:
+	// durable uses --keep-vars (to preserve secrets from StoreAgentPEM),
+	// preview does NOT (each preview version is self-contained to
+	// prevent cross-preview env var inheritance).
 	sourceDir := createFakeWorkerSourceDir(t)
 
 	tests := []struct {

@@ -1229,8 +1229,9 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesOmitted(t *testing.T) {
 	withMintCFWrangler(t, fake)
 
 	// When --allowed-workflow-files is omitted, ALLOWED_WORKFLOW_FILES
-	// should NOT be included in env vars — preserving the existing value
-	// on the Worker via --keep-vars.
+	// should NOT be included in env vars. For durable deploys this
+	// preserves the existing value via --keep-vars; for preview deploys
+	// the var is simply not set (preview is self-contained).
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",
@@ -1280,7 +1281,9 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRunOmitted(t *testing.T)
 	os.Stdout = w
 
 	// When --allowed-workflow-files is omitted, dry-run should NOT show
-	// ALLOWED_WORKFLOW_FILES at all (value is preserved via --keep-vars).
+	// ALLOWED_WORKFLOW_FILES at all. For durable deploys, the existing
+	// value is preserved via --keep-vars; for preview deploys the var
+	// is simply absent (preview is self-contained).
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",
@@ -1424,7 +1427,8 @@ func TestMintDeployCmd_CloudflareEmptyAllowedOrgsClearsBinding(t *testing.T) {
 	withMintCFWrangler(t, fake)
 
 	// --allowed-orgs= (explicit empty) should include ALLOWED_ORGS with
-	// an empty value so --keep-vars clears the existing binding.
+	// an empty value. For durable deploys, --keep-vars clears the
+	// existing binding; for preview deploys, the var is set to "".
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",

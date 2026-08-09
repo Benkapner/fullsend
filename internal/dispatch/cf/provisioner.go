@@ -782,14 +782,19 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 // and passed via --secrets-file. This is the only way to attach secrets
 // to a preview version because wrangler secret put does not support
 // --preview-alias.
+//
+// Preview deploys do NOT use --keep-vars. Each preview version must be
+// self-contained: only the --var env vars and --secrets-file PEMs passed
+// in this deploy are applied. Without this isolation, sequential preview
+// uploads (e.g. both → per-repo → per-org) would inherit env vars from
+// the prior preview via --keep-vars, causing cross-preview contamination
+// (per-repo preview ends up with per-org's ALLOWED_ORGS, etc.).
+//
+// Durable deploys DO use --keep-vars (see deployDurable) so that secrets
+// stored via StoreAgentPEM are not wiped on redeploy.
 func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, workerName, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
 	args := []string{"wrangler", "versions", "upload", "--name", workerName}
 	args = append(args, fmt.Sprintf("--preview-alias=%s", previewAlias))
-	// Pass --keep-vars to preserve existing Worker secrets (PEM keys
-	// stored via StoreAgentPEM on the durable Worker). Preview-alias
-	// deploys target the same Worker script as production, so omitting
-	// this could wipe secrets.
-	args = append(args, "--keep-vars")
 
 	// Pass env vars to wrangler via --var flags.
 	for k, v := range envVars {

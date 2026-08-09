@@ -71,13 +71,15 @@ Authentication (one of):
 
 #### Omit-vs-empty semantics for config flags on redeploy
 
-Cloudflare deploys use `--keep-vars` so existing Worker bindings are preserved when a flag is omitted:
+**Durable deploys** use `--keep-vars` so existing Worker bindings are preserved when a flag is omitted:
 
 - **Flag omitted:** existing Worker value is preserved.
 - **Flag non-empty:** Worker binding set to the given value.
 - **Flag set to `""`:** Worker binding cleared (set to empty string).
 
 Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `wrangler delete` first.
+
+**Preview deploys** do **not** use `--keep-vars`. Each preview version is self-contained — only the `--var` env vars and `--secrets-file` PEMs passed in the deploy command are applied. This prevents cross-preview contamination when deploying multiple preview aliases in sequence (e.g. `both` → `per-repo` → `per-org`).
 
 ### Flags
 
