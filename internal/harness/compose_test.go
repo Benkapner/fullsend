@@ -1333,7 +1333,6 @@ forge:
 
 	assert.Equal(t, "policies/child-gitlab.yaml", h.Policy)
 }
-
 func TestLoadWithBase_InvalidForgeAfterMerge(t *testing.T) {
 	dir := t.TempDir()
 
@@ -3728,6 +3727,360 @@ func TestResolveBaseResources_RejectsTraversalInSkill(t *testing.T) {
 	assert.Contains(t, err.Error(), "skills[0]")
 }
 
+func TestLoadWithBase_URLBase_ForgeSkillsFetchedFromBase(t *testing.T) {
+	skillContent := []byte("# GitLab skill\nThis is a GitLab-specific skill.")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  gitlab:
+    skills:
+      - skills/issue-labels/gitlab
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/skills/issue-labels/gitlab/SKILL.md": skillContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	// The test server URL is not a raw.githubusercontent.com URL, so skill
+	// directory resolution errors out (same as TestLoadWithBase_URLBase_SkillFetchedAndCachedAsDir).
+	// This confirms resolveBaseResources now iterates forge-level skills.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+	assert.Contains(t, err.Error(), "forge.gitlab.skills[0]")
+}
+
+func TestLoadWithBase_URLBase_ForgeSkillsOfflineCacheHit(t *testing.T) {
+	skillContent := []byte("# GitLab cached skill")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  gitlab:
+    skills:
+      - skills/issue-labels/gitlab
+`)
+	hash := computeHash(baseContent)
+
+	// Pre-populate base in cache
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	// Pre-populate agent resource
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	// Pre-populate the forge skill in cache
+	skillFileURL := "https://example.com/skills/issue-labels/gitlab/SKILL.md"
+	require.NoError(t, fetch.CachePut(cacheDir, skillFileURL, skillContent))
+	skillFileHash := fetch.ComputeSHA256(skillContent)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, skillFileHash))
+
+	files := map[string][]byte{"SKILL.md": skillContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, skillFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, treeHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	// Forge skill resolved from cache and merged into h.Skills via ResolveForge
+	require.NotEmpty(t, h.Skills)
+	assert.True(t, filepath.IsAbs(h.Skills[len(h.Skills)-1]),
+		"forge skill should be resolved to absolute cache path")
+
+	// Verify content from cache
+	skillMD := filepath.Join(h.Skills[len(h.Skills)-1], "SKILL.md")
+	content, err := os.ReadFile(skillMD)
+	require.NoError(t, err)
+	assert.Equal(t, skillContent, content)
+
+	// 1 base + 1 agent + 1 forge skill, all cache hits
+	var foundForgeSkill bool
+	for _, d := range deps {
+		if d.Field == "forge.gitlab.skills[0]" {
+			foundForgeSkill = true
+			assert.True(t, d.CacheHit)
+			assert.Equal(t, "directory", d.Type)
+		}
+	}
+	assert.True(t, foundForgeSkill, "forge.gitlab.skills[0] should appear in deps")
+}
+
+func TestLoadWithBase_URLBase_ForgeHostFilesFetchedFromBase(t *testing.T) {
+	envContent := []byte("GITLAB_TOKEN=${GITLAB_TOKEN}\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  gitlab:
+    host_files:
+      - src: env/gitlab/triage.env
+        dest: /run/env/forge.env
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/env/gitlab/triage.env": envContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Forge host_files resolved and merged into h.HostFiles via ResolveForge
+	require.NotEmpty(t, h.HostFiles)
+	var found bool
+	for _, hf := range h.HostFiles {
+		if hf.Dest == "/run/env/forge.env" {
+			found = true
+			assert.True(t, filepath.IsAbs(hf.Src),
+				"forge host_file src should be resolved to absolute cache path")
+			// Verify content
+			data, err := os.ReadFile(hf.Src)
+			require.NoError(t, err)
+			assert.Equal(t, envContent, data)
+		}
+	}
+	assert.True(t, found, "forge host_file with dest /run/env/forge.env should exist")
+
+	// Verify the forge host_file was fetched as a dependency
+	var foundDep bool
+	for _, d := range deps {
+		if d.Field == "forge.gitlab.host_files[0].src" {
+			foundDep = true
+			assert.Equal(t, "resource", d.Type)
+		}
+	}
+	assert.True(t, foundDep, "forge.gitlab.host_files[0].src should appear in deps")
+}
+
+func TestLoadWithBase_ForgeHostFilesBlockMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    host_files:
+      - src: env/github/base.env
+        dest: /run/env/forge.env
+  gitlab:
+    host_files:
+      - src: env/gitlab/base.env
+        dest: /run/env/forge.env
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github:
+    host_files:
+      - src: env/github/child.env
+        dest: /run/env/forge.env
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+
+	// GitHub forge merged (child overrides base by dest), then resolved
+	require.Len(t, h.HostFiles, 1)
+	assert.Equal(t, "env/github/child.env", h.HostFiles[0].Src)
+	assert.Equal(t, "/run/env/forge.env", h.HostFiles[0].Dest)
+}
+
+func TestMergeForgeConfigInto_HostFilesInherited(t *testing.T) {
+	base := &ForgeConfig{
+		HostFiles: []HostFile{
+			{Src: "env/base.env", Dest: "/run/env/forge.env"},
+		},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.Len(t, child.HostFiles, 1)
+	assert.Equal(t, "env/base.env", child.HostFiles[0].Src)
+}
+
+func TestMergeForgeConfigInto_HostFilesOverriddenByChild(t *testing.T) {
+	base := &ForgeConfig{
+		HostFiles: []HostFile{
+			{Src: "env/base.env", Dest: "/run/env/forge.env"},
+		},
+	}
+	child := &ForgeConfig{
+		HostFiles: []HostFile{
+			{Src: "env/child.env", Dest: "/run/env/forge.env"},
+		},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.Len(t, child.HostFiles, 1)
+	assert.Equal(t, "env/child.env", child.HostFiles[0].Src)
+}
+
+func TestLoadWithBase_URLBase_ForgeSkillPathTraversal(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+forge:
+  gitlab:
+    skills:
+      - ../../../etc/shadow
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(baseContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   fpolicy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestLoadWithBase_URLBase_ForgeHostFilePathTraversal(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+forge:
+  gitlab:
+    host_files:
+      - src: ../../../etc/shadow
+        dest: /run/secret
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(baseContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "gitlab",
+		FetchPolicy:   fpolicy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
 func TestLoadWithBase_URLBase_ResourceNotInAllowlist(t *testing.T) {
 	baseContent := []byte(`
 agent: agents/triage.md
@@ -5677,4 +6030,1260 @@ host_files:
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving URL-sourced host_files after base composition")
+}
+
+func TestResolveBaseResources_ForgeNilEntry(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": nil,
+		},
+	}
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseResources_ForgeSkillSkipsURLAndEmpty(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("d", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				Skills: []string{"", "https://example.com/skills/remote", cachePath},
+			},
+		},
+	}
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "", base.Forge["gitlab"].Skills[0])
+	assert.Equal(t, "https://example.com/skills/remote", base.Forge["gitlab"].Skills[1])
+	assert.Equal(t, cachePath, base.Forge["gitlab"].Skills[2])
+}
+
+func TestResolveBaseHostFiles_ForgeNilEntry(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": nil,
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseHostFiles_ForgeSkipsURLEnvVarEmptyAndCache(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("e", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				HostFiles: []HostFile{
+					{Src: "", Dest: "/sandbox/empty"},
+					{Src: "${HOME}/.config", Dest: "/sandbox/config"},
+					{Src: "https://example.com/file.env", Dest: "/sandbox/remote"},
+					{Src: cachePath, Dest: "/sandbox/cached"},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "", base.Forge["gitlab"].HostFiles[0].Src)
+	assert.Equal(t, "${HOME}/.config", base.Forge["gitlab"].HostFiles[1].Src)
+	assert.Equal(t, "https://example.com/file.env", base.Forge["gitlab"].HostFiles[2].Src)
+	assert.Equal(t, cachePath, base.Forge["gitlab"].HostFiles[3].Src)
+}
+
+func TestResolveBaseHostFiles_ForgeFetchError(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	baseURL := server.URL + "/base.yaml#sha256=abc"
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {
+				HostFiles: []HostFile{
+					{Src: "env/test.env", Dest: "/sandbox/.env"},
+				},
+			},
+		},
+	}
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, err := resolveBaseHostFiles(context.Background(), base, baseURL, []string{server.URL + "/"}, ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fpolicy,
+	})
+	require.Error(t, err)
+}
+
+// --- Tests for resolveBaseProfiles ---
+
+func TestResolveBaseProfiles_EmptyProfiles(t *testing.T) {
+	base := &Harness{}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_NilOpenShell(t *testing.T) {
+	base := &Harness{OpenShell: nil}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_SkipsURLs(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/net.yaml#sha256=abc"},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "https://example.com/profiles/net.yaml#sha256=abc", base.OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_SkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("c", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{cachePath},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_SkipsEmpty(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{""},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"../../etc/passwd"},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "openshell.profiles[0]")
+}
+
+func TestResolveBaseProfiles_RejectsNullBytes(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/net\x00.yaml"},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain null bytes")
+}
+
+func TestResolveBaseProfiles_InvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/net.yaml"},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// --- Tests for resolveBaseProviders ---
+
+func TestResolveBaseProviders_EmptyProviders(t *testing.T) {
+	base := &Harness{}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_SkipsBareNames(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"my-provider"},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "my-provider", base.Providers[0])
+}
+
+func TestResolveBaseProviders_SkipsURLs(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"https://example.com/providers/custom.yaml#sha256=abc"},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_SkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("d", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Providers: []string{cachePath},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.Providers[0])
+}
+
+func TestResolveBaseProviders_SkipsEmpty(t *testing.T) {
+	base := &Harness{
+		Providers: []string{""},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"../../etc/passwd.yaml"},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "providers[0]")
+}
+
+func TestResolveBaseProviders_InvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		Providers: []string{"providers/custom.yaml"},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// --- Integration tests for profiles/providers through LoadWithBase ---
+
+func TestLoadWithBase_URLBase_ProfilesFetched(t *testing.T) {
+	profileContent := []byte("id: claude-code\nnetwork:\n  egress:\n    - host: api.example.com\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+openshell:
+  profiles:
+  - profiles/claude-code.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/profiles/claude-code.yaml": profileContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.OpenShellProfiles(), 1)
+	assert.True(t, filepath.IsAbs(h.OpenShellProfiles()[0]), "profile should be resolved to absolute cache path")
+	assert.False(t, IsURL(h.OpenShellProfiles()[0]), "profile should not be a URL")
+
+	content, err := os.ReadFile(h.OpenShellProfiles()[0])
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, content)
+
+	profileDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "openshell.profiles[") {
+			profileDeps = append(profileDeps, d)
+		}
+	}
+	assert.Len(t, profileDeps, 1)
+	assert.Equal(t, "resource", profileDeps[0].Type)
+}
+
+func TestLoadWithBase_URLBase_ProvidersFetched(t *testing.T) {
+	providerContent := []byte("name: custom-provider\ntype: custom\ncredentials:\n  KEY: ${API_KEY}\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+providers:
+  - providers/custom-provider.yaml
+  - bare-name
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/providers/custom-provider.yaml": providerContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Providers, 2)
+	assert.True(t, filepath.IsAbs(h.Providers[0]), "provider path should be resolved to absolute cache path")
+	assert.Equal(t, "bare-name", h.Providers[1], "bare provider name should be unchanged")
+
+	content, err := os.ReadFile(h.Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, content)
+
+	providerDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "providers[") {
+			providerDeps = append(providerDeps, d)
+		}
+	}
+	assert.Len(t, providerDeps, 1)
+	assert.Equal(t, "resource", providerDeps[0].Type)
+}
+
+// --- SourceURL tests for profiles/providers ---
+
+func TestLoadWithBase_SourceURL_Profiles(t *testing.T) {
+	profileContent := []byte("id: network-profile\nnetwork:\n  egress:\n    - host: example.com\n")
+	agentContent := []byte("# agent definition")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	absCachePath, err := fetch.CachePath(cacheDir, strings.Repeat("a", 64))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(absCachePath), 0o755))
+	require.NoError(t, os.WriteFile(absCachePath, []byte("cached profile"), 0o644))
+
+	harnessContent := []byte(fmt.Sprintf(`
+role: triage
+slug: triage
+agent: agents/triage.md
+openshell:
+  profiles:
+  - profiles/network.yaml
+  - %s
+`, absCachePath))
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/profiles/network.yaml":
+			w.Write(profileContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.OpenShellProfiles(), 2)
+	assert.True(t, filepath.IsAbs(h.OpenShellProfiles()[0]),
+		"relative profile should be resolved to absolute cache path, got %s", h.OpenShellProfiles()[0])
+
+	gotContent, err := os.ReadFile(h.OpenShellProfiles()[0])
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, gotContent)
+
+	assert.Equal(t, absCachePath, h.OpenShellProfiles()[1],
+		"already-cached absolute path should be left unchanged")
+
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["openshell.profiles[0]"], "should have profile dep")
+}
+
+func TestLoadWithBase_SourceURL_Providers(t *testing.T) {
+	providerContent := []byte("name: src-provider\ntype: custom\ncredentials:\n  KEY: ${API_KEY}\n")
+	agentContent := []byte("# agent definition")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+providers:
+  - providers/src-provider.yaml
+  - my-bare-provider
+`)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/providers/src-provider.yaml":
+			w.Write(providerContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Providers, 2)
+	assert.True(t, filepath.IsAbs(h.Providers[0]),
+		"relative provider path should be resolved to absolute cache path, got %s", h.Providers[0])
+	assert.Equal(t, "my-bare-provider", h.Providers[1],
+		"bare provider name should be left unchanged")
+
+	gotContent, err := os.ReadFile(h.Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, gotContent)
+
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["providers[0]"], "should have provider dep")
+}
+
+func TestLoadWithBase_URLBase_PluginFetchedAsDir(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+plugins:
+  - plugins/gopls-lsp
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/plugins/gopls-lsp/plugin.json": []byte(`{"name":"gopls-lsp"}`),
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+}
+
+func TestLoadWithBase_URLBase_PluginOfflineCacheHit(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+plugins:
+  - plugins/gopls-lsp
+`)
+	hash := computeHash(baseContent)
+
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0]))
+
+	cachedPlugin := filepath.Join(h.Plugins[0], "plugin.json")
+	content, err := os.ReadFile(cachedPlugin)
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, content)
+
+	assert.True(t, deps[len(deps)-1].CacheHit, "plugin should be cache hit")
+	assert.Equal(t, "directory", deps[len(deps)-1].Type)
+}
+
+func TestLoadWithBase_SourceURL_Plugins(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	harnessContent := []byte(`
+role: test
+slug: test
+agent: agents/triage.md
+plugins:
+  - plugins/gopls-lsp
+`)
+
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	sourceURL := "https://example.com/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0]),
+		"plugin should be resolved to cache path, got %s", h.Plugins[0])
+
+	cachedPlugin := filepath.Join(h.Plugins[0], "plugin.json")
+	content, err := os.ReadFile(cachedPlugin)
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, content)
+
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["plugins[0]"], "should have plugin dep")
+}
+
+// Regression test for the bug where a harness fetched from a remote source
+// (e.g. fullsend-ai/agents) had relative plugin paths that were not resolved
+// against the source URL. ResolveRelativeTo would resolve them against the
+// target repo's .fullsend dir (where the plugin doesn't exist), and
+// ValidateFilesExist would fail with "no such file or directory".
+func TestLoadWithBase_SourceURL_PluginPassesValidateFilesExist(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	fullsendDir := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.MkdirAll(fullsendDir, 0o755))
+
+	harnessContent := []byte(`
+role: test
+slug: test
+agent: agents/triage.md
+plugins:
+  - plugins/gopls-lsp
+`)
+
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		SourceURL:     "https://example.com/harness/triage.yaml",
+	})
+	require.NoError(t, err)
+
+	// Simulate what run.go does: ResolveRelativeTo then ValidateFilesExist.
+	// Without the fix, ResolveRelativeTo would resolve "plugins/gopls-lsp"
+	// against fullsendDir (where it does not exist) and ValidateFilesExist
+	// would fail.
+	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
+	require.NoError(t, h.ValidateFilesExist(),
+		"plugin path should have been resolved to a cache path, not left as a relative path")
+}
+
+func TestFetchBasePluginDir_FullDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+		"bin/gopls":   []byte("#!/bin/sh\nexec gopls"),
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/fullsend-ai/agents/"}
+
+	dep, localDir, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "fullsend-ai/agents", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, localDir)
+	assert.Equal(t, "directory", dep.Type)
+	assert.Empty(t, dep.Warning)
+	assert.False(t, dep.CacheHit)
+	assert.Equal(t, "gopls-lsp", filepath.Base(localDir))
+
+	pluginJSON, err := os.ReadFile(filepath.Join(localDir, "plugin.json"))
+	require.NoError(t, err)
+	assert.Equal(t, `{"name":"gopls-lsp"}`, string(pluginJSON))
+
+	binGopls, err := os.ReadFile(filepath.Join(localDir, "bin", "gopls"))
+	require.NoError(t, err)
+	assert.Equal(t, "#!/bin/sh\nexec gopls", string(binGopls))
+
+	info, err := os.Stat(filepath.Join(localDir, "bin", "gopls"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(),
+		"plugin files should be chmod 0755")
+}
+
+func TestFetchBasePluginDir_NoPluginJSON(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"bin/gopls": []byte("#!/bin/sh"),
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no plugin.json")
+}
+
+func TestFetchBasePluginDir_FetchError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("network timeout")
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching plugin directory")
+	assert.Contains(t, err.Error(), "network timeout")
+}
+
+func TestFetchBasePlugin_AllowlistRejection(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/other/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestFetchBasePlugin_FreshFetch(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+	})
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit)
+	assert.Equal(t, "directory", dep.Type)
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_FullCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	files := map[string][]byte{"plugin.json": []byte(`{"name":"gopls-lsp"}`)}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, treeHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Equal(t, "directory", dep.Type)
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_StaleCacheInvalidation(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+		"bin/gopls":   []byte("#!/bin/sh"),
+	})
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit, "stale cache should be bypassed")
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+	assert.FileExists(t, filepath.Join(localDir, "bin", "gopls"))
+
+	dep2, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep2.CacheHit, "re-fetched entry should be cached")
+}
+
+func TestFetchBasePlugin_StaleCacheOfflineServesStale(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_StaleCacheTransientFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}
+	}
+
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Contains(t, dep.Warning, "using stale cached content")
+	assert.Contains(t, dep.Warning, "connection refused")
+	assert.FileExists(t, filepath.Join(localDir, "plugin.json"))
+}
+
+func TestFetchBasePlugin_StaleCacheNonTransientError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
+	oldHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("authentication failed: 401 Unauthorized")
+	}
+
+	_, _, err = fetchBasePlugin(context.Background(), "plugins[0]",
+		baseURLDir, "plugins/gopls-lsp", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+}
+
+func TestFetchBasePlugin_OfflineNoCacheError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	_, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in cache and offline mode is enabled")
+}
+
+func TestFetchBasePlugin_PartialIndexHit_RefetchesViaTreeFetcher(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	pluginFileURL := "https://raw.githubusercontent.com/org/repo/ref/plugins/gopls-lsp/plugin.json"
+	content := []byte(`{"name":"gopls-lsp"}`)
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, content))
+	fileHash := fetch.ComputeSHA256(content)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, fileHash))
+	// Deliberately omit the "plugin:" tree hash entry to trigger partial index hit
+
+	fetcher := fakeTreeFetcher(map[string][]byte{"plugin.json": content})
+
+	dep, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"plugins/gopls-lsp", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit)
+}
+
+func TestResolveBasePlugins_InvalidBaseURL(t *testing.T) {
+	base := &Harness{Plugins: []string{"plugins/test"}}
+	_, err := resolveBasePlugins(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+func TestResolveBasePlugins_PathTraversal(t *testing.T) {
+	base := &Harness{Plugins: []string{"../../../etc/shadow"}}
+	_, err := resolveBasePlugins(context.Background(), base,
+		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
+		[]string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestResolveBasePlugins_InvalidBasename(t *testing.T) {
+	base := &Harness{Plugins: []string{"plugins/bad name"}}
+	_, err := resolveBasePlugins(context.Background(), base,
+		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
+		[]string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "valid plugin basename")
+}
+
+func TestResolveBasePlugins_SkipsEmptyURLAndCache(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	base := &Harness{Plugins: []string{
+		"",
+		"https://example.com/plugin",
+		filepath.Join(cacheDir, ".fullsend-cache/sha256/abc/my-plugin"),
+	}}
+	deps, err := resolveBasePlugins(context.Background(), base,
+		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
+		nil, ComposeOpts{WorkspaceRoot: cacheDir})
+	require.NoError(t, err)
+	assert.Empty(t, deps, "empty, URL, and cache paths should be skipped")
+}
+
+func TestFetchBasePluginDir_NarrowAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"plugin.json": []byte(`{"name":"gopls-lsp"}`),
+	})
+
+	narrowAllowlist := []string{
+		"https://raw.githubusercontent.com/org/repo/ref1/plugins/gopls-lsp/plugin.json",
+	}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref1/plugins/gopls-lsp",
+		"https://raw.githubusercontent.com/org/repo/ref1/plugins/gopls-lsp/plugin.json",
+		"plugins/gopls-lsp", "org/repo", narrowAllowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin directory URL")
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestFetchBasePluginDir_FetchErrorWithToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+			GitToken:      "ghp_test123",
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching plugin directory")
+	assert.NotContains(t, err.Error(), "hint:")
+}
+
+func TestFetchBasePluginDir_FetchErrorNoToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
+	pluginFileURL := pluginDirURL + "/plugin.json"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
+		pluginDirURL, pluginFileURL, "plugins/gopls-lsp", "org/repo", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hint:")
+}
+
+func TestLoadWithBase_SourceURL_PluginPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Pre-populate agent in cache so resolveBaseResources succeeds
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	path := writeTestHarness(t, dir, "triage.yaml", `
+role: test
+slug: test
+agent: agents/triage.md
+plugins:
+  - ../../../etc/shadow
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		SourceURL:     "https://example.com/harness/triage.yaml",
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced plugins")
+}
+
+func TestLoadWithBase_URLBase_PluginPathTraversalAfterMerge(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+`)
+	hash := computeHash(baseContent)
+
+	// Pre-populate agent + base in cache
+	agentRes := []byte("# test agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/base.yaml", baseContent))
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/remote.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/remote.md", fetch.ComputeSHA256(agentRes)))
+
+	baseURL := "https://example.com/base.yaml#sha256=" + hash
+
+	// The child harness is loaded from a SourceURL and has a path-traversal plugin.
+	// The base is clean, but after merge, the child's plugin remains.
+	// resolveBasePlugins is called on the merged harness with the SourceURL.
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+plugins:
+  - ../../../etc/shadow
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		SourceURL:     "https://example.com/harness/child.yaml",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced plugins after base composition")
+}
+
+func TestChmodPluginDir_NonexistentSymlink(t *testing.T) {
+	err := ChmodPluginDir(filepath.Join(t.TempDir(), "nonexistent-link"))
+	require.Error(t, err)
+}
+
+func TestLoadWithBase_URLBase_PluginInChainedBase(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	grandparentContent := []byte(`
+agent: agents/grandparent.md
+role: test
+model: opus
+plugins:
+  - plugins/gopls-lsp
+`)
+	grandparentHash := computeHash(grandparentContent)
+
+	parentContent := []byte(`
+agent: agents/parent.md
+role: test
+base: https://example.com/grandparent.yaml#sha256=` + grandparentHash + `
+`)
+	parentHash := computeHash(parentContent)
+
+	// Pre-populate cache: parent harness
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/parent.yaml", parentContent))
+	// Pre-populate cache: grandparent harness
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/grandparent.yaml", grandparentContent))
+	// Pre-populate cache: agent resources
+	agentRes := []byte("# test agent")
+	for _, agentURL := range []string{
+		"https://example.com/agents/grandparent.md",
+		"https://example.com/agents/parent.md",
+	} {
+		require.NoError(t, fetch.CachePut(cacheDir, agentURL, agentRes))
+		require.NoError(t, urlIndexPut(cacheDir, agentURL, fetch.ComputeSHA256(agentRes)))
+	}
+	// Pre-populate cache: plugin directory
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	baseURL := "https://example.com/parent.yaml#sha256=" + parentHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "agents/child.md", h.Agent)
+	assert.Equal(t, "opus", h.Model)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0]),
+		"plugin should be resolved to cache path, got %s", h.Plugins[0])
+
+	pluginJSON, err := os.ReadFile(filepath.Join(h.Plugins[0], "plugin.json"))
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, pluginJSON)
+
+	var foundPlugin bool
+	for _, d := range deps {
+		if d.Field == "plugins[0]" {
+			foundPlugin = true
+			assert.Equal(t, "directory", d.Type)
+		}
+	}
+	assert.True(t, foundPlugin, "should have plugin dependency")
 }

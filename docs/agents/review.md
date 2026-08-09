@@ -71,8 +71,7 @@ You can also overload it at the org level in your `.fullsend` config repo at
 the upstream default -- no other configuration needed.
 
 > **Deprecated (ADR-0064):** The `customized/` overlay is deprecated. Use
-> config-driven agent registration instead. Run `fullsend agent migrate-customizations`
-> to migrate existing overrides.
+> config-driven agent registration instead.
 
 See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Configuring with Skills](../guides/user/customizing-with-skills.md).

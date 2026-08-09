@@ -571,6 +571,56 @@ func TestCreateBranch(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCreateBranchFromSHA(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "feature-branch", body["branch"])
+		assert.Equal(t, "abc123sha", body["ref"])
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"name": "feature-branch"})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.NoError(t, err)
+}
+
+func TestCreateBranchFromSHA_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Branch already exists",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsAlreadyExists(err), "expected ErrAlreadyExists, got: %v", err)
+}
+
+func TestCreateBranchFromSHA_GenericError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Internal server error",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create branch feature-branch from SHA")
+	assert.False(t, forge.IsAlreadyExists(err), "non-400 error should not be ErrAlreadyExists")
+}
+
 func TestGetRef(t *testing.T) {
 	t.Run("heads prefix", func(t *testing.T) {
 		client, mux := setupTest(t)
@@ -1399,4 +1449,77 @@ func TestTransportRetry_SkipsNonIdempotent(t *testing.T) {
 	_, err = client.do(context.Background(), http.MethodPost, "/create", map[string]string{"key": "val"})
 	require.Error(t, err)
 	assert.EqualValues(t, 1, attempts.Load(), "POST should not retry on transport error")
+}
+
+// ---------- WithNoteTarget tests ----------
+
+func TestWithNoteTarget_Default(t *testing.T) {
+	c, err := New("tok")
+	require.NoError(t, err)
+	assert.Equal(t, "issues", c.noteTarget)
+}
+
+func TestWithNoteTarget_MergeRequests(t *testing.T) {
+	c, err := New("tok", WithNoteTarget("merge_requests"))
+	require.NoError(t, err)
+	assert.Equal(t, "merge_requests", c.noteTarget)
+}
+
+func TestWithNoteTarget_RejectsInvalid(t *testing.T) {
+	_, err := New("tok", WithNoteTarget("invalid"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid note target")
+}
+
+func TestCreateIssueComment_MRNoteTarget(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests/42/notes", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         101,
+			"body":       "hello MR",
+			"created_at": "2025-01-01T00:00:00Z",
+			"author":     map[string]string{"username": "bot"},
+		})
+	})
+
+	comment, err := client.CreateIssueComment(ctx, "own", "repo", 42, "hello MR")
+	require.NoError(t, err)
+	assert.Equal(t, 101, comment.ID)
+	assert.Contains(t, comment.HTMLURL, "/-/merge_requests/42#note_101")
+}
+
+func TestListIssueComments_MRNoteTarget(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests/7/notes", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "note1", "created_at": "2025-01-01T00:00:00Z", "author": map[string]string{"username": "u1"}},
+		})
+	})
+
+	comments, err := client.ListIssueComments(ctx, "own", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].HTMLURL, "/-/merge_requests/7#note_1")
+}
+
+func TestDeleteIssueComment_MRNoteTarget_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	client.noteTarget = "merge_requests"
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/own%2Frepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	err := client.DeleteIssueComment(ctx, "own", "repo", 999)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not find merge request containing this note")
 }

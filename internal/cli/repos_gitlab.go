@@ -36,16 +36,28 @@ var secretIDSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_\-]`)
 const secretIDMaxLen = 255
 
 // botTokenSecretID returns the Secret Manager secret ID for a repo's bot token.
-// Slashes in GitLab subgroup paths are mapped to double underscores so that
-// "group/sub" and "group-sub" produce distinct IDs.
+// Slashes in GitLab subgroup paths are mapped to double underscores and dots
+// are mapped to "_dot_" so that "group/sub", "group-sub", "my.group", and
+// "my-group" all produce distinct IDs. Note: a literal "_dot_" in a name would
+// collide with a dot-mapped name; this is accepted as extremely unlikely.
 func botTokenSecretID(owner, repo string) (string, error) {
 	combined := strings.ReplaceAll(owner, "/", "__") + "--" + repo
+	combined = strings.ReplaceAll(combined, ".", "_dot_")
 	sanitized := secretIDSanitizer.ReplaceAllString(combined, "-")
 	id := "fullsend-bot-token-" + sanitized
 	if len(id) > secretIDMaxLen {
 		return "", fmt.Errorf("secret ID %q exceeds %d character limit", id, secretIDMaxLen)
 	}
 	return id, nil
+}
+
+// legacyBotTokenSecretID returns the pre-_dot_ secret ID for migration.
+// Before the _dot_ mapping was added, dots were mapped to hyphens by the
+// sanitizer. This is used during cleanup to delete secrets created under
+// the old naming scheme.
+func legacyBotTokenSecretID(owner, repo string) string {
+	combined := strings.ReplaceAll(owner, "/", "__") + "--" + repo
+	return "fullsend-bot-token-" + secretIDSanitizer.ReplaceAllString(combined, "-")
 }
 
 // setupGitLabBotToken creates a project access token for the fullsend bot
@@ -66,6 +78,7 @@ func botTokenSecretID(owner, repo string) (string, error) {
 func setupGitLabBotToken(ctx context.Context, client forge.Client, glClient *gitlab.LiveClient, printer *ui.Printer, owner, repo, fallbackToken string, wifCfg *botTokenWIFConfig) (string, error) {
 	printer.StepStart("Creating project access token")
 	var botPAT string
+	var botTokenID int
 	if glClient != nil {
 		// Revoke any existing fullsend-bot tokens to avoid duplicates on re-install.
 		existing, listErr := glClient.ListProjectAccessTokens(ctx, owner, repo)
@@ -98,6 +111,7 @@ func setupGitLabBotToken(ctx context.Context, client forge.Client, glClient *git
 			}
 		} else {
 			botPAT = token.Token
+			botTokenID = token.ID
 			printer.StepDone(fmt.Sprintf("Created project access token %q (ID: %d)", gitlabBotTokenName, token.ID))
 		}
 	} else if fallbackToken != "" {
@@ -125,8 +139,17 @@ func setupGitLabBotToken(ctx context.Context, client forge.Client, glClient *git
 			// Grant the WIF service account access to read the secret.
 			saEmail := gcf.MintServiceAccountEmail(wifCfg.ProjectID)
 			secretResource := fmt.Sprintf("projects/%s/secrets/%s", wifCfg.ProjectID, secretID)
-			if err := wifCfg.GCPClient.SetSecretIAMBinding(ctx, secretResource,
+			if err := wifCfg.GCPClient.ReplaceSecretIAMBinding(ctx, secretResource,
 				"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
+				// Best-effort cleanup: delete the orphaned secret and revoke the PAT.
+				if delErr := wifCfg.GCPClient.DeleteSecret(ctx, wifCfg.ProjectID, secretID); delErr != nil {
+					printer.StepWarn(fmt.Sprintf("Failed to clean up secret %s: %v", secretID, delErr))
+				}
+				if botTokenID != 0 && glClient != nil {
+					if revErr := glClient.RevokeProjectAccessToken(ctx, owner, repo, botTokenID); revErr != nil {
+						printer.StepWarn(fmt.Sprintf("Failed to revoke bot PAT (ID %d): %v", botTokenID, revErr))
+					}
+				}
 				printer.StepFail("Failed to grant secret access")
 				return "", fmt.Errorf("granting secret access for %s: %w", secretID, err)
 			}
@@ -134,10 +157,27 @@ func setupGitLabBotToken(ctx context.Context, client forge.Client, glClient *git
 			// Set FULLSEND_BOT_TOKEN_SECRET as a protected CI/CD variable
 			// so the scaffold knows which secret to read from Secret Manager.
 			if err := client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_BOT_TOKEN_SECRET", secretID); err != nil {
+				// Best-effort cleanup: delete the orphaned secret and revoke the PAT.
+				if delErr := wifCfg.GCPClient.DeleteSecret(ctx, wifCfg.ProjectID, secretID); delErr != nil {
+					printer.StepWarn(fmt.Sprintf("Failed to clean up secret %s: %v", secretID, delErr))
+				}
+				if botTokenID != 0 && glClient != nil {
+					if revErr := glClient.RevokeProjectAccessToken(ctx, owner, repo, botTokenID); revErr != nil {
+						printer.StepWarn(fmt.Sprintf("Failed to revoke bot PAT (ID %d): %v", botTokenID, revErr))
+					}
+				}
 				printer.StepFail("Failed to set FULLSEND_BOT_TOKEN_SECRET")
 				return "", fmt.Errorf("setting FULLSEND_BOT_TOKEN_SECRET: %w", err)
 			}
 			printer.StepDone("Bot credentials stored in Secret Manager")
+
+			// Best-effort: delete any legacy-named secret left by
+			// a previous install that used dot-to-hyphen mapping.
+			if legacyID := legacyBotTokenSecretID(owner, repo); legacyID != secretID {
+				if err := wifCfg.GCPClient.DeleteSecret(ctx, wifCfg.ProjectID, legacyID); err == nil {
+					printer.StepDone(fmt.Sprintf("Deleted legacy secret %s", legacyID))
+				}
+			}
 		} else {
 			// Variable mode: store bot PAT directly as a protected CI/CD variable.
 			printer.StepStart("Storing bot credentials")
@@ -260,6 +300,86 @@ func cleanupGitLabPipelineSchedules(ctx context.Context, client forge.Client, pr
 	}
 	printer.StepDone(fmt.Sprintf("Removed %d pipeline schedule(s)", deleted))
 	return nil
+}
+
+// healGitLabResourceGroups toggles process_mode on all fullsend-prefixed
+// resource groups to break stale locks left by cancelled or deleted pipelines.
+// This complements the per-job self-heal in the scaffold templates: the
+// self-heal cannot fix stale locks on first run because the job is blocked
+// before it starts. Running this during install breaks those locks.
+//
+// The toggle sequence (unordered → newest_first) forces GitLab to
+// re-evaluate the lock state and release stale locks.
+func healGitLabResourceGroups(ctx context.Context, glClient *gitlab.LiveClient, printer *ui.Printer, owner, repo string) {
+	printer.StepStart("Healing resource group locks")
+	groups, err := glClient.ListResourceGroups(ctx, owner, repo)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not list resource groups: %v", err))
+		return
+	}
+
+	var healed int
+	for _, g := range groups {
+		if !strings.HasPrefix(g.Key, "fullsend-") {
+			continue
+		}
+		// Toggle to unordered first to break any stale lock, then set to
+		// newest_first which is the desired production mode.
+		if err := glClient.UpdateResourceGroupProcessMode(ctx, owner, repo, g.Key, "unordered"); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to toggle resource group %q to unordered: %v", g.Key, err))
+			continue
+		}
+		if err := glClient.UpdateResourceGroupProcessMode(ctx, owner, repo, g.Key, "newest_first"); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to set resource group %q to newest_first: %v", g.Key, err))
+			continue
+		}
+		healed++
+	}
+	printer.StepDone(fmt.Sprintf("Healed %d resource group(s)", healed))
+}
+
+// cleanupGitLabBotTokenSecret deletes the bot token Secret Manager secret
+// and is a best-effort operation — errors are logged but not returned.
+// This handles the GCP side of cleanup; the GitLab side (CI/CD variables,
+// PAT revocation) is handled by the main uninstall path and
+// cleanupGitLabBotToken.
+//
+// Tries both the current naming scheme (_dot_ for dots) and the legacy
+// scheme (dots mapped to hyphens by the sanitizer) to handle secrets
+// created before the _dot_ mapping was introduced.
+func cleanupGitLabBotTokenSecret(ctx context.Context, gcpClient gcf.GCFClient, printer *ui.Printer, projectID, owner, repo string) {
+	secretID, err := botTokenSecretID(owner, repo)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to derive secret ID for %s/%s: %v", owner, repo, err))
+		return
+	}
+	if err := gcpClient.DeleteSecret(ctx, projectID, secretID); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to delete Secret Manager secret %s: %v", secretID, err))
+	} else {
+		printer.StepDone(fmt.Sprintf("Deleted Secret Manager secret %s", secretID))
+	}
+
+	legacyID := legacyBotTokenSecretID(owner, repo)
+	if legacyID != secretID {
+		if err := gcpClient.DeleteSecret(ctx, projectID, legacyID); err == nil {
+			printer.StepDone(fmt.Sprintf("Deleted legacy Secret Manager secret %s", legacyID))
+		}
+	}
+}
+
+// projectIDFromSAEmail extracts the GCP project ID from a service account
+// email in the standard format: name@{projectID}.iam.gserviceaccount.com.
+// Returns an empty string if the email doesn't match the expected format.
+func projectIDFromSAEmail(email string) string {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	const suffix = ".iam.gserviceaccount.com"
+	if !strings.HasSuffix(parts[1], suffix) {
+		return ""
+	}
+	return strings.TrimSuffix(parts[1], suffix)
 }
 
 // cleanupGitLabBotToken revokes any active fullsend bot project access

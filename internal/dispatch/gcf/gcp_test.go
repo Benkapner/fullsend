@@ -475,6 +475,62 @@ func TestLiveGCFClient_SetSecretIAMBinding(t *testing.T) {
 	})
 }
 
+// --- ReplaceSecretIAMBinding ---
+
+func TestLiveGCFClient_ReplaceSecretIAMBinding(t *testing.T) {
+	t.Run("replaces existing members", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount == 1 {
+				assert.Contains(t, r.URL.Path, ":getIamPolicy")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"bindings":[{"role":"roles/secretmanager.secretAccessor","members":["serviceAccount:old@proj.iam.gserviceaccount.com"]}],"etag":"abc"}`)
+				return
+			}
+			assert.Contains(t, r.URL.Path, ":setIamPolicy")
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			policy := body["policy"].(map[string]interface{})
+			bindings := policy["bindings"].([]interface{})
+			require.Len(t, bindings, 1)
+			binding := bindings[0].(map[string]interface{})
+			members := binding["members"].([]interface{})
+			assert.Equal(t, []interface{}{"serviceAccount:new@proj.iam.gserviceaccount.com"}, members)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).ReplaceSecretIAMBinding(context.Background(),
+			"projects/proj/secrets/s", "serviceAccount:new@proj.iam.gserviceaccount.com", "roles/secretmanager.secretAccessor")
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+	})
+
+	t.Run("adds binding when role not present", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"bindings":[],"etag":"abc"}`)
+				return
+			}
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			policy := body["policy"].(map[string]interface{})
+			bindings := policy["bindings"].([]interface{})
+			require.Len(t, bindings, 1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).ReplaceSecretIAMBinding(context.Background(),
+			"projects/proj/secrets/s", "serviceAccount:sa@proj.iam.gserviceaccount.com", "roles/secretmanager.secretAccessor")
+		require.NoError(t, err)
+	})
+}
+
 // --- iamRetryDelay ---
 
 func TestIAMRetryDelay(t *testing.T) {

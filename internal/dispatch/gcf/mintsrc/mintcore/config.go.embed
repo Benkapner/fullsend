@@ -32,6 +32,11 @@ type WorkerConfig struct {
 	// PerRepoWIFRepos is a comma-separated list of repos with per-repo WIF.
 	PerRepoWIFRepos string
 
+	// WorkflowHostRepos is a comma-separated list of repos whose workflows
+	// are trusted to call the mint in per-repo mode. Defaults to
+	// fullsend-ai/fullsend when empty.
+	WorkflowHostRepos string
+
 	// CustomRolePermissions is a JSON-encoded map of custom role permissions.
 	// Same format as the CUSTOM_ROLE_PERMISSIONS environment variable.
 	CustomRolePermissions string
@@ -76,7 +81,7 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 		}
 	}
 
-	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, pemAccessor, oidcVerifier, httpClient)
+	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, cfg.WorkflowHostRepos, pemAccessor, oidcVerifier, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -105,14 +110,24 @@ func SplitCSV(s string) []string {
 // comma-separated ALLOWED_ROLES list (empty means all roles from roleAppIDs);
 // perRepoWIFReposCSV is the comma-separated PER_REPO_WIF_REPOS list;
 // allowedOrgsCSV is the comma-separated ALLOWED_ORGS list;
-// allowedWorkflowFilesCSV is the comma-separated ALLOWED_WORKFLOW_FILES list.
+// allowedWorkflowFilesCSV is the comma-separated ALLOWED_WORKFLOW_FILES list;
+// workflowHostReposCSV is the comma-separated WORKFLOW_HOST_REPOS list
+// (defaults to fullsend-ai/fullsend when empty).
 //
 // The handler performs authorization (org-allowed, workflow-ref) after the
 // OIDCVerifier authenticates the token.
-func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV, workflowHostReposCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
 	perRepoWIFRepos := make(map[string]bool)
 	for _, entry := range SplitCSV(perRepoWIFReposCSV) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
+	}
+
+	workflowHostRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(workflowHostReposCSV) {
+		workflowHostRepos[strings.ToLower(entry)] = true
+	}
+	if len(workflowHostRepos) == 0 {
+		workflowHostRepos["fullsend-ai/fullsend"] = true
 	}
 
 	h := &Handler{
@@ -126,6 +141,7 @@ func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, a
 		perRepoWIFRepos:      perRepoWIFRepos,
 		allowedOrgs:          SplitCSV(allowedOrgsCSV),
 		allowedWorkflowFiles: SplitCSV(allowedWorkflowFilesCSV),
+		workflowHostRepos:    workflowHostRepos,
 	}
 
 	if roleAppIDsJSON != "" {

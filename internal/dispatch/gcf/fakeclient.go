@@ -162,6 +162,9 @@ func (f *fakeGCFClient) DeleteWIFProvider(_ context.Context, _, _, _ string) err
 func (f *fakeGCFClient) SetSecretIAMBinding(_ context.Context, _, _, _ string) error {
 	return f.record("SetSecretIAMBinding")
 }
+func (f *fakeGCFClient) ReplaceSecretIAMBinding(_ context.Context, _, _, _ string) error {
+	return f.record("ReplaceSecretIAMBinding")
+}
 func (f *fakeGCFClient) SetProjectIAMBinding(_ context.Context, projectID, member, role string) error {
 	f.projectIAMBindings = append(f.projectIAMBindings, projectIAMBinding{projectID, member, role})
 	return f.record("SetProjectIAMBinding")
@@ -317,4 +320,26 @@ func LastWIFProviderCondition(client GCFClient) string {
 		return ""
 	}
 	return f.lastWIFProviderConfig.AttributeCondition
+}
+
+// ProjectIAMBindingCount returns the number of SetProjectIAMBinding calls
+// recorded on a fake client, for cross-package test assertions. Returns 0 if
+// client isn't a fake.
+func ProjectIAMBindingCount(client GCFClient) int {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return 0
+	}
+	return len(f.projectIAMBindings)
+}
+
+// DeletedSecretIDs returns the secret IDs passed to DeleteSecret calls on a
+// fake client, for cross-package test assertions. Returns nil if client isn't
+// a fake.
+func DeletedSecretIDs(client GCFClient) []string {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return nil
+	}
+	return f.deletedSecretIDs
 }

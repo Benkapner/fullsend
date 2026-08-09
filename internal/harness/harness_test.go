@@ -865,6 +865,79 @@ func TestResolveRelativeTo_URLsUnchanged(t *testing.T) {
 	assert.Equal(t, "/base/dir/skills/local-skill", h.Skills[0])
 }
 
+func TestResolveRelativeTo_Profiles(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/network.yaml"},
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "/base/dir/profiles/network.yaml", h.OpenShellProfiles()[0])
+}
+
+func TestResolveRelativeTo_ProfilesUnchanged(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+	}{
+		{"absolute path", "/abs/cache/profiles/network.yaml"},
+		{"URL", "https://example.com/profiles/net.yaml#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Harness{
+				Agent:     "agents/test.md",
+				OpenShell: &OpenShellConfig{Profiles: []string{tt.profile}},
+			}
+			require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+			assert.Equal(t, tt.profile, h.OpenShellProfiles()[0])
+		})
+	}
+}
+
+func TestResolveRelativeTo_ProfileProviderTraversalRejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		harness Harness
+	}{
+		{
+			"profile traversal",
+			Harness{Agent: "agents/test.md", OpenShell: &OpenShellConfig{Profiles: []string{"../escape/profiles/net.yaml"}}},
+		},
+		{
+			"provider traversal",
+			Harness{Agent: "agents/test.md", Providers: []string{"../escape/providers/evil.yaml"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.harness.ResolveRelativeTo("/base/dir")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "resolves outside")
+		})
+	}
+}
+
+func TestResolveRelativeTo_Providers(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Providers: []string{
+			"providers/custom.yaml",
+			"fullsend-github",
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	// File path gets resolved
+	assert.Equal(t, "/base/dir/providers/custom.yaml", h.Providers[0])
+	// Bare provider name stays unchanged
+	assert.Equal(t, "fullsend-github", h.Providers[1])
+}
+
 func TestValidateFilesExist_MissingPlugin(t *testing.T) {
 	dir := t.TempDir()
 	agentFile := filepath.Join(dir, "agent.md")
@@ -933,6 +1006,18 @@ validation_loop:
 	require.NoError(t, err)
 	require.NotNil(t, h.ValidationLoop)
 	assert.Empty(t, h.ValidationLoop.PreflightCheck)
+}
+
+func TestValidateFilesExist_BareProviderNameSkipped(t *testing.T) {
+	dir := t.TempDir()
+	agentFile := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
+
+	h := &Harness{
+		Agent:     agentFile,
+		Providers: []string{"fullsend-github"},
+	}
+	require.NoError(t, h.ValidateFilesExist())
 }
 
 // --- AllowedRemoteResources tests ---
@@ -1272,6 +1357,16 @@ func TestHasURLReferences(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "URL plugin",
+			h:    Harness{Agent: "agents/test.md", Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=abc"}},
+			want: true,
+		},
+		{
+			name: "local plugin only",
+			h:    Harness{Agent: "agents/test.md", Plugins: []string{"gopls-lsp"}},
+			want: false,
+		},
+		{
 			name: "URL provider",
 			h:    Harness{Agent: "agents/test.md", Providers: []string{"https://example.com/prov.yaml#sha256=abc"}},
 			want: true,
@@ -1279,6 +1374,11 @@ func TestHasURLReferences(t *testing.T) {
 		{
 			name: "local provider only",
 			h:    Harness{Agent: "agents/test.md", Providers: []string{"my-provider"}},
+			want: false,
+		},
+		{
+			name: "local profile only",
+			h:    Harness{Agent: "agents/test.md", OpenShell: &OpenShellConfig{Profiles: []string{"/cache/profiles/net.yaml"}}},
 			want: false,
 		},
 	}
@@ -1786,6 +1886,8 @@ env:
 }
 
 func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
+	// Profiles can now be local paths (resolved from base composition) or URLs with hashes.
+	// This test verifies that local profile paths are accepted.
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
@@ -1794,8 +1896,7 @@ func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
 		},
 	}
 	err := h.ValidateResourceTypes()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell.profiles[0] must be a URL")
+	require.NoError(t, err)
 }
 
 func TestValidateResourceTypes_ProfilesRequireIntegrityHash(t *testing.T) {
@@ -1819,6 +1920,31 @@ func TestValidateResourceTypes_ProfilesValidURL(t *testing.T) {
 			Profiles: []string{
 				"https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_ProfilesRequireYAMLExtension(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/mycustomprofile"},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must have a .yaml or .yml extension")
+}
+
+func TestValidateResourceTypes_ProfilesYMLExtensionAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/mycustomprofile.yml"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -1858,6 +1984,134 @@ func TestValidateResourceTypes_ProviderURLWithHashValid(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateResourceTypes_PluginURLRequiresHash(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Role:    "test",
+		Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp"},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0] URL must include #sha256=")
+}
+
+func TestValidateResourceTypes_PluginLocalNamePassesThrough(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Role:    "test",
+		Plugins: []string{"gopls-lsp"},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_PluginURLWithHashValid(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Plugins: []string{
+			"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_PluginNonForgeURLRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Plugins: []string{
+			"https://example.com/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0] URL must be hosted on a supported forge")
+}
+
+func TestValidateResourceTypes_PluginNonGitHubForgeRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Plugins: []string{
+			"https://gitlab.com/org/repo/-/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0] forge \"gitlab\" is recognized but fetch support has not landed yet")
+}
+
+func TestValidateResourceTypes_SkillBlobURLRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Skills: []string{
+			"https://github.com/org/repo/blob/main/skills/test/SKILL.md#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skills[0] URL must use /tree/ (directory), not /blob/ (single file)")
+}
+
+func TestValidateResourceTypes_PluginBlobURLRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Plugins: []string{
+			"https://github.com/org/repo/blob/main/plugins/gopls-lsp/init.sh#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0] URL must use /tree/ (directory), not /blob/ (single file)")
+}
+
+func TestValidateResourceTypes_SkillRepoRootURLRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Skills: []string{
+			"https://github.com/org/myskills/tree/main#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skills[0] URL must point to a directory inside the repo, not the repo root")
+}
+
+func TestValidateResourceTypes_PluginRepoRootURLRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Plugins: []string{
+			"https://github.com/org/myplugin/tree/main#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0] URL must point to a directory inside the repo, not the repo root")
+}
+
+func TestLoad_PluginURLPassesValidation(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+plugins:
+  - gopls-lsp
+  - "https://github.com/org/repo/tree/main/plugins/my-plugin#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err, "Load must not reject URL plugins via validPluginName")
+	assert.Len(t, h.Plugins, 2)
+}
+
 func TestLoad_ProviderURLPassesValidation(t *testing.T) {
 	content := `
 agent: agents/test.md
@@ -1873,4 +2127,25 @@ providers:
 	h, err := Load(path)
 	require.NoError(t, err, "Load must not reject URL providers via validProviderName")
 	assert.Len(t, h.Providers, 2)
+}
+
+func TestHasURLDirResources(t *testing.T) {
+	tests := []struct {
+		name    string
+		skills  []string
+		plugins []string
+		want    bool
+	}{
+		{"no URLs", []string{"local-skill"}, []string{"local-plugin"}, false},
+		{"URL skill", []string{"https://github.com/org/repo/tree/main/skill#sha256=abc"}, nil, true},
+		{"URL plugin", nil, []string{"https://github.com/org/repo/tree/main/plugin#sha256=abc"}, true},
+		{"both local", []string{"s1"}, []string{"p1"}, false},
+		{"empty", nil, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Harness{Skills: tt.skills, Plugins: tt.plugins}
+			assert.Equal(t, tt.want, h.HasURLDirResources())
+		})
+	}
 }

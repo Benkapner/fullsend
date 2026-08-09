@@ -22,9 +22,10 @@ import (
 
 // LiveClient implements forge.Client for the GitLab REST API v4.
 type LiveClient struct {
-	http    *http.Client
-	token   string
-	baseURL string
+	http       *http.Client
+	token      string
+	baseURL    string
+	noteTarget string // "issues" (default) or "merge_requests"
 }
 
 // Compile-time interface check.
@@ -32,6 +33,17 @@ var _ forge.Client = (*LiveClient)(nil)
 
 // Option configures the GitLab client.
 type Option func(*LiveClient)
+
+// WithNoteTarget configures which GitLab noteable type the comment methods
+// (CreateIssueComment, ListIssueComments, UpdateIssueComment, DeleteIssueComment)
+// operate on. Valid values are "issues" (default) and "merge_requests".
+// GitLab uses separate API endpoints for issue notes vs MR notes; this
+// option selects the correct one.
+func WithNoteTarget(target string) Option {
+	return func(c *LiveClient) {
+		c.noteTarget = target
+	}
+}
 
 // WithBaseURL sets a custom base URL for self-hosted GitLab instances.
 // Non-https schemes are only allowed for loopback addresses (localhost,
@@ -84,14 +96,18 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 				return nil
 			},
 		},
-		token:   token,
-		baseURL: "https://gitlab.com",
+		token:      token,
+		baseURL:    "https://gitlab.com",
+		noteTarget: "issues",
 	}
 	for _, o := range opts {
 		o(c)
 	}
 	if err := validateBaseURL(c.baseURL); err != nil {
 		return nil, err
+	}
+	if c.noteTarget != "issues" && c.noteTarget != "merge_requests" {
+		return nil, fmt.Errorf("gitlab: invalid note target %q; must be %q or %q", c.noteTarget, "issues", "merge_requests")
 	}
 	return c, nil
 }

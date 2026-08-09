@@ -8,11 +8,12 @@ import (
 
 // ForgeURLInfo contains the parsed components of a forge URL.
 type ForgeURLInfo struct {
-	Forge string // "github" (future: "gitlab")
-	Owner string
-	Repo  string
-	Path  string // path within the repo (e.g., "skills/pr-review")
-	Ref   string // commit SHA, tag, or branch name
+	Forge    string // "github" (future: "gitlab")
+	Owner    string
+	Repo     string
+	Path     string // path within the repo (e.g., "skills/pr-review")
+	Ref      string // commit SHA, tag, or branch name
+	PathType string // "tree" (directory), "blob" (file), or "" (raw content URLs)
 }
 
 // ParseForgeURL extracts forge, owner, repo, path, and ref from an HTTPS URL
@@ -97,11 +98,12 @@ func ParseForgeURL(rawURL string) (*ForgeURLInfo, error) {
 	}
 
 	return &ForgeURLInfo{
-		Forge: forgeName,
-		Owner: owner,
-		Repo:  repo,
-		Path:  repoPath,
-		Ref:   ref,
+		Forge:    forgeName,
+		Owner:    owner,
+		Repo:     repo,
+		Path:     repoPath,
+		Ref:      ref,
+		PathType: pathType,
 	}, nil
 }
 
@@ -149,11 +151,12 @@ func parseGitLabURL(segments []string) (*ForgeURLInfo, error) {
 	}
 
 	return &ForgeURLInfo{
-		Forge: "gitlab",
-		Owner: owner,
-		Repo:  repo,
-		Path:  repoPath,
-		Ref:   ref,
+		Forge:    "gitlab",
+		Owner:    owner,
+		Repo:     repo,
+		Path:     repoPath,
+		Ref:      ref,
+		PathType: pathType,
 	}, nil
 }
 
@@ -226,11 +229,12 @@ func ParseRawContentURL(rawURL string) (*ForgeURLInfo, error) {
 	}
 
 	return &ForgeURLInfo{
-		Forge: "github",
-		Owner: owner,
-		Repo:  repo,
-		Path:  repoPath,
-		Ref:   ref,
+		Forge:    "github",
+		Owner:    owner,
+		Repo:     repo,
+		Path:     repoPath,
+		Ref:      ref,
+		PathType: "blob",
 	}, nil
 }
 

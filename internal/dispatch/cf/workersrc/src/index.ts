@@ -61,6 +61,8 @@ export interface Env {
   ALLOWED_WORKFLOW_FILES?: string;
   /** Comma-separated repos using per-repo WIF providers. */
   PER_REPO_WIF_REPOS?: string;
+  /** Comma-separated repos trusted to host workflows for per-repo callers. */
+  WORKFLOW_HOST_REPOS?: string;
   /** JSON-encoded map of custom role permissions. */
   CUSTOM_ROLE_PERMISSIONS?: string;
   /**
@@ -162,6 +164,7 @@ function buildWasmConfig(env: Env): string {
     AllowedRoles: env.ALLOWED_ROLES ?? "",
     AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "",
     PerRepoWIFRepos: env.PER_REPO_WIF_REPOS ?? "",
+    WorkflowHostRepos: env.WORKFLOW_HOST_REPOS ?? "",
     CustomRolePermissions: env.CUSTOM_ROLE_PERMISSIONS ?? "",
     // Version constants are imported from the generated version.ts file
     // (written by writeVersionTS at deploy time) rather than read from

@@ -36,17 +36,19 @@ type Dependency struct {
 	Warning   string // non-fatal warning about this dependency
 }
 
-// ResolvedProfile is a profile definition fetched from a URL and
-// validated to have a non-empty id field.
+// ResolvedProfile is a profile definition resolved from a URL or local path
+// and validated to have a non-empty id field.
 type ResolvedProfile struct {
 	ID        string
 	LocalPath string
+	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
 }
 
-// ResolvedProvider is a provider definition fetched from a URL.
+// ResolvedProvider is a provider definition resolved from a URL or local path.
 type ResolvedProvider struct {
 	Def       harness.ProviderDef
 	LocalPath string
+	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
 }
 
 // ResolveResult contains all outputs from harness resolution.
@@ -54,6 +56,7 @@ type ResolveResult struct {
 	Deps      []Dependency
 	Profiles  []ResolvedProfile
 	Providers []ResolvedProvider
+	Warnings  []string
 }
 
 // ProfileYAML is the subset of an openshell profile definition needed
@@ -88,6 +91,34 @@ func ParseProfileID(data []byte) (string, error) {
 	return prof.ID, nil
 }
 
+// CollectProfileIDs scans a profiles directory and returns the id from each
+// YAML file. Returns nil (not an error) if the directory does not exist.
+func CollectProfileIDs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading profiles directory %s: %w", dir, err)
+	}
+	var ids []string
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("reading profile %s: %w", e.Name(), err)
+		}
+		id, err := ParseProfileID(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing profile %s: %w", e.Name(), err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // envVarPattern requires the entire value to be a single ${VAR} reference.
 // Compound expressions like "${HOST}:${PORT}" are intentionally flagged —
 // credential values in URL-fetched providers should be a single env var
@@ -110,6 +141,65 @@ func WarnLiteralCredentials(providerName string, creds map[string]string) string
 	return fmt.Sprintf(
 		"provider %q: credential(s) %s do not look like ${VAR} references — ensure secrets are not embedded in URL-fetched provider definitions",
 		providerName, strings.Join(bad, ", "))
+}
+
+// parseProviderDef unmarshals a provider definition from YAML content,
+// validates required fields, and checks for literal credentials.
+func parseProviderDef(content []byte, index int, source string) (harness.ProviderDef, string, error) {
+	var def harness.ProviderDef
+	if err := yaml.Unmarshal(content, &def); err != nil {
+		return harness.ProviderDef{}, "", fmt.Errorf("parsing provider %s: %w", source, err)
+	}
+	if def.Name == "" {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider name is required in %s", index, source)
+	}
+	if !validIdentifier.MatchString(def.Name) {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider name %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", index, def.Name, source)
+	}
+	if def.Type == "" {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider type is required in %s", index, source)
+	}
+	if !validIdentifier.MatchString(def.Type) {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider type %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", index, def.Type, source)
+	}
+	w := WarnLiteralCredentials(def.Name, def.Credentials)
+	return def, w, nil
+}
+
+// isContainedPath reports whether the absolute path p is inside root.
+// Used as defense-in-depth when reading local profile/provider files —
+// upstream guards (ResolveRelativeTo, validateBaseRelPath) already constrain
+// paths, but this check catches bugs in those guards.
+// When the path exists on disk, resolves symlinks to prevent escape.
+func isContainedPath(p, root string) bool {
+	if root == "" {
+		return false
+	}
+	cleaned := filepath.Clean(p)
+	rootCleaned := filepath.Clean(root)
+	if cleaned != rootCleaned && !strings.HasPrefix(cleaned, rootCleaned+string(filepath.Separator)) {
+		return false
+	}
+	realPath, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return true // path doesn't exist yet; syntactic check passed
+	}
+	realRoot, err := filepath.EvalSymlinks(rootCleaned)
+	if err != nil {
+		return true // root doesn't exist; syntactic check passed
+	}
+	return realPath == realRoot || strings.HasPrefix(realPath, realRoot+string(filepath.Separator))
+}
+
+// isCachePath reports whether p is inside the .fullsend-cache directory.
+// Duplicates compose.isFullsendCachePath intentionally to avoid an import cycle.
+func isCachePath(p, workspaceRoot string) bool {
+	if !filepath.IsAbs(p) || workspaceRoot == "" {
+		return false
+	}
+	cacheDir := filepath.Join(workspaceRoot, ".fullsend-cache")
+	rel, err := filepath.Rel(cacheDir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ResolveOpts controls how URL-referenced resources are resolved.
@@ -145,16 +235,17 @@ type resolveState struct {
 	inDeps        map[string]bool
 	resourceCount int
 	deps          []Dependency
+	warnings      []string
 	maxDepth      int
 	maxResources  int
 }
 
 // ResolveHarness resolves URL-referenced declarative fields (Agent, Policy,
-// Skills, Profiles, Providers) in the harness to local cache paths. Local paths
-// are left unchanged. The harness is modified in place: URL fields are replaced
-// with cache paths, and h.Skills may grow to include transitively resolved skill
-// dependencies. Returns a ResolveResult containing all resolved dependencies,
-// profiles, and providers.
+// Skills, Plugins, Profiles, Providers) in the harness to local cache paths.
+// Local paths are left unchanged. The harness is modified in place: URL fields
+// are replaced with cache paths, and h.Skills may grow to include transitively
+// resolved skill dependencies. Returns a ResolveResult containing all resolved
+// dependencies, profiles, and providers.
 //
 // Skills are directories: when a skill field is a URL, the resolver uses
 // git sparse checkout (via TreeFetcher / gitfetch.FetchTree) to fetch the
@@ -240,48 +331,145 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	}
 	h.Skills = filtered
 
-	// Resolve profiles (all entries must be URLs — enforced by
-	// ValidateResourceTypes at load time).
-	var profiles []ResolvedProfile
-	for i, p := range h.OpenShellProfiles() {
-		if !harness.IsURL(p) {
-			return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: expected URL, got local path %q", i, p)
-		}
-		dep, localPath, err := resolveFileURL(ctx, fmt.Sprintf("openshell.profiles[%d]", i), p, h, opts, state)
-		if err != nil {
-			return ResolveResult{}, fmt.Errorf("resolving openshell.profiles[%d]: %w", i, err)
-		}
+	// Resolve plugins — same directory fetch as skills, but without
+	// transitive dependency resolution (plugins have no SKILL.md frontmatter).
+	for i, p := range h.Plugins {
+		if harness.IsURL(p) {
+			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("plugins[%d]", i), p, h, opts, state, false, 0)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("resolving plugins[%d]: %w", i, err)
+			}
 
-		content, err := os.ReadFile(localPath)
-		if err != nil {
-			return ResolveResult{}, fmt.Errorf("reading resolved profile %s: %w", localPath, err)
-		}
-		id, err := ParseProfileID(content)
-		if err != nil {
-			return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, dep.URL)
-		}
+			// Validate the plugin basename from the forge URL path, not
+			// from the post-symlink local path. CacheNamedSymlink falls
+			// back to "tree" for empty/reserved path components, which
+			// would silently pass ValidPluginBasename. Checking the URL
+			// path catches repo-root URLs (Path=="") and reserved names.
+			forgeInfo, parseErr := forge.ParseForgeURL(dep.URL)
+			if parseErr == nil {
+				urlBase := filepath.Base(forgeInfo.Path)
+				if forgeInfo.Path == "" || !harness.ValidPluginBasename(urlBase) {
+					return ResolveResult{}, fmt.Errorf("plugins[%d]: URL path %q does not end in a valid plugin basename (allowed: a-z, A-Z, 0-9, _, -)", i, forgeInfo.Path)
+				}
+			}
 
-		// Create a named symlink so openshell sees a .yaml extension
-		// instead of the extensionless cache-internal "content" filename.
-		localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
-		if err != nil {
-			return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)
-		}
-		dep.LocalPath = localPath
-		// Keep the fetch-dedup cache in sync with the renamed path, so a
-		// second reference to the same profile URL (elsewhere in the same
-		// harness) doesn't resolve to the pre-rename cache path.
-		state.resolved[dep.URL] = dep
+			// Always assign — plugins have no transitive re-append, so
+			// blanking the slot (as skills do for dedup) would drop the plugin.
+			h.Plugins[i] = localPath
+			state.appendDependency(dep)
 
-		state.appendDependency(dep)
-		profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
+			// Make plugin files executable. The cache writes all files
+			// as 0600 (via atomicWrite), but plugins may contain scripts
+			// or MCP server binaries that need the executable bit.
+			// NOTE: this mutates the shared content-addressed cache — files
+			// in the same tree referenced as skills will also become 0755.
+			if err := chmodPluginDir(h.Plugins[i]); err != nil {
+				return ResolveResult{}, fmt.Errorf("setting plugin permissions for plugins[%d]: %w", i, err)
+			}
+		}
 	}
 
-	// Resolve providers
+	// De-duplicate plugins by resolved path (e.g. two slots referencing
+	// the same URL resolve to identical local paths).
+	seen := make(map[string]bool, len(h.Plugins))
+	deduped := h.Plugins[:0]
+	for _, p := range h.Plugins {
+		if !seen[p] {
+			seen[p] = true
+			deduped = append(deduped, p)
+		}
+	}
+	h.Plugins = deduped
+
+	// Resolve profiles: URL entries are fetched and cached; local paths
+	// (from ResolveRelativeTo or base composition cache) are used directly.
+	var profiles []ResolvedProfile
+	for i, p := range h.OpenShellProfiles() {
+		var localPath string
+		if harness.IsURL(p) {
+			dep, lp, err := resolveFileURL(ctx, fmt.Sprintf("openshell.profiles[%d]", i), p, h, opts, state)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("resolving openshell.profiles[%d]: %w", i, err)
+			}
+			localPath = lp
+
+			content, err := os.ReadFile(localPath)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("reading resolved profile %s: %w", localPath, err)
+			}
+			id, err := ParseProfileID(content)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, p)
+			}
+
+			// Create a named symlink so openshell sees a .yaml extension
+			// instead of the extensionless cache-internal "content" filename.
+			localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)
+			}
+			dep.LocalPath = localPath
+			// Keep the fetch-dedup cache in sync with the renamed path, so a
+			// second reference to the same profile URL (elsewhere in the same
+			// harness) doesn't resolve to the pre-rename cache path.
+			state.resolved[dep.URL] = dep
+
+			state.appendDependency(dep)
+			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath, FromURL: true})
+		} else {
+			localPath = p
+
+			if !filepath.IsAbs(localPath) {
+				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: non-URL profile %q must be an absolute path", i, p)
+			}
+			if !isContainedPath(localPath, opts.WorkspaceRoot) {
+				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: path %q is outside workspace root", i, localPath)
+			}
+			content, err := os.ReadFile(localPath)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("reading profile %s: %w", localPath, err)
+			}
+			id, err := ParseProfileID(content)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, localPath)
+			}
+
+			ext := strings.ToLower(filepath.Ext(localPath))
+			if ext != ".yaml" && ext != ".yml" && isCachePath(localPath, opts.WorkspaceRoot) {
+				localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
+				if err != nil {
+					return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)
+				}
+			}
+			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
+		}
+	}
+
+	// Resolve providers: URL entries are fetched and cached; absolute-path
+	// entries (from ResolveRelativeTo or base composition cache) are read
+	// directly; bare provider names are kept in h.Providers for LoadProviderDefs.
 	var resolvedProviders []ResolvedProvider
 	remaining := h.Providers[:0]
 	for i, p := range h.Providers {
 		if !harness.IsURL(p) {
+			if filepath.IsAbs(p) {
+				if !isContainedPath(p, opts.WorkspaceRoot) {
+					return ResolveResult{}, fmt.Errorf("providers[%d]: path %q is outside workspace root", i, p)
+				}
+				content, err := os.ReadFile(p)
+				if err != nil {
+					return ResolveResult{}, fmt.Errorf("reading provider %s: %w", p, err)
+				}
+				def, w, err := parseProviderDef(content, i, p)
+				if err != nil {
+					return ResolveResult{}, err
+				}
+				if w != "" {
+					state.warnings = append(state.warnings, w)
+				}
+				resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: p})
+				continue
+			}
 			remaining = append(remaining, p)
 			continue
 		}
@@ -294,28 +482,15 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		if err != nil {
 			return ResolveResult{}, fmt.Errorf("reading resolved provider %s: %w", localPath, err)
 		}
-		var def harness.ProviderDef
-		if err := yaml.Unmarshal(content, &def); err != nil {
-			return ResolveResult{}, fmt.Errorf("parsing provider from %s: %w", dep.URL, err)
+		def, w, err := parseProviderDef(content, i, dep.URL)
+		if err != nil {
+			return ResolveResult{}, err
 		}
-		if def.Name == "" {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider name is required in %s", i, dep.URL)
-		}
-		if !validIdentifier.MatchString(def.Name) {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider name %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Name, dep.URL)
-		}
-		if def.Type == "" {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type is required in %s", i, dep.URL)
-		}
-		if !validIdentifier.MatchString(def.Type) {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Type, dep.URL)
-		}
-
-		if w := WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
+		if w != "" {
 			dep.Warning = w
 		}
 		state.appendDependency(dep)
-		resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: localPath})
+		resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: localPath, FromURL: true})
 	}
 	h.Providers = remaining
 	if h.OpenShell != nil {
@@ -326,6 +501,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		Deps:      state.deps,
 		Profiles:  profiles,
 		Providers: resolvedProviders,
+		Warnings:  state.warnings,
 	}, nil
 }
 
@@ -483,7 +659,7 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 
 	forgeInfo, err := forge.ParseForgeURL(cleanURL)
 	if err != nil {
-		return Dependency{}, "", fmt.Errorf("%s: skill URLs must be hosted on a supported forge: %w", field, err)
+		return Dependency{}, "", fmt.Errorf("%s: URLs must be hosted on a supported forge: %w", field, err)
 	}
 	if forgeInfo.Forge != "github" {
 		return Dependency{}, "", fmt.Errorf("%s: forge %q is recognized but fetch support has not landed yet", field, forgeInfo.Forge)
@@ -533,11 +709,11 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 		fetchedAt = dirEntry.FetchTime
 	}
 
-	// Create a symlink named after the skill directory so downstream consumers
-	// (sandbox upload, logging) see the real skill name instead of "tree".
+	// Create a symlink named after the directory so downstream consumers
+	// (sandbox upload, logging) see the real name instead of "tree".
 	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
 	if err != nil {
-		return Dependency{}, "", fmt.Errorf("naming cached skill for %s: %w", field, err)
+		return Dependency{}, "", fmt.Errorf("naming cached directory for %s: %w", field, err)
 	}
 
 	if opts.AuditLogPath != "" {
@@ -637,4 +813,18 @@ func resolveSkillTransitiveDeps(ctx context.Context, parentURL, skillDirPath str
 	}
 
 	return nil
+}
+
+// chmodPluginDir sets all regular files in dir to 0755 so that scripts
+// and MCP server binaries within a fetched plugin directory are
+// executable. Uses 0755 for consistency with pre_script/post_script
+// permission handling in lock.go.
+//
+// WARNING: this mutates the shared content-addressed cache. Files in
+// the same tree referenced as skills from another harness field will
+// also become 0755. This is acceptable because making declarative
+// files (markdown, JSON) executable is harmless, and the SHA-256
+// integrity pin constrains content, not permissions.
+func chmodPluginDir(dir string) error {
+	return harness.ChmodPluginDir(dir)
 }

@@ -258,7 +258,7 @@ func (n *Notifier) buildStartBody(description string) string {
 
 	line2 := n.buildSecondLine()
 	if line2 != "" {
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(line2)
 	}
 	return b.String()
@@ -280,7 +280,7 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 
 	line2 := n.buildSecondLine()
 	if line2 != "" {
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(line2)
 	}
 	return b.String()
@@ -514,7 +514,7 @@ func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string,
 		parts = append(parts, fmt.Sprintf("[View workflow run →](%s)", runURL))
 	}
 	if len(parts) > 0 {
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(strings.Join(parts, " · "))
 	}
 	return b.String()

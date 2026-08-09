@@ -1,6 +1,6 @@
 ---
 title: "70. Portable provider and profile resolution"
-status: Accepted
+status: Superseded
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -19,7 +19,7 @@ Date: 2026-07-03
 
 ## Status
 
-Accepted
+Superseded by [ADR 0075](0075-local-path-profiles-providers.md)
 
 ## Context
 
