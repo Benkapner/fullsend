@@ -49,6 +49,9 @@ type fakeCFWranglerRunner struct {
 	deployCalls  []fakeCFDeployCall
 	secretCalls  []fakeCFSecretCall
 	secretPutErr error
+	// workerExists controls the return value of WorkerExists.
+	// Defaults to true (Worker exists).
+	workerExists *bool
 }
 
 type fakeCFDeployCall struct {
@@ -87,6 +90,13 @@ func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretNa
 
 func (f *fakeCFWranglerRunner) Delete(context.Context, string) error {
 	return nil
+}
+
+func (f *fakeCFWranglerRunner) WorkerExists(_ context.Context, _ string) (bool, error) {
+	if f.workerExists != nil {
+		return *f.workerExists, nil
+	}
+	return true, nil // default: Worker exists
 }
 
 func TestMintCommand_HasSubcommands(t *testing.T) {
@@ -1716,6 +1726,21 @@ func TestParseRolesFlag(t *testing.T) {
 			name:    "role with double hyphen",
 			input:   "coder,my--role",
 			wantErr: "invalid role",
+		},
+		{
+			name:  "empty tokens between commas",
+			input: "coder,,",
+			want:  []string{"coder"},
+		},
+		{
+			name:    "all empty after split",
+			input:   ",,,",
+			wantErr: "must contain at least one valid role name",
+		},
+		{
+			name:    "whitespace-only segments",
+			input:   " , , ",
+			wantErr: "must contain at least one valid role name",
 		},
 	}
 
@@ -4350,4 +4375,176 @@ func TestRunMintStatus_ShowsDefaultWorkflowHostRepos(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "Workflow Host Repos")
 	assert.Contains(t, out.String(), "fullsend-ai/fullsend")
+}
+
+// --- CF --app-set invalid value tests ---
+
+func TestMintDeployCmd_CloudflareInvalidAppSet(t *testing.T) {
+	withCFEnvVars(t)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--app-set=INVALID_SET!",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --app-set")
+}
+
+func TestMintDeployCmd_GCPInvalidAppSet(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=gcp",
+		"--project=my-project-id",
+		"--app-set=BAD!!",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --app-set")
+}
+
+// --- Preview bootstrap dry-run messaging ---
+
+func TestMintDeployCmd_CloudflareDryRunPreviewShowsBootstrapNote(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-run-42",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "does not exist")
+	assert.Contains(t, stdout, "one-time durable deploy")
+}
+
+// --- Invalid platform test (azure variant) ---
+
+func TestMintDeployCmd_InvalidPlatformAzure(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=azure",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported platform")
+}
+
+// --- CF --pem-dir dry-run validation failure ---
+
+func TestMintDeployCmd_CloudflareDryRunPemDirMissingRoles(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Create a pem dir with only one role file (missing others).
+	pemDir := t.TempDir()
+	testPEM := generateTestPEM(t)
+	require.NoError(t, os.WriteFile(filepath.Join(pemDir, "coder.pem"), testPEM, 0o600))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing PEM file")
+}
+
+// --- CF deploy: preview deploys with bootstrap (end-to-end CLI test) ---
+
+func TestMintDeployCmd_CloudflarePreviewBootstrapDeploy(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	workerMissing := false
+	fake := &fakeCFWranglerRunner{
+		deployURL:    "https://bt-run-42-fullsend-mint.workers.dev",
+		workerExists: &workerMissing,
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-run-42",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	// Should have two deploy calls: bootstrap durable + preview.
+	require.Len(t, fake.deployCalls, 2)
+	assert.Empty(t, fake.deployCalls[0].previewAlias, "first call should be durable bootstrap")
+	assert.Equal(t, "bt-run-42", fake.deployCalls[1].previewAlias, "second call should be preview")
+}
+
+func TestMintDeployCmd_CloudflarePreviewSkipsBootstrapWhenWorkerExists(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	workerPresent := true
+	fake := &fakeCFWranglerRunner{
+		deployURL:    "https://bt-run-42-fullsend-mint.workers.dev",
+		workerExists: &workerPresent,
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-run-42",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	// Only one deploy call — no bootstrap needed.
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-run-42", fake.deployCalls[0].previewAlias)
+}
+
+// --- CF --pem-dir loadAppSetPEMs failure path ---
+
+func TestMintDeployCmd_CloudflarePemDirLoadFailure(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+
+	// Create a pem dir with invalid PEM data.
+	pemDir := t.TempDir()
+	roles := defaultMintRoles()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), []byte("not-a-pem"), 0o600))
+	}
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading app set PEMs")
 }

@@ -26,6 +26,11 @@ type fakeWranglerRunner struct {
 	// Deploy and store in deployCall.fileContents (for asserting
 	// generated file content after the temp dir is cleaned up).
 	captureFiles []string
+	// workerExists controls the return value of WorkerExists.
+	// Defaults to true (Worker exists).
+	workerExists *bool
+	// workerExistsErr, if non-nil, is returned by WorkerExists.
+	workerExistsErr error
 }
 
 type deployCall struct {
@@ -86,6 +91,16 @@ func (f *fakeWranglerRunner) PutSecret(_ context.Context, workerName, secretName
 func (f *fakeWranglerRunner) Delete(_ context.Context, workerName string) error {
 	f.deleteCalls = append(f.deleteCalls, workerName)
 	return f.deleteErr
+}
+
+func (f *fakeWranglerRunner) WorkerExists(_ context.Context, _ string) (bool, error) {
+	if f.workerExistsErr != nil {
+		return false, f.workerExistsErr
+	}
+	if f.workerExists != nil {
+		return *f.workerExists, nil
+	}
+	return true, nil // default: Worker exists
 }
 
 // --- Provisioner tests ---
@@ -1223,6 +1238,341 @@ func TestProvisioner_Provision_EmptyEnvVarPassedToWrangler(t *testing.T) {
 	prwr, present := envVars["PER_REPO_WIF_REPOS"]
 	assert.True(t, present, "empty env var should be present in deploy call")
 	assert.Equal(t, "", prwr, "empty env var should be empty string")
+}
+
+// --- Bootstrap (auto-create durable before preview) tests ---
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestProvisioner_Provision_PreviewBootstrap_WorkerMissing(t *testing.T) {
+	// When the Worker does not exist, a preview deploy should first
+	// perform a durable bootstrap deploy, then the preview deploy.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		workerExists: boolPtr(false),
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	// Expect two deploy calls: first durable bootstrap, then preview.
+	require.Len(t, fake.deployCalls, 2)
+	assert.Empty(t, fake.deployCalls[0].previewAlias, "first deploy should be durable (no preview alias)")
+	assert.Equal(t, "bt-run-42", fake.deployCalls[1].previewAlias, "second deploy should be preview")
+	assert.Equal(t, "test-mint", fake.deployCalls[0].workerName)
+	assert.Equal(t, "test-mint", fake.deployCalls[1].workerName)
+}
+
+func TestProvisioner_Provision_PreviewBootstrap_WorkerExists(t *testing.T) {
+	// When the Worker already exists, preview deploy should NOT
+	// perform a bootstrap durable deploy.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		workerExists: boolPtr(true),
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	// Only one deploy call — no bootstrap needed.
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-run-42", fake.deployCalls[0].previewAlias)
+}
+
+func TestProvisioner_Provision_PreviewBootstrap_WithSecrets(t *testing.T) {
+	// Bootstrap deploy should include PEM secrets when --pem-dir is set.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	secrets := map[string][]byte{
+		"CODER_APP_PEM": []byte("pem-data"),
+	}
+	fake := &fakeWranglerRunner{
+		workerExists: boolPtr(false),
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+		Secrets:      secrets,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 2)
+	// Bootstrap durable deploy should include secrets.
+	assert.Equal(t, []byte("pem-data"), fake.deployCalls[0].secrets["CODER_APP_PEM"],
+		"bootstrap deploy should include PEM secrets")
+	// Preview deploy should also include secrets.
+	assert.Equal(t, []byte("pem-data"), fake.deployCalls[1].secrets["CODER_APP_PEM"],
+		"preview deploy should include PEM secrets")
+}
+
+func TestProvisioner_Provision_PreviewBootstrap_BootstrapFails(t *testing.T) {
+	// When the bootstrap durable deploy fails, the preview deploy
+	// should not be attempted.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	callCount := 0
+	fake := &fakeWranglerRunner{
+		workerExists: boolPtr(false),
+	}
+	// Make deploy fail on the first call (bootstrap) only.
+	origDeploy := fake.Deploy
+	_ = origDeploy // unused, we override via deployErr
+	fake.deployErr = fmt.Errorf("bootstrap failed")
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bootstrap durable deploy")
+	_ = callCount
+	// Only bootstrap deploy should be attempted (which failed).
+	require.Len(t, fake.deployCalls, 1)
+}
+
+func TestProvisioner_Provision_PreviewBootstrap_CheckExistenceFails(t *testing.T) {
+	// When WorkerExists fails, Provision should return the error.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		workerExistsErr: fmt.Errorf("API timeout"),
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking worker existence")
+	assert.Empty(t, fake.deployCalls, "no deploy should be attempted when existence check fails")
+}
+
+func TestProvisioner_Provision_DurableSkipsBootstrap(t *testing.T) {
+	// Durable deploys should never trigger a bootstrap existence check.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		// workerExists is nil (default true), but shouldn't be called at all.
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+		SourceDir:  sourceDir,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	// Only one deploy call — no bootstrap check.
+	require.Len(t, fake.deployCalls, 1)
+	assert.Empty(t, fake.deployCalls[0].previewAlias)
+}
+
+// --- LiveWranglerRunner.WorkerExists tests ---
+
+func TestLiveWranglerRunner_WorkerExists_CommandError(t *testing.T) {
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+
+	// Cancel context immediately so exec fails.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := runner.WorkerExists(ctx, "test-worker")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking worker existence")
+}
+
+// --- copyDir additional edge case tests ---
+
+func TestCopyDir_SkipsSymlinks(t *testing.T) {
+	src := t.TempDir()
+	os.WriteFile(filepath.Join(src, "file.txt"), []byte("content"), 0o644)
+	// Create a symlink — it should be skipped.
+	os.Symlink(filepath.Join(src, "file.txt"), filepath.Join(src, "link.txt"))
+
+	dst := t.TempDir()
+	err := copyDir(src, dst)
+	require.NoError(t, err)
+
+	// Regular file should exist.
+	data, err := os.ReadFile(filepath.Join(dst, "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "content", string(data))
+
+	// Symlink should NOT exist.
+	_, err = os.Lstat(filepath.Join(dst, "link.txt"))
+	assert.True(t, os.IsNotExist(err), "symlink should not be copied")
+}
+
+// --- writeSecretsFile edge cases ---
+
+func TestWriteSecretsFile_NilSecrets(t *testing.T) {
+	// nil secrets should behave like empty map.
+	secrets := map[string][]byte(nil)
+	// writeSecretsFile doesn't special-case nil, so it should work
+	// (json.Marshal of empty map produces "{}")
+	path, cleanup, err := writeSecretsFile(secrets)
+	require.NoError(t, err)
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "{}", string(data))
+}
+
+// --- ensureWASMArtifacts edge case: CopyWASMExec error ---
+
+func TestEnsureWASMArtifacts_CopyExecError(t *testing.T) {
+	origBuild := BuildWASMFn
+	origCopy := CopyWASMExecFn
+	BuildWASMFn = func(outPath string) error {
+		return os.WriteFile(outPath, []byte("wasm"), 0o644)
+	}
+	CopyWASMExecFn = func(destPath string) error {
+		return fmt.Errorf("copy failed")
+	}
+	t.Cleanup(func() {
+		BuildWASMFn = origBuild
+		CopyWASMExecFn = origCopy
+	})
+
+	dir := t.TempDir()
+	err := ensureWASMArtifacts(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying wasm_exec.js")
+}
+
+// --- Provisioner.Provision resolveSourceDir error test ---
+
+func TestProvisioner_Provision_SourceDirIsFile(t *testing.T) {
+	// sourceDir that is a file (not a directory) should fail validation.
+	f := filepath.Join(t.TempDir(), "notadir")
+	require.NoError(t, os.WriteFile(f, []byte("content"), 0o644))
+
+	p := NewProvisioner(Config{
+		AccountID: "abc123",
+		SourceDir: f,
+	}, &fakeWranglerRunner{})
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a directory")
+}
+
+// --- Provisioner validate edge cases ---
+
+func TestProvisioner_Provision_PreviewWithoutAlias(t *testing.T) {
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		DeployMode: DeployPreview,
+		// PreviewAlias intentionally empty.
+	}, &fakeWranglerRunner{})
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-empty PreviewAlias")
+}
+
+// --- Provisioner.Teardown durable is rejected ---
+
+func TestProvisioner_Teardown_DurableRejectsCleanup_Default(t *testing.T) {
+	// Same as existing test but with default deploy mode.
+	fake := &fakeWranglerRunner{}
+	p := &Provisioner{
+		cfg: Config{
+			AccountID:  "abc123",
+			WorkerName: "test-mint",
+			// DeployMode defaults to DeployDurable (0).
+		},
+		wrangler: fake,
+	}
+
+	err := p.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only supported for preview")
+}
+
+// --- fileExistsAndNonEmpty tests ---
+
+func TestFileExistsAndNonEmpty_EmptyFile(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "empty")
+	require.NoError(t, os.WriteFile(f, []byte(""), 0o644))
+	assert.False(t, fileExistsAndNonEmpty(f), "empty file should return false")
+}
+
+func TestFileExistsAndNonEmpty_NonExistent(t *testing.T) {
+	assert.False(t, fileExistsAndNonEmpty("/nonexistent/path"))
+}
+
+func TestFileExistsAndNonEmpty_NonEmpty(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(f, []byte("data"), 0o644))
+	assert.True(t, fileExistsAndNonEmpty(f))
+}
+
+// --- PreviewAlias validation tests ---
+
+func TestProvisioner_Provision_PreviewWithEnvVarsPassedToBothDeploys(t *testing.T) {
+	// When bootstrap is triggered, env vars should be passed to both
+	// the bootstrap durable deploy and the preview deploy.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		workerExists: boolPtr(false),
+	}
+
+	envVars := map[string]string{
+		"ALLOWED_ORGS": "acme",
+		"ROLE_APP_IDS": `{"coder":"42"}`,
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+		EnvVars:      envVars,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 2)
+	// Both deploys should receive env vars.
+	assert.Equal(t, "acme", fake.deployCalls[0].envVars["ALLOWED_ORGS"])
+	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"])
 }
 
 // --- helpers ---

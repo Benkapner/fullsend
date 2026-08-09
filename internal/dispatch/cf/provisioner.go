@@ -135,6 +135,11 @@ type WranglerRunner interface {
 
 	// Delete removes a Worker deployment.
 	Delete(ctx context.Context, workerName string) error
+
+	// WorkerExists checks whether a Worker script with the given name
+	// already exists. Used to determine whether a bootstrap durable
+	// deploy is needed before a preview deploy.
+	WorkerExists(ctx context.Context, workerName string) (bool, error)
 }
 
 // Provisioner creates Cloudflare Worker infrastructure for token minting.
@@ -204,6 +209,27 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	// action on environment variables.
 	if err := writeVersionTS(sourceDir, p.cfg.Version, p.cfg.Commit); err != nil {
 		return nil, fmt.Errorf("writing version.ts: %w", err)
+	}
+
+	// For preview deploys, check whether the Worker script exists. If it
+	// does not, perform a one-time minimal durable deploy so that the
+	// subsequent preview `wrangler versions upload` can succeed.
+	// Without this bootstrap step, wrangler rejects the preview upload
+	// with: "You cannot upload a new version of a Worker that does not
+	// yet exist. Please run the `deploy` command first."
+	if p.cfg.PreviewAlias != "" {
+		exists, existsErr := p.wrangler.WorkerExists(ctx, p.cfg.WorkerName)
+		if existsErr != nil {
+			return nil, fmt.Errorf("checking worker existence: %w", existsErr)
+		}
+		if !exists {
+			// Bootstrap: create the durable Worker script with a
+			// minimal deploy (no preview alias, include PEM secrets
+			// from cfg.Secrets so the script is usable).
+			if _, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, "", p.cfg.EnvVars, p.cfg.Secrets); err != nil {
+				return nil, fmt.Errorf("bootstrap durable deploy for new worker: %w", err)
+			}
+		}
 	}
 
 	url, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, p.cfg.PreviewAlias, p.cfg.EnvVars, p.cfg.Secrets)
@@ -824,6 +850,32 @@ func (r *LiveWranglerRunner) Delete(ctx context.Context, workerName string) erro
 		return fmt.Errorf("wrangler delete failed: %s\n%s", err, string(output))
 	}
 	return nil
+}
+
+// WorkerExists checks whether a Worker script with the given name exists
+// by running `npx wrangler versions list --name <workerName>`. If the
+// command succeeds, the Worker exists. If it fails with a "not found"
+// error, the Worker does not exist.
+func (r *LiveWranglerRunner) WorkerExists(ctx context.Context, workerName string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "versions", "list", "--name", workerName)
+	cmd.Env = append(os.Environ(),
+		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := string(output)
+		// wrangler returns a non-zero exit code with "not found" or
+		// "does not exist" when the Worker script doesn't exist.
+		lower := strings.ToLower(outStr)
+		if strings.Contains(lower, "not found") ||
+			strings.Contains(lower, "does not exist") ||
+			strings.Contains(lower, "could not find") {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking worker existence: %s\n%s", err, outStr)
+	}
+	return true, nil
 }
 
 // PEMSecretsFromRoles converts a role-keyed PEM map (e.g. "coder" → PEM data)

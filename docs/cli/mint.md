@@ -61,6 +61,8 @@ fullsend mint deploy \
 
 Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown abandons the alias without deleting the Worker script.
 
+If the target Worker script does not yet exist (first-time preview on a new `--worker-name`), the CLI automatically creates it with a one-time durable deploy before proceeding with the preview upload. Subsequent preview deploys skip this bootstrap step. When `--pem-dir` is set, the bootstrap deploy includes PEM secrets so the Worker is immediately usable.
+
 Use `--worker-name` to target a specific Worker script name.
 
 Authentication (one of):

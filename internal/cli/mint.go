@@ -837,6 +837,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 			printer.StepInfo(fmt.Sprintf("Mode: preview (alias=%s)", previewAlias))
 			printer.StepInfo(fmt.Sprintf("Preview URL: https://%s-%s.workers.dev", previewAlias, effectiveName))
 			printer.StepInfo("Command: wrangler versions upload --preview-alias=" + previewAlias)
+			printer.StepInfo(fmt.Sprintf("Note: if Worker %s does not exist, a one-time durable deploy will create it first", effectiveName))
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
 		}
