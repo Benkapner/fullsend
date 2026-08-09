@@ -34,19 +34,30 @@ echo "Follow-up window: ${FOLLOWUP_DAYS} days after merge"
 echo ""
 
 # Fetch merged PRs by bot authors (paginated)
+# Capture stdout even on non-zero exit: gh --paginate can fail on the boundary
+# page (e.g. GitHub's 1000-result cap returns 422) after emitting valid data.
 BOT_PRS_ERR=$(mktemp)
-if ! BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:${BOT_LOGIN}+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
-  --paginate --jq '.items[] | {number: .number, title: .title, merged_at: .pull_request.merged_at}' 2>"$BOT_PRS_ERR"); then
-  echo "ERROR: could not fetch bot PRs: $(cat "$BOT_PRS_ERR")"
-  rm -f "$BOT_PRS_ERR"
-  exit 1
-fi
-rm -f "$BOT_PRS_ERR"
+set +e
+BOT_PRS=$(gh api "search/issues?q=repo:${REPO}+is:pr+is:merged+author:${BOT_LOGIN}+merged:>=${SINCE}&per_page=100&sort=created&order=desc" \
+  --paginate --jq '.items[] | {number: .number, title: .title, merged_at: .pull_request.merged_at}' 2>"$BOT_PRS_ERR")
+BOT_PRS_EXIT=$?
+set -e
 
 if [ -z "$BOT_PRS" ]; then
+  if [ "$BOT_PRS_EXIT" -ne 0 ]; then
+    echo "ERROR: could not fetch bot PRs: $(cat "$BOT_PRS_ERR")"
+    rm -f "$BOT_PRS_ERR"
+    exit 1
+  fi
+  rm -f "$BOT_PRS_ERR"
   echo "No agent PRs found in the last ${DAYS} days."
   exit 0
 fi
+
+if [ "$BOT_PRS_EXIT" -ne 0 ]; then
+  echo "WARNING: pagination error during bot PR fetch ($(cat "$BOT_PRS_ERR" | head -1)). Continuing with partial results."
+fi
+rm -f "$BOT_PRS_ERR"
 
 PR_COUNT=$(echo "$BOT_PRS" | jq -s 'length')
 if [ "$PR_COUNT" -ge 1000 ]; then
