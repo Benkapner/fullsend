@@ -1140,9 +1140,10 @@ func TestMintDeployCmd_CloudflareNoConfigFlagsOmitsEnvVars(t *testing.T) {
 	assert.False(t, hasAllowedOrgs, "ALLOWED_ORGS should not be set when --allowed-orgs is omitted")
 	assert.False(t, hasPRWR, "PER_REPO_WIF_REPOS should not be set when --per-repo-wif-repos is omitted")
 	assert.False(t, hasWHR, "WORKFLOW_HOST_REPOS should not be set when --workflow-host-repos is omitted")
-	// ALLOWED_WORKFLOW_FILES defaults to "*" even when the flag is omitted.
-	assert.Equal(t, "*", envVars["ALLOWED_WORKFLOW_FILES"],
-		"ALLOWED_WORKFLOW_FILES should default to * when --allowed-workflow-files is omitted")
+	// ALLOWED_WORKFLOW_FILES should NOT be set when --allowed-workflow-files
+	// is omitted — this preserves the existing Worker value on redeploy.
+	_, hasAWF := envVars["ALLOWED_WORKFLOW_FILES"]
+	assert.False(t, hasAWF, "ALLOWED_WORKFLOW_FILES should not be set when --allowed-workflow-files is omitted")
 }
 
 func TestMintDeployCmd_CloudflareConfigFlagsWarnOnGCP(t *testing.T) {
@@ -1218,7 +1219,7 @@ func TestMintDeployCmd_NewFlagsExist(t *testing.T) {
 	require.NotNil(t, rolesFlag, "expected --roles flag")
 }
 
-func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDefault(t *testing.T) {
+func TestMintDeployCmd_CloudflareAllowedWorkflowFilesOmitted(t *testing.T) {
 	withCFEnvVars(t)
 	sourceDir := createMinimalWorkerSourceDir(t)
 
@@ -1227,7 +1228,9 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDefault(t *testing.T) {
 	}
 	withMintCFWrangler(t, fake)
 
-	// When --allowed-workflow-files is omitted, it should default to "*".
+	// When --allowed-workflow-files is omitted, ALLOWED_WORKFLOW_FILES
+	// should NOT be included in env vars — preserving the existing value
+	// on the Worker via --keep-vars.
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",
@@ -1239,8 +1242,9 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDefault(t *testing.T) {
 
 	require.Len(t, fake.deployCalls, 1)
 	envVars := fake.deployCalls[0].envVars
-	assert.Equal(t, "*", envVars["ALLOWED_WORKFLOW_FILES"],
-		"ALLOWED_WORKFLOW_FILES should default to * when flag is omitted")
+	_, hasAWF := envVars["ALLOWED_WORKFLOW_FILES"]
+	assert.False(t, hasAWF,
+		"ALLOWED_WORKFLOW_FILES should not be set when flag is omitted (preserves existing Worker value)")
 }
 
 func TestMintDeployCmd_CloudflareAllowedWorkflowFilesExplicit(t *testing.T) {
@@ -1268,14 +1272,15 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesExplicit(t *testing.T) {
 		"ALLOWED_WORKFLOW_FILES should use the explicit value")
 }
 
-func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRun(t *testing.T) {
+func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRunOmitted(t *testing.T) {
 	withCFEnvVars(t)
 
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	// Default dry-run should show the * default and a warning.
+	// When --allowed-workflow-files is omitted, dry-run should NOT show
+	// ALLOWED_WORKFLOW_FILES at all (value is preserved via --keep-vars).
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{
 		"mint", "deploy",
@@ -1291,8 +1296,37 @@ func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRun(t *testing.T) {
 	stdout := string(out)
 
 	require.NoError(t, err)
+	assert.NotContains(t, stdout, "ALLOWED_WORKFLOW_FILES",
+		"dry-run should not mention ALLOWED_WORKFLOW_FILES when flag is omitted")
+}
+
+func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDryRunWildcard(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// When --allowed-workflow-files=* is explicit, dry-run should show
+	// the value and include the warning.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--allowed-workflow-files=*",
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
 	assert.Contains(t, stdout, "ALLOWED_WORKFLOW_FILES=*",
-		"dry-run should show the default ALLOWED_WORKFLOW_FILES value")
+		"dry-run should show the explicit ALLOWED_WORKFLOW_FILES=* value")
 	assert.Contains(t, stdout, "allow any workflow basename",
 		"dry-run should include a warning about * allowing any workflow")
 }
@@ -4434,7 +4468,8 @@ func TestMintDeployCmd_CloudflareDryRunPreviewShowsBootstrapNote(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, stdout, "does not exist")
-	assert.Contains(t, stdout, "one-time durable deploy")
+	assert.Contains(t, stdout, "empty durable deploy")
+	assert.Contains(t, stdout, "mint config applies to the preview version only")
 }
 
 // --- Invalid platform test (azure variant) ---

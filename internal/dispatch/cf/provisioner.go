@@ -223,10 +223,14 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 			return nil, fmt.Errorf("checking worker existence: %w", existsErr)
 		}
 		if !exists {
-			// Bootstrap: create the durable Worker script with a
-			// minimal deploy (no preview alias, include PEM secrets
-			// from cfg.Secrets so the script is usable).
-			if _, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, "", p.cfg.EnvVars, p.cfg.Secrets); err != nil {
+			// Bootstrap: create an empty durable Worker script shell
+			// so wrangler versions upload can target it. The bootstrap
+			// deploy intentionally sets NO env vars — mint configuration
+			// (ALLOWED_ORGS, PER_REPO_WIF_REPOS, etc.) applies only to
+			// the preview version deployed immediately after. This
+			// prevents dual-enrollment when a later per-repo preview
+			// inherits env vars from the durable script via --keep-vars.
+			if _, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, "", nil, nil); err != nil {
 				return nil, fmt.Errorf("bootstrap durable deploy for new worker: %w", err)
 			}
 		}

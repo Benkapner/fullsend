@@ -1259,6 +1259,9 @@ func TestProvisioner_Provision_PreviewBootstrap_WorkerMissing(t *testing.T) {
 		DeployMode:   DeployPreview,
 		PreviewAlias: "bt-run-42",
 		SourceDir:    sourceDir,
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "acme",
+		},
 	}, fake)
 
 	_, err := p.Provision(context.Background())
@@ -1269,6 +1272,14 @@ func TestProvisioner_Provision_PreviewBootstrap_WorkerMissing(t *testing.T) {
 	assert.Equal(t, "bt-run-42", fake.deployCalls[1].previewAlias, "second deploy should be preview")
 	assert.Equal(t, "test-mint", fake.deployCalls[0].workerName)
 	assert.Equal(t, "test-mint", fake.deployCalls[1].workerName)
+	// Bootstrap deploy must have empty env vars.
+	assert.Empty(t, fake.deployCalls[0].envVars,
+		"bootstrap deploy must not set env vars (prevents dual-enrollment via --keep-vars)")
+	assert.Empty(t, fake.deployCalls[0].secrets,
+		"bootstrap deploy must not include secrets")
+	// Preview deploy should receive the configured env vars.
+	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"],
+		"preview deploy should receive configured env vars")
 }
 
 func TestProvisioner_Provision_PreviewBootstrap_WorkerExists(t *testing.T) {
@@ -1296,7 +1307,9 @@ func TestProvisioner_Provision_PreviewBootstrap_WorkerExists(t *testing.T) {
 }
 
 func TestProvisioner_Provision_PreviewBootstrap_WithSecrets(t *testing.T) {
-	// Bootstrap deploy should include PEM secrets when --pem-dir is set.
+	// Bootstrap deploy should NOT include PEM secrets or env vars — it
+	// creates an empty durable script shell. PEM secrets and env vars
+	// land only on the preview version deployed immediately after.
 	stubWASMBuild(t)
 	sourceDir := createFakeWorkerSourceDir(t)
 	secrets := map[string][]byte{
@@ -1312,18 +1325,26 @@ func TestProvisioner_Provision_PreviewBootstrap_WithSecrets(t *testing.T) {
 		DeployMode:   DeployPreview,
 		PreviewAlias: "bt-run-42",
 		SourceDir:    sourceDir,
-		Secrets:      secrets,
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "acme",
+			"ROLE_APP_IDS": `{"coder":"42"}`,
+		},
+		Secrets: secrets,
 	}, fake)
 
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 2)
-	// Bootstrap durable deploy should include secrets.
-	assert.Equal(t, []byte("pem-data"), fake.deployCalls[0].secrets["CODER_APP_PEM"],
-		"bootstrap deploy should include PEM secrets")
-	// Preview deploy should also include secrets.
+	// Bootstrap durable deploy must have empty env vars and no secrets.
+	assert.Empty(t, fake.deployCalls[0].envVars,
+		"bootstrap deploy must not set env vars (prevents dual-enrollment via --keep-vars)")
+	assert.Empty(t, fake.deployCalls[0].secrets,
+		"bootstrap deploy must not include secrets (PEMs land on preview only)")
+	// Preview deploy should include both secrets and env vars.
 	assert.Equal(t, []byte("pem-data"), fake.deployCalls[1].secrets["CODER_APP_PEM"],
 		"preview deploy should include PEM secrets")
+	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"],
+		"preview deploy should include configured env vars")
 }
 
 func TestProvisioner_Provision_PreviewBootstrap_BootstrapFails(t *testing.T) {
@@ -1544,9 +1565,10 @@ func TestFileExistsAndNonEmpty_NonEmpty(t *testing.T) {
 
 // --- PreviewAlias validation tests ---
 
-func TestProvisioner_Provision_PreviewWithEnvVarsPassedToBothDeploys(t *testing.T) {
-	// When bootstrap is triggered, env vars should be passed to both
-	// the bootstrap durable deploy and the preview deploy.
+func TestProvisioner_Provision_PreviewBootstrap_EmptyEnvVars(t *testing.T) {
+	// When bootstrap is triggered, only the preview deploy should
+	// receive env vars. The bootstrap durable deploy must set NO env
+	// vars to prevent dual-enrollment via --keep-vars inheritance.
 	stubWASMBuild(t)
 	sourceDir := createFakeWorkerSourceDir(t)
 	fake := &fakeWranglerRunner{
@@ -1570,9 +1592,14 @@ func TestProvisioner_Provision_PreviewWithEnvVarsPassedToBothDeploys(t *testing.
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 2)
-	// Both deploys should receive env vars.
-	assert.Equal(t, "acme", fake.deployCalls[0].envVars["ALLOWED_ORGS"])
-	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"])
+	// Bootstrap durable deploy must have empty env vars.
+	assert.Empty(t, fake.deployCalls[0].envVars,
+		"bootstrap deploy must not set env vars")
+	// Preview deploy should receive the configured env vars.
+	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"],
+		"preview deploy should receive configured env vars")
+	assert.Equal(t, `{"coder":"42"}`, fake.deployCalls[1].envVars["ROLE_APP_IDS"],
+		"preview deploy should receive ROLE_APP_IDS")
 }
 
 // --- helpers ---

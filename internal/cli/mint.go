@@ -460,7 +460,7 @@ Cloudflare mode (--platform=cloudflare):
     --allowed-orgs=acme,bigcorp     Set ALLOWED_ORGS
     --per-repo-wif-repos=a/b,c/d   Set PER_REPO_WIF_REPOS
     --workflow-host-repos=o/r       Set WORKFLOW_HOST_REPOS
-    --allowed-workflow-files=f,g    Set ALLOWED_WORKFLOW_FILES (default: *)
+    --allowed-workflow-files=f,g    Set ALLOWED_WORKFLOW_FILES
     --public                        Set PER_REPO_WIF_REPOS=* (mutually
                                     exclusive with --per-repo-wif-repos)
 
@@ -563,10 +563,11 @@ Omit to preserve existing value on redeploy; set to "" to clear`)
 	cmd.Flags().StringVar(&workflowHostRepos, "workflow-host-repos", "", `comma-separated workflow host repos (Cloudflare only, sets WORKFLOW_HOST_REPOS)
 Omit to preserve existing value on redeploy; set to "" to clear`)
 	cmd.Flags().StringVar(&allowedWorkflowFiles, "allowed-workflow-files", "", `comma-separated workflow file basenames (Cloudflare only, sets ALLOWED_WORKFLOW_FILES)
-When omitted, defaults to "*" (allow any workflow basename).
+Omit to preserve existing value on redeploy; set to "" to clear.
+Use --allowed-workflow-files=* to allow any workflow basename.
 Use --allowed-workflow-files=dispatch.yml,fullsend.yml to restrict.
-The mintcore fail-closed default (deny-all when env var is unset) applies
-only to non-CLI deploys; CLI deploy defaults to "*" for usability.`)
+First deploy: pass --allowed-workflow-files=* explicitly (mintcore
+denies all workflow basenames when the env var is unset).`)
 
 	return cmd
 }
@@ -744,13 +745,11 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		perRepoWIFRepos = "*"
 	}
 
-	// Default ALLOWED_WORKFLOW_FILES to "*" when the flag is omitted.
-	// The mintcore fail-closed default (deny-all when env var is unset)
-	// applies only to non-CLI deploys (hand-rolled Workers). CLI deploy
-	// defaults to "*" for usability so a plain deploy can mint tokens.
-	if !allowedWorkflowFilesExplicit {
-		allowedWorkflowFiles = "*"
-	}
+	// When --allowed-workflow-files is omitted (!Changed), do NOT set
+	// ALLOWED_WORKFLOW_FILES — this preserves the existing Worker value
+	// on redeploy (via --keep-vars). For brand-new deploys, pass
+	// --allowed-workflow-files=* explicitly to allow any workflow
+	// basename, or specify the allowed basenames.
 
 	if workerName != "" && !cf.ValidateWorkerName(workerName) {
 		return fmt.Errorf("invalid --worker-name %q: must be 2-63 lowercase alphanumeric characters or hyphens", workerName)
@@ -837,7 +836,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 			printer.StepInfo(fmt.Sprintf("Mode: preview (alias=%s)", previewAlias))
 			printer.StepInfo(fmt.Sprintf("Preview URL: https://%s-%s.workers.dev", previewAlias, effectiveName))
 			printer.StepInfo("Command: wrangler versions upload --preview-alias=" + previewAlias)
-			printer.StepInfo(fmt.Sprintf("Note: if Worker %s does not exist, a one-time durable deploy will create it first", effectiveName))
+			printer.StepInfo(fmt.Sprintf("Note: if Worker %s does not exist, a one-time empty durable deploy will create the script shell (mint config applies to the preview version only)", effectiveName))
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
 		}
