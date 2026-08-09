@@ -75,11 +75,8 @@ type PerRepoConfigReader interface {
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string
-	// Mint and inference accessors (ADR 0069 Decision 1).
-	// These resolve through the layered fallback chain:
-	// overlay → base → code defaults.
 	ConfigMintURL() string
-	ConfigInferenceProvider() string
+	ConfigInferenceType() string
 	ConfigInferenceProject() string
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
@@ -117,7 +114,7 @@ type PerRepoConfigWriter interface {
 	SetRoles([]string)
 	SetRuntime(string)
 	SetMintURL(string)
-	SetInferenceProvider(string)
+	SetInferenceType(string)
 	SetInferenceProject(string)
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
@@ -404,12 +401,6 @@ func (c *perRepoConfig) ConfigForge() string {
 	return ""
 }
 
-// --- perRepoConfig mint/inference getter methods ---
-//
-// Scalar string fallback: local -> parent -> empty. The terminal
-// perRepoDefaults parent returns "" for all mint/inference fields,
-// so an empty string means "not configured".
-
 // ConfigMintURL returns the configured token mint URL.
 func (c *perRepoConfig) ConfigMintURL() string {
 	if c.MintURL != "" {
@@ -421,23 +412,21 @@ func (c *perRepoConfig) ConfigMintURL() string {
 	return ""
 }
 
-// ConfigInferenceProvider returns the configured inference provider
-// (e.g. "vertex").
-func (c *perRepoConfig) ConfigInferenceProvider() string {
-	if c.InferenceProvider != "" {
-		return c.InferenceProvider
+// ConfigInferenceType returns the inference provider type (e.g. "vertex").
+func (c *perRepoConfig) ConfigInferenceType() string {
+	if c.Inference != nil && c.Inference.Type != "" {
+		return c.Inference.Type
 	}
 	if c.parent != nil {
-		return c.parent.ConfigInferenceProvider()
+		return c.parent.ConfigInferenceType()
 	}
 	return ""
 }
 
-// ConfigInferenceProject returns the configured GCP project ID for
-// inference.
+// ConfigInferenceProject returns the GCP project ID for inference.
 func (c *perRepoConfig) ConfigInferenceProject() string {
-	if c.InferenceProject != "" {
-		return c.InferenceProject
+	if c.Inference != nil && c.Inference.Project != "" {
+		return c.Inference.Project
 	}
 	if c.parent != nil {
 		return c.parent.ConfigInferenceProject()
@@ -445,11 +434,10 @@ func (c *perRepoConfig) ConfigInferenceProject() string {
 	return ""
 }
 
-// ConfigInferenceRegion returns the configured GCP region for
-// inference.
+// ConfigInferenceRegion returns the GCP region for inference.
 func (c *perRepoConfig) ConfigInferenceRegion() string {
-	if c.InferenceRegion != "" {
-		return c.InferenceRegion
+	if c.Inference != nil && c.Inference.Region != "" {
+		return c.Inference.Region
 	}
 	if c.parent != nil {
 		return c.parent.ConfigInferenceRegion()
@@ -457,11 +445,10 @@ func (c *perRepoConfig) ConfigInferenceRegion() string {
 	return ""
 }
 
-// ConfigInferenceWIFProvider returns the configured Workload Identity
-// Federation provider resource name for inference.
+// ConfigInferenceWIFProvider returns the WIF provider resource name.
 func (c *perRepoConfig) ConfigInferenceWIFProvider() string {
-	if c.InferenceWIFProvider != "" {
-		return c.InferenceWIFProvider
+	if c.Inference != nil && c.Inference.WIFProvider != "" {
+		return c.Inference.WIFProvider
 	}
 	if c.parent != nil {
 		return c.parent.ConfigInferenceWIFProvider()
@@ -493,18 +480,25 @@ func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
 // SetMintURL sets the token mint URL.
 func (c *perRepoConfig) SetMintURL(u string) { c.MintURL = u }
 
-// SetInferenceProvider sets the inference provider name.
-func (c *perRepoConfig) SetInferenceProvider(p string) { c.InferenceProvider = p }
+// SetInferenceType sets the inference provider type.
+func (c *perRepoConfig) SetInferenceType(t string) { c.ensureInference().Type = t }
 
 // SetInferenceProject sets the GCP project ID for inference.
-func (c *perRepoConfig) SetInferenceProject(p string) { c.InferenceProject = p }
+func (c *perRepoConfig) SetInferenceProject(p string) { c.ensureInference().Project = p }
 
 // SetInferenceRegion sets the GCP region for inference.
-func (c *perRepoConfig) SetInferenceRegion(r string) { c.InferenceRegion = r }
+func (c *perRepoConfig) SetInferenceRegion(r string) { c.ensureInference().Region = r }
 
-// SetInferenceWIFProvider sets the WIF provider resource name for
-// inference.
-func (c *perRepoConfig) SetInferenceWIFProvider(w string) { c.InferenceWIFProvider = w }
+// SetInferenceWIFProvider sets the WIF provider resource name.
+func (c *perRepoConfig) SetInferenceWIFProvider(w string) { c.ensureInference().WIFProvider = w }
+
+// ensureInference lazily initialises the Inference struct.
+func (c *perRepoConfig) ensureInference() *PerRepoInferenceConfig {
+	if c.Inference == nil {
+		c.Inference = &PerRepoInferenceConfig{}
+	}
+	return c.Inference
+}
 
 // --- LoadConfig / LoadConfigWriter factories ---
 
@@ -635,16 +629,17 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 
 // IsPerRepoYAML probes raw YAML for structural markers that distinguish
 // perRepoConfig from orgConfig. orgConfig has org-only top-level keys
-// (dispatch, repos, inference, defaults); perRepoConfig never does. When
-// no org-only key is present we default to per-repo: the shared fields
-// parse identically under either parser, and this avoids silently
-// dropping the per-repo Roles field on configs that omit it.
+// (dispatch, repos, defaults); perRepoConfig never does. The "inference"
+// key is shared: orgConfig uses it for the provider name, perRepoConfig
+// uses it for nested inference backend settings. Org configs always
+// contain dispatch/repos/defaults (non-omitempty), so the remaining
+// markers are sufficient for detection.
 func IsPerRepoYAML(data []byte) bool {
 	var probe map[string]interface{}
 	if err := yaml.Unmarshal(data, &probe); err != nil {
 		return false
 	}
-	for _, key := range []string{"dispatch", "repos", "inference", "defaults"} {
+	for _, key := range []string{"dispatch", "repos", "defaults"} {
 		if _, ok := probe[key]; ok {
 			return false
 		}

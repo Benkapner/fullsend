@@ -118,6 +118,8 @@ func TestIsPerRepoYAML(t *testing.T) {
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: github-actions\n")))
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: \"\"\n")))
 	assert.False(t, IsPerRepoYAML([]byte("not yaml")))
+	// inference key is shared between org and per-repo; should not trigger org detection.
+	assert.True(t, IsPerRepoYAML([]byte("version: \"1\"\ninference:\n  type: vertex\n")))
 }
 
 // --- Base-layer loading (config.base.yaml) tests ---
@@ -463,10 +465,11 @@ func TestLoadConfig_BothExist_MintInferenceFallback(t *testing.T) {
 	// Base sets mint/inference values; overlay overrides only mint_url.
 	base := `version: "1"
 mint_url: https://base-mint.example.com
-inference_provider: vertex
-inference_project: base-project
-inference_region: us-central1
-inference_wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov
+inference:
+  type: vertex
+  project: base-project
+  region: us-central1
+  wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov
 `
 	overlay := `mint_url: https://overlay-mint.example.com
 `
@@ -482,7 +485,7 @@ inference_wif_provider: projects/123/locations/global/workloadIdentityPools/pool
 	// Overlay overrides mint_url.
 	assert.Equal(t, "https://overlay-mint.example.com", pcr.ConfigMintURL())
 	// Inference fields fall through to base.
-	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
+	assert.Equal(t, "vertex", pcr.ConfigInferenceType())
 	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
 	assert.Equal(t, "us-central1", pcr.ConfigInferenceRegion())
 	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/prov", pcr.ConfigInferenceWIFProvider())
@@ -492,9 +495,10 @@ func TestLoadConfig_OnlyBase_MintInference(t *testing.T) {
 	dir := t.TempDir()
 	base := `version: "1"
 mint_url: https://base-mint.example.com
-inference_provider: vertex
-inference_project: base-project
-inference_region: global
+inference:
+  type: vertex
+  project: base-project
+  region: global
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
 
@@ -506,19 +510,20 @@ inference_region: global
 
 	// All values from base.
 	assert.Equal(t, "https://base-mint.example.com", pcr.ConfigMintURL())
-	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
+	assert.Equal(t, "vertex", pcr.ConfigInferenceType())
 	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
 	assert.Equal(t, "global", pcr.ConfigInferenceRegion())
 	// WIF provider not set in base — falls through to default (empty).
 	assert.Equal(t, "", pcr.ConfigInferenceWIFProvider())
 }
 
-func TestLoadConfig_BothExist_MarshalOmitsMintInferenceFromBase(t *testing.T) {
+func TestLoadConfig_BothExist_MarshalOmitsInferenceFromBase(t *testing.T) {
 	dir := t.TempDir()
 	base := `version: "1"
 mint_url: https://base-mint.example.com
-inference_provider: vertex
-inference_project: base-project
+inference:
+  type: vertex
+  project: base-project
 `
 	overlay := `roles:
   - coder
@@ -534,7 +539,7 @@ inference_project: base-project
 	s := string(data)
 	// Base values should NOT appear in overlay marshal.
 	assert.NotContains(t, s, "base-mint")
-	assert.NotContains(t, s, "inference_provider")
+	assert.NotContains(t, s, "inference:")
 	assert.NotContains(t, s, "base-project")
 	// Overlay values should appear.
 	assert.Contains(t, s, "coder")

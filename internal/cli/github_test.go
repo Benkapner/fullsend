@@ -87,6 +87,10 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 	require.NotNil(t, directFlag, "expected --direct flag")
 	assert.Equal(t, "false", directFlag.DefValue)
 
+	inferenceTypeFlag := cmd.Flags().Lookup("inference-type")
+	require.NotNil(t, inferenceTypeFlag, "expected --inference-type flag")
+	assert.Equal(t, "vertex", inferenceTypeFlag.DefValue)
+
 	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
 	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
 
@@ -264,11 +268,13 @@ func TestBuildPresetOverlay_NoFlagsChanged(t *testing.T) {
 func TestBuildPresetOverlay_FlagsPopulateOverlay(t *testing.T) {
 	cfg := githubSetupConfig{
 		mintURL:              "https://custom-mint.example.com",
+		inferenceType:        "vertex",
 		inferenceProject:     "custom-project",
 		inferenceRegion:      "us-west2",
 		inferenceWIFProvider: "projects/789/locations/global/workloadIdentityPools/pool/providers/prov",
 		changedFlags: map[string]bool{
 			"mint-url":               true,
+			"inference-type":         true,
 			"inference-project":      true,
 			"inference-region":       true,
 			"inference-wif-provider": true,
@@ -277,6 +283,7 @@ func TestBuildPresetOverlay_FlagsPopulateOverlay(t *testing.T) {
 	overlay := buildPresetOverlay(cfg)
 
 	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
+	assert.Equal(t, "vertex", overlay.ConfigInferenceType())
 	assert.Equal(t, "custom-project", overlay.ConfigInferenceProject())
 	assert.Equal(t, "us-west2", overlay.ConfigInferenceRegion())
 	assert.Equal(t, "projects/789/locations/global/workloadIdentityPools/pool/providers/prov", overlay.ConfigInferenceWIFProvider())
@@ -296,6 +303,7 @@ func TestBuildPresetOverlay_PartialFlags(t *testing.T) {
 
 	// Only mint-url was changed, so only it should be in the overlay.
 	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
+	assert.Equal(t, "", overlay.ConfigInferenceType())
 	assert.Equal(t, "", overlay.ConfigInferenceProject())
 	assert.Equal(t, "", overlay.ConfigInferenceRegion())
 	assert.Equal(t, "", overlay.ConfigInferenceWIFProvider())

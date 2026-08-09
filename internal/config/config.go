@@ -100,9 +100,21 @@ type DispatchConfig struct {
 	MintURL  string `yaml:"mint_url,omitempty"` // informational, set when mode=oidc-mint
 }
 
-// InferenceConfig configures the inference provider used by agents.
+// InferenceConfig configures the inference provider used by agents
+// (org-mode config).
 type InferenceConfig struct {
 	Provider string `yaml:"provider"`
+}
+
+// PerRepoInferenceConfig groups inference backend settings for
+// per-repo configs. The Type field identifies the provider (currently
+// only "vertex"); Project, Region, and WIFProvider hold
+// provider-specific connection details.
+type PerRepoInferenceConfig struct {
+	Type        string `yaml:"type,omitempty"`
+	Project     string `yaml:"project,omitempty"`
+	Region      string `yaml:"region,omitempty"`
+	WIFProvider string `yaml:"wif_provider,omitempty"`
 }
 
 // StatusNotificationConfig controls status comments posted on issues/PRs
@@ -521,16 +533,13 @@ type perRepoConfig struct {
 	// method sharing a name on the same type.
 	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 
-	// Mint and inference backend settings (ADR 0069 Decision 1).
-	// These fields are the per-repo config source of truth for values
-	// previously supplied only via CLI flags and repo variables/secrets.
-	// Field names are prefixed to avoid colliding with the org-mode
-	// detection keys in IsPerRepoYAML ("dispatch", "inference").
-	MintURL              string `yaml:"mint_url,omitempty"`
-	InferenceProvider    string `yaml:"inference_provider,omitempty"`
-	InferenceProject     string `yaml:"inference_project,omitempty"`
-	InferenceRegion      string `yaml:"inference_region,omitempty"`
-	InferenceWIFProvider string `yaml:"inference_wif_provider,omitempty"`
+	// Mint URL for token minting (ADR 0069 Decision 1).
+	MintURL string `yaml:"mint_url,omitempty"`
+
+	// Inference groups the inference backend settings under a single
+	// top-level key. The nested struct allows future provider types
+	// beyond "vertex" without flat-key proliferation.
+	Inference *PerRepoInferenceConfig `yaml:"inference,omitempty"`
 
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
@@ -713,10 +722,7 @@ type perRepoConfigMarshal struct {
 	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
-	InferenceProvider      string                    `yaml:"inference_provider,omitempty"`
-	InferenceProject       string                    `yaml:"inference_project,omitempty"`
-	InferenceRegion        string                    `yaml:"inference_region,omitempty"`
-	InferenceWIFProvider   string                    `yaml:"inference_wif_provider,omitempty"`
+	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -726,18 +732,18 @@ type perRepoConfigMarshal struct {
 // sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
-		Version:              c.Version,
-		Forge:                c.Forge,
-		KillSwitch:           c.KillSwitch,
-		Runtime:              c.Runtime,
-		Agents:               c.Agents,
-		CreateIssues:         c.CreateIssues,
-		StatusNotifications:  c.Notifications,
-		MintURL:              c.MintURL,
-		InferenceProvider:    c.InferenceProvider,
-		InferenceProject:     c.InferenceProject,
-		InferenceRegion:      c.InferenceRegion,
-		InferenceWIFProvider: c.InferenceWIFProvider,
+		Version:             c.Version,
+		Forge:               c.Forge,
+		KillSwitch:          c.KillSwitch,
+		Runtime:             c.Runtime,
+		Agents:              c.Agents,
+		CreateIssues:        c.CreateIssues,
+		StatusNotifications: c.Notifications,
+		MintURL:             c.MintURL,
+	}
+	// Only emit inference block when at least one field is set locally.
+	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
+		h.Inference = c.Inference
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -790,10 +796,10 @@ func (c *perRepoConfig) Validate() error {
 	if err := validateStatusNotifications(c.Notifications); err != nil {
 		return err
 	}
-	if ip := c.InferenceProvider; ip != "" {
+	if c.Inference != nil && c.Inference.Type != "" {
 		validProviders := ValidProviders()
-		if !slices.Contains(validProviders, ip) {
-			return fmt.Errorf("invalid inference_provider %q: must be one of %s", ip, strings.Join(validProviders, ", "))
+		if !slices.Contains(validProviders, c.Inference.Type) {
+			return fmt.Errorf("invalid inference type %q: must be one of %s", c.Inference.Type, strings.Join(validProviders, ", "))
 		}
 	}
 	return nil

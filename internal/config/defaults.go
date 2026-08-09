@@ -41,18 +41,17 @@ func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { retu
 // IsOrgMode returns false — per-repo configs are never org mode.
 func (d *perRepoDefaults) IsOrgMode() bool { return false }
 
-// ConfigMintURL returns "" — no default mint URL. Callers that need
-// a fallback (e.g. the CLI) use DefaultMintURL from the cli package.
+// ConfigMintURL returns the default mint URL (empty).
 func (d *perRepoDefaults) ConfigMintURL() string { return "" }
 
-// ConfigInferenceProvider returns "" — no default inference provider.
-func (d *perRepoDefaults) ConfigInferenceProvider() string { return "" }
+// ConfigInferenceType returns the default inference type (empty).
+func (d *perRepoDefaults) ConfigInferenceType() string { return "" }
 
-// ConfigInferenceProject returns "" — no default inference project.
+// ConfigInferenceProject returns the default inference project (empty).
 func (d *perRepoDefaults) ConfigInferenceProject() string { return "" }
 
-// ConfigInferenceRegion returns "" — no default inference region.
+// ConfigInferenceRegion returns the default inference region (empty).
 func (d *perRepoDefaults) ConfigInferenceRegion() string { return "" }
 
-// ConfigInferenceWIFProvider returns "" — no default WIF provider.
+// ConfigInferenceWIFProvider returns the default WIF provider (empty).
 func (d *perRepoDefaults) ConfigInferenceWIFProvider() string { return "" }

@@ -56,6 +56,7 @@ type githubSetupConfig struct {
 	agents               string
 	inferenceProject     string
 	inferenceRegion      string
+	inferenceType        string
 	inferenceWIFProvider string
 	skipAppSetup         bool
 	publicApps           bool
@@ -171,6 +172,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", DefaultMintURL, "token mint URL (default: hosted public mint)")
 	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
+	cmd.Flags().StringVar(&cfg.inferenceType, "inference-type", "vertex", "inference provider type (e.g. vertex)")
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "global", "GCP region for inference")
 	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name")
@@ -293,7 +295,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 		// Store mint/inference settings in config (ADR 0069 Decision 1).
 		perRepoCfg.SetMintURL(cfg.mintURL)
-		perRepoCfg.SetInferenceProvider("vertex")
+		perRepoCfg.SetInferenceType(cfg.inferenceType)
 		perRepoCfg.SetInferenceRegion(cfg.inferenceRegion)
 		if cfg.inferenceProject != "" {
 			perRepoCfg.SetInferenceProject(cfg.inferenceProject)
@@ -427,7 +429,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 // Returns nil when no relevant flags were changed, signaling the
 // caller to use the stub overlay YAML with human-readable comments.
 func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
-	flagNames := []string{"mint-url", "inference-project", "inference-region", "inference-wif-provider"}
+	flagNames := []string{"mint-url", "inference-type", "inference-project", "inference-region", "inference-wif-provider"}
 	anyChanged := false
 	for _, name := range flagNames {
 		if cfg.changedFlags[name] {
@@ -442,6 +444,9 @@ func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
 	o := config.NewEmptyPerRepoOverlay()
 	if cfg.changedFlags["mint-url"] {
 		o.SetMintURL(cfg.mintURL)
+	}
+	if cfg.changedFlags["inference-type"] {
+		o.SetInferenceType(cfg.inferenceType)
 	}
 	if cfg.changedFlags["inference-project"] {
 		o.SetInferenceProject(cfg.inferenceProject)
