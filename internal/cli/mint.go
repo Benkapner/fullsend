@@ -66,6 +66,37 @@ func resolveRole(role string) string {
 	return role
 }
 
+// parseRolesFlag parses a comma-separated --roles value into a
+// deduplicated, alias-resolved, validated slice of canonical role names.
+// Returns an error if the input is empty or contains invalid role names.
+func parseRolesFlag(rolesStr string) ([]string, error) {
+	if strings.TrimSpace(rolesStr) == "" {
+		return nil, fmt.Errorf("--roles value must not be empty")
+	}
+
+	seen := make(map[string]bool)
+	var roles []string
+	for _, raw := range strings.Split(rolesStr, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		canonical := resolveRole(name)
+		if err := mintcore.ValidateRoleName(canonical); err != nil {
+			return nil, fmt.Errorf("invalid role %q in --roles: %w", name, err)
+		}
+		if !seen[canonical] {
+			seen[canonical] = true
+			roles = append(roles, canonical)
+		}
+	}
+	if len(roles) == 0 {
+		return nil, fmt.Errorf("--roles value must contain at least one valid role name")
+	}
+	sort.Strings(roles)
+	return roles, nil
+}
+
 // rolesFromAppIDs returns unique role names from role-only ROLE_APP_IDS keys.
 func rolesFromAppIDs(roleAppIDs map[string]string) []string {
 	roleOnly := mintcore.RoleOnlyAppIDs(roleAppIDs)
@@ -255,7 +286,7 @@ func listPEMFiles(dir string) []string {
 // validatePEMDir checks that pemDir exists, is a directory, and contains valid
 // RSA PEM files for all default mint roles. Returns the validated PEM data keyed
 // by role. This is the offline-only portion of PEM validation — no network calls.
-func validatePEMDir(pemDir string) (map[string][]byte, error) {
+func validatePEMDir(pemDir string, roles []string) (map[string][]byte, error) {
 	info, err := os.Stat(pemDir)
 	if err != nil {
 		return nil, fmt.Errorf("--pem-dir %q: %w", pemDir, err)
@@ -264,7 +295,9 @@ func validatePEMDir(pemDir string) (map[string][]byte, error) {
 		return nil, fmt.Errorf("--pem-dir %q is not a directory", pemDir)
 	}
 
-	roles := defaultMintRoles()
+	if len(roles) == 0 {
+		roles = defaultMintRoles()
+	}
 
 	for _, role := range roles {
 		pemPath := filepath.Join(pemDir, role+".pem")
@@ -295,13 +328,14 @@ func validatePEMDir(pemDir string) (map[string][]byte, error) {
 }
 
 // loadAppSetPEMs reads PEM files from pemDir and discovers app IDs from the
-// GitHub API, returning maps ready for gcf.Config.
-func loadAppSetPEMs(ctx context.Context, pemDir, appSet string) (map[string][]byte, map[string]string, error) {
+// GitHub API, returning maps ready for gcf.Config. When roles is non-empty,
+// only those roles are loaded; otherwise defaultMintRoles() is used.
+func loadAppSetPEMs(ctx context.Context, pemDir, appSet string, roles []string) (map[string][]byte, map[string]string, error) {
 	if err := appsetup.ValidateAppSet(appSet); err != nil {
 		return nil, nil, fmt.Errorf("invalid app set: %w", err)
 	}
 
-	pemsByRole, err := validatePEMDir(pemDir)
+	pemsByRole, err := validatePEMDir(pemDir, roles)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -360,6 +394,7 @@ func newMintDeployCmd() *cobra.Command {
 	var dryRun bool
 	var pemDir string
 	var appSet string
+	var rolesFlag string
 	var public bool
 
 	// Cloudflare-specific flags.
@@ -383,7 +418,8 @@ GCP mode (--platform=gcp):
   'fullsend mint enroll' after deployment (tight mode only).
 
   Required flags: --project
-  Optional: --region, --source-dir, --skip-deploy, --pem-dir, --app-set, --public
+  Optional: --region, --source-dir, --skip-deploy, --pem-dir, --app-set,
+            --roles, --public
 
   Required GCP APIs (gcloud services enable):
     - iam.googleapis.com
@@ -410,7 +446,7 @@ Cloudflare mode (--platform=cloudflare):
 
   Required flags: none (Worker name defaults to "fullsend-mint")
   Optional: --worker-name, --preview=<alias>, --source-dir, --pem-dir,
-            --app-set, --allowed-orgs, --per-repo-wif-repos,
+            --app-set, --roles, --allowed-orgs, --per-repo-wif-repos,
             --workflow-host-repos, --public
 
   Authentication (one of):
@@ -440,6 +476,12 @@ Cloudflare mode (--platform=cloudflare):
   mapping roles to their numeric GitHub App IDs.
   Use --app-set to target a non-default app set (default: fullsend-ai).
 
+  By default, --pem-dir bootstraps exactly the default agent roles
+  (fullsend, triage, coder, review, retro, prioritize). Use --roles to
+  override this list — for example, to include the e2e role:
+    --roles=fullsend,triage,coder,review,retro,prioritize,e2e
+  Role aliases (e.g. fix→coder) are resolved automatically.
+
   Use --preview=<alias> for ephemeral preview deploys. This runs
   'wrangler versions upload --preview-alias=<alias>' instead of
   'wrangler deploy', so the durable Worker script is not affected.
@@ -455,9 +497,20 @@ Cloudflare mode (--platform=cloudflare):
 			// discover misconfigurations immediately.
 			warnIrrelevantFlags(cmd, platform)
 
+			// Parse --roles if provided. When omitted, nil signals
+			// downstream functions to use defaultMintRoles().
+			var roles []string
+			if cmd.Flags().Changed("roles") {
+				var err error
+				roles, err = parseRolesFlag(rolesFlag)
+				if err != nil {
+					return err
+				}
+			}
+
 			switch platform {
 			case "gcp":
-				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, public)
+				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public)
 			case "cloudflare":
 				// Reject conflicting flags: --public widens auth to all repos,
 				// so combining it with an explicit --per-repo-wif-repos list
@@ -465,7 +518,7 @@ Cloudflare mode (--platform=cloudflare):
 				if public && cmd.Flags().Changed("per-repo-wif-repos") {
 					return fmt.Errorf("--public and --per-repo-wif-repos are mutually exclusive; use one or the other")
 				}
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, cmd.Flags().Changed("allowed-workflow-files"))
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, cmd.Flags().Changed("allowed-workflow-files"))
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -478,6 +531,9 @@ Cloudflare mode (--platform=cloudflare):
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files for PEM bootstrap")
 	cmd.Flags().StringVar(&appSet, "app-set", "", "app set name for PEM bootstrap (default: fullsend-ai)")
+	cmd.Flags().StringVar(&rolesFlag, "roles", "", `comma-separated role names to bootstrap with --pem-dir
+Overrides the default set (fullsend,triage,coder,review,retro,prioritize).
+Example: --roles=fullsend,triage,coder,review,retro,prioritize,e2e`)
 	cmd.Flags().BoolVar(&public, "public", false, `deploy public mint (GCP: ALLOWED_ORGS=*; Cloudflare: PER_REPO_WIF_REPOS=*)
 Mutually exclusive with --per-repo-wif-repos on Cloudflare`)
 
@@ -534,7 +590,7 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 	}
 }
 
-func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, public bool) error {
+func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -581,7 +637,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 			printer.StepInfo("Would deploy public mint (ALLOWED_ORGS=*, permissive WIF)")
 		}
 		if pemDir != "" {
-			if _, err := validatePEMDir(pemDir); err != nil {
+			if _, err := validatePEMDir(pemDir, roles); err != nil {
 				return err
 			}
 			printer.StepInfo(fmt.Sprintf("Would bootstrap app set %q with PEMs from %s (app ID lookup and PEM verification skipped in dry-run)", appSet, pemDir))
@@ -610,7 +666,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 
 	if pemDir != "" {
 		printer.StepStart(fmt.Sprintf("Loading PEMs and discovering app IDs for app set %q", appSet))
-		agentPEMs, agentAppIDs, err := loadAppSetPEMs(ctx, pemDir, appSet)
+		agentPEMs, agentAppIDs, err := loadAppSetPEMs(ctx, pemDir, appSet, roles)
 		if err != nil {
 			printer.StepFail("Failed to load app set PEMs")
 			return fmt.Errorf("loading app set PEMs: %w", err)
@@ -660,7 +716,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, allowedWorkflowFilesExplicit bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, allowedWorkflowFilesExplicit bool) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -773,7 +829,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 			printer.StepInfo(fmt.Sprintf("Would set %s=%s", k, v))
 		}
 		if pemDir != "" {
-			if _, err := validatePEMDir(pemDir); err != nil {
+			if _, err := validatePEMDir(pemDir, roles); err != nil {
 				return err
 			}
 			printer.StepInfo(fmt.Sprintf("Would bootstrap app set %q with PEMs from %s (app ID lookup and PEM verification skipped in dry-run)", appSet, pemDir))
@@ -789,7 +845,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	if pemDir != "" {
 		printer.StepStart(fmt.Sprintf("Loading PEMs and discovering app IDs for app set %q", appSet))
 		var agentAppIDs map[string]string
-		agentPEMs, agentAppIDs, err = loadAppSetPEMs(ctx, pemDir, appSet)
+		agentPEMs, agentAppIDs, err = loadAppSetPEMs(ctx, pemDir, appSet, roles)
 		if err != nil {
 			printer.StepFail("Failed to load app set PEMs")
 			return fmt.Errorf("loading app set PEMs: %w", err)

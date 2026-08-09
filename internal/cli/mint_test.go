@@ -208,7 +208,7 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	require.NoError(t, err)
 	oldStdout := os.Stdout
 	os.Stdout = w
-	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", false)
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false)
 	require.NoError(t, w.Close())
 	os.Stdout = oldStdout
 	require.NoError(t, deployErr)
@@ -1203,6 +1203,9 @@ func TestMintDeployCmd_NewFlagsExist(t *testing.T) {
 
 	allowedWorkflowFilesFlag := cmd.Flags().Lookup("allowed-workflow-files")
 	require.NotNil(t, allowedWorkflowFilesFlag, "expected --allowed-workflow-files flag")
+
+	rolesFlag := cmd.Flags().Lookup("roles")
+	require.NotNil(t, rolesFlag, "expected --roles flag")
 }
 
 func TestMintDeployCmd_CloudflareAllowedWorkflowFilesDefault(t *testing.T) {
@@ -1476,6 +1479,325 @@ func TestMintDeployCmd_CloudflareAppSetDefault(t *testing.T) {
 		assert.True(t, strings.HasPrefix(slug, "fullsend-ai-"),
 			"expected slug to use default app set prefix, got %q", slug)
 	}
+}
+
+// --- --roles flag tests ---
+
+func TestParseRolesFlag(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    []string
+		wantErr string
+	}{
+		{
+			name:  "standard roles",
+			input: "fullsend,triage,coder",
+			want:  []string{"coder", "fullsend", "triage"},
+		},
+		{
+			name:  "with e2e",
+			input: "fullsend,triage,coder,review,retro,prioritize,e2e",
+			want:  []string{"coder", "e2e", "fullsend", "prioritize", "retro", "review", "triage"},
+		},
+		{
+			name:  "alias fix resolved to coder",
+			input: "fullsend,fix,triage",
+			want:  []string{"coder", "fullsend", "triage"},
+		},
+		{
+			name:  "alias code resolved to coder",
+			input: "code,fullsend",
+			want:  []string{"coder", "fullsend"},
+		},
+		{
+			name:  "deduplicate",
+			input: "coder,coder,triage",
+			want:  []string{"coder", "triage"},
+		},
+		{
+			name:  "deduplicate after alias resolution",
+			input: "coder,fix",
+			want:  []string{"coder"},
+		},
+		{
+			name:  "whitespace trimmed",
+			input: " coder , triage ",
+			want:  []string{"coder", "triage"},
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: "must not be empty",
+		},
+		{
+			name:    "whitespace only",
+			input:   "  ",
+			wantErr: "must not be empty",
+		},
+		{
+			name:    "invalid role name",
+			input:   "coder,INVALID",
+			wantErr: "invalid role",
+		},
+		{
+			name:    "role with double hyphen",
+			input:   "coder,my--role",
+			wantErr: "invalid role",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseRolesFlag(tt.input)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestMintDeployCmd_CloudflareRolesOmittedUsesDefaults(t *testing.T) {
+	// When --roles is omitted, --pem-dir should require exactly defaultMintRoles() PEMs.
+	withCFEnvVars(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Would bootstrap app set")
+	// e2e should NOT be required when --roles is omitted.
+	assert.NotContains(t, stdout, "e2e")
+}
+
+func TestMintDeployCmd_CloudflareRolesWithE2E(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	// Create PEMs for default roles + e2e.
+	rolesWithE2E := append(defaultMintRoles(), "e2e")
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range rolesWithE2E {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	appIDCounter := 600
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+		"--roles=fullsend,triage,coder,review,retro,prioritize,e2e",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	// Verify ROLE_APP_IDS contains e2e.
+	require.Len(t, fake.deployCalls, 1)
+	deployEnvVars := fake.deployCalls[0].envVars
+	assert.Contains(t, deployEnvVars, "ROLE_APP_IDS",
+		"ROLE_APP_IDS should be passed as a Worker env var")
+	assert.Contains(t, deployEnvVars["ROLE_APP_IDS"], "e2e",
+		"ROLE_APP_IDS should contain e2e when --roles includes it")
+
+	// Verify e2e PEM secret was stored via PutSecret.
+	secretNames := make(map[string]bool)
+	for _, call := range fake.secretCalls {
+		secretNames[call.secretName] = true
+	}
+	assert.True(t, secretNames["E2E_APP_PEM"], "expected E2E_APP_PEM secret")
+}
+
+func TestMintDeployCmd_CloudflareRolesInvalidRole(t *testing.T) {
+	withCFEnvVars(t)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--roles=coder,INVALID_ROLE",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role")
+}
+
+func TestMintDeployCmd_CloudflareRolesEmpty(t *testing.T) {
+	withCFEnvVars(t)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--roles=",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be empty")
+}
+
+func TestMintDeployCmd_CloudflareRolesAliasResolution(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Using "fix" should require coder.pem (not fix.pem).
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(pemDir, "coder.pem"), testPEM, 0o600))
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=" + pemDir,
+		"--roles=fix",
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	_, _ = io.ReadAll(r)
+
+	require.NoError(t, err, "fix alias should resolve to coder and use coder.pem")
+}
+
+func TestMintDeployCmd_CloudflareRolesMissingPEM(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Create PEMs only for coder, not for e2e.
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(pemDir, "coder.pem"), testPEM, 0o600))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=" + pemDir,
+		"--roles=coder,e2e",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "e2e")
+	assert.Contains(t, err.Error(), "missing PEM")
+}
+
+func TestMintDeployCmd_CloudflareRolesPreviewDeploy(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	rolesWithE2E := []string{"coder", "e2e"}
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range rolesWithE2E {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	appIDCounter := 700
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test-99",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+		"--roles=coder,e2e",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	// ROLE_APP_IDS should contain both coder and e2e.
+	assert.Contains(t, fake.deployCalls[0].envVars["ROLE_APP_IDS"], "e2e")
+	assert.Contains(t, fake.deployCalls[0].envVars["ROLE_APP_IDS"], "coder")
+
+	// For preview deploys, PEM secrets are passed through Deploy.
+	require.NotNil(t, fake.deployCalls[0].secrets)
+	assert.Contains(t, fake.deployCalls[0].secrets, "E2E_APP_PEM",
+		"expected E2E_APP_PEM in deploy secrets for preview")
+	assert.Contains(t, fake.deployCalls[0].secrets, "CODER_APP_PEM",
+		"expected CODER_APP_PEM in deploy secrets for preview")
+	// PutSecret should not be called for preview deploys.
+	assert.Empty(t, fake.secretCalls)
 }
 
 func TestMintDeployCmd_CloudflareWranglerSession(t *testing.T) {
@@ -1834,7 +2156,7 @@ func TestLoadAppSetPEMs_Success(t *testing.T) {
 	githubAPIBaseURL = srv.URL
 	defer func() { githubAPIBaseURL = orig }()
 
-	agentPEMs, agentAppIDs, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai")
+	agentPEMs, agentAppIDs, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai", nil)
 	require.NoError(t, err)
 	assert.Len(t, agentPEMs, len(roles))
 	assert.Len(t, agentAppIDs, len(roles))
@@ -1853,13 +2175,13 @@ func TestLoadAppSetPEMs_MissingPEM(t *testing.T) {
 	err := os.WriteFile(filepath.Join(pemDir, "fullsend.pem"), []byte("fake"), 0o600)
 	require.NoError(t, err)
 
-	_, _, err = loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai")
+	_, _, err = loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing PEM file for role")
 }
 
 func TestLoadAppSetPEMs_InvalidAppSet(t *testing.T) {
-	_, _, err := loadAppSetPEMs(context.Background(), t.TempDir(), "INVALID CHARS")
+	_, _, err := loadAppSetPEMs(context.Background(), t.TempDir(), "INVALID CHARS", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid app set")
 }
@@ -1888,13 +2210,13 @@ func TestLoadAppSetPEMs_InvalidPEM(t *testing.T) {
 	githubAPIBaseURL = srv.URL
 	defer func() { githubAPIBaseURL = orig }()
 
-	_, _, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai")
+	_, _, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid PEM for role")
 }
 
 func TestLoadAppSetPEMs_BadDir(t *testing.T) {
-	_, _, err := loadAppSetPEMs(context.Background(), "/nonexistent/path", "fullsend-ai")
+	_, _, err := loadAppSetPEMs(context.Background(), "/nonexistent/path", "fullsend-ai", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--pem-dir")
 }
@@ -1903,7 +2225,7 @@ func TestLoadAppSetPEMs_FileNotDir(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "notadir.txt")
 	require.NoError(t, os.WriteFile(tmpFile, []byte("dummy"), 0o600))
 
-	_, _, err := loadAppSetPEMs(context.Background(), tmpFile, "fullsend-ai")
+	_, _, err := loadAppSetPEMs(context.Background(), tmpFile, "fullsend-ai", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is not a directory")
 }
@@ -1930,7 +2252,7 @@ func TestLoadAppSetPEMs_AppNotFound(t *testing.T) {
 	githubAPIBaseURL = srv.URL
 	defer func() { githubAPIBaseURL = orig }()
 
-	_, _, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai")
+	_, _, err := loadAppSetPEMs(context.Background(), pemDir, "fullsend-ai", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "looking up app ID")
 	assert.Contains(t, err.Error(), "not found")
