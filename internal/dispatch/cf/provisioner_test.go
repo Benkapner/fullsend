@@ -1121,6 +1121,110 @@ func TestLiveWranglerRunner_Delete_CommandError(t *testing.T) {
 	assert.Contains(t, err.Error(), "wrangler delete failed")
 }
 
+// --- isHex tests ---
+
+func TestIsHex(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"", false},
+		{"0123456789abcdef", true},
+		{"ABCDEF", true},
+		{"0123456789ABCDEF", true},
+		{"abcdefg", false}, // 'g' is not hex
+		{"xyz", false},
+		{"12 34", false}, // space
+		{"a1b2c3", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			assert.Equal(t, tc.want, isHex(tc.input))
+		})
+	}
+}
+
+// --- writeSecretsFile additional tests ---
+
+func TestWriteSecretsFile_MultipleSecrets(t *testing.T) {
+	secrets := map[string][]byte{
+		"CODER_APP_PEM":  []byte("pem-data-1"),
+		"REVIEW_APP_PEM": []byte("pem-data-2"),
+	}
+	path, cleanup, err := writeSecretsFile(secrets)
+	require.NoError(t, err)
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"CODER_APP_PEM"`)
+	assert.Contains(t, string(data), `"REVIEW_APP_PEM"`)
+	assert.Contains(t, string(data), `"pem-data-1"`)
+	assert.Contains(t, string(data), `"pem-data-2"`)
+}
+
+func TestWriteSecretsFile_EmptySecrets(t *testing.T) {
+	secrets := map[string][]byte{}
+	path, cleanup, err := writeSecretsFile(secrets)
+	require.NoError(t, err)
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "{}", string(data))
+}
+
+// --- resolveSourceDir additional tests ---
+
+func TestResolveSourceDir_ExplicitMissingSrcDir(t *testing.T) {
+	// An explicit source dir that is not a valid Worker source should fail
+	// during Provision (at validateSourceDir).
+	stubWASMBuild(t)
+	dir := t.TempDir()
+	// Create wrangler.toml and package.json but NOT src/index.ts.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wrangler.toml"), []byte("name = \"test\""), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	fake := &fakeWranglerRunner{deployURL: "https://test.workers.dev"}
+	p := NewProvisioner(Config{
+		AccountID: "test-account",
+		SourceDir: dir,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "src/index.ts")
+}
+
+// --- Provisioner env var passing tests ---
+
+func TestProvisioner_Provision_EmptyEnvVarPassedToWrangler(t *testing.T) {
+	// Verify that empty-string env vars are passed through to the wrangler
+	// runner (enabling --var KEY: to clear bindings with --keep-vars).
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+
+	fake := &fakeWranglerRunner{deployURL: "https://test.workers.dev"}
+	p := NewProvisioner(Config{
+		AccountID: "test-account",
+		SourceDir: sourceDir,
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":       "acme",
+			"PER_REPO_WIF_REPOS": "",
+		},
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "acme", envVars["ALLOWED_ORGS"])
+	prwr, present := envVars["PER_REPO_WIF_REPOS"]
+	assert.True(t, present, "empty env var should be present in deploy call")
+	assert.Equal(t, "", prwr, "empty env var should be empty string")
+}
+
 // --- helpers ---
 
 func createFakeWorkerSourceDir(t *testing.T) string {

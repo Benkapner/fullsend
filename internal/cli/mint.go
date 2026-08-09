@@ -464,6 +464,13 @@ Cloudflare mode (--platform=cloudflare):
     --public                        Set PER_REPO_WIF_REPOS=* (mutually
                                     exclusive with --per-repo-wif-repos)
 
+  Omit-vs-empty semantics for config flags on redeploy (with --keep-vars):
+    Flag omitted:    existing Worker value is preserved.
+    Flag non-empty:  Worker binding set to the given value.
+    Flag set to "":  Worker binding cleared (set to empty string).
+  Example: --per-repo-wif-repos= clears PER_REPO_WIF_REPOS without
+  requiring 'wrangler delete' first.
+
   For preview deploys, all mint configuration must be specified via
   deploy flags since separate commands (enroll, add-role) are not
   supported for preview versions. For durable deploys, configuration
@@ -518,7 +525,7 @@ Cloudflare mode (--platform=cloudflare):
 				if public && cmd.Flags().Changed("per-repo-wif-repos") {
 					return fmt.Errorf("--public and --per-repo-wif-repos are mutually exclusive; use one or the other")
 				}
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, cmd.Flags().Changed("allowed-workflow-files"))
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -548,10 +555,13 @@ Mutually exclusive with --per-repo-wif-repos on Cloudflare`)
 Value is the preview alias passed to --preview-alias. The preview
 mint URL is deterministic: https://<alias>-<worker-name>.workers.dev
 Example: --preview=bt-run-42`)
-	cmd.Flags().StringVar(&allowedOrgs, "allowed-orgs", "", "comma-separated allowed GitHub orgs (Cloudflare only, sets ALLOWED_ORGS)")
+	cmd.Flags().StringVar(&allowedOrgs, "allowed-orgs", "", `comma-separated allowed GitHub orgs (Cloudflare only, sets ALLOWED_ORGS)
+Omit to preserve existing value on redeploy; set to "" to clear`)
 	cmd.Flags().StringVar(&perRepoWIFRepos, "per-repo-wif-repos", "", `comma-separated per-repo WIF repos (Cloudflare only, sets PER_REPO_WIF_REPOS)
-Mutually exclusive with --public on Cloudflare`)
-	cmd.Flags().StringVar(&workflowHostRepos, "workflow-host-repos", "", "comma-separated workflow host repos (Cloudflare only, sets WORKFLOW_HOST_REPOS)")
+Mutually exclusive with --public on Cloudflare.
+Omit to preserve existing value on redeploy; set to "" to clear`)
+	cmd.Flags().StringVar(&workflowHostRepos, "workflow-host-repos", "", `comma-separated workflow host repos (Cloudflare only, sets WORKFLOW_HOST_REPOS)
+Omit to preserve existing value on redeploy; set to "" to clear`)
 	cmd.Flags().StringVar(&allowedWorkflowFiles, "allowed-workflow-files", "", `comma-separated workflow file basenames (Cloudflare only, sets ALLOWED_WORKFLOW_FILES)
 When omitted, defaults to "*" (allow any workflow basename).
 Use --allowed-workflow-files=dispatch.yml,fullsend.yml to restrict.
@@ -716,7 +726,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, allowedWorkflowFilesExplicit bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -780,17 +790,22 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	// Build Worker env vars from deploy flags. These are passed to
 	// wrangler via --var flags during both preview and durable deploys,
 	// providing a unified code path for mint configuration.
+	//
+	// Omit-vs-empty semantics (with --keep-vars):
+	//   Flag omitted:    var not included → existing Worker value preserved.
+	//   Flag non-empty:  var set to that value.
+	//   Flag set to "":  var set to empty string → clears existing binding.
 	cfEnvVars := make(map[string]string)
-	if allowedOrgs != "" {
+	if allowedOrgs != "" || allowedOrgsExplicit {
 		cfEnvVars["ALLOWED_ORGS"] = allowedOrgs
 	}
-	if perRepoWIFRepos != "" {
+	if perRepoWIFRepos != "" || perRepoWIFReposExplicit {
 		cfEnvVars["PER_REPO_WIF_REPOS"] = perRepoWIFRepos
 	}
-	if workflowHostRepos != "" {
+	if workflowHostRepos != "" || workflowHostReposExplicit {
 		cfEnvVars["WORKFLOW_HOST_REPOS"] = workflowHostRepos
 	}
-	if allowedWorkflowFiles != "" {
+	if allowedWorkflowFiles != "" || allowedWorkflowFilesExplicit {
 		cfEnvVars["ALLOWED_WORKFLOW_FILES"] = allowedWorkflowFiles
 	}
 
@@ -825,8 +840,19 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
 		}
-		for k, v := range cfEnvVars {
-			printer.StepInfo(fmt.Sprintf("Would set %s=%s", k, v))
+		// Sort keys for deterministic output across runs.
+		envKeys := make([]string, 0, len(cfEnvVars))
+		for k := range cfEnvVars {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+		for _, k := range envKeys {
+			v := cfEnvVars[k]
+			if v == "" {
+				printer.StepInfo(fmt.Sprintf("Would clear %s (empty value replaces existing binding)", k))
+			} else {
+				printer.StepInfo(fmt.Sprintf("Would set %s=%s", k, v))
+			}
 		}
 		if pemDir != "" {
 			if _, err := validatePEMDir(pemDir, roles); err != nil {
@@ -938,17 +964,23 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appSet))
 	}
-	if allowedOrgs != "" {
-		summaryLines = append(summaryLines, fmt.Sprintf("ALLOWED_ORGS: %s", allowedOrgs))
-	}
-	if perRepoWIFRepos != "" {
-		summaryLines = append(summaryLines, fmt.Sprintf("PER_REPO_WIF_REPOS: %s", perRepoWIFRepos))
-	}
-	if workflowHostRepos != "" {
-		summaryLines = append(summaryLines, fmt.Sprintf("WORKFLOW_HOST_REPOS: %s", workflowHostRepos))
-	}
-	if allowedWorkflowFiles != "" {
-		summaryLines = append(summaryLines, fmt.Sprintf("ALLOWED_WORKFLOW_FILES: %s", allowedWorkflowFiles))
+	// Report env var changes in the summary. Show "cleared" when a flag
+	// was explicitly set to empty to clear the existing Worker binding.
+	for _, ev := range []struct {
+		key      string
+		value    string
+		explicit bool
+	}{
+		{"ALLOWED_ORGS", allowedOrgs, allowedOrgsExplicit},
+		{"PER_REPO_WIF_REPOS", perRepoWIFRepos, perRepoWIFReposExplicit},
+		{"WORKFLOW_HOST_REPOS", workflowHostRepos, workflowHostReposExplicit},
+		{"ALLOWED_WORKFLOW_FILES", allowedWorkflowFiles, allowedWorkflowFilesExplicit},
+	} {
+		if ev.value != "" {
+			summaryLines = append(summaryLines, fmt.Sprintf("%s: %s", ev.key, ev.value))
+		} else if ev.explicit {
+			summaryLines = append(summaryLines, fmt.Sprintf("%s: (cleared)", ev.key))
+		}
 	}
 	summaryLines = append(summaryLines,
 		fmt.Sprintf("Version: %s", version),

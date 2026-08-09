@@ -1368,6 +1368,178 @@ func TestMintDeployCmd_CloudflarePerRepoWIFAloneWorks(t *testing.T) {
 		"--per-repo-wif-repos alone should set the exact value")
 }
 
+// --- Empty-flag-clears-var semantics tests ---
+
+func TestMintDeployCmd_CloudflareEmptyAllowedOrgsClearsBinding(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// --allowed-orgs= (explicit empty) should include ALLOWED_ORGS with
+	// an empty value so --keep-vars clears the existing binding.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--allowed-orgs=",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	val, present := envVars["ALLOWED_ORGS"]
+	assert.True(t, present, "ALLOWED_ORGS should be present when --allowed-orgs is explicitly empty")
+	assert.Equal(t, "", val, "ALLOWED_ORGS should be empty string to clear existing binding")
+}
+
+func TestMintDeployCmd_CloudflareEmptyPerRepoWIFReposClearsBinding(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--per-repo-wif-repos=",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	val, present := envVars["PER_REPO_WIF_REPOS"]
+	assert.True(t, present, "PER_REPO_WIF_REPOS should be present when --per-repo-wif-repos is explicitly empty")
+	assert.Equal(t, "", val, "PER_REPO_WIF_REPOS should be empty string to clear existing binding")
+}
+
+func TestMintDeployCmd_CloudflareEmptyWorkflowHostReposClearsBinding(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--workflow-host-repos=",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	val, present := envVars["WORKFLOW_HOST_REPOS"]
+	assert.True(t, present, "WORKFLOW_HOST_REPOS should be present when --workflow-host-repos is explicitly empty")
+	assert.Equal(t, "", val, "WORKFLOW_HOST_REPOS should be empty string to clear existing binding")
+}
+
+func TestMintDeployCmd_CloudflareEmptyAllowedWorkflowFilesClearsBinding(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--allowed-workflow-files=",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	val, present := envVars["ALLOWED_WORKFLOW_FILES"]
+	assert.True(t, present, "ALLOWED_WORKFLOW_FILES should be present when --allowed-workflow-files is explicitly empty")
+	assert.Equal(t, "", val, "ALLOWED_WORKFLOW_FILES should be empty string to clear existing binding")
+}
+
+func TestMintDeployCmd_CloudflareMultipleEmptyFlagsClearBindings(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// Simulate switching from dual/per-repo mode to org-only:
+	// keep ALLOWED_ORGS with a value, clear PER_REPO_WIF_REPOS.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--allowed-orgs=fullsand-ai",
+		"--per-repo-wif-repos=",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "fullsand-ai", envVars["ALLOWED_ORGS"],
+		"ALLOWED_ORGS should be set to the provided value")
+	prwr, present := envVars["PER_REPO_WIF_REPOS"]
+	assert.True(t, present, "PER_REPO_WIF_REPOS should be present (cleared)")
+	assert.Equal(t, "", prwr, "PER_REPO_WIF_REPOS should be empty to clear binding")
+	// WORKFLOW_HOST_REPOS was not set — should not be present.
+	_, hasWHR := envVars["WORKFLOW_HOST_REPOS"]
+	assert.False(t, hasWHR, "WORKFLOW_HOST_REPOS should not be present when flag is omitted")
+}
+
+func TestMintDeployCmd_CloudflareDryRunShowsClearedVars(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--allowed-orgs=acme",
+		"--per-repo-wif-repos=",
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Would set ALLOWED_ORGS=acme",
+		"dry-run should show setting ALLOWED_ORGS")
+	assert.Contains(t, stdout, "Would clear PER_REPO_WIF_REPOS",
+		"dry-run should show clearing PER_REPO_WIF_REPOS")
+}
+
 func TestMintDeployCmd_CloudflareAppSetNonDefault(t *testing.T) {
 	withCFEnvVars(t)
 	sourceDir := createMinimalWorkerSourceDir(t)
