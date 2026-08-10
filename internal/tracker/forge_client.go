@@ -106,8 +106,18 @@ func wrapNotFound(err error) error {
 	if !forge.IsNotFound(err) {
 		return err
 	}
-	return fmt.Errorf("%w: %w", ErrNotFound, err)
+	return &notFoundError{err: err}
 }
+
+// notFoundError makes a forge error also satisfy tracker.IsNotFound
+// without repeating "not found" in its message — the wrapped forge error's
+// text already says that.
+type notFoundError struct {
+	err error
+}
+
+func (e *notFoundError) Error() string   { return e.err.Error() }
+func (e *notFoundError) Unwrap() []error { return []error{ErrNotFound, e.err} }
 
 func fromForgeComment(c forge.IssueComment) Comment {
 	return Comment{

@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -88,6 +89,24 @@ func TestForgeClient_GetIssue_NotFound(t *testing.T) {
 	}
 	if !forge.IsNotFound(err) {
 		t.Errorf("GetIssue error = %v, want it to still satisfy forge.ErrNotFound", err)
+	}
+}
+
+func TestForgeClient_GetIssue_NotFound_NoStutteredMessage(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+	_, err := c.GetIssue(context.Background(), "acme/widgets", 99)
+	if got := err.Error(); strings.Count(got, "not found") != 1 {
+		t.Errorf("GetIssue error = %q, want \"not found\" to appear exactly once", got)
+	}
+}
+
+func TestForgeClient_UpdateComment_NotFound_NoStutteredMessage(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+	err := c.UpdateComment(context.Background(), "acme/widgets", 42, "99", "updated")
+	if got := err.Error(); strings.Count(got, "not found") != 1 {
+		t.Errorf("UpdateComment error = %q, want \"not found\" to appear exactly once", got)
 	}
 }
 
