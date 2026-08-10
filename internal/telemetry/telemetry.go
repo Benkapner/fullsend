@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,20 +84,38 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 // to span attributes only — event messages are bounded at their call
 // site — and free-text attributes such as a transcript-derived model
 // name or a pre-script skip reason are otherwise unbounded. 8192 matches
-// the exception-event bound in internal/cli; an operator's
-// OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT / OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT
-// setting takes precedence.
+// the exception-event bound in internal/cli; it applies only when the
+// operator has not set OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT or
+// OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT — any parseable setting, including
+// -1 (unlimited), is honored as-is.
 const maxSpanAttrValueLen = 8192
 
-// spanLimits returns the SDK span limits (env vars included), with the
-// attribute value-length limit defaulted to maxSpanAttrValueLen when the
-// operator has not set one.
+// spanLimits returns the SDK span limits. NewSpanLimits collapses "env
+// unset" and an explicit "-1" (the OTel sentinel for unlimited) to the
+// same struct value, so the env vars are consulted directly: the
+// maxSpanAttrValueLen default applies only when the operator has not set
+// a parseable integer in either variable.
 func spanLimits() sdktrace.SpanLimits {
 	limits := sdktrace.NewSpanLimits()
-	if limits.AttributeValueLengthLimit < 0 {
+	if limits.AttributeValueLengthLimit < 0 && !attrValueLenConfigured() {
 		limits.AttributeValueLengthLimit = maxSpanAttrValueLen
 	}
 	return limits
+}
+
+// attrValueLenConfigured reports whether the operator set an attribute
+// value-length limit via the standard OTel env vars. Values are parsed
+// the way the SDK parses them (strconv.Atoi, no trimming), so a value
+// the SDK ignores is not treated as a setting here either.
+func attrValueLenConfigured() bool {
+	for _, key := range []string{"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT"} {
+		if v, ok := os.LookupEnv(key); ok {
+			if _, err := strconv.Atoi(v); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Setup creates a TracerProvider with file and (optionally) OTLP exporters.

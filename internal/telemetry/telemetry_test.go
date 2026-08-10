@@ -99,15 +99,32 @@ func TestSetup_SpanAttributeValueLengthLimit(t *testing.T) {
 	assert.Len(t, got, maxSpanAttrValueLen, "attribute value must be truncated to the provider limit")
 }
 
-// TestSpanLimits pins the default and the operator-env precedence.
+// TestSpanLimits pins the default and the operator-env precedence,
+// including the explicit "-1" (unlimited) sentinel, which the SDK
+// collapses to the same struct value as "unset".
 func TestSpanLimits(t *testing.T) {
 	pinOTELEnv(t)
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
 		"unset env defaults to maxSpanAttrValueLen")
 
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "512")
 	assert.Equal(t, 512, spanLimits().AttributeValueLengthLimit,
 		"operator env setting wins over the default")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "-1")
+	assert.Equal(t, -1, spanLimits().AttributeValueLengthLimit,
+		"an explicit -1 (unlimited) is honored, not capped")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "-1")
+	assert.Equal(t, -1, spanLimits().AttributeValueLengthLimit,
+		"the generic variable's explicit -1 is honored too")
+
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "banana")
+	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+		"an unparseable value is not an operator setting; the default applies")
 }
 
 func TestSetup_NoopOnBadDir(t *testing.T) {
