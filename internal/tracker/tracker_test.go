@@ -213,10 +213,10 @@ func (staticClient) GetIssue(_ context.Context, _ string, _ int) (*Issue, error)
 func (staticClient) ListComments(_ context.Context, _ string, _ int) ([]Comment, error) {
 	return nil, nil
 }
-func (staticClient) CreateComment(_ context.Context, _ string, _ int, _ string) (*Comment, error) {
+func (staticClient) CreateComment(_ context.Context, _ string, _ int, _ Body) (*Comment, error) {
 	return nil, nil
 }
-func (staticClient) UpdateComment(_ context.Context, _ string, _ int, _ string, _ string) error {
+func (staticClient) UpdateComment(_ context.Context, _ string, _ int, _ string, _ Body) error {
 	return nil
 }
 

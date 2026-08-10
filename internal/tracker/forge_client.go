@@ -38,7 +38,7 @@ func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) 
 	return &Issue{
 		Number: issue.Number,
 		Title:  issue.Title,
-		Body:   issue.Body,
+		Body:   Body(issue.Body),
 		URL:    issue.URL,
 		Labels: issue.Labels,
 	}, nil
@@ -64,12 +64,12 @@ func (c *ForgeClient) ListComments(ctx context.Context, project string, number i
 
 // CreateComment implements Client by splitting project into owner/repo for
 // the underlying forge call.
-func (c *ForgeClient) CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error) {
+func (c *ForgeClient) CreateComment(ctx context.Context, project string, number int, body Body) (*Comment, error) {
 	owner, repo, err := splitProject(project)
 	if err != nil {
 		return nil, err
 	}
-	comment, err := c.forge.CreateIssueComment(ctx, owner, repo, number, body)
+	comment, err := c.forge.CreateIssueComment(ctx, owner, repo, number, string(body))
 	if err != nil {
 		return nil, wrapNotFound(err)
 	}
@@ -85,7 +85,7 @@ func (c *ForgeClient) CreateComment(ctx context.Context, project string, number 
 // UpdateIssueComment doesn't expose one, so the GitLab path still falls
 // back to that method's documented scan. Jira needs the issue key for an
 // unrelated reason: it isn't a forge.Client implementation at all.
-func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body string) error {
+func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body Body) error {
 	owner, repo, err := splitProject(project)
 	if err != nil {
 		return err
@@ -94,7 +94,7 @@ func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number 
 	if err != nil {
 		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
 	}
-	return wrapNotFound(c.forge.UpdateIssueComment(ctx, owner, repo, id, body))
+	return wrapNotFound(c.forge.UpdateIssueComment(ctx, owner, repo, id, string(body)))
 }
 
 // wrapNotFound translates a forge.ErrNotFound-satisfying error into one
@@ -123,7 +123,7 @@ func fromForgeComment(c forge.IssueComment) Comment {
 	return Comment{
 		ID:        strconv.Itoa(c.ID),
 		HTMLURL:   c.HTMLURL,
-		Body:      c.Body,
+		Body:      Body(c.Body),
 		Author:    c.Author,
 		CreatedAt: c.CreatedAt,
 	}

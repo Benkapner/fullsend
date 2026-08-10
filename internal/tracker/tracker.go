@@ -33,11 +33,22 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
 
+// Body is Markdown-formatted issue/comment text, as produced by GitHub and
+// GitLab. Jira doesn't speak Markdown — its v3 API requires comment and
+// description bodies in Atlassian Document Format (ADF) and rejects plain
+// strings outright. A Jira Client implementation is responsible for
+// converting Body to and from ADF; a naive pass-through (wrapping the raw
+// Markdown string in a single ADF text node) doesn't just lose formatting,
+// it actively corrupts content — Jira's plain-text rendering path
+// interprets stray Markdown characters (e.g. braces in code samples) as
+// wiki-markup and mangles the surrounding text.
+type Body string
+
 // Issue represents an issue's content, independent of the tracker backend.
 type Issue struct {
 	Number int
 	Title  string
-	Body   string
+	Body   Body
 	URL    string
 	Labels []string
 }
@@ -52,7 +63,7 @@ type Issue struct {
 type Comment struct {
 	ID        string
 	HTMLURL   string
-	Body      string
+	Body      Body
 	Author    string
 	CreatedAt string
 }
@@ -69,8 +80,8 @@ type Client interface {
 	// ListComments returns all comments on the issue identified by project and number.
 	ListComments(ctx context.Context, project string, number int) ([]Comment, error)
 	// CreateComment adds a new comment with the given body to the issue.
-	CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error)
+	CreateComment(ctx context.Context, project string, number int, body Body) (*Comment, error)
 	// UpdateComment updates the body of commentID on the issue (project, number).
 	// number is included because Jira requires the issue key to update a comment.
-	UpdateComment(ctx context.Context, project string, number int, commentID string, body string) error
+	UpdateComment(ctx context.Context, project string, number int, commentID string, body Body) error
 }
