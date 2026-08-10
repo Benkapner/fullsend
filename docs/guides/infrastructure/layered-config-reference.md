@@ -79,6 +79,7 @@ the overlay → base → code defaults chain.
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
 | `forge` | `string` | Scalar override | `""` (GitHub) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
+| `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 
 ### Scalar override fields
 
@@ -218,6 +219,16 @@ object:
 - Non-nil — replaces the parent value entirely. There is no merge of
   `allow_targets` lists across layers.
 
+### `status_notifications` — replace whole object if set
+
+The `status_notifications` field uses the same replace-if-set semantics as
+`create_issues`:
+
+- `nil` (key omitted) — falls through to parent, then to code default
+  `nil`.
+- Non-nil — replaces the parent value entirely, including nested
+  `comment.start`/`comment.completion` settings.
+
 ## Code defaults reference
 
 When neither the overlay nor the base layer sets a field, the following
@@ -233,6 +244,7 @@ compiled-in defaults apply:
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
 | `forge` | `""` (GitHub) |
 | `create_issues` | `nil` |
+| `status_notifications` | `nil` |
 
 ## Related
 
