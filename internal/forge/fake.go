@@ -1382,7 +1382,7 @@ func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, c
 			}
 		}
 	}
-	return nil
+	return fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
 }
 
 func (f *FakeClient) DeleteIssueComment(_ context.Context, _, _ string, commentID int) error {

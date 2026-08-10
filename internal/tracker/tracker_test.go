@@ -91,6 +91,44 @@ func TestForgeClient_GetIssue_NotFound(t *testing.T) {
 	}
 }
 
+func TestForgeClient_ListComments_NotFound(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors = map[string]error{"ListIssueComments": forge.ErrNotFound}
+	c := NewForgeClient(fc)
+	_, err := c.ListComments(context.Background(), "acme/widgets", 42)
+	if !IsNotFound(err) {
+		t.Errorf("ListComments error = %v, want tracker.ErrNotFound", err)
+	}
+	if !forge.IsNotFound(err) {
+		t.Errorf("ListComments error = %v, want it to still satisfy forge.ErrNotFound", err)
+	}
+}
+
+func TestForgeClient_CreateComment_NotFound(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors = map[string]error{"CreateIssueComment": forge.ErrNotFound}
+	c := NewForgeClient(fc)
+	_, err := c.CreateComment(context.Background(), "acme/widgets", 42, "hello")
+	if !IsNotFound(err) {
+		t.Errorf("CreateComment error = %v, want tracker.ErrNotFound", err)
+	}
+	if !forge.IsNotFound(err) {
+		t.Errorf("CreateComment error = %v, want it to still satisfy forge.ErrNotFound", err)
+	}
+}
+
+func TestForgeClient_UpdateComment_NotFound(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+	err := c.UpdateComment(context.Background(), "acme/widgets", 42, "99", "updated")
+	if !IsNotFound(err) {
+		t.Errorf("UpdateComment error = %v, want tracker.ErrNotFound", err)
+	}
+	if !forge.IsNotFound(err) {
+		t.Errorf("UpdateComment error = %v, want it to still satisfy forge.ErrNotFound", err)
+	}
+}
+
 func TestForgeClient_CreateAndListComments(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-bot"
