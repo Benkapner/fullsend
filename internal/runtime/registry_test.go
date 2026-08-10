@@ -19,6 +19,11 @@ func TestResolve(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummy.Runtime.Name())
 
+	oc, err := Resolve("opencode")
+	require.NoError(t, err)
+	assert.Equal(t, "opencode", oc.Runtime.Name())
+	assert.NotNil(t, oc.Transcripts)
+
 	_, err = Resolve("unknown")
 	require.Error(t, err)
 }

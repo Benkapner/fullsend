@@ -17,6 +17,9 @@ func Resolve(name string) (Backend, error) {
 		// Selected only via explicit per-repo/org config (behaviour test orgs).
 		r := DummyRuntime{}
 		return Backend{Runtime: r, Transcripts: r}, nil
+	case "opencode":
+		r := OpenCodeRuntime{}
+		return Backend{Runtime: r, Transcripts: r}, nil
 	default:
 		return Backend{}, fmt.Errorf("unknown runtime %q: must be one of %s", name, strings.Join(config.ValidRuntimes(), ", "))
 	}

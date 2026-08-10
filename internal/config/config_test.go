@@ -384,6 +384,7 @@ func TestValidRuntimes(t *testing.T) {
 	runtimes := ValidRuntimes()
 	assert.Contains(t, runtimes, "claude")
 	assert.Contains(t, runtimes, "dummy")
+	assert.Contains(t, runtimes, "opencode")
 }
 
 func TestOrgConfigValidateRuntime(t *testing.T) {

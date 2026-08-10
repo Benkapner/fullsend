@@ -9,6 +9,7 @@ When adding a runtime, fill in the security matrix below and register it in `run
 | Runtime | Purpose | Inference |
 |---------|---------|-----------|
 | `claude` | Production agent runs via Claude Code | Required |
+| `opencode` | OpenCode agent runs (stub — not yet functional) | Required |
 | `dummy` | Behaviour tests — scripted ops in real sandbox | None |
 
 ## Security feature matrix

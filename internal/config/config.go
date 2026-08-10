@@ -174,7 +174,7 @@ func ValidProviders() []string {
 
 // ValidRuntimes returns the set of recognized agent runtimes.
 func ValidRuntimes() []string {
-	return []string{"claude", "dummy"}
+	return []string{"claude", "dummy", "opencode"}
 }
 
 // DefaultAgentRoles returns the standard set of agent roles installed
