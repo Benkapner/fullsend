@@ -513,14 +513,21 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 	// repos not in the selection return 404 from the installation
 	// lookup. Detecting this upfront produces a clear error instead
 	// of a confusing 422 from CreateInstallationToken.
+	//
+	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
+	// Transient failures (500, 503, 429, network errors) are propagated
+	// as 502, matching the repos[0] lookup error path above.
 	if len(repos) > 1 {
 		for _, repo := range repos[1:] {
 			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
 			if otherErr != nil {
-				return "", "", nil, &mintError{
-					status: http.StatusUnprocessableEntity,
-					msg:    fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo),
+				if strings.Contains(otherErr.Error(), "status 404") {
+					return "", "", nil, &mintError{
+						status: http.StatusUnprocessableEntity,
+						msg:    fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo),
+					}
 				}
+				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
 			}
 			if otherID != installationID {
 				return "", "", nil, &mintError{

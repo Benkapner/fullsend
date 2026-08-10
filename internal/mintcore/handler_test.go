@@ -1588,6 +1588,78 @@ func TestHandler_MultiRepoInstallationMismatch(t *testing.T) {
 	}
 }
 
+func TestHandler_MultiRepoInstallationTransientError(t *testing.T) {
+	// When FindInstallation for repos[1] fails with a transient error
+	// (e.g. GitHub returns 500), the handler should propagate it as 502
+	// (bad gateway) — matching the repos[0] error path — instead of
+	// misclassifying it as 422 "not covered."
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, map[string]interface{}{
+		"repository":       "test-org/.fullsend",
+		"repository_owner": "test-org",
+		"job_workflow_ref": "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+	})
+
+	var tokenCreateCalled bool
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/repo-ok/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 42, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case r.URL.Path == "/repos/test-org/repo-flaky/installation" && r.Method == http.MethodGet:
+			// Transient GitHub failure → 500.
+			w.WriteHeader(http.StatusInternalServerError)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			tokenCreateCalled = true
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_should_not_reach",
+				ExpiresAt: "2099-01-01T00:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder","repos":["repo-ok","repo-flaky"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	// Transient errors should produce 502, not 422.
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for transient GitHub failure on repos[1], got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	// The error should NOT say "not covered" — it's a transient failure.
+	if strings.Contains(resp["error"], "not covered") {
+		t.Fatalf("transient error should not be misclassified as 'not covered', got: %s", resp["error"])
+	}
+	if tokenCreateCalled {
+		t.Fatal("CreateInstallationToken should not be called when installation lookup fails")
+	}
+}
+
 func TestHandler_FullFlowWithRepos_Retro(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"retro":"600"}`)
 
