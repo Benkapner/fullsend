@@ -34,7 +34,7 @@ type CreateIssuesReader interface {
 }
 
 // StatusNotificationsReader provides read access to status notification
-// configuration (comment/reaction start & completion).
+// configuration (comment start & completion).
 type StatusNotificationsReader interface {
 	StatusNotifications() *StatusNotificationConfig
 }
