@@ -20,10 +20,19 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// newTestClient creates a LiveClient pointed at the given httptest server.
+// noWaitAfter returns a channel that is immediately ready, eliminating
+// real sleeps in retry loops during tests.
+func noWaitAfter(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
+
+// newTestClient creates a LiveClient pointed at the given httptest server
+// with retry delays disabled for fast tests.
 func newTestClient(t *testing.T, srv *httptest.Server) *LiveClient {
 	t.Helper()
-	return New("test-token").WithBaseURL(srv.URL)
+	return New("test-token").WithBaseURL(srv.URL).WithAfterFunc(noWaitAfter)
 }
 
 func TestListOrgRepos(t *testing.T) {
@@ -2005,9 +2014,10 @@ func TestSecondaryRateLimit_RetriedWithoutRetryAfterHeader(t *testing.T) {
 	defer srv.Close()
 
 	client := &LiveClient{
-		token:   "test-token",
-		baseURL: srv.URL,
-		http:    srv.Client(),
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
 	}
 
 	// Override the backoff for testing — we don't want to wait 60s.

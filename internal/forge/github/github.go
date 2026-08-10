@@ -26,9 +26,10 @@ import (
 
 // LiveClient implements forge.Client for the GitHub REST API.
 type LiveClient struct {
-	http    *http.Client
-	token   string
-	baseURL string
+	http      *http.Client
+	token     string
+	baseURL   string
+	afterFunc func(time.Duration) <-chan time.Time
 }
 
 // Compile-time interface checks.
@@ -38,15 +39,23 @@ var _ forge.GitHubExtensions = (*LiveClient)(nil)
 // New creates a new GitHub client with the given personal access token.
 func New(token string) *LiveClient {
 	return &LiveClient{
-		http:    &http.Client{Timeout: 60 * time.Second},
-		token:   token,
-		baseURL: "https://api.github.com",
+		http:      &http.Client{Timeout: 60 * time.Second},
+		token:     token,
+		baseURL:   "https://api.github.com",
+		afterFunc: time.After,
 	}
 }
 
 // WithBaseURL sets a custom base URL (for testing with httptest).
 func (c *LiveClient) WithBaseURL(url string) *LiveClient {
 	c.baseURL = strings.TrimRight(url, "/")
+	return c
+}
+
+// WithAfterFunc replaces the default time.After used for retry delays.
+// Tests can inject an immediate-return function to avoid real sleeps.
+func (c *LiveClient) WithAfterFunc(f func(time.Duration) <-chan time.Time) *LiveClient {
+	c.afterFunc = f
 	return c
 }
 
@@ -225,7 +234,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 			return nil, &APIError{StatusCode: resp.StatusCode, Message: msg}
 		}
 		select {
-		case <-time.After(delay):
+		case <-c.afterFunc(delay):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -853,7 +862,7 @@ func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func(
 
 		if i < attempts-1 {
 			select {
-			case <-time.After(delay):
+			case <-c.afterFunc(delay):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -914,7 +923,7 @@ func (c *LiveClient) commitFilesWithRetry(ctx context.Context, owner, repo, bran
 			select {
 			case <-ctx.Done():
 				return false, ctx.Err()
-			case <-time.After(jitter):
+			case <-c.afterFunc(jitter):
 			}
 			log.Printf("retrying commit to %s/%s@%s (attempt %d/%d): %v", owner, repo, branch, attempt+1, maxAttempts, err)
 		}

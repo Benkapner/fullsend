@@ -19,14 +19,23 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// setupTest creates a test server and a LiveClient pointed at it.
+// noWaitAfter returns a channel that is immediately ready, eliminating
+// real sleeps in retry loops during tests.
+func noWaitAfter(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
+
+// setupTest creates a test server and a LiveClient pointed at it
+// with retry delays disabled for fast tests.
 func setupTest(t *testing.T) (*LiveClient, *http.ServeMux) {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client, err := New("test-token", WithBaseURL(srv.URL))
+	client, err := New("test-token", WithBaseURL(srv.URL), WithAfterFunc(noWaitAfter))
 	require.NoError(t, err)
 	return client, mux
 }
@@ -194,7 +203,7 @@ func TestRetryOnServerError(t *testing.T) {
 		srv := httptest.NewServer(mux)
 		defer srv.Close()
 
-		client, err := New("tok", WithBaseURL(srv.URL))
+		client, err := New("tok", WithBaseURL(srv.URL), WithAfterFunc(noWaitAfter))
 		require.NoError(t, err)
 		resp, err := client.do(context.Background(), http.MethodGet, "/flaky", nil)
 		require.NoError(t, err)
@@ -219,7 +228,7 @@ func TestRetryOnServerError(t *testing.T) {
 		srv := httptest.NewServer(mux)
 		defer srv.Close()
 
-		client, err := New("tok", WithBaseURL(srv.URL))
+		client, err := New("tok", WithBaseURL(srv.URL), WithAfterFunc(noWaitAfter))
 		require.NoError(t, err)
 		resp, err := client.do(context.Background(), http.MethodGet, "/ratelimit", nil)
 		require.NoError(t, err)
@@ -238,7 +247,7 @@ func TestRetryOnServerError(t *testing.T) {
 		srv := httptest.NewServer(mux)
 		defer srv.Close()
 
-		client, err := New("tok", WithBaseURL(srv.URL))
+		client, err := New("tok", WithBaseURL(srv.URL), WithAfterFunc(noWaitAfter))
 		require.NoError(t, err)
 		_, err = client.do(context.Background(), http.MethodGet, "/down", nil)
 		require.Error(t, err)
