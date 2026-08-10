@@ -32,11 +32,19 @@ func TestOpenCodeRuntimeRun_NotImplemented(t *testing.T) {
 	assert.Contains(t, err.Error(), "not yet implemented")
 }
 
+func TestOpenCodeRuntimeBootstrap_NotImplemented(t *testing.T) {
+	t.Parallel()
+
+	rt := OpenCodeRuntime{}
+	err := rt.Bootstrap(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not yet implemented")
+}
+
 func TestOpenCodeRuntimeNoopMethods(t *testing.T) {
 	t.Parallel()
 
 	rt := OpenCodeRuntime{}
-	assert.NoError(t, rt.Bootstrap(nil))
 	assert.NoError(t, rt.ExtractTranscripts("", "", ""))
 	assert.NoError(t, rt.ExtractDebugLog("", "", ""))
 	assert.Nil(t, rt.ParseTranscriptErrors(""))

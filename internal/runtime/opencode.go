@@ -20,8 +20,9 @@ func (OpenCodeRuntime) Name() string { return "opencode" }
 
 // System returns the OTEL GenAI gen_ai.system value. OpenCode is multi-provider
 // (Anthropic, OpenAI, Google, etc.), so the system is the runtime itself rather
-// than a single model vendor. The actual model vendor can be captured from
-// InitEvent at stream parse time in a future PR.
+// than a single model vendor. The actual model vendor may be capturable from
+// opencode's stream/export events in a future PR once the event schema is
+// confirmed (see #1935).
 func (OpenCodeRuntime) System() string { return "opencode" }
 
 func (OpenCodeRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.opencode" }
@@ -30,7 +31,9 @@ func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 
 func (OpenCodeRuntime) EnvExports() []string { return nil }
 
-func (OpenCodeRuntime) Bootstrap(_ BootstrapInput) error { return nil }
+func (OpenCodeRuntime) Bootstrap(_ BootstrapInput) error {
+	return fmt.Errorf("opencode runtime is not yet implemented")
+}
 
 func (OpenCodeRuntime) Run(_ context.Context, _ RunParams, _ *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
 	return -1, fmt.Errorf("opencode runtime is not yet implemented")
