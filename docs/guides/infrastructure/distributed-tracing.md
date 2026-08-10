@@ -248,11 +248,11 @@ authentication mechanism.
 
 After each managed agent run, `fullsend eval-measure` scores
 `run-telemetry.jsonl` in the same job (fail-open). Scores always land in
-`eval-measurements.jsonl` beside telemetry. Portable remote export uses the
-same `OTEL_EXPORTER_OTLP_*` configuration as agent traces; product UI
-adapters (e.g. MLflow Assessments) are optional. Measurements read the
-Level 1/2 metadata contract of `run-telemetry.jsonl` (not Level 3 content).
-See [Eval Measurements](./eval-measurements.md) and
+`eval-measurements.jsonl` beside telemetry (tool-agnostic artifact). Portable
+remote export will reuse the same `OTEL_EXPORTER_OTLP_*` configuration as
+agent traces when implemented. Measurements read the Level 1/2 metadata
+contract of `run-telemetry.jsonl` (not Level 3 content). See
+[Eval Measurements](./eval-measurements.md) and
 [ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
 
 ## See also

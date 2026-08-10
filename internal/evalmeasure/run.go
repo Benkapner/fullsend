@@ -6,14 +6,16 @@ import (
 	"path/filepath"
 )
 
-// MeasureFile parses telemetry, scores with the registry, writes local JSONL,
-// and best-effort exports MLflow Assessments. Idempotent per ledger.
+// MeasureFile parses telemetry, scores with the manifest, and writes local
+// eval-measurements.jsonl. Idempotent per ledger.
 func MeasureFile(telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
 	return MeasureAndExport(context.Background(), telemetryPath, registryPath, outDir)
 }
 
-// MeasureAndExport is MeasureFile with an explicit context.
+// MeasureAndExport is MeasureFile with an explicit context (reserved for
+// future portable OTLP score export on the same OTEL_* path as ADR 0050).
 func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
+	_ = ctx
 	if outDir == "" {
 		outDir = filepath.Dir(telemetryPath)
 	}
@@ -50,8 +52,5 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 		}
 	}
 
-	if err := ExportMLflowAssessments(ctx, all); err != nil {
-		return all, fmt.Errorf("export mlflow: %w", err)
-	}
 	return all, nil
 }

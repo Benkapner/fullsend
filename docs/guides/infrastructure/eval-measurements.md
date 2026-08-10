@@ -10,9 +10,9 @@ Telemetry baseline: [Distributed Tracing](./distributed-tracing.md)
 
 ## Architecture (read this first)
 
-Every managed agent job that produces telemetry gets the same three layers.
-Only the first is mandatory; the others reuse existing OTEL config or are
-optional product adapters.
+Fullsend does not pick an observability product for scores. The portable
+contract is a local JSONL artifact next to telemetry; remote export (when
+implemented) reuses the same OTEL configuration as agent traces.
 
 ```text
 fullsend run
@@ -23,10 +23,7 @@ fullsend run
 fullsend eval-measure   (same GHA job, fail-open, after run)
   └─ always writes  output/**/eval-measurements.jsonl
        (+ eval-measure-ledger.jsonl for idempotency)
-  └─ portable remote: same OTEL_EXPORTER_OTLP_* as the agent run
-       (scores follow traces — no second required endpoint)
-  └─ optional adapter: MLflow Assessments when MLFLOW_TRACKING_* is set
-       (Quality / Assessments UI only — not required for portability)
+  └─ portable remote (planned): same OTEL_EXPORTER_OTLP_* as the agent run
 ```
 
 | Artifact | When | Purpose |
@@ -34,12 +31,11 @@ fullsend eval-measure   (same GHA job, fail-open, after run)
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
 | `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …) |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
-| Remote scores (portable) | OTEL configured | Scores on the OTLP path — works with any OTLP backend |
-| MLflow Assessments | `MLFLOW_TRACKING_PASSWORD` (+ URI) set | Extra UX on MLflow only |
+| Remote scores (planned) | OTEL configured | Scores on the OTLP path — any OTLP backend |
 
-**Do not** treat MLflow Assessments as the primary export. Telemetry already
-goes “anywhere OTLP points”; scores must follow that model. Assessments are an
-optional adapter for one backend’s Quality panel.
+Orgs choose Phoenix, MLflow, Jaeger, or another collector independently.
+Fullsend does not forward vendor-specific score credentials in managed
+workflows.
 
 ## Measurements vs functional evals
 
@@ -54,13 +50,36 @@ optional adapter for one backend’s Quality panel.
 
 | Concern | Repo |
 |---|---|
-| Parser, scorers, CLI, GHA post-step | `fullsend-ai/fullsend` |
-| Per-agent **measurement manifests** (which scorers) | `fullsend-ai/agents` |
+| Parser, scorer **implementations**, CLI, GHA post-step | `fullsend-ai/fullsend` |
+| Default manifests for stock agents (which scorers / ids) | `fullsend-ai/agents` |
+| Overrides, opt-out, BYOA agent manifests | Consumer repo (`FULLSEND_DIR`) |
+
+Defaults for stock agents live next to those agents in `fullsend-ai/agents`.
+Managed jobs fetch them from `agents@v0` when no local file exists — users do
+**not** duplicate YAML into every install. Put a file under
+`${FULLSEND_DIR}/eval/measurements/` only to change policy or score a custom
+agent.
+
+Scorer *code* stays in fullsend: the measure CLI is the released engine that
+understands `run-telemetry.jsonl`. Agents ships **policy** (manifests), not Go.
+EM-001 (`trace_fitness`) evaluates fullsend’s telemetry contract across agents;
+stock agents opt in via manifests here / in `agents`.
+
+| Change | Where |
+|---|---|
+| New Go scorer or new declarative `assert:` primitive | `fullsend` PR |
+| New measurement `id` / enable / thresholds for a stock agent (existing scorer) | `agents` PR |
+| Org-specific policy for stock or custom agents | Local override in the consumer repo |
+
+**Planned (not in first ship):** declarative checks in the manifest (attribute
+exists, ratio/threshold bands) so most agent-specific policy is YAML-only.
+Until then, agent-specific math still lands as a named Go scorer in fullsend,
+enabled only for the agents that list it.
 
 First scorer: **`trace_fitness`** (catalog id `em-001`) — span tree + expected
 attributes so later scorers can trust the trace.
 
-Manifest shape:
+Manifest shape (first ship — enablement only):
 
 ```yaml
 agent: review
@@ -68,6 +87,27 @@ measurements:
   - id: em-001
     scorer: trace_fitness
     version: 1
+```
+
+Illustrative **logic-as-config** (future declarative engine — not wired yet):
+
+```yaml
+agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+  - id: em-010
+    scorer: declarative
+    version: 1
+    where:
+      span: agent
+    checks:
+      - name: turn_token_ratio
+        assert: ratio_lte
+        numerator: gen_ai.usage.total_tokens
+        denominator: fullsend.turns
+        max: 8000
 ```
 
 ### Versioning
@@ -89,7 +129,7 @@ success/failure signal for outcome scorers.
 
 | Proposal | Relationship to measurements |
 |---|---|
-| [#5947](https://github.com/fullsend-ai/fullsend/pull/5947) Level 3 activation + sandbox OTEL denylist | Richer traces fuel later scorers. v1 reads Level 1/2 local JSONL; content-aware scorers need OTLP/backend (or a widened file contract) under the proposed L3 rules. Measure CLI is host-side after the sandbox exits. |
+| [#5947](https://github.com/fullsend-ai/fullsend/pull/5947) Level 3 activation + sandbox OTEL denylist | Richer traces fuel later scorers. First ship reads Level 1/2 local JSONL; content-aware scorers need OTLP/backend (or a widened file contract) under the proposed L3 rules. Measure CLI is host-side after the sandbox exits. |
 | [#5944](https://github.com/fullsend-ai/fullsend/pull/5944) Span status from run outcome | Unblocks outcome scorers keyed on Status, not raw exit alone. |
 | [#2423](https://github.com/fullsend-ai/fullsend/pull/2423) Semantic observability / observer / lessons | Observer + lessons → fixtures; measurements are the online score path. |
 
@@ -109,6 +149,9 @@ GitHub Actions job
 1. `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present, else
 2. `https://raw.githubusercontent.com/fullsend-ai/agents/v0/eval/measurements/${AGENT}.yaml`
 
+Step 2 is how stock-agent defaults reach every install (same pin style as
+other agents-repo fallbacks). Step 1 is override / BYOA only.
+
 Missing manifest → log and exit `0` (skip). The CLI flag remains
 `--registry` for now (path to the YAML); rename is cosmetic follow-up.
 
@@ -124,26 +167,10 @@ fullsend eval-measure \
 - `--registry` is required (manifests live in `fullsend-ai/agents`, not in
   the fullsend binary).
 - Exit `0` when a score is `fail` — scores are data.
-- Export failures warn and still exit `0`; local JSONL is kept.
-
-### Env for remote export
-
-| Variable | Role |
-|---|---|
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `_HEADERS` / … | **Portable** score export (same as agent traces) |
-| `MLFLOW_TRACKING_URI` | Optional; derived from OTEL endpoint if unset |
-| `MLFLOW_TRACKING_USERNAME` | Optional Assessments adapter (default `admin`) |
-| `MLFLOW_TRACKING_PASSWORD` | Optional Assessments adapter (Basic auth) |
-
-Reusable agent workflows forward OTEL and optional `MLFLOW_TRACKING_*`.
-The OTEL ingest Bearer token can write `/v1/traces` but cannot create MLflow
-Assessments — that adapter needs tracking Basic auth when used.
 
 ## Implementation note
 
-Local `eval-measurements.jsonl` and the optional MLflow Assessments adapter
-are wired in the measure CLI today. Portable OTLP score export (same
-`OTEL_*` as traces) is the ADR 0087 remote contract — keep adapters
-optional; do not require `MLFLOW_TRACKING_*` for scores to be useful
-outside one vendor UI. Until portable OTLP score export lands, remote
-scores need the optional Assessments adapter (or local JSONL alone).
+Today the measure CLI always writes local `eval-measurements.jsonl`. Portable
+OTLP score export (same `OTEL_*` as traces) is the ADR 0087 remote contract
+and is not wired yet — until it lands, consume the JSONL artifact (or your
+own pipeline) for remote dashboards.

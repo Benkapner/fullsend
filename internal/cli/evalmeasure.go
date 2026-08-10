@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -22,16 +21,14 @@ func newEvalMeasureCmd() *cobra.Command {
 		Use:   "eval-measure",
 		Short: "Score agent run traces with eval measurements",
 		Long: `Parse run-telemetry.jsonl, score with an agents measurement manifest,
-write eval-measurements.jsonl, and best-effort export scores to MLflow
-Assessments (Quality / per-trace Assessments panel).
+and write eval-measurements.jsonl beside the telemetry artifact.
 
-MLflow export uses MLFLOW_TRACKING_URI (or derives it from
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) plus MLFLOW_TRACKING_USERNAME/
-MLFLOW_TRACKING_PASSWORD. The OTEL ingest Bearer token is not sufficient
-for the Assessments API.
+Remote backends are not selected by fullsend: scores are a portable local
+JSONL artifact. When portable OTLP score export lands, it will reuse the
+same OTEL_EXPORTER_OTLP_* configuration as agent traces (ADR 0050 / 0087).
 
 Exit 0 when scores fail — measurements are data, not gates. Non-zero only
-on hard IO/parse errors. Export failures print a warning and exit 0.
+on hard IO/parse errors.
 
 The --registry path is required (manifests live in fullsend-ai/agents,
 e.g. eval/measurements/<agent>.yaml).`,
@@ -41,11 +38,6 @@ e.g. eval/measurements/<agent>.yaml).`,
 
 			results, err := evalmeasure.MeasureAndExport(cmd.Context(), telemetryPath, registryPath, outDir)
 			if err != nil {
-				if isExportWarnErr(err) {
-					printer.StepWarn(fmt.Sprintf("Export failed (local measurements kept): %v", err))
-					printResults(printer, results)
-					return nil
-				}
 				return err
 			}
 			printResults(printer, results)
@@ -59,11 +51,6 @@ e.g. eval/measurements/<agent>.yaml).`,
 	_ = cmd.MarkFlagRequired("telemetry")
 	_ = cmd.MarkFlagRequired("registry")
 	return cmd
-}
-
-func isExportWarnErr(err error) bool {
-	var exportErr *evalmeasure.ExportError
-	return errors.As(err, &exportErr)
 }
 
 func printResults(printer *ui.Printer, results []evalmeasure.EvaluationResult) {

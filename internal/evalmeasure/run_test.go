@@ -25,11 +25,6 @@ func TestLoadRegistryAndScoreTrace(t *testing.T) {
 }
 
 func TestMeasureFile_Idempotent(t *testing.T) {
-	t.Setenv("MLFLOW_TRACKING_URI", "")
-	t.Setenv("MLFLOW_TRACKING_PASSWORD", "")
-	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-
 	out := t.TempDir()
 	telemetry := filepath.Join("testdata", "complete.jsonl")
 	registry := filepath.Join("testdata", "sample-registry.yaml")

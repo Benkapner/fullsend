@@ -11,11 +11,6 @@ import (
 )
 
 func TestEvalMeasureCmd_ScoresFixture(t *testing.T) {
-	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	t.Setenv("MLFLOW_TRACKING_URI", "")
-	t.Setenv("MLFLOW_TRACKING_PASSWORD", "")
-
 	out := t.TempDir()
 	telemetry := filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl")
 	registry := filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml")

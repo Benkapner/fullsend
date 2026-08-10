@@ -62,8 +62,6 @@ on:
         required: false
       OTEL_EXPORTER_OTLP_HEADERS:
         required: false
-      MLFLOW_TRACKING_PASSWORD:
-        required: false
 
 concurrency:
   group: >-
@@ -396,16 +394,3 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
-          # Eval measurements → MLflow Assessments (Quality UI). Optional —
-          # OTEL ingest Bearer cannot write assessments; needs tracking Basic auth.
-          MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
-          MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
-          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
-        with:
-          agent: fix
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          status-repo: ${{ inputs.source_repo }}
-          status-number: ${{ steps.context.outputs.pr_number }}
-          mint-url: ${{ inputs.mint_url }}
