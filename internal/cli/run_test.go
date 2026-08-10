@@ -1899,6 +1899,71 @@ func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
 	}
 }
 
+// TestReservedSandboxKeys_IncludesRoleSlug verifies that FULLSEND_ROLE and
+// FULLSEND_SLUG are in reservedSandboxKeys so env.sandbox cannot shadow them (#6045).
+func TestReservedSandboxKeys_IncludesRoleSlug(t *testing.T) {
+	for _, key := range []string{
+		"FULLSEND_ROLE",
+		"FULLSEND_SLUG",
+	} {
+		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
+	}
+}
+
+// TestBuildSandboxEnvLines_SkipsRoleSlug verifies that FULLSEND_ROLE and
+// FULLSEND_SLUG in env.sandbox are rejected by buildSandboxEnvLines (#6045).
+func TestBuildSandboxEnvLines_SkipsRoleSlug(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "review",
+		Slug:  "my-app",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":    "allowed",
+				"FULLSEND_ROLE": "evil",
+				"FULLSEND_SLUG": "evil-slug",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+// TestBuildRoleSlugEnvLines verifies that buildRoleSlugEnvLines generates the
+// correct export lines for FULLSEND_ROLE and FULLSEND_SLUG, including proper
+// single-quote escaping (#6045).
+func TestBuildRoleSlugEnvLines(t *testing.T) {
+	t.Run("role and slug set", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "review", Slug: "my-app"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='review'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='my-app'", lines[1])
+	})
+
+	t.Run("role set slug empty", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "coder"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "export FULLSEND_ROLE='coder'", lines[0])
+	})
+
+	t.Run("single quote escaping", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "it's", Slug: "app'name"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='it'\\''s'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='app'\\''name'", lines[1])
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md"}
+		lines := buildRoleSlugEnvLines(h)
+		assert.Empty(t, lines)
+	})
+}
+
 // TestBuildSandboxEnvLines_SkipsOIDCVars verifies that OIDC credential vars
 // in env.sandbox are rejected by buildSandboxEnvLines (#5832).
 func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
