@@ -583,7 +583,7 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Configuring with Skills](customizing-with-skills.md) — creating and managing skills
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
-- [Configuring agent behavior](customizing-agents.md) — harness configurations and layered content resolution
+- [Configuring agent behavior](customizing-agents.md) — harness configurations and `base:` composition
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory
 - [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Standalone mint](../infrastructure/standalone-mint.md) — custom agent roles and identity

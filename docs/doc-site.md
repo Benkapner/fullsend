@@ -70,10 +70,12 @@ docs add ongoing maintenance cost (per-release builds, backport burden) that
 is not yet justified.
 
 **When to revisit:** If a future release removes deprecated features entirely
-(e.g., `runner_env` removal, `customized/` removal), users
-on older versions will lose reference material. At that point, the git tag
-snapshot approach offers the best effort-to-value ratio: snapshot the docs at
-the last release before removal and serve them as a read-only archive.
+(e.g., `runner_env` removal), users on older versions will lose reference
+material. The `customized/` directory has already been removed (#5697, #5836,
+#5866); `runner_env` deprecation remains the primary candidate. At that point,
+the git tag snapshot approach offers the best effort-to-value ratio: snapshot
+the docs at the last release before removal and serve them as a read-only
+archive.
 
 See [#4886](https://github.com/fullsend-ai/fullsend/issues/4886) for the
 original discussion.
