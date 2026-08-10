@@ -374,13 +374,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var me *mintError
 		if errors.As(err, &me) {
 			msg := "mint failed"
-			// 422 errors from repo-installation validation carry
-			// actionable messages (e.g. which repo is not covered).
-			// Surface them instead of the generic message so callers
-			// can diagnose misconfigured installations. Other status
-			// codes keep the generic message to avoid leaking internals.
-			if me.status == http.StatusUnprocessableEntity {
-				msg = me.msg
+			// Surface the user-facing message when the error explicitly
+			// provides one. Only errors that set userMsg opt into this;
+			// all others keep the generic message to avoid leaking
+			// internal details.
+			if me.userMsg != "" {
+				msg = me.userMsg
 			}
 			writeError(w, me.status, msg)
 		} else {
@@ -522,17 +521,21 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
 			if otherErr != nil {
 				if strings.Contains(otherErr.Error(), "status 404") {
+					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
 					return "", "", nil, &mintError{
-						status: http.StatusUnprocessableEntity,
-						msg:    fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo),
+						status:  http.StatusUnprocessableEntity,
+						msg:     umsg,
+						userMsg: umsg,
 					}
 				}
 				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
 			}
 			if otherID != installationID {
+				umsg := fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0])
 				return "", "", nil, &mintError{
-					status: http.StatusUnprocessableEntity,
-					msg:    fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0]),
+					status:  http.StatusUnprocessableEntity,
+					msg:     umsg,
+					userMsg: umsg,
 				}
 			}
 		}
@@ -823,9 +826,14 @@ func (h *Handler) lookupRoleAppID(role string) (string, error) {
 }
 
 // mintError is an HTTP-aware error carrying a status code for the response.
+// userMsg, when non-empty, is a client-safe message that the response
+// boundary surfaces instead of the generic "mint failed". Errors that
+// do not set userMsg keep the generic message, preventing accidental
+// disclosure of internal details.
 type mintError struct {
-	status int
-	msg    string
+	status  int
+	msg     string
+	userMsg string
 }
 
 func (e *mintError) Error() string { return e.msg }
