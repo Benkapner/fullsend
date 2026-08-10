@@ -1475,7 +1475,7 @@ func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
 			},
 		}
 
-		err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+		err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 		require.NoError(t, err)
 
 		require.Len(t, fc.UpdatedComments, 1)
