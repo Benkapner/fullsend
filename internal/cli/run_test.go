@@ -1930,30 +1930,37 @@ func TestBuildSandboxEnvLines_SkipsRoleSlug(t *testing.T) {
 	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
 }
 
-// TestBootstrapEnv_RoleAndSlug verifies that bootstrapEnv always injects
-// FULLSEND_ROLE from h.Role and FULLSEND_SLUG when h.Slug is set (#6045).
-func TestBootstrapEnv_RoleAndSlug(t *testing.T) {
-	// bootstrapEnv writes a temp file and calls sandbox.UploadFile which
-	// fails for a nonexistent sandbox. We intercept the written content by
-	// reading the temp file before it is removed (upload is the first
-	// sandbox call). Since we can't intercept the temp file easily, we
-	// verify indirectly: the function fails at upload, but the env content
-	// is assembled before that point. We verify via the SkipsReservedKeys
-	// and buildSandboxEnvLines tests above, plus a targeted test here that
-	// exercises bootstrapEnv with both role+slug and role-only cases.
-
+// TestBuildRoleSlugEnvLines verifies that buildRoleSlugEnvLines generates the
+// correct export lines for FULLSEND_ROLE and FULLSEND_SLUG, including proper
+// single-quote escaping (#6045).
+func TestBuildRoleSlugEnvLines(t *testing.T) {
 	t.Run("role and slug set", func(t *testing.T) {
 		h := &harness.Harness{Agent: "agents/test.md", Role: "review", Slug: "my-app"}
-		err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "copying .env file to sandbox")
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='review'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='my-app'", lines[1])
 	})
 
 	t.Run("role set slug empty", func(t *testing.T) {
 		h := &harness.Harness{Agent: "agents/test.md", Role: "coder"}
-		err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "copying .env file to sandbox")
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "export FULLSEND_ROLE='coder'", lines[0])
+	})
+
+	t.Run("single quote escaping", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "it's", Slug: "app'name"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='it'\\''s'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='app'\\''name'", lines[1])
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md"}
+		lines := buildRoleSlugEnvLines(h)
+		assert.Empty(t, lines)
 	})
 }
 
