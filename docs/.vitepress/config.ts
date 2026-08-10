@@ -259,6 +259,7 @@ export default defineConfig({
             { text: "Standalone Mint", link: "/guides/infrastructure/standalone-mint" },
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
+            { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
             {
               text: "Layered Config Reference",

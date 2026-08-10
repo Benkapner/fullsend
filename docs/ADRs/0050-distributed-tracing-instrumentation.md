@@ -155,3 +155,10 @@ and agent spans in `run-telemetry.jsonl`, which became the sole Level 1
 artifact. OTLP export also changed from post-hoc directory upload to live
 span export via the OTel SDK's batch processor. The core decision (three-level
 opt-in, OTel-native, W3C propagation) is unchanged.
+
+**2026-08-10 — Eval measurements ([ADR 0087](0087-eval-measurements-online-trace-scoring.md)):**
+online scoring of wild-run traces writes `eval-measurements.jsonl` beside
+telemetry; portable remote score export is designed to follow the same OTLP
+configuration as this ADR (MLflow Assessments adapter available now; OTLP
+path planned). Backend-specific UI adapters remain optional. Distinct from
+functional eval fixtures ([ADR 0051](0051-agent-eval-harness-for-test-infrastructure.md)).

@@ -244,7 +244,19 @@ Any variable and secret names work here; the values reach the exporter
 as-is. Consult your backend's documentation for the endpoint URL and
 authentication mechanism.
 
+## Eval measurements
+
+After each managed agent run, `fullsend eval-measure` scores
+`run-telemetry.jsonl` in the same job (fail-open). Scores always land in
+`eval-measurements.jsonl` beside telemetry. Portable remote export uses the
+same `OTEL_EXPORTER_OTLP_*` configuration as agent traces; product UI
+adapters (e.g. MLflow Assessments) are optional. Measurements read the
+Level 1/2 metadata contract of `run-telemetry.jsonl` (not Level 3 content).
+See [Eval Measurements](./eval-measurements.md) and
+[ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
+
 ## See also
 
 - [How To Emit Traces](../user/how-to-emit-traces.md): step-by-step setup guide
 - [Tracing Development Guide](../dev/tracing.md): implementation details for contributors
+- [Eval Measurements](./eval-measurements.md): online scoring of wild-run traces

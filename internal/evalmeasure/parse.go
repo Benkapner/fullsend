@@ -1,0 +1,187 @@
+package evalmeasure
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+)
+
+type otlpTracesData struct {
+	ResourceSpans []otlpResourceSpans `json:"resourceSpans"`
+}
+
+type otlpResourceSpans struct {
+	ScopeSpans []otlpScopeSpans `json:"scopeSpans"`
+}
+
+type otlpScopeSpans struct {
+	Spans []otlpSpan `json:"spans"`
+}
+
+type otlpSpan struct {
+	TraceID           string         `json:"traceId"`
+	SpanID            string         `json:"spanId"`
+	ParentSpanID      string         `json:"parentSpanId"`
+	Name              string         `json:"name"`
+	StartTimeUnixNano string         `json:"startTimeUnixNano"`
+	EndTimeUnixNano   string         `json:"endTimeUnixNano"`
+	Attributes        []otlpKeyValue `json:"attributes"`
+	Status            *otlpStatus    `json:"status"`
+}
+
+type otlpStatus struct {
+	Code int `json:"code"`
+}
+
+type otlpKeyValue struct {
+	Key   string         `json:"key"`
+	Value map[string]any `json:"value"`
+}
+
+// ParseTelemetryFile reads OTLP JSON TracesData lines from run-telemetry.jsonl
+// and merges spans by trace id.
+func ParseTelemetryFile(path string) ([]Trace, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	byID := make(map[string]*Trace)
+	var order []string
+
+	sc := bufio.NewScanner(f)
+	// Spans can be large; raise buffer.
+	buf := make([]byte, 0, 64*1024)
+	sc.Buffer(buf, 10*1024*1024)
+
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var doc otlpTracesData
+		if err := json.Unmarshal(line, &doc); err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		for _, rs := range doc.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, raw := range ss.Spans {
+					sp, err := convertSpan(raw)
+					if err != nil {
+						return nil, fmt.Errorf("line %d span %s: %w", lineNo, raw.SpanID, err)
+					}
+					tr, ok := byID[sp.TraceID]
+					if !ok {
+						tr = &Trace{TraceID: sp.TraceID}
+						byID[sp.TraceID] = tr
+						order = append(order, sp.TraceID)
+					}
+					tr.Spans = append(tr.Spans, sp)
+				}
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]Trace, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
+}
+
+func convertSpan(raw otlpSpan) (Span, error) {
+	start, err := parseUint(raw.StartTimeUnixNano)
+	if err != nil {
+		return Span{}, fmt.Errorf("startTimeUnixNano: %w", err)
+	}
+	end, err := parseUint(raw.EndTimeUnixNano)
+	if err != nil {
+		return Span{}, fmt.Errorf("endTimeUnixNano: %w", err)
+	}
+	attrs := make(map[string]any, len(raw.Attributes))
+	for _, kv := range raw.Attributes {
+		if kv.Key == "" {
+			continue
+		}
+		if v, ok := decodeAny(kv.Value); ok {
+			attrs[kv.Key] = v
+		}
+	}
+	status := 0
+	if raw.Status != nil {
+		status = raw.Status.Code
+	}
+	return Span{
+		TraceID:       raw.TraceID,
+		SpanID:        raw.SpanID,
+		ParentSpanID:  raw.ParentSpanID,
+		Name:          raw.Name,
+		StartUnixNano: start,
+		EndUnixNano:   end,
+		StatusCode:    status,
+		Attrs:         attrs,
+	}, nil
+}
+
+func parseUint(s string) (uint64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(s, 10, 64)
+}
+
+// decodeAny extracts scalar OTLP attribute values. arrayValue and kvlistValue
+// are intentionally unsupported — fitness scoring uses only scalar attributes.
+func decodeAny(m map[string]any) (any, bool) {
+	if m == nil {
+		return nil, false
+	}
+	if v, ok := m["stringValue"]; ok {
+		return fmt.Sprint(v), true
+	}
+	if v, ok := m["boolValue"]; ok {
+		switch t := v.(type) {
+		case bool:
+			return t, true
+		default:
+			return nil, false
+		}
+	}
+	if v, ok := m["doubleValue"]; ok {
+		switch t := v.(type) {
+		case float64:
+			return t, true
+		case string:
+			n, err := strconv.ParseFloat(t, 64)
+			if err != nil {
+				return nil, false
+			}
+			return n, true
+		default:
+			return nil, false
+		}
+	}
+	if v, ok := m["intValue"]; ok {
+		switch t := v.(type) {
+		case string:
+			n, err := strconv.ParseInt(t, 10, 64)
+			if err != nil {
+				return nil, false
+			}
+			return n, true
+		case float64:
+			return int64(t), true
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
