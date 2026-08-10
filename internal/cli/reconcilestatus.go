@@ -95,14 +95,15 @@ finalized, this is a no-op.`,
 				case err != nil:
 					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
 				default:
-					ocr, ok := writer.(config.OrgConfigReader)
-					switch {
-					case ok && ocr.StatusNotifications() != nil:
-						completionMode = ocr.StatusNotifications().Comment.Completion
-					case ok:
-						fmt.Fprintf(os.Stderr, "INFO: no status_notifications configured at %s; using default completion mode\n", fullsendDir)
-					default:
-						fmt.Fprintf(os.Stderr, "INFO: %s is not an org config (status_notifications is org-level only); using default completion mode\n", fullsendDir)
+					// ConfigWriter embeds StatusNotificationsReader (via
+					// ConfigReader) directly, so this works for both org
+					// and per-repo configs — no need to type-assert to
+					// OrgConfigReader, which per-repo configs don't
+					// implement.
+					if sn := writer.StatusNotifications(); sn != nil {
+						completionMode = sn.Comment.Completion
+					} else {
+						fmt.Fprintf(os.Stderr, "WARNING: no status_notifications configured at %s; using default completion mode\n", fullsendDir)
 					}
 				}
 			}

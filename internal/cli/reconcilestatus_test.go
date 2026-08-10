@@ -382,6 +382,42 @@ defaults:
 	assert.Equal(t, "failure", gotStatus)
 }
 
+func TestNewReconcileStatusCmd_FullsendDir_PerRepoConfig_OnFailure(t *testing.T) {
+	dir := t.TempDir()
+	// No "dispatch"/"repos"/"inference"/"defaults" key, so this is
+	// detected as a per-repo config, not an org config.
+	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+roles: ["review"]
+status_notifications:
+  comment:
+    completion: on_failure
+`), 0o644)
+	require.NoError(t, err)
+
+	var gotMode, gotStatus string
+	stubReconcileVars(t, func(completionMode, jobStatus string, _ bool, _ string) {
+		gotMode = completionMode
+		gotStatus = jobStatus
+	})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--fullsend-dir", dir,
+		"--job-status", "failure",
+	})
+
+	err = cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "on_failure", gotMode, "per-repo config should be able to configure completion mode")
+	assert.Equal(t, "failure", gotStatus)
+}
+
 func TestNewReconcileStatusCmd_FullsendDir_MalformedConfig(t *testing.T) {
 	dir := t.TempDir()
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`{{{not valid yaml`), 0o644)
