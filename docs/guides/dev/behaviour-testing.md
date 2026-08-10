@@ -228,6 +228,9 @@ BEHAVIOUR_CI=githubactions
 BEHAVIOUR_INSTALL_MODE=per-repo
 E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
+TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
+TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
+TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
 ```
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
