@@ -3830,6 +3830,10 @@ func TestValidateMintSetupRole(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "e2e", role)
 
+	role, err = validateMintSetupRole("scribe")
+	require.NoError(t, err)
+	assert.Equal(t, "scribe", role)
+
 	_, err = validateMintSetupRole("fix")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "coder")
@@ -3838,6 +3842,7 @@ func TestValidateMintSetupRole(t *testing.T) {
 	_, err = validateMintSetupRole("unknown")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported role")
+	assert.Contains(t, err.Error(), "scribe")
 }
 
 func TestValidateAppSlug(t *testing.T) {

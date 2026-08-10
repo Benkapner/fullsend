@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -225,6 +226,19 @@ func TestRolePermissionsFor(t *testing.T) {
 func TestHasRole(t *testing.T) {
 	assert.True(t, HasRole("coder"))
 	assert.False(t, HasRole("nonexistent"))
+}
+
+func TestBuiltInRoles_IncludesScribe(t *testing.T) {
+	roles := BuiltInRoles()
+	assert.Contains(t, roles, "scribe")
+	assert.Contains(t, roles, "triage")
+	assert.Contains(t, roles, "coder")
+	// BuiltInRoles is sorted for stable CLI error messages.
+	assert.Equal(t, append([]string(nil), roles...), func() []string {
+		cp := append([]string(nil), roles...)
+		sort.Strings(cp)
+		return cp
+	}())
 }
 
 func TestCustomRolePermissions(t *testing.T) {

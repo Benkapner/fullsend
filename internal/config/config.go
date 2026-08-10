@@ -162,9 +162,13 @@ type orgConfig struct {
 	CreateIssues           *CreateIssuesConfig   `yaml:"create_issues,omitempty"`
 }
 
-// ValidRoles returns the set of recognized agent roles.
+// ValidRoles returns the set of agent roles accepted in `.fullsend`
+// `roles:` / `defaults.roles` config. This is intentionally narrower than
+// mintcore's canonical roles: mint-only dogfood roles (e.g. scribe) can be
+// registered with `fullsend mint add-role` before scaffold/workflow wiring
+// lands, and must not silently pass config validation.
 func ValidRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e", "scribe"}
+	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }
 
 // ValidProviders returns the set of recognized inference providers.

@@ -349,7 +349,6 @@ Each agent role has its own identity, permissions, and purpose:
 | `fix` | (reuses coder app) | Fix failures |
 | `retro` | `{org}-retro[bot]` | Retrospectives |
 | `prioritize` | `{org}-prioritize[bot]` | Backlog priority |
-| `scribe` | `{org}-scribe[bot]` | Meeting-notes issue filing (opt-in; not in default installs) |
 
 **Naming conventions:**
 - App naming: `{org}-{role}`
@@ -358,6 +357,12 @@ Each agent role has its own identity, permissions, and purpose:
 - Secret name: `fullsend-{role}-app-pem`
 
 > **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
+
+> **Note:** Mint-only dogfood roles such as `scribe` can be registered with
+> `fullsend mint add-role` (and used via remote harness registration) but are
+> **not** valid values for the `.fullsend` `roles:` field until scaffold /
+> workflow wiring lands. Adding them under `roles:` fails config validation
+> rather than silently no-oping.
 
 ## Configuration Examples
 

@@ -17,6 +17,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -189,6 +190,17 @@ func HasRole(role string) bool {
 		}
 	}
 	return false
+}
+
+// BuiltInRoles returns the sorted names of canonical mint roles
+// (excludes standalone-mint custom roles registered at runtime).
+func BuiltInRoles() []string {
+	roles := make([]string, 0, len(canonicalRolePermissions))
+	for role := range canonicalRolePermissions {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return roles
 }
 
 // GenerateAppJWT creates a signed RS256 JWT for GitHub App authentication.
