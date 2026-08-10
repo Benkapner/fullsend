@@ -163,6 +163,50 @@ func TestJiraClient_ListComments(t *testing.T) {
 	}
 }
 
+func TestJiraClient_ListComments_EditedCommentAttributesToEditor(t *testing.T) {
+	// Jira sets UpdateAuthor when a comment has been edited, which may
+	// differ from Author if someone with Edit-All-Comments rewrote
+	// another user's comment. Consumers of tracker.Comment.Author must
+	// see the editor's identity, not the original author's, mirroring
+	// jirapoll/discover.go's edit-attribution logic (ADR 0054) so a
+	// rewritten comment can't be misattributed to whoever originally
+	// posted it.
+	fc := &fakeJiraClient{
+		comments: map[string][]jira.Comment{
+			"PROJ-42": {
+				{
+					ID:           "1",
+					Body:         "edited body",
+					Author:       jira.User{DisplayName: "Original Author"},
+					UpdateAuthor: jira.User{AccountID: "acct-2", DisplayName: "Editor"},
+					Created:      "2026-08-06T00:00:00.000+0000",
+				},
+				{
+					ID:      "2",
+					Body:    "unedited body",
+					Author:  jira.User{DisplayName: "Original Author"},
+					Created: "2026-08-06T00:00:00.000+0000",
+				},
+			},
+		},
+	}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+
+	comments, err := c.ListComments(context.Background(), "PROJ", 42)
+	if err != nil {
+		t.Fatalf("ListComments returned error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("len(comments) = %d, want 2", len(comments))
+	}
+	if comments[0].Author != "Editor" {
+		t.Errorf("edited comment Author = %q, want %q (the editor, not the original author)", comments[0].Author, "Editor")
+	}
+	if comments[1].Author != "Original Author" {
+		t.Errorf("unedited comment Author = %q, want %q (UpdateAuthor unset, so Author stands)", comments[1].Author, "Original Author")
+	}
+}
+
 func TestJiraClient_CreateComment(t *testing.T) {
 	fc := &fakeJiraClient{}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")

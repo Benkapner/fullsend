@@ -102,11 +102,22 @@ func (c *JiraClient) UpdateComment(ctx context.Context, project string, number i
 // deliberately left empty: Jira's comment permalink format isn't confirmed
 // against real Jira Cloud behavior, so rather than guess at a URL shape
 // that might be wrong, it's left unset instead of risking a broken link.
+//
+// Author is UpdateAuthor when the comment has been edited (Jira sets
+// UpdateAuthor.AccountID only then), not Author: someone with
+// Edit-All-Comments can rewrite another user's comment, and this mirrors
+// jirapoll/discover.go's identical attribute-to-the-editor logic (ADR
+// 0054) so any future authorization-sensitive consumer of tracker.Comment
+// doesn't misattribute edited content to the original author.
 func fromJiraComment(c jira.Comment) Comment {
+	author := c.Author.DisplayName
+	if c.UpdateAuthor.AccountID != "" {
+		author = c.UpdateAuthor.DisplayName
+	}
 	return Comment{
 		ID:        c.ID,
 		Body:      jira.ADFToPlainText(c.Body),
-		Author:    c.Author.DisplayName,
+		Author:    author,
 		CreatedAt: c.Created,
 	}
 }
