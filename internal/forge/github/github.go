@@ -52,8 +52,7 @@ func (c *LiveClient) WithBaseURL(url string) *LiveClient {
 	return c
 }
 
-// WithAfterFunc replaces the default time.After used for retry delays.
-// Tests can inject an immediate-return function to avoid real sleeps.
+// WithAfterFunc sets a custom delay function (for testing without real sleeps).
 func (c *LiveClient) WithAfterFunc(f func(time.Duration) <-chan time.Time) *LiveClient {
 	c.afterFunc = f
 	return c
