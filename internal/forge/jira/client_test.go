@@ -633,159 +633,6 @@ func TestGetStatus_NotFound(t *testing.T) {
 // SearchIssues single page
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// GetProjectRoleMembership
-// ---------------------------------------------------------------------------
-
-func TestGetProjectRoleMembership(t *testing.T) {
-	t.Parallel()
-	client, mux := setupTest(t)
-	ctx := context.Background()
-
-	// Role list endpoint.
-	mux.HandleFunc("/rest/api/3/project/PROJ/role", func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodGet, r.Method)
-		writeJSON(t, w, http.StatusOK, map[string]string{
-			"Administrators": "http://localhost/rest/api/3/project/10001/role/10002",
-			"Developers":     "http://localhost/rest/api/3/project/10001/role/10003",
-		})
-	})
-
-	// Administrators role detail.
-	mux.HandleFunc("/rest/api/3/project/PROJ/role/10002", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, ProjectRoleDetail{
-			Name: "Administrators",
-			Actors: []RoleActor{
-				{
-					ID:          1,
-					DisplayName: "Alice Admin",
-					Type:        "atlassian-user-role-actor",
-					ActorUser:   &RoleActorUser{AccountID: "alice-id"},
-				},
-				{
-					ID:          2,
-					DisplayName: "Both Roles User",
-					Type:        "atlassian-user-role-actor",
-					ActorUser:   &RoleActorUser{AccountID: "both-id"},
-				},
-			},
-		})
-	})
-
-	// Developers role detail.
-	mux.HandleFunc("/rest/api/3/project/PROJ/role/10003", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, ProjectRoleDetail{
-			Name: "Developers",
-			Actors: []RoleActor{
-				{
-					ID:          3,
-					DisplayName: "Bob Dev",
-					Type:        "atlassian-user-role-actor",
-					ActorUser:   &RoleActorUser{AccountID: "bob-id"},
-				},
-				{
-					ID:          4,
-					DisplayName: "Both Roles User",
-					Type:        "atlassian-user-role-actor",
-					ActorUser:   &RoleActorUser{AccountID: "both-id"},
-				},
-				{
-					// Group actor — should be skipped (no ActorUser).
-					ID:          5,
-					DisplayName: "dev-group",
-					Type:        "atlassian-group-role-actor",
-				},
-			},
-		})
-	})
-
-	membership, err := client.GetProjectRoleMembership(ctx, "PROJ")
-	require.NoError(t, err)
-
-	assert.Equal(t, "Administrators", membership["alice-id"], "alice should be Administrator")
-	assert.Equal(t, "Developers", membership["bob-id"], "bob should be Developer")
-	assert.Equal(t, "Administrators", membership["both-id"], "user in both roles should get highest (Administrators)")
-	assert.NotContains(t, membership, "dev-group", "group actors should be skipped")
-}
-
-func TestGetProjectRoleMembership_GroupActor(t *testing.T) {
-	t.Parallel()
-	client, mux := setupTest(t)
-	ctx := context.Background()
-
-	mux.HandleFunc("/rest/api/3/project/PROJ/role", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, map[string]string{
-			"Developers": "http://localhost/rest/api/3/project/10001/role/10003",
-		})
-	})
-
-	mux.HandleFunc("/rest/api/3/project/PROJ/role/10003", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusOK, ProjectRoleDetail{
-			Name: "Developers",
-			Actors: []RoleActor{
-				{
-					ID:          5,
-					DisplayName: "dev-group",
-					Type:        "atlassian-group-role-actor",
-					ActorGroup:  &RoleActorGroup{GroupID: "group-1", Name: "dev-group"},
-				},
-			},
-		})
-	})
-
-	var groupMemberCalls int
-	mux.HandleFunc("/rest/api/3/group/member", func(w http.ResponseWriter, r *http.Request) {
-		groupMemberCalls++
-		assert.Equal(t, "group-1", r.URL.Query().Get("groupId"))
-		writeJSON(t, w, http.StatusOK, map[string]any{
-			"values": []map[string]string{
-				{"accountId": "carol-id"},
-				{"accountId": "dave-id"},
-			},
-			"isLast": true,
-		})
-	})
-
-	membership, err := client.GetProjectRoleMembership(ctx, "PROJ")
-	require.NoError(t, err)
-	assert.Equal(t, "Developers", membership["carol-id"], "carol should inherit role via group membership")
-	assert.Equal(t, "Developers", membership["dave-id"], "dave should inherit role via group membership")
-	assert.Equal(t, 1, groupMemberCalls)
-
-	// Second call within the cache TTL should reuse the cached members
-	// rather than hitting the group/member endpoint again.
-	_, err = client.GetProjectRoleMembership(ctx, "PROJ")
-	require.NoError(t, err)
-	assert.Equal(t, 1, groupMemberCalls, "group member lookup should be cached within TTL")
-
-	// Force the cache entry to look stale; the next call should refetch.
-	client.groupMemberCacheMu.Lock()
-	entry := client.groupMemberCache["group-1"]
-	entry.fetchedAt = time.Now().Add(-groupMemberCacheTTL - time.Second)
-	client.groupMemberCache["group-1"] = entry
-	client.groupMemberCacheMu.Unlock()
-
-	_, err = client.GetProjectRoleMembership(ctx, "PROJ")
-	require.NoError(t, err)
-	assert.Equal(t, 2, groupMemberCalls, "expired cache entry should trigger a refetch")
-}
-
-func TestGetProjectRoleMembership_Error(t *testing.T) {
-	t.Parallel()
-	client, mux := setupTest(t)
-	ctx := context.Background()
-
-	mux.HandleFunc("/rest/api/3/project/BADPROJ/role", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusNotFound, map[string]any{
-			"errorMessages": []string{"No project could be found with key 'BADPROJ'"},
-		})
-	})
-
-	_, err := client.GetProjectRoleMembership(ctx, "BADPROJ")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "list project roles")
-}
-
 func TestSearchIssues_SinglePage(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)
@@ -1011,4 +858,141 @@ func TestDo_RetriesOnTransientNetworkError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "42", user.AccountID)
 	assert.Equal(t, 2, transport.calls)
+}
+
+// ---------------------------------------------------------------------------
+// GetProjectRoleActors
+// ---------------------------------------------------------------------------
+
+func TestGetProjectRoleActors(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/project/PROJ/role", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]string{
+			"Administrators": "http://localhost/rest/api/3/project/10001/role/10002",
+			"Developers":     "http://localhost/rest/api/3/project/10001/role/10003",
+		})
+	})
+
+	mux.HandleFunc("/rest/api/3/project/PROJ/role/10002", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, ProjectRoleDetail{
+			Name: "Administrators",
+			Actors: []RoleActor{
+				{
+					ID:          1,
+					DisplayName: "Alice Admin",
+					Type:        "atlassian-user-role-actor",
+					ActorUser:   &RoleActorUser{AccountID: "alice-id"},
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("/rest/api/3/project/PROJ/role/10003", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, ProjectRoleDetail{
+			Name: "Developers",
+			Actors: []RoleActor{
+				{
+					ID:          2,
+					DisplayName: "Bob Dev",
+					Type:        "atlassian-user-role-actor",
+					ActorUser:   &RoleActorUser{AccountID: "bob-id"},
+				},
+				{
+					ID:          3,
+					DisplayName: "dev-group",
+					Type:        "atlassian-group-role-actor",
+					ActorGroup:  &RoleActorGroup{GroupID: "group-1", Name: "dev-group"},
+				},
+			},
+		})
+	})
+
+	actors, err := client.GetProjectRoleActors(ctx, "PROJ")
+	require.NoError(t, err)
+
+	assert.True(t, actors["Administrators"].DirectUsers["alice-id"],
+		"alice should be a direct Administrators user")
+	assert.True(t, actors["Developers"].DirectUsers["bob-id"],
+		"bob should be a direct Developers user")
+	assert.Equal(t, []string{"group-1"}, actors["Developers"].GroupIDs,
+		"dev-group should be listed in Developers GroupIDs")
+	assert.Empty(t, actors["Administrators"].GroupIDs,
+		"Administrators should have no group actors")
+}
+
+func TestGetProjectRoleActors_Error(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/project/BADPROJ/role", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"No project could be found with key 'BADPROJ'"},
+		})
+	})
+
+	_, err := client.GetProjectRoleActors(ctx, "BADPROJ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list project roles")
+}
+
+// ---------------------------------------------------------------------------
+// GetUserGroups
+// ---------------------------------------------------------------------------
+
+func TestGetUserGroups(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/user/groups", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "user-123", r.URL.Query().Get("accountId"))
+		writeJSON(t, w, http.StatusOK, []UserGroupInfo{
+			{Name: "developers", GroupID: "group-dev-1", Self: "https://example.com/group/1"},
+			{Name: "jira-users", GroupID: "group-all-2", Self: "https://example.com/group/2"},
+		})
+	})
+
+	groups, err := client.GetUserGroups(ctx, "user-123")
+	require.NoError(t, err)
+	assert.Len(t, groups, 2)
+	assert.Equal(t, "developers", groups[0].Name)
+	assert.Equal(t, "group-dev-1", groups[0].GroupID)
+	assert.Equal(t, "jira-users", groups[1].Name)
+	assert.Equal(t, "group-all-2", groups[1].GroupID)
+}
+
+func TestGetUserGroups_Error(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/user/groups", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"User not found"},
+		})
+	})
+
+	_, err := client.GetUserGroups(ctx, "nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get user groups")
+}
+
+func TestGetUserGroups_Empty(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/user/groups", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []UserGroupInfo{})
+	})
+
+	groups, err := client.GetUserGroups(ctx, "user-no-groups")
+	require.NoError(t, err)
+	assert.Empty(t, groups)
 }
