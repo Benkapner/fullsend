@@ -18,17 +18,16 @@ import (
 
 func newPollCmd() *cobra.Command {
 	var (
-		forgeFlag    string
-		inputDriver  string
-		projectPath  string
-		gitlabURL    string
-		outputPath   string
-		pollModeFlag string
-		fullsendDir  string
-		jiraURL      string
-		jiraProject  string
-		jqlOverride  string
-		targetRepo   string
+		forgeFlag   string
+		inputDriver string
+		projectPath string
+		gitlabURL   string
+		outputPath  string
+		fullsendDir string
+		jiraURL     string
+		jiraProject string
+		jqlOverride string
+		targetRepo  string
 	)
 
 	cmd := &cobra.Command{
@@ -54,8 +53,6 @@ func newPollCmd() *cobra.Command {
 			if projectPath == "" {
 				return fmt.Errorf("--project or CI_PROJECT_PATH is required")
 			}
-
-			slashCommandsOnly := pollModeFlag == "fast" || os.Getenv("FULLSEND_POLL_MODE") == "fast"
 
 			glClient, err := gitlab.New(forgeToken, gitlab.WithBaseURL(gitlabURL))
 			if err != nil {
@@ -83,12 +80,11 @@ func newPollCmd() *cobra.Command {
 			}
 
 			opts := poll.Options{
-				SlashCommandsOnly: slashCommandsOnly,
-				BotUserID:         botUserID,
-				GitLabURL:         gitlabURL,
-				PipelineRef:       pipelineRef,
-				PollJobURL:        os.Getenv("CI_JOB_URL"),
-				DispatchSecret:    os.Getenv("FULLSEND_DISPATCH_SECRET"),
+				BotUserID:      botUserID,
+				GitLabURL:      gitlabURL,
+				PipelineRef:    pipelineRef,
+				PollJobURL:     os.Getenv("CI_JOB_URL"),
+				DispatchSecret: os.Getenv("FULLSEND_DISPATCH_SECRET"),
 			}
 
 			poller := poll.New(pollClient, router, projectPath, opts)
@@ -101,7 +97,6 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH)")
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
 	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; ignored by --forge gitlab)")
-	cmd.Flags().StringVar(&pollModeFlag, "poll-mode", "", "Poll mode: fast (slash commands only) or full")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL)")
