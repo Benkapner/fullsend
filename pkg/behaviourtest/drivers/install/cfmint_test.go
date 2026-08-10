@@ -11,94 +11,42 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
-func TestCFMintConfig_Enabled(t *testing.T) {
+func TestPreviewMintURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		pemDir  string
-		enabled bool
-	}{
-		{"empty PEM dir", "", false},
-		{"non-empty PEM dir", "/tmp/pems", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := cfMintConfig{PEMDir: tt.pemDir}
-			assert.Equal(t, tt.enabled, cfg.enabled())
-		})
-	}
-}
-
-func TestCFMintConfig_EffectiveWorkerName(t *testing.T) {
-	tests := []struct {
-		name       string
-		workerName string
-		want       string
-	}{
-		{"default", "", "fullsend-mint"},
-		{"custom", "my-worker", "my-worker"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := cfMintConfig{WorkerName: tt.workerName}
-			assert.Equal(t, tt.want, cfg.effectiveWorkerName())
-		})
-	}
-}
-
-func TestCFMintConfig_PreviewMintURL(t *testing.T) {
-	tests := []struct {
-		name       string
-		workerName string
-		alias      string
-		want       string
+		name  string
+		alias string
+		want  string
 	}{
 		{
-			name:  "default worker",
+			name:  "standard alias",
 			alias: "bt-abc12345",
 			want:  "https://bt-abc12345-fullsend-mint.workers.dev",
 		},
 		{
-			name:       "custom worker",
-			workerName: "my-mint",
-			alias:      "bt-deadbeef",
-			want:       "https://bt-deadbeef-my-mint.workers.dev",
+			name:  "another alias",
+			alias: "bt-deadbeef",
+			want:  "https://bt-deadbeef-fullsend-mint.workers.dev",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := cfMintConfig{WorkerName: tt.workerName}
-			assert.Equal(t, tt.want, cfg.previewMintURL(tt.alias))
+			assert.Equal(t, tt.want, previewMintURL(tt.alias))
 		})
 	}
 }
 
 func TestNewCFMintConfig(t *testing.T) {
 	e2eCfg := e2etest.EnvConfig{
-		CFMintPEMDir:               "/ci/pems",
-		CFMintAllowedOrgs:          "test-org",
-		CFMintPerRepoWIFRepos:      "test-org/repo-a,test-org/repo-b",
-		CFMintWorkerName:           "custom-mint",
-		CFMintAppSet:               "test-apps",
-		CFMintRoles:                "triage,coder",
-		CFMintWorkflowHostRepos:    "org/repo",
-		CFMintAllowedWorkflowFiles: "dispatch.yml",
+		CFMintPEMDir: "/ci/pems",
 	}
 
 	cfg := newCFMintConfig(e2eCfg)
 	assert.Equal(t, "/ci/pems", cfg.PEMDir)
-	assert.Equal(t, "test-org", cfg.AllowedOrgs)
-	assert.Equal(t, "test-org/repo-a,test-org/repo-b", cfg.PerRepoWIFRepos)
-	assert.Equal(t, "custom-mint", cfg.WorkerName)
-	assert.Equal(t, "test-apps", cfg.AppSet)
-	assert.Equal(t, "triage,coder", cfg.Roles)
-	assert.Equal(t, "org/repo", cfg.WorkflowHostRepos)
-	assert.Equal(t, "dispatch.yml", cfg.AllowedWorkflowFiles)
-	assert.True(t, cfg.enabled())
 }
 
-func TestNewCFMintConfig_Disabled(t *testing.T) {
+func TestNewCFMintConfig_Empty(t *testing.T) {
 	cfg := newCFMintConfig(e2etest.EnvConfig{})
-	assert.False(t, cfg.enabled())
+	assert.Empty(t, cfg.PEMDir)
 }
 
 func TestGeneratePreviewAlias(t *testing.T) {
@@ -123,7 +71,7 @@ func TestBuildPerRepoWIFRepos(t *testing.T) {
 	assert.Equal(t, "halfsend-01/test-repo-12", repos[btPoolSize-1])
 }
 
-func TestDeployCFMint_FullArgs(t *testing.T) {
+func TestDeployCFMint_Args(t *testing.T) {
 	// Verify that deployCFMint passes the correct CLI arguments.
 	var capturedArgs []string
 	stubCLI := func(binary, token string, args ...string) (string, error) {
@@ -131,22 +79,12 @@ func TestDeployCFMint_FullArgs(t *testing.T) {
 		return "", nil
 	}
 
-	cfg := cfMintConfig{
-		PEMDir:               "/ci/pems",
-		AllowedOrgs:          "my-org",
-		PerRepoWIFRepos:      "my-org/repo-a",
-		WorkerName:           "custom-mint",
-		AppSet:               "test-apps",
-		Roles:                "triage,coder",
-		WorkflowHostRepos:    "fullsend-ai/fullsend",
-		AllowedWorkflowFiles: "dispatch.yml",
-	}
-
+	cfg := cfMintConfig{PEMDir: "/ci/pems"}
 	url, err := deployCFMint("/bin/fullsend", "tok", cfg, "bt-test1234", "my-org", stubCLI, t.Logf)
 	require.NoError(t, err)
-	assert.Equal(t, "https://bt-test1234-custom-mint.workers.dev", url)
+	assert.Equal(t, "https://bt-test1234-fullsend-mint.workers.dev", url)
 
-	// Verify key arguments.
+	// Verify all arguments.
 	assert.Contains(t, capturedArgs, "mint")
 	assert.Contains(t, capturedArgs, "deploy")
 	assert.Contains(t, capturedArgs, "--platform")
@@ -158,47 +96,9 @@ func TestDeployCFMint_FullArgs(t *testing.T) {
 	assert.Contains(t, capturedArgs, "--allowed-orgs")
 	assert.Contains(t, capturedArgs, "my-org")
 	assert.Contains(t, capturedArgs, "--per-repo-wif-repos")
-	assert.Contains(t, capturedArgs, "my-org/repo-a")
-	assert.Contains(t, capturedArgs, "--worker-name")
-	assert.Contains(t, capturedArgs, "custom-mint")
-	assert.Contains(t, capturedArgs, "--app-set")
-	assert.Contains(t, capturedArgs, "test-apps")
-	assert.Contains(t, capturedArgs, "--roles")
-	assert.Contains(t, capturedArgs, "triage,coder")
-	assert.Contains(t, capturedArgs, "--workflow-host-repos")
-	assert.Contains(t, capturedArgs, "fullsend-ai/fullsend")
-	assert.Contains(t, capturedArgs, "--allowed-workflow-files")
-	assert.Contains(t, capturedArgs, "dispatch.yml")
-}
-
-func TestDeployCFMint_MinimalArgs(t *testing.T) {
-	// When optional fields are empty, only required flags are passed.
-	var capturedArgs []string
-	stubCLI := func(binary, token string, args ...string) (string, error) {
-		capturedArgs = args
-		return "", nil
-	}
-
-	cfg := cfMintConfig{PEMDir: "/ci/pems"}
-	url, err := deployCFMint("/bin/fullsend", "tok", cfg, "bt-abcd0123", "pool-org", stubCLI, t.Logf)
-	require.NoError(t, err)
-	assert.Equal(t, "https://bt-abcd0123-fullsend-mint.workers.dev", url)
-
-	// Required flags present.
-	assert.Contains(t, capturedArgs, "--pem-dir")
-	assert.Contains(t, capturedArgs, "--allowed-orgs")
-	assert.Contains(t, capturedArgs, "pool-org")
-	assert.Contains(t, capturedArgs, "--per-repo-wif-repos")
-
-	// Optional flags absent.
-	for _, flag := range []string{"--worker-name", "--app-set", "--roles", "--workflow-host-repos", "--allowed-workflow-files"} {
-		assert.NotContains(t, capturedArgs, flag,
-			"optional flag %s should not be present when empty", flag)
-	}
 }
 
 func TestDeployCFMint_AutoGeneratesPerRepoWIFRepos(t *testing.T) {
-	// When PerRepoWIFRepos is empty, deployCFMint auto-generates from org.
 	var capturedArgs []string
 	stubCLI := func(binary, token string, args ...string) (string, error) {
 		capturedArgs = args
@@ -223,7 +123,7 @@ func TestDeployCFMint_AutoGeneratesPerRepoWIFRepos(t *testing.T) {
 	assert.Equal(t, "halfsend-05/test-repo-01", repos[0])
 }
 
-func TestDeployCFMint_DefaultsAllowedOrgsToOrg(t *testing.T) {
+func TestDeployCFMint_AllowedOrgsIsAcquiredOrg(t *testing.T) {
 	var capturedArgs []string
 	stubCLI := func(binary, token string, args ...string) (string, error) {
 		capturedArgs = args
@@ -242,7 +142,7 @@ func TestDeployCFMint_DefaultsAllowedOrgsToOrg(t *testing.T) {
 			break
 		}
 	}
-	assert.Equal(t, "halfsend-03", allowedOrgs, "should default to the acquired org")
+	assert.Equal(t, "halfsend-03", allowedOrgs, "should use the acquired org")
 }
 
 func TestDeployCFMint_Error(t *testing.T) {
@@ -264,8 +164,7 @@ func TestTeardownCFMint_OK(t *testing.T) {
 		return "", nil
 	}
 
-	cfg := cfMintConfig{WorkerName: "custom-mint"}
-	err := teardownCFMint("/bin/fullsend", "tok", cfg, "bt-tear0000", stubCLI, t.Logf)
+	err := teardownCFMint("/bin/fullsend", "tok", "bt-tear0000", stubCLI, t.Logf)
 	require.NoError(t, err)
 
 	assert.Contains(t, capturedArgs, "mint")
@@ -275,23 +174,6 @@ func TestTeardownCFMint_OK(t *testing.T) {
 	assert.Contains(t, capturedArgs, "--preview")
 	assert.Contains(t, capturedArgs, "bt-tear0000")
 	assert.Contains(t, capturedArgs, "--yolo")
-	assert.Contains(t, capturedArgs, "--worker-name")
-	assert.Contains(t, capturedArgs, "custom-mint")
-}
-
-func TestTeardownCFMint_DefaultWorkerName(t *testing.T) {
-	var capturedArgs []string
-	stubCLI := func(binary, token string, args ...string) (string, error) {
-		capturedArgs = args
-		return "", nil
-	}
-
-	cfg := cfMintConfig{}
-	err := teardownCFMint("/bin/fullsend", "tok", cfg, "bt-tear0001", stubCLI, t.Logf)
-	require.NoError(t, err)
-
-	assert.NotContains(t, capturedArgs, "--worker-name",
-		"should not pass --worker-name when empty (CLI uses default)")
 }
 
 func TestTeardownCFMint_Error(t *testing.T) {
@@ -299,8 +181,7 @@ func TestTeardownCFMint_Error(t *testing.T) {
 		return "", fmt.Errorf("delete failed")
 	}
 
-	cfg := cfMintConfig{}
-	err := teardownCFMint("/bin/fullsend", "tok", cfg, "bt-err00001", stubCLI, t.Logf)
+	err := teardownCFMint("/bin/fullsend", "tok", "bt-err00001", stubCLI, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint delete")
 	assert.Contains(t, err.Error(), "delete failed")
@@ -317,14 +198,4 @@ func TestPerRepoState_MintURL(t *testing.T) {
 	// Verify MintURLProvider interface.
 	var provider MintURLProvider = st
 	assert.Equal(t, st.MintURL(), provider.MintURL())
-}
-
-func TestPerRepoState_MintURL_Legacy(t *testing.T) {
-	// When no CF mint is used, MintURL holds the configured value.
-	st := &perRepoState{
-		org:     "org",
-		repo:    "repo",
-		mintURL: "https://hosted-mint.example.com",
-	}
-	assert.Equal(t, "https://hosted-mint.example.com", st.MintURL())
 }

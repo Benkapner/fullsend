@@ -24,9 +24,9 @@ const (
 )
 
 // perRepoDriver installs fullsend in per-repo mode via fullsend github setup.
-// When cfMint is enabled (PEMDir non-empty), Install deploys a temporary
-// Cloudflare Worker preview mint and uses the derived preview URL as the
-// mint endpoint for github setup. Teardown abandons the preview alias.
+// Install deploys a temporary Cloudflare Worker preview mint (using PEMs
+// materialized from TEST_*_PEM env vars) and uses the derived preview URL
+// as the mint endpoint for github setup. Teardown abandons the preview alias.
 type perRepoDriver struct {
 	e2eCfg       e2etest.EnvConfig
 	client       forge.Client
@@ -34,7 +34,7 @@ type perRepoDriver struct {
 	binary       string
 	logf         func(string, ...any)
 	cfMint       cfMintConfig
-	previewAlias string // set during Install when cfMint is enabled
+	previewAlias string // set during Install
 }
 
 type perRepoState struct {
@@ -76,21 +76,16 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 	repo := perRepoTestRepo
 	target := org + "/" + repo
 
-	// Determine the effective mint URL. When CF mint is configured,
-	// deploy a temporary preview mint and use its URL.
-	mintURL := d.e2eCfg.MintURL
-	if d.cfMint.enabled() {
-		alias, err := generatePreviewAlias()
-		if err != nil {
-			return nil, err
-		}
-		d.previewAlias = alias
+	// Deploy a temporary CF preview mint and use its URL.
+	alias, err := generatePreviewAlias()
+	if err != nil {
+		return nil, err
+	}
+	d.previewAlias = alias
 
-		url, err := deployCFMint(d.binary, d.token, d.cfMint, alias, org, e2etest.TryRunCLI, d.logf)
-		if err != nil {
-			return nil, fmt.Errorf("deploying CF preview mint for BT: %w", err)
-		}
-		mintURL = url
+	mintURL, err := deployCFMint(d.binary, d.token, d.cfMint, alias, org, e2etest.TryRunCLI, d.logf)
+	if err != nil {
+		return nil, fmt.Errorf("deploying CF preview mint for BT: %w", err)
 	}
 
 	args := []string{
@@ -175,9 +170,9 @@ func (d *perRepoDriver) Teardown(ctx context.Context, org string, state State) e
 	d.logf("[install] tearing down per-repo install on %s/%s", org, repo)
 	e2etest.TeardownPerRepoInstall(ctx, d.client, d.token, org, repo, d.logf)
 
-	// Tear down the CF preview mint if one was deployed during Install.
-	if d.cfMint.enabled() && d.previewAlias != "" {
-		if err := teardownCFMint(d.binary, d.token, d.cfMint, d.previewAlias, e2etest.TryRunCLI, d.logf); err != nil {
+	// Tear down the CF preview mint deployed during Install.
+	if d.previewAlias != "" {
+		if err := teardownCFMint(d.binary, d.token, d.previewAlias, e2etest.TryRunCLI, d.logf); err != nil {
 			// Log but don't fail — the preview is ephemeral and will
 			// expire. A teardown failure should not mask test results.
 			d.logf("[install] CF preview mint teardown failed: %v", err)

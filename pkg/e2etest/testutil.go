@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -314,17 +315,11 @@ type envConfig struct {
 	wifProvider  string
 	lockTimeout  time.Duration
 
-	// Cloudflare Worker mint configuration for behaviour tests.
-	// When cfMintPEMDir is non-empty, the BT driver deploys a temporary
-	// CF preview mint instead of using the hosted GCP mint.
-	cfMintPEMDir               string
-	cfMintAllowedOrgs          string
-	cfMintPerRepoWIFRepos      string
-	cfMintWorkerName           string
-	cfMintAppSet               string
-	cfMintRoles                string
-	cfMintWorkflowHostRepos    string
-	cfMintAllowedWorkflowFiles string
+	// cfMintPEMDir is a temp directory containing {role}.pem files
+	// materialized from the TEST_*_PEM environment variables provided by
+	// the CI workflow. When non-empty, the BT install driver deploys a
+	// temporary CF preview mint using these PEMs.
+	cfMintPEMDir string
 }
 
 // EnvConfig is the exported view of envConfig for behaviour tests.
@@ -335,55 +330,32 @@ type EnvConfig struct {
 	WIFProvider  string
 	LockTimeout  time.Duration
 
-	// CFMint* fields configure a temporary Cloudflare Worker mint for
-	// behaviour tests. When CFMintPEMDir is non-empty, the BT install
-	// driver deploys a CF preview mint via "fullsend mint deploy
-	// --platform=cloudflare --preview=<alias>" and uses the derived
-	// preview URL as the mint endpoint. The preview is torn down via
-	// "fullsend mint delete" on teardown.
-	CFMintPEMDir               string // E2E_CF_MINT_PEM_DIR: directory with {role}.pem files
-	CFMintAllowedOrgs          string // E2E_CF_MINT_ALLOWED_ORGS: comma-separated (defaults to acquired org)
-	CFMintPerRepoWIFRepos      string // E2E_CF_MINT_PER_REPO_WIF_REPOS: comma-separated (defaults to pool repos)
-	CFMintWorkerName           string // E2E_CF_MINT_WORKER_NAME: defaults to "fullsend-mint"
-	CFMintAppSet               string // E2E_CF_MINT_APP_SET: defaults to CLI default
-	CFMintRoles                string // E2E_CF_MINT_ROLES: comma-separated role names
-	CFMintWorkflowHostRepos    string // E2E_CF_MINT_WORKFLOW_HOST_REPOS: defaults to CLI default
-	CFMintAllowedWorkflowFiles string // E2E_CF_MINT_ALLOWED_WORKFLOW_FILES: defaults to * for preview
+	// CFMintPEMDir is a temp directory with {role}.pem files written from
+	// the TEST_*_PEM env vars the CI workflow provides. When non-empty,
+	// the BT install driver deploys a CF preview mint and uses the
+	// derived preview URL as the mint endpoint.
+	CFMintPEMDir string
 }
 
 func (c envConfig) exported() EnvConfig {
 	return EnvConfig{
-		MintURL:                    c.mintURL,
-		UseMint:                    c.useMint,
-		GCPProjectID:               c.gcpProjectID,
-		WIFProvider:                c.wifProvider,
-		LockTimeout:                c.lockTimeout,
-		CFMintPEMDir:               c.cfMintPEMDir,
-		CFMintAllowedOrgs:          c.cfMintAllowedOrgs,
-		CFMintPerRepoWIFRepos:      c.cfMintPerRepoWIFRepos,
-		CFMintWorkerName:           c.cfMintWorkerName,
-		CFMintAppSet:               c.cfMintAppSet,
-		CFMintRoles:                c.cfMintRoles,
-		CFMintWorkflowHostRepos:    c.cfMintWorkflowHostRepos,
-		CFMintAllowedWorkflowFiles: c.cfMintAllowedWorkflowFiles,
+		MintURL:      c.mintURL,
+		UseMint:      c.useMint,
+		GCPProjectID: c.gcpProjectID,
+		WIFProvider:  c.wifProvider,
+		LockTimeout:  c.lockTimeout,
+		CFMintPEMDir: c.cfMintPEMDir,
 	}
 }
 
 func (c EnvConfig) internal() envConfig {
 	return envConfig{
-		mintURL:                    c.MintURL,
-		useMint:                    c.UseMint,
-		gcpProjectID:               c.GCPProjectID,
-		wifProvider:                c.WIFProvider,
-		lockTimeout:                c.LockTimeout,
-		cfMintPEMDir:               c.CFMintPEMDir,
-		cfMintAllowedOrgs:          c.CFMintAllowedOrgs,
-		cfMintPerRepoWIFRepos:      c.CFMintPerRepoWIFRepos,
-		cfMintWorkerName:           c.CFMintWorkerName,
-		cfMintAppSet:               c.CFMintAppSet,
-		cfMintRoles:                c.CFMintRoles,
-		cfMintWorkflowHostRepos:    c.CFMintWorkflowHostRepos,
-		cfMintAllowedWorkflowFiles: c.CFMintAllowedWorkflowFiles,
+		mintURL:      c.MintURL,
+		useMint:      c.UseMint,
+		gcpProjectID: c.GCPProjectID,
+		wifProvider:  c.WIFProvider,
+		lockTimeout:  c.LockTimeout,
+		cfMintPEMDir: c.CFMintPEMDir,
 	}
 }
 
@@ -424,16 +396,50 @@ func loadEnvConfig(t *testing.T) envConfig {
 		gcpProjectID: gcpProjectID,
 		wifProvider:  wifProvider,
 		lockTimeout:  lockTimeout,
-
-		cfMintPEMDir:               os.Getenv("E2E_CF_MINT_PEM_DIR"),
-		cfMintAllowedOrgs:          os.Getenv("E2E_CF_MINT_ALLOWED_ORGS"),
-		cfMintPerRepoWIFRepos:      os.Getenv("E2E_CF_MINT_PER_REPO_WIF_REPOS"),
-		cfMintWorkerName:           os.Getenv("E2E_CF_MINT_WORKER_NAME"),
-		cfMintAppSet:               os.Getenv("E2E_CF_MINT_APP_SET"),
-		cfMintRoles:                os.Getenv("E2E_CF_MINT_ROLES"),
-		cfMintWorkflowHostRepos:    os.Getenv("E2E_CF_MINT_WORKFLOW_HOST_REPOS"),
-		cfMintAllowedWorkflowFiles: os.Getenv("E2E_CF_MINT_ALLOWED_WORKFLOW_FILES"),
+		cfMintPEMDir: setupCFMintPEMDir(t),
 	}
+}
+
+// pemRoleEnvVars maps PEM role names to the environment variables the CI
+// workflow already provides (TEST_*_PEM secrets wired in e2e.yml).
+var pemRoleEnvVars = map[string]string{
+	"fullsend":   "TEST_FULLSEND_PEM",
+	"triage":     "TEST_TRIAGE_PEM",
+	"coder":      "TEST_CODER_PEM",
+	"review":     "TEST_REVIEW_PEM",
+	"retro":      "TEST_RETRO_PEM",
+	"prioritize": "TEST_PRIORITIZE_PEM",
+}
+
+// setupCFMintPEMDir materializes TEST_*_PEM environment variables into
+// {role}.pem files inside a temporary directory. Returns the directory
+// path, or "" when no PEM env vars are set (e.g. local dev).
+func setupCFMintPEMDir(t *testing.T) string {
+	t.Helper()
+
+	var found bool
+	for _, envVar := range pemRoleEnvVars {
+		if os.Getenv(envVar) != "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+
+	dir := t.TempDir()
+	for role, envVar := range pemRoleEnvVars {
+		pem := os.Getenv(envVar)
+		if pem == "" {
+			continue
+		}
+		path := filepath.Join(dir, role+".pem")
+		if err := os.WriteFile(path, []byte(pem), 0600); err != nil {
+			t.Fatalf("writing PEM file %s: %v", path, err)
+		}
+	}
+	return dir
 }
 
 // newLiveClient creates a GitHub API client from the token.
