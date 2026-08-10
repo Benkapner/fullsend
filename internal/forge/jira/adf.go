@@ -1,9 +1,9 @@
 package jira
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -23,14 +23,28 @@ import (
 // vanishing outright — ADF has no equivalent node for most of them, but
 // dropping the content entirely would silently lose whatever a caller
 // wrote (e.g. this repo's own <details> convention for collapsing output).
-func MarkdownToADF(source string) map[string]any {
-	src := truncateForParse([]byte(source))
+//
+// Returns an error, rather than a partial or empty result, if source is
+// over maxMarkdownParseBytes or if it converts to no ADF content at all
+// (e.g. markdown that's nothing but a chain of nested blockquotes deeper
+// than maxADFWriteDepth): callers write the result straight to Jira, and
+// silently posting a truncated or visibly empty comment is worse than
+// failing the write.
+func MarkdownToADF(source string) (map[string]any, error) {
+	src := []byte(source)
+	if len(src) > maxMarkdownParseBytes {
+		return nil, fmt.Errorf("markdown body is %d bytes, over the %d byte limit", len(src), maxMarkdownParseBytes)
+	}
 	doc := goldmark.DefaultParser().Parse(text.NewReader(src))
+	content := adfBlockContent(doc, src, 0, false)
+	if len(content) == 0 {
+		return nil, fmt.Errorf("markdown body converted to no ADF content")
+	}
 	return map[string]any{
 		"version": 1,
 		"type":    "doc",
-		"content": adfBlockContent(doc, src, 0, false),
-	}
+		"content": content,
+	}, nil
 }
 
 // maxADFWriteDepth caps how deep adfBlockContent/convertBlockNode/
@@ -43,30 +57,18 @@ func MarkdownToADF(source string) map[string]any {
 // happens.
 const maxADFWriteDepth = 50
 
-// maxMarkdownParseBytes caps the input size MarkdownToADF hands to
-// goldmark.Parse(). maxADFWriteDepth above only bounds the post-parse AST
-// walk; Parse() itself is the actual bottleneck for adversarial input —
-// benchmarking showed it costs ~O(N^2) on deeply nested blockquotes
-// (~3.2s to parse 80,000 nesting levels, i.e. 160KB), independent of and
-// unreached by the walk-depth cap. This limit keeps worst-case parse time
-// to roughly a few hundred milliseconds even for pathologically nested
-// input, while comfortably fitting any realistically hand-written comment
-// or issue description.
+// maxMarkdownParseBytes caps the input size MarkdownToADF will parse.
+// maxADFWriteDepth above only bounds the post-parse AST walk; Parse()
+// itself is the actual bottleneck for adversarial input — benchmarking
+// showed it costs ~O(N^2) on deeply nested blockquotes (~3.2s to parse
+// 80,000 nesting levels, i.e. 160KB), independent of and unreached by the
+// walk-depth cap. Rejecting oversized input outright keeps worst-case
+// parse time to roughly a few hundred milliseconds even for
+// pathologically nested input, while comfortably fitting any
+// realistically hand-written comment or issue description; MarkdownToADF
+// documents the limit for callers that may feed it larger,
+// machine-generated bodies.
 const maxMarkdownParseBytes = 32 * 1024
-
-// truncateForParse trims src to maxMarkdownParseBytes, walking back to a
-// valid UTF-8 rune boundary so truncation can't split a multi-byte
-// character.
-func truncateForParse(src []byte) []byte {
-	if len(src) <= maxMarkdownParseBytes {
-		return src
-	}
-	cut := maxMarkdownParseBytes
-	for cut > 0 && !utf8.RuneStart(src[cut]) {
-		cut--
-	}
-	return src[:cut]
-}
 
 // adfBlockContent converts each block-level child of parent into zero or
 // more ADF block nodes (a child can expand to several siblings, e.g. a

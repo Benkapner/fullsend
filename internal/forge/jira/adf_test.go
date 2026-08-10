@@ -27,12 +27,24 @@ func asSlice(t *testing.T, v any) []any {
 	return s
 }
 
+// mustADF calls MarkdownToADF and fails the test if it returns an error,
+// for the vast majority of test cases that expect src to convert
+// successfully.
+func mustADF(t *testing.T, src string) map[string]any {
+	t.Helper()
+	doc, err := MarkdownToADF(src)
+	if err != nil {
+		t.Fatalf("MarkdownToADF(%q) returned unexpected error: %v", src, err)
+	}
+	return doc
+}
+
 // ---------------------------------------------------------------------------
 // MarkdownToADF
 // ---------------------------------------------------------------------------
 
 func TestMarkdownToADF_PlainParagraph(t *testing.T) {
-	doc := MarkdownToADF("hello world")
+	doc := mustADF(t, "hello world")
 
 	if doc["type"] != "doc" {
 		t.Errorf("doc type = %v, want %q", doc["type"], "doc")
@@ -60,7 +72,7 @@ func TestMarkdownToADF_PlainParagraph(t *testing.T) {
 }
 
 func TestMarkdownToADF_ResolvesBackslashEscapesAndEntities(t *testing.T) {
-	doc := MarkdownToADF(`\*not em\* and &copy; and &amp;`)
+	doc := mustADF(t, `\*not em\* and &copy; and &amp;`)
 
 	para := asMap(t, asSlice(t, doc["content"])[0])
 	nodes := asSlice(t, para["content"])
@@ -77,7 +89,7 @@ func TestMarkdownToADF_ResolvesBackslashEscapesAndEntities(t *testing.T) {
 }
 
 func TestMarkdownToADF_CodeSpanKeepsBackslashesLiteral(t *testing.T) {
-	doc := MarkdownToADF("`\\*literal\\*`")
+	doc := mustADF(t, "`\\*literal\\*`")
 
 	para := asMap(t, asSlice(t, doc["content"])[0])
 	nodes := asSlice(t, para["content"])
@@ -89,7 +101,7 @@ func TestMarkdownToADF_CodeSpanKeepsBackslashesLiteral(t *testing.T) {
 }
 
 func TestMarkdownToADF_MultipleParagraphs(t *testing.T) {
-	doc := MarkdownToADF("first\n\nsecond")
+	doc := mustADF(t, "first\n\nsecond")
 
 	content := asSlice(t, doc["content"])
 	if len(content) != 2 {
@@ -107,7 +119,7 @@ func TestMarkdownToADF_MultipleParagraphs(t *testing.T) {
 func TestMarkdownToADF_HeadingLevels(t *testing.T) {
 	for level := 1; level <= 6; level++ {
 		src := strings.Repeat("#", level) + " Heading"
-		doc := MarkdownToADF(src)
+		doc := mustADF(t, src)
 		content := asSlice(t, doc["content"])
 		if len(content) != 1 {
 			t.Fatalf("level %d: doc content len = %d, want 1", level, len(content))
@@ -125,7 +137,7 @@ func TestMarkdownToADF_HeadingLevels(t *testing.T) {
 }
 
 func TestMarkdownToADF_BoldItalicInlineCode(t *testing.T) {
-	doc := MarkdownToADF("**bold** and *italic* and `code`")
+	doc := mustADF(t, "**bold** and *italic* and `code`")
 
 	para := asMap(t, asSlice(t, doc["content"])[0])
 	nodes := asSlice(t, para["content"])
@@ -170,7 +182,7 @@ func TestMarkdownToADF_BoldItalicInlineCode(t *testing.T) {
 }
 
 func TestMarkdownToADF_BoldInlineCodeDoesNotCombineMarks(t *testing.T) {
-	doc := MarkdownToADF("**`--flag`**")
+	doc := mustADF(t, "**`--flag`**")
 
 	para := asMap(t, asSlice(t, doc["content"])[0])
 	nodes := asSlice(t, para["content"])
@@ -205,7 +217,7 @@ func TestMarkdownToADF_BoldInlineCodeDoesNotCombineMarks(t *testing.T) {
 }
 
 func TestMarkdownToADF_FencedCodeBlockWithLanguage(t *testing.T) {
-	doc := MarkdownToADF("```go\nfmt.Println(\"hi\")\n```")
+	doc := mustADF(t, "```go\nfmt.Println(\"hi\")\n```")
 
 	content := asSlice(t, doc["content"])
 	if len(content) != 1 {
@@ -227,7 +239,7 @@ func TestMarkdownToADF_FencedCodeBlockWithLanguage(t *testing.T) {
 }
 
 func TestMarkdownToADF_EmptyFencedCodeBlock(t *testing.T) {
-	doc := MarkdownToADF("```\n```")
+	doc := mustADF(t, "```\n```")
 
 	content := asSlice(t, doc["content"])
 	if len(content) != 1 {
@@ -247,7 +259,7 @@ func TestMarkdownToADF_EmptyFencedCodeBlock(t *testing.T) {
 }
 
 func TestMarkdownToADF_BulletList(t *testing.T) {
-	doc := MarkdownToADF("- one\n- two\n")
+	doc := mustADF(t, "- one\n- two\n")
 
 	content := asSlice(t, doc["content"])
 	list := asMap(t, content[0])
@@ -272,7 +284,7 @@ func TestMarkdownToADF_BulletList(t *testing.T) {
 }
 
 func TestMarkdownToADF_OrderedListNonOneStart(t *testing.T) {
-	doc := MarkdownToADF("5. five\n6. six\n")
+	doc := mustADF(t, "5. five\n6. six\n")
 
 	content := asSlice(t, doc["content"])
 	list := asMap(t, content[0])
@@ -290,7 +302,7 @@ func TestMarkdownToADF_OrderedListNonOneStart(t *testing.T) {
 }
 
 func TestMarkdownToADF_Blockquote(t *testing.T) {
-	doc := MarkdownToADF("> quoted text")
+	doc := mustADF(t, "> quoted text")
 
 	content := asSlice(t, doc["content"])
 	bq := asMap(t, content[0])
@@ -305,7 +317,7 @@ func TestMarkdownToADF_Blockquote(t *testing.T) {
 }
 
 func TestMarkdownToADF_Link(t *testing.T) {
-	doc := MarkdownToADF("see [the docs](https://example.com/docs)")
+	doc := mustADF(t, "see [the docs](https://example.com/docs)")
 
 	para := asMap(t, asSlice(t, doc["content"])[0])
 	nodes := asSlice(t, para["content"])
@@ -338,7 +350,7 @@ func TestMarkdownToADF_Link(t *testing.T) {
 }
 
 func TestMarkdownToADF_LinkMarkDoesNotLeakToFollowingText(t *testing.T) {
-	doc := MarkdownToADF("before [link](https://example.com) after")
+	doc := mustADF(t, "before [link](https://example.com) after")
 
 	para := asMap(t, asSlice(t, doc["content"])[0])
 	nodes := asSlice(t, para["content"])
@@ -369,7 +381,7 @@ func TestMarkdownToADF_UnknownBlockFallsBackToPlainText(t *testing.T) {
 	// HTML blocks would vanish entirely if posted to Jira. Mirror
 	// walkInline's own default case, which falls back to plain text
 	// rather than losing readable content.
-	doc := MarkdownToADF("before\n\n<details><summary>x</summary>\ny\n</details>\n\nafter")
+	doc := mustADF(t, "before\n\n<details><summary>x</summary>\ny\n</details>\n\nafter")
 
 	content := asSlice(t, doc["content"])
 	var sawFallbackText bool
@@ -420,7 +432,7 @@ func TestMarkdownToADF_LinkRejectsDangerousSchemes(t *testing.T) {
 		"[click me](data:text/html,<script>alert(1)</script>)",
 		"[click me](vbscript:msgbox(1))",
 	} {
-		doc := MarkdownToADF(src)
+		doc := mustADF(t, src)
 		if _, found := linkMarkHref(t, doc); found {
 			t.Errorf("MarkdownToADF(%q) produced a link mark; want the dangerous-scheme href dropped", src)
 		}
@@ -435,7 +447,7 @@ func TestMarkdownToADF_LinkAllowsSafeSchemes(t *testing.T) {
 		{"[section](#section)", "#section"},
 		{"[rel](/path/to/page)", "/path/to/page"},
 	} {
-		doc := MarkdownToADF(tc.src)
+		doc := mustADF(t, tc.src)
 		href, found := linkMarkHref(t, doc)
 		if !found {
 			t.Errorf("MarkdownToADF(%q): expected a link mark, got none", tc.src)
@@ -448,7 +460,7 @@ func TestMarkdownToADF_LinkAllowsSafeSchemes(t *testing.T) {
 }
 
 func TestMarkdownToADF_LinkRejectsProtocolRelativeHost(t *testing.T) {
-	doc := MarkdownToADF("[click me](//evil.example)")
+	doc := mustADF(t, "[click me](//evil.example)")
 	if href, found := linkMarkHref(t, doc); found {
 		t.Errorf("MarkdownToADF(protocol-relative link) produced a link mark with href %q; want it dropped", href)
 	}
@@ -457,7 +469,7 @@ func TestMarkdownToADF_LinkRejectsProtocolRelativeHost(t *testing.T) {
 func TestMarkdownToADF_AutoLinkRejectsDangerousScheme(t *testing.T) {
 	// goldmark's autolink extension isn't enabled by default, so this
 	// exercises the CommonMark <...> autolink form instead.
-	doc := MarkdownToADF("<javascript:alert(1)>")
+	doc := mustADF(t, "<javascript:alert(1)>")
 	if _, found := linkMarkHref(t, doc); found {
 		t.Errorf("MarkdownToADF(autolink with javascript: scheme) produced a link mark; want it dropped")
 	}
@@ -486,7 +498,7 @@ func assertNoEmptyContainers(t *testing.T, node any) {
 }
 
 func TestMarkdownToADF_HeadingInsideBlockquoteDegradesToBoldParagraph(t *testing.T) {
-	doc := MarkdownToADF("> # title")
+	doc := mustADF(t, "> # title")
 
 	bq := asMap(t, asSlice(t, doc["content"])[0])
 	if bq["type"] != "blockquote" {
@@ -518,7 +530,7 @@ func TestMarkdownToADF_HeadingInsideBlockquoteDegradesToBoldParagraph(t *testing
 }
 
 func TestMarkdownToADF_NestedBlockquoteFlattens(t *testing.T) {
-	doc := MarkdownToADF("> > inner")
+	doc := mustADF(t, "> > inner")
 
 	outer := asMap(t, asSlice(t, doc["content"])[0])
 	if outer["type"] != "blockquote" {
@@ -533,7 +545,7 @@ func TestMarkdownToADF_NestedBlockquoteFlattens(t *testing.T) {
 }
 
 func TestMarkdownToADF_HeadingInsideListItemDegradesToBoldParagraph(t *testing.T) {
-	doc := MarkdownToADF("- # h")
+	doc := mustADF(t, "- # h")
 
 	list := asMap(t, asSlice(t, doc["content"])[0])
 	item := asMap(t, asSlice(t, list["content"])[0])
@@ -545,7 +557,7 @@ func TestMarkdownToADF_HeadingInsideListItemDegradesToBoldParagraph(t *testing.T
 }
 
 func TestMarkdownToADF_BlockquoteInsideListItemFlattens(t *testing.T) {
-	doc := MarkdownToADF("- > q")
+	doc := mustADF(t, "- > q")
 
 	list := asMap(t, asSlice(t, doc["content"])[0])
 	item := asMap(t, asSlice(t, list["content"])[0])
@@ -558,7 +570,7 @@ func TestMarkdownToADF_BlockquoteInsideListItemFlattens(t *testing.T) {
 }
 
 func TestMarkdownToADF_ThematicBreakInsideBlockquoteDropped(t *testing.T) {
-	doc := MarkdownToADF("> above\n>\n> ---\n>\n> below")
+	doc := mustADF(t, "> above\n>\n> ---\n>\n> below")
 
 	bq := asMap(t, asSlice(t, doc["content"])[0])
 	if bq["type"] != "blockquote" {
@@ -576,15 +588,44 @@ func TestMarkdownToADF_DeepNestingProducesNoEmptyContainers(t *testing.T) {
 	// The maxADFWriteDepth cutoff truncates a deeply nested blockquote's
 	// content, which — before the container-emptiness check — left an
 	// innermost {"type":"blockquote","content":[]} at the cap boundary:
-	// schema-invalid ADF Jira would reject outright.
+	// schema-invalid ADF Jira would reject outright. A sibling paragraph
+	// keeps the overall doc non-empty despite the nested blockquote
+	// collapsing entirely, so this exercises the container-emptiness
+	// check on its own, independent of MarkdownToADF's separate
+	// empty-doc error (see TestMarkdownToADF_AllContentDroppedReturnsError).
 	const depth = 60 // > maxADFWriteDepth (50)
-	src := strings.Repeat("> ", depth) + "leaf"
-	doc := MarkdownToADF(src)
+	src := strings.Repeat("> ", depth) + "leaf" + "\n\nsibling paragraph"
+	doc := mustADF(t, src)
 	assertNoEmptyContainers(t, doc)
 }
 
+func TestMarkdownToADF_AllContentDroppedReturnsError(t *testing.T) {
+	// A chain of nested blockquotes deeper than maxADFWriteDepth, with no
+	// other top-level content, collapses all the way up to an empty doc:
+	// each level past the cutoff drops its empty container, which empties
+	// its parent, and so on to the top. Posting that to Jira would create
+	// a visibly empty comment with no error. MarkdownToADF must fail
+	// instead of returning {"type":"doc","content":[]}.
+	const depth = 60 // > maxADFWriteDepth (50)
+	src := strings.Repeat("> ", depth) + "leaf"
+
+	_, err := MarkdownToADF(src)
+	if err == nil {
+		t.Error("MarkdownToADF(all-dropped nested blockquotes) returned no error; want one rather than an empty ADF doc")
+	}
+}
+
+func TestMarkdownToADF_OversizedInputReturnsError(t *testing.T) {
+	src := strings.Repeat("a", maxMarkdownParseBytes+1)
+
+	_, err := MarkdownToADF(src)
+	if err == nil {
+		t.Errorf("MarkdownToADF(%d bytes) returned no error; want one for input over the %d byte limit", len(src), maxMarkdownParseBytes)
+	}
+}
+
 func TestMarkdownToADF_ThematicBreak(t *testing.T) {
-	doc := MarkdownToADF("above\n\n---\n\nbelow")
+	doc := mustADF(t, "above\n\n---\n\nbelow")
 
 	content := asSlice(t, doc["content"])
 	if len(content) != 3 {
@@ -600,11 +641,13 @@ func TestMarkdownToADF_DeepNestingIsBounded(t *testing.T) {
 	// Mirrors TestADFToPlainText_DeepNestingIsBounded: MarkdownToADF's
 	// block/inline converters recurse once per markdown nesting level with
 	// no cap, so deeply nested input (e.g. thousands of ">" blockquote
-	// markers) must not be walked to full depth.
+	// markers) must not be walked to full depth. A sibling paragraph keeps
+	// the doc non-empty despite the nested blockquote collapsing entirely
+	// past the depth cap.
 	const depth = 10000
-	src := strings.Repeat("> ", depth) + "leaf"
+	src := strings.Repeat("> ", depth) + "leaf" + "\n\nsibling paragraph"
 
-	doc := MarkdownToADF(src)
+	doc := mustADF(t, src)
 
 	walked := 0
 	content := doc["content"]
@@ -630,13 +673,16 @@ func TestMarkdownToADF_ParseTimeIsBounded(t *testing.T) {
 	// Parse() is ~O(N^2) on deeply nested blockquotes and dominates the
 	// cost long before the walk-depth cap is ever reached (confirmed by
 	// benchmark: 80,000 nesting levels take ~3.2s to parse alone). Without
-	// an input size limit applied before Parse(), MarkdownToADF blocks for
-	// seconds on adversarial input regardless of maxADFWriteDepth.
+	// an input size limit rejected before Parse(), MarkdownToADF blocks
+	// for seconds on adversarial input regardless of maxADFWriteDepth.
+	// This input is well over maxMarkdownParseBytes, so MarkdownToADF
+	// returns an error rather than parsing it at all — both return values
+	// are discarded since this test only cares about timing.
 	const depth = 80000
 	src := strings.Repeat("> ", depth) + "leaf"
 
 	start := time.Now()
-	MarkdownToADF(src)
+	MarkdownToADF(src) //nolint:errcheck // timing-only test, error is expected
 	elapsed := time.Since(start)
 
 	const budget = 750 * time.Millisecond
@@ -646,7 +692,7 @@ func TestMarkdownToADF_ParseTimeIsBounded(t *testing.T) {
 }
 
 func TestMarkdownToADF_HardBreak(t *testing.T) {
-	doc := MarkdownToADF("line one  \nline two")
+	doc := mustADF(t, "line one  \nline two")
 
 	para := asMap(t, asSlice(t, doc["content"])[0])
 	nodes := asSlice(t, para["content"])

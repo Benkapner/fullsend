@@ -468,7 +468,11 @@ type commentRequest struct {
 // converted to ADF before being sent, since Jira Cloud doesn't accept
 // markdown directly.
 func (c *LiveClient) CreateComment(ctx context.Context, issueIDOrKey, body string) (*Comment, error) {
-	reqBody, err := json.Marshal(commentRequest{Body: MarkdownToADF(body)})
+	adf, err := MarkdownToADF(body)
+	if err != nil {
+		return nil, fmt.Errorf("convert comment body to ADF: %w", err)
+	}
+	reqBody, err := json.Marshal(commentRequest{Body: adf})
 	if err != nil {
 		return nil, fmt.Errorf("marshal create comment request: %w", err)
 	}
@@ -484,7 +488,11 @@ func (c *LiveClient) CreateComment(ctx context.Context, issueIDOrKey, body strin
 // markdown; it's converted to ADF before being sent, for the same reason
 // as CreateComment.
 func (c *LiveClient) UpdateComment(ctx context.Context, issueIDOrKey, commentID, body string) error {
-	reqBody, err := json.Marshal(commentRequest{Body: MarkdownToADF(body)})
+	adf, err := MarkdownToADF(body)
+	if err != nil {
+		return fmt.Errorf("convert comment body to ADF: %w", err)
+	}
+	reqBody, err := json.Marshal(commentRequest{Body: adf})
 	if err != nil {
 		return fmt.Errorf("marshal update comment request: %w", err)
 	}

@@ -36,9 +36,13 @@ func (f *fakeJiraClient) ListComments(_ context.Context, issueIDOrKey string) ([
 
 func (f *fakeJiraClient) CreateComment(_ context.Context, issueIDOrKey, body string) (*jira.Comment, error) {
 	f.createdBody = body
+	adf, err := jira.MarkdownToADF(body) // mirrors Jira echoing back the ADF it stored
+	if err != nil {
+		return nil, err
+	}
 	comment := jira.Comment{
 		ID:      "50001",
-		Body:    jira.MarkdownToADF(body), // mirrors Jira echoing back the ADF it stored
+		Body:    adf,
 		Author:  jira.User{DisplayName: "fullsend-bot"},
 		Created: "2026-08-06T00:00:00.000+0000",
 	}
