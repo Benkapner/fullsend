@@ -1047,7 +1047,9 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			}
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, upstreamTag)
+		guardInstalled := guardErr == nil && guardExists && guardVal == "true"
+		meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, upstreamTag,
+			repos.ScaffoldMetadataOpts{GuardInstalled: &guardInstalled})
 		if direct {
 			printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 				owner, repo, targetRepo.DefaultBranch))
@@ -1221,8 +1223,9 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		}
 		return fmt.Errorf("getting repo info: %w", err)
 	}
-	// applyPerRepoScaffold is only called from the vendor path, which
-	// always runs as a fresh install (no upstreamTag available here).
+	// No upstreamTag is available in this code path, so
+	// BuildScaffoldPRMetadata will use the guard variable to distinguish
+	// fresh installs from upgrades without version information.
 	meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, "")
 	if direct {
 		printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",

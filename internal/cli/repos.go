@@ -807,7 +807,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if repoErr != nil {
 				return fmt.Errorf("getting repo info: %w", repoErr)
 			}
-			meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
+			// Repos in the upgrade path are already known to be installed
+			// (they come from alreadyInstalled), so skip the redundant
+			// guard-variable API call.
+			guardInstalled := true
+			meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag,
+				repos.ScaffoldMetadataOpts{GuardInstalled: &guardInstalled})
 			_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
 				targetRepo.DefaultBranch, meta, files, isDirect, nil)
 			return commitErr

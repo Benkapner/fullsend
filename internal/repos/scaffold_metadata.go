@@ -18,8 +18,9 @@ type ScaffoldPRMetadata struct {
 }
 
 const (
-	// DefaultScaffoldPRBody is the PR body for fresh installations.
-	DefaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
+	// defaultScaffoldPRBody is the PR body for fresh installations.
+	// Only used within this package.
+	defaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
 		"Merge this PR to activate fullsend workflows."
 
 	// DefaultScaffoldBranch is the branch name for fresh installations.
@@ -90,7 +91,7 @@ func freshInstallMetadata() ScaffoldPRMetadata {
 	return ScaffoldPRMetadata{
 		CommitMsg: "chore: initialize fullsend per-repo installation",
 		PRTitle:   "chore: initialize fullsend per-repo installation",
-		PRBody:    DefaultScaffoldPRBody,
+		PRBody:    defaultScaffoldPRBody,
 		Branch:    DefaultScaffoldBranch,
 	}
 }
