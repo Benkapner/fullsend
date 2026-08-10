@@ -26,6 +26,7 @@ ignore:
   - "pkg/behaviourtest/steps/dispatch_count.go"
   - "pkg/behaviourtest/steps/dummy_agent.go"
   - "pkg/behaviourtest/steps/fork.go"
+  - "pkg/behaviourtest/steps/jirapoll.go"
   - "pkg/behaviourtest/steps/registry.go"
   - "pkg/behaviourtest/steps/triage.go"
   - "pkg/behaviourtest/suite/init.go"

@@ -96,7 +96,7 @@ func TestEntityPropertyCRUD(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestProjectRoleMembership(t *testing.T) {
+func TestProjectRoleActors(t *testing.T) {
 	t.Parallel()
 	srv, state := NewServer()
 	defer srv.Close()
@@ -105,10 +105,42 @@ func TestProjectRoleMembership(t *testing.T) {
 	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
 	require.NoError(t, err)
 
-	membership, err := client.GetProjectRoleMembership(context.Background(), "PROJ")
+	actors, err := client.GetProjectRoleActors(context.Background(), "PROJ")
 	require.NoError(t, err)
-	assert.Equal(t, "Developers", membership["commenter-001"])
-	assert.Equal(t, "Developers", membership["changer-001"])
+	require.Contains(t, actors, "Developers")
+	assert.True(t, actors["Developers"].DirectUsers["commenter-001"])
+	assert.True(t, actors["Developers"].DirectUsers["changer-001"])
+}
+
+// TestProjectRoleActorsGroupResolution verifies GetProjectRoleActors and
+// GetUserGroups together resolve an actor's role via group membership,
+// exercising the same client-call sequence internal/jirapoll's per-actor
+// role resolution uses, end-to-end against the mock server.
+func TestProjectRoleActorsGroupResolution(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	state.SetRoleGroup("Administrators", "admin-group-001")
+	state.SetUserGroups("admin-001", "admin-group-001")
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	actors, err := client.GetProjectRoleActors(context.Background(), "PROJ")
+	require.NoError(t, err)
+	require.Contains(t, actors, "Administrators")
+	assert.Contains(t, actors["Administrators"].GroupIDs, "admin-group-001")
+
+	groups, err := client.GetUserGroups(context.Background(), "admin-001")
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "admin-group-001", groups[0].GroupID)
+
+	// An actor with no registered groups gets an empty (not error) response.
+	groups, err = client.GetUserGroups(context.Background(), "nobody")
+	require.NoError(t, err)
+	assert.Empty(t, groups)
 }
 
 func TestRejectsMissingOrMalformedAuthHeader(t *testing.T) {
