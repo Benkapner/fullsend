@@ -147,7 +147,7 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		}
 		meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-			targetRepo.DefaultBranch, meta.CommitMsg, meta.PRTitle, meta.PRBody, files, direct, nil, meta.Branch)
+			targetRepo.DefaultBranch, meta, files, direct, nil)
 		return commitErr
 	}
 
@@ -632,12 +632,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
 		meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
-		commitMsg := meta.CommitMsg
 		if rc.Forge == repos.ForgeGitLab {
-			commitMsg += " [skip ci]"
+			meta.CommitMsg += " [skip ci]"
 		}
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-			targetRepo.DefaultBranch, commitMsg, meta.PRTitle, meta.PRBody, files, direct, nil, meta.Branch)
+			targetRepo.DefaultBranch, meta, files, direct, nil)
 		return commitErr
 	}
 
@@ -810,7 +809,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
 			_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-				targetRepo.DefaultBranch, meta.CommitMsg, meta.PRTitle, meta.PRBody, files, isDirect, nil, meta.Branch)
+				targetRepo.DefaultBranch, meta, files, isDirect, nil)
 			return commitErr
 		}
 

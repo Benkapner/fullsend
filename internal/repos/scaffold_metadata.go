@@ -25,29 +25,63 @@ const (
 	// DefaultScaffoldBranch is the branch name for fresh installations.
 	DefaultScaffoldBranch = "fullsend/scaffold-install"
 
-	// scaffoldBumpBranchPrefix is the branch prefix for version upgrades.
-	scaffoldBumpBranchPrefix = "fullsend/bump-"
+	// ScaffoldBumpBranchPrefix is the branch prefix for version upgrades.
+	ScaffoldBumpBranchPrefix = "fullsend/bump-"
 )
 
 // versionCommentPattern matches "# vX.Y.Z" traceability comments in
 // scaffold workflow files. The version tag is captured in group 1.
-var versionCommentPattern = regexp.MustCompile(`# (v\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)`)
+var versionCommentPattern = regexp.MustCompile(`# (v\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)`)
+
+// ScaffoldMetadataOpts holds optional pre-fetched values for
+// BuildScaffoldPRMetadata. When provided, the corresponding API call is
+// skipped, avoiding redundant network round-trips in batch flows.
+type ScaffoldMetadataOpts struct {
+	// GuardInstalled, when non-nil, overrides the guard-variable check.
+	// true means the repo already has fullsend installed (upgrade path);
+	// false means fresh install.
+	GuardInstalled *bool
+
+	// OldVersion, when non-empty, overrides the existing-version detection
+	// from the workflow file. Only meaningful on the upgrade path.
+	OldVersion string
+}
 
 // BuildScaffoldPRMetadata returns PR metadata appropriate for the operation
 // type: fresh install vs. version upgrade. It checks whether the target repo
 // already has fullsend installed (via the guard variable) and, for upgrades,
 // attempts to detect the previous version from the existing workflow file.
+//
+// Callers that already know the guard state or old version can pass them via
+// opts to skip the redundant API calls.
 func BuildScaffoldPRMetadata(ctx context.Context, client forge.Client,
-	owner, repo, upstreamTag string) ScaffoldPRMetadata {
+	owner, repo, upstreamTag string, opts ...ScaffoldMetadataOpts) ScaffoldPRMetadata {
 
-	guardVal, guardExists, err := client.GetRepoVariable(ctx, owner, repo, forge.PerRepoGuardVar)
-	if err != nil || !guardExists || guardVal != "true" {
-		// Fresh install.
+	var o ScaffoldMetadataOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+
+	// Determine whether fullsend is already installed.
+	installed := false
+	if o.GuardInstalled != nil {
+		installed = *o.GuardInstalled
+	} else {
+		guardVal, guardExists, err := client.GetRepoVariable(ctx, owner, repo, forge.PerRepoGuardVar)
+		if err == nil && guardExists && guardVal == "true" {
+			installed = true
+		}
+	}
+
+	if !installed {
 		return freshInstallMetadata()
 	}
 
 	// Upgrade path — guard variable exists and is "true".
-	oldVersion := detectExistingVersion(ctx, client, owner, repo)
+	oldVersion := o.OldVersion
+	if oldVersion == "" {
+		oldVersion = detectExistingVersion(ctx, client, owner, repo)
+	}
 	return upgradeMetadata(oldVersion, upstreamTag)
 }
 
@@ -71,14 +105,14 @@ func upgradeMetadata(oldVersion, newVersion string) ScaffoldPRMetadata {
 			PRTitle:   fmt.Sprintf("chore: bump fullsend from %s to %s", oldVersion, newVersion),
 			PRBody: fmt.Sprintf("This PR updates the fullsend reusable workflow pin from %s to %s.",
 				oldVersion, newVersion),
-			Branch: scaffoldBumpBranchPrefix + newVersion,
+			Branch: ScaffoldBumpBranchPrefix + newVersion,
 		}
 	case newVersion != "":
 		return ScaffoldPRMetadata{
 			CommitMsg: fmt.Sprintf("chore: bump fullsend to %s", newVersion),
 			PRTitle:   fmt.Sprintf("chore: bump fullsend to %s", newVersion),
 			PRBody:    fmt.Sprintf("This PR updates the fullsend reusable workflow pin to %s.", newVersion),
-			Branch:    scaffoldBumpBranchPrefix + newVersion,
+			Branch:    ScaffoldBumpBranchPrefix + newVersion,
 		}
 	default:
 		return ScaffoldPRMetadata{

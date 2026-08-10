@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -18,8 +19,8 @@ import (
 // via PR. When direct is true, files are pushed directly to the default branch,
 // falling back to a PR if branch protection blocks the push.
 //
-// The scaffoldBranch parameter controls the feature branch name for PR-based
-// delivery. Pass an empty string to use the default ("fullsend/scaffold-install").
+// The meta parameter supplies the commit message, PR title/body, and branch
+// name. Pass an empty Branch to use the default ("fullsend/scaffold-install").
 //
 // The in parameter enables interactive prompts (e.g., fork-vs-upstream choice).
 // Pass os.Stdin for interactive CLI callers; pass nil for non-interactive
@@ -28,21 +29,22 @@ import (
 // The returned bool is true when files were committed directly to the default
 // branch (false for PR-based delivery, idempotent no-ops, or unchanged content).
 func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.Printer,
-	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
-	files []forge.TreeFile, direct bool, in io.Reader, scaffoldBranch string) (bool, error) {
+	owner, repo, defaultBranch string, meta repos.ScaffoldPRMetadata,
+	files []forge.TreeFile, direct bool, in io.Reader) (bool, error) {
 
-	commitMsg = adaptCommitMsg(ctx, client, printer, owner, repo, commitMsg)
+	commitMsg := adaptCommitMsg(ctx, client, printer, owner, repo, meta.CommitMsg)
 
+	scaffoldBranch := meta.Branch
 	if scaffoldBranch == "" {
-		scaffoldBranch = defaultScaffoldBranch
+		scaffoldBranch = repos.DefaultScaffoldBranch
 	}
 
 	if direct {
 		return commitScaffoldDirect(ctx, client, printer,
-			owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody, files, in)
+			owner, repo, defaultBranch, scaffoldBranch, commitMsg, meta.PRTitle, meta.PRBody, files, in)
 	}
 	return commitScaffoldViaPR(ctx, client, printer,
-		owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody, files, in)
+		owner, repo, defaultBranch, scaffoldBranch, commitMsg, meta.PRTitle, meta.PRBody, files, in)
 }
 
 // CommitFilesViaPR delivers files via a pull request on the given branch.
@@ -54,8 +56,6 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 	return commitViaPR(ctx, client, printer,
 		owner, repo, defaultBranch, branch, commitMsg, prTitle, prBody, files)
 }
-
-const defaultScaffoldBranch = "fullsend/scaffold-install"
 
 // knownScaffoldBranches lists all branch names that have been used to deliver
 // scaffold files across different install modes. Per-org mode uses
@@ -242,7 +242,7 @@ func isKnownScaffoldBranch(branch string) bool {
 		}
 	}
 	// Match version-upgrade branches: fullsend/bump-v*
-	if strings.HasPrefix(branch, "fullsend/bump-") {
+	if strings.HasPrefix(branch, repos.ScaffoldBumpBranchPrefix) {
 		return true
 	}
 	return false

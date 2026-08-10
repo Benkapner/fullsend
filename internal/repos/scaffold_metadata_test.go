@@ -83,6 +83,54 @@ func TestBuildScaffoldPRMetadata_GuardCheckError(t *testing.T) {
 	assert.Equal(t, "fullsend/scaffold-install", meta.Branch)
 }
 
+func TestBuildScaffoldPRMetadata_PreFetchedGuardInstalled(t *testing.T) {
+	fc := forge.NewFakeClient()
+	// No guard variable set — but pre-fetched guard says installed.
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
+		ScaffoldMetadataOpts{GuardInstalled: &installed})
+
+	// Should follow the upgrade path despite no guard variable being set.
+	assert.Equal(t, "chore: bump fullsend to v0.28.0", meta.CommitMsg)
+	assert.Equal(t, "fullsend/bump-v0.28.0", meta.Branch)
+}
+
+func TestBuildScaffoldPRMetadata_PreFetchedGuardNotInstalled(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["acme/widget/"+forge.PerRepoGuardVar] = "true"
+	// Guard is set in the API — but pre-fetched guard says NOT installed.
+	notInstalled := false
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
+		ScaffoldMetadataOpts{GuardInstalled: &notInstalled})
+
+	// Pre-fetched value should override the API result.
+	assert.Equal(t, "chore: initialize fullsend per-repo installation", meta.CommitMsg)
+	assert.Equal(t, "fullsend/scaffold-install", meta.Branch)
+}
+
+func TestBuildScaffoldPRMetadata_PreFetchedOldVersion(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["acme/widget/"+forge.PerRepoGuardVar] = "true"
+	// No workflow file on API — but caller provides old version.
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
+		ScaffoldMetadataOpts{OldVersion: "v0.25.2"})
+
+	assert.Equal(t, "chore: bump fullsend from v0.25.2 to v0.28.0", meta.CommitMsg)
+	assert.Contains(t, meta.PRBody, "from v0.25.2 to v0.28.0")
+	assert.Equal(t, "fullsend/bump-v0.28.0", meta.Branch)
+}
+
+func TestBuildScaffoldPRMetadata_PreFetchedBothGuardAndVersion(t *testing.T) {
+	fc := forge.NewFakeClient()
+	// Both pre-fetched — no API calls needed for guard or version detection.
+	installed := true
+	meta := BuildScaffoldPRMetadata(context.Background(), fc, "acme", "widget", "v0.28.0",
+		ScaffoldMetadataOpts{GuardInstalled: &installed, OldVersion: "v0.24.0"})
+
+	assert.Equal(t, "chore: bump fullsend from v0.24.0 to v0.28.0", meta.CommitMsg)
+	assert.Equal(t, "fullsend/bump-v0.28.0", meta.Branch)
+}
+
 func TestDetectExistingVersion(t *testing.T) {
 	t.Run("version comment found", func(t *testing.T) {
 		fc := forge.NewFakeClient()
@@ -118,5 +166,15 @@ func TestDetectExistingVersion(t *testing.T) {
 		}
 		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
 		assert.Equal(t, "v1.0.0-rc.1", v)
+	})
+
+	t.Run("hyphenated prerelease version", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.FileContents = map[string][]byte{
+			"acme/widget/.github/workflows/fullsend.yaml": []byte(
+				"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc # v1.0.0-alpha-1\n"),
+		}
+		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
+		assert.Equal(t, "v1.0.0-alpha-1", v)
 	})
 }

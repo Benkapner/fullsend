@@ -1056,7 +1056,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 				owner, repo, targetRepo.DefaultBranch))
 		}
 		_, err := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
-			targetRepo.DefaultBranch, meta.CommitMsg, meta.PRTitle, meta.PRBody, files, direct, os.Stdin, meta.Branch)
+			targetRepo.DefaultBranch, meta, files, direct, os.Stdin)
 		return err
 	}
 
@@ -1233,7 +1233,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	}
 	if _, err := layers.CommitScaffoldFiles(ctx, client, printer,
 		owner, repo, targetRepo.DefaultBranch,
-		meta.CommitMsg, meta.PRTitle, meta.PRBody, files, direct, os.Stdin, meta.Branch); err != nil {
+		meta, files, direct, os.Stdin); err != nil {
 		return err
 	}
 
