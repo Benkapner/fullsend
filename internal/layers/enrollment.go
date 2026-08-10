@@ -43,6 +43,7 @@ type EnrollmentLayer struct {
 	ui              *ui.Printer
 	scaffoldPending bool
 	waitTimeout     time.Duration // test override; 0 uses enrollmentWaitTimeout
+	clock           Clock
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
@@ -56,6 +57,7 @@ func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledR
 		enabledRepos:  enabledRepos,
 		disabledRepos: disabledRepos,
 		ui:            printer,
+		clock:         realClock{},
 	}
 }
 
@@ -64,6 +66,12 @@ func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledR
 // until the scaffold PR is merged and repo-maintenance triggers on push.
 func (l *EnrollmentLayer) WithScaffoldPending() *EnrollmentLayer {
 	l.scaffoldPending = true
+	return l
+}
+
+// WithClock overrides the default real clock, primarily for testing.
+func (l *EnrollmentLayer) WithClock(c Clock) *EnrollmentLayer {
+	l.clock = c
 	return l
 }
 
@@ -154,7 +162,7 @@ func (l *EnrollmentLayer) dispatchRepoMaintenanceWithRetry(ctx context.Context) 
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(delay):
+			case <-l.clock.After(delay):
 			}
 			delay += workflowDispatchRetryInitial
 			if delay > workflowDispatchRetryMax {
@@ -203,7 +211,7 @@ func (l *EnrollmentLayer) awaitWorkflowRegistration(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(workflowRegistrationPoll):
+		case <-l.clock.After(workflowRegistrationPoll):
 		}
 	}
 }
@@ -244,7 +252,7 @@ func (l *EnrollmentLayer) awaitWorkflowRun(ctx context.Context, dispatchTime tim
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(interval):
+		case <-l.clock.After(interval):
 		}
 
 		elapsed := time.Since(start).Round(time.Second)
