@@ -2,11 +2,11 @@ package layers
 
 import "time"
 
-// Clock abstracts time.After for testability. Production code uses
+// clock abstracts time.After for testability. Production code uses
 // realClock (the default); tests inject a fake that resolves After
 // channels immediately so poll/retry loops complete without wall-clock
 // delays.
-type Clock interface {
+type clock interface {
 	After(d time.Duration) <-chan time.Time
 }
 

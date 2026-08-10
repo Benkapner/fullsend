@@ -43,7 +43,7 @@ type EnrollmentLayer struct {
 	ui              *ui.Printer
 	scaffoldPending bool
 	waitTimeout     time.Duration // test override; 0 uses enrollmentWaitTimeout
-	clock           Clock
+	clock           clock
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
@@ -66,12 +66,6 @@ func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledR
 // until the scaffold PR is merged and repo-maintenance triggers on push.
 func (l *EnrollmentLayer) WithScaffoldPending() *EnrollmentLayer {
 	l.scaffoldPending = true
-	return l
-}
-
-// WithClock overrides the default real clock, primarily for testing.
-func (l *EnrollmentLayer) WithClock(c Clock) *EnrollmentLayer {
-	l.clock = c
 	return l
 }
 
