@@ -373,7 +373,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to mint token: org=%s target_org=%s role=%s err=%v", callerOrg, targetOrg, req.Role, err)
 		var me *mintError
 		if errors.As(err, &me) {
-			writeError(w, me.status, "mint failed")
+			msg := "mint failed"
+			if me.status == http.StatusUnprocessableEntity {
+				msg = me.msg
+			}
+			writeError(w, me.status, msg)
 		} else {
 			writeError(w, http.StatusInternalServerError, "internal error")
 		}
@@ -497,6 +501,29 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 	}
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+	}
+
+	// Verify all requested repos are covered by the same installation.
+	// If the GitHub App uses selected-repository installation mode,
+	// repos not in the selection return 404 from the installation
+	// lookup. Detecting this upfront produces a clear error instead
+	// of a confusing 422 from CreateInstallationToken.
+	if len(repos) > 1 {
+		for _, repo := range repos[1:] {
+			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
+			if otherErr != nil {
+				return "", "", nil, &mintError{
+					status: http.StatusUnprocessableEntity,
+					msg:    fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation: %v", org, repo, otherErr),
+				}
+			}
+			if otherID != installationID {
+				return "", "", nil, &mintError{
+					status: http.StatusUnprocessableEntity,
+					msg:    fmt.Sprintf("repository %s/%s has a different installation (ID %d) than %s (ID %d)", org, repo, otherID, repos[0], installationID),
+				}
+			}
+		}
 	}
 
 	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
