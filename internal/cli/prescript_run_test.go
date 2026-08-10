@@ -202,17 +202,17 @@ func TestRunPreScript_CleansUpOutputFile(t *testing.T) {
 
 // usePreScriptStub puts an openshell stub on PATH that passes the gateway
 // check but refuses sandbox creation, so a run that gets that far fails
-// recognizably. It also replaces sandbox.RetrySleep with a no-op so retry
-// backoff does not add real delays (see #6060).
+// recognizably. It also replaces sandbox.RetrySleepFn with a no-op so
+// retry backoff does not add real delays (see #6060).
 func usePreScriptStub(t *testing.T) {
 	t.Helper()
 	stubDir, err := filepath.Abs(filepath.Join("testdata", "prescript-stub"))
 	require.NoError(t, err)
 	t.Setenv("PATH", stubDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
 
-	orig := sandbox.RetrySleep
-	sandbox.RetrySleep = func(time.Duration) {}
-	t.Cleanup(func() { sandbox.RetrySleep = orig })
+	orig := sandbox.RetrySleepFn
+	sandbox.RetrySleepFn = func(time.Duration) {}
+	t.Cleanup(func() { sandbox.RetrySleepFn = orig })
 }
 
 // newSkipHarnessDir builds a minimal fullsend dir whose code harness runs

@@ -610,9 +610,9 @@ func TestCreateWithRetry_SleepsBetweenAttempts(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	var sleeps []time.Duration
-	orig := RetrySleep
-	RetrySleep = func(d time.Duration) { sleeps = append(sleeps, d) }
-	t.Cleanup(func() { RetrySleep = orig })
+	orig := RetrySleepFn
+	RetrySleepFn = func(d time.Duration) { sleeps = append(sleeps, d) }
+	t.Cleanup(func() { RetrySleepFn = orig })
 
 	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 0)
 	assert.Error(t, err)

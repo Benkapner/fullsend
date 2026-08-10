@@ -38,10 +38,10 @@ const (
 	retryMaxBackoff          = 15 * time.Second
 )
 
-// RetrySleep is the function called between retry attempts in CreateWithRetry.
-// It defaults to time.Sleep. Tests can replace it with a no-op to avoid real
-// delays (restore the original in a cleanup function).
-var RetrySleep = time.Sleep
+// RetrySleepFn is the function called between retry attempts in
+// CreateWithRetry. It defaults to time.Sleep. Override in tests to
+// avoid real delays.
+var RetrySleepFn = time.Sleep
 
 // errSymlink wraps symlink-related os.Remove failures during
 // sanitizeDownload with the symlink path and target, so error messages
@@ -549,7 +549,7 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 				backoff = retryMaxBackoff
 			}
 			fmt.Fprintf(os.Stderr, "  Sandbox creation attempt %d/%d failed (%v), retrying in %s...\n", attempt, maxAttempts, lastErr, backoff)
-			RetrySleep(backoff)
+			RetrySleepFn(backoff)
 		}
 	}
 	return fmt.Errorf("sandbox creation failed after %d attempts: %w", maxAttempts, lastErr)
