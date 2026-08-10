@@ -358,13 +358,25 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	})
 
 	// Mint/inference values are stored in config.yaml (ADR 0069
-	// Decision 1). Repo variables/secrets are no longer written for
-	// these values; reads are preserved for backward compatibility.
+	// Decision 1). Repo variables/secrets are ALSO written for backward
+	// compatibility — existing workflow templates still reference
+	// ${{ vars.FULLSEND_MINT_URL }}, ${{ vars.FULLSEND_GCP_REGION }},
+	// ${{ secrets.FULLSEND_GCP_PROJECT_ID }}, and
+	// ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}.
+	// See #5870 / #4977 for the migration to config-only reads.
 	repoVars := map[string]string{
+		"FULLSEND_MINT_URL":   cfg.mintURL,
+		"FULLSEND_GCP_REGION": cfg.inferenceRegion,
 		forge.PerRepoGuardVar: "true",
 	}
 
 	repoSecrets := make(map[string]string)
+	if !reuseProject {
+		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = cfg.inferenceProject
+	}
+	if !reuseWIF {
+		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = cfg.inferenceWIFProvider
+	}
 
 	if cfg.dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
