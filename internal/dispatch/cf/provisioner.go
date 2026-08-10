@@ -307,8 +307,9 @@ func (p *Provisioner) validate() error {
 	}
 	// Guard against the inverse: DeployDurable with a non-empty alias.
 	// Provision routes on PreviewAlias (non-empty → preview deploy) while
-	// Teardown routes on DeployMode (DeployDurable → rejected). This
-	// mismatch would cause a preview deploy that cannot be torn down.
+	// Teardown routes on DeployMode (DeployDurable → full Worker deletion).
+	// This mismatch would cause a preview deploy followed by a destructive
+	// full-Worker deletion.
 	if p.cfg.DeployMode != DeployPreview && p.cfg.PreviewAlias != "" {
 		return fmt.Errorf("PreviewAlias %q requires DeployMode=DeployPreview", p.cfg.PreviewAlias)
 	}

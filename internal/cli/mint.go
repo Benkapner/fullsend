@@ -371,7 +371,7 @@ and mint short-lived tokens via OIDC.
 The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker).
 Use 'fullsend mint deploy --platform' to select the target platform.
 
-Infrastructure subcommands (deploy, enroll, unenroll, status, add-role, remove-role) require
+Infrastructure subcommands (deploy, delete, enroll, unenroll, status, add-role, remove-role) require
 platform-specific access. The 'token' subcommand requires only GitHub Actions OIDC.`,
 	}
 	cmd.AddCommand(newMintDeployCmd())

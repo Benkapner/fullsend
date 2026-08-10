@@ -1550,6 +1550,31 @@ func TestProvisioner_Teardown_DurableDeletesWorker_Default(t *testing.T) {
 	assert.Equal(t, "test-mint", fake.deleteCalls[0])
 }
 
+func TestProvisioner_Teardown_ValidationFails(t *testing.T) {
+	// Empty AccountID should fail validation.
+	p := NewProvisioner(Config{
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+	}, &fakeWranglerRunner{})
+
+	err := p.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLOUDFLARE_ACCOUNT_ID is required")
+}
+
+func TestProvisioner_Teardown_DeleteError(t *testing.T) {
+	fake := &fakeWranglerRunner{deleteErr: fmt.Errorf("wrangler delete failed")}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+	}, fake)
+
+	err := p.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler delete failed")
+}
+
 // --- fileExistsAndNonEmpty tests ---
 
 func TestFileExistsAndNonEmpty_EmptyFile(t *testing.T) {

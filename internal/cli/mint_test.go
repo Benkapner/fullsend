@@ -2750,9 +2750,14 @@ func TestMintDeleteCloudflare_DryRunDurable(t *testing.T) {
 	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
 	defer func() { mintCFWranglerFactory = origFactory }()
 
-	origResolve := cfResolveAuth
-	cfResolveAuth = func(context.Context) (string, error) { return "test-account", nil }
-	defer func() { cfResolveAuth = origResolve }()
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", true, false, os.Stdin)
 	require.NoError(t, err)
@@ -2765,9 +2770,14 @@ func TestMintDeleteCloudflare_DurableTeardown(t *testing.T) {
 	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
 	defer func() { mintCFWranglerFactory = origFactory }()
 
-	origResolve := cfResolveAuth
-	cfResolveAuth = func(context.Context) (string, error) { return "test-account", nil }
-	defer func() { cfResolveAuth = origResolve }()
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
 	require.NoError(t, err)
@@ -2782,9 +2792,14 @@ func TestMintDeleteCloudflare_PreviewTeardown(t *testing.T) {
 	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
 	defer func() { mintCFWranglerFactory = origFactory }()
 
-	origResolve := cfResolveAuth
-	cfResolveAuth = func(context.Context) (string, error) { return "test-account", nil }
-	defer func() { cfResolveAuth = origResolve }()
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", false, true, os.Stdin)
 	require.NoError(t, err)
@@ -2816,6 +2831,209 @@ func TestMintDeleteGCP_ConfirmationRequired(t *testing.T) {
 	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", false, false, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stdin is not a terminal")
+}
+
+func TestMintDeleteGCP_InvalidRegion(t *testing.T) {
+	err := runMintDeleteGCP(context.Background(), "test-project1", "INVALID!", false, false, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP region")
+}
+
+func TestMintDeleteGCP_DiscoveryFails(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeErrors(map[string]error{
+			"GetFunction": fmt.Errorf("API unavailable"),
+		}),
+	)
+	withMintGCFClient(t, client)
+
+	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "discovering mint")
+}
+
+func TestMintDeleteGCP_DeleteFunctionFails(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			Name:  "projects/test-proj/locations/us-central1/functions/fullsend-mint",
+			State: "ACTIVE",
+			URI:   "https://fullsend-mint-abc123.a.run.app",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS":  `{"coder":"123"}`,
+				"ALLOWED_ORGS":  "acme",
+				"ALLOWED_ROLES": "coder",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"123"}`,
+			"ALLOWED_ORGS":  "acme",
+			"ALLOWED_ROLES": "coder",
+		}),
+		gcf.WithFakeErrors(map[string]error{
+			"DeleteFunction": fmt.Errorf("permission denied"),
+		}),
+	)
+	withMintGCFClient(t, client)
+
+	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting Cloud Function")
+}
+
+func TestMintDeleteGCP_WarningsOnSAAndWIFFailure(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			Name:  "projects/test-proj/locations/us-central1/functions/fullsend-mint",
+			State: "ACTIVE",
+			URI:   "https://fullsend-mint-abc123.a.run.app",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS":  `{"coder":"123"}`,
+				"ALLOWED_ORGS":  "acme",
+				"ALLOWED_ROLES": "coder",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"123"}`,
+			"ALLOWED_ORGS":  "acme",
+			"ALLOWED_ROLES": "coder",
+		}),
+		gcf.WithFakeErrors(map[string]error{
+			"DeleteServiceAccount": fmt.Errorf("SA delete failed"),
+			"GetProjectNumber":     fmt.Errorf("project number lookup failed"),
+		}),
+	)
+	withMintGCFClient(t, client)
+
+	// Should succeed despite SA and WIF failures (they're warnings, not hard errors).
+	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", false, true, os.Stdin)
+	require.NoError(t, err)
+
+	// Verify DeleteFunction was still called.
+	calls := gcf.RecordedCalls(client)
+	assert.Contains(t, calls, "DeleteFunction", "expected DeleteFunction to be called")
+}
+
+func TestMintDeleteCloudflare_InvalidWorkerName(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	err := runMintDeleteCloudflare(context.Background(), "INVALID_NAME!", "", false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --worker-name")
+}
+
+func TestMintDeleteCloudflare_InvalidPreviewAlias(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "INVALID!", false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --preview alias")
+}
+
+func TestMintDeleteCloudflare_AuthFailure(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Unsetenv("CLOUDFLARE_ACCOUNT_ID")
+	os.Unsetenv("CLOUDFLARE_API_TOKEN")
+
+	oldWhoami := cf.WranglerWhoamiFn
+	cf.WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("not logged in")
+	}
+	t.Cleanup(func() { cf.WranglerWhoamiFn = oldWhoami })
+
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Cloudflare credentials")
+}
+
+func TestMintDeleteCloudflare_DryRunPreview(t *testing.T) {
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", true, false, os.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, fakeCF.deployCalls, "dry run should not deploy")
+	assert.Empty(t, fakeCF.deleteCalls, "dry run should not delete")
+}
+
+func TestMintDeleteCloudflare_DefaultWorkerName(t *testing.T) {
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	// Empty worker name should use default "fullsend-mint".
+	err := runMintDeleteCloudflare(context.Background(), "", "", false, true, os.Stdin)
+	require.NoError(t, err)
+	assert.Len(t, fakeCF.deleteCalls, 1, "expected exactly one Delete call")
+	assert.Equal(t, "fullsend-mint", fakeCF.deleteCalls[0], "expected Delete called with default worker name")
+}
+
+func TestMintDeleteCloudflare_ConfirmationRequired(t *testing.T) {
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	// stdin is not a terminal → should fail without --yolo.
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, false, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stdin is not a terminal")
+}
+
+func TestMintDeleteCloudflare_UnsupportedPlatform(t *testing.T) {
+	cmd := newMintDeleteCmd()
+	cmd.SetArgs([]string{"--platform=azure"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported platform")
 }
 
 func TestConfirmDelete(t *testing.T) {

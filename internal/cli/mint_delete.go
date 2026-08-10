@@ -17,9 +17,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// cfResolveAuth resolves Cloudflare auth for mint delete. Overridden in tests.
-var cfResolveAuth = cf.ResolveCloudflareAuth
-
 func newMintDeleteCmd() *cobra.Command {
 	var platform string
 	var project string
@@ -245,7 +242,7 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 }
 
 func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias string, dryRun, yolo bool, stdin *os.File) error {
-	accountID, err := cfResolveAuth(ctx)
+	accountID, err := cf.ResolveCloudflareAuth(ctx)
 	if err != nil {
 		return err
 	}
