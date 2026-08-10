@@ -368,6 +368,121 @@ func TestWaitForHarnessAgent_FailFastOnStartupFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), `"startup_failure"`)
 }
 
+func TestWaitForFailedHarnessAgent_FromRepositoryArtifact(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// The fullsend action uploads the artifact with if: always(), so a
+	// failed standard-stage run (job named "Fix", not "Harness run
+	// (fix)") is still resolvable through its artifact.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 11, Name: "fullsend-fix", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 77},
+		},
+	}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 77, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL: "https://github.com/org/repo/actions/runs/77",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		77: {{ID: 1, Name: "dispatch / Fix", Status: "completed", Conclusion: "failure"}},
+	}
+
+	d := &Driver{Client: client}
+	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix", after)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 77, run.ID)
+}
+
+func TestWaitForFailedHarnessAgent_ErrorsOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 12, Name: "fullsend-fix", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 78},
+		},
+	}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 78, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL: "https://github.com/org/repo/actions/runs/78",
+		},
+	}
+
+	d := &Driver{Client: client}
+	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix", after)
+	require.Error(t, err)
+	assert.Nil(t, run)
+	assert.Contains(t, err.Error(), "concluded successfully; expected failure")
+}
+
+func TestWaitForFailedHarnessAgent_FallbackJobNameMatch(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// No artifact (custom harness failed before uploading one); the run
+	// is attributed through its "Harness run (<agent>)" matrix job.
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 79, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL: "https://github.com/org/repo/actions/runs/79",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		79: {{ID: 1, Name: "dispatch / Harness run (fix-ping)", Status: "completed", Conclusion: "failure"}},
+	}
+
+	d := &Driver{Client: client}
+	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix-ping", after)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 79, run.ID)
+}
+
+func TestWaitForFailedHarnessAgent_FallbackErrorsOnJobSuccess(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// No artifact for this run at all — the run's overall conclusion is
+	// "success", but the fallback must still inspect the agent's own
+	// job (not pre-filter on the run-level conclusion) so a run that
+	// completes successfully still fails fast via the fallback path,
+	// not just the artifact-based one.
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 80, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL: "https://github.com/org/repo/actions/runs/80",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		80: {{ID: 1, Name: "dispatch / Harness run (fix-ping)", Status: "completed", Conclusion: "success"}},
+	}
+
+	d := &Driver{Client: client}
+	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix-ping", after)
+	require.Error(t, err)
+	assert.Nil(t, run)
+	assert.Contains(t, err.Error(), "concluded successfully; expected failure")
+}
+
+func TestWaitForFailedHarnessAgent_ContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d := &Driver{Client: forge.NewFakeClient()}
+	_, err := d.WaitForFailedHarnessAgent(ctx, "org", "repo", "fix", time.Now())
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 // TestWaitForHarnessAgent_SiblingRunFailureIgnored verifies the fix for
 // #5852: a sibling fullsend.yaml run (e.g. triggered by PR "opened")
 // that fails in Route/Review without scheduling the waited agent's
