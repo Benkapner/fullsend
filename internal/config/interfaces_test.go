@@ -495,33 +495,33 @@ func TestPerRepoConfig_MintURL_Fallback(t *testing.T) {
 	})
 }
 
-// --- Inference type fallback ---
+// --- Inference provider fallback ---
 
-func TestPerRepoConfig_InferenceType_Fallback(t *testing.T) {
+func TestPerRepoConfig_InferenceProvider_Fallback(t *testing.T) {
 	t.Run("empty falls through to parent", func(t *testing.T) {
 		parent := &perRepoConfig{
-			Inference: &PerRepoInferenceConfig{Type: "vertex"},
+			Inference: &PerRepoInferenceConfig{Provider: "vertex"},
 			parent:    &perRepoDefaults{},
 		}
 		overlay := &perRepoConfig{parent: parent}
-		assert.Equal(t, "vertex", overlay.ConfigInferenceType())
+		assert.Equal(t, "vertex", overlay.ConfigInferenceProvider())
 	})
 
 	t.Run("local overrides parent", func(t *testing.T) {
 		parent := &perRepoConfig{
-			Inference: &PerRepoInferenceConfig{Type: "vertex"},
+			Inference: &PerRepoInferenceConfig{Provider: "vertex"},
 			parent:    &perRepoDefaults{},
 		}
 		overlay := &perRepoConfig{
-			Inference: &PerRepoInferenceConfig{Type: "vertex"},
+			Inference: &PerRepoInferenceConfig{Provider: "vertex"},
 			parent:    parent,
 		}
-		assert.Equal(t, "vertex", overlay.ConfigInferenceType())
+		assert.Equal(t, "vertex", overlay.ConfigInferenceProvider())
 	})
 
 	t.Run("falls through to defaults when unset", func(t *testing.T) {
 		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
-		assert.Equal(t, "", cfg.ConfigInferenceType())
+		assert.Equal(t, "", cfg.ConfigInferenceProvider())
 	})
 }
 
@@ -623,7 +623,7 @@ func TestPerRepoConfig_MintInference_ChainedFallback(t *testing.T) {
 	base := &perRepoConfig{
 		MintURL: "https://base-mint.example.com",
 		Inference: &PerRepoInferenceConfig{
-			Type:        "vertex",
+			Provider:    "vertex",
 			Project:     "base-project",
 			Region:      "us-central1",
 			WIFProvider: "projects/123/locations/global/workloadIdentityPools/pool/providers/prov",
@@ -638,7 +638,7 @@ func TestPerRepoConfig_MintInference_ChainedFallback(t *testing.T) {
 	// overlay overrides mint_url.
 	assert.Equal(t, "https://overlay-mint.example.com", overlay.ConfigMintURL())
 	// inference fields fall through overlay (nil) -> base.
-	assert.Equal(t, "vertex", overlay.ConfigInferenceType())
+	assert.Equal(t, "vertex", overlay.ConfigInferenceProvider())
 	assert.Equal(t, "base-project", overlay.ConfigInferenceProject())
 	assert.Equal(t, "us-central1", overlay.ConfigInferenceRegion())
 	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/prov", overlay.ConfigInferenceWIFProvider())
@@ -652,10 +652,10 @@ func TestPerRepoConfig_SetMintURL(t *testing.T) {
 	assert.Equal(t, "https://mint.example.com", cfg.ConfigMintURL())
 }
 
-func TestPerRepoConfig_SetInferenceType(t *testing.T) {
+func TestPerRepoConfig_SetInferenceProvider_Setter(t *testing.T) {
 	cfg := &perRepoConfig{parent: &perRepoDefaults{}}
-	cfg.SetInferenceType("vertex")
-	assert.Equal(t, "vertex", cfg.ConfigInferenceType())
+	cfg.SetInferenceProvider("vertex")
+	assert.Equal(t, "vertex", cfg.ConfigInferenceProvider())
 }
 
 func TestPerRepoConfig_SetInferenceProject(t *testing.T) {
@@ -692,7 +692,7 @@ func TestPerRepoConfig_MarshalMintInference(t *testing.T) {
 		cfg := &perRepoConfig{
 			MintURL: "https://mint.example.com",
 			Inference: &PerRepoInferenceConfig{
-				Type:        "vertex",
+				Provider:    "vertex",
 				Project:     "my-project",
 				Region:      "us-central1",
 				WIFProvider: "projects/123/pool/prov",
@@ -704,7 +704,7 @@ func TestPerRepoConfig_MarshalMintInference(t *testing.T) {
 		s := string(data)
 		assert.Contains(t, s, "mint_url: https://mint.example.com")
 		assert.Contains(t, s, "inference:")
-		assert.Contains(t, s, "type: vertex")
+		assert.Contains(t, s, "provider: vertex")
 		assert.Contains(t, s, "project: my-project")
 		assert.Contains(t, s, "region: us-central1")
 		assert.Contains(t, s, "wif_provider: projects/123/pool/prov")
@@ -717,7 +717,7 @@ func TestPerRepoConfig_MintInference_YAMLRoundTrip(t *testing.T) {
 	yamlData := `version: "1"
 mint_url: https://mint.example.com
 inference:
-  type: vertex
+  provider: vertex
   project: my-project
   region: us-central1
   wif_provider: projects/123/pool/prov
@@ -726,26 +726,26 @@ inference:
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://mint.example.com", cfg.ConfigMintURL())
-	assert.Equal(t, "vertex", cfg.ConfigInferenceType())
+	assert.Equal(t, "vertex", cfg.ConfigInferenceProvider())
 	assert.Equal(t, "my-project", cfg.ConfigInferenceProject())
 	assert.Equal(t, "us-central1", cfg.ConfigInferenceRegion())
 	assert.Equal(t, "projects/123/pool/prov", cfg.ConfigInferenceWIFProvider())
 }
 
-// --- Validate inference type ---
+// --- Validate inference provider ---
 
-func TestPerRepoConfig_Validate_InferenceType(t *testing.T) {
-	t.Run("valid type passes", func(t *testing.T) {
+func TestPerRepoConfig_Validate_InferenceProvider(t *testing.T) {
+	t.Run("valid provider passes", func(t *testing.T) {
 		cfg := &perRepoConfig{
 			Version:   "1",
 			Roles:     []string{"triage"},
-			Inference: &PerRepoInferenceConfig{Type: "vertex"},
+			Inference: &PerRepoInferenceConfig{Provider: "vertex"},
 			parent:    &perRepoDefaults{},
 		}
 		assert.NoError(t, cfg.Validate())
 	})
 
-	t.Run("empty type passes (inherits from parent)", func(t *testing.T) {
+	t.Run("empty provider passes (inherits from parent)", func(t *testing.T) {
 		cfg := &perRepoConfig{
 			Version: "1",
 			Roles:   []string{"triage"},
@@ -754,16 +754,16 @@ func TestPerRepoConfig_Validate_InferenceType(t *testing.T) {
 		assert.NoError(t, cfg.Validate())
 	})
 
-	t.Run("invalid type fails", func(t *testing.T) {
+	t.Run("invalid provider fails", func(t *testing.T) {
 		cfg := &perRepoConfig{
 			Version:   "1",
 			Roles:     []string{"triage"},
-			Inference: &PerRepoInferenceConfig{Type: "openai"},
+			Inference: &PerRepoInferenceConfig{Provider: "openai"},
 			parent:    &perRepoDefaults{},
 		}
 		err := cfg.Validate()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid inference type")
+		assert.Contains(t, err.Error(), "invalid inference provider")
 	})
 }
 
@@ -776,7 +776,7 @@ func TestNewEmptyPerRepoOverlay(t *testing.T) {
 	assert.Equal(t, "claude", o.ConfigRuntime())
 	// Mint/inference unset.
 	assert.Equal(t, "", o.ConfigMintURL())
-	assert.Equal(t, "", o.ConfigInferenceType())
+	assert.Equal(t, "", o.ConfigInferenceProvider())
 
 	// Marshal should be minimal.
 	data, err := o.Marshal()
@@ -794,7 +794,7 @@ func TestIsPerRepoYAML_WithInferenceBlock(t *testing.T) {
 	yamlData := `version: "1"
 mint_url: https://mint.example.com
 inference:
-  type: vertex
+  provider: vertex
   project: my-project
   region: us-central1
 `

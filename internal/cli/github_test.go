@@ -87,9 +87,9 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 	require.NotNil(t, directFlag, "expected --direct flag")
 	assert.Equal(t, "false", directFlag.DefValue)
 
-	inferenceTypeFlag := cmd.Flags().Lookup("inference-type")
-	require.NotNil(t, inferenceTypeFlag, "expected --inference-type flag")
-	assert.Equal(t, "vertex", inferenceTypeFlag.DefValue)
+	inferenceProviderFlag := cmd.Flags().Lookup("inference-provider")
+	require.NotNil(t, inferenceProviderFlag, "expected --inference-provider flag")
+	assert.Equal(t, "vertex", inferenceProviderFlag.DefValue)
 
 	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
 	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
@@ -268,13 +268,13 @@ func TestBuildPresetOverlay_NoFlagsChanged(t *testing.T) {
 func TestBuildPresetOverlay_FlagsPopulateOverlay(t *testing.T) {
 	cfg := githubSetupConfig{
 		mintURL:              "https://custom-mint.example.com",
-		inferenceType:        "vertex",
+		inferenceProvider:    "vertex",
 		inferenceProject:     "custom-project",
 		inferenceRegion:      "us-west2",
 		inferenceWIFProvider: "projects/789/locations/global/workloadIdentityPools/pool/providers/prov",
 		changedFlags: map[string]bool{
 			"mint-url":               true,
-			"inference-type":         true,
+			"inference-provider":     true,
 			"inference-project":      true,
 			"inference-region":       true,
 			"inference-wif-provider": true,
@@ -283,7 +283,7 @@ func TestBuildPresetOverlay_FlagsPopulateOverlay(t *testing.T) {
 	overlay := buildPresetOverlay(cfg)
 
 	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
-	assert.Equal(t, "vertex", overlay.ConfigInferenceType())
+	assert.Equal(t, "vertex", overlay.ConfigInferenceProvider())
 	assert.Equal(t, "custom-project", overlay.ConfigInferenceProject())
 	assert.Equal(t, "us-west2", overlay.ConfigInferenceRegion())
 	assert.Equal(t, "projects/789/locations/global/workloadIdentityPools/pool/providers/prov", overlay.ConfigInferenceWIFProvider())
@@ -303,7 +303,7 @@ func TestBuildPresetOverlay_PartialFlags(t *testing.T) {
 
 	// Only mint-url was changed, so only it should be in the overlay.
 	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
-	assert.Equal(t, "", overlay.ConfigInferenceType())
+	assert.Equal(t, "", overlay.ConfigInferenceProvider())
 	assert.Equal(t, "", overlay.ConfigInferenceProject())
 	assert.Equal(t, "", overlay.ConfigInferenceRegion())
 	assert.Equal(t, "", overlay.ConfigInferenceWIFProvider())
@@ -762,22 +762,18 @@ func TestRunGitHubSetupPerRepo(t *testing.T) {
 	require.NotEmpty(t, client.CommittedFilesToBranch)
 	require.NotEmpty(t, client.CreatedProposals)
 
-	// Verify repo variables were set.
+	// Verify only the guard variable was set (mint/inference values
+	// are stored in config.yaml, not repo variables/secrets).
 	varNames := make(map[string]string)
 	for _, v := range client.Variables {
 		varNames[v.Name] = v.Value
 	}
-	assert.Equal(t, "https://mint-test-abc123.run.app", varNames["FULLSEND_MINT_URL"])
-	assert.Equal(t, "global", varNames["FULLSEND_GCP_REGION"])
 	assert.Equal(t, "true", varNames["FULLSEND_PER_REPO_INSTALL"])
+	assert.NotContains(t, varNames, "FULLSEND_MINT_URL")
+	assert.NotContains(t, varNames, "FULLSEND_GCP_REGION")
 
-	// Verify repo secrets were set.
-	secretNames := make(map[string]string)
-	for _, s := range client.CreatedSecrets {
-		secretNames[s.Name] = s.Value
-	}
-	assert.Equal(t, "my-project", secretNames["FULLSEND_GCP_PROJECT_ID"])
-	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+	// Verify no secrets were written (values are in config.yaml).
+	assert.Empty(t, client.CreatedSecrets)
 }
 
 func TestGitHubSetCmd_OrgTargetDefaultsToConfigRepo(t *testing.T) {
@@ -894,16 +890,16 @@ func TestRunGitHubSetupPerRepo_ReusesExistingSecrets(t *testing.T) {
 	// Default mode delivers via PR — verify files were committed to the scaffold branch.
 	require.NotEmpty(t, client.CommittedFilesToBranch)
 
-	// Verify repo variables were set.
+	// Verify only the guard variable was set.
 	varNames := make(map[string]string)
 	for _, v := range client.Variables {
 		varNames[v.Name] = v.Value
 	}
-	assert.Equal(t, "https://mint-test-abc123.run.app", varNames["FULLSEND_MINT_URL"])
-	assert.Equal(t, "global", varNames["FULLSEND_GCP_REGION"])
 	assert.Equal(t, "true", varNames["FULLSEND_PER_REPO_INSTALL"])
+	assert.NotContains(t, varNames, "FULLSEND_MINT_URL")
+	assert.NotContains(t, varNames, "FULLSEND_GCP_REGION")
 
-	// Verify no secrets were overwritten.
+	// Verify no secrets were written.
 	assert.Empty(t, client.CreatedSecrets)
 }
 
@@ -928,13 +924,8 @@ func TestRunGitHubSetupPerRepo_PartialReuse_ProjectOnly(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify only WIF secret was written (project was reused).
-	secretNames := make(map[string]string)
-	for _, s := range client.CreatedSecrets {
-		secretNames[s.Name] = s.Value
-	}
-	assert.NotContains(t, secretNames, "FULLSEND_GCP_PROJECT_ID")
-	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+	// Secrets are no longer written (values stored in config.yaml).
+	assert.Empty(t, client.CreatedSecrets)
 }
 
 func TestRunGitHubSetupPerRepo_MissingFlagNoExistingSecret(t *testing.T) {
@@ -991,13 +982,8 @@ func TestRunGitHubSetupPerRepo_PartialReuse_WIFOnly(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify only project secret was written (WIF was reused).
-	secretNames := make(map[string]string)
-	for _, s := range client.CreatedSecrets {
-		secretNames[s.Name] = s.Value
-	}
-	assert.Contains(t, secretNames, "FULLSEND_GCP_PROJECT_ID")
-	assert.NotContains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+	// Secrets are no longer written (values stored in config.yaml).
+	assert.Empty(t, client.CreatedSecrets)
 }
 
 func TestRunGitHubSetupPerRepo_SecretCheckError(t *testing.T) {

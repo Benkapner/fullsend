@@ -44,8 +44,8 @@ func (d *perRepoDefaults) IsOrgMode() bool { return false }
 // ConfigMintURL returns the default mint URL (empty).
 func (d *perRepoDefaults) ConfigMintURL() string { return "" }
 
-// ConfigInferenceType returns the default inference type (empty).
-func (d *perRepoDefaults) ConfigInferenceType() string { return "" }
+// ConfigInferenceProvider returns the default inference provider (empty).
+func (d *perRepoDefaults) ConfigInferenceProvider() string { return "" }
 
 // ConfigInferenceProject returns the default inference project (empty).
 func (d *perRepoDefaults) ConfigInferenceProject() string { return "" }

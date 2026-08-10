@@ -119,7 +119,7 @@ func TestIsPerRepoYAML(t *testing.T) {
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: \"\"\n")))
 	assert.False(t, IsPerRepoYAML([]byte("not yaml")))
 	// inference key is shared between org and per-repo; should not trigger org detection.
-	assert.True(t, IsPerRepoYAML([]byte("version: \"1\"\ninference:\n  type: vertex\n")))
+	assert.True(t, IsPerRepoYAML([]byte("version: \"1\"\ninference:\n  provider: vertex\n")))
 }
 
 // --- Base-layer loading (config.base.yaml) tests ---
@@ -466,7 +466,7 @@ func TestLoadConfig_BothExist_MintInferenceFallback(t *testing.T) {
 	base := `version: "1"
 mint_url: https://base-mint.example.com
 inference:
-  type: vertex
+  provider: vertex
   project: base-project
   region: us-central1
   wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov
@@ -485,7 +485,7 @@ inference:
 	// Overlay overrides mint_url.
 	assert.Equal(t, "https://overlay-mint.example.com", pcr.ConfigMintURL())
 	// Inference fields fall through to base.
-	assert.Equal(t, "vertex", pcr.ConfigInferenceType())
+	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
 	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
 	assert.Equal(t, "us-central1", pcr.ConfigInferenceRegion())
 	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/prov", pcr.ConfigInferenceWIFProvider())
@@ -496,7 +496,7 @@ func TestLoadConfig_OnlyBase_MintInference(t *testing.T) {
 	base := `version: "1"
 mint_url: https://base-mint.example.com
 inference:
-  type: vertex
+  provider: vertex
   project: base-project
   region: global
 `
@@ -510,7 +510,7 @@ inference:
 
 	// All values from base.
 	assert.Equal(t, "https://base-mint.example.com", pcr.ConfigMintURL())
-	assert.Equal(t, "vertex", pcr.ConfigInferenceType())
+	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
 	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
 	assert.Equal(t, "global", pcr.ConfigInferenceRegion())
 	// WIF provider not set in base — falls through to default (empty).
@@ -522,7 +522,7 @@ func TestLoadConfig_BothExist_MarshalOmitsInferenceFromBase(t *testing.T) {
 	base := `version: "1"
 mint_url: https://base-mint.example.com
 inference:
-  type: vertex
+  provider: vertex
   project: base-project
 `
 	overlay := `roles:

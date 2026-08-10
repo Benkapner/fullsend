@@ -107,11 +107,11 @@ type InferenceConfig struct {
 }
 
 // PerRepoInferenceConfig groups inference backend settings for
-// per-repo configs. The Type field identifies the provider (currently
-// only "vertex"); Project, Region, and WIFProvider hold
-// provider-specific connection details.
+// per-repo configs. The Provider field identifies the inference
+// backend (currently only "vertex"); Project, Region, and WIFProvider
+// hold provider-specific connection details.
 type PerRepoInferenceConfig struct {
-	Type        string `yaml:"type,omitempty"`
+	Provider    string `yaml:"provider,omitempty"`
 	Project     string `yaml:"project,omitempty"`
 	Region      string `yaml:"region,omitempty"`
 	WIFProvider string `yaml:"wif_provider,omitempty"`
@@ -796,10 +796,10 @@ func (c *perRepoConfig) Validate() error {
 	if err := validateStatusNotifications(c.Notifications); err != nil {
 		return err
 	}
-	if c.Inference != nil && c.Inference.Type != "" {
+	if c.Inference != nil && c.Inference.Provider != "" {
 		validProviders := ValidProviders()
-		if !slices.Contains(validProviders, c.Inference.Type) {
-			return fmt.Errorf("invalid inference type %q: must be one of %s", c.Inference.Type, strings.Join(validProviders, ", "))
+		if !slices.Contains(validProviders, c.Inference.Provider) {
+			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
 		}
 	}
 	return nil

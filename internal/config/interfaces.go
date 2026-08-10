@@ -76,7 +76,7 @@ type PerRepoConfigReader interface {
 	ConfigRuntime() string
 	ConfigForge() string
 	ConfigMintURL() string
-	ConfigInferenceType() string
+	ConfigInferenceProvider() string
 	ConfigInferenceProject() string
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
@@ -114,7 +114,7 @@ type PerRepoConfigWriter interface {
 	SetRoles([]string)
 	SetRuntime(string)
 	SetMintURL(string)
-	SetInferenceType(string)
+	SetInferenceProvider(string)
 	SetInferenceProject(string)
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
@@ -412,13 +412,13 @@ func (c *perRepoConfig) ConfigMintURL() string {
 	return ""
 }
 
-// ConfigInferenceType returns the inference provider type (e.g. "vertex").
-func (c *perRepoConfig) ConfigInferenceType() string {
-	if c.Inference != nil && c.Inference.Type != "" {
-		return c.Inference.Type
+// ConfigInferenceProvider returns the inference provider (e.g. "vertex").
+func (c *perRepoConfig) ConfigInferenceProvider() string {
+	if c.Inference != nil && c.Inference.Provider != "" {
+		return c.Inference.Provider
 	}
 	if c.parent != nil {
-		return c.parent.ConfigInferenceType()
+		return c.parent.ConfigInferenceProvider()
 	}
 	return ""
 }
@@ -478,19 +478,23 @@ func (c *perRepoConfig) SetRoles(roles []string) { c.Roles = roles }
 func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
 
 // SetMintURL sets the token mint URL.
-func (c *perRepoConfig) SetMintURL(u string) { c.MintURL = u }
+func (c *perRepoConfig) SetMintURL(mintURL string) { c.MintURL = mintURL }
 
-// SetInferenceType sets the inference provider type.
-func (c *perRepoConfig) SetInferenceType(t string) { c.ensureInference().Type = t }
+// SetInferenceProvider sets the inference provider.
+func (c *perRepoConfig) SetInferenceProvider(provider string) {
+	c.ensureInference().Provider = provider
+}
 
 // SetInferenceProject sets the GCP project ID for inference.
-func (c *perRepoConfig) SetInferenceProject(p string) { c.ensureInference().Project = p }
+func (c *perRepoConfig) SetInferenceProject(project string) { c.ensureInference().Project = project }
 
 // SetInferenceRegion sets the GCP region for inference.
-func (c *perRepoConfig) SetInferenceRegion(r string) { c.ensureInference().Region = r }
+func (c *perRepoConfig) SetInferenceRegion(region string) { c.ensureInference().Region = region }
 
 // SetInferenceWIFProvider sets the WIF provider resource name.
-func (c *perRepoConfig) SetInferenceWIFProvider(w string) { c.ensureInference().WIFProvider = w }
+func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
+	c.ensureInference().WIFProvider = wifProvider
+}
 
 // ensureInference lazily initialises the Inference struct.
 func (c *perRepoConfig) ensureInference() *PerRepoInferenceConfig {

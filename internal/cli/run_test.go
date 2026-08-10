@@ -424,7 +424,7 @@ func TestIsPerRepoYAML(t *testing.T) {
 		{"org with dispatch", "version: '1'\ndispatch:\n  platform: github\n", false},
 		{"org with repos", "version: '1'\nrepos:\n  acme/widget:\n    enabled: true\n", false},
 		{"org with dispatch and roles", "version: '1'\ndispatch:\n  platform: github\nroles:\n  - triage\n", false},
-		{"per-repo with inference", "version: '1'\ninference:\n  type: vertex\n", true},
+		{"per-repo with inference", "version: '1'\ninference:\n  provider: vertex\n", true},
 		{"org with inference and dispatch", "version: '1'\ninference:\n  provider: vertex\ndispatch:\n  platform: github\n", false},
 		{"org with defaults", "version: '1'\ndefaults:\n  roles:\n    - triage\n", false},
 		{"per-repo without roles", "version: '1'\nkill_switch: false\n", true},

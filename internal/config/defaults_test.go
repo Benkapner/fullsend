@@ -31,7 +31,7 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 
 	// Mint/inference defaults are empty.
 	assert.Equal(t, "", d.ConfigMintURL())
-	assert.Equal(t, "", d.ConfigInferenceType())
+	assert.Equal(t, "", d.ConfigInferenceProvider())
 	assert.Equal(t, "", d.ConfigInferenceProject())
 	assert.Equal(t, "", d.ConfigInferenceRegion())
 	assert.Equal(t, "", d.ConfigInferenceWIFProvider())
@@ -53,7 +53,7 @@ func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
 
 	// Mint/inference fields fall through to defaults (empty).
 	assert.Equal(t, "", cfg.ConfigMintURL())
-	assert.Equal(t, "", cfg.ConfigInferenceType())
+	assert.Equal(t, "", cfg.ConfigInferenceProvider())
 	assert.Equal(t, "", cfg.ConfigInferenceProject())
 	assert.Equal(t, "", cfg.ConfigInferenceRegion())
 	assert.Equal(t, "", cfg.ConfigInferenceWIFProvider())

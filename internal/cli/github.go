@@ -56,7 +56,7 @@ type githubSetupConfig struct {
 	agents               string
 	inferenceProject     string
 	inferenceRegion      string
-	inferenceType        string
+	inferenceProvider    string
 	inferenceWIFProvider string
 	skipAppSetup         bool
 	publicApps           bool
@@ -172,7 +172,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", DefaultMintURL, "token mint URL (default: hosted public mint)")
 	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
-	cmd.Flags().StringVar(&cfg.inferenceType, "inference-type", "vertex", "inference provider type (e.g. vertex)")
+	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "vertex", "inference provider (e.g. vertex)")
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "global", "GCP region for inference")
 	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name")
@@ -295,7 +295,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 		// Store mint/inference settings in config (ADR 0069 Decision 1).
 		perRepoCfg.SetMintURL(cfg.mintURL)
-		perRepoCfg.SetInferenceType(cfg.inferenceType)
+		perRepoCfg.SetInferenceProvider(cfg.inferenceProvider)
 		perRepoCfg.SetInferenceRegion(cfg.inferenceRegion)
 		if cfg.inferenceProject != "" {
 			perRepoCfg.SetInferenceProject(cfg.inferenceProject)
@@ -316,6 +316,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		// Flag-specified values go into the overlay so the base
 		// layer remains identical to the fetched preset (ADR 0069).
 		if overlayCfg := buildPresetOverlay(cfg); overlayCfg != nil {
+			if err := overlayCfg.Validate(); err != nil {
+				return fmt.Errorf("invalid overlay config: %w", err)
+			}
 			cfgYAML, err = overlayCfg.Marshal()
 			if err != nil {
 				return fmt.Errorf("marshaling overlay config: %w", err)
@@ -354,19 +357,14 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		Mode:    "100644",
 	})
 
+	// Mint/inference values are stored in config.yaml (ADR 0069
+	// Decision 1). Repo variables/secrets are no longer written for
+	// these values; reads are preserved for backward compatibility.
 	repoVars := map[string]string{
-		"FULLSEND_MINT_URL":   cfg.mintURL,
-		"FULLSEND_GCP_REGION": cfg.inferenceRegion,
 		forge.PerRepoGuardVar: "true",
 	}
 
 	repoSecrets := make(map[string]string)
-	if !reuseProject {
-		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = cfg.inferenceProject
-	}
-	if !reuseWIF {
-		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = cfg.inferenceWIFProvider
-	}
 
 	if cfg.dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
@@ -429,7 +427,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 // Returns nil when no relevant flags were changed, signaling the
 // caller to use the stub overlay YAML with human-readable comments.
 func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
-	flagNames := []string{"mint-url", "inference-type", "inference-project", "inference-region", "inference-wif-provider"}
+	flagNames := []string{"mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider"}
 	anyChanged := false
 	for _, name := range flagNames {
 		if cfg.changedFlags[name] {
@@ -445,8 +443,8 @@ func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
 	if cfg.changedFlags["mint-url"] {
 		o.SetMintURL(cfg.mintURL)
 	}
-	if cfg.changedFlags["inference-type"] {
-		o.SetInferenceType(cfg.inferenceType)
+	if cfg.changedFlags["inference-provider"] {
+		o.SetInferenceProvider(cfg.inferenceProvider)
 	}
 	if cfg.changedFlags["inference-project"] {
 		o.SetInferenceProject(cfg.inferenceProject)
