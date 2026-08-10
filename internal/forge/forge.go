@@ -263,10 +263,12 @@ func (id *UserIdentity) SignOffTrailer() string {
 
 // FormatSignOffTrailer builds a "Signed-off-by: name <email>" string.
 // Newline characters (\n, \r) are stripped from both fields to prevent
-// trailer injection via crafted forge profile names.
+// trailer injection via crafted forge profile names. Angle brackets
+// (< and >) are stripped from the name field to prevent malformed trailers.
 func FormatSignOffTrailer(name, email string) string {
 	r := strings.NewReplacer("\n", "", "\r", "")
-	return fmt.Sprintf("Signed-off-by: %s <%s>", r.Replace(name), r.Replace(email))
+	cleanName := strings.NewReplacer("\n", "", "\r", "", "<", "", ">", "").Replace(name)
+	return fmt.Sprintf("Signed-off-by: %s <%s>", cleanName, r.Replace(email))
 }
 
 // TreeFile represents a file to be committed via the Git Trees API.

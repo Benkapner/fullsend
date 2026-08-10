@@ -16,6 +16,14 @@ func TestFormatSignOffTrailer_StripsNewlines(t *testing.T) {
 	assert.Equal(t, "Signed-off-by: EvilUser <evil@example.com>", got)
 }
 
+func TestFormatSignOffTrailer_StripsAngleBracketsFromName(t *testing.T) {
+	got := FormatSignOffTrailer("Evil>User", "evil@example.com")
+	assert.Equal(t, "Signed-off-by: EvilUser <evil@example.com>", got)
+
+	got = FormatSignOffTrailer("User <injected>", "user@example.com")
+	assert.Equal(t, "Signed-off-by: User injected <user@example.com>", got)
+}
+
 func TestUserIdentity_SignOffTrailer(t *testing.T) {
 	id := &UserIdentity{Name: "Test User", Email: "test@example.com"}
 	assert.Equal(t, "Signed-off-by: Test User <test@example.com>", id.SignOffTrailer())
