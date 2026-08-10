@@ -184,6 +184,7 @@ func TestJiraClient_ListComments_EditedCommentAttributesToEditor(t *testing.T) {
 					Author:       jira.User{DisplayName: "Original Author"},
 					UpdateAuthor: jira.User{AccountID: "acct-2", DisplayName: "Editor"},
 					Created:      "2026-08-06T00:00:00.000+0000",
+					Updated:      "2026-08-06T01:00:00.000+0000",
 				},
 				{
 					ID:      "2",
@@ -208,6 +209,49 @@ func TestJiraClient_ListComments_EditedCommentAttributesToEditor(t *testing.T) {
 	}
 	if comments[1].Author != "Original Author" {
 		t.Errorf("unedited comment Author = %q, want %q (UpdateAuthor unset, so Author stands)", comments[1].Author, "Original Author")
+	}
+}
+
+func TestJiraClient_ListComments_UpdateAuthorIgnoredWithoutLaterUpdatedTimestamp(t *testing.T) {
+	// UpdateAuthor.AccountID alone isn't a reliable edit signal — mirror
+	// jirapoll/discover.go's defense-in-depth gate of also requiring
+	// Updated to parse and be after Created before trusting it.
+	fc := &fakeJiraClient{
+		comments: map[string][]jira.Comment{
+			"PROJ-42": {
+				{
+					ID:           "1",
+					Body:         "not actually edited",
+					Author:       jira.User{DisplayName: "Original Author"},
+					UpdateAuthor: jira.User{AccountID: "acct-2", DisplayName: "Editor"},
+					Created:      "2026-08-06T00:00:00.000+0000",
+					Updated:      "2026-08-06T00:00:00.000+0000",
+				},
+				{
+					ID:           "2",
+					Body:         "unparseable updated timestamp",
+					Author:       jira.User{DisplayName: "Original Author"},
+					UpdateAuthor: jira.User{AccountID: "acct-2", DisplayName: "Editor"},
+					Created:      "2026-08-06T00:00:00.000+0000",
+					Updated:      "not-a-timestamp",
+				},
+			},
+		},
+	}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+
+	comments, err := c.ListComments(context.Background(), "PROJ", 42)
+	if err != nil {
+		t.Fatalf("ListComments returned error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("len(comments) = %d, want 2", len(comments))
+	}
+	if comments[0].Author != "Original Author" {
+		t.Errorf("Updated == Created comment Author = %q, want %q (not after Created, so not treated as edited)", comments[0].Author, "Original Author")
+	}
+	if comments[1].Author != "Original Author" {
+		t.Errorf("unparseable Updated comment Author = %q, want %q (can't confirm edit, so not treated as edited)", comments[1].Author, "Original Author")
 	}
 }
 

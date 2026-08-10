@@ -4,9 +4,32 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
+
+// jiraTimestampFormats are the layouts Jira Cloud has been observed to
+// use for created/updated timestamps. Duplicated from
+// jirapoll/discover.go's unexported jiraTimestampFormats/
+// parseJiraTimestamp rather than shared, for the same reason
+// adf.go/jirapoll's ADF walkers stay duplicated for now: consolidating
+// onto one shared helper is a reasonable follow-up once the Jira tracker
+// integration stabilizes.
+var jiraTimestampFormats = []string{
+	"2006-01-02T15:04:05.000-0700",
+	time.RFC3339,
+}
+
+// parseJiraTimestamp parses a Jira timestamp string.
+func parseJiraTimestamp(s string) (time.Time, error) {
+	for _, format := range jiraTimestampFormats {
+		if t, err := time.Parse(format, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unparseable Jira timestamp: %q", s)
+}
 
 // jiraClient is the Jira API surface this adapter needs. Implemented by
 // jira.LiveClient; faked in tests.
@@ -103,18 +126,17 @@ func (c *JiraClient) UpdateComment(ctx context.Context, project string, number i
 // against real Jira Cloud behavior, so rather than guess at a URL shape
 // that might be wrong, it's left unset instead of risking a broken link.
 //
-// Author is UpdateAuthor when the comment has been edited (Jira sets
-// UpdateAuthor.AccountID only then), not Author: someone with
-// Edit-All-Comments can rewrite another user's comment, and this is
-// adapted from jirapoll/discover.go's attribute-to-the-editor logic (ADR
-// 0054) so edited content isn't misattributed to the original author.
-// Note that tracker.Comment.Author is a display name only — unlike
-// jirapoll, which authorizes on the stable AccountID, nothing here makes
-// Author a trustworthy identifier for authorization decisions; a future
-// consumer needing that would have to add one.
+// Author is UpdateAuthor when the comment has been edited, not Author:
+// someone with Edit-All-Comments can rewrite another user's comment, and
+// this is adapted from jirapoll/discover.go's attribute-to-the-editor
+// logic (ADR 0054) so edited content isn't misattributed to the original
+// author. Note that tracker.Comment.Author is a display name only —
+// unlike jirapoll, which authorizes on the stable AccountID, nothing here
+// makes Author a trustworthy identifier for authorization decisions; a
+// future consumer needing that would have to add one.
 func fromJiraComment(c jira.Comment) Comment {
 	author := c.Author.DisplayName
-	if c.UpdateAuthor.AccountID != "" {
+	if commentEdited(c) {
 		author = c.UpdateAuthor.DisplayName
 	}
 	return Comment{
@@ -123,4 +145,26 @@ func fromJiraComment(c jira.Comment) Comment {
 		Author:    author,
 		CreatedAt: c.Created,
 	}
+}
+
+// commentEdited reports whether c has genuinely been edited since
+// creation. UpdateAuthor.AccountID alone is Jira's signal for this
+// (observed Cloud behavior, not a documented contract — see
+// jirapoll/discover.go's identical hedge), so this additionally requires
+// Updated to parse and be after Created, mirroring jirapoll's own
+// edit-detection gate for defense in depth against that signal alone
+// being wrong.
+func commentEdited(c jira.Comment) bool {
+	if c.UpdateAuthor.AccountID == "" {
+		return false
+	}
+	created, err := parseJiraTimestamp(c.Created)
+	if err != nil {
+		return false
+	}
+	updated, err := parseJiraTimestamp(c.Updated)
+	if err != nil {
+		return false
+	}
+	return updated.After(created)
 }
