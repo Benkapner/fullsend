@@ -74,6 +74,14 @@ func TestBehaviourSuite(t *testing.T) {
 		t.Fatalf("installing fullsend on %s: %v", org, err)
 	}
 
+	// When a CF preview mint was deployed, the install state carries the
+	// derived preview URL. Override e2eCfg.MintURL so the RepoEnsurer
+	// (which creates additional pool repos) uses the same mint endpoint.
+	if m, ok := installState.(install.MintURLProvider); ok && m.MintURL() != "" {
+		t.Logf("using CF preview mint URL for ensurer: %s", m.MintURL())
+		e2eCfg.MintURL = m.MintURL()
+	}
+
 	t.Cleanup(func() {
 		teardownCtx := context.Background()
 		if teardownErr := installDriver.Teardown(teardownCtx, org, installState); teardownErr != nil {

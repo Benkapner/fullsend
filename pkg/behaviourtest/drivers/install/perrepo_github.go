@@ -24,17 +24,23 @@ const (
 )
 
 // perRepoDriver installs fullsend in per-repo mode via fullsend github setup.
+// When cfMint is enabled (PEMDir non-empty), Install deploys a temporary
+// Cloudflare Worker preview mint and uses the derived preview URL as the
+// mint endpoint for github setup. Teardown abandons the preview alias.
 type perRepoDriver struct {
-	e2eCfg e2etest.EnvConfig
-	client forge.Client
-	token  string
-	binary string
-	logf   func(string, ...any)
+	e2eCfg       e2etest.EnvConfig
+	client       forge.Client
+	token        string
+	binary       string
+	logf         func(string, ...any)
+	cfMint       cfMintConfig
+	previewAlias string // set during Install when cfMint is enabled
 }
 
 type perRepoState struct {
-	org  string
-	repo string
+	org     string
+	repo    string
+	mintURL string // effective mint URL (CF preview or configured MintURL)
 }
 
 func (s *perRepoState) Mode() string               { return "per-repo" }
@@ -47,6 +53,14 @@ func (s *perRepoState) TriageWorkflowFile() string { return perRepoTriageWorkflo
 func (s *perRepoState) AgentWorkflowFile() string  { return perRepoAgentWorkflow }
 func (s *perRepoState) AgentArtifactName() string  { return perRepoAgentArtifact }
 
+// MintURL returns the effective mint URL used during install. When a CF
+// preview mint was deployed, this is the derived preview URL. Otherwise
+// it is the configured MintURL from EnvConfig.
+func (s *perRepoState) MintURL() string { return s.mintURL }
+
+// Compile-time check that perRepoState implements MintURLProvider.
+var _ MintURLProvider = (*perRepoState)(nil)
+
 func newPerRepoDriver(e2eCfg e2etest.EnvConfig, client forge.Client, token, binary string, logf func(string, ...any)) Driver {
 	return &perRepoDriver{
 		e2eCfg: e2eCfg,
@@ -54,6 +68,7 @@ func newPerRepoDriver(e2eCfg e2etest.EnvConfig, client forge.Client, token, bina
 		token:  token,
 		binary: binary,
 		logf:   logf,
+		cfMint: newCFMintConfig(e2eCfg),
 	}
 }
 
@@ -61,11 +76,28 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 	repo := perRepoTestRepo
 	target := org + "/" + repo
 
+	// Determine the effective mint URL. When CF mint is configured,
+	// deploy a temporary preview mint and use its URL.
+	mintURL := d.e2eCfg.MintURL
+	if d.cfMint.enabled() {
+		alias, err := generatePreviewAlias()
+		if err != nil {
+			return nil, err
+		}
+		d.previewAlias = alias
+
+		url, err := deployCFMint(d.binary, d.token, d.cfMint, alias, org, e2etest.TryRunCLI, d.logf)
+		if err != nil {
+			return nil, fmt.Errorf("deploying CF preview mint for BT: %w", err)
+		}
+		mintURL = url
+	}
+
 	args := []string{
 		"github", "setup", target,
 		"--vendor", "--direct",
 		"--skip-app-setup",
-		"--mint-url", d.e2eCfg.MintURL,
+		"--mint-url", mintURL,
 		"--runtime", "dummy",
 	}
 	if project := strings.TrimSpace(d.e2eCfg.GCPProjectID); project != "" {
@@ -81,7 +113,7 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 		return nil, fmt.Errorf("github setup %s: %w", target, err)
 	}
 
-	st := &perRepoState{org: org, repo: repo}
+	st := &perRepoState{org: org, repo: repo, mintURL: mintURL}
 	if err := validatePerRepoPostInstall(ctx, d.client, org, repo); err != nil {
 		return nil, err
 	}
@@ -142,6 +174,16 @@ func (d *perRepoDriver) Teardown(ctx context.Context, org string, state State) e
 	repo := state.TestRepo()
 	d.logf("[install] tearing down per-repo install on %s/%s", org, repo)
 	e2etest.TeardownPerRepoInstall(ctx, d.client, d.token, org, repo, d.logf)
+
+	// Tear down the CF preview mint if one was deployed during Install.
+	if d.cfMint.enabled() && d.previewAlias != "" {
+		if err := teardownCFMint(d.binary, d.token, d.cfMint, d.previewAlias, e2etest.TryRunCLI, d.logf); err != nil {
+			// Log but don't fail — the preview is ephemeral and will
+			// expire. A teardown failure should not mask test results.
+			d.logf("[install] CF preview mint teardown failed: %v", err)
+		}
+	}
+
 	return nil
 }
 
