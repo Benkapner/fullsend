@@ -738,6 +738,95 @@ func TestCountHarnessDispatches_IgnoresRunsWithoutAgentJob(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+func TestCountHarnessDispatches_ExcludesCancelledJob(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// Two runs for the same agent: one cancelled by concurrency group,
+	// one completed successfully. Only the successful one counts (#6053).
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "completed", Conclusion: "cancelled", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:01:00Z"},
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "cancelled"}},
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_ExcludesSkippedJob(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// Run with skipped harness job (empty matrix from CEL mismatch)
+	// plus one successful run. Only the successful one counts.
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:01:00Z"},
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "skipped"}},
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_CountsFailedJob(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// A failed job is a real dispatch — it should be counted.
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "failure"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestIsConcurrencySuperseded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		conclusion string
+		want       bool
+	}{
+		{"cancelled", true},
+		{"skipped", true},
+		{"success", false},
+		{"failure", false},
+		{"timed_out", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, isConcurrencySuperseded(tt.conclusion),
+			"isConcurrencySuperseded(%q)", tt.conclusion)
+	}
+}
+
 func TestAssertNoHarnessAgentArtifact_IgnoresOtherAgentJobs(t *testing.T) {
 	t.Parallel()
 

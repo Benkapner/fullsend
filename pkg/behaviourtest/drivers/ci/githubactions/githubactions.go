@@ -644,6 +644,13 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 
 // CountHarnessDispatches returns the number of harness workflow runs that
 // scheduled the "Harness run (<agent>)" job after the trigger time.
+//
+// Runs where the agent's job was cancelled or skipped are excluded.
+// GitHub's concurrency groups cancel duplicate runs when two events
+// (e.g. synchronize + labeled) race, and webhook at-least-once delivery
+// can trigger duplicate workflow runs for the same event. In both cases
+// the concurrency group cancels the superseded run, and counting it
+// would produce a false-positive exact-count assertion failure (#6053).
 func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
 	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
@@ -655,15 +662,28 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		hasJob, conclusion, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
 		if err != nil {
 			return 0, err
 		}
-		if hasJob {
+		if hasJob && !isConcurrencySuperseded(conclusion) {
 			count++
 		}
 	}
 	return count, nil
+}
+
+// isConcurrencySuperseded reports whether a job conclusion indicates
+// the run was superseded by a concurrency group (cancelled or skipped).
+// These runs should not count toward dispatch totals because the
+// platform handled deduplication correctly.
+func isConcurrencySuperseded(conclusion string) bool {
+	switch conclusion {
+	case "cancelled", "skipped":
+		return true
+	default:
+		return false
+	}
 }
 
 // AssertNoHarnessAgentArtifact asserts that the named agent's harness job
