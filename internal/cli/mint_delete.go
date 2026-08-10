@@ -163,7 +163,7 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 
 	if dryRun {
 		printer.Blank()
-		printer.StepInfo("Dry run -- no changes will be made")
+		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		printer.StepInfo(fmt.Sprintf("  Would delete Cloud Function: %s", "fullsend-mint"))
 		for _, role := range pemRoles {
@@ -192,6 +192,9 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 	}
 	printer.StepDone("Cloud Function deleted")
 
+	// Track whether any non-critical resources failed to delete.
+	var hadWarnings bool
+
 	// Step 2: Delete PEM secrets.
 	if len(pemRoles) > 0 {
 		printer.StepStart(fmt.Sprintf("Deleting %d PEM secret(s)", len(pemRoles)))
@@ -202,6 +205,7 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 			}
 		}
 		if len(pemErrors) > 0 {
+			hadWarnings = true
 			printer.StepWarn(fmt.Sprintf("Some PEM secrets could not be deleted: %s", strings.Join(pemErrors, "; ")))
 		} else {
 			printer.StepDone(fmt.Sprintf("Deleted %d PEM secret(s)", len(pemRoles)))
@@ -211,6 +215,7 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 	// Step 3: Delete service account.
 	printer.StepStart("Deleting service account")
 	if err := provisioner.DeleteMintServiceAccount(ctx); err != nil {
+		hadWarnings = true
 		printer.StepWarn(fmt.Sprintf("Failed to delete service account: %v", err))
 	} else {
 		printer.StepDone("Service account deleted")
@@ -219,16 +224,21 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 	// Step 4: Delete WIF pool (includes all providers).
 	printer.StepStart("Deleting WIF pool")
 	if err := provisioner.DeleteMintWIFPool(ctx); err != nil {
+		hadWarnings = true
 		printer.StepWarn(fmt.Sprintf("Failed to delete WIF pool: %v", err))
 	} else {
 		printer.StepDone("WIF pool deleted")
 	}
 
 	printer.Blank()
+	summaryMsg := "All mint infrastructure has been removed."
+	if hadWarnings {
+		summaryMsg = "Mint function deleted. Some resources could not be removed — see warnings above."
+	}
 	printer.Summary("Delete complete", []string{
 		fmt.Sprintf("Project: %s", project),
 		fmt.Sprintf("Region: %s", region),
-		"All mint infrastructure has been removed.",
+		summaryMsg,
 	})
 
 	return nil
@@ -266,7 +276,7 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 	}
 
 	if dryRun {
-		printer.StepInfo("Dry run -- no changes will be made")
+		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		if previewAlias != "" {
 			printer.StepInfo(fmt.Sprintf("  Would abandon preview alias: %s", previewAlias))

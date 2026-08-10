@@ -48,6 +48,7 @@ type fakeCFWranglerRunner struct {
 	deployURL    string
 	deployCalls  []fakeCFDeployCall
 	secretCalls  []fakeCFSecretCall
+	deleteCalls  []string
 	secretPutErr error
 	// workerExists controls the return value of WorkerExists.
 	// Defaults to true (Worker exists).
@@ -88,7 +89,8 @@ func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretNa
 	return f.secretPutErr
 }
 
-func (f *fakeCFWranglerRunner) Delete(context.Context, string) error {
+func (f *fakeCFWranglerRunner) Delete(_ context.Context, workerName string) error {
+	f.deleteCalls = append(f.deleteCalls, workerName)
 	return nil
 }
 
@@ -2722,6 +2724,12 @@ func TestMintDeleteGCP_FullTeardown(t *testing.T) {
 	// Verify PEM secrets were deleted.
 	deletedSecrets := gcf.DeletedSecretIDs(client)
 	assert.NotEmpty(t, deletedSecrets, "expected PEM secrets to be deleted")
+
+	// Verify delete operations were called.
+	calls := gcf.RecordedCalls(client)
+	assert.Contains(t, calls, "DeleteFunction", "expected DeleteFunction to be called")
+	assert.Contains(t, calls, "DeleteServiceAccount", "expected DeleteServiceAccount to be called")
+	assert.Contains(t, calls, "DeleteWIFPool", "expected DeleteWIFPool to be called")
 }
 
 func TestMintDeleteGCP_MintNotFound(t *testing.T) {
@@ -2764,6 +2772,8 @@ func TestMintDeleteCloudflare_DurableTeardown(t *testing.T) {
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "durable delete should not deploy")
+	assert.Len(t, fakeCF.deleteCalls, 1, "expected exactly one Delete call")
+	assert.Equal(t, "test-mint", fakeCF.deleteCalls[0], "expected Delete called with worker name")
 }
 
 func TestMintDeleteCloudflare_PreviewTeardown(t *testing.T) {

@@ -5,6 +5,7 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | Command | Description |
 |---------|-------------|
 | `mint deploy` | Deploy or update the token mint (GCP Cloud Function or Cloudflare Worker) |
+| `mint delete` | Tear down mint infrastructure (Cloud Function, secrets, SA, WIF pool or Worker) |
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
@@ -52,16 +53,16 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
 - **GCP IAM roles** — the user running mint commands authenticates via ADC (`gcloud auth application-default login`). The required roles depend on the command:
 
-  | IAM Role | `mint deploy` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
-  |----------|:---:|:---:|:---:|:---:|:---:|:---:|
-  | `roles/iam.serviceAccountAdmin` | x | | | | | |
-  | `roles/iam.workloadIdentityPoolAdmin` | x | | | x | x | |
-  | `roles/resourcemanager.projectIamAdmin` | \* | | | | | |
-  | `roles/secretmanager.admin` | \* | \*\* | \*\*\* | | | |
-  | `roles/cloudfunctions.developer` | x | | | | | |
-  | `roles/cloudfunctions.viewer` | | x | x | x | x | x |
-  | `roles/run.admin` | x | x | x | x | x | |
-  | `roles/secretmanager.viewer` | | § | | | | x |
+  | IAM Role | `mint deploy` | `mint delete` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
+  |----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+  | `roles/iam.serviceAccountAdmin` | x | x | | | | | |
+  | `roles/iam.workloadIdentityPoolAdmin` | x | x | | | x | x | |
+  | `roles/resourcemanager.projectIamAdmin` | \* | | | | | | |
+  | `roles/secretmanager.admin` | \* | x | \*\* | \*\*\* | | | |
+  | `roles/cloudfunctions.developer` | x | x | | | | | |
+  | `roles/cloudfunctions.viewer` | | | x | x | x | x | x |
+  | `roles/run.admin` | x | | x | x | x | x | |
+  | `roles/secretmanager.viewer` | | | § | | | | x |
 
   \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 

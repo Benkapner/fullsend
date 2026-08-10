@@ -352,3 +352,13 @@ func DeletedSecretIDs(client GCFClient) []string {
 	}
 	return f.deletedSecretIDs
 }
+
+// RecordedCalls returns the method names recorded on a fake client, for
+// cross-package test assertions. Returns nil if client isn't a fake.
+func RecordedCalls(client GCFClient) []string {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return nil
+	}
+	return f.calls
+}

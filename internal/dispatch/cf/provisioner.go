@@ -274,6 +274,10 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 // For durable deploys (DeployDurable): deletes the Worker script and
 // all associated bindings/secrets via `wrangler delete`.
 func (p *Provisioner) Teardown(ctx context.Context) error {
+	if err := p.validate(); err != nil {
+		return err
+	}
+
 	switch p.cfg.DeployMode {
 	case DeployPreview:
 		// Preview-alias teardown: abandon the alias without deleting the
