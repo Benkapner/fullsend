@@ -45,6 +45,7 @@ fullsend github setup <owner/repo> \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mint-url` | | HTTPS endpoint of the token mint service |
+| `--inference-provider` | `vertex` | Inference provider (e.g. `vertex`) |
 | `--inference-project` | | GCP project ID for Agent Platform |
 | `--inference-wif-provider` | | Full WIF provider resource name |
 | `--inference-region` | `global` | GCP region for inference |

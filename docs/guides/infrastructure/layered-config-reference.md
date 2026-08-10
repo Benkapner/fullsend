@@ -78,6 +78,11 @@ the overlay → base → code defaults chain.
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
 | `forge` | `string` | Scalar override | `""` (GitHub) |
+| `mint_url` | `string` | Scalar override | `""` (empty) |
+| `inference.provider` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.project` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.region` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.wif_provider` | `string` (nested) | Scalar override | `""` (empty) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 
@@ -97,6 +102,53 @@ unset, the accessor falls through to the base layer, then to code defaults.
   - `*false` (explicit `kill_switch: false`) — locally set to inactive.
     Does **not** fall through.
   - `*true` (explicit `kill_switch: true`) — locally set to active.
+
+### `mint_url` and `inference` — scalar override (ADR 0069 Decision 1)
+
+**`mint_url`** stores the token mint URL. It is a flat string field on
+`perRepoConfig` and follows the same scalar override semantics as `runtime`:
+unset (`""`) falls through to parent, then to code default `""`.
+
+**`inference`** groups inference backend settings under a single YAML key
+(`inference:`) using the `PerRepoInferenceConfig` struct. Each subfield
+(`provider`, `project`, `region`, `wif_provider`) resolves independently
+through scalar override semantics:
+
+- **`inference.provider`**: Inference provider identifier (e.g. `"vertex"`).
+  Unset (`""`) falls through to parent.
+- **`inference.project`**: GCP project ID for inference. Unset (`""`) falls
+  through to parent.
+- **`inference.region`**: GCP region for inference. Unset (`""`) falls
+  through to parent.
+- **`inference.wif_provider`**: Full WIF provider resource name. Unset (`""`)
+  falls through to parent.
+
+The `inference` pointer itself (`*PerRepoInferenceConfig`) uses nil to mean
+"no local inference settings" — if the entire `inference:` key is omitted
+from YAML, all four subfields fall through to the parent layer. If the key
+is present, each subfield is checked independently.
+
+Example:
+
+```yaml
+# config.base.yaml (base layer)
+mint_url: https://mint.example.com
+inference:
+  provider: vertex
+  project: base-project
+  region: us-central1
+  wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/base
+
+# config.yaml (overlay) — override project only
+inference:
+  project: my-project
+# Effective:
+#   mint_url: https://mint.example.com (from base)
+#   inference.provider: vertex (from base)
+#   inference.project: my-project (from overlay)
+#   inference.region: us-central1 (from base)
+#   inference.wif_provider: ...base... (from base)
+```
 
 ### `roles` — replace if set
 
@@ -243,6 +295,11 @@ compiled-in defaults apply:
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
 | `forge` | `""` (GitHub) |
+| `mint_url` | `""` (empty) |
+| `inference.provider` | `""` (empty) |
+| `inference.project` | `""` (empty) |
+| `inference.region` | `""` (empty) |
+| `inference.wif_provider` | `""` (empty) |
 | `create_issues` | `nil` |
 | `status_notifications` | `nil` |
 
