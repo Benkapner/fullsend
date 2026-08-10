@@ -374,6 +374,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var me *mintError
 		if errors.As(err, &me) {
 			msg := "mint failed"
+			// 422 errors from repo-installation validation carry
+			// actionable messages (e.g. which repo is not covered).
+			// Surface them instead of the generic message so callers
+			// can diagnose misconfigured installations. Other status
+			// codes keep the generic message to avoid leaking internals.
 			if me.status == http.StatusUnprocessableEntity {
 				msg = me.msg
 			}
@@ -514,13 +519,13 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 			if otherErr != nil {
 				return "", "", nil, &mintError{
 					status: http.StatusUnprocessableEntity,
-					msg:    fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation: %v", org, repo, otherErr),
+					msg:    fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo),
 				}
 			}
 			if otherID != installationID {
 				return "", "", nil, &mintError{
 					status: http.StatusUnprocessableEntity,
-					msg:    fmt.Sprintf("repository %s/%s has a different installation (ID %d) than %s (ID %d)", org, repo, otherID, repos[0], installationID),
+					msg:    fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0]),
 				}
 			}
 		}

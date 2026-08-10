@@ -1583,7 +1583,7 @@ func TestHandler_MultiRepoInstallationMismatch(t *testing.T) {
 	if !strings.Contains(resp["error"], "repo-b") {
 		t.Fatalf("error should name the mismatched repo, got: %s", resp["error"])
 	}
-	if !strings.Contains(resp["error"], "different installation") {
+	if !strings.Contains(resp["error"], "different GitHub App installation") {
 		t.Fatalf("error should indicate different installation, got: %s", resp["error"])
 	}
 }
