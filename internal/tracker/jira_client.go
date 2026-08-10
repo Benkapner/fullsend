@@ -105,10 +105,13 @@ func (c *JiraClient) UpdateComment(ctx context.Context, project string, number i
 //
 // Author is UpdateAuthor when the comment has been edited (Jira sets
 // UpdateAuthor.AccountID only then), not Author: someone with
-// Edit-All-Comments can rewrite another user's comment, and this mirrors
-// jirapoll/discover.go's identical attribute-to-the-editor logic (ADR
-// 0054) so any future authorization-sensitive consumer of tracker.Comment
-// doesn't misattribute edited content to the original author.
+// Edit-All-Comments can rewrite another user's comment, and this is
+// adapted from jirapoll/discover.go's attribute-to-the-editor logic (ADR
+// 0054) so edited content isn't misattributed to the original author.
+// Note that tracker.Comment.Author is a display name only — unlike
+// jirapoll, which authorizes on the stable AccountID, nothing here makes
+// Author a trustworthy identifier for authorization decisions; a future
+// consumer needing that would have to add one.
 func fromJiraComment(c jira.Comment) Comment {
 	author := c.Author.DisplayName
 	if c.UpdateAuthor.AccountID != "" {
