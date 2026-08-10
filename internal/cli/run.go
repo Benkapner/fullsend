@@ -1970,6 +1970,8 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_OUTPUT_SCHEMA":   true,
 	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
+	"FULLSEND_ROLE":            true,
+	"FULLSEND_SLUG":            true,
 }
 
 func init() {
@@ -2030,6 +2032,15 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	lines = append(lines, runtimeEnvExports...)
 	lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_DIR=%s", outputDir))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_TARGET_REPO_DIR=%s", remoteRepositoryDir))
+
+	// Expose harness identity so skills can reference their own role/slug
+	// without hardcoding values that drift from the harness YAML. See #6045.
+	if h.Role != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_ROLE='%s'", strings.ReplaceAll(h.Role, "'", "'\\''")))
+	}
+	if h.Slug != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_SLUG='%s'", strings.ReplaceAll(h.Slug, "'", "'\\''")))
+	}
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
