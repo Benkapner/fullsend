@@ -704,7 +704,25 @@ func TestReconcileOrphaned_OnFailure_SynthesizesWhenSkippedEvenIfJobSucceeded(t 
 
 	comments := fc.IssueComments["org/repo/7"]
 	require.Len(t, comments, 1, "should synthesize an interrupted comment despite jobStatus==success")
-	assert.Contains(t, comments[0].Body, "❌ Terminated")
+	assert.Contains(t, comments[0].Body, "⏭️ Skipped (comment failed to post)")
+	assert.NotContains(t, comments[0].Body, "❌ Terminated")
+}
+
+func TestReconcileOrphaned_OnFailure_SkippedWithRealCancellationKeepsReason(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
+
+	// wasSkipped is true, but jobStatus is "cancelled" — the job was
+	// actually cancelled (unrelated to the skip-reason comment), so the
+	// passed-in reason should be preserved rather than relabeled as a
+	// comment-post failure.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "on_failure", "cancelled", true, "")
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["org/repo/7"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "⚠️ Cancelled")
+	assert.NotContains(t, comments[0].Body, "Skipped (comment failed to post)")
 }
 
 func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenSkippedButNotOnFailure(t *testing.T) {

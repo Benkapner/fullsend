@@ -33,6 +33,15 @@ type TerminationReason string
 const (
 	ReasonTerminated TerminationReason = "terminated"
 	ReasonCancelled  TerminationReason = "cancelled"
+
+	// ReasonSkipCommentFailed is used when the pre-script decided to skip
+	// the run and PostCompletionWithDetail's own skip-reason comment failed
+	// to post, but the job otherwise completed normally (jobStatus is
+	// "success" or unknown). This is semantically distinct from a hard
+	// kill or job cancellation — the agent ran to completion, only its own
+	// comment-post attempt failed — so it gets a dedicated label rather
+	// than falling through to ReasonTerminated. See PR #5736.
+	ReasonSkipCommentFailed TerminationReason = "skip_comment_failed"
 )
 
 // now is overridable in tests to fix the current time for ReconcileOrphaned.
@@ -522,7 +531,17 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 	// PostCompletion suppressed the comment as designed. See PR #5736.
 	if completionMode == "on_failure" && (wasSkipped || (jobStatus != "" && jobStatus != "success")) {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, reason)
+		synthReason := reason
+		// wasSkipped with no other failure/cancellation signal means the
+		// agent ran fine — only its own skip-reason comment failed to
+		// post. That's not a hard kill or cancellation, so label it
+		// distinctly rather than defaulting to ReasonTerminated. If
+		// jobStatus does show failure/cancellation, the passed-in reason
+		// already reflects that real outcome, so leave it alone.
+		if wasSkipped && (jobStatus == "" || jobStatus == "success") {
+			synthReason = ReasonSkipCommentFailed
+		}
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason)
 		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}
@@ -579,6 +598,13 @@ func reasonLabel(reason TerminationReason, description string) (statusLabel, hea
 			heading = description
 		} else {
 			heading = "Agent run cancelled"
+		}
+	case ReasonSkipCommentFailed:
+		statusLabel = "⏭️ Skipped (comment failed to post)"
+		if description != "" {
+			heading = description
+		} else {
+			heading = "Agent run skipped"
 		}
 	default:
 		statusLabel = "❌ Terminated"
