@@ -6,6 +6,8 @@ package forge
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 )
 
 // ConfigRepoName is the conventional name for the org-level fullsend
@@ -250,6 +252,21 @@ type OrgVariable struct {
 type UserIdentity struct {
 	Name  string // display name (may equal login if no name is set)
 	Email string // primary or noreply email
+}
+
+// SignOffTrailer returns a "Signed-off-by: Name <email>" string for this
+// identity. Newline characters are stripped from both fields to prevent
+// trailer injection via crafted profile names.
+func (id *UserIdentity) SignOffTrailer() string {
+	return FormatSignOffTrailer(id.Name, id.Email)
+}
+
+// FormatSignOffTrailer builds a "Signed-off-by: name <email>" string.
+// Newline characters (\n, \r) are stripped from both fields to prevent
+// trailer injection via crafted forge profile names.
+func FormatSignOffTrailer(name, email string) string {
+	r := strings.NewReplacer("\n", "", "\r", "")
+	return fmt.Sprintf("Signed-off-by: %s <%s>", r.Replace(name), r.Replace(email))
 }
 
 // TreeFile represents a file to be committed via the Git Trees API.

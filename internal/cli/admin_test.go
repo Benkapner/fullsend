@@ -2657,7 +2657,7 @@ func TestApplyPerRepoScaffold(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, repoVars, repoSecrets, false, "")
+		"acme", "widget", files, repoVars, repoSecrets, scaffoldOptions{})
 	require.NoError(t, err)
 
 	require.Len(t, client.CommittedFilesToBranch, 1)
@@ -2696,7 +2696,7 @@ func TestApplyPerRepoScaffold_WithSignOff(t *testing.T) {
 	trailer := "Signed-off-by: Test User <test@example.com>"
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, trailer)
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true, signOffTrailer: trailer})
 	require.NoError(t, err)
 
 	require.NotEmpty(t, client.CommittedFiles)
@@ -2716,7 +2716,7 @@ func TestApplyPerRepoScaffold_WithoutSignOff(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.NoError(t, err)
 
 	require.NotEmpty(t, client.CommittedFiles)
@@ -2731,7 +2731,7 @@ func TestApplyPerRepoScaffold_GetRepoError(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", nil, nil, nil, false, "")
+		"acme", "widget", nil, nil, nil, scaffoldOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting repo info")
 }
@@ -2748,7 +2748,7 @@ func TestApplyPerRepoScaffold_CommitFilesError(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing scaffold files")
 	assert.Empty(t, client.CreatedBranches, "should not attempt fallback for generic error")
@@ -2772,7 +2772,7 @@ func TestApplyPerRepoScaffold_Idempotent(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, map[string]string{"K": "V"}, map[string]string{"S": "secret"}, false, "")
+		"acme", "widget", files, map[string]string{"K": "V"}, map[string]string{"S": "secret"}, scaffoldOptions{})
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "up to date")
 	assert.Len(t, client.Variables, 1, "variables should still be set even when files are unchanged")
@@ -2794,7 +2794,7 @@ func TestApplyPerRepoScaffold_DefaultPR_NoChanges(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, map[string]string{"K": "V"}, nil, false, "")
+		"acme", "widget", files, map[string]string{"K": "V"}, nil, scaffoldOptions{})
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "up to date")
 }
@@ -2811,7 +2811,7 @@ func TestApplyPerRepoScaffold_NonMainBranch(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "acme/widget (develop branch)")
 	assert.Contains(t, buf.String(), "Pushed 1 file to develop")
@@ -2827,7 +2827,7 @@ func TestApplyPerRepoScaffold_CreateVariableError(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", nil, map[string]string{"K": "V"}, nil, false, "")
+		"acme", "widget", nil, map[string]string{"K": "V"}, nil, scaffoldOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "setting repo variable")
 }
@@ -2842,7 +2842,7 @@ func TestApplyPerRepoScaffold_CreateSecretError(t *testing.T) {
 	printer := ui.New(&bytes.Buffer{})
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", nil, nil, map[string]string{"S": "V"}, false, "")
+		"acme", "widget", nil, nil, map[string]string{"S": "V"}, scaffoldOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "setting repo secret")
 }
@@ -2862,7 +2862,7 @@ func TestApplyPerRepoScaffold_ProtectedBranchFallback(t *testing.T) {
 	repoSecrets := map[string]string{"S": "secret"}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, repoVars, repoSecrets, true, "")
+		"acme", "widget", files, repoVars, repoSecrets, scaffoldOptions{direct: true})
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedBranches, 1)
@@ -2895,7 +2895,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ExistingBranch(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.NoError(t, err)
 
 	require.Len(t, client.CommittedFilesToBranch, 1, "should proceed despite branch existing")
@@ -2916,7 +2916,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_StillSetsVarsAndSecrets(t *testing
 	repoSecrets := map[string]string{"FULLSEND_GCP_PROJECT_ID": "my-project"}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, repoVars, repoSecrets, true, "")
+		"acme", "widget", files, repoVars, repoSecrets, scaffoldOptions{direct: true})
 	require.NoError(t, err)
 
 	assert.Len(t, client.Variables, 1, "variables should be set even with PR fallback")
@@ -2936,7 +2936,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreateBranchFails(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating scaffold branch")
 }
@@ -2954,7 +2954,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CommitToBranchFails(t *testing.T) 
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing scaffold files to branch")
 }
@@ -2972,7 +2972,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ScaffoldBranchAlsoProtected(t *tes
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is protected")
 	assert.Contains(t, err.Error(), "configure branch protection")
@@ -2991,7 +2991,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreatePRFails(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating scaffold PR")
 }
@@ -3010,7 +3010,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_DuplicatePR(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.NoError(t, err)
 
 	output := buf.String()
@@ -3177,7 +3177,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	}
 
 	err := applyPerRepoScaffold(context.Background(), client, printer,
-		"acme", "widget", files, nil, nil, true, "")
+		"acme", "widget", files, nil, nil, scaffoldOptions{direct: true})
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "up to date")

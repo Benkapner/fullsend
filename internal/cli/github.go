@@ -117,7 +117,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 			_, _, isRepoTarget := parseTarget(cfg.target)
 			if !isRepoTarget {
-				for _, name := range []string{"config", "config-hash"} {
+				for _, name := range []string{"config", "config-hash", "signoff"} {
 					if cmd.Flags().Changed(name) {
 						return fmt.Errorf("--%s is only valid for per-repo setup (fullsend github setup <owner/repo>)", name)
 					}
@@ -192,7 +192,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
-	cmd.Flags().BoolVar(&cfg.signoff, "signoff", false, "add Signed-off-by trailer to scaffold commits (requires git user identity)")
+	cmd.Flags().BoolVar(&cfg.signoff, "signoff", false, "add Signed-off-by trailer to scaffold commits (requires GitHub user identity)")
 
 	return cmd
 }
@@ -436,13 +436,21 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	printer.Blank()
 
 	// Resolve Signed-off-by trailer when --signoff is set.
+	//
+	// Unlike sync-scaffold (which gracefully degrades when identity is
+	// unavailable), setup uses an explicit opt-in flag and hard-fails.
+	// The user explicitly requested DCO sign-off; silently omitting the
+	// trailer would cause the DCO check to fail with a confusing error.
 	var signOffTrailer string
 	if cfg.signoff {
 		id, idErr := client.GetAuthenticatedUserIdentity(ctx)
 		if idErr != nil {
-			return fmt.Errorf("--signoff requires git user identity (name and email): %w", idErr)
+			return fmt.Errorf("--signoff requires a GitHub user identity (name and email) — this is not available for GitHub App tokens: %w", idErr)
 		}
-		signOffTrailer = fmt.Sprintf("Signed-off-by: %s <%s>", id.Name, id.Email)
+		if id.Name == "" || id.Email == "" {
+			return fmt.Errorf("--signoff requires a GitHub user identity with both name and email set (got name=%q, email=%q)", id.Name, id.Email)
+		}
+		signOffTrailer = id.SignOffTrailer()
 	}
 
 	if cfg.vendor {

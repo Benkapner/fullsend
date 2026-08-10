@@ -67,7 +67,7 @@ func (l *WorkflowsLayer) WithDirect(direct bool) *WorkflowsLayer {
 // sign-off is required. Pass an empty string to disable.
 func (l *WorkflowsLayer) WithSignOff(name, email string) *WorkflowsLayer {
 	if name != "" && email != "" {
-		l.signOffTrailer = fmt.Sprintf("Signed-off-by: %s <%s>", name, email)
+		l.signOffTrailer = forge.FormatSignOffTrailer(name, email)
 	}
 	return l
 }
