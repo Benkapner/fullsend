@@ -375,6 +375,7 @@ Infrastructure subcommands (deploy, enroll, unenroll, status, add-role, remove-r
 platform-specific access. The 'token' subcommand requires only GitHub Actions OIDC.`,
 	}
 	cmd.AddCommand(newMintDeployCmd())
+	cmd.AddCommand(newMintDeleteCmd())
 	cmd.AddCommand(newMintEnrollCmd())
 	cmd.AddCommand(newMintUnenrollCmd())
 	cmd.AddCommand(newMintStatusCmd())

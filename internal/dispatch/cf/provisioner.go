@@ -265,26 +265,25 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 	return nil
 }
 
-// Teardown cleans up a preview Worker deployment. Only valid when
-// DeployMode is DeployPreview.
+// Teardown cleans up a Worker deployment.
 //
-// Preview-alias deploys use `wrangler versions upload`, which creates
-// a version routed via the alias. The durable Worker script is shared
-// with production, so teardown abandons the preview version without
-// deleting the Worker script. The alias is simply left unrouted — it
-// will be overwritten on the next preview deploy or can be cleaned up
-// manually via `wrangler versions list`.
+// For preview deploys (DeployPreview): abandons the preview alias
+// without deleting the durable Worker script, which is shared with
+// production. The alias is simply left unrouted.
 //
-// Note: validate() enforces that DeployPreview always has a non-empty
-// PreviewAlias, so the bare-preview (delete Worker) path is no longer
-// reachable through normal Provisioner lifecycle.
+// For durable deploys (DeployDurable): deletes the Worker script and
+// all associated bindings/secrets via `wrangler delete`.
 func (p *Provisioner) Teardown(ctx context.Context) error {
-	if p.cfg.DeployMode != DeployPreview {
-		return fmt.Errorf("teardown is only supported for preview Workers")
+	switch p.cfg.DeployMode {
+	case DeployPreview:
+		// Preview-alias teardown: abandon the alias without deleting the
+		// durable Worker script, which is shared with production.
+		return nil
+	case DeployDurable:
+		return p.wrangler.Delete(ctx, p.cfg.WorkerName)
+	default:
+		return fmt.Errorf("unknown deploy mode for teardown")
 	}
-	// Preview-alias teardown: abandon the alias without deleting the
-	// durable Worker script, which is shared with production.
-	return nil
 }
 
 // validate checks that the Config has all required fields.

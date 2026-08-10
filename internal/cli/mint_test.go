@@ -106,6 +106,7 @@ func TestMintCommand_HasSubcommands(t *testing.T) {
 		names[sub.Use] = true
 	}
 	assert.True(t, names["deploy"], "expected deploy subcommand")
+	assert.True(t, names["delete"], "expected delete subcommand")
 	assert.True(t, names["enroll <org|owner/repo>"], "expected enroll subcommand")
 	assert.True(t, names["unenroll <org|owner/repo>"], "expected unenroll subcommand")
 	assert.True(t, names["status [org]"], "expected status subcommand")
@@ -2623,6 +2624,209 @@ func TestMintEnrollCmd_InvalidProject(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid GCP project ID")
+}
+
+// --- delete command tests ---
+
+func TestMintDeleteCmd_Flags(t *testing.T) {
+	cmd := newMintDeleteCmd()
+
+	platformFlag := cmd.Flags().Lookup("platform")
+	require.NotNil(t, platformFlag, "expected --platform flag")
+	assert.Equal(t, "gcp", platformFlag.DefValue)
+
+	projectFlag := cmd.Flags().Lookup("project")
+	require.NotNil(t, projectFlag, "expected --project flag")
+
+	regionFlag := cmd.Flags().Lookup("region")
+	require.NotNil(t, regionFlag, "expected --region flag")
+	assert.Equal(t, "us-central1", regionFlag.DefValue)
+
+	dryRunFlag := cmd.Flags().Lookup("dry-run")
+	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
+
+	yoloFlag := cmd.Flags().Lookup("yolo")
+	require.NotNil(t, yoloFlag, "expected --yolo flag")
+
+	workerNameFlag := cmd.Flags().Lookup("worker-name")
+	require.NotNil(t, workerNameFlag, "expected --worker-name flag")
+
+	previewFlag := cmd.Flags().Lookup("preview")
+	require.NotNil(t, previewFlag, "expected --preview flag")
+}
+
+func TestMintDeleteGCP_RequiresProject(t *testing.T) {
+	err := runMintDeleteGCP(context.Background(), "", "us-central1", false, false, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintDeleteGCP_InvalidProject(t *testing.T) {
+	err := runMintDeleteGCP(context.Background(), "INVALID", "us-central1", false, false, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid GCP project ID")
+}
+
+func TestMintDeleteGCP_DryRun(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			Name:  "projects/test-proj/locations/us-central1/functions/fullsend-mint",
+			State: "ACTIVE",
+			URI:   "https://fullsend-mint-abc123.a.run.app",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS":  `{"coder":"123","triage":"456"}`,
+				"ALLOWED_ORGS":  "acme",
+				"ALLOWED_ROLES": "coder,triage",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"123","triage":"456"}`,
+			"ALLOWED_ORGS":  "acme",
+			"ALLOWED_ROLES": "coder,triage",
+		}),
+	)
+
+	withMintGCFClient(t, client)
+
+	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", true, false, os.Stdin)
+	require.NoError(t, err)
+
+	// Dry run should NOT delete any secrets.
+	assert.Empty(t, gcf.DeletedSecretIDs(client), "dry run should not delete any secrets")
+}
+
+func TestMintDeleteGCP_FullTeardown(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			Name:  "projects/test-proj/locations/us-central1/functions/fullsend-mint",
+			State: "ACTIVE",
+			URI:   "https://fullsend-mint-abc123.a.run.app",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS":  `{"coder":"123","triage":"456"}`,
+				"ALLOWED_ORGS":  "acme",
+				"ALLOWED_ROLES": "coder,triage",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"123","triage":"456"}`,
+			"ALLOWED_ORGS":  "acme",
+			"ALLOWED_ROLES": "coder,triage",
+		}),
+	)
+
+	withMintGCFClient(t, client)
+
+	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", false, true, os.Stdin)
+	require.NoError(t, err)
+
+	// Verify PEM secrets were deleted.
+	deletedSecrets := gcf.DeletedSecretIDs(client)
+	assert.NotEmpty(t, deletedSecrets, "expected PEM secrets to be deleted")
+}
+
+func TestMintDeleteGCP_MintNotFound(t *testing.T) {
+	client := gcf.NewFakeGCFClient()
+	// Default fake: no functionInfo → DiscoverMint finds no function.
+
+	withMintGCFClient(t, client)
+
+	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", false, true, os.Stdin)
+	// Should succeed gracefully — nothing to delete.
+	require.NoError(t, err)
+}
+
+func TestMintDeleteCloudflare_DryRunDurable(t *testing.T) {
+	// Dry run should not call any wrangler methods.
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origResolve := cfResolveAuth
+	cfResolveAuth = func(context.Context) (string, error) { return "test-account", nil }
+	defer func() { cfResolveAuth = origResolve }()
+
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", true, false, os.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, fakeCF.deployCalls, "dry run should not deploy")
+}
+
+func TestMintDeleteCloudflare_DurableTeardown(t *testing.T) {
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origResolve := cfResolveAuth
+	cfResolveAuth = func(context.Context) (string, error) { return "test-account", nil }
+	defer func() { cfResolveAuth = origResolve }()
+
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, fakeCF.deployCalls, "durable delete should not deploy")
+}
+
+func TestMintDeleteCloudflare_PreviewTeardown(t *testing.T) {
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origResolve := cfResolveAuth
+	cfResolveAuth = func(context.Context) (string, error) { return "test-account", nil }
+	defer func() { cfResolveAuth = origResolve }()
+
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", false, true, os.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, fakeCF.deployCalls, "preview teardown should not deploy")
+}
+
+func TestMintDeleteGCP_ConfirmationRequired(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			Name:  "projects/test-proj/locations/us-central1/functions/fullsend-mint",
+			State: "ACTIVE",
+			URI:   "https://fullsend-mint-abc123.a.run.app",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS":  `{"coder":"123"}`,
+				"ALLOWED_ORGS":  "acme",
+				"ALLOWED_ROLES": "coder",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"123"}`,
+			"ALLOWED_ORGS":  "acme",
+			"ALLOWED_ROLES": "coder",
+		}),
+	)
+
+	withMintGCFClient(t, client)
+
+	// stdin is not a terminal → should fail without --yolo.
+	err := runMintDeleteGCP(context.Background(), "test-project1", "us-central1", false, false, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stdin is not a terminal")
+}
+
+func TestConfirmDelete(t *testing.T) {
+	printer := ui.New(io.Discard)
+
+	// Matching input.
+	reader := bufio.NewReader(strings.NewReader("delete\n"))
+	err := confirmDelete(printer, "mint infrastructure", reader, true)
+	require.NoError(t, err)
+
+	// Mismatched input.
+	reader = bufio.NewReader(strings.NewReader("nope\n"))
+	err = confirmDelete(printer, "mint infrastructure", reader, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "confirmation did not match")
+
+	// Not a terminal.
+	reader = bufio.NewReader(strings.NewReader("delete\n"))
+	err = confirmDelete(printer, "mint infrastructure", reader, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stdin is not a terminal")
 }
 
 // --- unenroll command tests ---
