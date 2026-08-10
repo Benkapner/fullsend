@@ -260,6 +260,8 @@ func TestTranscriptError_DisplayMessage(t *testing.T) {
 		{"empty message falls back to subtype", TranscriptError{Subtype: "error_max_turns"}, "agent terminated with error (subtype: error_max_turns)"},
 		{"subtype is sanitized too", TranscriptError{Subtype: "x::y\n"}, "agent terminated with error (subtype: x: :y )"},
 		{"message that sanitizes to empty falls back", TranscriptError{ErrorMessage: "\x1b[31m", Subtype: "error_unknown"}, "agent terminated with error (subtype: error_unknown)"},
+		// A colon run must not reconstitute "::" at a replacement seam.
+		{"colon run stays broken", TranscriptError{ErrorMessage: "x::::y"}, "x: : : :y"},
 		// Subtype is not truncated at parse time the way ErrorMessage is,
 		// and a transcript line can be up to 1MB — the fallback bounds it
 		// with the same truncateError treatment.

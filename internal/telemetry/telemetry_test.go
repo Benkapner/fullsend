@@ -96,7 +96,7 @@ func TestSetup_SpanAttributeValueLengthLimit(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, got, "test attribute must be exported")
-	assert.Len(t, got, maxSpanAttrValueLen, "attribute value must be truncated to the provider limit")
+	assert.Len(t, got, MaxSpanAttrValueLen, "attribute value must be truncated to the provider limit")
 }
 
 // TestSpanLimits pins the default and the operator-env precedence,
@@ -106,8 +106,8 @@ func TestSpanLimits(t *testing.T) {
 	pinOTELEnv(t)
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
-	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
-		"unset env defaults to maxSpanAttrValueLen")
+	assert.Equal(t, MaxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+		"unset env defaults to MaxSpanAttrValueLen")
 
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "512")
 	assert.Equal(t, 512, spanLimits().AttributeValueLengthLimit,
@@ -123,7 +123,7 @@ func TestSpanLimits(t *testing.T) {
 		"the generic variable's explicit -1 is honored too")
 
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "banana")
-	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+	assert.Equal(t, MaxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
 		"an unparseable value is not an operator setting; the default applies")
 
 	// The SDK's firstInt short-circuits on the first non-empty key: an
@@ -134,7 +134,7 @@ func TestSpanLimits(t *testing.T) {
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "500")
 	require.Equal(t, -1, sdktrace.NewSpanLimits().AttributeValueLengthLimit,
 		"SDK ground truth: invalid specific var short-circuits, generic var ignored")
-	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+	assert.Equal(t, MaxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
 		"an override the SDK discarded is not an operator setting; the default applies")
 
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "512")

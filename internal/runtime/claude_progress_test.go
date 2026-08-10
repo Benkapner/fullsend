@@ -314,6 +314,24 @@ func TestSanitizeOutput(t *testing.T) {
 			want:  "Edit: /src/config: :default.go",
 		},
 		{
+			// A single non-overlapping ReplaceAll pass turns ":::" into
+			// ": ::" — the replacement seam reconstitutes a literal "::".
+			// Colon runs must break to a fixed point.
+			name:  "three-colon run",
+			input: ":::",
+			want:  ": : :",
+		},
+		{
+			name:  "four-colon run reconstitution guard",
+			input: "::::",
+			want:  ": : : :",
+		},
+		{
+			name:  "colon run around a workflow command",
+			input: "safe text\n::::error::injected annotation",
+			want:  "safe text : : : :error: :injected annotation",
+		},
+		{
 			name:  "url-encoded newline",
 			input: "Read%0A::error::pwned",
 			want:  "Read : :error: :pwned",
@@ -381,6 +399,36 @@ func TestSanitizeOutput(t *testing.T) {
 				t.Errorf("sanitizeOutput(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestSanitize_ColonBreakIsIdempotent pins the guard property itself: no
+// sanitized output contains "::", and sanitizing twice equals sanitizing
+// once — for both variants, across colon runs long enough to reconstitute
+// a pair at a ReplaceAll seam.
+func TestSanitize_ColonBreakIsIdempotent(t *testing.T) {
+	inputs := []string{
+		"::", ":::", "::::", ":::::", "::::::",
+		"a::::b\n::::::c",
+		strings.Repeat(":", 100),
+		"::::error::forged",
+	}
+	for _, variant := range []struct {
+		name string
+		fn   func(string) string
+	}{
+		{"sanitizeOutput", sanitizeOutput},
+		{"sanitizeStreamText", sanitizeStreamText},
+	} {
+		for _, in := range inputs {
+			once := variant.fn(in)
+			if strings.Contains(once, "::") {
+				t.Errorf("%s(%q) = %q still contains \"::\"", variant.name, in, once)
+			}
+			if twice := variant.fn(once); twice != once {
+				t.Errorf("%s not idempotent on %q: %q -> %q", variant.name, in, once, twice)
+			}
+		}
 	}
 }
 

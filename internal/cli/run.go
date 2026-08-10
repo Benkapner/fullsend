@@ -2429,11 +2429,14 @@ const maxSpanStatusMsgLen = 2000
 // the fuller copy of an error than the status description, but not an
 // unbounded one: a sandbox-create failure embeds raw supervisor/gateway/
 // container logs, the SDK never truncates event attribute values, and an
-// oversized batch can be rejected by the collector whole. 8192 holds the
+// oversized batch can be rejected by the collector whole. The value is the
+// provider's default attribute bound so the two defaults cannot drift
+// (an operator's runtime attribute override deliberately does not move
+// this bound — the SDK never truncates event attributes); it holds the
 // worst-case transcript message — maxTranscriptErrorLength plus the parser
-// suffix, grown up to 1.5x by sanitization's "::" breaking (3,015 bytes) —
-// with room to spare; no external limit mandates the value.
-const maxSpanEventMsgLen = 8192
+// suffix, grown to just under 2x by sanitization's colon-pair breaking
+// (4,014 bytes) — with room to spare. No external limit mandates it.
+const maxSpanEventMsgLen = telemetry.MaxSpanAttrValueLen
 
 const statusEllipsis = "…"
 

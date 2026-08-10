@@ -824,10 +824,11 @@ func TestTranscriptErrorMessage(t *testing.T) {
 	assert.LessOrEqual(t, len(got), maxSpanEventMsgLen)
 
 	// Parser worst case survives sanitization growth whole: 2,000 bytes of
-	// colons grow to 3,000 when "::" is broken, plus the parser suffix —
-	// still inside the bound, so nothing is re-truncated.
+	// colons grow to 3,999 when every adjacent pair is broken to the fixed
+	// point, plus the parser suffix — still inside the bound, so nothing
+	// is re-truncated.
 	worst := strings.Repeat(":", 2000) + "… (truncated)"
 	got = transcriptErrorMessage(agentruntime.TranscriptError{ErrorMessage: worst})
-	assert.Equal(t, strings.Repeat(": :", 1000)+"… (truncated)", got,
+	assert.Equal(t, strings.Repeat(": ", 1999)+":"+"… (truncated)", got,
 		"worst-case sanitized growth stays whole")
 }

@@ -79,27 +79,28 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 	return nil
 }
 
-// maxSpanAttrValueLen bounds every span attribute value recorded through
+// MaxSpanAttrValueLen bounds every span attribute value recorded through
 // this provider. The SDK applies the limit (with UTF-8-safe truncation)
 // to span attributes only — event messages are bounded at their call
 // site — and free-text attributes such as a transcript-derived model
-// name or a pre-script skip reason are otherwise unbounded. 8192 matches
-// the exception-event bound in internal/cli; it applies only when the SDK
-// took no operator override — the first non-empty of
+// name or a pre-script skip reason are otherwise unbounded. The
+// exception-event bound in internal/cli (maxSpanEventMsgLen) is defined
+// from this constant so the two cannot drift. It applies only when the
+// SDK took no operator override — the first non-empty of
 // OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT and
 // OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT decides alone, and a parseable value
 // there, including -1 (unlimited), is honored as-is.
-const maxSpanAttrValueLen = 8192
+const MaxSpanAttrValueLen = 8192
 
 // spanLimits returns the SDK span limits. NewSpanLimits collapses "env
 // unset" and an explicit "-1" (the OTel sentinel for unlimited) to the
 // same struct value, so the env vars are consulted directly: the
-// maxSpanAttrValueLen default applies only when the deciding variable —
+// MaxSpanAttrValueLen default applies only when the deciding variable —
 // the first non-empty one — holds no parseable integer.
 func spanLimits() sdktrace.SpanLimits {
 	limits := sdktrace.NewSpanLimits()
 	if limits.AttributeValueLengthLimit < 0 && !attrValueLenConfigured() {
-		limits.AttributeValueLengthLimit = maxSpanAttrValueLen
+		limits.AttributeValueLengthLimit = MaxSpanAttrValueLen
 	}
 	return limits
 }
