@@ -319,6 +319,23 @@ This is an accepted tradeoff — the alternative (sharing a
 processed-note-IDs set or cross-reading watermarks between modes)
 adds state coupling that complicates the independent-schedule design.
 
+> **Update (2026-08, #5959):** The dual-schedule architecture above was replaced
+> by a single `*/5 * * * *` schedule with automatic full-poll promotion. The
+> poller now decides at runtime whether to run a fast poll or full poll based on
+> elapsed time since the last full poll (`FULLSEND_LAST_POLL_AT_FULL`). This
+> eliminates the tier distinction (Premium vs Free), the separate fast/full
+> schedules, and the `FULLSEND_POLL_MODE` variable. The fast-poll watermark
+> (`FULLSEND_LAST_POLL_AT_FAST`) is still used for slash-command-only cycles.
+> Free tier in-CI polling is no longer supported by this schedule (Free tier's
+> minimum interval is 60 minutes); Free tier users should use off-system polling
+> (`fullsend poll` on a VM or Kubernetes CronJob) as documented in "GitLab tier
+> considerations" below. Superseded sections: "Multi-frequency polling" above,
+> the "5 minutes on Premium/Ultimate, 60 minutes on Free tier" reference in the
+> cron-poller introduction, "Multi-frequency polling" and fast-poll MR note
+> limitation under "Slash command latency", the Free tier 60-minute interval
+> references in "GitLab tier considerations", and the "5 minutes on Premium, 60
+> minutes on Free" latency in "Consequences".
+
 ### Event routing
 
 The design goal is **functional event-type parity with GitHub** — users see the

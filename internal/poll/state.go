@@ -31,7 +31,7 @@ func (p *Poller) readWatermark(ctx context.Context, owner, repo string) (time.Ti
 // watermarkVarName returns the CI variable name used for the poll watermark.
 // Slash-command-only mode uses a faster polling cadence with its own variable.
 func (p *Poller) watermarkVarName() string {
-	if p.opts.SlashCommandsOnly {
+	if p.slashCommandsOnly {
 		return "FULLSEND_LAST_POLL_AT_FAST"
 	}
 	return "FULLSEND_LAST_POLL_AT_FULL"
@@ -134,7 +134,7 @@ func (p *Poller) isIssueClosed(ctx context.Context, owner, repo string, iid int)
 
 // dispatchedKeysVarName returns the per-mode CI variable name for dispatched keys.
 func (p *Poller) dispatchedKeysVarName() string {
-	if p.opts.SlashCommandsOnly {
+	if p.slashCommandsOnly {
 		return "FULLSEND_DISPATCHED_KEYS_FAST"
 	}
 	return "FULLSEND_DISPATCHED_KEYS_FULL"
@@ -179,7 +179,7 @@ func (p *Poller) persistDispatchedKeys(ctx context.Context, owner, repo string, 
 
 // failedKeysVarName returns the CI variable name for failed event retry counts.
 func (p *Poller) failedKeysVarName() string {
-	if p.opts.SlashCommandsOnly {
+	if p.slashCommandsOnly {
 		return "FULLSEND_FAILED_KEYS_FAST"
 	}
 	return "FULLSEND_FAILED_KEYS_FULL"

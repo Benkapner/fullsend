@@ -15,7 +15,7 @@ import (
 func clearPollEnv(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
-		"FULLSEND_FORGE_TOKEN", "CI_PROJECT_PATH", "FULLSEND_POLL_MODE",
+		"FULLSEND_FORGE_TOKEN", "CI_PROJECT_PATH",
 		"CI_COMMIT_REF_NAME", "CI_DEFAULT_BRANCH", "CI_JOB_URL",
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
 		"JIRA_TOKEN", "JIRA_USER_EMAIL",

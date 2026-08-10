@@ -251,125 +251,42 @@ func TestSetupGitLabBotToken(t *testing.T) {
 func TestSetupGitLabPipelineSchedules(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("enterprise gets dual schedules", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"enterprise": true})
-		})
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-
-		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-		require.NoError(t, err)
-
+	t.Run("creates single poll schedule", func(t *testing.T) {
 		fake := &forge.FakeClient{}
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		isEnterprise, err := setupGitLabPipelineSchedules(ctx, fake, glClient, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
 		require.NoError(t, err)
-		assert.True(t, isEnterprise)
-		require.Len(t, fake.CreatedSchedules, 2)
-		assert.Equal(t, "*/5 * * * *", fake.CreatedSchedules[0].Cron)
-		assert.Equal(t, "*/15 * * * *", fake.CreatedSchedules[1].Cron)
-	})
-
-	t.Run("free tier gets hourly schedule", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{"enterprise": false})
-		})
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-
-		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-		require.NoError(t, err)
-
-		fake := &forge.FakeClient{}
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		isEnterprise, err := setupGitLabPipelineSchedules(ctx, fake, glClient, printer, "group", "project", "main")
-		require.NoError(t, err)
-		assert.False(t, isEnterprise)
 		require.Len(t, fake.CreatedSchedules, 1)
-		assert.Equal(t, "0 * * * *", fake.CreatedSchedules[0].Cron)
+		assert.Equal(t, "*/5 * * * *", fake.CreatedSchedules[0].Cron)
+		assert.Equal(t, "fullsend poll", fake.CreatedSchedules[0].Description)
 	})
 }
 
-func TestSetupGitLabPipelineSchedules_FreeScheduleError(t *testing.T) {
+func TestSetupGitLabPipelineSchedules_ScheduleError(t *testing.T) {
 	ctx := context.Background()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"enterprise": false})
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-	require.NoError(t, err)
 
 	fake := forge.NewFakeClient()
 	fake.Errors["CreatePipelineSchedule"] = fmt.Errorf("quota exceeded")
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	_, err = setupGitLabPipelineSchedules(ctx, fake, glClient, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating poll schedule")
 }
 
-func TestSetupGitLabPipelineSchedules_EnterpriseFastScheduleError(t *testing.T) {
-	ctx := context.Background()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"enterprise": true})
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-	require.NoError(t, err)
-
-	fake := forge.NewFakeClient()
-	fake.Errors["CreatePipelineSchedule"] = fmt.Errorf("quota exceeded")
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-
-	isEnterprise, err := setupGitLabPipelineSchedules(ctx, fake, glClient, printer, "group", "project", "main")
-	require.Error(t, err)
-	assert.True(t, isEnterprise)
-	assert.Contains(t, err.Error(), "creating fast poll schedule")
-}
-
 func TestSetupGitLabPipelineSchedules_ListError(t *testing.T) {
 	ctx := context.Background()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"enterprise": false})
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-	require.NoError(t, err)
 
 	fake := forge.NewFakeClient()
 	fake.Errors["ListPipelineSchedules"] = fmt.Errorf("forbidden")
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	isEnterprise, err := setupGitLabPipelineSchedules(ctx, fake, glClient, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
 	require.NoError(t, err)
-	assert.False(t, isEnterprise)
 	assert.Contains(t, buf.String(), "Could not list existing schedules")
 }
 
@@ -492,17 +409,6 @@ func TestSetupGitLabBotToken_RevokesExistingBeforeCreate(t *testing.T) {
 func TestSetupGitLabPipelineSchedules_DeletesExisting(t *testing.T) {
 	ctx := context.Background()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"enterprise": false})
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-	require.NoError(t, err)
-
 	fake := &forge.FakeClient{
 		PipelineSchedules: map[string][]forge.PipelineSchedule{
 			"group/project": {
@@ -514,9 +420,8 @@ func TestSetupGitLabPipelineSchedules_DeletesExisting(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	isEnterprise, err := setupGitLabPipelineSchedules(ctx, fake, glClient, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
 	require.NoError(t, err)
-	assert.False(t, isEnterprise)
 	assert.Equal(t, []int64{5}, fake.DeletedScheduleIDs, "should delete existing fullsend schedule")
 	require.Len(t, fake.CreatedSchedules, 1)
 }
