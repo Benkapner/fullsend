@@ -337,6 +337,29 @@ func TestMarkdownToADF_Link(t *testing.T) {
 	}
 }
 
+func TestMarkdownToADF_LinkMarkDoesNotLeakToFollowingText(t *testing.T) {
+	doc := MarkdownToADF("before [link](https://example.com) after")
+
+	para := asMap(t, asSlice(t, doc["content"])[0])
+	nodes := asSlice(t, para["content"])
+
+	var sawTrailingText bool
+	for _, n := range nodes {
+		node := asMap(t, n)
+		text, _ := node["text"].(string)
+		if !strings.Contains(text, "after") {
+			continue
+		}
+		sawTrailingText = true
+		if marks, ok := node["marks"].([]any); ok && len(marks) > 0 {
+			t.Errorf("text node %q has marks %v, want none (link mark must not leak to a sibling)", text, marks)
+		}
+	}
+	if !sawTrailingText {
+		t.Fatal("expected a text node containing \"after\"")
+	}
+}
+
 func TestMarkdownToADF_UnknownBlockFallsBackToPlainText(t *testing.T) {
 	// convertBlockNode's default case previously returned nil for any
 	// block-level node outside its supported vocabulary (e.g. a raw HTML

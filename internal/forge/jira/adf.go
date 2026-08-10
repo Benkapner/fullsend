@@ -265,14 +265,15 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth i
 			walkInline(v, source, withMark(marks, map[string]any{"type": markType}), out, depth+1)
 		case *ast.Link:
 			dest := string(v.Destination)
+			linkMarks := marks
 			if isSafeHref(dest) {
 				attrs := map[string]any{"href": dest}
 				if len(v.Title) > 0 {
 					attrs["title"] = string(v.Title)
 				}
-				marks = withMark(marks, map[string]any{"type": "link", "attrs": attrs})
+				linkMarks = withMark(marks, map[string]any{"type": "link", "attrs": attrs})
 			}
-			walkInline(v, source, marks, out, depth+1)
+			walkInline(v, source, linkMarks, out, depth+1)
 		case *ast.AutoLink:
 			dest := string(v.URL(source))
 			linkMarks := marks
