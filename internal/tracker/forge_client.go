@@ -77,10 +77,14 @@ func (c *ForgeClient) CreateComment(ctx context.Context, project string, number 
 	return &result, nil
 }
 
-// UpdateComment implements Client. number is unused: forge.Client's
-// UpdateIssueComment identifies the comment by ID alone (GitHub/GitLab
-// comment IDs are globally unique within the repo), unlike Jira which
-// needs the issue key too.
+// UpdateComment implements Client. number is unused here: forge.Client's
+// UpdateIssueComment takes only a comment ID, which is sufficient for
+// GitHub (comment IDs are globally unique within the repo). GitLab
+// actually needs the issue/MR IID to address a note directly — see
+// gitlab.LiveClient.updateOrDeleteNote — but forge.Client's
+// UpdateIssueComment doesn't expose one, so the GitLab path still falls
+// back to that method's documented scan. Jira needs the issue key for an
+// unrelated reason: it isn't a forge.Client implementation at all.
 func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body string) error {
 	owner, repo, err := splitProject(project)
 	if err != nil {
