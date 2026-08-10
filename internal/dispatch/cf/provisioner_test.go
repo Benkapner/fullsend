@@ -496,7 +496,7 @@ func TestProvisioner_Provision_DurableWithSecretsRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "Config.Secrets must be empty for durable deploys")
 }
 
-func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
+func TestProvisioner_Teardown_DurableDeletesWorker(t *testing.T) {
 	fake := &fakeWranglerRunner{}
 	p := NewProvisioner(Config{
 		AccountID:  "abc123",
@@ -505,8 +505,9 @@ func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
 	}, fake)
 
 	err := p.Teardown(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "only supported for preview")
+	require.NoError(t, err)
+	require.Len(t, fake.deleteCalls, 1, "durable teardown must call Delete")
+	assert.Equal(t, "test-mint", fake.deleteCalls[0])
 }
 
 // --- WASM auto-staging tests ---
@@ -1531,7 +1532,7 @@ func TestProvisioner_Provision_PreviewWithoutAlias(t *testing.T) {
 
 // --- Provisioner.Teardown durable is rejected ---
 
-func TestProvisioner_Teardown_DurableRejectsCleanup_Default(t *testing.T) {
+func TestProvisioner_Teardown_DurableDeletesWorker_Default(t *testing.T) {
 	// Same as existing test but with default deploy mode.
 	fake := &fakeWranglerRunner{}
 	p := &Provisioner{
@@ -1544,8 +1545,34 @@ func TestProvisioner_Teardown_DurableRejectsCleanup_Default(t *testing.T) {
 	}
 
 	err := p.Teardown(context.Background())
+	require.NoError(t, err)
+	require.Len(t, fake.deleteCalls, 1, "durable teardown must call Delete")
+	assert.Equal(t, "test-mint", fake.deleteCalls[0])
+}
+
+func TestProvisioner_Teardown_ValidationFails(t *testing.T) {
+	// Empty AccountID should fail validation.
+	p := NewProvisioner(Config{
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+	}, &fakeWranglerRunner{})
+
+	err := p.Teardown(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "only supported for preview")
+	assert.Contains(t, err.Error(), "CLOUDFLARE_ACCOUNT_ID is required")
+}
+
+func TestProvisioner_Teardown_DeleteError(t *testing.T) {
+	fake := &fakeWranglerRunner{deleteErr: fmt.Errorf("wrangler delete failed")}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+	}, fake)
+
+	err := p.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler delete failed")
 }
 
 // --- fileExistsAndNonEmpty tests ---

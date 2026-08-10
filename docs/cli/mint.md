@@ -11,6 +11,7 @@ Deploy and manage the OIDC token mint service. The mint exchanges GitHub Actions
 | Command | Description |
 |---------|-------------|
 | `fullsend mint deploy` | Deploy or update the token mint (GCP or Cloudflare) |
+| `fullsend mint delete` | Tear down mint infrastructure (GCP or Cloudflare) |
 | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | `fullsend mint remove-role <role>` | Remove a role from the mint |
 | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint |
@@ -59,7 +60,7 @@ fullsend mint deploy \
   --platform cloudflare
 ```
 
-Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown abandons the alias without deleting the Worker script.
+Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown via `mint delete --platform=cloudflare --preview=<alias>` abandons the alias without deleting the Worker script.
 
 If the target Worker script does not yet exist (first-time preview on a new `--worker-name`), the CLI automatically creates it with a one-time durable deploy before proceeding with the preview upload. Subsequent preview deploys skip this bootstrap step. When `--pem-dir` is set, the bootstrap deploy includes PEM secrets so the Worker is immediately usable.
 
@@ -125,6 +126,57 @@ gcloud services enable \
   iamcredentials.googleapis.com \
   --project="$GCP_PROJECT"
 ```
+
+## `mint delete`
+
+Tears down mint infrastructure. This is the inverse of `mint deploy`. Use `--platform` to select the target platform (default: `gcp`).
+
+### GCP mode (`--platform=gcp`)
+
+Deletes all GCP mint infrastructure in order: Cloud Function, PEM secrets, service account, and WIF pool (with all providers). Non-critical resource failures (service account, WIF pool) are reported as warnings rather than hard errors.
+
+```bash
+fullsend mint delete \
+  --project "<GCP_PROJECT>" \
+  --region "us-central1"
+```
+
+### Cloudflare durable mode (`--platform=cloudflare`)
+
+Deletes the durable Worker script and all associated bindings/secrets via `wrangler delete`.
+
+```bash
+fullsend mint delete --platform cloudflare
+```
+
+### Cloudflare preview mode (`--platform=cloudflare --preview=<alias>`)
+
+Abandons the preview alias without deleting the durable Worker script. This is the explicit teardown for preview mints deployed with `mint deploy --preview=<alias>`.
+
+```bash
+fullsend mint delete --platform cloudflare --preview bt-run-42
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (GCP only, required) |
+| `--region` | `us-central1` | GCP region for the Cloud Function (GCP only) |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
+| `--preview` | | Tear down a preview mint identified by this alias (Cloudflare only) |
+| `--dry-run` | `false` | Preview changes without making them |
+| `--yolo` | `false` | Skip confirmation prompt |
+
+### Required IAM roles (GCP)
+
+| Role | Description |
+|------|-------------|
+| `roles/cloudfunctions.developer` | Delete the Cloud Function |
+| `roles/secretmanager.admin` | Delete PEM secrets |
+| `roles/iam.serviceAccountAdmin` | Delete the mint service account |
+| `roles/iam.workloadIdentityPoolAdmin` | Delete the WIF pool and providers |
 
 ## `mint add-role`
 
