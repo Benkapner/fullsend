@@ -661,10 +661,69 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenMarkerExists(t *testing.T) {
 func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenNoMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	// No comments, default completion mode — should NOT synthesize.
+	// No comments, default completion mode, unknown job status — should
+	// NOT synthesize.
 	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize for enabled mode")
+	assert.Empty(t, fc.UpdatedComments)
+}
+
+func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenJobSucceeded(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	// No comments, default completion mode, job succeeded — the run
+	// completed and posted its own completion comment as expected; nothing
+	// to synthesize.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "enabled", "success", false, "")
+	require.NoError(t, err)
+	assert.Empty(t, fc.IssueComments)
+	assert.Empty(t, fc.UpdatedComments)
+}
+
+func TestReconcileOrphaned_EnabledMode_SynthesizesOnFailureWithNoMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
+
+	// No comments, default ("") completion mode, job failed. A status
+	// comment should always exist for a run that reached the harness under
+	// the default mode — its absence alongside a failed job means the
+	// process crashed before it could post anything at all (e.g. during
+	// environment validation), leaving maintainers unable to tell "no
+	// review was triggered" from "review was attempted and failed
+	// silently." See #3635.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "failure", false, "Review")
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["org/repo/7"]
+	require.Len(t, comments, 1, "should synthesize an interrupted comment for a crash before any comment posted")
+	assert.Contains(t, comments[0].Body, "❌ Terminated")
+	assert.Contains(t, comments[0].Body, "Review")
+}
+
+func TestReconcileOrphaned_EnabledMode_SynthesizesOnCancelledWithNoMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
+
+	// Same as above, but the job was cancelled rather than failed, and
+	// completion is explicitly "enabled" rather than the implicit default.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "enabled", "cancelled", false, "")
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["org/repo/7"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "⚠️ Cancelled")
+}
+
+func TestReconcileOrphaned_DisabledMode_NoSynthesisEvenOnFailure(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	// completion: disabled is an explicit opt-out of all status comments.
+	// Even though no marker exists and the job failed, we must not
+	// synthesize one — that would override the user's choice.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "disabled", "failure", false, "")
+	require.NoError(t, err)
+	assert.Empty(t, fc.IssueComments, "disabled completion mode must never synthesize a comment")
 	assert.Empty(t, fc.UpdatedComments)
 }
 
@@ -704,7 +763,13 @@ func TestReconcileOrphaned_OnFailure_SynthesizesWhenSkippedEvenIfJobSucceeded(t 
 
 	comments := fc.IssueComments["org/repo/7"]
 	require.Len(t, comments, 1, "should synthesize an interrupted comment despite jobStatus==success")
-	assert.Contains(t, comments[0].Body, "⏭️ Skipped (comment failed to post)")
+	// The label is deliberately outcome-neutral: "no completion comment" is
+	// true whether the notifier failed to set up (never attempted a post)
+	// or its own skip-reason comment post failed — ReconcileOrphaned can't
+	// tell those apart, so it shouldn't assert a specific cause. See the
+	// review discussion on PR #5736.
+	assert.Contains(t, comments[0].Body, "⏭️ Skipped (no completion comment)")
+	assert.NotContains(t, comments[0].Body, "comment failed to post")
 	assert.NotContains(t, comments[0].Body, "❌ Terminated")
 }
 
@@ -722,7 +787,7 @@ func TestReconcileOrphaned_OnFailure_SkippedWithRealCancellationKeepsReason(t *t
 	comments := fc.IssueComments["org/repo/7"]
 	require.Len(t, comments, 1)
 	assert.Contains(t, comments[0].Body, "⚠️ Cancelled")
-	assert.NotContains(t, comments[0].Body, "Skipped (comment failed to post)")
+	assert.NotContains(t, comments[0].Body, "Skipped (no completion comment)")
 }
 
 func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenSkippedButNotOnFailure(t *testing.T) {

@@ -35,12 +35,16 @@ const (
 	ReasonCancelled  TerminationReason = "cancelled"
 
 	// ReasonSkipCommentFailed is used when the pre-script decided to skip
-	// the run and PostCompletionWithDetail's own skip-reason comment failed
-	// to post, but the job otherwise completed normally (jobStatus is
-	// "success" or unknown). This is semantically distinct from a hard
-	// kill or job cancellation — the agent ran to completion, only its own
-	// comment-post attempt failed — so it gets a dedicated label rather
-	// than falling through to ReasonTerminated. See PR #5736.
+	// the run but no completion comment ended up recorded for it, while the
+	// job otherwise completed normally (jobStatus is "success" or
+	// unknown). The missing comment could mean the notifier failed to set
+	// up (no post was ever attempted) or that PostCompletionWithDetail's
+	// own skip-reason comment failed to post — this function can't tell
+	// those apart, so the label stays outcome-neutral rather than
+	// asserting a specific cause. It's semantically distinct from a hard
+	// kill or job cancellation — the agent ran to completion — so it gets
+	// a dedicated label rather than falling through to ReasonTerminated.
+	// See PR #5736.
 	ReasonSkipCommentFailed TerminationReason = "skip_comment_failed"
 )
 
@@ -467,20 +471,28 @@ func statusEmoji(status string) string {
 // state, it updates the comment to "Interrupted" and tags it as terminal.
 //
 // completionMode is the configured comment.completion value ("enabled",
-// "on_failure", or "disabled"). When "on_failure", no start comment marker
-// is created — so the absence of a marker means the process may have been
-// hard-killed before PostCompletion could run. In that case, a new
-// "Interrupted" comment is synthesized so the failure is still surfaced.
+// "on_failure", or "disabled"). It changes what an absent marker means:
+//
+//   - "on_failure": no start comment marker is ever created, so an absent
+//     marker doesn't by itself indicate a problem. It may mean the process
+//     was hard-killed before PostCompletion could run. See PR #5736.
+//   - "" or "enabled" (the default): a status comment should exist for
+//     every run that reached the harness, win or lose. An absent marker
+//     here means the process crashed before it could post anything at
+//     all (e.g. during environment validation) — a blind spot where
+//     maintainers can't tell "no review was triggered" from "review was
+//     attempted and failed silently." See #3635.
+//   - "disabled": an explicit opt-out of all status comments. An absent
+//     marker is never synthesized in this mode, regardless of outcome.
 //
 // jobStatus is the GitHub Actions job status (e.g., "success", "failure",
-// "cancelled"). When completionMode is "on_failure" and jobStatus is
-// "success" or empty, synthesis is skipped — "success" means the agent
-// completed normally and suppressed its comment, and empty means the job
-// outcome is unknown (e.g., --job-status was omitted). wasSkipped overrides
-// this: it's true when the pre-script itself decided to skip the run, which
-// means jobStatus can be "success" even though PostCompletionWithDetail's
-// skip-reason comment failed to post (its error is only logged, not
-// propagated to the job's exit code). See PR #5736.
+// "cancelled"). Synthesis is skipped when jobStatus is "success" or
+// empty — "success" means the run completed normally, and empty means the
+// job outcome is unknown (e.g., --job-status was omitted). wasSkipped
+// overrides this for "on_failure" mode only: it's true when the pre-script
+// itself decided to skip the run, which means jobStatus can be "success"
+// even though no completion comment ended up recorded for it (its error is
+// only logged, not propagated to the job's exit code). See PR #5736.
 //
 // agentDescription is used as the heading for a synthesized "Interrupted"
 // comment (e.g. "Code" for the code agent), so operators can tell which
@@ -521,26 +533,36 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 		return nil
 	}
 
-	// No matching comment found. When completion is "on_failure", the start
-	// comment is intentionally suppressed — so an absent marker doesn't mean
-	// "nothing happened." It may mean the process was hard-killed before
-	// PostCompletion could run. Synthesize an "Interrupted" comment so the
-	// failure is visible — but only when the job actually failed or was
-	// cancelled, or the run was skipped and its own skip-reason comment
-	// failed to post. A successful, non-skipped job with no marker means
-	// PostCompletion suppressed the comment as designed. See PR #5736.
-	if completionMode == "on_failure" && (wasSkipped || (jobStatus != "" && jobStatus != "success")) {
-		endTime := now().UTC()
-		synthReason := reason
+	// No matching comment found. Whether that's cause for synthesizing an
+	// "Interrupted" comment depends on completionMode — see the doc
+	// comment above for the three cases. "disabled" is excluded from both
+	// branches below: the user opted out of all status comments, so an
+	// absent marker is never treated as a problem there.
+	jobFailed := jobStatus != "" && jobStatus != "success"
+	shouldSynthesize := false
+	synthReason := reason
+	switch {
+	case completionMode == "on_failure" && (wasSkipped || jobFailed):
+		shouldSynthesize = true
 		// wasSkipped with no other failure/cancellation signal means the
-		// agent ran fine — only its own skip-reason comment failed to
-		// post. That's not a hard kill or cancellation, so label it
+		// agent ran fine — no completion comment ended up recorded for
+		// it. That's not a hard kill or cancellation, so label it
 		// distinctly rather than defaulting to ReasonTerminated. If
 		// jobStatus does show failure/cancellation, the passed-in reason
 		// already reflects that real outcome, so leave it alone.
-		if wasSkipped && (jobStatus == "" || jobStatus == "success") {
+		if wasSkipped && !jobFailed {
 			synthReason = ReasonSkipCommentFailed
 		}
+	case commentEnabled(completionMode) && jobFailed:
+		// Default/"enabled" completion mode: a marker should always exist
+		// for a run that reached the harness. Its absence alongside a
+		// failed or cancelled job means the process crashed before it
+		// could post anything at all. See #3635.
+		shouldSynthesize = true
+	}
+
+	if shouldSynthesize {
+		endTime := now().UTC()
 		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason)
 		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
@@ -600,7 +622,7 @@ func reasonLabel(reason TerminationReason, description string) (statusLabel, hea
 			heading = "Agent run cancelled"
 		}
 	case ReasonSkipCommentFailed:
-		statusLabel = "⏭️ Skipped (comment failed to post)"
+		statusLabel = "⏭️ Skipped (no completion comment)"
 		if description != "" {
 			heading = description
 		} else {
