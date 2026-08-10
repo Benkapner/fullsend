@@ -1,11 +1,14 @@
 package jira
 
 import (
+	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 // MarkdownToADF parses source as CommonMark and returns an Atlassian
@@ -15,16 +18,18 @@ import (
 // internal/jirapoll) already recognizes: paragraphs, headings,
 // bullet/ordered lists, blockquotes, fenced/indented code blocks,
 // thematic breaks, and the strong/em/code/link/hardBreak inline marks.
-// Markdown constructs outside that vocabulary (tables, images, raw HTML,
-// footnotes, ...) are silently dropped rather than rendered as something
-// ADF doesn't understand.
+// Block-level constructs outside that vocabulary (raw HTML, tables, ...)
+// fall back to a plain-text paragraph of their raw source rather than
+// vanishing outright — ADF has no equivalent node for most of them, but
+// dropping the content entirely would silently lose whatever a caller
+// wrote (e.g. this repo's own <details> convention for collapsing output).
 func MarkdownToADF(source string) map[string]any {
-	src := []byte(source)
+	src := truncateForParse([]byte(source))
 	doc := goldmark.DefaultParser().Parse(text.NewReader(src))
 	return map[string]any{
 		"version": 1,
 		"type":    "doc",
-		"content": adfBlockContent(doc, src, 0),
+		"content": adfBlockContent(doc, src, 0, false),
 	}
 }
 
@@ -38,49 +43,99 @@ func MarkdownToADF(source string) map[string]any {
 // happens.
 const maxADFWriteDepth = 50
 
-// adfBlockContent converts each block-level child of parent into an ADF
-// block node, dropping any child type convertBlockNode doesn't recognize.
+// maxMarkdownParseBytes caps the input size MarkdownToADF hands to
+// goldmark.Parse(). maxADFWriteDepth above only bounds the post-parse AST
+// walk; Parse() itself is the actual bottleneck for adversarial input —
+// benchmarking showed it costs ~O(N^2) on deeply nested blockquotes
+// (~3.2s to parse 80,000 nesting levels, i.e. 160KB), independent of and
+// unreached by the walk-depth cap. This limit keeps worst-case parse time
+// to roughly a few hundred milliseconds even for pathologically nested
+// input, while comfortably fitting any realistically hand-written comment
+// or issue description.
+const maxMarkdownParseBytes = 32 * 1024
+
+// truncateForParse trims src to maxMarkdownParseBytes, walking back to a
+// valid UTF-8 rune boundary so truncation can't split a multi-byte
+// character.
+func truncateForParse(src []byte) []byte {
+	if len(src) <= maxMarkdownParseBytes {
+		return src
+	}
+	cut := maxMarkdownParseBytes
+	for cut > 0 && !utf8.RuneStart(src[cut]) {
+		cut--
+	}
+	return src[:cut]
+}
+
+// adfBlockContent converts each block-level child of parent into zero or
+// more ADF block nodes (a child can expand to several siblings, e.g. a
+// flattened nested blockquote, or to none, e.g. a dropped thematic break).
 // depth is the nesting depth of parent's children; past maxADFWriteDepth,
-// remaining content is dropped rather than descended into, consistent with
-// how unsupported node types are already handled.
-func adfBlockContent(parent ast.Node, source []byte, depth int) []any {
+// remaining content is dropped rather than descended into. restricted
+// indicates parent is itself a blockquote or listItem, whose ADF schema
+// only accepts a narrower set of block types (paragraph, list, codeBlock)
+// than convertBlockNode emits by default — see convertBlockNode.
+func adfBlockContent(parent ast.Node, source []byte, depth int, restricted bool) []any {
 	content := []any{}
 	if depth > maxADFWriteDepth {
 		return content
 	}
 	for c := parent.FirstChild(); c != nil; c = c.NextSibling() {
-		if node := convertBlockNode(c, source, depth); node != nil {
-			content = append(content, node)
-		}
+		content = append(content, convertBlockNode(c, source, depth, restricted)...)
 	}
 	return content
 }
 
-// convertBlockNode converts a single goldmark block node to its ADF
-// equivalent, or returns nil for node kinds outside MarkdownToADF's
-// supported vocabulary. depth is n's own nesting depth.
-func convertBlockNode(n ast.Node, source []byte, depth int) map[string]any {
+// convertBlockNode converts a single goldmark block node to zero or more
+// ADF nodes: normally one, but zero for a dropped or empty node, or
+// several when a nested blockquote is flattened into its parent's
+// content. depth is n's own nesting depth. restricted indicates n is a
+// direct child of a blockquote or listItem: ADF restricts both to
+// paragraph/bulletList/orderedList/codeBlock/media content, so heading,
+// thematic break, and nested blockquote — all valid at the top level or
+// inside a list item's ordinary flow — must be degraded rather than
+// emitted as-is, or Jira Cloud rejects the whole write with a 400.
+func convertBlockNode(n ast.Node, source []byte, depth int, restricted bool) []any {
 	switch v := n.(type) {
 	case *ast.Paragraph:
-		return map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth)}
+		return oneNode(map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth, nil)})
 	case *ast.TextBlock:
 		// Tight list items wrap their text in a TextBlock rather than a
 		// Paragraph; ADF's listItem schema still expects a paragraph child.
-		return map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth)}
+		return oneNode(map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth, nil)})
 	case *ast.Heading:
-		return map[string]any{
+		if restricted {
+			// Degrade to a bold paragraph: ADF's blockquote/listItem
+			// schema has no heading node.
+			marks := []any{map[string]any{"type": "strong"}}
+			return oneNode(map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth, marks)})
+		}
+		return oneNode(map[string]any{
 			"type":    "heading",
 			"attrs":   map[string]any{"level": v.Level},
-			"content": adfInlineContent(n, source, depth),
-		}
+			"content": adfInlineContent(n, source, depth, nil),
+		})
 	case *ast.ThematicBreak:
-		return map[string]any{"type": "rule"}
+		if restricted {
+			// ADF's blockquote/listItem schema has no rule node; there's
+			// no reasonable degradation, so it's dropped.
+			return nil
+		}
+		return oneNode(map[string]any{"type": "rule"})
 	case *ast.Blockquote:
-		return map[string]any{"type": "blockquote", "content": adfBlockContent(n, source, depth+1)}
+		children := adfBlockContent(n, source, depth+1, true)
+		if restricted {
+			// ADF's blockquote schema doesn't allow a nested blockquote;
+			// flatten by splicing this one's children directly into the
+			// parent's content instead of wrapping them.
+			return children
+		}
+		return containerNode("blockquote", children, nil)
 	case *ast.CodeBlock:
-		return codeBlockNode(v.Lines().Value(source), "")
+		return oneNode(codeBlockNode(v.Lines().Value(source), ""))
 	case *ast.FencedCodeBlock:
-		return codeBlockNode(v.Lines().Value(source), string(v.Language(source)))
+		return oneNode(codeBlockNode(v.Lines().Value(source), string(v.Language(source))))
 	case *ast.List:
 		listType := "bulletList"
 		var attrs map[string]any
@@ -90,24 +145,73 @@ func convertBlockNode(n ast.Node, source []byte, depth int) map[string]any {
 				attrs = map[string]any{"order": v.Start}
 			}
 		}
-		node := map[string]any{"type": listType, "content": adfBlockContent(n, source, depth+1)}
-		if attrs != nil {
-			node["attrs"] = attrs
-		}
-		return node
+		// A List's own children are always ListItems, which are valid in
+		// any context, so restricted doesn't propagate here — only into
+		// each ListItem's own content below.
+		return containerNode(listType, adfBlockContent(n, source, depth+1, false), attrs)
 	case *ast.ListItem:
-		return map[string]any{"type": "listItem", "content": adfBlockContent(n, source, depth+1)}
+		return containerNode("listItem", adfBlockContent(n, source, depth+1, true), nil)
 	default:
+		// Node types without ADF-specific handling (e.g. HTMLBlock) fall
+		// back to a plain-text paragraph of their raw source, mirroring
+		// walkInline's own default case, so at least the readable content
+		// isn't lost outright.
+		if node := fallbackTextNode(n, source); node != nil {
+			return oneNode(node)
+		}
 		return nil
 	}
 }
 
+// oneNode wraps a single ADF node for convertBlockNode's []any return
+// type.
+func oneNode(node map[string]any) []any {
+	return []any{node}
+}
+
+// containerNode builds an ADF container node (blockquote, bulletList,
+// orderedList, listItem) of the given type, or returns no nodes at all if
+// content is empty: ADF requires these types to have at least one child
+// (minItems: 1), and an empty one — e.g. from a maxADFWriteDepth cutoff,
+// or a listItem whose only child was dropped — would make Jira reject the
+// entire write with a 400. Dropping the container is preferable to
+// inserting a placeholder, since it doesn't fabricate visible content the
+// original markdown never had.
+func containerNode(nodeType string, content []any, attrs map[string]any) []any {
+	if len(content) == 0 {
+		return nil
+	}
+	node := map[string]any{"type": nodeType, "content": content}
+	if attrs != nil {
+		node["attrs"] = attrs
+	}
+	return oneNode(node)
+}
+
+// fallbackTextNode renders a block node's raw source lines as a plain-text
+// paragraph, for block kinds convertBlockNode has no dedicated handling
+// for. Returns nil if the node exposes no raw lines or they're blank.
+func fallbackTextNode(n ast.Node, source []byte) map[string]any {
+	lines, ok := n.(interface{ Lines() *text.Segments })
+	if !ok {
+		return nil
+	}
+	raw := strings.TrimSpace(string(lines.Lines().Value(source)))
+	if raw == "" {
+		return nil
+	}
+	return map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": raw}}}
+}
+
 // codeBlockNode builds an ADF codeBlock node. lang is set as the
 // "language" attr only when non-empty (indented code blocks have none).
+// The text child is omitted entirely for an empty block: ADF requires
+// text nodes to be non-empty, but codeBlock content itself is optional, so
+// a bare {"type":"codeBlock"} is the valid way to represent one.
 func codeBlockNode(text []byte, lang string) map[string]any {
-	node := map[string]any{
-		"type":    "codeBlock",
-		"content": []any{map[string]any{"type": "text", "text": strings.TrimRight(string(text), "\n")}},
+	node := map[string]any{"type": "codeBlock"}
+	if trimmed := strings.TrimRight(string(text), "\n"); trimmed != "" {
+		node["content"] = []any{map[string]any{"type": "text", "text": trimmed}}
 	}
 	if lang != "" {
 		node["attrs"] = map[string]any{"language": lang}
@@ -118,10 +222,13 @@ func codeBlockNode(text []byte, lang string) map[string]any {
 // adfInlineContent converts the inline children of a block node (paragraph
 // or heading) into a flat sequence of ADF text/hardBreak nodes. depth is
 // the block node's own nesting depth, threaded through to walkInline since
-// inline marks (nested emphasis/links/code spans) recurse too.
-func adfInlineContent(parent ast.Node, source []byte, depth int) []any {
+// inline marks (nested emphasis/links/code spans) recurse too. marks seeds
+// the mark set every emitted text node starts with — nil normally, or e.g.
+// a "strong" mark when a heading is being degraded to a bold paragraph
+// inside a blockquote/listItem.
+func adfInlineContent(parent ast.Node, source []byte, depth int, marks []any) []any {
 	content := []any{}
-	walkInline(parent, source, nil, &content, depth)
+	walkInline(parent, source, marks, &content, depth)
 	return content
 }
 
@@ -136,7 +243,7 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth i
 	for c := parent.FirstChild(); c != nil; c = c.NextSibling() {
 		switch v := c.(type) {
 		case *ast.Text:
-			appendADFText(out, string(v.Value(source)), marks)
+			appendADFText(out, textValue(v, source), marks)
 			if v.HardLineBreak() {
 				*out = append(*out, map[string]any{"type": "hardBreak"})
 			} else if v.SoftLineBreak() {
@@ -145,7 +252,11 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth i
 		case *ast.String:
 			appendADFText(out, string(v.Value), marks)
 		case *ast.CodeSpan:
-			walkInline(v, source, withMark(marks, map[string]any{"type": "code"}), out, depth+1)
+			// ADF's code mark can only combine with link, per Atlassian's
+			// mark-combination rules; drop any inherited strong/em (or
+			// other) marks rather than emitting a schema-invalid
+			// [strong, code] pair for input like "**`--flag`**".
+			walkInline(v, source, withMark(onlyLinkMarks(marks), map[string]any{"type": "code"}), out, depth+1)
 		case *ast.Emphasis:
 			markType := "em"
 			if v.Level >= 2 {
@@ -153,15 +264,24 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth i
 			}
 			walkInline(v, source, withMark(marks, map[string]any{"type": markType}), out, depth+1)
 		case *ast.Link:
-			attrs := map[string]any{"href": string(v.Destination)}
-			if len(v.Title) > 0 {
-				attrs["title"] = string(v.Title)
+			dest := string(v.Destination)
+			if isSafeHref(dest) {
+				attrs := map[string]any{"href": dest}
+				if len(v.Title) > 0 {
+					attrs["title"] = string(v.Title)
+				}
+				marks = withMark(marks, map[string]any{"type": "link", "attrs": attrs})
 			}
-			walkInline(v, source, withMark(marks, map[string]any{"type": "link", "attrs": attrs}), out, depth+1)
+			walkInline(v, source, marks, out, depth+1)
 		case *ast.AutoLink:
-			appendADFText(out, string(v.Label(source)), withMark(marks, map[string]any{
-				"type": "link", "attrs": map[string]any{"href": string(v.URL(source))},
-			}))
+			dest := string(v.URL(source))
+			linkMarks := marks
+			if isSafeHref(dest) {
+				linkMarks = withMark(marks, map[string]any{
+					"type": "link", "attrs": map[string]any{"href": dest},
+				})
+			}
+			appendADFText(out, string(v.Label(source)), linkMarks)
 		default:
 			// Node types without ADF-specific handling (e.g. Image,
 			// RawHTML) fall through to walking their children as plain
@@ -171,6 +291,46 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth i
 	}
 }
 
+// isSafeHref reports whether dest is safe to emit as an ADF link's href.
+// A missing scheme (relative paths, "#fragment" anchors) is allowed, as
+// are http/https/mailto; anything else — javascript:, data:, vbscript:,
+// file:, ... — is rejected, mirroring the scheme allowlisting
+// ValidateBaseURL already applies to Jira base URLs elsewhere in this
+// package. dest that fails to parse as a URL at all is rejected too.
+func isSafeHref(dest string) bool {
+	if dest == "" {
+		return true
+	}
+	u, err := url.Parse(dest)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "", "http", "https", "mailto":
+		return true
+	default:
+		return false
+	}
+}
+
+// textValue returns the plain-text value of an *ast.Text node, resolving
+// backslash escapes and HTML entity/numeric character references the same
+// way goldmark's own HTML renderer does (via v.Value, which is raw source
+// bytes and does neither). Raw text — inside a code span or code block —
+// is returned unresolved, since goldmark's renderer leaves that content
+// verbatim too: "\*not em\*" outside code becomes "*not em*", but
+// "`\*x\*`" keeps its backslashes.
+func textValue(v *ast.Text, source []byte) string {
+	value := v.Value(source)
+	if v.IsRaw() {
+		return string(value)
+	}
+	value = util.UnescapePunctuations(value)
+	value = util.ResolveNumericReferences(value)
+	value = util.ResolveEntityNames(value)
+	return string(value)
+}
+
 // withMark returns a new marks slice with mark appended, without mutating
 // the caller's slice (siblings must not see marks added while walking a
 // previous sibling's subtree).
@@ -178,6 +338,19 @@ func withMark(marks []any, mark map[string]any) []any {
 	next := make([]any, len(marks), len(marks)+1)
 	copy(next, marks)
 	return append(next, mark)
+}
+
+// onlyLinkMarks filters marks down to just the "link" mark (if present),
+// for use before appending a "code" mark: ADF documents that code can only
+// be combined with link, not with strong/em or other marks.
+func onlyLinkMarks(marks []any) []any {
+	var kept []any
+	for _, m := range marks {
+		if mark, ok := m.(map[string]any); ok && mark["type"] == "link" {
+			kept = append(kept, m)
+		}
+	}
+	return kept
 }
 
 // appendADFText appends a "text" ADF node, or does nothing for empty text
