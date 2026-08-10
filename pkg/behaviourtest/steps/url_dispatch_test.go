@@ -814,6 +814,14 @@ func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
 	return nil
 }
 
+func (f *fakeURLSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeURLSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
+
 func (f *fakeURLSCM) EnsureRepoPublic(_ context.Context, _, _ string) error {
 	f.ensurePublicCalled = true
 	return f.ensurePublicErr

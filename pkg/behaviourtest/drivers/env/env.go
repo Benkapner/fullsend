@@ -11,14 +11,42 @@ type RunnerConfig struct {
 	SCM         string
 	CI          string
 	InstallMode string
+
+	// Capabilities lists environment capabilities the runner declares,
+	// from the comma-separated BEHAVIOUR_CAPABILITIES env var. Scenarios
+	// tagged @requires:capability:<name> are skipped unless <name> is
+	// declared — the gate for coverage of behavior that only exists past
+	// a certain dependency version (e.g. an agents-repo release).
+	Capabilities []string
 }
 
 func LoadRunnerConfig() RunnerConfig {
 	return RunnerConfig{
-		SCM:         stringsTrimOrDefault(os.Getenv("BEHAVIOUR_SCM"), "github"),
-		CI:          stringsTrimOrDefault(os.Getenv("BEHAVIOUR_CI"), "githubactions"),
-		InstallMode: stringsTrimOrDefault(os.Getenv("BEHAVIOUR_INSTALL_MODE"), "per-repo"),
+		SCM:          stringsTrimOrDefault(os.Getenv("BEHAVIOUR_SCM"), "github"),
+		CI:           stringsTrimOrDefault(os.Getenv("BEHAVIOUR_CI"), "githubactions"),
+		InstallMode:  stringsTrimOrDefault(os.Getenv("BEHAVIOUR_INSTALL_MODE"), "per-repo"),
+		Capabilities: splitCapabilities(os.Getenv("BEHAVIOUR_CAPABILITIES")),
 	}
+}
+
+// HasCapability reports whether the runner declared the named capability.
+func (c RunnerConfig) HasCapability(name string) bool {
+	for _, declared := range c.Capabilities {
+		if declared == name {
+			return true
+		}
+	}
+	return false
+}
+
+func splitCapabilities(raw string) []string {
+	var caps []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			caps = append(caps, p)
+		}
+	}
+	return caps
 }
 
 func (c RunnerConfig) Validate() error {
