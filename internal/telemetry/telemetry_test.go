@@ -125,6 +125,23 @@ func TestSpanLimits(t *testing.T) {
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "banana")
 	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
 		"an unparseable value is not an operator setting; the default applies")
+
+	// The SDK's firstInt short-circuits on the first non-empty key: an
+	// unparseable specific variable falls back to the SDK default without
+	// ever consulting the generic one. The helper must mirror that, or a
+	// mixed valid/invalid override leaves attribute values unbounded.
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "garbage")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "500")
+	require.Equal(t, -1, sdktrace.NewSpanLimits().AttributeValueLengthLimit,
+		"SDK ground truth: invalid specific var short-circuits, generic var ignored")
+	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+		"an override the SDK discarded is not an operator setting; the default applies")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "512")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "garbage")
+	require.Equal(t, 512, sdktrace.NewSpanLimits().AttributeValueLengthLimit)
+	assert.Equal(t, 512, spanLimits().AttributeValueLengthLimit,
+		"a valid specific var wins regardless of the generic one")
 }
 
 func TestSetup_NoopOnBadDir(t *testing.T) {

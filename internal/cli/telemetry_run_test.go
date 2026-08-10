@@ -532,6 +532,7 @@ func TestAgentSpanStatus_TranscriptBoundary(t *testing.T) {
 // status, the fullsend.transcript_error marker, the raw exit_code, and the
 // exception event on the runtime-error path.
 func TestFinalizeAgentSpan(t *testing.T) {
+	pinSpanLimitEnv(t)
 	newRecorded := func(runErr error, exitCode int, transcriptErr string) tracetest.SpanStub {
 		rec := tracetest.NewSpanRecorder()
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
@@ -614,11 +615,134 @@ func TestFinalizeAgentSpan(t *testing.T) {
 	})
 }
 
+// pinSpanLimitEnv clears the OTEL span-limit variables so recorder tests
+// are hermetic — an ambient OTEL_SPAN_EVENT_COUNT_LIMIT=0 on a CI runner
+// would drop the exception events these tests assert on.
+func pinSpanLimitEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+		"OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+		"OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT",
+		"OTEL_SPAN_EVENT_COUNT_LIMIT",
+		"OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+// TestFinalizeRootSpan pins the root span's finalization the same way the
+// agent and sandbox spans are pinned: the exception event only on the
+// runtime-error path, the rootSpanStatus mapping on the wire, and the
+// span ended exactly once.
+func TestFinalizeRootSpan(t *testing.T) {
+	pinSpanLimitEnv(t)
+	newRecorded := func(runErr error, exitCode int, validationPassed bool) tracetest.SpanStub {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "run")
+		finalizeRootSpan(span, runErr, exitCode, validationPassed)
+		ended := rec.Ended()
+		require.Len(t, ended, 1, "span must be ended exactly once")
+		return tracetest.SpanStubFromReadOnlySpan(ended[0])
+	}
+	eventNames := func(s tracetest.SpanStub) []string {
+		var names []string
+		for _, e := range s.Events {
+			names = append(names, e.Name)
+		}
+		return names
+	}
+
+	t.Run("run error records bounded repaired exception", func(t *testing.T) {
+		err := fmt.Errorf("creating sandbox: sandbox create failed: %s\xff", strings.Repeat("log\n", 4096))
+		require.Greater(t, len(err.Error()), maxSpanEventMsgLen, "fixture must exceed both caps")
+		s := newRecorded(err, 1, false)
+		assert.Equal(t, codes.Error, s.Status.Code)
+		assert.LessOrEqual(t, len(s.Status.Description), maxSpanStatusMsgLen)
+		assert.True(t, utf8.ValidString(s.Status.Description))
+		assert.Contains(t, eventNames(s), "exception")
+		for _, e := range s.Events {
+			for _, kv := range e.Attributes {
+				if kv.Key == "exception.message" {
+					assert.LessOrEqual(t, len(kv.Value.AsString()), maxSpanEventMsgLen)
+					assert.True(t, utf8.ValidString(kv.Value.AsString()))
+				}
+			}
+		}
+	})
+
+	t.Run("validation passed is Ok despite non-zero exit", func(t *testing.T) {
+		s := newRecorded(nil, 1, true)
+		assert.Equal(t, codes.Ok, s.Status.Code)
+		assert.Empty(t, s.Events, "no exception event without a runtime error")
+	})
+
+	t.Run("failed agent without validation loop is Error, status only", func(t *testing.T) {
+		s := newRecorded(nil, 1, false)
+		assert.Equal(t, codes.Error, s.Status.Code)
+		assert.Equal(t, "run finished with exit code 1", s.Status.Description)
+		assert.Empty(t, s.Events, "exit-code failures carry no exception event")
+	})
+
+	t.Run("green run", func(t *testing.T) {
+		s := newRecorded(nil, 0, false)
+		assert.Equal(t, codes.Ok, s.Status.Code)
+	})
+}
+
+// TestFinalizeSandboxSpan pins the sandbox-create span the same way
+// TestFinalizeAgentSpan pins the agent span: the create error — raw
+// supervisor/gateway/container logs, arbitrary size, possibly invalid
+// UTF-8 — gets the bounded exception event and the tighter bounded
+// status, and the span ends exactly once.
+func TestFinalizeSandboxSpan(t *testing.T) {
+	pinSpanLimitEnv(t)
+	newRecorded := func(err error) tracetest.SpanStub {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "sandbox_create")
+		finalizeSandboxSpan(span, err)
+		ended := rec.Ended()
+		require.Len(t, ended, 1, "span must be ended exactly once")
+		return tracetest.SpanStubFromReadOnlySpan(ended[0])
+	}
+
+	t.Run("create failure with oversized invalid-UTF-8 logs", func(t *testing.T) {
+		logs := "\xff\xfepull: " + strings.Repeat("layer abc123 downloading\n", 4096)
+		err := fmt.Errorf("sandbox create failed: %s", logs)
+		require.Greater(t, len(err.Error()), maxSpanEventMsgLen, "fixture must exceed both caps")
+		s := newRecorded(err)
+		assert.Equal(t, codes.Error, s.Status.Code)
+		assert.LessOrEqual(t, len(s.Status.Description), maxSpanStatusMsgLen, "status is bounded")
+		assert.True(t, utf8.ValidString(s.Status.Description), "status is repaired UTF-8")
+		assert.True(t, strings.HasPrefix(s.Status.Description, "sandbox create failed:"))
+		var msg string
+		for _, e := range s.Events {
+			for _, kv := range e.Attributes {
+				if kv.Key == "exception.message" {
+					msg = kv.Value.AsString()
+				}
+			}
+		}
+		require.NotEmpty(t, msg, "create failure must record an exception event")
+		assert.LessOrEqual(t, len(msg), maxSpanEventMsgLen, "event carries the fuller bounded copy")
+		assert.True(t, utf8.ValidString(msg))
+	})
+
+	t.Run("create success", func(t *testing.T) {
+		s := newRecorded(nil)
+		assert.Equal(t, codes.Ok, s.Status.Code)
+		assert.Empty(t, s.Events, "no exception event on success")
+	})
+}
+
 // TestRecordSanitizedError pins the exception-event contract: the message is
 // repaired to valid UTF-8 and bounded to maxSpanEventMsgLen. The SDK applies
 // no length limit of its own to event attributes, and a sandbox-create error
 // embeds raw supervisor/gateway/container logs of arbitrary size.
 func TestRecordSanitizedError(t *testing.T) {
+	pinSpanLimitEnv(t)
 	record := func(err error) tracetest.SpanStub {
 		rec := tracetest.NewSpanRecorder()
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))

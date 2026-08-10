@@ -961,12 +961,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			)
 		}
 
-		if runErr != nil {
-			recordSanitizedError(rootSpan, runErr)
-		}
-		code, msg := rootSpanStatus(runErr, exitCode, validationPassed)
-		rootSpan.SetStatus(code, msg)
-		rootSpan.End()
+		finalizeRootSpan(rootSpan, runErr, exitCode, validationPassed)
 
 		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
 		defer cancel()
@@ -1028,17 +1023,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
-		// This error embeds raw supervisor/gateway/container logs — same
-		// treatment as the agent and root spans: the fuller bounded copy
-		// on the event, a tighter valid-UTF-8 status.
-		recordSanitizedError(sandboxSpan, err)
-		sandboxSpan.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
-		sandboxSpan.End()
+		finalizeSandboxSpan(sandboxSpan, err)
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
-	sandboxSpan.SetStatus(codes.Ok, "")
-	sandboxSpan.End()
+	finalizeSandboxSpan(sandboxSpan, nil)
 
 	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
 	// and corresponds to the validated iteration. It is false when:
@@ -2471,6 +2460,34 @@ func truncateStatusMsgTo(s string, n int) string {
 		truncated = truncated[:len(truncated)-1]
 	}
 	return truncated + statusEllipsis
+}
+
+// finalizeRootSpan records the run outcome on the root span and ends it:
+// a runtime error gets the bounded exception event before the status, and
+// the status comes from rootSpanStatus — validation, not the last agent
+// exit, is the run's success gate (#5361).
+func finalizeRootSpan(span trace.Span, runErr error, exitCode int, validationPassed bool) {
+	if runErr != nil {
+		recordSanitizedError(span, runErr)
+	}
+	code, msg := rootSpanStatus(runErr, exitCode, validationPassed)
+	span.SetStatus(code, msg)
+	span.End()
+}
+
+// finalizeSandboxSpan records the sandbox-create outcome and ends the
+// span. On failure the create error — which embeds raw supervisor/
+// gateway/container logs — gets the same treatment as the agent and root
+// spans: the fuller bounded copy on the exception event, a tighter
+// valid-UTF-8 status description.
+func finalizeSandboxSpan(span trace.Span, err error) {
+	if err != nil {
+		recordSanitizedError(span, err)
+		span.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	span.End()
 }
 
 // transcriptErrorMessage builds the message for a transcript-reported

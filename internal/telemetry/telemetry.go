@@ -84,17 +84,18 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 // to span attributes only — event messages are bounded at their call
 // site — and free-text attributes such as a transcript-derived model
 // name or a pre-script skip reason are otherwise unbounded. 8192 matches
-// the exception-event bound in internal/cli; it applies only when the
-// operator has not set OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT or
-// OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT — any parseable setting, including
-// -1 (unlimited), is honored as-is.
+// the exception-event bound in internal/cli; it applies only when the SDK
+// took no operator override — the first non-empty of
+// OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT and
+// OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT decides alone, and a parseable value
+// there, including -1 (unlimited), is honored as-is.
 const maxSpanAttrValueLen = 8192
 
 // spanLimits returns the SDK span limits. NewSpanLimits collapses "env
 // unset" and an explicit "-1" (the OTel sentinel for unlimited) to the
 // same struct value, so the env vars are consulted directly: the
-// maxSpanAttrValueLen default applies only when the operator has not set
-// a parseable integer in either variable.
+// maxSpanAttrValueLen default applies only when the deciding variable —
+// the first non-empty one — holds no parseable integer.
 func spanLimits() sdktrace.SpanLimits {
 	limits := sdktrace.NewSpanLimits()
 	if limits.AttributeValueLengthLimit < 0 && !attrValueLenConfigured() {
@@ -103,17 +104,20 @@ func spanLimits() sdktrace.SpanLimits {
 	return limits
 }
 
-// attrValueLenConfigured reports whether the operator set an attribute
-// value-length limit via the standard OTel env vars. Values are parsed
-// the way the SDK parses them (strconv.Atoi, no trimming), so a value
-// the SDK ignores is not treated as a setting here either.
+// attrValueLenConfigured reports whether the SDK honored an operator's
+// attribute value-length limit. It mirrors the SDK's firstInt resolution
+// exactly (sdk/trace/internal/env, v1.44.0): the first non-empty variable
+// decides alone — if its value fails strconv.Atoi, the SDK falls back to
+// its default without consulting the second variable, so a discarded
+// override is not a setting here either.
 func attrValueLenConfigured() bool {
 	for _, key := range []string{"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT"} {
-		if v, ok := os.LookupEnv(key); ok {
-			if _, err := strconv.Atoi(v); err == nil {
-				return true
-			}
+		v := os.Getenv(key)
+		if v == "" {
+			continue
 		}
+		_, err := strconv.Atoi(v)
+		return err == nil
 	}
 	return false
 }
