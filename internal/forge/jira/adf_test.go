@@ -447,6 +447,13 @@ func TestMarkdownToADF_LinkAllowsSafeSchemes(t *testing.T) {
 	}
 }
 
+func TestMarkdownToADF_LinkRejectsProtocolRelativeHost(t *testing.T) {
+	doc := MarkdownToADF("[click me](//evil.example)")
+	if href, found := linkMarkHref(t, doc); found {
+		t.Errorf("MarkdownToADF(protocol-relative link) produced a link mark with href %q; want it dropped", href)
+	}
+}
+
 func TestMarkdownToADF_AutoLinkRejectsDangerousScheme(t *testing.T) {
 	// goldmark's autolink extension isn't enabled by default, so this
 	// exercises the CommonMark <...> autolink form instead.

@@ -293,11 +293,12 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth i
 }
 
 // isSafeHref reports whether dest is safe to emit as an ADF link's href.
-// A missing scheme (relative paths, "#fragment" anchors) is allowed, as
-// are http/https/mailto; anything else — javascript:, data:, vbscript:,
-// file:, ... — is rejected, mirroring the scheme allowlisting
-// ValidateBaseURL already applies to Jira base URLs elsewhere in this
-// package. dest that fails to parse as a URL at all is rejected too.
+// A missing scheme with no host (relative paths, "#fragment" anchors) is
+// allowed, as are http/https/mailto; anything else — javascript:, data:,
+// vbscript:, file:, protocol-relative "//host", ... — is rejected,
+// mirroring the scheme allowlisting ValidateBaseURL already applies to
+// Jira base URLs elsewhere in this package. dest that fails to parse as a
+// URL at all is rejected too.
 func isSafeHref(dest string) bool {
 	if dest == "" {
 		return true
@@ -307,7 +308,9 @@ func isSafeHref(dest string) bool {
 		return false
 	}
 	switch strings.ToLower(u.Scheme) {
-	case "", "http", "https", "mailto":
+	case "":
+		return u.Host == ""
+	case "http", "https", "mailto":
 		return true
 	default:
 		return false
