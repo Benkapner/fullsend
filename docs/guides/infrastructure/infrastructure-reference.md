@@ -252,8 +252,9 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_CREDENTIAL_MODE` — Set to `"variable"` or `"wif"` (when `--inference-project` is provided)
 - `FULLSEND_FORGE` — Set to `"gitlab"`
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to `"true"`)
-- `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last fast poll run
-- `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last full poll run
+- `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last slash poll run (name predates the slash/events terminology split; used by the slash-command schedule)
+- `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last event poll run (name predates the slash/events terminology split; used by the event-discovery schedule)
+- `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
 - `FULLSEND_LABEL_STATE` — JSON object tracking label sync state
 
 **Additional variables when `--inference-project` is provided (WIF mode):**
