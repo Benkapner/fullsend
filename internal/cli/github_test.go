@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -1048,6 +1049,35 @@ func TestRunGitHubSetupPerRepo_SignoffEmptyIdentityFields(t *testing.T) {
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--signoff requires a GitHub user identity with both name and email set")
+}
+
+func TestRunGitHubSetupPerRepo_DryRunSignoffShowsTrailer(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	cfg.signoff = true
+	cfg.dryRun = true
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.NoError(t, err)
+
+	// Dry run should display the trailer that would be added.
+	assert.Contains(t, buf.String(), "Signed-off-by: Test User <test@example.com>")
+	// Nothing should actually be committed.
+	assert.Empty(t, client.CommittedFiles)
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_DryRunSignoffMissingIdentity(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	client.AuthenticatedUserIdentity = nil
+	cfg.signoff = true
+	cfg.dryRun = true
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--signoff requires a GitHub user identity")
 }
 
 func TestGitHubSetCmd_OrgTargetDefaultsToConfigRepo(t *testing.T) {

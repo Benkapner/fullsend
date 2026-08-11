@@ -404,11 +404,36 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = cfg.inferenceWIFProvider
 	}
 
+	// Resolve Signed-off-by trailer when --signoff is set.
+	//
+	// Identity resolution runs before the dry-run early return so that
+	// --dry-run --signoff validates the token's identity up front instead
+	// of silently skipping the check.
+	//
+	// Unlike sync-scaffold (which gracefully degrades when identity is
+	// unavailable), setup uses an explicit opt-in flag and hard-fails.
+	// The user explicitly requested DCO sign-off; silently omitting the
+	// trailer would cause the DCO check to fail with a confusing error.
+	var signOffTrailer string
+	if cfg.signoff {
+		id, idErr := client.GetAuthenticatedUserIdentity(ctx)
+		if idErr != nil {
+			return fmt.Errorf("--signoff requires a GitHub user identity (name and email) — this is not available for GitHub App tokens: %w", idErr)
+		}
+		if id.Name == "" || id.Email == "" {
+			return fmt.Errorf("--signoff requires a GitHub user identity with both name and email set (got name=%q, email=%q)", id.Name, id.Email)
+		}
+		signOffTrailer = id.SignOffTrailer()
+	}
+
 	if cfg.dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		for _, f := range files {
 			printer.StepDone(fmt.Sprintf("Would commit: %s (%d bytes)", f.Path, len(f.Content)))
+		}
+		if signOffTrailer != "" {
+			printer.StepDone(fmt.Sprintf("Would add trailer: %s", signOffTrailer))
 		}
 		printer.Blank()
 		printer.StepInfo("Would set repository variables:")
@@ -434,24 +459,6 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return err
 	}
 	printer.Blank()
-
-	// Resolve Signed-off-by trailer when --signoff is set.
-	//
-	// Unlike sync-scaffold (which gracefully degrades when identity is
-	// unavailable), setup uses an explicit opt-in flag and hard-fails.
-	// The user explicitly requested DCO sign-off; silently omitting the
-	// trailer would cause the DCO check to fail with a confusing error.
-	var signOffTrailer string
-	if cfg.signoff {
-		id, idErr := client.GetAuthenticatedUserIdentity(ctx)
-		if idErr != nil {
-			return fmt.Errorf("--signoff requires a GitHub user identity (name and email) — this is not available for GitHub App tokens: %w", idErr)
-		}
-		if id.Name == "" || id.Email == "" {
-			return fmt.Errorf("--signoff requires a GitHub user identity with both name and email set (got name=%q, email=%q)", id.Name, id.Email)
-		}
-		signOffTrailer = id.SignOffTrailer()
-	}
 
 	if cfg.vendor {
 		var vendorErr error
