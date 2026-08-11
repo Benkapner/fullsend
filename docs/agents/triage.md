@@ -70,7 +70,8 @@ create_issues:
       - upstream-org/specific-repo
 ```
 
-**Defaults:** At install time, fullsend populates this with your org (in org mode)
+**Defaults:** At install time, fullsend populates this with your org (in org mode,
+[deprecated](../ADRs/0044-deprecate-per-org-installation-mode.md))
 or your repo (in per-repo mode), plus `fullsend-ai/fullsend` as an upstream target.
 
 **When to expand the allowlist:** If your project depends on libraries or services
