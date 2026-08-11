@@ -1056,6 +1056,40 @@ func TestADFToMarkdown_CodeBlockWithLanguage(t *testing.T) {
 	}
 }
 
+func TestADFToMarkdown_CodeBlockEmpty(t *testing.T) {
+	// An ADF codeBlock with no text children must render as an empty fenced
+	// block (no blank line between the fences), not "```\n\n```" which
+	// introduces a spurious blank line on round-trip.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{"type": "codeBlock"},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "```\n```"
+	if got != want {
+		t.Errorf("ADFToMarkdown(empty codeBlock) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_CodeBlockEmptyWithLanguage(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":  "codeBlock",
+				"attrs": map[string]any{"language": "go"},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "```go\n```"
+	if got != want {
+		t.Errorf("ADFToMarkdown(empty codeBlock with language) = %q, want %q", got, want)
+	}
+}
+
 func TestADFToMarkdown_CodeBlockWithoutLanguage(t *testing.T) {
 	adf := map[string]any{
 		"type": "doc",
@@ -1263,6 +1297,54 @@ func TestADFToMarkdown_Float64Attrs(t *testing.T) {
 	got = ADFToMarkdown(orderedList)
 	if got != "5. item" {
 		t.Errorf("ADFToMarkdown(orderedList with float64 order 5) = %q, want %q", got, "5. item")
+	}
+}
+
+func TestADFToMarkdown_EscapesMarkdownSignificantChars(t *testing.T) {
+	// Jira-native ADF (not from a MarkdownToADF round-trip) can contain
+	// literal markdown-significant characters in text nodes. Without
+	// escaping, wrapping "a * b" in **...** produces "**a * b**" which
+	// is ambiguous markdown.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{"type": "text", "text": "a * b and [c]"},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := `a \* b and \[c\]`
+	if got != want {
+		t.Errorf("ADFToMarkdown(text with markdown chars) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_NoEscapeInsideCodeMark(t *testing.T) {
+	// Text inside a code span is verbatim in Markdown; escaping would
+	// insert visible backslashes.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{
+						"type":  "text",
+						"text":  "a * b",
+						"marks": []any{map[string]any{"type": "code"}},
+					},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "`a * b`"
+	if got != want {
+		t.Errorf("ADFToMarkdown(code with markdown chars) = %q, want %q", got, want)
 	}
 }
 

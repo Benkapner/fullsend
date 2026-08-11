@@ -559,7 +559,11 @@ func adfMarkdownBlock(node map[string]any, depth int) string {
 				lang = l
 			}
 		}
-		return "```" + lang + "\n" + adfCodeBlockText(node) + "\n```"
+		text := adfCodeBlockText(node)
+		if text == "" {
+			return "```" + lang + "\n```"
+		}
+		return "```" + lang + "\n" + text + "\n```"
 	case "rule":
 		return "---"
 	case "blockquote":
@@ -655,8 +659,12 @@ func adfMarkdownInline(node map[string]any) string {
 // outer-to-inner (each enclosing mark is appended after the ones already
 // inherited from its parent — see its Emphasis/Link cases), so marks[0] is
 // the outermost mark and must be applied last to reproduce the original
-// nesting.
+// nesting. Text is escaped for Markdown-significant characters unless a
+// code mark is present (code spans are verbatim in Markdown).
 func applyADFMarks(text string, marks []map[string]any) string {
+	if !hasCodeMark(marks) {
+		text = escapeMDText(text)
+	}
 	for i := len(marks) - 1; i >= 0; i-- {
 		mark := marks[i]
 		switch mark["type"] {
@@ -675,4 +683,34 @@ func applyADFMarks(text string, marks []map[string]any) string {
 		}
 	}
 	return text
+}
+
+// mdEscaper escapes characters that have syntactic meaning in CommonMark
+// so that literal content from Jira-native ADF (not from a MarkdownToADF
+// round-trip) renders verbatim rather than triggering formatting.
+// Backslash is escaped first to avoid double-escaping.
+var mdEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`*`, `\*`,
+	`_`, `\_`,
+	"`", "\\`",
+	`[`, `\[`,
+	`]`, `\]`,
+)
+
+// escapeMDText escapes markdown-significant characters in text.
+func escapeMDText(text string) string {
+	return mdEscaper.Replace(text)
+}
+
+// hasCodeMark reports whether marks contains a "code" mark. Text inside a
+// code span is rendered verbatim in Markdown, so escaping would insert
+// visible backslashes.
+func hasCodeMark(marks []map[string]any) bool {
+	for _, m := range marks {
+		if m["type"] == "code" {
+			return true
+		}
+	}
+	return false
 }
