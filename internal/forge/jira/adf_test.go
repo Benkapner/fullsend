@@ -397,6 +397,75 @@ func TestMarkdownToADF_LinkMarkDoesNotLeakToFollowingText(t *testing.T) {
 	}
 }
 
+func TestMarkdownToADF_NestedAutolinkKeepsInnerHref(t *testing.T) {
+	// goldmark parses "[a <inner>](outer)" as an AutoLink nested inside a
+	// Link — deviating from CommonMark, which refuses nested links, but
+	// reachable input nonetheless. withMark's type-only dedup on "link"
+	// must not let the outer link's href silently overwrite the inner
+	// autolink's own href.
+	doc := mustADF(t, "[a <https://inner.example> b](https://outer.example)")
+
+	para := asMap(t, asSlice(t, doc["content"])[0])
+	var innerHref string
+	var found bool
+	for _, n := range asSlice(t, para["content"]) {
+		node := asMap(t, n)
+		if node["text"] != "https://inner.example" {
+			continue
+		}
+		found = true
+		marks := asSlice(t, node["marks"])
+		for _, m := range marks {
+			mark := asMap(t, m)
+			if mark["type"] != "link" {
+				continue
+			}
+			attrs := asMap(t, mark["attrs"])
+			innerHref = fmt.Sprint(attrs["href"])
+		}
+	}
+	if !found {
+		t.Fatalf("expected a text node with value %q", "https://inner.example")
+	}
+	if innerHref != "https://inner.example" {
+		t.Errorf("inner autolink href = %q, want %q (the outer link's href leaked in)", innerHref, "https://inner.example")
+	}
+}
+
+func TestMarkdownToADF_ImagePreservesDestinationAsLink(t *testing.T) {
+	// ADF has no plain image node outside "media" (which requires an
+	// uploaded attachment id, not a bare URL), so the load-bearing
+	// destination is preserved as a link on the alt text — the closest
+	// faithful degradation available.
+	doc := mustADF(t, "see ![diagram](https://img.example/d.png) here")
+
+	href, found := linkMarkHref(t, doc)
+	if !found {
+		t.Fatalf("MarkdownToADF(image) produced no link mark; want the image destination preserved as a link")
+	}
+	if href != "https://img.example/d.png" {
+		t.Errorf("image link href = %q, want %q", href, "https://img.example/d.png")
+	}
+
+	para := asMap(t, asSlice(t, doc["content"])[0])
+	var sawAlt bool
+	for _, n := range asSlice(t, para["content"]) {
+		if asMap(t, n)["text"] == "diagram" {
+			sawAlt = true
+		}
+	}
+	if !sawAlt {
+		t.Errorf("MarkdownToADF(image) = %+v, want alt text %q preserved", doc, "diagram")
+	}
+}
+
+func TestMarkdownToADF_ImageRejectsDangerousScheme(t *testing.T) {
+	doc := mustADF(t, "see ![diagram](javascript:alert(1)) here")
+	if href, found := linkMarkHref(t, doc); found {
+		t.Errorf("MarkdownToADF(image with javascript: scheme) produced a link mark with href %q; want it dropped", href)
+	}
+}
+
 func TestMarkdownToADF_UnknownBlockFallsBackToPlainText(t *testing.T) {
 	// convertBlockNode's default case previously returned nil for any
 	// block-level node outside its supported vocabulary (e.g. a raw HTML
@@ -1107,6 +1176,63 @@ func TestADFToMarkdown_CodeBlockWithoutLanguage(t *testing.T) {
 	}
 }
 
+func TestADFToMarkdown_CodeBlockFenceLongerThanContentBackticks(t *testing.T) {
+	// A fixed 3-backtick fence can be broken out of by content that
+	// itself contains a ``` line: the closing fence needs only be *at
+	// least as many* backticks as the opener per CommonMark, so a
+	// content line of exactly 3 backticks would close the block early.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":    "codeBlock",
+				"content": []any{map[string]any{"type": "text", "text": "example:\n```go\nfunc main() {}\n```"}},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "````\nexample:\n```go\nfunc main() {}\n```\n````"
+	if got != want {
+		t.Errorf("ADFToMarkdown(codeBlock with fence-length content) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_CodeBlockSanitizesLanguageAttr(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":    "codeBlock",
+				"attrs":   map[string]any{"language": "go\n```\n# injected"},
+				"content": []any{map[string]any{"type": "text", "text": "code"}},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "```\ncode\n```"
+	if got != want {
+		t.Errorf("ADFToMarkdown(codeBlock with hostile language attr) = %q, want %q (language dropped)", got, want)
+	}
+}
+
+func TestADFToMarkdown_CodeBlockAllowsSafeLanguageAttr(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":    "codeBlock",
+				"attrs":   map[string]any{"language": "c++"},
+				"content": []any{map[string]any{"type": "text", "text": "code"}},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "```c++\ncode\n```"
+	if got != want {
+		t.Errorf("ADFToMarkdown(codeBlock with safe language attr) = %q, want %q", got, want)
+	}
+}
+
 func TestADFToMarkdown_BulletList(t *testing.T) {
 	adf := map[string]any{
 		"type": "doc",
@@ -1215,6 +1341,134 @@ func TestADFToMarkdown_HardBreak(t *testing.T) {
 	}
 }
 
+func TestADFToMarkdown_UnknownContainerNodeRecursesIntoBlockChildren(t *testing.T) {
+	// Unknown ADF container types (panel, table, expand, taskList) wrap
+	// block-level content (paragraphs, tableRows, ...), not inline text.
+	// adfMarkdownInline alone can't see any of it, since it only reads
+	// direct children's top-level "text" fields.
+	for _, tc := range []struct {
+		name string
+		node map[string]any
+		want string
+	}{
+		{
+			name: "panel",
+			node: map[string]any{
+				"type":  "panel",
+				"attrs": map[string]any{"panelType": "info"},
+				"content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "important warning text"}}},
+				},
+			},
+			want: "important warning text",
+		},
+		{
+			name: "table",
+			node: map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a"}}},
+						}},
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "b"}}},
+						}},
+					}},
+				},
+			},
+			want: "a\n\nb",
+		},
+		{
+			name: "expand",
+			node: map[string]any{
+				"type":  "expand",
+				"attrs": map[string]any{"title": "Click to expand"},
+				"content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "hidden content"}}},
+				},
+			},
+			want: "hidden content",
+		},
+		{
+			name: "taskList",
+			node: map[string]any{
+				"type": "taskList",
+				"content": []any{
+					map[string]any{
+						"type":    "taskItem",
+						"attrs":   map[string]any{"localId": "1", "state": "TODO"},
+						"content": []any{map[string]any{"type": "text", "text": "buy milk"}},
+					},
+				},
+			},
+			want: "buy milk",
+		},
+	} {
+		doc := map[string]any{"type": "doc", "content": []any{tc.node}}
+		got := ADFToMarkdown(doc)
+		if got != tc.want {
+			t.Errorf("%s: ADFToMarkdown(%+v) = %q, want %q (content dropped)", tc.name, tc.node, got, tc.want)
+		}
+	}
+}
+
+func TestADFToMarkdown_InlineAtomNodesFallBackToText(t *testing.T) {
+	// mention/emoji/status/date/inlineCard carry their visible text in
+	// attrs, not a top-level "text" field; without a case for them,
+	// adfMarkdownInline silently drops them.
+	for _, tc := range []struct {
+		name string
+		node map[string]any
+		want string
+	}{
+		{
+			name: "mention",
+			node: map[string]any{"type": "mention", "attrs": map[string]any{"id": "557058:abc", "text": "@Alice"}},
+			want: "@Alice",
+		},
+		{
+			name: "emoji with text",
+			node: map[string]any{"type": "emoji", "attrs": map[string]any{"shortName": ":smile:", "text": "😄"}},
+			want: "😄",
+		},
+		{
+			name: "emoji falls back to shortName",
+			node: map[string]any{"type": "emoji", "attrs": map[string]any{"shortName": ":smile:"}},
+			want: ":smile:",
+		},
+		{
+			name: "status",
+			node: map[string]any{"type": "status", "attrs": map[string]any{"text": "DONE", "color": "green"}},
+			want: "DONE",
+		},
+		{
+			name: "date",
+			node: map[string]any{"type": "date", "attrs": map[string]any{"timestamp": "1584645600000"}},
+			want: "1584645600000",
+		},
+		{
+			name: "inlineCard",
+			node: map[string]any{"type": "inlineCard", "attrs": map[string]any{"url": "https://example.com/issue/1"}},
+			want: "https://example.com/issue/1",
+		},
+	} {
+		para := map[string]any{
+			"type": "paragraph",
+			"content": []any{
+				map[string]any{"type": "text", "text": "ping "},
+				tc.node,
+				map[string]any{"type": "text", "text": " please review"},
+			},
+		}
+		got := ADFToMarkdown(para)
+		want := "ping " + tc.want + " please review"
+		if got != want {
+			t.Errorf("%s: ADFToMarkdown(%+v) = %q, want %q", tc.name, tc.node, got, want)
+		}
+	}
+}
+
 func TestADFToMarkdown_DeepNestingIsBounded(t *testing.T) {
 	// Unlike ADFToPlainText's single generic node walker, ADFToMarkdown
 	// only recurses through container types that can genuinely nest in
@@ -1300,6 +1554,57 @@ func TestADFToMarkdown_Float64Attrs(t *testing.T) {
 	}
 }
 
+func TestADFToMarkdown_HeadingLevelOutOfRangeDoesNotPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		level any
+		want  string
+	}{
+		{"negative int", -1, "# hi"},
+		{"negative float64", float64(-1), "# hi"},
+		{"zero", 0, "# hi"},
+		{"seven", 7, "###### hi"},
+	} {
+		adf := map[string]any{
+			"type": "doc",
+			"content": []any{
+				map[string]any{
+					"type":    "heading",
+					"attrs":   map[string]any{"level": tc.level},
+					"content": []any{map[string]any{"type": "text", "text": "hi"}},
+				},
+			},
+		}
+		got := ADFToMarkdown(adf)
+		if got != tc.want {
+			t.Errorf("%s: ADFToMarkdown(heading level %v) = %q, want %q", tc.name, tc.level, got, tc.want)
+		}
+	}
+}
+
+func TestADFToMarkdown_OrderedListOrderOutOfRangeIsBounded(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":  "orderedList",
+				"attrs": map[string]any{"order": -5},
+				"content": []any{
+					map[string]any{
+						"type":    "listItem",
+						"content": []any{map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "item"}}}},
+					},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "0. item"
+	if got != want {
+		t.Errorf("ADFToMarkdown(orderedList order -5) = %q, want %q", got, want)
+	}
+}
+
 func TestADFToMarkdown_EscapesMarkdownSignificantChars(t *testing.T) {
 	// Jira-native ADF (not from a MarkdownToADF round-trip) can contain
 	// literal markdown-significant characters in text nodes. Without
@@ -1320,6 +1625,78 @@ func TestADFToMarkdown_EscapesMarkdownSignificantChars(t *testing.T) {
 	want := `a \* b and \[c\]`
 	if got != want {
 		t.Errorf("ADFToMarkdown(text with markdown chars) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_EscapesLineLeadingBlockSyntax(t *testing.T) {
+	// Unmarked text that begins a rendered line with block syntax
+	// changes node type on a round trip through MarkdownToADF (e.g. a
+	// paragraph "# not a heading" reparses as a real heading), even
+	// though escapeMDText already covers inline-significant characters.
+	for _, tc := range []struct {
+		name, text, want string
+	}{
+		{"heading hash", "# not a heading", `\# not a heading`},
+		{"bullet dash", "- not a list item", `\- not a list item`},
+		{"blockquote", "> not a quote", `\> not a quote`},
+		{"plus list", "+ not a list item", `\+ not a list item`},
+		{"ordered list dot", "1. not a list item", `1\. not a list item`},
+		{"ordered list paren", "1) not a list item", `1\) not a list item`},
+		{"mid-text hash not escaped", "see the C# language", "see the C# language"},
+		{"mid-text dash not escaped", "well-known issue", "well-known issue"},
+	} {
+		adf := map[string]any{
+			"type":    "paragraph",
+			"content": []any{map[string]any{"type": "text", "text": tc.text}},
+		}
+		got := ADFToMarkdown(adf)
+		if got != tc.want {
+			t.Errorf("%s: ADFToMarkdown(%q) = %q, want %q", tc.name, tc.text, got, tc.want)
+		}
+	}
+}
+
+func TestADFToMarkdown_LineLeadingBlockSyntaxRoundTripsAsParagraph(t *testing.T) {
+	for _, text := range []string{"# not a heading", "- not a list item", "> not a quote", "1. not a list item"} {
+		adf := map[string]any{
+			"type":    "paragraph",
+			"content": []any{map[string]any{"type": "text", "text": text}},
+		}
+		md := ADFToMarkdown(adf)
+		doc, err := MarkdownToADF(md)
+		if err != nil {
+			t.Fatalf("MarkdownToADF(%q) returned unexpected error: %v", md, err)
+		}
+		block := asMap(t, asSlice(t, doc["content"])[0])
+		if block["type"] != "paragraph" {
+			t.Errorf("round trip of %q via markdown %q reparsed as %v, want paragraph", text, md, block["type"])
+		}
+	}
+}
+
+func TestADFToMarkdown_EscapesAmpersand(t *testing.T) {
+	// escapeMDText doesn't escape "&"; textValue on the MarkdownToADF
+	// side resolves HTML entity/numeric references, so literal "&copy;"
+	// text mutates into "©" on a round trip without escaping.
+	adf := map[string]any{
+		"type":    "paragraph",
+		"content": []any{map[string]any{"type": "text", "text": "&copy; and &amp; stay literal"}},
+	}
+	got := ADFToMarkdown(adf)
+	want := `\&copy; and \&amp; stay literal`
+	if got != want {
+		t.Errorf("ADFToMarkdown(ampersand text) = %q, want %q", got, want)
+	}
+
+	doc, err := MarkdownToADF(got)
+	if err != nil {
+		t.Fatalf("MarkdownToADF(%q) returned unexpected error: %v", got, err)
+	}
+	para := asMap(t, asSlice(t, doc["content"])[0])
+	text := asMap(t, asSlice(t, para["content"])[0])
+	wantText := "&copy; and &amp; stay literal"
+	if text["text"] != wantText {
+		t.Errorf("round trip text = %q, want %q", text["text"], wantText)
 	}
 }
 
@@ -1345,6 +1722,97 @@ func TestADFToMarkdown_NoEscapeInsideCodeMark(t *testing.T) {
 	want := "`a * b`"
 	if got != want {
 		t.Errorf("ADFToMarkdown(code with markdown chars) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_CoalescesAdjacentSameMarkedTextNodes(t *testing.T) {
+	// Real Jira-Cloud-authored ADF commonly splits one bold run across
+	// adjacent text nodes carrying identical marks. Wrapping each node
+	// independently produces "**hello ****world**", which re-parses
+	// with the middle "****" as literal asterisks rather than as one
+	// continuous bold run.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{"type": "text", "text": "hello ", "marks": []any{map[string]any{"type": "strong"}}},
+					map[string]any{"type": "text", "text": "world", "marks": []any{map[string]any{"type": "strong"}}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "**hello world**"
+	if got != want {
+		t.Errorf("ADFToMarkdown(adjacent same-marked text) = %q, want %q", got, want)
+	}
+
+	doc, err := MarkdownToADF(got)
+	if err != nil {
+		t.Fatalf("MarkdownToADF(%q) returned unexpected error: %v", got, err)
+	}
+	para := asMap(t, asSlice(t, doc["content"])[0])
+	text := asMap(t, asSlice(t, para["content"])[0])
+	if text["text"] != "hello world" {
+		t.Errorf("round trip text = %q, want %q", text["text"], "hello world")
+	}
+	marks := asSlice(t, text["marks"])
+	if len(marks) != 1 || asMap(t, marks[0])["type"] != "strong" {
+		t.Errorf("round trip marks = %v, want a single strong mark", marks)
+	}
+}
+
+func TestADFToMarkdown_MarkSpanningSoftBreakRoundTrips(t *testing.T) {
+	// walkInline's soft-break case emits a " " text node carrying
+	// inherited marks, so writing "**bold\nsoft**" through
+	// MarkdownToADF produces three adjacent strong-marked text nodes:
+	// "bold", " ", "soft". Reading that back naively (wrapping each
+	// independently) produces "**bold**** ****soft**", which does not
+	// round trip.
+	src := "**bold\nsoft**"
+	doc := mustADF(t, src)
+	got := ADFToMarkdown(doc)
+	want := "**bold soft**"
+	if got != want {
+		t.Errorf("ADFToMarkdown(MarkdownToADF(%q)) = %q, want %q", src, got, want)
+	}
+}
+
+func TestADFToMarkdown_HoistsWhitespaceOutsideEmphasisDelimiters(t *testing.T) {
+	// A single marked text node with leading/trailing whitespace can't
+	// be wrapped directly ("**hello **") since CommonMark's flanking
+	// rule refuses to treat a "**" preceded by whitespace as a closer;
+	// the whitespace must be hoisted outside the delimiters.
+	adf := map[string]any{
+		"type":    "paragraph",
+		"content": []any{map[string]any{"type": "text", "text": " hello ", "marks": []any{map[string]any{"type": "strong"}}}},
+	}
+	got := ADFToMarkdown(adf)
+	want := " **hello** "
+	if got != want {
+		t.Errorf("ADFToMarkdown(leading/trailing whitespace strong) = %q, want %q", got, want)
+	}
+
+	doc, err := MarkdownToADF(got)
+	if err != nil {
+		t.Fatalf("MarkdownToADF(%q) returned unexpected error: %v", got, err)
+	}
+	para := asMap(t, asSlice(t, doc["content"])[0])
+	content := asSlice(t, para["content"])
+	var boldFound bool
+	for _, item := range content {
+		m := asMap(t, item)
+		if m["text"] == "hello" {
+			marks := asSlice(t, m["marks"])
+			if len(marks) == 1 && asMap(t, marks[0])["type"] == "strong" {
+				boldFound = true
+			}
+		}
+	}
+	if !boldFound {
+		t.Errorf("round trip content = %v, want a strong-marked %q text node", content, "hello")
 	}
 }
 

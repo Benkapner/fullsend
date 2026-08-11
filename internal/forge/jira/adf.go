@@ -3,7 +3,12 @@ package jira
 import (
 	"fmt"
 	"net/url"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -293,6 +298,22 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth i
 				})
 			}
 			appendADFText(out, string(v.Label(source)), linkMarks)
+		case *ast.Image:
+			// ADF has no plain image node outside "media", which needs
+			// an uploaded attachment id rather than a bare URL — so the
+			// destination, the load-bearing part of an image, is
+			// preserved as a link on the alt text instead of being
+			// dropped like the generic default case would (which walks
+			// an Image's children as plain text and never looks at its
+			// Destination).
+			dest := string(v.Destination)
+			linkMarks := marks
+			if isSafeHref(dest) {
+				linkMarks = withMark(marks, map[string]any{
+					"type": "link", "attrs": map[string]any{"href": dest},
+				})
+			}
+			walkInline(v, source, linkMarks, out, depth+1)
 		default:
 			// Node types without ADF-specific handling (e.g. Image,
 			// RawHTML) fall through to walking their children as plain
@@ -339,10 +360,85 @@ func textValue(v *ast.Text, source []byte) string {
 	if v.IsRaw() {
 		return string(value)
 	}
-	value = util.UnescapePunctuations(value)
-	value = util.ResolveNumericReferences(value)
-	value = util.ResolveEntityNames(value)
-	return string(value)
+	return string(resolveTextEscapes(value))
+}
+
+// resolveTextEscapes resolves backslash-escaped punctuation and HTML
+// entity/numeric character references in a single left-to-right pass, the
+// same way goldmark's HTML renderer (defaultWriter.Write) does. A single
+// pass is required: resolving punctuation escapes and entity references as
+// two separate passes — the way util.UnescapePunctuations followed by
+// util.ResolveEntityNames does — would unescape "\&copy;" to "&copy;"
+// first and then misread that as the entity reference "&copy;", even
+// though CommonMark's backslash-escape rule says the escaped "&" should
+// stay literal and shield the following text from entity parsing.
+func resolveTextEscapes(source []byte) []byte {
+	var out []byte
+	escaped := false
+	limit := len(source)
+	var ok bool
+	n := 0
+	for i := 0; i < limit; i++ {
+		c := source[i]
+		if escaped {
+			if util.IsPunct(c) {
+				out = append(out, source[n:i-1]...)
+				n = i
+				escaped = false
+				continue
+			}
+			escaped = false
+		}
+		if c == '&' {
+			pos := i
+			next := i + 1
+			if next < limit && source[next] == '#' {
+				nnext := next + 1
+				if nnext < limit {
+					nc := source[nnext]
+					if nc == 'x' || nc == 'X' {
+						start := nnext + 1
+						i, ok = util.ReadWhile(source, [2]int{start, limit}, util.IsHexDecimal)
+						if ok && i < limit && source[i] == ';' {
+							v, _ := strconv.ParseUint(util.BytesToReadOnlyString(source[start:i]), 16, 32)
+							out = append(out, source[n:pos]...)
+							n = i + 1
+							out = utf8.AppendRune(out, util.ToValidRune(rune(v)))
+							continue
+						}
+					} else if nc >= '0' && nc <= '9' {
+						start := nnext
+						i, ok = util.ReadWhile(source, [2]int{start, limit}, util.IsNumeric)
+						if ok && i < limit && i-start < 8 && source[i] == ';' {
+							v, _ := strconv.ParseUint(util.BytesToReadOnlyString(source[start:i]), 10, 32)
+							out = append(out, source[n:pos]...)
+							n = i + 1
+							out = utf8.AppendRune(out, util.ToValidRune(rune(v)))
+							continue
+						}
+					}
+				}
+			} else {
+				start := next
+				i, ok = util.ReadWhile(source, [2]int{start, limit}, util.IsAlphaNumeric)
+				if ok && i < limit && source[i] == ';' {
+					name := util.BytesToReadOnlyString(source[start:i])
+					if entity, ok2 := util.LookUpHTML5EntityByName(name); ok2 {
+						out = append(out, source[n:pos]...)
+						n = i + 1
+						out = append(out, entity.Characters...)
+						continue
+					}
+				}
+			}
+			i = next - 1
+		}
+		if c == '\\' {
+			escaped = true
+		}
+	}
+	out = append(out, source[n:]...)
+	return out
 }
 
 // withMark returns a new marks slice with mark appended, without mutating
@@ -353,12 +449,28 @@ func textValue(v *ast.Text, source []byte) string {
 // with the same "em" markType — marks is returned unchanged rather than
 // growing a duplicate: a text node with two identical marks is never
 // meaningful, and ADF's validator behavior for it is unconfirmed.
+//
+// A same-type "link" mark is the one exception: unlike em/strong, two
+// link marks can carry different hrefs — goldmark parses an autolink
+// nested inside a Markdown link (e.g. "[a <inner-url> b](outer-url)") as
+// a Link wrapping an AutoLink, even though CommonMark itself refuses
+// nested links — so the existing link mark is replaced in place by the
+// new (inner) one rather than treated as a redundant duplicate, matching
+// CommonMark's inner-most-wins resolution for nested constructs.
 func withMark(marks []any, mark map[string]any) []any {
 	markType, _ := mark["type"].(string)
-	for _, m := range marks {
-		if existing, ok := m.(map[string]any); ok && existing["type"] == markType {
+	for i, m := range marks {
+		existing, ok := m.(map[string]any)
+		if !ok || existing["type"] != markType {
+			continue
+		}
+		if markType != "link" {
 			return marks
 		}
+		next := make([]any, len(marks))
+		copy(next, marks)
+		next[i] = mark
+		return next
 	}
 	next := make([]any, len(marks), len(marks)+1)
 	copy(next, marks)
@@ -534,9 +646,13 @@ func adfMarkdownBlocks(node map[string]any, depth int) []string {
 }
 
 // adfMarkdownBlock renders a single ADF block-level node as Markdown.
-// Unrecognized types (e.g. "panel", "media") fall back to rendering any
-// inline text content flat, mirroring MarkdownToADF's own
-// fallback-to-plain-text convention, so content isn't silently dropped.
+// Unrecognized types (e.g. "panel", "table", "expand", "taskList") fall
+// back to recursing into their block-level children (e.g. a panel's
+// paragraphs, a table's rows) so content isn't silently dropped; if that
+// yields nothing, e.g. a taskItem whose own children are inline text
+// nodes rather than blocks, it falls back further to rendering any
+// direct inline text content flat, mirroring MarkdownToADF's own
+// fallback-to-plain-text convention.
 func adfMarkdownBlock(node map[string]any, depth int) string {
 	nodeType, _ := node["type"].(string)
 	switch nodeType {
@@ -551,19 +667,25 @@ func adfMarkdownBlock(node map[string]any, depth int) string {
 				level = int(l)
 			}
 		}
+		// The ADF schema restricts heading level to 1-6, but a
+		// malformed or malicious body could carry anything;
+		// strings.Repeat panics on a negative count, and 0 or >6
+		// wouldn't round-trip as a heading anyway.
+		level = clampInt(level, 1, 6)
 		return strings.Repeat("#", level) + " " + adfMarkdownInline(node)
 	case "codeBlock":
 		lang := ""
 		if attrs, ok := node["attrs"].(map[string]any); ok {
 			if l, ok := attrs["language"].(string); ok {
-				lang = l
+				lang = sanitizeCodeLanguage(l)
 			}
 		}
 		text := adfCodeBlockText(node)
+		fence := strings.Repeat("`", codeFenceLength(text))
 		if text == "" {
-			return "```" + lang + "\n```"
+			return fence + lang + "\n" + fence
 		}
-		return "```" + lang + "\n" + text + "\n```"
+		return fence + lang + "\n" + text + "\n" + fence
 	case "rule":
 		return "---"
 	case "blockquote":
@@ -583,10 +705,55 @@ func adfMarkdownBlock(node map[string]any, depth int) string {
 				start = int(o)
 			}
 		}
+		// CommonMark ordered-list start numbers are bounded to
+		// [0, 999999999]; clamp so a malformed order attr can't
+		// produce a marker a Markdown parser would reject.
+		start = clampInt(start, 0, 999999999)
 		return adfMarkdownList(node, depth, func(i int) string { return fmt.Sprintf("%d. ", start+i) })
 	default:
+		if blocks := adfMarkdownBlocks(node, depth); len(blocks) > 0 {
+			return strings.Join(blocks, "\n\n")
+		}
 		return adfMarkdownInline(node)
 	}
+}
+
+// codeFenceLength returns the number of backticks to use for a codeBlock's
+// Markdown fence: at least 3, and always more than the longest run of
+// consecutive backticks in content, so a quoted fenced code block inside
+// content can't be mistaken for this block's own closing fence — per
+// CommonMark, a closing fence needs only be *at least as many* backticks
+// as the opening one.
+func codeFenceLength(content string) int {
+	longest, current := 0, 0
+	for _, r := range content {
+		if r == '`' {
+			current++
+			if current > longest {
+				longest = current
+			}
+		} else {
+			current = 0
+		}
+	}
+	return max(longest+1, 3)
+}
+
+// codeLanguagePattern matches the conservative set of characters legal in
+// Markdown fence-line language identifiers (word characters plus a few
+// symbols common in real language names like "c++" and "c#").
+var codeLanguagePattern = regexp.MustCompile(`^[A-Za-z0-9+#._-]+$`)
+
+// sanitizeCodeLanguage returns lang unchanged if it matches
+// codeLanguagePattern, or "" otherwise. ADF's codeBlock attrs.language is
+// an unconstrained string spliced directly into the fence line; a value
+// containing a newline and its own fence could inject arbitrary block
+// structure into the rendered Markdown.
+func sanitizeCodeLanguage(lang string) string {
+	if codeLanguagePattern.MatchString(lang) {
+		return lang
+	}
+	return ""
 }
 
 // adfCodeBlockText concatenates a codeBlock node's text children verbatim
@@ -617,6 +784,17 @@ func adfMarkdownList(node map[string]any, depth int, marker func(i int) string) 
 	return strings.Join(lines, "\n")
 }
 
+// clampInt returns n bounded to [min, max].
+func clampInt(n, min, max int) int {
+	if n < min {
+		return min
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
 // asADFNodes type-asserts an ADF "content" field into a slice of child
 // node maps, skipping (rather than failing on) any element that isn't a
 // map[string]any.
@@ -634,24 +812,107 @@ func asADFNodes(content any) []map[string]any {
 	return nodes
 }
 
-// adfMarkdownInline renders a block node's inline children (text/hardBreak)
-// as a single line of Markdown, applying each text node's marks.
+// adfMarkdownInline renders a block node's inline children (text/hardBreak/
+// mention/emoji/status/date/inlineCard) as a single line of Markdown,
+// applying each node's marks.
+//
+// Adjacent children carrying identical mark sets are coalesced into one
+// run before their marks are applied, rather than wrapped independently.
+// Real Jira-Cloud-authored ADF commonly splits a single bold run across
+// several same-marked text nodes, and walkInline's own soft-break case
+// (a " " text node inheriting its neighbors' marks) produces the same
+// shape on the write side: wrapping "hello " and "world" independently
+// as "**hello **" + "**world**" leaves "**hello ****world**", which
+// MarkdownToADF re-parses with the middle "****" as literal asterisks
+// rather than one continuous bold run.
 func adfMarkdownInline(node map[string]any) string {
 	var sb strings.Builder
+	// atLineStart tracks whether the next emitted content starts a fresh
+	// rendered Markdown line: true for the block's first child, and
+	// again right after a hardBreak. Unmarked text landing here needs
+	// escaping if it happens to begin with block-level syntax (#, -, >,
+	// +, "1."), or MarkdownToADF would reparse it as a different node
+	// type — see applyADFMarks/escapeMDLineStarts.
+	atLineStart := true
+
+	// pending buffers a run of consecutive children with identical marks
+	// so their text can be escaped and wrapped once, rather than once
+	// per ADF node.
+	var pending struct {
+		text        string
+		marks       []map[string]any
+		atLineStart bool
+		open        bool
+	}
+	flush := func() {
+		if !pending.open {
+			return
+		}
+		sb.WriteString(applyADFMarks(pending.text, pending.marks, pending.atLineStart))
+		pending.open = false
+	}
+	appendRun := func(text string, marks []map[string]any) {
+		if pending.open && reflect.DeepEqual(pending.marks, marks) {
+			pending.text += text
+			return
+		}
+		flush()
+		pending.text, pending.marks, pending.atLineStart, pending.open = text, marks, atLineStart, true
+	}
+
 	for _, c := range asADFNodes(node["content"]) {
-		if childType, _ := c["type"].(string); childType == "hardBreak" {
+		childType, _ := c["type"].(string)
+		switch childType {
+		case "hardBreak":
 			// A backslash before the line ending, rather than the more
 			// common trailing double-space: trailing whitespace is
 			// silently stripped by enough editors, git diffs, and web
 			// forms that a hard break built from it wouldn't reliably
 			// survive a copy/paste round trip.
+			flush()
 			sb.WriteString("\\\n")
+			atLineStart = true
+			continue
+		case "mention", "status":
+			appendRun(atomAttrText(c, "text"), asADFNodes(c["marks"]))
+			atLineStart = false
+			continue
+		case "emoji":
+			text := atomAttrText(c, "text")
+			if text == "" {
+				text = atomAttrText(c, "shortName")
+			}
+			appendRun(text, asADFNodes(c["marks"]))
+			atLineStart = false
+			continue
+		case "date":
+			appendRun(atomAttrText(c, "timestamp"), asADFNodes(c["marks"]))
+			atLineStart = false
+			continue
+		case "inlineCard":
+			appendRun(atomAttrText(c, "url"), asADFNodes(c["marks"]))
+			atLineStart = false
 			continue
 		}
 		text, _ := c["text"].(string)
-		sb.WriteString(applyADFMarks(text, asADFNodes(c["marks"])))
+		appendRun(text, asADFNodes(c["marks"]))
+		atLineStart = false
 	}
+	flush()
 	return sb.String()
+}
+
+// atomAttrText reads a string-valued attrs field from an inline atom node
+// (mention, emoji, status, date, inlineCard) — these carry their visible
+// text in attrs rather than a top-level "text" field. Returns "" if attrs
+// or the named field is missing or not a string.
+func atomAttrText(node map[string]any, field string) string {
+	attrs, ok := node["attrs"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	s, _ := attrs[field].(string)
+	return s
 }
 
 // applyADFMarks wraps text in the Markdown syntax for each of marks, in
@@ -661,17 +922,26 @@ func adfMarkdownInline(node map[string]any) string {
 // the outermost mark and must be applied last to reproduce the original
 // nesting. Text is escaped for Markdown-significant characters unless a
 // code mark is present (code spans are verbatim in Markdown).
-func applyADFMarks(text string, marks []map[string]any) string {
+//
+// atLineStart additionally escapes leading block-level syntax (#, -, >,
+// +, "1.") when text is otherwise unmarked and lands at the start of a
+// rendered line — marked text doesn't need this, since a Markdown parser
+// sees the mark's own opening delimiter, not text's first character, at
+// that position.
+func applyADFMarks(text string, marks []map[string]any, atLineStart bool) string {
 	if !hasCodeMark(marks) {
 		text = escapeMDText(text)
+		if len(marks) == 0 {
+			text = escapeMDLineStarts(text, atLineStart)
+		}
 	}
 	for i := len(marks) - 1; i >= 0; i-- {
 		mark := marks[i]
 		switch mark["type"] {
 		case "strong":
-			text = "**" + text + "**"
+			text = wrapFlanking(text, "**")
 		case "em":
-			text = "*" + text + "*"
+			text = wrapFlanking(text, "*")
 		case "code":
 			text = "`" + text + "`"
 		case "link":
@@ -685,6 +955,26 @@ func applyADFMarks(text string, marks []map[string]any) string {
 	return text
 }
 
+// wrapFlanking wraps text in an emphasis delimiter (CommonMark's "**" or
+// "*"), placing the delimiters around only text's non-whitespace core and
+// leaving any leading or trailing whitespace outside them. CommonMark
+// only lets a delimiter open or close emphasis when it isn't immediately
+// followed (to open) or preceded (to close) by whitespace — wrapping
+// "hello " directly as "**hello **" leaves the closing "**" unable to
+// close, so MarkdownToADF would read it back as literal asterisks rather
+// than bold. If text is entirely whitespace (or empty), there's no
+// visible content to mark up, so it's returned unwrapped.
+func wrapFlanking(text, delim string) string {
+	leftTrimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+	lead := text[:len(text)-len(leftTrimmed)]
+	core := strings.TrimRightFunc(leftTrimmed, unicode.IsSpace)
+	if core == "" {
+		return text
+	}
+	trail := leftTrimmed[len(core):]
+	return lead + delim + core + delim + trail
+}
+
 // mdEscaper escapes characters that have syntactic meaning in CommonMark
 // so that literal content from Jira-native ADF (not from a MarkdownToADF
 // round-trip) renders verbatim rather than triggering formatting.
@@ -696,11 +986,62 @@ var mdEscaper = strings.NewReplacer(
 	"`", "\\`",
 	`[`, `\[`,
 	`]`, `\]`,
+	`&`, `\&`,
 )
 
 // escapeMDText escapes markdown-significant characters in text.
 func escapeMDText(text string) string {
 	return mdEscaper.Replace(text)
+}
+
+// escapeMDBlockChars are the characters that only carry block-level
+// meaning (ATX heading, blockquote, bullet list) when they're the first
+// character on a Markdown source line. Unlike mdEscaper's characters,
+// escaping these everywhere would be needlessly noisy for ordinary body
+// text ("well-known", "C#"), so escapeMDLineStarts only escapes them at
+// an actual line start.
+const escapeMDBlockChars = "#->+"
+
+// escapeMDLineStarts backslash-escapes a leading block-syntax character
+// — ATX heading '#', blockquote '>', bullet list '-'/'+', or an ordered
+// list marker like "1." or "1)" — wherever it falls at the start of a
+// rendered Markdown line: at the very start of text if atLineStart, and
+// after any newline embedded directly within text. Without this, e.g. a
+// Jira-native paragraph whose text happens to start with "# " would
+// reparse as a heading on a round trip through MarkdownToADF.
+func escapeMDLineStarts(text string, atLineStart bool) string {
+	var sb strings.Builder
+	lineStart := atLineStart
+	for i := 0; i < len(text); {
+		c := text[i]
+		if lineStart {
+			if strings.IndexByte(escapeMDBlockChars, c) >= 0 {
+				sb.WriteByte('\\')
+				sb.WriteByte(c)
+				i++
+				lineStart = false
+				continue
+			}
+			if c >= '0' && c <= '9' {
+				j := i
+				for j < len(text) && text[j] >= '0' && text[j] <= '9' {
+					j++
+				}
+				if j < len(text) && (text[j] == '.' || text[j] == ')') {
+					sb.WriteString(text[i:j])
+					sb.WriteByte('\\')
+					sb.WriteByte(text[j])
+					i = j + 1
+					lineStart = false
+					continue
+				}
+			}
+		}
+		sb.WriteByte(c)
+		lineStart = c == '\n'
+		i++
+	}
+	return sb.String()
 }
 
 // hasCodeMark reports whether marks contains a "code" mark. Text inside a
