@@ -34,7 +34,7 @@ fullsend run
 
 fullsend eval-measure   (same GHA job, fail-open, after run)
   └─ always writes  output/**/eval-measurements.jsonl
-       (+ eval-measure-ledger.jsonl for idempotency)
+       (+ eval-measure-ledger.txt for idempotency)
 ```
 
 > **Planned:** portable remote score export via the same `OTEL_EXPORTER_OTLP_*`

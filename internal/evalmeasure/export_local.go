@@ -11,7 +11,7 @@ import (
 
 const (
 	MeasurementsFile = "eval-measurements.jsonl"
-	LedgerFile       = "eval-measure-ledger.jsonl"
+	LedgerFile       = "eval-measure-ledger.txt"
 )
 
 // AppendMeasurements writes one NDJSON EvaluationResult per line.

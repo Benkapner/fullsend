@@ -197,3 +197,11 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+        with:
+          agent: code
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ inputs.source_repo }}
+          status-number: ${{ fromJSON(inputs.event_payload).issue.number }}
+          mint-url: ${{ inputs.mint_url }}
