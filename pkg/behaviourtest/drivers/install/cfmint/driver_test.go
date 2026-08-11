@@ -175,6 +175,33 @@ func TestDeployArgs_WithoutAppSet(t *testing.T) {
 	assert.Contains(t, args, "--workflow-host-repos")
 }
 
+func TestTeardownArgs(t *testing.T) {
+	args := TeardownArgs("bt-abc12345", "bt-mint")
+
+	assert.Contains(t, args, "--platform")
+	assert.Contains(t, args, "--preview")
+	assert.Contains(t, args, "--worker-name")
+	assert.Contains(t, args, "--yolo")
+
+	// Verify --worker-name value matches deploy worker name.
+	for i, a := range args {
+		if a == "--worker-name" {
+			require.Less(t, i+1, len(args), "--worker-name must have a value")
+			assert.Equal(t, "bt-mint", args[i+1])
+			break
+		}
+	}
+
+	// Verify --preview value.
+	for i, a := range args {
+		if a == "--preview" {
+			require.Less(t, i+1, len(args), "--preview must have a value")
+			assert.Equal(t, "bt-abc12345", args[i+1])
+			break
+		}
+	}
+}
+
 func TestDriver_Implements_Install_Driver(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))

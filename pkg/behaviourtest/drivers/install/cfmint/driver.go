@@ -230,17 +230,24 @@ func (d *driver) deployCFMint(alias, org string) (string, error) {
 	return mintURL, nil
 }
 
+// TeardownArgs builds the CLI arguments for `fullsend mint delete --platform=cloudflare`.
+// Exported so unit tests can verify arg construction without shelling out.
+func TeardownArgs(previewAlias, workerName string) []string {
+	return []string{
+		"mint", "delete",
+		"--platform", "cloudflare",
+		"--preview", previewAlias,
+		"--worker-name", workerName,
+		"--yolo",
+	}
+}
+
 // teardownPreview tears down the CF preview mint if one was deployed.
 func (d *driver) teardownPreview() {
 	if d.previewAlias == "" {
 		return
 	}
-	args := []string{
-		"mint", "delete",
-		"--platform", "cloudflare",
-		"--preview", d.previewAlias,
-		"--yolo",
-	}
+	args := TeardownArgs(d.previewAlias, d.workerName)
 
 	d.logf("[cfmint] tearing down preview mint: fullsend %s", strings.Join(args, " "))
 	if _, err := e2etest.TryRunCLI(d.binary, d.token, args...); err != nil {
