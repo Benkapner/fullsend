@@ -78,6 +78,7 @@ func TestBehaviourSuite(t *testing.T) {
 		SuiteName:       suiteName,
 		AllowedOrgs:     org,
 		PerRepoWIFRepos: buildPerRepoWIFRepos(org),
+		AppSet:          "fullsend-test",
 	})
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)

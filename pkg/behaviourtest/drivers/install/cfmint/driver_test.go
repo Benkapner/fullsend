@@ -96,32 +96,53 @@ func TestNewDriver_OK(t *testing.T) {
 		SuiteName:       "bt",
 		AllowedOrgs:     "my-org",
 		PerRepoWIFRepos: "my-org/test-repo-01,my-org/test-repo-02",
+		AppSet:          "fullsend-test",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, d)
 }
 
-func TestDriver_DeployCFMint_Args(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
-
-	d := &driver{
-		binary:     "/bin/fullsend",
-		token:      "tok",
-		logf:       t.Logf,
-		workerName: "bt-mint",
-		cfg: Config{
-			PEMDir:          dir,
-			SuiteName:       "bt",
-			AllowedOrgs:     "my-org",
-			PerRepoWIFRepos: "my-org/test-repo-01",
-		},
+func TestDeployArgs_WithAppSet(t *testing.T) {
+	cfg := Config{
+		PEMDir:          "/tmp/pems",
+		SuiteName:       "bt",
+		AllowedOrgs:     "my-org",
+		PerRepoWIFRepos: "my-org/test-repo-01",
+		AppSet:          "fullsend-test",
 	}
 
-	// We can't easily test deployCFMint since it calls e2etest.TryRunCLI directly.
-	// Instead, verify the URL derivation.
-	url := PreviewMintURL("bt-test1234", d.workerName)
-	assert.Equal(t, "https://bt-test1234-bt-mint.workers.dev", url)
+	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
+
+	assert.Contains(t, args, "--app-set")
+	// Find the value after --app-set.
+	for i, a := range args {
+		if a == "--app-set" {
+			require.Less(t, i+1, len(args), "--app-set must have a value")
+			assert.Equal(t, "fullsend-test", args[i+1])
+			break
+		}
+	}
+	// Verify other expected flags are present.
+	assert.Contains(t, args, "--pem-dir")
+	assert.Contains(t, args, "--allowed-orgs")
+	assert.Contains(t, args, "--per-repo-wif-repos")
+}
+
+func TestDeployArgs_WithoutAppSet(t *testing.T) {
+	cfg := Config{
+		PEMDir:          "/tmp/pems",
+		SuiteName:       "bt",
+		AllowedOrgs:     "my-org",
+		PerRepoWIFRepos: "my-org/test-repo-01",
+	}
+
+	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
+
+	// --app-set should not be present when AppSet is empty.
+	assert.NotContains(t, args, "--app-set")
+	// Other flags should still be present.
+	assert.Contains(t, args, "--pem-dir")
+	assert.Contains(t, args, "--allowed-orgs")
 }
 
 func TestDriver_Implements_Install_Driver(t *testing.T) {

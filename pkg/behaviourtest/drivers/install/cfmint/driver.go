@@ -38,6 +38,12 @@ type Config struct {
 	// PerRepoWIFRepos is a comma-separated list of repos for per-repo
 	// WIF. Passed to --per-repo-wif-repos on deploy.
 	PerRepoWIFRepos string
+
+	// AppSet is the app set name for PEM bootstrap. Passed to --app-set
+	// on deploy so the CLI verifies PEMs against the correct GitHub Apps.
+	// For example, test PEMs use "fullsend-test" while production uses
+	// "fullsend-ai". When empty, the CLI uses its own default.
+	AppSet string
 }
 
 // driver deploys a CF Worker preview mint and uses the derived preview
@@ -154,18 +160,28 @@ func (d *driver) Teardown(ctx context.Context, org string, state install.State) 
 	return nil
 }
 
-// deployCFMint deploys a Cloudflare Worker preview mint and returns the
-// derived preview URL.
-func (d *driver) deployCFMint(alias, org string) (string, error) {
+// DeployArgs builds the CLI arguments for `fullsend mint deploy --platform=cloudflare`.
+// Exported so unit tests can verify arg construction without shelling out.
+func DeployArgs(alias, workerName string, cfg Config) []string {
 	args := []string{
 		"mint", "deploy",
 		"--platform", "cloudflare",
 		"--preview", alias,
-		"--worker-name", d.workerName,
-		"--pem-dir", d.cfg.PEMDir,
-		"--allowed-orgs", d.cfg.AllowedOrgs,
-		"--per-repo-wif-repos", d.cfg.PerRepoWIFRepos,
+		"--worker-name", workerName,
+		"--pem-dir", cfg.PEMDir,
+		"--allowed-orgs", cfg.AllowedOrgs,
+		"--per-repo-wif-repos", cfg.PerRepoWIFRepos,
 	}
+	if cfg.AppSet != "" {
+		args = append(args, "--app-set", cfg.AppSet)
+	}
+	return args
+}
+
+// deployCFMint deploys a Cloudflare Worker preview mint and returns the
+// derived preview URL.
+func (d *driver) deployCFMint(alias, org string) (string, error) {
+	args := DeployArgs(alias, d.workerName, d.cfg)
 
 	d.logf("[cfmint] deploying preview mint: fullsend %s", strings.Join(args, " "))
 	if _, err := e2etest.TryRunCLI(d.binary, d.token, args...); err != nil {
