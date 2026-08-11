@@ -3573,7 +3573,7 @@ func TestSetupStatusNotifier_PerRepoConfigYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
-	// No "defaults"/"dispatch"/"repos"/"inference" key, so this parses as
+	// No "defaults"/"dispatch"/"repos" key, so this parses as
 	// per-repo config (see config.IsPerRepoYAML). Per #5994, per-repo
 	// configs support status_notifications the same way org configs do.
 	configData := `version: "1"
