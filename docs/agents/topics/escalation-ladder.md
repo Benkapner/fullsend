@@ -190,5 +190,5 @@ Before creating a derived or replacement agent for a core role, confirm:
   — Level 1: project-wide instructions
 - [Customizing with Skills](../../guides/user/customizing-with-skills.md)
   — Level 1: agent-specific domain knowledge
-- [Customizing agents](../../guides/user/customizing-agents.md) — harness
-  configuration and layered content resolution
+- [Configuring agent behavior](../../guides/user/customizing-agents.md) — harness
+  configurations and `base:` composition

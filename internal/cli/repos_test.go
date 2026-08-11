@@ -1464,6 +1464,7 @@ repos: []
 		inferenceRegion: "us-central1",
 		fullsendRef:     "v2.0.0",
 		mintURL:         "https://mint.example.com",
+		direct:          true,
 		testClient:      fc,
 	})
 	require.Error(t, err)

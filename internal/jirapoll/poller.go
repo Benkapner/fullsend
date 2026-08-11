@@ -41,6 +41,8 @@ type Poller struct {
 	dispatches          []poll.Dispatch
 	sleepFn             func(context.Context, time.Duration) // overridable for testing
 	roleMembership      map[string]string                    // accountID → Jira project role name
+	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
+	roleGroupsChecked   map[string]bool                      // accountID → group membership already fetched this cycle
 	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
 }
 
@@ -83,6 +85,8 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.dispatches = nil
 	p.statusCategoryCache = make(map[string]string)
 	p.roleMembership = make(map[string]string)
+	p.roleGroups = make(map[string][]string)
+	p.roleGroupsChecked = make(map[string]bool)
 
 	// Step 1: Execute JQL to get candidate issues.
 	candidates, err := p.searchCandidates(ctx)
@@ -99,24 +103,28 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 3: Randomly select min(N, len(unlocked)) candidates.
 	selected := selectRandom(unlocked, p.opts.N)
 
-	// Load project role membership for actor role resolution. Deferred
-	// until after selection so a cycle with nothing to process doesn't
-	// spend Jira API calls resolving roles that end up unused. A load
-	// FAILURE fails the whole cycle rather than degrading to an empty map:
-	// with no membership every actor resolves to "external", write-gated
-	// events (slash commands, ready-to-code labels) route to nothing, and
-	// the checkpoint would still advance past them — permanently dropping
-	// real events over a transient roles-API error. Failing the cycle
-	// leaves checkpoints untouched so the next cron run retries. (A
-	// missing project key is different: JQL-only mode is documented as
-	// always-external, so that path proceeds.)
+	// Load project role structure for actor role resolution. Uses
+	// per-actor resolution instead of full group member enumeration to
+	// avoid the 100-page pagination cap on the group/member endpoint
+	// (see issue #6041). Direct user actors are resolved immediately;
+	// group-based membership is resolved lazily per actor in
+	// processIssue via GetUserGroups.
+	//
+	// Deferred until after selection so a cycle with nothing to process
+	// doesn't spend Jira API calls resolving roles that end up unused.
+	// A load FAILURE fails the whole cycle rather than degrading to an
+	// empty map: with no membership every actor resolves to "external",
+	// write-gated events (slash commands, ready-to-code labels) route to
+	// nothing, and the checkpoint would still advance past them —
+	// permanently dropping real events over a transient roles-API error.
+	// Failing the cycle leaves checkpoints untouched so the next cron
+	// run retries. (A missing project key is different: JQL-only mode
+	// is documented as always-external, so that path proceeds.)
 	if len(selected) > 0 {
 		if p.opts.JiraProject != "" {
-			membership, err := p.client.GetProjectRoleMembership(ctx, p.opts.JiraProject)
-			if err != nil {
+			if err := p.loadRoleStructure(ctx, p.opts.JiraProject); err != nil {
 				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, err)
 			}
-			p.roleMembership = membership
 		} else {
 			log.Printf("WARNING: no Jira project key set, cannot resolve actor roles (defaulting to external)")
 		}
@@ -193,6 +201,86 @@ func (p *Poller) Run(ctx context.Context) error {
 type pendingCheckpoint struct {
 	issueKey string
 	t        time.Time
+}
+
+// maxRolePriority is the highest value jira.RolePriority can return
+// (Administrators). An actor already at this priority cannot be
+// upgraded further, so resolveActorRoles's caller skips the group lookup
+// for them.
+const maxRolePriority = 2
+
+// loadRoleStructure loads the project role structure (direct users and
+// group assignments) without enumerating group members. Direct user
+// actors are added to roleMembership immediately; group IDs are stored
+// in roleGroups for lazy per-actor resolution in resolveActorRoles.
+func (p *Poller) loadRoleStructure(ctx context.Context, projectKey string) error {
+	actors, err := p.client.GetProjectRoleActors(ctx, projectKey)
+	if err != nil {
+		return err
+	}
+	for roleName, ra := range actors {
+		for aid := range ra.DirectUsers {
+			existing, ok := p.roleMembership[aid]
+			if !ok || jira.RolePriority(roleName) > jira.RolePriority(existing) {
+				p.roleMembership[aid] = roleName
+			}
+		}
+		if len(ra.GroupIDs) > 0 {
+			p.roleGroups[roleName] = ra.GroupIDs
+		}
+	}
+	return nil
+}
+
+// resolveActorRoles resolves group-based role membership for the given
+// actors, each of whom is below maxRolePriority (the caller filters).
+// A direct role assignment doesn't rule out also belonging to a
+// higher-priority group, so this always fetches and checks group
+// membership rather than skipping actors who already have some role.
+// For each actor, it calls GetUserGroups to retrieve the actor's group
+// memberships and cross-references them with the groups assigned to
+// each project role (stored in roleGroups), upgrading roleMembership
+// only if a higher-priority match is found.
+//
+// Any lookup failure — partial or total — propagates an error so the
+// issue is retried next cycle, rather than silently leaving the failed
+// actor's role unresolved (defaulting to "external" in resolveRole) and
+// dispatching their event anyway with a possibly-wrong, unrecoverable
+// privilege downgrade for this cycle.
+func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error {
+	if len(p.roleGroups) == 0 || len(actorIDs) == 0 {
+		return nil
+	}
+	var lastErr error
+	var errorCount int
+	for _, aid := range actorIDs {
+		groups, err := p.client.GetUserGroups(ctx, aid)
+		if err != nil {
+			log.Printf("WARNING: getting groups for actor %s: %v", aid, err)
+			lastErr = err
+			errorCount++
+			continue
+		}
+		p.roleGroupsChecked[aid] = true
+		userGroupIDs := make(map[string]bool, len(groups))
+		for _, g := range groups {
+			userGroupIDs[g.GroupID] = true
+		}
+		for roleName, groupIDs := range p.roleGroups {
+			for _, gid := range groupIDs {
+				if userGroupIDs[gid] {
+					if existing := p.roleMembership[aid]; jira.RolePriority(roleName) > jira.RolePriority(existing) {
+						p.roleMembership[aid] = roleName
+					}
+					break
+				}
+			}
+		}
+	}
+	if errorCount > 0 {
+		return fmt.Errorf("%d of %d actor group lookups failed: %w", errorCount, len(actorIDs), lastErr)
+	}
+	return nil
 }
 
 // searchCandidates executes JQL and collects up to M results.
@@ -338,6 +426,39 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	if len(events) > maxEventsPerIssue {
 		log.Printf("WARNING: %s produced %d routable events this cycle; capping dispatch at %d (possible lastCheck rewind or bulk change)", issue.Key, len(events), maxEventsPerIssue)
 		events = events[:maxEventsPerIssue]
+	}
+
+	// Resolve per-actor roles for actors below the highest possible
+	// priority (Administrators). A direct role assignment doesn't rule
+	// out also belonging to a higher-priority group, so every such actor
+	// is checked, not just ones with no role yet — otherwise a direct
+	// Developers member who is also in an Administrators-mapped group
+	// would never have their groups checked. This handles group-based
+	// role membership by checking each actor's groups against the
+	// role-assigned groups, avoiding the 100-page group/member
+	// pagination cap that truncated large groups. roleGroupsChecked
+	// skips actors already resolved via groups earlier this cycle, since
+	// group membership can't change mid-cycle and re-checking would
+	// repeat the same GetUserGroups call for no new information. Any
+	// lookup failure — partial or total — fails this issue's processing
+	// so it's retried next cycle rather than silently dispatching a
+	// downgraded role for the failed actor.
+	if p.opts.JiraProject != "" && len(p.roleGroups) > 0 {
+		seen := make(map[string]bool)
+		var candidateActors []string
+		for _, event := range events {
+			aid := actorID(event)
+			if aid == "" || seen[aid] || p.roleGroupsChecked[aid] {
+				continue
+			}
+			seen[aid] = true
+			if jira.RolePriority(p.roleMembership[aid]) < maxRolePriority {
+				candidateActors = append(candidateActors, aid)
+			}
+		}
+		if err := p.resolveActorRoles(ctx, candidateActors); err != nil {
+			return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
+		}
 	}
 
 	// Convert, route, dispatch. A transiently failing event is skipped

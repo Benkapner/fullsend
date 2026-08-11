@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -145,13 +146,16 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 		l.ui.StepStart(fmt.Sprintf("Creating scaffold PR for %s/%s (target: %s)",
 			l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch))
 	}
-	prTitle := "chore: add fullsend scaffold files"
-	prBody := fmt.Sprintf("This PR adds the fullsend scaffold files to the %s config repo.\n\n"+
-		"Merge this PR to activate fullsend workflows.", forge.ConfigRepoName)
+	meta := repos.ScaffoldPRMetadata{
+		CommitMsg: commitMsg,
+		PRTitle:   "chore: add fullsend scaffold files",
+		PRBody: fmt.Sprintf("This PR adds the fullsend scaffold files to the %s config repo.\n\n"+
+			"Merge this PR to activate fullsend workflows.", forge.ConfigRepoName),
+	}
 
 	committed, err := CommitScaffoldFiles(ctx, l.client, l.ui,
 		l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch,
-		commitMsg, prTitle, prBody, files, l.direct, nil)
+		meta, files, l.direct, nil)
 	if err != nil {
 		return err
 	}

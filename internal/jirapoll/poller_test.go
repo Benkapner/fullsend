@@ -55,6 +55,13 @@ type mockClient struct {
 	roleMembership map[string]string // accountID -> role name
 	roleErr        error
 
+	roleActors    map[string]jira.ProjectRoleActors // explicit role actors
+	roleActorsErr error
+
+	userGroups     map[string][]jira.UserGroupInfo // accountID -> groups
+	userGroupsErr  error                           // global error
+	userGroupsErrs map[string]error                // per-actor error (overrides global)
+
 	// getPropertyHook, if set, runs after each GetEntityProperty call
 	// captures its return value, and before that value is returned. Used
 	// to simulate a concurrent writer changing the stored property
@@ -183,14 +190,42 @@ func (m *mockClient) GetStatus(_ context.Context, idOrName string) (*jira.Status
 	return &status, nil
 }
 
-func (m *mockClient) GetProjectRoleMembership(_ context.Context, _ string) (map[string]string, error) {
+func (m *mockClient) GetProjectRoleActors(_ context.Context, _ string) (map[string]jira.ProjectRoleActors, error) {
+	if m.roleActorsErr != nil {
+		return nil, m.roleActorsErr
+	}
 	if m.roleErr != nil {
 		return nil, m.roleErr
 	}
-	if m.roleMembership != nil {
-		return m.roleMembership, nil
+	if m.roleActors != nil {
+		return m.roleActors, nil
 	}
-	return map[string]string{}, nil
+	// Build from roleMembership for backward compat: existing tests set
+	// roleMembership with direct user→role entries, so we convert them
+	// into ProjectRoleActors with DirectUsers only (no groups).
+	result := make(map[string]jira.ProjectRoleActors)
+	for aid, roleName := range m.roleMembership {
+		ra, ok := result[roleName]
+		if !ok {
+			ra = jira.ProjectRoleActors{DirectUsers: make(map[string]bool)}
+		}
+		ra.DirectUsers[aid] = true
+		result[roleName] = ra
+	}
+	return result, nil
+}
+
+func (m *mockClient) GetUserGroups(_ context.Context, accountID string) ([]jira.UserGroupInfo, error) {
+	if err, ok := m.userGroupsErrs[accountID]; ok {
+		return nil, err
+	}
+	if m.userGroupsErr != nil {
+		return nil, m.userGroupsErr
+	}
+	if m.userGroups != nil {
+		return m.userGroups[accountID], nil
+	}
+	return nil, nil
 }
 
 // stubRouter implements dispatch.EventRouter for testing.
@@ -2120,5 +2155,429 @@ func TestRunUnsupportedChangelogField_AdvancesLastCheck(t *testing.T) {
 	}
 	if !lastCheck.Equal(assigneeChangeTime) && !lastCheck.After(now.Add(-30*time.Minute)) {
 		t.Errorf("lastCheck = %v, expected it to be advanced past the original %v", lastCheck, now.Add(-30*time.Minute))
+	}
+}
+
+// TestRunPerActorGroupResolution verifies that an actor who belongs to a
+// group assigned to a project role (but is NOT a direct user actor)
+// resolves to the correct role via per-actor group lookup, overcoming
+// the 100-page group member pagination cap.
+func TestRunPerActorGroupResolution(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+
+	// Set up role actors: the Developers role has a group, no direct users.
+	mc.roleActors = map[string]jira.ProjectRoleActors{
+		"Developers": {
+			DirectUsers: make(map[string]bool),
+			GroupIDs:    []string{"group-devs"},
+		},
+	}
+	// The actor belongs to the group.
+	mc.userGroups = map[string][]jira.UserGroupInfo{
+		"group-member-user": {
+			{Name: "dev-group", GroupID: "group-devs"},
+		},
+	}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:   "10042",
+			Key:  "PROJ-123",
+			Self: "https://acme.atlassian.net/rest/api/3/issue/10042",
+			Fields: jira.IssueFields{
+				Summary: "Test issue",
+				Labels:  []string{"bug"},
+				Status: jira.Status{
+					Name:           "Open",
+					StatusCategory: jira.StatusCategory{Key: "new"},
+				},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage check this",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author: jira.User{
+				AccountID:   "group-member-user",
+				AccountType: "atlassian",
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Verify the actor was resolved to "write" (Developers role) via group.
+	if role, ok := p.roleMembership["group-member-user"]; !ok {
+		t.Error("expected group-member-user to be in roleMembership")
+	} else if role != "Developers" {
+		t.Errorf("roleMembership[group-member-user] = %q, want %q", role, "Developers")
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []poll.Dispatch
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(dispatches) == 0 {
+		t.Error("expected dispatches for group-resolved actor")
+	}
+
+	// Verify the comment_added dispatch has the correct role for the
+	// group-resolved actor (skip the "opened" event from the reporter).
+	var foundGroupActor bool
+	for _, d := range dispatches {
+		if d.EventPayloadB64 == "" || d.EventType != "comment_added" {
+			continue
+		}
+		payload, err := base64.StdEncoding.DecodeString(d.EventPayloadB64)
+		if err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		var ne dispatch.NormalizedEvent
+		if err := json.Unmarshal(payload, &ne); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if ne.Actor.ID == "group-member-user" {
+			foundGroupActor = true
+			if ne.Actor.Role != "write" {
+				t.Errorf("actor.role = %q, want %q (resolved via group membership)", ne.Actor.Role, "write")
+			}
+		}
+	}
+	if !foundGroupActor {
+		t.Error("expected a dispatch for group-member-user")
+	}
+}
+
+// TestRunPerActorGroupResolution_HighestPriorityWins verifies that when
+// an actor belongs to groups assigned to multiple roles, the highest-
+// priority role wins.
+func TestRunPerActorGroupResolution_HighestPriorityWins(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+
+	mc.roleActors = map[string]jira.ProjectRoleActors{
+		"Administrators": {
+			DirectUsers: make(map[string]bool),
+			GroupIDs:    []string{"group-admins"},
+		},
+		"Developers": {
+			DirectUsers: make(map[string]bool),
+			GroupIDs:    []string{"group-devs"},
+		},
+	}
+	// Actor belongs to both groups.
+	mc.userGroups = map[string][]jira.UserGroupInfo{
+		"dual-group-user": {
+			{Name: "dev-group", GroupID: "group-devs"},
+			{Name: "admin-group", GroupID: "group-admins"},
+		},
+	}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage go",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "dual-group-user", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if role := p.roleMembership["dual-group-user"]; role != "Administrators" {
+		t.Errorf("roleMembership[dual-group-user] = %q, want %q (highest priority)", role, "Administrators")
+	}
+}
+
+// TestRunPerActorGroupResolution_DirectPlusGroupPriority verifies that an
+// actor who is a direct member of a lower-priority role AND a member of
+// a group mapped to a higher-priority role resolves to the higher
+// priority role, rather than being capped at the direct assignment (see
+// PR #6048 review).
+func TestRunPerActorGroupResolution_DirectPlusGroupPriority(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+
+	mc.roleActors = map[string]jira.ProjectRoleActors{
+		"Developers": {
+			DirectUsers: map[string]bool{"dev-and-admin-user": true},
+		},
+		"Administrators": {
+			DirectUsers: make(map[string]bool),
+			GroupIDs:    []string{"group-admins"},
+		},
+	}
+	// The actor is also a member of the Administrators-mapped group.
+	mc.userGroups = map[string][]jira.UserGroupInfo{
+		"dev-and-admin-user": {
+			{Name: "admin-group", GroupID: "group-admins"},
+		},
+	}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage go",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "dev-and-admin-user", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if role := p.roleMembership["dev-and-admin-user"]; role != "Administrators" {
+		t.Errorf("roleMembership[dev-and-admin-user] = %q, want %q (direct Developers + group Administrators should upgrade)", role, "Administrators")
+	}
+}
+
+// TestRunPerActorGroupResolution_NoGroupMatch verifies that an actor
+// not in any project-role group resolves to "external".
+func TestRunPerActorGroupResolution_NoGroupMatch(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+
+	mc.roleActors = map[string]jira.ProjectRoleActors{
+		"Developers": {
+			DirectUsers: make(map[string]bool),
+			GroupIDs:    []string{"group-devs"},
+		},
+	}
+	// Actor belongs to a different group that is NOT assigned to any role.
+	mc.userGroups = map[string][]jira.UserGroupInfo{
+		"outsider-user": {
+			{Name: "other-group", GroupID: "group-other"},
+		},
+	}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "/fs-triage go",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "outsider-user", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if _, ok := p.roleMembership["outsider-user"]; ok {
+		t.Error("expected outsider-user to NOT be in roleMembership")
+	}
+}
+
+// TestRunPerActorGroupResolution_APIError verifies that a GetUserGroups
+// error for even one actor fails the issue closed (Run() returns an
+// error, checkpoint untouched, retried next cycle) rather than silently
+// leaving that actor unresolved (defaulting to "external" in resolveRole)
+// and dispatching their event anyway with an unrecoverable privilege
+// downgrade for this cycle (see PR #6048 review).
+func TestRunPerActorGroupResolution_APIError(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+
+	// direct-user and reporter-id are direct Developers members, but a
+	// direct assignment doesn't rule out also being in a higher-priority
+	// group, so they're still checked. Two group users: one whose lookup
+	// fails, one succeeds.
+	mc.roleActors = map[string]jira.ProjectRoleActors{
+		"Developers": {
+			DirectUsers: map[string]bool{
+				"direct-user": true,
+				"reporter-id": true,
+			},
+			GroupIDs: []string{"group-devs"},
+		},
+	}
+	// Per-actor error: only group-user-fail fails.
+	mc.userGroupsErrs = map[string]error{
+		"group-user-fail": fmt.Errorf("jira api: 503 service unavailable"),
+	}
+	// group-user-ok succeeds and resolves via group membership.
+	mc.userGroups = map[string][]jira.UserGroupInfo{
+		"group-user-ok": {
+			{Name: "dev-group", GroupID: "group-devs"},
+		},
+	}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-triage go",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "direct-user", AccountType: "atlassian"},
+		},
+		{
+			ID:      "2",
+			Body:    "/fs-triage go too",
+			Created: now.Add(1 * time.Second).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "group-user-fail", AccountType: "atlassian"},
+		},
+		{
+			ID:      "3",
+			Body:    "/fs-triage also go",
+			Created: now.Add(2 * time.Second).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "group-user-ok", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	// Should fail closed: even one actor's lookup failure fails this
+	// issue's processing, so it's retried next cycle instead of silently
+	// dispatching a downgraded role for the failed actor.
+	if err := p.Run(context.Background()); err == nil {
+		t.Fatal("expected Run() to fail when any actor group lookup fails (fail-closed)")
+	}
+
+	// group-user-fail should NOT be in roleMembership (API failed).
+	if _, ok := p.roleMembership["group-user-fail"]; ok {
+		t.Error("expected group-user-fail to NOT be in roleMembership after API error")
+	}
+}
+
+// TestRunPerActorGroupResolution_AllActorsAPIError verifies that when
+// ALL per-actor group lookups fail, the error propagates and the issue
+// processing fails.
+func TestRunPerActorGroupResolution_AllActorsAPIError(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+
+	mc.roleActors = map[string]jira.ProjectRoleActors{
+		"Developers": {
+			DirectUsers: make(map[string]bool),
+			GroupIDs:    []string{"group-devs"},
+		},
+	}
+	mc.userGroupsErr = fmt.Errorf("jira api: 503 service unavailable")
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-triage go",
+			Created: now.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "unknown-user", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubRouter{stages: []string{"triage"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	// Should fail because ALL actors have errors and only 1 issue → all failed.
+	if err := p.Run(context.Background()); err == nil {
+		t.Fatal("expected Run() to fail when all actor group lookups fail for all issues")
 	}
 }

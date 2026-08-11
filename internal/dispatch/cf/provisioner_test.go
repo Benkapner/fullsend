@@ -74,7 +74,11 @@ func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName str
 	}
 	url := f.deployURL
 	if url == "" {
-		url = fmt.Sprintf("https://%s.workers.dev", workerName)
+		if previewAlias != "" {
+			url = fmt.Sprintf("https://%s-%s.test-sub.workers.dev", previewAlias, workerName)
+		} else {
+			url = fmt.Sprintf("https://%s.test-sub.workers.dev", workerName)
+		}
 	}
 	return url, nil
 }
@@ -1004,6 +1008,100 @@ func TestParseWorkerURL(t *testing.T) {
 			assert.Equal(t, tc.expect, result)
 		})
 	}
+}
+
+// --- parsePreviewURL tests ---
+
+func TestParsePreviewURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		alias  string
+		expect string
+	}{
+		{
+			"standard preview output",
+			"Uploading...\nhttps://bt-run-42-test-mint.fullsend-ai.workers.dev\nDone",
+			"bt-run-42",
+			"https://bt-run-42-test-mint.fullsend-ai.workers.dev",
+		},
+		{
+			"ignores production URL",
+			"Published test-mint (0.5s)\nhttps://test-mint.fullsend-ai.workers.dev\n",
+			"bt-run-42",
+			"",
+		},
+		{
+			"preview URL with trailing punctuation",
+			"Preview: https://bt-abc-my-worker.sub.workers.dev.",
+			"bt-abc",
+			"https://bt-abc-my-worker.sub.workers.dev",
+		},
+		{
+			"no url in output",
+			"Upload completed without URL",
+			"bt-alias",
+			"",
+		},
+		{
+			"prefers preview URL over production URL",
+			"Production: https://test-mint.fullsend-ai.workers.dev\nPreview: https://bt-42-test-mint.fullsend-ai.workers.dev",
+			"bt-42",
+			"https://bt-42-test-mint.fullsend-ai.workers.dev",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := parsePreviewURL(tc.output, tc.alias)
+			assert.Equal(t, tc.expect, result)
+		})
+	}
+}
+
+// --- parseWranglerSubdomainOutput tests ---
+
+func TestParseWranglerSubdomainOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		expect string
+	}{
+		{
+			"simple output",
+			"fullsend-ai.workers.dev\n",
+			"fullsend-ai",
+		},
+		{
+			"with prefix noise",
+			"Fetching subdomain...\nfullsend-ai.workers.dev\n",
+			"fullsend-ai",
+		},
+		{
+			"no subdomain",
+			"No subdomain configured",
+			"",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := parseWranglerSubdomainOutput(tc.output)
+			assert.Equal(t, tc.expect, result)
+		})
+	}
+}
+
+// --- ResolveWorkersSubdomain tests ---
+
+func TestResolveWorkersSubdomain_UsesOverride(t *testing.T) {
+	old := ResolveWorkersSubdomainFn
+	ResolveWorkersSubdomainFn = func(_ context.Context, accountID string) (string, error) {
+		return "test-sub", nil
+	}
+	t.Cleanup(func() { ResolveWorkersSubdomainFn = old })
+
+	sub, err := ResolveWorkersSubdomainFn(context.Background(), "acc-123")
+	require.NoError(t, err)
+	assert.Equal(t, "test-sub", sub)
 }
 
 // --- writeVersionTS tests ---

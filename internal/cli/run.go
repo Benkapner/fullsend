@@ -1970,6 +1970,8 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_OUTPUT_SCHEMA":   true,
 	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
+	"FULLSEND_ROLE":            true,
+	"FULLSEND_SLUG":            true,
 }
 
 func init() {
@@ -2014,6 +2016,21 @@ func buildSandboxEnvLines(h *harness.Harness) []string {
 	return lines
 }
 
+// buildRoleSlugEnvLines generates export lines for FULLSEND_ROLE and
+// FULLSEND_SLUG from the harness identity fields. Role is always emitted
+// (it is a required harness field); Slug is emitted only when set. Values
+// are single-quote-escaped using the same pattern as buildSandboxEnvLines.
+func buildRoleSlugEnvLines(h *harness.Harness) []string {
+	var lines []string
+	if h.Role != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_ROLE='%s'", strings.ReplaceAll(h.Role, "'", "'\\''")))
+	}
+	if h.Slug != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_SLUG='%s'", strings.ReplaceAll(h.Slug, "'", "'\\''")))
+	}
+	return lines
+}
+
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
 	outputDir := sandbox.SandboxWorkspace + "/output"
@@ -2030,6 +2047,10 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	lines = append(lines, runtimeEnvExports...)
 	lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_DIR=%s", outputDir))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_TARGET_REPO_DIR=%s", remoteRepositoryDir))
+
+	// Expose harness identity so skills can reference their own role/slug
+	// without hardcoding values that drift from the harness YAML. See #6045.
+	lines = append(lines, buildRoleSlugEnvLines(h)...)
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
@@ -3110,14 +3131,11 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil {
-		// tryLoadFullsendConfig returns a ConfigWriter which may wrap either
-		// orgConfig or perRepoConfig. Only orgConfig implements OrgConfigReader
-		// (and carries StatusNotifications). When the loaded config is per-repo,
-		// this assertion intentionally falls through, leaving notifyCfg at its
-		// zero value — per-repo configs do not support status notifications.
-		if ocr, ok := orgCfg.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
-			notifyCfg = *ocr.StatusNotifications()
+	if fsCfg := tryLoadFullsendConfig(orgConfigPath, printer); fsCfg != nil {
+		// StatusNotifications is part of the shared ConfigReader interface,
+		// so this works for both orgConfig and perRepoConfig.
+		if sn := fsCfg.StatusNotifications(); sn != nil {
+			notifyCfg = *sn
 		}
 	}
 

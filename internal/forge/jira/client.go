@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -28,20 +27,6 @@ type LiveClient struct {
 	baseURL    string
 	email      string // for Basic auth (Cloud)
 	token      string
-
-	groupMemberCacheMu sync.Mutex
-	groupMemberCache   map[string]groupMemberCacheEntry
-}
-
-// groupMemberCacheTTL bounds how long a group's resolved member list is
-// reused across GetProjectRoleMembership calls, so that a poll cycle
-// touching many issues in the same project doesn't re-fetch group
-// membership from the group/member endpoint for every issue.
-const groupMemberCacheTTL = 5 * time.Minute
-
-type groupMemberCacheEntry struct {
-	accountIDs []string
-	fetchedAt  time.Time
 }
 
 // Option configures the Jira client.
@@ -533,23 +518,40 @@ func (c *LiveClient) DeleteEntityProperty(ctx context.Context, issueIDOrKey, pro
 	return nil
 }
 
-// GetProjectRoleMembership returns a map of accountID → role name for all
-// members of the given Jira project. Role names are the Jira project role
-// names (e.g. "Administrators", "Developers"). When a user appears in
-// multiple roles, the highest-priority role wins (Administrators > Developers
-// > everything else).
-func (c *LiveClient) GetProjectRoleMembership(ctx context.Context, projectKey string) (map[string]string, error) {
+// RolePriority returns the priority of a Jira project role name. Higher
+// values take precedence when a user appears in multiple roles.
+//
+// KNOWN LIMITATION (intentional for the MVP): matches by role name, not by
+// the project's permission scheme. See mapJiraRole in internal/jirapoll and
+// docs/guides/user/jira-integration.md#actor-role-resolution.
+func RolePriority(roleName string) int {
+	switch strings.ToLower(roleName) {
+	case "administrators":
+		return 2
+	case "developers":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// GetProjectRoleActors returns the direct users and group assignments
+// for each project role without enumerating group members. This avoids
+// the 100-page pagination cap on the group/member endpoint that used to
+// truncate large groups. Callers combine the returned structure with
+// GetUserGroups for per-actor resolution.
+func (c *LiveClient) GetProjectRoleActors(ctx context.Context, projectKey string) (map[string]ProjectRoleActors, error) {
 	path := fmt.Sprintf("/project/%s/role", url.PathEscape(projectKey))
 	var roleList ProjectRoleList
 	if err := c.do(ctx, http.MethodGet, path, nil, &roleList); err != nil {
 		return nil, fmt.Errorf("list project roles for %s: %w", projectKey, err)
 	}
 
-	membership := make(map[string]string)
+	result := make(map[string]ProjectRoleActors)
 	for roleName, roleURL := range roleList {
-		// Extract role ID from URL (last path segment).
 		idx := strings.LastIndex(roleURL, "/")
 		if idx < 0 || idx == len(roleURL)-1 {
+			log.Printf("WARNING: role %s for project %s has an unparseable URL %q; skipping (its actors will resolve to external)", roleName, projectKey, roleURL)
 			continue
 		}
 		roleID := roleURL[idx+1:]
@@ -561,99 +563,43 @@ func (c *LiveClient) GetProjectRoleMembership(ctx context.Context, projectKey st
 			return nil, fmt.Errorf("get project role %s (id %s): %w", roleName, roleID, err)
 		}
 
+		actors := ProjectRoleActors{DirectUsers: make(map[string]bool)}
 		for _, actor := range detail.Actors {
-			var aids []string
-			switch {
-			case actor.Type == "atlassian-group-role-actor":
-				if actor.ActorGroup == nil || actor.ActorGroup.GroupID == "" {
-					continue
-				}
-				members, err := c.groupMembers(ctx, actor.ActorGroup.GroupID)
-				if err != nil {
-					return nil, fmt.Errorf("list members of group %s (role %s): %w", actor.ActorGroup.Name, roleName, err)
-				}
-				aids = members
-			case actor.ActorUser != nil && actor.ActorUser.AccountID != "":
-				aids = []string{actor.ActorUser.AccountID}
-			default:
-				continue
+			if actor.ActorUser != nil && actor.ActorUser.AccountID != "" {
+				actors.DirectUsers[actor.ActorUser.AccountID] = true
 			}
-			for _, aid := range aids {
-				existing, ok := membership[aid]
-				if !ok || rolePriority(roleName) > rolePriority(existing) {
-					membership[aid] = roleName
-				}
+			if actor.Type == "atlassian-group-role-actor" && actor.ActorGroup != nil && actor.ActorGroup.GroupID != "" {
+				actors.GroupIDs = append(actors.GroupIDs, actor.ActorGroup.GroupID)
 			}
 		}
+		result[roleName] = actors
 	}
-	return membership, nil
+
+	return result, nil
 }
 
-// groupMembers returns the account IDs of all members of the given Jira
-// group, exhausting pagination. Results are cached for groupMemberCacheTTL
-// to avoid repeatedly re-fetching membership for the same group within a
-// single poll cycle (or across issues in the same project).
-func (c *LiveClient) groupMembers(ctx context.Context, groupID string) ([]string, error) {
-	c.groupMemberCacheMu.Lock()
-	entry, ok := c.groupMemberCache[groupID]
-	c.groupMemberCacheMu.Unlock()
-	if ok && time.Since(entry.fetchedAt) < groupMemberCacheTTL {
-		return entry.accountIDs, nil
-	}
+// maxExpectedUserGroups is a sanity bound on GetUserGroups's response, not
+// a real Jira limit: per Atlassian's REST v3 reference
+// (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/#api-rest-api-3-user-groups-get),
+// GET /user/groups returns the user's full group list unpaginated. If
+// that assumption is ever wrong for some account, silently truncating
+// here would resolve that actor's role incorrectly with no signal, so a
+// suspiciously large response logs a WARNING instead of failing quietly.
+const maxExpectedUserGroups = 200
 
-	var accountIDs []string
-	startAt := 0
-	truncated := true
-	for page := 0; page < maxListPages; page++ {
-		// maxResults=50 is this endpoint's documented maximum (unlike the
-		// comment/changelog endpoints, whose documented default is 100);
-		// Jira clamps oversized values, but stay in contract.
-		path := fmt.Sprintf("/group/member?groupId=%s&maxResults=50&startAt=%d",
-			url.QueryEscape(groupID), startAt)
-		var result groupMemberPage
-		if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
-			return nil, fmt.Errorf("list group members for %s (startAt=%d): %w", groupID, startAt, err)
-		}
-		for _, member := range result.Values {
-			if member.AccountID != "" {
-				accountIDs = append(accountIDs, member.AccountID)
-			}
-		}
-		if result.IsLast || len(result.Values) == 0 {
-			truncated = false
-			break
-		}
-		startAt += len(result.Values)
+// GetUserGroups returns the groups that the specified user belongs to,
+// for per-actor role resolution that is not subject to the group/member
+// pagination cap (see GetProjectRoleActors).
+func (c *LiveClient) GetUserGroups(ctx context.Context, accountID string) ([]UserGroupInfo, error) {
+	path := fmt.Sprintf("/user/groups?accountId=%s", url.QueryEscape(accountID))
+	var groups []UserGroupInfo
+	if err := c.do(ctx, http.MethodGet, path, nil, &groups); err != nil {
+		return nil, fmt.Errorf("get user groups for %s: %w", accountID, err)
 	}
-	if truncated {
-		log.Printf("WARNING: member listing for group %s truncated at %d pages; unlisted members will resolve to the external role", groupID, maxListPages)
+	if len(groups) > maxExpectedUserGroups {
+		log.Printf("WARNING: user %s belongs to %d groups (>%d expected); if this endpoint paginates after all, some groups may be missing from role resolution", accountID, len(groups), maxExpectedUserGroups)
 	}
-
-	c.groupMemberCacheMu.Lock()
-	if c.groupMemberCache == nil {
-		c.groupMemberCache = make(map[string]groupMemberCacheEntry)
-	}
-	c.groupMemberCache[groupID] = groupMemberCacheEntry{accountIDs: accountIDs, fetchedAt: time.Now()}
-	c.groupMemberCacheMu.Unlock()
-
-	return accountIDs, nil
-}
-
-// rolePriority returns the priority of a Jira project role name.
-// Higher values take precedence when a user appears in multiple roles.
-//
-// KNOWN LIMITATION (intentional for the MVP): matches by role name, not by
-// the project's permission scheme. See mapJiraRole in internal/jirapoll and
-// docs/guides/user/jira-integration.md#actor-role-resolution.
-func rolePriority(roleName string) int {
-	switch strings.ToLower(roleName) {
-	case "administrators":
-		return 2
-	case "developers":
-		return 1
-	default:
-		return 0
-	}
+	return groups, nil
 }
 
 // GetMyself returns the currently authenticated user.

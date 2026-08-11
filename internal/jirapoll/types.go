@@ -28,7 +28,12 @@ type JiraClient interface {
 	SetEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string, value any) error
 	DeleteEntityProperty(ctx context.Context, issueIDOrKey, propertyKey string) error
 	GetMyself(ctx context.Context) (*jira.User, error)
-	GetProjectRoleMembership(ctx context.Context, projectKey string) (map[string]string, error)
+	// GetProjectRoleActors returns direct users and group assignments per
+	// role without enumerating group members (no pagination cap).
+	GetProjectRoleActors(ctx context.Context, projectKey string) (map[string]jira.ProjectRoleActors, error)
+	// GetUserGroups returns the groups a specific user belongs to, for
+	// per-actor role resolution that avoids the group/member pagination cap.
+	GetUserGroups(ctx context.Context, accountID string) ([]jira.UserGroupInfo, error)
 }
 
 // Compile-time interface check.

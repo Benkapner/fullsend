@@ -82,7 +82,8 @@ func TestReadWatermark_ClientError(t *testing.T) {
 // --- watermarkVarName tests ---
 
 func TestWatermarkVarName_FastMode(t *testing.T) {
-	p := newTestPoller(nil, Options{SlashCommandsOnly: true})
+	p := newTestPoller(nil, Options{})
+	p.slashCommandsOnly = true
 	got := p.watermarkVarName()
 	if got != "FULLSEND_LAST_POLL_AT_FAST" {
 		t.Errorf("got %q, want FULLSEND_LAST_POLL_AT_FAST", got)
@@ -90,7 +91,8 @@ func TestWatermarkVarName_FastMode(t *testing.T) {
 }
 
 func TestWatermarkVarName_FullMode(t *testing.T) {
-	p := newTestPoller(nil, Options{SlashCommandsOnly: false})
+	p := newTestPoller(nil, Options{})
+	p.slashCommandsOnly = false
 	got := p.watermarkVarName()
 	if got != "FULLSEND_LAST_POLL_AT_FULL" {
 		t.Errorf("got %q, want FULLSEND_LAST_POLL_AT_FULL", got)
@@ -118,7 +120,8 @@ func TestUpdateWatermark_StoresRFC3339(t *testing.T) {
 
 func TestUpdateWatermark_UsesFastVarForSlashOnly(t *testing.T) {
 	mc := newMockClient()
-	p := newTestPoller(mc, Options{SlashCommandsOnly: true})
+	p := newTestPoller(mc, Options{})
+	p.slashCommandsOnly = true
 
 	ts := time.Date(2025, 7, 1, 14, 30, 0, 0, time.UTC)
 	err := p.updateWatermark(context.Background(), "testgroup", "testrepo", ts)

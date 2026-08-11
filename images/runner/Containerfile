@@ -38,7 +38,7 @@
 # Go compilation. UBI images pull anonymously from
 # registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:1f675b8824165404cbea41068342f9f8f6d47bfeccd6020bf8f9842876623d5b AS build
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:cc3a002ecdb1b7e6e0e2988333b257eb97cfce84dbdfc98f4e02297c9190c4e1 AS build
 
 USER 0
 WORKDIR /src
@@ -73,7 +73,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # under rootless podman container root maps to the invoking host user, so
 # bind-mounted configs and repos keep sane ownership without UID mapping.
 # registry.access.redhat.com/ubi10/ubi:latest
-FROM registry.access.redhat.com/ubi10/ubi@sha256:aad065f8857f86a136994c648ecc714f8cb59c96bf25ae54320e59e155dfca09
+FROM registry.access.redhat.com/ubi10/ubi@sha256:ccb838d655199bff6a77fc4296a2b2a44e00163dabd0ba8b0d9030f281ec935f
 
 # NOTE: no SHELL directive — podman's default OCI image format ignores it,
 # so all RUN steps below stay POSIX-sh compatible for docker AND podman.

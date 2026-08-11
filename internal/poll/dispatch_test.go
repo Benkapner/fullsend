@@ -364,7 +364,7 @@ func TestDispatch_CreatePipelineErrorPropagates(t *testing.T) {
 
 func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.pipelineErr = fmt.Errorf("API error: 500 internal server error")
@@ -395,7 +395,7 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 
 func TestRunPartialDispatchFailure(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	// Fail after 1 successful CreatePipeline call.

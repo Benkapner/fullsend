@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,8 @@ type State struct {
 	changelog  map[string][]jira.ChangelogEntry      // issueKey → changelog
 	properties map[string]map[string]json.RawMessage // issueKey → propKey → value
 	nextID     int
+	roleGroups map[string]string   // role name → group ID, for roles backed by a group actor (in addition to the canned "Developers" direct-user role)
+	userGroups map[string][]string // accountID → group IDs, backing GET /user/groups
 }
 
 // AddIssue inserts an issue with the given key and labels. A synthetic
@@ -61,6 +64,13 @@ func (s *State) AddIssue(key string, labels []string) {
 // AddComment appends a comment to the given issue. The comment is authored
 // by a canned human user (not a bot).
 func (s *State) AddComment(issueKey, body string) {
+	s.AddCommentFromActor(issueKey, body, "commenter-001", "Test Commenter")
+}
+
+// AddCommentFromActor appends a comment to the given issue, authored by
+// the given account. Used to test role resolution for actors other than
+// the default canned commenter.
+func (s *State) AddCommentFromActor(issueKey, body, accountID, displayName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,14 +81,39 @@ func (s *State) AddComment(issueKey, body string) {
 		ID:   id,
 		Body: body,
 		Author: jira.User{
-			AccountID:   "commenter-001",
-			DisplayName: "Test Commenter",
+			AccountID:   accountID,
+			DisplayName: displayName,
 			AccountType: "atlassian",
 			Active:      true,
 		},
 		Created: now,
 		Updated: now,
 	})
+}
+
+// SetRoleGroup registers a project role as backed by the given group ID,
+// in addition to the canned "Developers" role (whose direct users are
+// commenter-001 and changer-001). Backs GET /project/{key}/role[/{id}]
+// with a group-actor role, for testing per-actor group-based role
+// resolution (GetProjectRoleActors + GetUserGroups) end-to-end.
+func (s *State) SetRoleGroup(roleName, groupID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.roleGroups == nil {
+		s.roleGroups = make(map[string]string)
+	}
+	s.roleGroups[roleName] = groupID
+}
+
+// SetUserGroups registers the groups a Jira user belongs to, backing
+// GET /user/groups for per-actor role resolution.
+func (s *State) SetUserGroups(accountID string, groupIDs ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.userGroups == nil {
+		s.userGroups = make(map[string][]string)
+	}
+	s.userGroups[accountID] = groupIDs
 }
 
 // AddLabelChange appends a changelog entry representing a label addition
@@ -201,6 +236,7 @@ func handleAPIRoute(w http.ResponseWriter, r *http.Request, s *State, path strin
 	// /issue/{key}/properties/{propKey}
 	// /project/{key}/role
 	// /project/{key}/role/{id}
+	// /user/groups
 
 	parts := strings.Split(path, "/")
 
@@ -214,21 +250,54 @@ func handleAPIRoute(w http.ResponseWriter, r *http.Request, s *State, path strin
 		return
 	}
 
+	if len(parts) >= 2 && parts[0] == "user" && parts[1] == "groups" {
+		handleUserGroups(w, r, s)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
-func handleProjectRoute(w http.ResponseWriter, _ *http.Request, _ *State, parts []string) {
+// groupBackedRoleNames returns the names of roles registered via
+// SetRoleGroup, sorted for deterministic role-ID assignment across the
+// separate list and detail requests below.
+func groupBackedRoleNames(s *State) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.roleGroups))
+	for name := range s.roleGroups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func handleProjectRoute(w http.ResponseWriter, _ *http.Request, s *State, parts []string) {
 	// GET /project/{key}/role → role list
 	// GET /project/{key}/role/{id} → role detail
-	if len(parts) >= 3 && parts[2] == "role" {
-		if len(parts) == 3 {
-			// Role list — return a canned set with one role.
-			writeJSON(w, http.StatusOK, jira.ProjectRoleList{
-				"Developers": fmt.Sprintf("http://localhost/rest/api/3/project/%s/role/10001", parts[1]),
-			})
-			return
+	if len(parts) < 3 || parts[2] != "role" {
+		http.NotFound(w, nil)
+		return
+	}
+
+	// Group-backed roles registered via SetRoleGroup get role IDs
+	// starting at 10002, assigned in sorted-name order so the list and
+	// detail responses agree on which ID maps to which role.
+	groupRoleNames := groupBackedRoleNames(s)
+
+	if len(parts) == 3 {
+		roleList := jira.ProjectRoleList{
+			"Developers": fmt.Sprintf("http://localhost/rest/api/3/project/%s/role/10001", parts[1]),
 		}
-		if len(parts) == 4 {
+		for i, name := range groupRoleNames {
+			roleList[name] = fmt.Sprintf("http://localhost/rest/api/3/project/%s/role/%d", parts[1], 10002+i)
+		}
+		writeJSON(w, http.StatusOK, roleList)
+		return
+	}
+
+	if len(parts) == 4 {
+		if parts[3] == "10001" {
 			// Role detail — return the commenter and changer as developers.
 			writeJSON(w, http.StatusOK, jira.ProjectRoleDetail{
 				Name: "Developers",
@@ -249,8 +318,40 @@ func handleProjectRoute(w http.ResponseWriter, _ *http.Request, _ *State, parts 
 			})
 			return
 		}
+		for i, name := range groupRoleNames {
+			if parts[3] == strconv.Itoa(10002+i) {
+				s.mu.Lock()
+				groupID := s.roleGroups[name]
+				s.mu.Unlock()
+				writeJSON(w, http.StatusOK, jira.ProjectRoleDetail{
+					Name: name,
+					Actors: []jira.RoleActor{
+						{
+							ID:          3,
+							DisplayName: name + "-group",
+							Type:        "atlassian-group-role-actor",
+							ActorGroup:  &jira.RoleActorGroup{GroupID: groupID, Name: name + "-group"},
+						},
+					},
+				})
+				return
+			}
+		}
 	}
 	http.NotFound(w, nil)
+}
+
+func handleUserGroups(w http.ResponseWriter, r *http.Request, s *State) {
+	accountID := r.URL.Query().Get("accountId")
+	s.mu.Lock()
+	groupIDs := s.userGroups[accountID]
+	s.mu.Unlock()
+
+	groups := make([]jira.UserGroupInfo, 0, len(groupIDs))
+	for _, gid := range groupIDs {
+		groups = append(groups, jira.UserGroupInfo{GroupID: gid, Name: gid})
+	}
+	writeJSON(w, http.StatusOK, groups)
 }
 
 func handleIssueRoute(w http.ResponseWriter, r *http.Request, s *State, parts []string) {

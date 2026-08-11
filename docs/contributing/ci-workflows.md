@@ -127,6 +127,55 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
 - Never use `permissions: write-all` or omit permissions (which defaults to the repo's broad default token permissions).
 - Separate jobs that need elevated permissions (e.g., `pull-requests: write`) from jobs that check out untrusted code.
 
+## Secrets in pull_request_target jobs
+
+Jobs triggered by `pull_request_target` that check out and execute PR-head code can expose secrets to untrusted authors. This is the well-documented "pwn request" vulnerability class. Five components form the attack chain:
+
+1. **Event type** — `pull_request_target` runs with base-branch secrets and permissions, unlike `pull_request` which sandboxes fork PRs.
+2. **Checkout of PR head** — `ref: github.event.pull_request.head.sha` or `allow-unsafe-pr-checkout: true` brings untrusted code onto the runner.
+3. **Code execution** — a `run:` step (e.g., `make e2e-test`, `make behaviour-test`) executes that untrusted code.
+4. **Env access** — secrets wired into the step's `env:` block are readable by any code the step runs.
+5. **Credential type** — the blast radius of exfiltration depends on what was exposed.
+
+When all five components are present, any code the PR author controls can read and exfiltrate every secret in that step's environment.
+
+**ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` is safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the e2e and behaviour jobs in `e2e.yml`).
+
+### Credential blast radius
+
+Not all credentials carry the same risk on exfiltration:
+
+| Category | Examples | Blast radius |
+|---|---|---|
+| Short-lived, narrowly scoped | GitHub App installation tokens (`${{ github.token }}`), GCP WIF tokens | Expire in minutes/hours; scoped to specific repos or resources. Attacker window is small. |
+| Long-lived, broadly scoped | Classic PATs, GitHub App PEM keys, Cloudflare API tokens | Valid until manually rotated; often grant access beyond the repo that exposed them. Attacker window is large. |
+
+Prefer short-lived narrowly-scoped credentials whenever possible. When long-lived credentials are unavoidable (e.g., PEM keys for GitHub App impersonation during test setup), the authorization gate and code review become the primary defense.
+
+### Gate job mitigation
+
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the e2e and behaviour jobs check out PR-head code:
+
+- **Trusted authors** — org members and repo collaborators are auto-authorized.
+- **External contributors** — require a maintainer to apply the `ok-to-test` label after reviewing the PR diff. The gate removes stale labels when new commits land.
+- **Separation of concerns** — the gate job runs on the base-branch checkout with `pull-requests: write`; the e2e/behaviour jobs run on the PR-head checkout without write permissions.
+
+**Limitations of the gate:**
+
+- The gate authorizes *authors*, not *code*. A trusted author whose account is compromised bypasses the gate.
+- The gate does not inspect the PR diff — it trusts that maintainers reviewed the code before labeling `ok-to-test`.
+- The `ok-to-test` label check has a TOCTOU window: code can change between label application and job execution (mitigated by the stale-label removal on `synchronize` events, but not eliminated).
+
+### Review checklist for secrets in e2e/behaviour jobs
+
+When a PR adds or modifies secret references in a `pull_request_target` job, reviewers must verify:
+
+- [ ] **Trace the execution path.** Identify which `run:` steps execute after checkout of PR-head code. Confirm the secret is wired into one of those steps (all five attack-chain components are present).
+- [ ] **Assess blast radius.** Determine whether the credential is short-lived and narrowly scoped or long-lived and broadly scoped. Document the blast radius in a PR comment when adding long-lived credentials.
+- [ ] **Prefer short-lived credentials.** Use WIF tokens or GitHub App installation tokens over classic PATs or PEM keys when the test infrastructure supports it.
+- [ ] **Do not wire secrets before consumption code exists.** Adding a secret to `env:` in a PR that does not yet contain the code that uses it means the secret is exposed to whatever code does run — with no benefit.
+- [ ] **Verify the gate job covers the new job.** If the PR adds a new job that checks out PR-head code with secrets, confirm that job has `needs: gate` and the appropriate `if:` condition gating on `needs.gate.outputs.authorized`.
+
 ## Additional conventions
 
 - Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.

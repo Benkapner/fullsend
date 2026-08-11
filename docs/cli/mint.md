@@ -60,7 +60,7 @@ fullsend mint deploy \
   --platform cloudflare
 ```
 
-Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown via `mint delete --platform=cloudflare --preview=<alias>` abandons the alias without deleting the Worker script.
+Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL includes the account's workers.dev subdomain: `https://<alias>-<worker-name>.<subdomain>.workers.dev` (e.g., `https://bt-abc123-bt-mint.fullsend-ai.workers.dev`). The subdomain is resolved at deploy time from the Wrangler output or the Cloudflare API. Preview teardown via `mint delete --platform=cloudflare --preview=<alias>` abandons the alias without deleting the Worker script.
 
 If the target Worker script does not yet exist (first-time preview on a new `--worker-name`), the CLI automatically creates it with a one-time durable deploy before proceeding with the preview upload. Subsequent preview deploys skip this bootstrap step. When `--pem-dir` is set, the bootstrap deploy includes PEM secrets so the Worker is immediately usable.
 

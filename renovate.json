@@ -11,6 +11,11 @@
       "automerge": true
     },
     {
+      "description": "Auto-merge submodule bumps (low-risk digest updates)",
+      "matchManagers": ["git-submodules"],
+      "automerge": true
+    },
+    {
       "description": "Ignore fullsend self-references (own reusable workflows and actions)",
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["/^fullsend-ai\\//"],

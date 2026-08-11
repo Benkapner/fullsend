@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,6 +44,18 @@ func registerJiraPollSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the dispatch output does not contain a stage for issue "([^"]+)"$`, func(ctx context.Context, key string) (context.Context, error) {
 		return ctx, thenDispatchNotContains(world.FromContext(ctx), key)
+	})
+	sc.Step(`^the "([^"]+)" Jira project role is backed by group "([^"]+)"$`, func(ctx context.Context, role, group string) (context.Context, error) {
+		return ctx, givenRoleBackedByGroup(world.FromContext(ctx), role, group)
+	})
+	sc.Step(`^Jira user "([^"]+)" belongs to group "([^"]+)"$`, func(ctx context.Context, accountID, group string) (context.Context, error) {
+		return ctx, givenUserInGroup(world.FromContext(ctx), accountID, group)
+	})
+	sc.Step(`^a comment "([^"]*)" from Jira user "([^"]+)" is added to Jira issue "([^"]+)"$`, func(ctx context.Context, body, accountID, key string) (context.Context, error) {
+		return ctx, whenJiraCommentFromActor(world.FromContext(ctx), key, body, accountID)
+	})
+	sc.Step(`^the dispatch output attributes issue "([^"]+)" to actor "([^"]+)" with role "([^"]+)"$`, func(ctx context.Context, key, actorID, role string) (context.Context, error) {
+		return ctx, thenDispatchActorRole(world.FromContext(ctx), key, actorID, role)
 	})
 }
 
@@ -141,6 +154,59 @@ func thenDispatchContains(w *world.World, stage, issueKey string) error {
 	}
 	return fmt.Errorf("dispatch output missing stage=%q for %s; got %d dispatches: %v",
 		stage, resourceKey, len(dispatches), dispatches)
+}
+
+func givenRoleBackedByGroup(w *world.World, role, group string) error {
+	if w.JiraMockState == nil {
+		return fmt.Errorf("mock Jira server not initialized")
+	}
+	w.JiraMockState.SetRoleGroup(role, group)
+	return nil
+}
+
+func givenUserInGroup(w *world.World, accountID, group string) error {
+	if w.JiraMockState == nil {
+		return fmt.Errorf("mock Jira server not initialized")
+	}
+	w.JiraMockState.SetUserGroups(accountID, group)
+	return nil
+}
+
+func whenJiraCommentFromActor(w *world.World, key, body, accountID string) error {
+	if w.JiraMockState == nil {
+		return fmt.Errorf("mock Jira server not initialized")
+	}
+	w.JiraMockState.AddCommentFromActor(key, body, accountID, accountID)
+	return nil
+}
+
+func thenDispatchActorRole(w *world.World, issueKey, actorID, wantRole string) error {
+	dispatches, err := readDispatches(w)
+	if err != nil {
+		return err
+	}
+
+	resourceKey := "issue-" + issueKey
+	for _, d := range dispatches {
+		if d.ResourceKey != resourceKey || d.EventPayloadB64 == "" {
+			continue
+		}
+		payload, err := base64.StdEncoding.DecodeString(d.EventPayloadB64)
+		if err != nil {
+			return fmt.Errorf("decode payload: %w", err)
+		}
+		var ne dispatch.NormalizedEvent
+		if err := json.Unmarshal(payload, &ne); err != nil {
+			return fmt.Errorf("unmarshal payload: %w", err)
+		}
+		if ne.Actor.ID == actorID {
+			if ne.Actor.Role != wantRole {
+				return fmt.Errorf("actor %s role = %q, want %q", actorID, ne.Actor.Role, wantRole)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("no dispatch found for issue %s with actor %s", issueKey, actorID)
 }
 
 func thenDispatchNotContains(w *world.World, issueKey string) error {

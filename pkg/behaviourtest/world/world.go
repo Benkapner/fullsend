@@ -93,7 +93,7 @@ type World struct {
 // because the production implementations are immutable wrappers:
 //   - scm/github.Driver holds only a forge.Client (concurrent-safe).
 //   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
-//   - install.perRepoState holds only immutable string fields.
+//   - install.PerRepoState holds only immutable string fields.
 //
 // Race tests in each driver package (TestConcurrentAccess,
 // TestConcurrentStateAccess) verify the real types under -race with

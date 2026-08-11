@@ -62,6 +62,9 @@ Required repository secrets:
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
 | `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
 | `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
+| `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the behaviour job under the same env name |
+| `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
+| `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 

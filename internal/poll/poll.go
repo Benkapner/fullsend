@@ -2,26 +2,31 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+const defaultFullPollInterval = 15 * time.Minute
 
 // Poller discovers GitLab events and dispatches agent stages.
 type Poller struct {
-	client       GitLabClient
-	router       dispatch.EventRouter
-	projectPath  string
-	owner        string
-	repo         string
-	botUserID    int
-	gitlabURL    string
-	opts         Options
-	dispatches   []Dispatch
-	warnedNoHMAC bool
+	client            GitLabClient
+	router            dispatch.EventRouter
+	projectPath       string
+	owner             string
+	repo              string
+	botUserID         int
+	gitlabURL         string
+	opts              Options
+	dispatches        []Dispatch
+	warnedNoHMAC      bool
+	slashCommandsOnly bool
 }
 
 // New creates a Poller for the given project.
@@ -48,9 +53,21 @@ const maxEventRetries = 3
 // Run executes a single poll cycle: read watermark, discover events,
 // filter, deduplicate, convert to NormalizedEvent, route, dispatch,
 // and advance the watermark.
+//
+// Poll mode is determined automatically: if 15+ minutes have elapsed
+// since the last full poll (or no full poll has ever run), a full poll
+// is executed. Otherwise a fast poll (slash commands only) is used.
 func (p *Poller) Run(ctx context.Context) error {
 	if p.client == nil {
 		return fmt.Errorf("poller requires a GitLab client (Phase 1 wiring incomplete)")
+	}
+
+	// Auto-promote to full poll when enough time has elapsed.
+	p.slashCommandsOnly = !p.shouldFullPoll(ctx)
+	if p.slashCommandsOnly {
+		log.Printf("poll mode: fast (slash commands only)")
+	} else {
+		log.Printf("poll mode: full (auto-promoted)")
 	}
 
 	lastPollAt, err := p.readWatermark(ctx, p.owner, p.repo)
@@ -61,7 +78,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	var events []RoutableEvent
 	var labelState LabelState
 	var minSkippedAt time.Time
-	if p.opts.SlashCommandsOnly {
+	if p.slashCommandsOnly {
 		events, minSkippedAt, err = p.discoverSlashCommands(ctx, p.owner, p.repo, lastPollAt)
 	} else {
 		events, labelState, minSkippedAt, err = p.discoverAllEvents(ctx, p.owner, p.repo, lastPollAt)
@@ -267,6 +284,36 @@ func trackLabelFailure(failedLabelEvents map[int]map[string]bool, event Routable
 		failedLabelEvents[event.IID] = make(map[string]bool)
 	}
 	failedLabelEvents[event.IID][event.ChangedLabel] = true
+}
+
+// shouldFullPoll checks whether enough time has elapsed since the last
+// full poll to warrant a full discovery cycle. Returns true when a full
+// poll should run (15+ min since last full poll or first run).
+func (p *Poller) shouldFullPoll(ctx context.Context) bool {
+	interval := p.opts.FullPollInterval
+	if interval == 0 {
+		interval = defaultFullPollInterval
+	}
+
+	val, err := p.client.GetCIVariable(ctx, p.owner, p.repo, "FULLSEND_LAST_POLL_AT_FULL")
+	if err != nil {
+		if errors.Is(err, forge.ErrNotFound) {
+			// First run — no full poll has ever completed.
+			return true
+		}
+		// Transient error reading the variable — default to full poll
+		// to avoid silently skipping events.
+		log.Printf("WARNING: could not read full-poll watermark: %v (defaulting to full poll)", err)
+		return true
+	}
+
+	lastFull, err := time.Parse(time.RFC3339, val)
+	if err != nil {
+		log.Printf("WARNING: invalid full-poll watermark %q: %v (defaulting to full poll)", val, err)
+		return true
+	}
+
+	return time.Since(lastFull) >= interval
 }
 
 // splitOwnerRepo splits "group/subgroup/project" into owner="group/subgroup" and repo="project".

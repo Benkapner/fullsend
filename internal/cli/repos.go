@@ -145,11 +145,9 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		if repoErr != nil {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		commitMsg := "chore: initialize fullsend per-repo installation"
-		prTitle := "chore: initialize fullsend per-repo installation"
-		prBody := defaultScaffoldPRBody
+		meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
+			targetRepo.DefaultBranch, meta, files, direct, nil)
 		return commitErr
 	}
 
@@ -633,14 +631,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		if repoErr != nil {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		commitMsg := "chore: initialize fullsend per-repo installation"
+		meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
 		if rc.Forge == repos.ForgeGitLab {
-			commitMsg += " [skip ci]"
+			meta.CommitMsg += " [skip ci]"
 		}
-		prTitle := "chore: initialize fullsend per-repo installation"
-		prBody := defaultScaffoldPRBody
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
+			targetRepo.DefaultBranch, meta, files, direct, nil)
 		return commitErr
 	}
 
@@ -729,7 +725,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				continue
 			}
 
-			_, schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
+			schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
 			if schedErr != nil {
 				printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
 			}
@@ -811,12 +807,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if repoErr != nil {
 				return fmt.Errorf("getting repo info: %w", repoErr)
 			}
-			commitMsg := "chore: upgrade fullsend scaffold ref"
-			prTitle := "chore: upgrade fullsend scaffold ref"
-			prBody := "This PR upgrades the fullsend scaffold workflow ref.\n\n" +
-				"Merge this PR to activate the updated workflows."
+			// Repos in the upgrade path are already known to be installed
+			// (they come from alreadyInstalled), so skip the redundant
+			// guard-variable API call.
+			guardInstalled := true
+			meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag,
+				repos.ScaffoldMetadataOpts{GuardInstalled: &guardInstalled})
 			_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-				targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, isDirect, nil)
+				targetRepo.DefaultBranch, meta, files, isDirect, nil)
 			return commitErr
 		}
 

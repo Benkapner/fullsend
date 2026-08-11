@@ -33,9 +33,8 @@ func TestSplitOwnerRepo(t *testing.T) {
 func TestNew(t *testing.T) {
 	mc := newMockClient()
 	p := New(mc, nil, "org/sub/project", Options{
-		SlashCommandsOnly: true,
-		BotUserID:         42,
-		GitLabURL:         "https://gitlab.example.com",
+		BotUserID: 42,
+		GitLabURL: "https://gitlab.example.com",
 	})
 	if p.owner != "org/sub" {
 		t.Errorf("owner = %q, want %q", p.owner, "org/sub")
@@ -70,7 +69,7 @@ func (r *stubRouter) Route(_ *dispatch.NormalizedEvent) ([]string, error) {
 func TestRunEmptyPoll(t *testing.T) {
 	now := time.Now()
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = now.Add(-10 * time.Minute).Format(time.RFC3339)
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = now.Add(-20 * time.Minute).Format(time.RFC3339)
 
 	p := New(mc, nil, "org/project", Options{})
 
@@ -89,14 +88,15 @@ func TestRunEmptyPoll(t *testing.T) {
 	}
 }
 
-func TestRunSlashCommandsOnlyMode(t *testing.T) {
+func TestRunAutoPromoteFastMode(t *testing.T) {
+	// When the full-poll watermark is recent (< 15 min), the poller
+	// should auto-select fast mode (slash commands only).
 	now := time.Now()
 	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = now.Add(-5 * time.Minute).Format(time.RFC3339)
 	mc.variables["FULLSEND_LAST_POLL_AT_FAST"] = now.Add(-5 * time.Minute).Format(time.RFC3339)
 
-	p := New(mc, nil, "org/project", Options{
-		SlashCommandsOnly: true,
-	})
+	p := New(mc, nil, "org/project", Options{})
 
 	err := p.Run(context.Background())
 	if err != nil {
@@ -105,6 +105,42 @@ func TestRunSlashCommandsOnlyMode(t *testing.T) {
 
 	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FAST"]; !ok {
 		t.Error("fast watermark not updated")
+	}
+}
+
+func TestRunAutoPromoteFullMode(t *testing.T) {
+	// When the full-poll watermark is old (>= 15 min), the poller
+	// should auto-promote to full mode.
+	now := time.Now()
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = now.Add(-20 * time.Minute).Format(time.RFC3339)
+
+	p := New(mc, nil, "org/project", Options{})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
+		t.Error("full watermark not updated after auto-promotion")
+	}
+}
+
+func TestRunAutoPromoteFirstRun(t *testing.T) {
+	// When no full-poll watermark exists (first run), the poller
+	// should default to full mode.
+	mc := newMockClient()
+
+	p := New(mc, nil, "org/project", Options{})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
+		t.Error("full watermark not updated on first run")
 	}
 }
 
@@ -149,9 +185,83 @@ func TestTrackLabelFailure(t *testing.T) {
 	}
 }
 
+func TestShouldFullPoll_FirstRun(t *testing.T) {
+	mc := newMockClient()
+	// No FULLSEND_LAST_POLL_AT_FULL variable → first run.
+	p := newTestPoller(mc, Options{})
+	if !p.shouldFullPoll(context.Background()) {
+		t.Error("expected full poll on first run")
+	}
+}
+
+func TestShouldFullPoll_RecentFullPoll(t *testing.T) {
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = time.Now().Add(-5 * time.Minute).Format(time.RFC3339)
+
+	p := newTestPoller(mc, Options{})
+	if p.shouldFullPoll(context.Background()) {
+		t.Error("expected fast poll when full poll was recent")
+	}
+}
+
+func TestShouldFullPoll_StaleFullPoll(t *testing.T) {
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = time.Now().Add(-20 * time.Minute).Format(time.RFC3339)
+
+	p := newTestPoller(mc, Options{})
+	if !p.shouldFullPoll(context.Background()) {
+		t.Error("expected full poll when 20 minutes have elapsed")
+	}
+}
+
+func TestShouldFullPoll_ExactBoundary(t *testing.T) {
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = time.Now().Add(-15 * time.Minute).Format(time.RFC3339)
+
+	p := newTestPoller(mc, Options{})
+	if !p.shouldFullPoll(context.Background()) {
+		t.Error("expected full poll at exactly 15-minute boundary")
+	}
+}
+
+func TestShouldFullPoll_CustomInterval(t *testing.T) {
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = time.Now().Add(-8 * time.Minute).Format(time.RFC3339)
+
+	p := newTestPoller(mc, Options{FullPollInterval: 10 * time.Minute})
+	if p.shouldFullPoll(context.Background()) {
+		t.Error("expected fast poll when only 8 min elapsed with 10 min interval")
+	}
+
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = time.Now().Add(-12 * time.Minute).Format(time.RFC3339)
+	if !p.shouldFullPoll(context.Background()) {
+		t.Error("expected full poll when 12 min elapsed with 10 min interval")
+	}
+}
+
+func TestShouldFullPoll_InvalidTimestamp(t *testing.T) {
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = "not-a-timestamp"
+
+	p := newTestPoller(mc, Options{})
+	if !p.shouldFullPoll(context.Background()) {
+		t.Error("expected full poll when timestamp is unparseable")
+	}
+}
+
+func TestShouldFullPoll_ReadError(t *testing.T) {
+	mc := newMockClient()
+	mc.variableErr["FULLSEND_LAST_POLL_AT_FULL"] = fmt.Errorf("network failure")
+
+	p := newTestPoller(mc, Options{})
+	if !p.shouldFullPoll(context.Background()) {
+		t.Error("expected full poll on transient read error")
+	}
+}
+
 func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -193,7 +303,7 @@ func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 
 func TestRunMultipleStages(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -236,7 +346,7 @@ func TestRunMultipleStages(t *testing.T) {
 
 func TestRunLabelEventThreadsActorID(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -275,7 +385,7 @@ func TestRunLabelEventThreadsActorID(t *testing.T) {
 
 func TestRunNoMatchingStages(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -302,7 +412,7 @@ func TestRunNoMatchingStages(t *testing.T) {
 
 func TestRunRouterError(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -324,7 +434,7 @@ func TestRunRouterError(t *testing.T) {
 
 func TestRunConversionErrorSkipsEvent(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -349,7 +459,7 @@ func TestRunConversionErrorSkipsEvent(t *testing.T) {
 
 func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -377,7 +487,7 @@ func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 
 func TestRunNilRouter(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -398,7 +508,7 @@ func TestRunNilRouter(t *testing.T) {
 
 func TestRunIdempotentSecondPoll(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -441,7 +551,7 @@ func TestRunEntityDedup_MultipleNotesOnSameIssue(t *testing.T) {
 	// should dispatch only one pipeline. The second note is skipped by
 	// entity-level deduplication (stage:issue-3).
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -473,7 +583,7 @@ func TestRunEntityDedup_MultipleNotesOnSameIssue(t *testing.T) {
 func TestRunEntityDedup_DifferentIssues(t *testing.T) {
 	// Notes on different issues should each dispatch their own pipeline.
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -508,7 +618,7 @@ func TestRunEntityDedup_DifferentStagesSameIssue(t *testing.T) {
 	// Two notes on the same issue routed to different stages should
 	// each dispatch (entity key includes the stage).
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -536,7 +646,7 @@ func TestRunEntityDedup_DifferentStagesSameIssue(t *testing.T) {
 
 func TestRunLabelFailureRollback(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{

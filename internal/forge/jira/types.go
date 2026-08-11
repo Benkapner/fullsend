@@ -131,11 +131,21 @@ type RoleActorGroup struct {
 	Name    string `json:"name"`
 }
 
-// groupMemberPage is the paginated response from
-// GET /rest/api/3/group/member.
-type groupMemberPage struct {
-	Values []User `json:"values"`
-	IsLast bool   `json:"isLast"`
+// UserGroupInfo represents a group returned by GET /rest/api/3/user/groups.
+// Used for per-actor role resolution that checks the actor's group
+// memberships instead of enumerating all members of a role-assigned group.
+type UserGroupInfo struct {
+	Name    string `json:"name"`
+	GroupID string `json:"groupId"`
+	Self    string `json:"self"`
+}
+
+// ProjectRoleActors describes the direct users and group assignments for
+// a project role without enumerating group members, so it is not subject
+// to the group/member pagination cap.
+type ProjectRoleActors struct {
+	DirectUsers map[string]bool // accountIDs directly assigned to this role
+	GroupIDs    []string        // group IDs assigned to this role
 }
 
 // changelogPage is the paginated response from the changelog API.

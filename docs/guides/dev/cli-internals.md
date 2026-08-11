@@ -118,7 +118,10 @@ fullsend
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
     ├── --role <string>                      #   Agent role for minting (required with --mint-url)
-    └── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+    ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection)
+    ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
+    └── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
 ```
 
 ### Command Decomposition
@@ -225,8 +228,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
-│  │  Both modes: write workflow files (customized/ removed      │ │
-│  │  per ADR-0064; use config-driven agents instead)           │ │
+│  │  Both modes: write workflow files                           │ │
 │  │  CommitScaffoldFiles() delivery modes:                     │ │
 │  │    Default (PR):  create feature branch → commit → open PR │ │
 │  │    --direct:      try CommitFiles (default branch)         │ │

@@ -899,6 +899,61 @@ func TestOrgConfigValidate_InvalidCommentCompletion(t *testing.T) {
 	assert.Contains(t, err.Error(), "status_notifications.comment.completion")
 }
 
+func TestOrgConfigValidate_OnFailureCompletion(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Completion: "on_failure"},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate(), "on_failure should be valid for comment.completion")
+}
+
+func TestOrgConfigValidate_OnFailureStart_Rejected(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Start: "on_failure"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err, "on_failure should be rejected for comment.start")
+	assert.Contains(t, err.Error(), "status_notifications.comment.start")
+}
+
+func TestParseOrgConfig_OnFailureCompletion(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  status_notifications:
+    comment:
+      start: disabled
+      completion: on_failure
+agents: []
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "disabled", cfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "on_failure", cfg.StatusNotifications().Comment.Completion)
+}
+
 func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
 	cfg := &orgConfig{
 		Version:  "1",
@@ -928,6 +983,90 @@ func TestOrgConfigMarshal_WithoutStatusNotifications(t *testing.T) {
 		},
 		Repos: map[string]RepoConfig{},
 	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "status_notifications")
+}
+
+func TestParsePerRepoConfig_WithStatusNotifications(t *testing.T) {
+	yamlData := `
+version: "1"
+roles:
+  - triage
+status_notifications:
+  comment:
+    start: enabled
+    completion: disabled
+`
+	cfg, err := ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "enabled", cfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "disabled", cfg.StatusNotifications().Comment.Completion)
+}
+
+func TestParsePerRepoConfig_WithoutStatusNotifications(t *testing.T) {
+	yamlData := `
+version: "1"
+roles:
+  - triage
+`
+	cfg, err := ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.StatusNotifications())
+}
+
+func TestPerRepoConfig_StatusNotifications_FallsThroughToParent(t *testing.T) {
+	base, err := ParsePerRepoConfig([]byte(`
+version: "1"
+status_notifications:
+  comment:
+    start: enabled
+`))
+	require.NoError(t, err)
+
+	overlay := &perRepoConfig{parent: base}
+	require.NotNil(t, overlay.StatusNotifications())
+	assert.Equal(t, "enabled", overlay.StatusNotifications().Comment.Start)
+}
+
+func TestPerRepoConfigValidate_ValidStatusNotifications(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Notifications: &StatusNotificationConfig{
+			Comment: CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
+		},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestPerRepoConfigValidate_InvalidCommentStart(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Notifications: &StatusNotificationConfig{
+			Comment: CommentNotificationConfig{Start: "bogus"},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "status_notifications.comment.start")
+}
+
+func TestPerRepoConfigMarshal_WithStatusNotifications(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Notifications: &StatusNotificationConfig{
+			Comment: CommentNotificationConfig{Start: "enabled"},
+		},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "status_notifications:")
+	assert.Contains(t, string(data), "start: enabled")
+}
+
+func TestPerRepoConfigMarshal_WithoutStatusNotifications(t *testing.T) {
+	cfg := &perRepoConfig{Version: "1"}
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "status_notifications")
@@ -2062,6 +2201,38 @@ func TestNewPerRepoConfigFromOrg_MapsAllPortableFields(t *testing.T) {
 	assert.Contains(t, string(data), "kill_switch: true")
 	assert.Contains(t, string(data), "runtime: claude")
 	assert.Contains(t, string(data), "agents:")
+}
+
+func TestNewPerRepoConfigFromOrg_CarriesOverStatusNotifications(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api"}, []string{"api"},
+		[]string{"triage"}, "vertex", "acme",
+	)
+	sn := &StatusNotificationConfig{Comment: CommentNotificationConfig{Start: "enabled", Completion: "disabled"}}
+	orgCfg.(*orgConfig).Defaults.StatusNotifications = sn
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg := cfg.(PerRepoConfigReader)
+
+	require.NotNil(t, prCfg.StatusNotifications())
+	assert.Equal(t, "enabled", prCfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "disabled", prCfg.StatusNotifications().Comment.Completion)
+
+	// Deep copy: mutating the per-repo copy must not affect org config.
+	prCfg.StatusNotifications().Comment.Start = "disabled"
+	assert.Equal(t, "enabled", sn.Comment.Start, "mutating per-repo status_notifications must not affect org config")
+}
+
+func TestNewPerRepoConfigFromOrg_NoStatusNotifications(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api"}, []string{"api"},
+		[]string{"triage"}, "vertex", "acme",
+	)
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg := cfg.(PerRepoConfigReader)
+
+	assert.Nil(t, prCfg.StatusNotifications())
 }
 
 func TestNewPerRepoConfigFromOrg_PerRepoRoleOverride(t *testing.T) {

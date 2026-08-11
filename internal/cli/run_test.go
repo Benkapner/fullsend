@@ -424,7 +424,8 @@ func TestIsPerRepoYAML(t *testing.T) {
 		{"org with dispatch", "version: '1'\ndispatch:\n  platform: github\n", false},
 		{"org with repos", "version: '1'\nrepos:\n  acme/widget:\n    enabled: true\n", false},
 		{"org with dispatch and roles", "version: '1'\ndispatch:\n  platform: github\nroles:\n  - triage\n", false},
-		{"org with inference", "version: '1'\ninference:\n  provider: vertex\n", false},
+		{"per-repo with inference", "version: '1'\ninference:\n  provider: vertex\n", true},
+		{"org with inference and dispatch", "version: '1'\ninference:\n  provider: vertex\ndispatch:\n  platform: github\n", false},
 		{"org with defaults", "version: '1'\ndefaults:\n  roles:\n    - triage\n", false},
 		{"per-repo without roles", "version: '1'\nkill_switch: false\n", true},
 		{"minimal (no discriminator)", "version: '1'\n", true},
@@ -1897,6 +1898,71 @@ func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
 	} {
 		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
 	}
+}
+
+// TestReservedSandboxKeys_IncludesRoleSlug verifies that FULLSEND_ROLE and
+// FULLSEND_SLUG are in reservedSandboxKeys so env.sandbox cannot shadow them (#6045).
+func TestReservedSandboxKeys_IncludesRoleSlug(t *testing.T) {
+	for _, key := range []string{
+		"FULLSEND_ROLE",
+		"FULLSEND_SLUG",
+	} {
+		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
+	}
+}
+
+// TestBuildSandboxEnvLines_SkipsRoleSlug verifies that FULLSEND_ROLE and
+// FULLSEND_SLUG in env.sandbox are rejected by buildSandboxEnvLines (#6045).
+func TestBuildSandboxEnvLines_SkipsRoleSlug(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "review",
+		Slug:  "my-app",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":    "allowed",
+				"FULLSEND_ROLE": "evil",
+				"FULLSEND_SLUG": "evil-slug",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+// TestBuildRoleSlugEnvLines verifies that buildRoleSlugEnvLines generates the
+// correct export lines for FULLSEND_ROLE and FULLSEND_SLUG, including proper
+// single-quote escaping (#6045).
+func TestBuildRoleSlugEnvLines(t *testing.T) {
+	t.Run("role and slug set", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "review", Slug: "my-app"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='review'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='my-app'", lines[1])
+	})
+
+	t.Run("role set slug empty", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "coder"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "export FULLSEND_ROLE='coder'", lines[0])
+	})
+
+	t.Run("single quote escaping", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "it's", Slug: "app'name"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='it'\\''s'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='app'\\''name'", lines[1])
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md"}
+		lines := buildRoleSlugEnvLines(h)
+		assert.Empty(t, lines)
+	})
 }
 
 // TestBuildSandboxEnvLines_SkipsOIDCVars verifies that OIDC credential vars
@@ -3487,6 +3553,34 @@ func TestSetupStatusNotifier_ConfigYAML(t *testing.T) {
     comment:
       start: enabled
       completion: disabled
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configData), 0o644))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_PerRepoConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// No "defaults"/"dispatch"/"repos" key, so this parses as
+	// per-repo config (see config.IsPerRepoYAML). Per #5994, per-repo
+	// configs support status_notifications the same way org configs do.
+	configData := `version: "1"
+status_notifications:
+  comment:
+    start: enabled
+    completion: disabled
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configData), 0o644))
 

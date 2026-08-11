@@ -217,18 +217,10 @@ func storeSecretManagerToken(ctx context.Context, gcpClient gcf.GCFClient, print
 	return nil
 }
 
-// setupGitLabPipelineSchedules creates pipeline schedules for polling.
-// Enterprise instances get dual fast/full poll schedules; free/CE instances
-// get a single hourly schedule.
-func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, glClient *gitlab.LiveClient, printer *ui.Printer, owner, repo, defaultBranch string) (bool, error) {
-	printer.StepStart("Detecting GitLab tier")
-	isEnterprise := glClient != nil && glClient.IsEnterprise(ctx)
-	if isEnterprise {
-		printer.StepDone("Detected tier: enterprise")
-	} else {
-		printer.StepDone("Detected tier: free")
-	}
-
+// setupGitLabPipelineSchedules creates a single pipeline schedule for
+// polling. The schedule runs every 5 minutes; the poller auto-promotes
+// to a full poll when 15+ minutes have elapsed since the last full poll.
+func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string) error {
 	// Delete existing fullsend schedules to avoid duplicates on re-install.
 	existing, listErr := client.ListPipelineSchedules(ctx, owner, repo)
 	if listErr != nil {
@@ -245,34 +237,15 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, glCl
 		}
 	}
 
-	printer.StepStart("Creating pipeline schedules")
-	if isEnterprise {
-		fastID, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
-			"fullsend fast poll", "*/5 * * * *",
-			map[string]string{"FULLSEND_POLL_MODE": "fast"})
-		if err != nil {
-			printer.StepFail("Failed to create fast poll schedule")
-			return isEnterprise, fmt.Errorf("creating fast poll schedule: %w", err)
-		}
-		fullID, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
-			"fullsend full poll", "*/15 * * * *",
-			map[string]string{"FULLSEND_POLL_MODE": "full"})
-		if err != nil {
-			printer.StepFail("Failed to create full poll schedule")
-			return isEnterprise, fmt.Errorf("creating full poll schedule: %w", err)
-		}
-		printer.StepDone(fmt.Sprintf("Created dual poll schedules (fast: ID %d, full: ID %d)", fastID, fullID))
-	} else {
-		scheduleID, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
-			"fullsend poll", "0 * * * *", nil)
-		if err != nil {
-			printer.StepFail("Failed to create poll schedule")
-			return isEnterprise, fmt.Errorf("creating poll schedule: %w", err)
-		}
-		printer.StepDone(fmt.Sprintf("Created hourly poll schedule (ID %d)", scheduleID))
+	printer.StepStart("Creating pipeline schedule")
+	scheduleID, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
+		"fullsend poll", "*/5 * * * *", nil)
+	if err != nil {
+		printer.StepFail("Failed to create poll schedule")
+		return fmt.Errorf("creating poll schedule: %w", err)
 	}
-
-	return isEnterprise, nil
+	printer.StepDone(fmt.Sprintf("Created poll schedule (ID %d)", scheduleID))
+	return nil
 }
 
 // cleanupGitLabPipelineSchedules removes all fullsend-prefixed pipeline
