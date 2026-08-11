@@ -150,6 +150,12 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 None.
 
+## Image and network policy synchronization
+
+::: warning
+The fix agent and [code agent](code.md) share the same container image and network policy configuration. When you change container image versions or network policy rules for one agent, you **must** apply the same changes to the other. Failing to keep them in sync causes runtime mismatches — for example, one agent may have access to a tool or network endpoint that the other lacks, leading to silent failures.
+:::
+
 ## Source
 
 [`fullsend-ai/agents` — `harness/fix.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/fix.yaml)
