@@ -40,7 +40,7 @@ e.g. eval/measurements/<agent>.yaml).`,
 			if err != nil {
 				return err
 			}
-			printResults(printer, results)
+			printMeasurementResults(printer, results)
 			return nil
 		},
 	}
@@ -53,7 +53,7 @@ e.g. eval/measurements/<agent>.yaml).`,
 	return cmd
 }
 
-func printResults(printer *ui.Printer, results []evalmeasure.EvaluationResult) {
+func printMeasurementResults(printer *ui.Printer, results []evalmeasure.EvaluationResult) {
 	if len(results) == 0 {
 		printer.StepDone("No new measurements (already scored or no matching traces)")
 		return

@@ -43,11 +43,11 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 				continue
 			}
 			all = append(all, r)
-			if err := RecordScored(ledgerPath, r.TraceID, r.Name, r.Version); err != nil {
-				return all, fmt.Errorf("record scored: %w", err)
-			}
 			if err := AppendMeasurements(measPath, []EvaluationResult{r}); err != nil {
 				return all, fmt.Errorf("append measurements: %w", err)
+			}
+			if err := RecordScored(ledgerPath, r.TraceID, r.Name, r.Version); err != nil {
+				return all, fmt.Errorf("record scored: %w", err)
 			}
 		}
 	}

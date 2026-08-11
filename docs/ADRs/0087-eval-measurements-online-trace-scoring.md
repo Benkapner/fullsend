@@ -62,53 +62,21 @@ Adjacent telemetry proposals (not competing with this score path):
 
 Introduce **eval measurements**: deterministic scorers that read
 `run-telemetry.jsonl` after `fullsend run` in the **same** managed job
-(`fullsend eval-measure` in `action.yml`), **fail-open**.
+(`fullsend eval-measure` in `action.yml`), **fail-open**. Functional eval
+scenarios remain ADR 0051 / `eval/<agent>/`; measurements never block
+delivery.
 
-**Not fixtures:** functional eval scenarios remain ADR 0051 / `eval/<agent>/`.
-Measurements never block delivery. Prefer the glossary terms *eval
-measurement* (score) and *eval scenario* (fixture).
+Scores always land in a tool-agnostic `eval-measurements.jsonl` (plus a
+small idempotency ledger) next to `run-telemetry.jsonl`. Remote score export
+will use the same `OTEL_EXPORTER_OTLP_*` configuration as ADR 0050 — no
+vendor-specific score adapters in core. `fullsend` owns the parser, scorers,
+CLI, and GHA step; `fullsend-ai/agents` owns per-agent measurement manifests
+(`eval/measurements/<agent>.yaml`) that declare which scorers to enable.
+Stock-agent defaults resolve from `agents@v0` at runtime; local files are for
+override, opt-out, or custom agents only.
 
-**Ownership (engine vs default policy):**
-
-| Concern | Repo |
-|---|---|
-| Parser, scorer **implementations**, CLI, GHA post-step | `fullsend-ai/fullsend` |
-| Default measurement manifests for stock agents | `fullsend-ai/agents` (`eval/measurements/<agent>.yaml`) |
-| Org/repo overrides and BYOA agent manifests | Consumer repo (`FULLSEND_DIR`) |
-
-Stock agents ship defaults the same way as other agent content: managed jobs
-resolve local `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present,
-else fetch `fullsend-ai/agents@v0/...`. Users who only use stock agents do
-**not** copy manifests into their repos. Local files are for override, opt-out,
-or custom agents — not for receiving defaults.
-
-Executable scorer logic stays in fullsend because `fullsend eval-measure` is
-the released binary that reads `run-telemetry.jsonl` (which fullsend writes).
-Agents is content (YAML/prompts), not a library linked into that binary.
-EM-001 (`trace_fitness`) is a platform fitness check on that telemetry
-contract, so its Go implementation belongs in fullsend even though every
-stock agent enables it via agents manifests.
-
-**Future — logic-as-config:** agent-specific *policy* (thresholds, attribute
-checks) should move into declarative manifest fields evaluated by a generic
-engine in fullsend. Until that lands, new imperative scorers are Go in
-fullsend; wiring a default for a stock agent is an agents manifest change.
-New assert primitive → fullsend PR; new id/thresholds on existing primitives →
-agents-only (or consumer-repo override).
-
-**Persistence (always):** write `eval-measurements.jsonl` (and a small ledger)
-next to `run-telemetry.jsonl`. This JSONL is the portable, tool-agnostic
-contract — backends and dashboards are chosen by the org, not by fullsend.
-
-**Remote export:** use the same `OTEL_EXPORTER_OTLP_*` configuration as
-ADR 0050 when score export is implemented. Do **not** ship vendor-specific
-score adapters or `MLFLOW_*` (or similar) wiring in core action/workflows.
-Orgs that want a product UI can consume the local JSONL or an OTLP backend
-outside fullsend.
-
-**First scorer:** `trace_fitness` (catalog id `em-001`) — span-tree /
-attribute fitness so later scorers can trust the trace. Further scorers
-land via manifests without changing this export model.
+The first scorer is `trace_fitness` (catalog id `em-001`) — span-tree and
+attribute fitness so later scorers can trust the trace.
 
 ### Versioning (per measurement, not platform “v1”)
 
@@ -129,12 +97,13 @@ Entirely new signal → new `em-NNN` (and usually a new `scorer` string).
 ## Consequences
 
 - Every measured run produces a reviewable, backend-agnostic score file beside
-  telemetry.
+  telemetry; missing manifests skip cleanly and measure failure never fails
+  the agent job.
 - Core stays tool-agnostic: no product-specific score env vars in managed
   workflows; remote scores follow OTEL when that path lands.
-- Missing manifests skip cleanly; measure failure never fails the agent job.
-- Functional scenarios (gate) and eval measurements (trend) stay separate.
-- Retro can recommend a **manifest scorer** or a **scenario fixture** — not
-  substitutes.
+- Functional scenarios (gate) and eval measurements (trend) stay separate;
+  retro can recommend either a manifest scorer or a scenario fixture.
 - Richer telemetry (Level 3 / Status fixes) expands what scorers *can* assert;
   it does not replace this same-job path.
+- Per-measurement versioning (`id@version`) lets pass/fail semantics evolve
+  without mixing trend eras.

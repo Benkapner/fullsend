@@ -8,11 +8,23 @@ trends over time. They are **not** functional evals (PR-gate fixtures under
 Telemetry baseline: [Distributed Tracing](./distributed-tracing.md)
 ([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md)).
 
+## Prerequisites
+
+- A repository with fullsend installed and producing `run-telemetry.jsonl`
+  (see [Distributed Tracing](./distributed-tracing.md)).
+- A measurement manifest for the agent (stock agents get one from
+  `fullsend-ai/agents@v0`; custom agents need a local YAML under
+  `${FULLSEND_DIR}/eval/measurements/`).
+
 ## Architecture (read this first)
 
 Fullsend does not pick an observability product for scores. The portable
-contract is a local JSONL artifact next to telemetry; remote export (when
-implemented) reuses the same OTEL configuration as agent traces.
+contract is a local JSONL artifact next to telemetry; remote export reuses
+the same [OTEL](../../glossary.md) (OpenTelemetry) configuration as agent
+traces when implemented.
+
+OTLP (OpenTelemetry Protocol) is the wire format that carries spans and
+scores to any compatible backend — Phoenix, MLflow, Jaeger, etc.
 
 ```text
 fullsend run
@@ -23,15 +35,17 @@ fullsend run
 fullsend eval-measure   (same GHA job, fail-open, after run)
   └─ always writes  output/**/eval-measurements.jsonl
        (+ eval-measure-ledger.jsonl for idempotency)
-  └─ portable remote (planned): same OTEL_EXPORTER_OTLP_* as the agent run
 ```
+
+> **Planned:** portable remote score export via the same `OTEL_EXPORTER_OTLP_*`
+> path as agent traces. Not yet implemented.
 
 | Artifact | When | Purpose |
 |---|---|---|
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
 | `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …) |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
-| Remote scores (planned) | OTEL configured | Scores on the OTLP path — any OTLP backend |
+| Remote scores *(planned)* | OTEL configured | Scores on the OTLP path — any OTLP backend |
 
 Orgs choose Phoenix, MLflow, Jaeger, or another collector independently.
 Fullsend does not forward vendor-specific score credentials in managed
@@ -170,7 +184,8 @@ fullsend eval-measure \
 
 ## Implementation note
 
-Today the measure CLI always writes local `eval-measurements.jsonl`. Portable
-OTLP score export (same `OTEL_*` as traces) is the ADR 0087 remote contract
-and is not wired yet — until it lands, consume the JSONL artifact (or your
-own pipeline) for remote dashboards.
+Today the measure CLI always writes local `eval-measurements.jsonl`.
+
+> **Planned:** portable OTLP score export (same `OTEL_*` as traces) is the
+> ADR 0087 remote contract and is not wired yet. Until it lands, consume the
+> JSONL artifact (or your own pipeline) for remote dashboards.
