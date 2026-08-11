@@ -188,6 +188,69 @@ Technically `--jql` can be used without `--jira-project`, but the only scenario 
 
 Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects queries without a search restriction (e.g. a bare `ORDER BY updated DESC`) with a 400 on every cycle. Always include at least a `project = ...` or similar restriction, as the examples above do.
 
+## Local testing
+
+You can run `fullsend poll` locally to verify your Jira connection and inspect dispatch output before deploying the scheduled workflow.
+
+### Required environment variables
+
+Set the same credentials you would configure as GitHub Actions secrets:
+
+```bash
+export JIRA_TOKEN="your-jira-api-token"
+export JIRA_USER_EMAIL="you@example.com"
+export JIRA_BASE_URL="https://myteam.atlassian.net"
+```
+
+### Running the poller
+
+From the repo root, use `go run` (per [AGENTS.md](../../../AGENTS.md) convention — do not use a `fullsend` binary from `$PATH` or another checkout):
+
+```bash
+go run ./cmd/fullsend poll \
+  --input-driver jira-poll \
+  --jira-url "${JIRA_BASE_URL}" \
+  --jira-project PROJ \
+  --target-repo owner/repo \
+  --output dispatches.json \
+  --fullsend-dir .fullsend
+```
+
+Replace `PROJ` with your Jira project key and `owner/repo` with the GitHub repository slug where agent workflows run.
+
+> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.). Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
+
+### Inspecting output
+
+The poller writes dispatch records to the `--output` path. Inspect them with `jq`:
+
+```bash
+# Pretty-print all dispatch records
+jq '.' dispatches.json
+
+# Count dispatches
+jq 'length' dispatches.json
+
+# Show stage and resource key for each dispatch
+jq '.[] | {stage, resource_key, event_type}' dispatches.json
+```
+
+Key fields in each dispatch record:
+
+| Field | Description |
+|---|---|
+| `stage` | Agent stage to dispatch (e.g., `triage`, `code`) |
+| `event_type` | What triggered the dispatch (e.g., `comment_added`, `label_changed`) |
+| `resource_key` | Identifies the Jira issue (e.g., `issue-PROJ-101`) |
+| `iid` | Numeric issue ID used for concurrency grouping |
+| `event_payload_b64` | Base64-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — decode with `jq -r '.event_payload_b64' | base64 -d | jq '.'` |
+
+### Dry-run tip
+
+To inspect what the poller *would* dispatch without triggering any agent workflows, run the `fullsend poll` command above and stop there — do not run the "Dispatch agent workflows" step from the [scheduled workflow](#scheduled-workflow). The poll step writes `dispatches.json` and advances Jira checkpoints, but no workflows are dispatched until the separate dispatch script reads that file and calls `gh workflow run`.
+
+If you want to avoid advancing Jira checkpoints during testing, poll against a dedicated test project or use a narrowly scoped `--jql` that selects only test issues.
+
 ## Actor role resolution
 
 > **Known limitation.** Roles are resolved by Jira project **role name**, not by actual granted permissions. This is intentional for the MVP — see below.
