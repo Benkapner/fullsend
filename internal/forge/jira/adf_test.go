@@ -1193,6 +1193,54 @@ func TestADFToMarkdown_DeepNestingIsBounded(t *testing.T) {
 	}
 }
 
+func TestADFToMarkdown_Float64Attrs(t *testing.T) {
+	// JSON-decoded ADF has float64 for numeric attrs, not int. Verify
+	// ADFToMarkdown handles this correctly (the real shape from json.Decode).
+	heading := map[string]any{
+		"type":    "doc",
+		"version": float64(1),
+		"content": []any{
+			map[string]any{
+				"type":  "heading",
+				"attrs": map[string]any{"level": float64(3)},
+				"content": []any{
+					map[string]any{"type": "text", "text": "Title"},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(heading)
+	if got != "### Title" {
+		t.Errorf("ADFToMarkdown(heading with float64 level 3) = %q, want %q", got, "### Title")
+	}
+
+	orderedList := map[string]any{
+		"type":    "doc",
+		"version": float64(1),
+		"content": []any{
+			map[string]any{
+				"type":  "orderedList",
+				"attrs": map[string]any{"order": float64(5)},
+				"content": []any{
+					map[string]any{
+						"type": "listItem",
+						"content": []any{
+							map[string]any{
+								"type":    "paragraph",
+								"content": []any{map[string]any{"type": "text", "text": "item"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	got = ADFToMarkdown(orderedList)
+	if got != "5. item" {
+		t.Errorf("ADFToMarkdown(orderedList with float64 order 5) = %q, want %q", got, "5. item")
+	}
+}
+
 func TestADFToMarkdown_RoundTripsThroughMarkdownToADF(t *testing.T) {
 	for _, src := range []string{
 		"hello world",

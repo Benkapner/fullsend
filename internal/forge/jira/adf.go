@@ -101,11 +101,19 @@ func adfBlockContent(parent ast.Node, source []byte, depth int, restricted bool)
 func convertBlockNode(n ast.Node, source []byte, depth int, restricted bool) []any {
 	switch v := n.(type) {
 	case *ast.Paragraph:
-		return oneNode(map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth, nil)})
+		content := adfInlineContent(n, source, depth, nil)
+		if len(content) == 0 {
+			return nil
+		}
+		return oneNode(map[string]any{"type": "paragraph", "content": content})
 	case *ast.TextBlock:
 		// Tight list items wrap their text in a TextBlock rather than a
 		// Paragraph; ADF's listItem schema still expects a paragraph child.
-		return oneNode(map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth, nil)})
+		content := adfInlineContent(n, source, depth, nil)
+		if len(content) == 0 {
+			return nil
+		}
+		return oneNode(map[string]any{"type": "paragraph", "content": content})
 	case *ast.Heading:
 		if restricted {
 			// Degrade to a bold paragraph: ADF's blockquote/listItem
@@ -528,6 +536,8 @@ func adfMarkdownBlock(node map[string]any, depth int) string {
 		if attrs, ok := node["attrs"].(map[string]any); ok {
 			if l, ok := attrs["level"].(int); ok {
 				level = l
+			} else if l, ok := attrs["level"].(float64); ok {
+				level = int(l)
 			}
 		}
 		return strings.Repeat("#", level) + " " + adfMarkdownInline(node)
@@ -554,6 +564,8 @@ func adfMarkdownBlock(node map[string]any, depth int) string {
 		if attrs, ok := node["attrs"].(map[string]any); ok {
 			if o, ok := attrs["order"].(int); ok {
 				start = o
+			} else if o, ok := attrs["order"].(float64); ok {
+				start = int(o)
 			}
 		}
 		return adfMarkdownList(node, depth, func(i int) string { return fmt.Sprintf("%d. ", start+i) })

@@ -74,7 +74,7 @@ func (c *JiraClient) GetIssue(ctx context.Context, project string, number int) (
 	key := issueKey(project, number)
 	issue, err := c.jira.GetIssue(ctx, key)
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	return &Issue{
 		Number: number,
@@ -90,7 +90,7 @@ func (c *JiraClient) ListComments(ctx context.Context, project string, number in
 	key := issueKey(project, number)
 	comments, err := c.jira.ListComments(ctx, key)
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	result := make([]Comment, len(comments))
 	for i, comment := range comments {
@@ -107,7 +107,7 @@ func (c *JiraClient) CreateComment(ctx context.Context, project string, number i
 	key := issueKey(project, number)
 	comment, err := c.jira.CreateComment(ctx, key, string(body))
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	result := fromJiraComment(*comment)
 	return &result, nil
@@ -118,7 +118,7 @@ func (c *JiraClient) CreateComment(ctx context.Context, project string, number i
 // part of the signature here.
 func (c *JiraClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body Body) error {
 	key := issueKey(project, number)
-	return c.jira.UpdateComment(ctx, key, commentID, string(body))
+	return wrapNotFound(c.jira.UpdateComment(ctx, key, commentID, string(body)))
 }
 
 // fromJiraComment converts a jira.Comment to a tracker.Comment. HTMLURL is

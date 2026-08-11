@@ -132,8 +132,8 @@ func TestJiraClient_GetIssue_NotFound(t *testing.T) {
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	_, err := c.GetIssue(context.Background(), "PROJ", 999)
-	if !errors.Is(err, forge.ErrNotFound) {
-		t.Errorf("GetIssue error = %v, want forge.ErrNotFound", err)
+	if !IsNotFound(err) {
+		t.Errorf("GetIssue error = %v, want tracker.IsNotFound", err)
 	}
 }
 
@@ -289,6 +289,26 @@ func TestJiraClient_UpdateComment(t *testing.T) {
 	}
 	if fc.updatedBody != "updated text" {
 		t.Errorf("underlying jira client received body %q, want %q", fc.updatedBody, "updated text")
+	}
+}
+
+func TestJiraClient_NotFoundWrapping(t *testing.T) {
+	// JiraClient must wrap forge.ErrNotFound into tracker.ErrNotFound so
+	// callers using tracker.IsNotFound get the expected result. Verify
+	// that the wrapper also preserves the underlying forge.ErrNotFound.
+	fc := &fakeJiraClient{issues: map[string]*jira.Issue{}}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+
+	_, err := c.GetIssue(context.Background(), "PROJ", 999)
+	if err == nil {
+		t.Fatal("GetIssue on missing issue: got nil error, want not-found")
+	}
+	if !IsNotFound(err) {
+		t.Errorf("GetIssue error does not satisfy tracker.IsNotFound: %v", err)
+	}
+	// The underlying forge.ErrNotFound should still be reachable for debug.
+	if !errors.Is(err, forge.ErrNotFound) {
+		t.Errorf("GetIssue error does not unwrap to forge.ErrNotFound: %v", err)
 	}
 }
 
