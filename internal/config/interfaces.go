@@ -496,7 +496,7 @@ func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
 }
 
-// ensureInference lazily initialises the Inference struct.
+// ensureInference lazily initializes the Inference struct.
 func (c *perRepoConfig) ensureInference() *PerRepoInferenceConfig {
 	if c.Inference == nil {
 		c.Inference = &PerRepoInferenceConfig{}
