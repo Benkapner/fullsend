@@ -301,7 +301,7 @@
         },
         "is_entity_author": {
           "type": "boolean",
-          "description": "True when actor.id is the author of the work item or change proposal."
+          "description": "True when actor.id is the author of the work item, change proposal, or conversation."
         }
       }
     },
@@ -356,7 +356,7 @@
                     "poll",
                     "other"
                   ],
-                  "description": "Optional category format / permission class. GitHub: open-ended→discussion, Q&A→question_answer, announcement→announcement, polls→poll. Chat backends without formats omit or use other."
+                  "description": "Optional portable category format for routing. Not a permission authority (ADR 0054). GitHub GraphQL DiscussionCategory exposes isAnswerable but no announcement/poll/discussion format field: adapters MUST set question_answer when isAnswerable is true, and SHOULD omit format otherwise unless they document an explicit heuristic (e.g. name/slug matching). UI-only GitHub create restrictions (e.g. announcement maintain/admin) are not queryable via the public API and MUST NOT be inferred solely from this field."
                 }
               },
               "description": "Exclusive category of the conversation (1:M category→conversation). Distinct from state.labels (M:M tags)."

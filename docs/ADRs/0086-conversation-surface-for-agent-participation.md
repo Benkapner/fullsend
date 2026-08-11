@@ -47,9 +47,9 @@ entity-context rules ([ADR 0076](0076-slash-command-entity-context-separation.md
 interface. Slack/Discord/Matrix are likewise not forges — conversation
 read/write must not grow `forge.Client`.
 
-Discussions also introduce **categories** (partition + format/permission
-policy) distinct from **labels** (multi-tag triage). The event model must
-expose both without collapsing them.
+Discussions also introduce **categories** (partition + optional format hints)
+distinct from **labels** (multi-tag triage). The event model must expose both
+without collapsing them.
 
 ## Options
 
@@ -85,18 +85,26 @@ Adopt **Option D**.
 | Conversation → Message | **1:M** | Messages (comments/replies) belong to one conversation. |
 | Message → Category / Label | **none** | Messages inherit routing context from their parent conversation; they are not categorized or labeled independently. |
 
-**Category ≠ label.** Categories are a single exclusive partition with
-backend-defined format/permission semantics (e.g. GitHub announcement =
-maintain/admin create; Q&A = answerable). Labels are additive tags on the
-conversation. Adapters must not encode the category name as a synthetic label.
+**Category ≠ label.** Categories are a single exclusive partition. Some
+backends expose category *format* hints (open discussion, Q&A, announcement,
+poll); those are optional routing metadata, not labels. Labels are additive
+tags on the conversation. Adapters must not encode the category name as a
+synthetic label.
 
 **Permissions.** Platform authorization remains
 [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) (effective
-repo/collaborator role on `actor`). Category format is **routing and policy
+repo/collaborator role on `actor`). Category name/slug/format are **routing
 metadata** for harness CEL (e.g. only vouch agents match
 `category.slug == "vouch-request"`), not a second auth system. Backends may
 still reject creates/replies the actor cannot perform; that is adapter error
 handling.
+
+GitHub's public GraphQL `DiscussionCategory` exposes `isAnswerable` but no
+announcement/poll/discussion format field. Adapters MUST map
+`isAnswerable == true` to `format: question_answer` and SHOULD omit `format`
+otherwise unless they document an explicit heuristic. UI-only create
+restrictions (e.g. Announcements limited to maintain/admin) are not queryable
+via that API and MUST NOT be treated as enforceable from `format` alone.
 
 ### Architecture seams
 
@@ -113,8 +121,10 @@ handling.
 3. **Ingress / egress / identity / security:** shim + dispatch drivers;
    host-mediated writeback via `conversation.Client` (tier 1 default, host API
    for mid-run); least-privilege Discussions/chat scopes; conversation bodies
-   untrusted; entity-context rules keep code-mutating slash commands off
-   conversations ([ADR 0076](0076-slash-command-entity-context-separation.md)).
+   untrusted. Entity-context separation keeps code-mutating slash commands off
+   conversations; enforcement is harness CEL `trigger` expressions over
+   `entity.kind` (target state in
+   [ADR 0076](0076-slash-command-entity-context-separation.md)).
 
 ## Consequences
 

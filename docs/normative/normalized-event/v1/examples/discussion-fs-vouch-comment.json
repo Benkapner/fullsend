@@ -25,8 +25,7 @@
       "category": {
         "id": "DIC_kwDOExample",
         "name": "Vouch Request",
-        "slug": "vouch-request",
-        "format": "discussion"
+        "slug": "vouch-request"
       }
     }
   },
