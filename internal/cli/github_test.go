@@ -55,7 +55,7 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 
 	mintURLFlag := cmd.Flags().Lookup("mint-url")
 	require.NotNil(t, mintURLFlag, "expected --mint-url flag")
-	assert.Equal(t, DefaultMintURL, mintURLFlag.DefValue)
+	assert.Equal(t, "", mintURLFlag.DefValue, "flag default should be empty; code default provides the value")
 
 	agentsFlag := cmd.Flags().Lookup("agents")
 	require.NotNil(t, agentsFlag, "expected --agents flag")
@@ -87,12 +87,16 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 	require.NotNil(t, directFlag, "expected --direct flag")
 	assert.Equal(t, "false", directFlag.DefValue)
 
+	inferenceProviderFlag := cmd.Flags().Lookup("inference-provider")
+	require.NotNil(t, inferenceProviderFlag, "expected --inference-provider flag")
+	assert.Equal(t, "", inferenceProviderFlag.DefValue, "flag default should be empty; code default provides the value")
+
 	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
 	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
 
 	inferenceRegionFlag := cmd.Flags().Lookup("inference-region")
 	require.NotNil(t, inferenceRegionFlag, "expected --inference-region flag")
-	assert.Equal(t, "global", inferenceRegionFlag.DefValue)
+	assert.Equal(t, "", inferenceRegionFlag.DefValue, "flag default should be empty; code default provides the value")
 
 	inferenceWIFFlag := cmd.Flags().Lookup("inference-wif-provider")
 	require.NotNil(t, inferenceWIFFlag, "expected --inference-wif-provider flag")
@@ -245,6 +249,224 @@ func TestGitHubEnrollCmd_DelegatesCorrectly(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, updatedCfg.RepoMap()["web-app"].Enabled)
 	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
+}
+
+// --- buildPresetOverlay tests ---
+
+func TestBuildPresetOverlay_NoFlagsChanged(t *testing.T) {
+	cfg := githubSetupConfig{
+		mintURL:         DefaultMintURL,
+		inferenceRegion: "global",
+		changedFlags:    map[string]bool{},
+	}
+	overlay := buildPresetOverlay(cfg)
+
+	// No flags changed: returns nil so the caller uses stubConfigYAML.
+	assert.Nil(t, overlay)
+}
+
+func TestBuildPresetOverlay_FlagsPopulateOverlay(t *testing.T) {
+	cfg := githubSetupConfig{
+		mintURL:              "https://custom-mint.example.com",
+		inferenceProvider:    "vertex",
+		inferenceProject:     "custom-project",
+		inferenceRegion:      "us-west2",
+		inferenceWIFProvider: "projects/789/locations/global/workloadIdentityPools/pool/providers/prov",
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-provider":     true,
+			"inference-project":      true,
+			"inference-region":       true,
+			"inference-wif-provider": true,
+		},
+	}
+	overlay := buildPresetOverlay(cfg)
+
+	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
+	assert.Equal(t, "vertex", overlay.ConfigInferenceProvider())
+	assert.Equal(t, "custom-project", overlay.ConfigInferenceProject())
+	assert.Equal(t, "us-west2", overlay.ConfigInferenceRegion())
+	assert.Equal(t, "projects/789/locations/global/workloadIdentityPools/pool/providers/prov", overlay.ConfigInferenceWIFProvider())
+}
+
+func TestBuildPresetOverlay_PartialFlags(t *testing.T) {
+	cfg := githubSetupConfig{
+		mintURL:          "https://custom-mint.example.com",
+		inferenceProject: "custom-project",
+		inferenceRegion:  "global",
+		changedFlags: map[string]bool{
+			"mint-url": true,
+			// inference-project, inference-region, inference-wif-provider not changed
+		},
+	}
+	overlay := buildPresetOverlay(cfg)
+
+	// Only mint-url was changed, so only it should be locally set in
+	// the overlay.  Other accessors resolve through the parent chain
+	// to code defaults.
+	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
+	assert.Equal(t, config.DefaultPerRepoInferenceProvider, overlay.ConfigInferenceProvider())
+	assert.Equal(t, "", overlay.ConfigInferenceProject())
+	assert.Equal(t, config.DefaultPerRepoInferenceRegion, overlay.ConfigInferenceRegion())
+	assert.Equal(t, "", overlay.ConfigInferenceWIFProvider())
+
+	// Marshal should emit ONLY the locally-set field (mint_url).
+	data, err := overlay.Marshal()
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, "mint_url:")
+	assert.NotContains(t, s, "inference:")
+}
+
+// --- No-preset: only changed flags go into config.yaml ---
+
+func TestRunGitHubSetupPerRepo_NoPreset_NoMintInferenceFlags(t *testing.T) {
+	// When no --mint-url, --inference-provider, or --inference-region
+	// flags are set, config.yaml should NOT contain those values —
+	// they are resolved from code defaults at runtime.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID":   true,
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{}, // no flags changed
+	})
+	require.NoError(t, err)
+
+	// config.yaml should NOT contain mint/inference values.
+	var cfgContent []byte
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == ".fullsend/config.yaml" {
+				cfgContent = f.Content
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, cfgContent, "expected .fullsend/config.yaml in committed files")
+	s := string(cfgContent)
+	assert.NotContains(t, s, "mint_url:")
+	assert.NotContains(t, s, "inference:")
+
+	// Dual-write vars should use resolved code defaults.
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, config.DefaultPerRepoMintURL, varNames["FULLSEND_MINT_URL"])
+	assert.Equal(t, config.DefaultPerRepoInferenceRegion, varNames["FULLSEND_GCP_REGION"])
+}
+
+func TestRunGitHubSetupPerRepo_NoPreset_ExplicitFlags(t *testing.T) {
+	// When flags are explicitly set, only those values go into
+	// config.yaml.  Dual-write vars use the flag values.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://custom-mint.example.com",
+		inferenceProvider:    "vertex",
+		inferenceProject:     "my-project",
+		inferenceRegion:      "us-west2",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-provider":     true,
+			"inference-project":      true,
+			"inference-region":       true,
+			"inference-wif-provider": true,
+		},
+	})
+	require.NoError(t, err)
+
+	// config.yaml should contain the explicitly-set values.
+	var cfgContent []byte
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == ".fullsend/config.yaml" {
+				cfgContent = f.Content
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, cfgContent, "expected .fullsend/config.yaml in committed files")
+	cfg, parseErr := config.ParsePerRepoConfig(cfgContent)
+	require.NoError(t, parseErr)
+	assert.Equal(t, "https://custom-mint.example.com", cfg.ConfigMintURL())
+	assert.Equal(t, "vertex", cfg.ConfigInferenceProvider())
+	assert.Equal(t, "my-project", cfg.ConfigInferenceProject())
+	assert.Equal(t, "us-west2", cfg.ConfigInferenceRegion())
+
+	// Dual-write vars use the flag values.
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://custom-mint.example.com", varNames["FULLSEND_MINT_URL"])
+	assert.Equal(t, "us-west2", varNames["FULLSEND_GCP_REGION"])
+}
+
+func TestRunGitHubSetupPerRepo_NoPreset_PartialFlags(t *testing.T) {
+	// When only --mint-url is set, only mint_url goes into config.yaml.
+	// Inference region var uses the code default.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID":   true,
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:  "acme/widget",
+		mintURL: "https://custom-mint.example.com",
+		agents:  strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{
+			"mint-url": true,
+		},
+	})
+	require.NoError(t, err)
+
+	// config.yaml should contain only mint_url.
+	var cfgContent []byte
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == ".fullsend/config.yaml" {
+				cfgContent = f.Content
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, cfgContent)
+	s := string(cfgContent)
+	assert.Contains(t, s, "mint_url:")
+	assert.NotContains(t, s, "inference:")
+
+	// Vars: mint_url from flag, region from code default.
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://custom-mint.example.com", varNames["FULLSEND_MINT_URL"])
+	assert.Equal(t, config.DefaultPerRepoInferenceRegion, varNames["FULLSEND_GCP_REGION"])
 }
 
 // --- Unenroll command tests ---
@@ -693,6 +915,12 @@ func TestRunGitHubSetupPerRepo(t *testing.T) {
 		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
 		inferenceRegion:      "global",
 		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
 	})
 	require.NoError(t, err)
 
@@ -700,7 +928,8 @@ func TestRunGitHubSetupPerRepo(t *testing.T) {
 	require.NotEmpty(t, client.CommittedFilesToBranch)
 	require.NotEmpty(t, client.CreatedProposals)
 
-	// Verify repo variables were set.
+	// Verify repo variables were set (dual-write alongside config.yaml
+	// for backward compatibility with existing workflow templates).
 	varNames := make(map[string]string)
 	for _, v := range client.Variables {
 		varNames[v.Name] = v.Value
@@ -798,6 +1027,12 @@ func TestRunGitHubSetupPerRepo_DryRun(t *testing.T) {
 		inferenceRegion:      "global",
 		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
 		dryRun:               true,
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
 	})
 	require.NoError(t, err)
 
@@ -832,7 +1067,7 @@ func TestRunGitHubSetupPerRepo_ReusesExistingSecrets(t *testing.T) {
 	// Default mode delivers via PR — verify files were committed to the scaffold branch.
 	require.NotEmpty(t, client.CommittedFilesToBranch)
 
-	// Verify repo variables were set.
+	// Verify repo variables were set (dual-write).
 	varNames := make(map[string]string)
 	for _, v := range client.Variables {
 		varNames[v.Name] = v.Value
@@ -841,7 +1076,7 @@ func TestRunGitHubSetupPerRepo_ReusesExistingSecrets(t *testing.T) {
 	assert.Equal(t, "global", varNames["FULLSEND_GCP_REGION"])
 	assert.Equal(t, "true", varNames["FULLSEND_PER_REPO_INSTALL"])
 
-	// Verify no secrets were overwritten.
+	// Verify no secrets were overwritten (both were reused).
 	assert.Empty(t, client.CreatedSecrets)
 }
 

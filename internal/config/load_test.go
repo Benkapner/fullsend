@@ -118,6 +118,8 @@ func TestIsPerRepoYAML(t *testing.T) {
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: github-actions\n")))
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: \"\"\n")))
 	assert.False(t, IsPerRepoYAML([]byte("not yaml")))
+	// inference key is shared between org and per-repo; should not trigger org detection.
+	assert.True(t, IsPerRepoYAML([]byte("version: \"1\"\ninference:\n  provider: vertex\n")))
 }
 
 // --- Base-layer loading (config.base.yaml) tests ---
@@ -456,6 +458,91 @@ agents:
 	// deploy: additive from overlay only.
 	assert.Equal(t, "deploy", agents[2].DerivedName())
 	assert.Equal(t, "harness/deploy.yaml", agents[2].Source)
+}
+
+func TestLoadConfig_BothExist_MintInferenceFallback(t *testing.T) {
+	dir := t.TempDir()
+	// Base sets mint/inference values; overlay overrides only mint_url.
+	base := `version: "1"
+mint_url: https://base-mint.example.com
+inference:
+  provider: vertex
+  project: base-project
+  region: us-central1
+  wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov
+`
+	overlay := `mint_url: https://overlay-mint.example.com
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(overlay), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	pcr, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+
+	// Overlay overrides mint_url.
+	assert.Equal(t, "https://overlay-mint.example.com", pcr.ConfigMintURL())
+	// Inference fields fall through to base.
+	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
+	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
+	assert.Equal(t, "us-central1", pcr.ConfigInferenceRegion())
+	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/prov", pcr.ConfigInferenceWIFProvider())
+}
+
+func TestLoadConfig_OnlyBase_MintInference(t *testing.T) {
+	dir := t.TempDir()
+	base := `version: "1"
+mint_url: https://base-mint.example.com
+inference:
+  provider: vertex
+  project: base-project
+  region: global
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	pcr, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+
+	// All values from base.
+	assert.Equal(t, "https://base-mint.example.com", pcr.ConfigMintURL())
+	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
+	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
+	assert.Equal(t, "global", pcr.ConfigInferenceRegion())
+	// WIF provider not set in base — falls through to default (empty).
+	assert.Equal(t, "", pcr.ConfigInferenceWIFProvider())
+}
+
+func TestLoadConfig_BothExist_MarshalOmitsInferenceFromBase(t *testing.T) {
+	dir := t.TempDir()
+	base := `version: "1"
+mint_url: https://base-mint.example.com
+inference:
+  provider: vertex
+  project: base-project
+`
+	overlay := `roles:
+  - coder
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(overlay), 0o644))
+
+	writer, err := LoadConfigWriter(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	data, err := writer.Marshal()
+	require.NoError(t, err)
+	s := string(data)
+	// Base values should NOT appear in overlay marshal.
+	assert.NotContains(t, s, "base-mint")
+	assert.NotContains(t, s, "inference:")
+	assert.NotContains(t, s, "base-project")
+	// Overlay values should appear.
+	assert.Contains(t, s, "coder")
 }
 
 func TestLoadConfig_BothExist_AllowedResourcesUnionAcrossLayers(t *testing.T) {

@@ -100,9 +100,21 @@ type DispatchConfig struct {
 	MintURL  string `yaml:"mint_url,omitempty"` // informational, set when mode=oidc-mint
 }
 
-// InferenceConfig configures the inference provider used by agents.
+// InferenceConfig configures the inference provider used by agents
+// (org-mode config).
 type InferenceConfig struct {
 	Provider string `yaml:"provider"`
+}
+
+// PerRepoInferenceConfig groups inference backend settings for
+// per-repo configs. The Provider field identifies the inference
+// backend (currently only "vertex"); Project, Region, and WIFProvider
+// hold provider-specific connection details.
+type PerRepoInferenceConfig struct {
+	Provider    string `yaml:"provider,omitempty"`
+	Project     string `yaml:"project,omitempty"`
+	Region      string `yaml:"region,omitempty"`
+	WIFProvider string `yaml:"wif_provider,omitempty"`
 }
 
 // StatusNotificationConfig controls status comments posted on issues/PRs
@@ -521,6 +533,14 @@ type perRepoConfig struct {
 	// method sharing a name on the same type.
 	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 
+	// Mint URL for token minting (ADR 0069 Decision 1).
+	MintURL string `yaml:"mint_url,omitempty"`
+
+	// Inference groups the inference backend settings under a single
+	// top-level key. The nested struct allows future provider types
+	// beyond "vertex" without flat-key proliferation.
+	Inference *PerRepoInferenceConfig `yaml:"inference,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
@@ -556,6 +576,16 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		}
 	}
 	return cfg
+}
+
+// NewEmptyPerRepoOverlay creates an empty per-repo config suitable for
+// use as a stub overlay when a preset base layer is provided. No roles,
+// agents, or version are populated; the overlay inherits everything from
+// the base layer via the parent fallback chain.
+func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
+	return &perRepoConfig{
+		parent: &perRepoDefaults{},
+	}
 }
 
 // NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
@@ -691,6 +721,8 @@ type perRepoConfigMarshal struct {
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
+	MintURL                string                    `yaml:"mint_url,omitempty"`
+	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -707,6 +739,11 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Agents:              c.Agents,
 		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,
+		MintURL:             c.MintURL,
+	}
+	// Only emit inference block when at least one field is set locally.
+	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
+		h.Inference = c.Inference
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -758,6 +795,12 @@ func (c *perRepoConfig) Validate() error {
 	}
 	if err := validateStatusNotifications(c.Notifications); err != nil {
 		return err
+	}
+	if c.Inference != nil && c.Inference.Provider != "" {
+		validProviders := ValidProviders()
+		if !slices.Contains(validProviders, c.Inference.Provider) {
+			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
+		}
 	}
 	return nil
 }

@@ -45,9 +45,10 @@ fullsend github setup <owner/repo> \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mint-url` | | HTTPS endpoint of the token mint service |
+| `--inference-provider` | | Inference provider; resolved to `vertex` if unset |
 | `--inference-project` | | GCP project ID for Agent Platform |
 | `--inference-wif-provider` | | Full WIF provider resource name |
-| `--inference-region` | `global` | GCP region for inference |
+| `--inference-region` | | GCP region for inference; resolved to `global` if unset |
 | `--skip-app-setup` | `false` | Skip GitHub App creation/installation |
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps |
 | `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Agent roles to provision |

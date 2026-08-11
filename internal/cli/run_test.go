@@ -424,7 +424,8 @@ func TestIsPerRepoYAML(t *testing.T) {
 		{"org with dispatch", "version: '1'\ndispatch:\n  platform: github\n", false},
 		{"org with repos", "version: '1'\nrepos:\n  acme/widget:\n    enabled: true\n", false},
 		{"org with dispatch and roles", "version: '1'\ndispatch:\n  platform: github\nroles:\n  - triage\n", false},
-		{"org with inference", "version: '1'\ninference:\n  provider: vertex\n", false},
+		{"per-repo with inference", "version: '1'\ninference:\n  provider: vertex\n", true},
+		{"org with inference and dispatch", "version: '1'\ninference:\n  provider: vertex\ndispatch:\n  platform: github\n", false},
 		{"org with defaults", "version: '1'\ndefaults:\n  roles:\n    - triage\n", false},
 		{"per-repo without roles", "version: '1'\nkill_switch: false\n", true},
 		{"minimal (no discriminator)", "version: '1'\n", true},
@@ -3572,7 +3573,7 @@ func TestSetupStatusNotifier_PerRepoConfigYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
-	// No "defaults"/"dispatch"/"repos"/"inference" key, so this parses as
+	// No "defaults"/"dispatch"/"repos" key, so this parses as
 	// per-repo config (see config.IsPerRepoYAML). Per #5994, per-repo
 	// configs support status_notifications the same way org configs do.
 	configData := `version: "1"
