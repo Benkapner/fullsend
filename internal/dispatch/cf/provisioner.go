@@ -11,7 +11,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,8 +94,9 @@ type Config struct {
 	// PreviewAlias is the Wrangler preview alias for preview deploys.
 	// When set (and DeployMode is DeployPreview), the provisioner uses
 	// `wrangler versions upload --preview-alias=<alias>` instead of
-	// `wrangler deploy`. The preview mint URL is deterministic:
-	// https://<alias>-<worker-name>.workers.dev
+	// `wrangler deploy`. The preview mint URL includes the account's
+	// workers.dev subdomain:
+	// https://<alias>-<worker-name>.<subdomain>.workers.dev
 	PreviewAlias string
 
 	// EnvVars are non-secret environment variables to set on the Worker
@@ -728,8 +731,9 @@ func NewLiveWranglerRunner(accountID string) *LiveWranglerRunner {
 // Deploy deploys a Worker from sourceDir using wrangler.
 //
 // When previewAlias is non-empty, uses `wrangler versions upload` with
-// `--preview-alias=<alias>` for a preview deploy. The preview URL is
-// deterministic: https://<alias>-<workerName>.workers.dev
+// `--preview-alias=<alias>` for a preview deploy. The preview URL
+// includes the account's workers.dev subdomain:
+// https://<alias>-<workerName>.<subdomain>.workers.dev
 //
 // When previewAlias is empty, uses `wrangler deploy` for a durable
 // production deploy.
@@ -773,12 +777,21 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 		return "", fmt.Errorf("wrangler deploy failed: %s\n%s", err, string(output))
 	}
 
-	// Parse the Worker URL from wrangler output.
+	// Parse the Worker URL from wrangler output. Wrangler prints the
+	// full URL including the account's workers.dev subdomain (e.g.
+	// https://<worker>.<subdomain>.workers.dev).
 	url := parseWorkerURL(string(output), workerName)
-	if url == "" {
-		url = fmt.Sprintf("https://%s.workers.dev", workerName)
+	if url != "" {
+		return url, nil
 	}
-	return url, nil
+
+	// Fallback: resolve the account's workers.dev subdomain via the
+	// Cloudflare API and construct the URL.
+	subdomain, subErr := ResolveWorkersSubdomainFn(ctx, r.AccountID)
+	if subErr != nil {
+		return "", fmt.Errorf("wrangler output did not contain Worker URL and subdomain lookup failed: %w", subErr)
+	}
+	return fmt.Sprintf("https://%s.%s.workers.dev", workerName, subdomain), nil
 }
 
 // deployPreview performs a preview deploy via `wrangler versions upload`.
@@ -826,12 +839,24 @@ func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, worke
 		return "", fmt.Errorf("wrangler versions upload failed: %s\n%s", err, string(output))
 	}
 
-	// Preview URL is deterministic from the alias and worker name.
-	// We don't use parseWorkerURL here because wrangler output may
-	// contain the production Worker URL, which parseWorkerURL would
-	// match as a false positive. The deterministic pattern is reliable.
-	url := fmt.Sprintf("https://%s-%s.workers.dev", previewAlias, workerName)
-	return url, nil
+	// Parse the preview URL from wrangler output. The preview URL
+	// includes the account's workers.dev subdomain (e.g.
+	// https://<alias>-<worker>.<subdomain>.workers.dev), which we
+	// cannot construct without knowing the subdomain. Parsing from
+	// wrangler output is auth-transparent: it works for both API-token
+	// and Wrangler-login auth modes.
+	if url := parsePreviewURL(string(output), previewAlias); url != "" {
+		return url, nil
+	}
+
+	// Wrangler output didn't contain a parseable preview URL. Fall
+	// back to resolving the account's workers.dev subdomain via the
+	// Cloudflare API and constructing the URL.
+	subdomain, subErr := ResolveWorkersSubdomainFn(ctx, r.AccountID)
+	if subErr != nil {
+		return "", fmt.Errorf("wrangler output did not contain preview URL and subdomain lookup failed: %w", subErr)
+	}
+	return fmt.Sprintf("https://%s-%s.%s.workers.dev", previewAlias, workerName, subdomain), nil
 }
 
 // PutSecret stores a secret value on the durable Worker via wrangler
@@ -956,6 +981,121 @@ func parseWorkerURL(output, _ string) string {
 				url = strings.TrimRight(url, " \t\n\r.,;")
 				return url
 			}
+		}
+	}
+	return ""
+}
+
+// parsePreviewURL extracts a preview Worker URL from wrangler output by
+// looking for a URL that contains the preview alias. This avoids false
+// positives from the production Worker URL that wrangler may also print.
+func parsePreviewURL(output, previewAlias string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "https://") || !strings.Contains(line, "workers.dev") {
+			continue
+		}
+		start := strings.Index(line, "https://")
+		if start < 0 {
+			continue
+		}
+		url := strings.TrimRight(line[start:], " \t\n\r.,;")
+		// Match only URLs that start with the preview alias to
+		// distinguish from the production Worker URL.
+		host := strings.TrimPrefix(url, "https://")
+		if strings.HasPrefix(host, previewAlias+"-") {
+			return url
+		}
+	}
+	return ""
+}
+
+// ResolveWorkersSubdomainFn is the function used to resolve the workers.dev
+// subdomain for a Cloudflare account. Override in tests to avoid real API
+// calls.
+var ResolveWorkersSubdomainFn = resolveWorkersSubdomain
+
+// resolveWorkersSubdomain calls the Cloudflare API to get the account's
+// workers.dev subdomain. Supports API-token auth via CLOUDFLARE_API_TOKEN
+// env var; when absent, attempts to use Wrangler's authenticated path
+// by running `npx wrangler subdomain` (which reads the Wrangler OAuth
+// session).
+func resolveWorkersSubdomain(ctx context.Context, accountID string) (string, error) {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	if token != "" {
+		return resolveSubdomainViaAPI(ctx, accountID, token)
+	}
+
+	// No API token — try wrangler's authenticated path.
+	return resolveSubdomainViaWrangler(ctx)
+}
+
+// resolveSubdomainViaAPI calls GET /accounts/{account_id}/workers/subdomain
+// using the Cloudflare API token.
+func resolveSubdomainViaAPI(ctx context.Context, accountID, token string) (string, error) {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/subdomain", accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("calling Cloudflare subdomain API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Cloudflare subdomain API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Result struct {
+			Subdomain string `json:"subdomain"`
+		} `json:"result"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parsing subdomain response: %w", err)
+	}
+	if !result.Success || result.Result.Subdomain == "" {
+		return "", fmt.Errorf("Cloudflare subdomain API returned empty subdomain: %s", string(body))
+	}
+	return result.Result.Subdomain, nil
+}
+
+// resolveSubdomainViaWrangler runs `npx wrangler subdomain` and parses
+// the subdomain from its output. This works when Wrangler is
+// authenticated via `wrangler login` (OAuth session) without requiring
+// CLOUDFLARE_API_TOKEN.
+func resolveSubdomainViaWrangler(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "subdomain")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("wrangler subdomain failed: %w\n%s", err, string(out))
+	}
+	subdomain := parseWranglerSubdomainOutput(string(out))
+	if subdomain == "" {
+		return "", fmt.Errorf("could not parse subdomain from wrangler output: %s", string(out))
+	}
+	return subdomain, nil
+}
+
+// parseWranglerSubdomainOutput extracts the subdomain from `wrangler
+// subdomain` output. The command typically prints a line like:
+//
+//	<subdomain>.workers.dev
+func parseWranglerSubdomainOutput(output string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasSuffix(line, ".workers.dev") {
+			return strings.TrimSuffix(line, ".workers.dev")
 		}
 	}
 	return ""

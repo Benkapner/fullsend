@@ -3,13 +3,13 @@ package install
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
@@ -38,11 +38,6 @@ type RepoEnsurer interface {
 	// (inference provision + github setup).
 	EnsureRepo(ctx context.Context, org, repoName string) (State, error)
 }
-
-// CLIRunnerFunc is the signature for running a fullsend CLI command.
-// The default implementation is e2etest.TryRunCLI. Inject a custom
-// function in tests to avoid shelling out.
-type CLIRunnerFunc func(binary, token string, args ...string) (string, error)
 
 // SettleFunc is called after a repo is freshly created or installed to
 // wait until GitHub Actions recognises the workflow file. The default
@@ -141,7 +136,7 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 	// Step 2: check whether fullsend was previously installed. We always
 	// re-vendor (step 3), but skip the settle wait when the workflow file
 	// already exists — GitHub Actions already indexed it.
-	alreadyInstalled := validatePerRepoPostInstall(ctx, e.client, org, repoName) == nil
+	alreadyInstalled := ValidatePerRepoPostInstall(ctx, e.client, org, repoName) == nil
 	if alreadyInstalled {
 		e.logf("[ensure] %s already installed, re-vendoring to keep binary current", target)
 	} else {
@@ -149,10 +144,12 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 	}
 
 	// Step 3: always run github setup --vendor to push the current binary.
+	// Use the mint URL from e2eCfg — the suite sets this from the install
+	// driver's result before creating the ensurer.
 	if err := e.installFullsend(ctx, org, repoName, target); err != nil {
 		return nil, err
 	}
-	if err := validatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
+	if err := ValidatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
 		return nil, fmt.Errorf("post-install validation for %s: %w", target, err)
 	}
 
@@ -160,12 +157,12 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 	// fresh installs. Re-vendors update the binary and workflow files
 	// but GitHub Actions already indexed the workflow on the prior install.
 	if !alreadyInstalled && e.settle != nil {
-		if err := e.settle(ctx, e.client, org, repoName, perRepoTriageWorkflow, e.logf); err != nil {
+		if err := e.settle(ctx, e.client, org, repoName, PerRepoTriageWorkflow, e.logf); err != nil {
 			return nil, fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
 		}
 	}
 
-	return &perRepoState{org: org, repo: repoName}, nil
+	return NewPerRepoState(org, repoName, e.e2eCfg.MintURL), nil
 }
 
 // ensureRepoExists creates the repo if it does not already exist.
@@ -190,30 +187,9 @@ func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, targe
 }
 
 // installFullsend runs inference provision (when a GCP project is
-// configured) and fullsend github setup for the target repo. Same
-// semantics as perRepoDriver.Install.
+// configured) and fullsend github setup for the target repo.
 func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) error {
-	args := []string{
-		"github", "setup", target,
-		"--vendor", "--direct",
-		"--skip-app-setup",
-		"--mint-url", e.e2eCfg.MintURL,
-		"--runtime", "dummy",
-	}
-
-	if project := strings.TrimSpace(e.e2eCfg.GCPProjectID); project != "" {
-		wifProvider, err := e.provisionInference(target, project)
-		if err != nil {
-			return err
-		}
-		args = append(args, "--inference-project", project, "--inference-wif-provider", wifProvider)
-	}
-
-	e.logf("[ensure] running fullsend %s", strings.Join(args, " "))
-	if _, err := e.runCLI(e.binary, e.token, args...); err != nil {
-		return fmt.Errorf("github setup %s: %w", target, err)
-	}
-	return nil
+	return common.RunGitHubSetup(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, e.runCLI, e.logf)
 }
 
 // awaitWorkflowReady polls the forge's GetWorkflow API until the given
@@ -242,29 +218,4 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 	}
 
 	return fmt.Errorf("workflow %s not visible on %s after %d attempts", workflowFile, target, settleMaxAttempts)
-}
-
-// provisionInference creates repo-scoped inference WIF for target and
-// returns the provider resource name. Mirrors
-// perRepoDriver.provisionPerRepoInference.
-func (e *repoEnsurer) provisionInference(target, project string) (string, error) {
-	provisionArgs := []string{"inference", "provision", target, "--project", project}
-	e.logf("[ensure] running fullsend %s", strings.Join(provisionArgs, " "))
-	if _, err := e.runCLI(e.binary, e.token, provisionArgs...); err != nil {
-		return "", fmt.Errorf("inference provision %s: %w", target, err)
-	}
-
-	statusArgs := []string{"inference", "status", target, "--project", project, "--format", "json"}
-	e.logf("[ensure] running fullsend %s", strings.Join(statusArgs, " "))
-	out, err := e.runCLI(e.binary, e.token, statusArgs...)
-	if err != nil {
-		return "", fmt.Errorf("inference status %s: %w", target, err)
-	}
-
-	wifProvider, err := parseInferenceStatusWIFProvider(out)
-	if err != nil {
-		return "", fmt.Errorf("inference status %s: %w", target, err)
-	}
-	e.logf("[ensure] repo-scoped inference WIF provider: %s", wifProvider)
-	return wifProvider, nil
 }
