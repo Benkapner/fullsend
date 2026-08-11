@@ -504,6 +504,18 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
+		// A 404 from FindInstallation means the repo is not covered by
+		// the GitHub App installation. Surface a clear 422 so callers
+		// can diagnose misconfigured installations. Transient errors
+		// (500, 503, 429, network) propagate as 502.
+		if len(repos) > 0 && strings.Contains(err.Error(), "status 404") {
+			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
+			return "", "", nil, &mintError{
+				status:  http.StatusUnprocessableEntity,
+				msg:     umsg,
+				userMsg: umsg,
+			}
+		}
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
 
@@ -515,7 +527,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 	//
 	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
 	// Transient failures (500, 503, 429, network errors) are propagated
-	// as 502, matching the repos[0] lookup error path above.
+	// as 502, matching the repos[0] error path above.
 	if len(repos) > 1 {
 		for _, repo := range repos[1:] {
 			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
