@@ -454,3 +454,202 @@ func isBlockType(nodeType string) bool {
 		return false
 	}
 }
+
+// ADFToMarkdown converts a Jira issue or comment body to CommonMark
+// Markdown, the reverse of MarkdownToADF. body is either a plain string or
+// an ADF document (map[string]any), matching the two shapes Jira's REST
+// API returns for description/body fields; any other type (including nil)
+// yields "".
+//
+// Unlike ADFToPlainText, this preserves formatting (bold/italic/code/
+// links, headings, lists, blockquotes, code blocks) rather than
+// discarding it: tracker.Body is documented as Markdown-formatted text,
+// so a Jira-backed tracker.Client returning plain text there would
+// silently drop content GitHub- and GitLab-backed implementations
+// preserve.
+func ADFToMarkdown(body any) string {
+	switch v := body.(type) {
+	case string:
+		return v
+	case map[string]any:
+		// A real Jira description/comment body is always a "doc" node
+		// whose own content is a list of sibling blocks. Some callers
+		// (and this package's own tests, mirroring ADFToPlainText's)
+		// instead pass a single block node — a bare paragraph or list —
+		// directly; render that as one block rather than misreading its
+		// inline/item content as if it were a list of sibling blocks.
+		if nodeType, _ := v["type"].(string); isBlockType(nodeType) && nodeType != "doc" {
+			return adfMarkdownBlock(v, 0)
+		}
+		return strings.Join(adfMarkdownBlocks(v, 0), "\n\n")
+	default:
+		return ""
+	}
+}
+
+// adfMarkdownBlocks renders each block-level child of node into its own
+// Markdown string, mirroring walkADFNode's traversal but block-aware:
+// callers join siblings with a blank line rather than a single newline,
+// since that's what separates Markdown blocks (a single newline reads
+// back as one paragraph). depth mirrors walkADFNode's cap against
+// attacker-controlled ADF bodies.
+func adfMarkdownBlocks(node map[string]any, depth int) []string {
+	if depth > maxADFDepth {
+		return nil
+	}
+	content, ok := node["content"].([]any)
+	if !ok {
+		return nil
+	}
+	var blocks []string
+	for _, c := range content {
+		childMap, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if block := adfMarkdownBlock(childMap, depth+1); block != "" {
+			blocks = append(blocks, block)
+		}
+	}
+	return blocks
+}
+
+// adfMarkdownBlock renders a single ADF block-level node as Markdown.
+// Unrecognized types (e.g. "panel", "media") fall back to rendering any
+// inline text content flat, mirroring MarkdownToADF's own
+// fallback-to-plain-text convention, so content isn't silently dropped.
+func adfMarkdownBlock(node map[string]any, depth int) string {
+	nodeType, _ := node["type"].(string)
+	switch nodeType {
+	case "paragraph":
+		return adfMarkdownInline(node)
+	case "heading":
+		level := 1
+		if attrs, ok := node["attrs"].(map[string]any); ok {
+			if l, ok := attrs["level"].(int); ok {
+				level = l
+			}
+		}
+		return strings.Repeat("#", level) + " " + adfMarkdownInline(node)
+	case "codeBlock":
+		lang := ""
+		if attrs, ok := node["attrs"].(map[string]any); ok {
+			if l, ok := attrs["language"].(string); ok {
+				lang = l
+			}
+		}
+		return "```" + lang + "\n" + adfCodeBlockText(node) + "\n```"
+	case "rule":
+		return "---"
+	case "blockquote":
+		lines := strings.Split(strings.Join(adfMarkdownBlocks(node, depth), "\n\n"), "\n")
+		for i, line := range lines {
+			lines[i] = "> " + line
+		}
+		return strings.Join(lines, "\n")
+	case "bulletList":
+		return adfMarkdownList(node, depth, func(int) string { return "- " })
+	case "orderedList":
+		start := 1
+		if attrs, ok := node["attrs"].(map[string]any); ok {
+			if o, ok := attrs["order"].(int); ok {
+				start = o
+			}
+		}
+		return adfMarkdownList(node, depth, func(i int) string { return fmt.Sprintf("%d. ", start+i) })
+	default:
+		return adfMarkdownInline(node)
+	}
+}
+
+// adfCodeBlockText concatenates a codeBlock node's text children verbatim
+// (no marks are valid inside an ADF codeBlock).
+func adfCodeBlockText(node map[string]any) string {
+	var sb strings.Builder
+	for _, c := range asADFNodes(node["content"]) {
+		if text, ok := c["text"].(string); ok {
+			sb.WriteString(text)
+		}
+	}
+	return sb.String()
+}
+
+// adfMarkdownList renders a bulletList or orderedList's items, each
+// prefixed by marker(i) for its zero-based index. A listItem's own block
+// content is rendered with adfMarkdownBlocks and indented so continuation
+// lines (a second paragraph, or a nested list) stay part of the same item.
+func adfMarkdownList(node map[string]any, depth int, marker func(i int) string) string {
+	items := asADFNodes(node["content"])
+	lines := make([]string, 0, len(items))
+	for i, item := range items {
+		body := strings.Join(adfMarkdownBlocks(item, depth+1), "\n\n")
+		prefix := marker(i)
+		indented := strings.ReplaceAll(body, "\n", "\n"+strings.Repeat(" ", len(prefix)))
+		lines = append(lines, prefix+indented)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// asADFNodes type-asserts an ADF "content" field into a slice of child
+// node maps, skipping (rather than failing on) any element that isn't a
+// map[string]any.
+func asADFNodes(content any) []map[string]any {
+	items, ok := content.([]any)
+	if !ok {
+		return nil
+	}
+	nodes := make([]map[string]any, 0, len(items))
+	for _, c := range items {
+		if m, ok := c.(map[string]any); ok {
+			nodes = append(nodes, m)
+		}
+	}
+	return nodes
+}
+
+// adfMarkdownInline renders a block node's inline children (text/hardBreak)
+// as a single line of Markdown, applying each text node's marks.
+func adfMarkdownInline(node map[string]any) string {
+	var sb strings.Builder
+	for _, c := range asADFNodes(node["content"]) {
+		if childType, _ := c["type"].(string); childType == "hardBreak" {
+			// A backslash before the line ending, rather than the more
+			// common trailing double-space: trailing whitespace is
+			// silently stripped by enough editors, git diffs, and web
+			// forms that a hard break built from it wouldn't reliably
+			// survive a copy/paste round trip.
+			sb.WriteString("\\\n")
+			continue
+		}
+		text, _ := c["text"].(string)
+		sb.WriteString(applyADFMarks(text, asADFNodes(c["marks"])))
+	}
+	return sb.String()
+}
+
+// applyADFMarks wraps text in the Markdown syntax for each of marks, in
+// reverse order: MarkdownToADF's walkInline builds a text node's marks
+// outer-to-inner (each enclosing mark is appended after the ones already
+// inherited from its parent — see its Emphasis/Link cases), so marks[0] is
+// the outermost mark and must be applied last to reproduce the original
+// nesting.
+func applyADFMarks(text string, marks []map[string]any) string {
+	for i := len(marks) - 1; i >= 0; i-- {
+		mark := marks[i]
+		switch mark["type"] {
+		case "strong":
+			text = "**" + text + "**"
+		case "em":
+			text = "*" + text + "*"
+		case "code":
+			text = "`" + text + "`"
+		case "link":
+			href := ""
+			if attrs, ok := mark["attrs"].(map[string]any); ok {
+				href, _ = attrs["href"].(string)
+			}
+			text = "[" + text + "](" + href + ")"
+		}
+	}
+	return text
+}

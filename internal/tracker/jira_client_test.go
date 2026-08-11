@@ -269,8 +269,8 @@ func TestJiraClient_CreateComment(t *testing.T) {
 	if _, ok := fc.comments["PROJ-42"]; !ok {
 		t.Fatal("expected comment to be created against issue key PROJ-42")
 	}
-	if comment.Body != "hello there" {
-		t.Errorf("comment.Body = %q, want %q (plain text, consistent with ListComments)", comment.Body, "hello there")
+	if comment.Body != "**hello** there" {
+		t.Errorf("comment.Body = %q, want %q (Markdown, consistent with ListComments)", comment.Body, "**hello** there")
 	}
 }
 

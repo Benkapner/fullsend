@@ -850,3 +850,362 @@ func TestADFToPlainText_UnexpectedType(t *testing.T) {
 		t.Errorf("ADFToPlainText(int) = %q, want empty string", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ADFToMarkdown
+// ---------------------------------------------------------------------------
+
+func TestADFToMarkdown_String(t *testing.T) {
+	got := ADFToMarkdown("plain text body")
+	if got != "plain text body" {
+		t.Errorf("ADFToMarkdown(string) = %q, want %q", got, "plain text body")
+	}
+}
+
+func TestADFToMarkdown_UnexpectedType(t *testing.T) {
+	got := ADFToMarkdown(42)
+	if got != "" {
+		t.Errorf("ADFToMarkdown(int) = %q, want empty string", got)
+	}
+}
+
+func TestADFToMarkdown_Paragraph(t *testing.T) {
+	adf := map[string]any{
+		"type":    "doc",
+		"version": 1,
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{"type": "text", "text": "hello there"},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	if got != "hello there" {
+		t.Errorf("ADFToMarkdown(paragraph) = %q, want %q", got, "hello there")
+	}
+}
+
+func TestADFToMarkdown_MultipleParagraphsSeparatedByBlankLine(t *testing.T) {
+	// Unlike ADFToPlainText, which joins blocks with a single newline,
+	// Markdown paragraphs must be separated by a blank line, or a
+	// Markdown parser (including this package's own MarkdownToADF) reads
+	// them back as one paragraph instead of two.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":    "paragraph",
+				"content": []any{map[string]any{"type": "text", "text": "first"}},
+			},
+			map[string]any{
+				"type":    "paragraph",
+				"content": []any{map[string]any{"type": "text", "text": "second"}},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "first\n\nsecond"
+	if got != want {
+		t.Errorf("ADFToMarkdown(two paragraphs) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_Heading(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":    "heading",
+				"attrs":   map[string]any{"level": 2},
+				"content": []any{map[string]any{"type": "text", "text": "Title"}},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "## Title"
+	if got != want {
+		t.Errorf("ADFToMarkdown(heading level 2) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_StrongEmCodeMarks(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{"type": "text", "text": "bold", "marks": []any{map[string]any{"type": "strong"}}},
+					map[string]any{"type": "text", "text": " and "},
+					map[string]any{"type": "text", "text": "italic", "marks": []any{map[string]any{"type": "em"}}},
+					map[string]any{"type": "text", "text": " and "},
+					map[string]any{"type": "text", "text": "code", "marks": []any{map[string]any{"type": "code"}}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "**bold** and *italic* and `code`"
+	if got != want {
+		t.Errorf("ADFToMarkdown(marks) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_MultipleMarksNestInApplicationOrder(t *testing.T) {
+	// MarkdownToADF builds a text node's marks slice outer-to-inner (see
+	// walkInline's Emphasis/Link cases): the outermost enclosing mark is
+	// appended first, so a "**[text](url)**" source produces
+	// marks: [strong, link]. Rendering must reverse that order, applying
+	// link (innermost) first and strong (outermost) last, or the
+	// asymmetric marks (link, strong) round-trip into the wrong nesting.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "text",
+						"marks": []any{
+							map[string]any{"type": "strong"},
+							map[string]any{"type": "link", "attrs": map[string]any{"href": "https://example.com"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "**[text](https://example.com)**"
+	if got != want {
+		t.Errorf("ADFToMarkdown(nested marks) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_Link(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "the docs",
+						"marks": []any{
+							map[string]any{"type": "link", "attrs": map[string]any{"href": "https://example.com/docs"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "[the docs](https://example.com/docs)"
+	if got != want {
+		t.Errorf("ADFToMarkdown(link) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_CodeBlockWithLanguage(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":  "codeBlock",
+				"attrs": map[string]any{"language": "go"},
+				"content": []any{
+					map[string]any{"type": "text", "text": "fmt.Println(\"hi\")"},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "```go\nfmt.Println(\"hi\")\n```"
+	if got != want {
+		t.Errorf("ADFToMarkdown(codeBlock) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_CodeBlockWithoutLanguage(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":    "codeBlock",
+				"content": []any{map[string]any{"type": "text", "text": "plain"}},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "```\nplain\n```"
+	if got != want {
+		t.Errorf("ADFToMarkdown(codeBlock without language) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_BulletList(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "bulletList",
+				"content": []any{
+					map[string]any{
+						"type":    "listItem",
+						"content": []any{map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "one"}}}},
+					},
+					map[string]any{
+						"type":    "listItem",
+						"content": []any{map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "two"}}}},
+					},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "- one\n- two"
+	if got != want {
+		t.Errorf("ADFToMarkdown(bulletList) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_OrderedListStartsAtAttrsOrder(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":  "orderedList",
+				"attrs": map[string]any{"order": 5},
+				"content": []any{
+					map[string]any{
+						"type":    "listItem",
+						"content": []any{map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "five"}}}},
+					},
+					map[string]any{
+						"type":    "listItem",
+						"content": []any{map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "six"}}}},
+					},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "5. five\n6. six"
+	if got != want {
+		t.Errorf("ADFToMarkdown(orderedList) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_Blockquote(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "blockquote",
+				"content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "quoted text"}}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "> quoted text"
+	if got != want {
+		t.Errorf("ADFToMarkdown(blockquote) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_Rule(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "above"}}},
+			map[string]any{"type": "rule"},
+			map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "below"}}},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "above\n\n---\n\nbelow"
+	if got != want {
+		t.Errorf("ADFToMarkdown(rule) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_HardBreak(t *testing.T) {
+	adf := map[string]any{
+		"type": "paragraph",
+		"content": []any{
+			map[string]any{"type": "text", "text": "line one"},
+			map[string]any{"type": "hardBreak"},
+			map[string]any{"type": "text", "text": "line two"},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	// A backslash-newline hard break, rather than trailing spaces:
+	// trailing whitespace is silently stripped by enough editors, git
+	// diffs, and web forms that a hard break built from it wouldn't
+	// reliably survive a copy/paste round trip.
+	want := "line one\\\nline two"
+	if got != want {
+		t.Errorf("ADFToMarkdown(hardBreak) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_DeepNestingIsBounded(t *testing.T) {
+	// Unlike ADFToPlainText's single generic node walker, ADFToMarkdown
+	// only recurses through container types that can genuinely nest in
+	// real ADF (blockquote, bulletList/orderedList, listItem); a
+	// paragraph's own content is inline runs, not further blocks. So the
+	// attacker-controlled-nesting vector here is a blockquote chain,
+	// mirroring MarkdownToADF's own deep-blockquote-nesting tests, rather
+	// than ADFToPlainText's paragraph-chain shape.
+	const depth = 10000
+	leaf := map[string]any{
+		"type":    "paragraph",
+		"content": []any{map[string]any{"type": "text", "text": "leaf"}},
+	}
+	nested := leaf
+	for i := 0; i < depth; i++ {
+		nested = map[string]any{"type": "blockquote", "content": []any{nested}}
+	}
+	doc := map[string]any{
+		"type": "doc",
+		"content": []any{
+			nested,
+			map[string]any{
+				"type":    "paragraph",
+				"content": []any{map[string]any{"type": "text", "text": "sibling"}},
+			},
+		},
+	}
+
+	got := ADFToMarkdown(doc)
+	if strings.Contains(got, "leaf") {
+		t.Errorf("ADFToMarkdown(%d nested blockquotes) walked all the way to the leaf; want it capped well below that", depth)
+	}
+	if !strings.Contains(got, "sibling") {
+		t.Errorf("ADFToMarkdown(deeply nested blockquote + sibling) = %q, want it to still contain the sibling paragraph", got)
+	}
+}
+
+func TestADFToMarkdown_RoundTripsThroughMarkdownToADF(t *testing.T) {
+	for _, src := range []string{
+		"hello world",
+		"**bold** and *italic* and `code`",
+		"# Heading\n\nsome body text",
+		"- one\n- two",
+		"> quoted text",
+		"[the docs](https://example.com/docs)",
+	} {
+		doc := mustADF(t, src)
+		got := ADFToMarkdown(doc)
+		if got != src {
+			t.Errorf("ADFToMarkdown(MarkdownToADF(%q)) = %q, want the original markdown back unchanged", src, got)
+		}
+	}
+}

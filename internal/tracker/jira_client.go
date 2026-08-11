@@ -79,7 +79,7 @@ func (c *JiraClient) GetIssue(ctx context.Context, project string, number int) (
 	return &Issue{
 		Number: number,
 		Title:  issue.Fields.Summary,
-		Body:   jira.ADFToPlainText(issue.Fields.Description),
+		Body:   Body(jira.ADFToMarkdown(issue.Fields.Description)),
 		URL:    c.baseURL + "/browse/" + key,
 		Labels: issue.Fields.Labels,
 	}, nil
@@ -100,12 +100,12 @@ func (c *JiraClient) ListComments(ctx context.Context, project string, number in
 }
 
 // CreateComment implements Client. The returned Comment's Body is
-// ADFToPlainText(comment.Body), the same representation ListComments
-// uses, so tracker.Comment.Body has a stable meaning regardless of which
-// method produced it.
-func (c *JiraClient) CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error) {
+// ADFToMarkdown(comment.Body), the same representation ListComments uses,
+// so tracker.Comment.Body has a stable meaning regardless of which method
+// produced it.
+func (c *JiraClient) CreateComment(ctx context.Context, project string, number int, body Body) (*Comment, error) {
 	key := issueKey(project, number)
-	comment, err := c.jira.CreateComment(ctx, key, body)
+	comment, err := c.jira.CreateComment(ctx, key, string(body))
 	if err != nil {
 		return nil, err
 	}
@@ -116,9 +116,9 @@ func (c *JiraClient) CreateComment(ctx context.Context, project string, number i
 // UpdateComment implements Client. Unlike GitHub/GitLab, Jira's
 // update-comment endpoint needs the issue key, which is why number is
 // part of the signature here.
-func (c *JiraClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body string) error {
+func (c *JiraClient) UpdateComment(ctx context.Context, project string, number int, commentID string, body Body) error {
 	key := issueKey(project, number)
-	return c.jira.UpdateComment(ctx, key, commentID, body)
+	return c.jira.UpdateComment(ctx, key, commentID, string(body))
 }
 
 // fromJiraComment converts a jira.Comment to a tracker.Comment. HTMLURL is
@@ -141,7 +141,7 @@ func fromJiraComment(c jira.Comment) Comment {
 	}
 	return Comment{
 		ID:        c.ID,
-		Body:      jira.ADFToPlainText(c.Body),
+		Body:      Body(jira.ADFToMarkdown(c.Body)),
 		Author:    author,
 		CreatedAt: c.Created,
 	}
