@@ -72,13 +72,23 @@ func TestBehaviourSuite(t *testing.T) {
 
 	// Construct the CF mint driver with caller-provided parameters.
 	// The driver does not hardcode pool size or test-repo-NN assumptions;
-	// the calling code passes allowed orgs and per-repo WIF repos.
+	// the calling code passes allowed orgs, per-repo WIF repos, and
+	// workflow host repos.
+	//
+	// AllowedOrgs is explicitly empty ("") — this is per-repo mode, so
+	// we must not dual-enroll the pool org as an allowed org. The CLI's
+	// explicit-empty semantics clear ALLOWED_ORGS on the Worker.
+	//
+	// WorkflowHostRepos registers the pool repos whose vendored workflows
+	// need to mint tokens. Without this, the mint rejects
+	// job_workflow_ref values from pool repos → 401.
 	installDriver, err := cfmint.NewDriver(client, token, binary, e2eCfg.GCPProjectID, t.Logf, cfmint.Config{
-		PEMDir:          e2eCfg.CFMintPEMDir,
-		SuiteName:       suiteName,
-		AllowedOrgs:     org,
-		PerRepoWIFRepos: buildPerRepoWIFRepos(org),
-		AppSet:          "fullsend-test",
+		PEMDir:            e2eCfg.CFMintPEMDir,
+		SuiteName:         suiteName,
+		AllowedOrgs:       "",
+		PerRepoWIFRepos:   buildPerRepoWIFRepos(org),
+		WorkflowHostRepos: buildWorkflowHostRepos(org),
+		AppSet:            "fullsend-test",
 	})
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
@@ -157,6 +167,19 @@ func buildPerRepoWIFRepos(org string) string {
 	repos := make([]string, poolSize)
 	for i := range poolSize {
 		repos[i] = fmt.Sprintf("%s/test-repo-%02d", org, i+1)
+	}
+	return strings.Join(repos, ",")
+}
+
+// buildWorkflowHostRepos constructs the --workflow-host-repos value.
+// These are the repos whose vendored workflows are allowed to mint
+// tokens. Includes the base test-repo (used for per-repo install)
+// and each numbered test-repo-NN in the pool.
+func buildWorkflowHostRepos(org string) string {
+	repos := make([]string, 0, poolSize+1)
+	repos = append(repos, org+"/test-repo")
+	for i := range poolSize {
+		repos = append(repos, fmt.Sprintf("%s/test-repo-%02d", org, i+1))
 	}
 	return strings.Join(repos, ",")
 }

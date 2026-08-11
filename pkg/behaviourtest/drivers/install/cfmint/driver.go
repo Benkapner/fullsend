@@ -39,6 +39,13 @@ type Config struct {
 	// WIF. Passed to --per-repo-wif-repos on deploy.
 	PerRepoWIFRepos string
 
+	// WorkflowHostRepos is a comma-separated list of repos whose
+	// vendored workflows are allowed to mint tokens. Passed to
+	// --workflow-host-repos on deploy. The caller builds the list
+	// from pool naming conventions; the driver does not hardcode
+	// org/repo assumptions.
+	WorkflowHostRepos string
+
 	// AppSet is the app set name for PEM bootstrap. Passed to --app-set
 	// on deploy so the CLI verifies PEMs against the correct GitHub Apps.
 	// For example, test PEMs use "fullsend-test" while production uses
@@ -180,6 +187,12 @@ func (d *driver) Teardown(ctx context.Context, org string, state install.State) 
 
 // DeployArgs builds the CLI arguments for `fullsend mint deploy --platform=cloudflare`.
 // Exported so unit tests can verify arg construction without shelling out.
+//
+// --allowed-orgs and --workflow-host-repos are always passed (even when
+// empty) so the CLI sees them as explicitly changed. The CLI uses
+// "flag changed" semantics: omitted flags preserve existing Worker
+// bindings, while explicitly-empty values clear them. For per-repo
+// mode the caller should set AllowedOrgs to "" to avoid dual-enrollment.
 func DeployArgs(alias, workerName string, cfg Config) []string {
 	args := []string{
 		"mint", "deploy",
@@ -189,6 +202,7 @@ func DeployArgs(alias, workerName string, cfg Config) []string {
 		"--pem-dir", cfg.PEMDir,
 		"--allowed-orgs", cfg.AllowedOrgs,
 		"--per-repo-wif-repos", cfg.PerRepoWIFRepos,
+		"--workflow-host-repos", cfg.WorkflowHostRepos,
 	}
 	if cfg.AppSet != "" {
 		args = append(args, "--app-set", cfg.AppSet)
