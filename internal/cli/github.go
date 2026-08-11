@@ -423,7 +423,11 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		if id.Name == "" || id.Email == "" {
 			return fmt.Errorf("--signoff requires a GitHub user identity with both name and email set (got name=%q, email=%q)", id.Name, id.Email)
 		}
-		signOffTrailer = id.SignOffTrailer()
+		trailer, trailerErr := id.SignOffTrailer()
+		if trailerErr != nil {
+			return fmt.Errorf("--signoff: %w", trailerErr)
+		}
+		signOffTrailer = trailer
 	}
 
 	if cfg.dryRun {

@@ -65,9 +65,13 @@ func (l *WorkflowsLayer) WithDirect(direct bool) *WorkflowsLayer {
 // WithSignOff configures a Signed-off-by trailer to append to commit
 // messages. This is used for human-driven CLI operations where DCO
 // sign-off is required. Pass an empty string to disable.
+// If the identity is empty after sanitization, the trailer is silently
+// omitted (callers in best-effort paths already guard for this).
 func (l *WorkflowsLayer) WithSignOff(name, email string) *WorkflowsLayer {
 	if name != "" && email != "" {
-		l.signOffTrailer = forge.FormatSignOffTrailer(name, email)
+		if trailer, err := forge.FormatSignOffTrailer(name, email); err == nil {
+			l.signOffTrailer = trailer
+		}
 	}
 	return l
 }

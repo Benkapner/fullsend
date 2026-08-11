@@ -256,18 +256,25 @@ type UserIdentity struct {
 
 // SignOffTrailer returns a "Signed-off-by: Name <email>" string for this
 // identity. Newline characters are stripped from both fields to prevent
-// trailer injection via crafted profile names.
-func (id *UserIdentity) SignOffTrailer() string {
+// trailer injection via crafted profile names. Returns an error if name
+// or email is empty after sanitization.
+func (id *UserIdentity) SignOffTrailer() (string, error) {
 	return FormatSignOffTrailer(id.Name, id.Email)
 }
 
 // FormatSignOffTrailer builds a "Signed-off-by: name <email>" string.
 // Newline characters (\n, \r) and angle brackets (< and >) are stripped
 // from both fields to prevent trailer injection via crafted forge profile
-// names and malformed trailers.
-func FormatSignOffTrailer(name, email string) string {
+// names and malformed trailers. Returns an error if name or email is
+// empty after sanitization.
+func FormatSignOffTrailer(name, email string) (string, error) {
 	sanitize := strings.NewReplacer("\n", "", "\r", "", "<", "", ">", "")
-	return fmt.Sprintf("Signed-off-by: %s <%s>", sanitize.Replace(name), sanitize.Replace(email))
+	name = sanitize.Replace(name)
+	email = sanitize.Replace(email)
+	if name == "" || email == "" {
+		return "", fmt.Errorf("sign-off identity must have non-empty name and email after sanitization (got name=%q, email=%q)", name, email)
+	}
+	return fmt.Sprintf("Signed-off-by: %s <%s>", name, email), nil
 }
 
 // TreeFile represents a file to be committed via the Git Trees API.
