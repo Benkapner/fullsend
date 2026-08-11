@@ -857,7 +857,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		}
 		if previewAlias != "" {
 			printer.StepInfo(fmt.Sprintf("Mode: preview (alias=%s)", previewAlias))
-			printer.StepInfo(fmt.Sprintf("Preview URL: https://%s-%s.workers.dev", previewAlias, effectiveName))
+			printer.StepInfo(fmt.Sprintf("Preview URL: https://%s-%s.<subdomain>.workers.dev (subdomain resolved at deploy time)", previewAlias, effectiveName))
 			printer.StepInfo("Command: wrangler versions upload --preview-alias=" + previewAlias)
 			printer.StepInfo(fmt.Sprintf("Note: if Worker %s does not exist, a one-time empty durable deploy will create the script shell (mint config applies to the preview version only)", effectiveName))
 		} else {
@@ -979,7 +979,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	}
 	if previewAlias != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("Mode: preview (alias=%s)", previewAlias))
-		summaryLines = append(summaryLines, fmt.Sprintf("Preview URL pattern: https://<alias>-%s.workers.dev", effectiveName))
+		summaryLines = append(summaryLines, fmt.Sprintf("Preview URL pattern: https://<alias>-%s.<subdomain>.workers.dev", effectiveName))
 		summaryLines = append(summaryLines, "Teardown: preview alias is abandoned (Worker script is preserved)")
 	} else {
 		summaryLines = append(summaryLines, "Mode: durable")

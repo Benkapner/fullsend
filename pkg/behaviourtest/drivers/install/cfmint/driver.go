@@ -105,10 +105,28 @@ func WorkerName(suiteName string) string {
 	return suiteName + "-mint"
 }
 
-// PreviewMintURL returns the deterministic preview mint URL for the given
-// preview alias and worker name. Format: https://<alias>-<worker>.workers.dev
-func PreviewMintURL(alias, workerName string) string {
-	return fmt.Sprintf("https://%s-%s.workers.dev", alias, workerName)
+// ParseMintURLFromOutput extracts the mint URL printed by `fullsend
+// mint deploy`. The CLI prints a line like:
+//
+//	✓ Worker deployed at https://<alias>-<worker>.<subdomain>.workers.dev
+//
+// This is the canonical way to obtain the preview URL from a deploy
+// invocation; callers should not re-derive it because the correct
+// workers.dev subdomain is only known at deploy time.
+func ParseMintURLFromOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "Worker deployed at") {
+			continue
+		}
+		idx := strings.Index(line, "https://")
+		if idx < 0 {
+			continue
+		}
+		url := strings.TrimRight(line[idx:], " \t\n\r.,;")
+		return url
+	}
+	return ""
 }
 
 // GeneratePreviewAlias creates a unique preview alias for a BT run.
@@ -179,16 +197,21 @@ func DeployArgs(alias, workerName string, cfg Config) []string {
 }
 
 // deployCFMint deploys a Cloudflare Worker preview mint and returns the
-// derived preview URL.
+// deploy-reported preview URL (which includes the account's workers.dev
+// subdomain).
 func (d *driver) deployCFMint(alias, org string) (string, error) {
 	args := DeployArgs(alias, d.workerName, d.cfg)
 
 	d.logf("[cfmint] deploying preview mint: fullsend %s", strings.Join(args, " "))
-	if _, err := e2etest.TryRunCLI(d.binary, d.token, args...); err != nil {
+	output, err := e2etest.TryRunCLI(d.binary, d.token, args...)
+	if err != nil {
 		return "", fmt.Errorf("mint deploy --platform=cloudflare --preview=%s: %w", alias, err)
 	}
 
-	mintURL := PreviewMintURL(alias, d.workerName)
+	mintURL := ParseMintURLFromOutput(output)
+	if mintURL == "" {
+		return "", fmt.Errorf("mint deploy --platform=cloudflare --preview=%s: could not parse mint URL from deploy output", alias)
+	}
 	d.logf("[cfmint] preview mint deployed at %s", mintURL)
 	return mintURL, nil
 }
