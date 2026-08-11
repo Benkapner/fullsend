@@ -25,6 +25,11 @@ func (OpenCodeRuntime) Name() string { return "opencode" }
 // confirmed (see #1935).
 func (OpenCodeRuntime) System() string { return "opencode" }
 
+// ConfigDir returns the opencode config directory inside the sandbox.
+// Provisional — verify opencode's config discovery before implementing
+// Bootstrap (#1260). Consider placing config outside the agent-writable
+// workspace (like Claude's /sandbox/claude-config) to prevent the agent
+// from rewriting its own runtime config.
 func (OpenCodeRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.opencode" }
 
 func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
@@ -41,12 +46,17 @@ func (OpenCodeRuntime) Run(_ context.Context, _ RunParams, _ *ui.Printer, _ time
 
 func (OpenCodeRuntime) ClearIterationArtifacts(_ string) error { return nil }
 
-// TranscriptHandler stub methods — all no-ops until opencode export integration
-// is implemented.
+// TranscriptHandler stub methods — return not-implemented errors for extract
+// methods (to avoid silent success claims in CI logs) and no-ops for parse
+// methods (which correctly indicate "nothing found"). See #1935.
 
-func (OpenCodeRuntime) ExtractTranscripts(_, _, _ string) error { return nil }
+func (OpenCodeRuntime) ExtractTranscripts(_, _, _ string) error {
+	return fmt.Errorf("opencode transcript extraction not implemented (see #1935)")
+}
 
-func (OpenCodeRuntime) ExtractDebugLog(_, _, _ string) error { return nil }
+func (OpenCodeRuntime) ExtractDebugLog(_, _, _ string) error {
+	return fmt.Errorf("opencode debug log extraction not implemented (see #1935)")
+}
 
 func (OpenCodeRuntime) ParseTranscriptErrors(_ string) []TranscriptError { return nil }
 

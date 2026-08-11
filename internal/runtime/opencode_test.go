@@ -17,7 +17,7 @@ func TestOpenCodeRuntimeMetadata(t *testing.T) {
 	rt := OpenCodeRuntime{}
 	assert.Equal(t, "opencode", rt.Name())
 	assert.Equal(t, "opencode", rt.System())
-	assert.Equal(t, sandbox.SandboxWorkspace+"/.opencode", rt.ConfigDir())
+	assert.Equal(t, sandbox.SandboxWorkspace+"/.opencode", rt.ConfigDir()) // provisional — see ConfigDir() comment
 	assert.Equal(t, sandbox.SandboxWorkspace, rt.WorkspaceDir())
 	assert.Nil(t, rt.EnvExports())
 }
@@ -41,12 +41,23 @@ func TestOpenCodeRuntimeBootstrap_NotImplemented(t *testing.T) {
 	assert.Contains(t, err.Error(), "not yet implemented")
 }
 
+func TestOpenCodeRuntimeExtractStubs_NotImplemented(t *testing.T) {
+	t.Parallel()
+
+	rt := OpenCodeRuntime{}
+	err := rt.ExtractTranscripts("", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "#1935")
+
+	err = rt.ExtractDebugLog("", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "#1935")
+}
+
 func TestOpenCodeRuntimeNoopMethods(t *testing.T) {
 	t.Parallel()
 
 	rt := OpenCodeRuntime{}
-	assert.NoError(t, rt.ExtractTranscripts("", "", ""))
-	assert.NoError(t, rt.ExtractDebugLog("", "", ""))
 	assert.Nil(t, rt.ParseTranscriptErrors(""))
 	assert.NoError(t, rt.ClearIterationArtifacts(""))
 
