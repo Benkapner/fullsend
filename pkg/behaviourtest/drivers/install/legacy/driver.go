@@ -20,18 +20,24 @@ type driver struct {
 	binary       string
 	mintURL      string
 	gcpProjectID string
+	repo         string
 	logf         func(string, ...any)
 }
 
 // NewDriver creates a legacy install driver that uses the provided
-// mintURL for fullsend github setup.
+// mintURL for fullsend github setup. repo is the target repository
+// name (without org prefix) for the suite-level install (e.g.
+// "test-repo-01").
 func NewDriver(
 	client forge.Client,
-	token, binary, mintURL, gcpProjectID string,
+	token, binary, mintURL, gcpProjectID, repo string,
 	logf func(string, ...any),
 ) (install.Driver, error) {
 	if mintURL == "" {
 		return nil, fmt.Errorf("legacy: mintURL is required")
+	}
+	if repo == "" {
+		return nil, fmt.Errorf("legacy: repo is required")
 	}
 	return &driver{
 		client:       client,
@@ -39,12 +45,13 @@ func NewDriver(
 		binary:       binary,
 		mintURL:      mintURL,
 		gcpProjectID: gcpProjectID,
+		repo:         repo,
 		logf:         logf,
 	}, nil
 }
 
 func (d *driver) Install(ctx context.Context, org string) (install.State, error) {
-	repo := install.PerRepoTestRepo
+	repo := d.repo
 	target := org + "/" + repo
 
 	if err := common.RunGitHubSetup(d.binary, d.token, target, d.mintURL, d.gcpProjectID, e2etest.TryRunCLI, d.logf); err != nil {

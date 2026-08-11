@@ -51,6 +51,12 @@ type Config struct {
 	// For example, test PEMs use "fullsend-test" while production uses
 	// "fullsend-ai". When empty, the CLI uses its own default.
 	AppSet string
+
+	// Repo is the target repository name (without org prefix) for the
+	// suite-level install. For example "test-repo-01". The driver runs
+	// github setup and post-install validation against org/Repo.
+	// Required; the driver fails early if empty.
+	Repo string
 }
 
 // driver deploys a CF Worker preview mint and uses the derived preview
@@ -93,6 +99,9 @@ func NewDriver(
 	}
 	if cfg.SuiteName == "" {
 		return nil, fmt.Errorf("cfmint: SuiteName is required")
+	}
+	if cfg.Repo == "" {
+		return nil, fmt.Errorf("cfmint: Repo is required")
 	}
 
 	return &driver{
@@ -148,7 +157,7 @@ func GeneratePreviewAlias() (string, error) {
 }
 
 func (d *driver) Install(ctx context.Context, org string) (install.State, error) {
-	repo := install.PerRepoTestRepo
+	repo := d.cfg.Repo
 	target := org + "/" + repo
 
 	alias, err := GeneratePreviewAlias()

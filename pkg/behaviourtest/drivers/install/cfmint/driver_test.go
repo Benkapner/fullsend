@@ -89,9 +89,22 @@ func TestNewDriver_FailsEarly_NoSuiteName(t *testing.T) {
 
 	_, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
 		PEMDir: dir,
+		Repo:   "test-repo-01",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SuiteName is required")
+}
+
+func TestNewDriver_FailsEarly_NoRepo(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
+
+	_, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
+		PEMDir:    dir,
+		SuiteName: "bt",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Repo is required")
 }
 
 func TestNewDriver_OK(t *testing.T) {
@@ -103,8 +116,9 @@ func TestNewDriver_OK(t *testing.T) {
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "my-org/test-repo-01,my-org/test-repo-02",
-		WorkflowHostRepos: "my-org/test-repo,my-org/test-repo-01,my-org/test-repo-02",
+		WorkflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		AppSet:            "fullsend-test",
+		Repo:              "test-repo-01",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, d)
@@ -116,8 +130,9 @@ func TestDeployArgs_WithAppSet(t *testing.T) {
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "my-org/test-repo-01",
-		WorkflowHostRepos: "my-org/test-repo,my-org/test-repo-01",
+		WorkflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		AppSet:            "fullsend-test",
+		Repo:              "test-repo-01",
 	}
 
 	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
@@ -150,7 +165,7 @@ func TestDeployArgs_WithAppSet(t *testing.T) {
 	for i, a := range args {
 		if a == "--workflow-host-repos" {
 			require.Less(t, i+1, len(args), "--workflow-host-repos must have a value")
-			assert.Equal(t, "my-org/test-repo,my-org/test-repo-01", args[i+1])
+			assert.Equal(t, "my-org/test-repo-01,my-org/test-repo-02", args[i+1])
 			break
 		}
 	}
@@ -163,6 +178,7 @@ func TestDeployArgs_WithoutAppSet(t *testing.T) {
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "my-org/test-repo-01",
 		WorkflowHostRepos: "my-org/test-repo-01",
+		Repo:              "test-repo-01",
 	}
 
 	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
@@ -212,6 +228,7 @@ func TestDriver_Implements_Install_Driver(t *testing.T) {
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "org/repo",
 		WorkflowHostRepos: "org/repo",
+		Repo:              "test-repo-01",
 	})
 	require.NoError(t, err)
 
