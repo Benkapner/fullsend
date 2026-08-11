@@ -216,6 +216,31 @@ func TestMarkdownToADF_BoldInlineCodeDoesNotCombineMarks(t *testing.T) {
 	}
 }
 
+func TestMarkdownToADF_NestedSameTypeEmphasisDoesNotDuplicateMarks(t *testing.T) {
+	for _, src := range []string{"*outer _inner_ text*", "**outer __inner__ text**"} {
+		doc := mustADF(t, src)
+
+		para := asMap(t, asSlice(t, doc["content"])[0])
+		nodes := asSlice(t, para["content"])
+
+		var found bool
+		for _, n := range nodes {
+			node := asMap(t, n)
+			if node["text"] != "inner" {
+				continue
+			}
+			found = true
+			marks := asSlice(t, node["marks"])
+			if len(marks) != 1 {
+				t.Errorf("%q: marks on %q = %v, want exactly one mark", src, "inner", marks)
+			}
+		}
+		if !found {
+			t.Fatalf("%q: expected a text node with value %q", src, "inner")
+		}
+	}
+}
+
 func TestMarkdownToADF_FencedCodeBlockWithLanguage(t *testing.T) {
 	doc := mustADF(t, "```go\nfmt.Println(\"hi\")\n```")
 

@@ -347,8 +347,19 @@ func textValue(v *ast.Text, source []byte) string {
 
 // withMark returns a new marks slice with mark appended, without mutating
 // the caller's slice (siblings must not see marks added while walking a
-// previous sibling's subtree).
+// previous sibling's subtree). If marks already contains a mark of the
+// same type — e.g. nested same-delimiter emphasis like
+// "*outer _inner_ text*", which produces two nested *ast.Emphasis nodes
+// with the same "em" markType — marks is returned unchanged rather than
+// growing a duplicate: a text node with two identical marks is never
+// meaningful, and ADF's validator behavior for it is unconfirmed.
 func withMark(marks []any, mark map[string]any) []any {
+	markType, _ := mark["type"].(string)
+	for _, m := range marks {
+		if existing, ok := m.(map[string]any); ok && existing["type"] == markType {
+			return marks
+		}
+	}
 	next := make([]any, len(marks), len(marks)+1)
 	copy(next, marks)
 	return append(next, mark)
