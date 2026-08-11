@@ -154,7 +154,7 @@ e2e testing of permission-sensitive behaviour:
 | `fstest-triage` | member | triage |
 | `fstest-outsider` | none | public read only (no collaborator grant) |
 
-Elevated access uses direct collaborator overrides (no teams). Fork repos
+Elevated access uses direct collaborator grants (not team membership). Fork repos
 (`test-repo-fork`) are intentionally excluded — they are not base/enrolled
 targets for permission grants.
 

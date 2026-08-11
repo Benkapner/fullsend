@@ -208,9 +208,13 @@ echo
 
 # --- 3c. test actor repo permissions ---
 echo "==> Granting test actor collaborator permissions on base repos..."
-base_repos=$(gh api --paginate "/orgs/${ORG}/repos" \
+if ! base_repos=$(gh api --paginate "/orgs/${ORG}/repos" \
   --jq '.[] | select(.fork == false) | select(.name | startswith("test-repo")) | .name' \
-  2>/dev/null || true)
+  2>&1); then
+  echo "    WARNING: could not list repos for ${ORG}: ${base_repos}"
+  echo "    Check authentication and permissions, then re-run."
+  base_repos=""
+fi
 
 if [[ -z "${base_repos}" ]]; then
   echo "    No base test-repo* repos found. Skipping collaborator grants."
@@ -224,7 +228,7 @@ else
         -X PUT -f permission="push" --silent 2>/dev/null; then
       ok_count=$((ok_count + 1))
     else
-      echo "    FAIL: ${TEST_WRITE_USER} → push on ${repo}"
+      echo "    WARNING: ${TEST_WRITE_USER} → push on ${repo}"
       fail_count=$((fail_count + 1))
     fi
 
@@ -233,12 +237,12 @@ else
         -X PUT -f permission="triage" --silent 2>/dev/null; then
       ok_count=$((ok_count + 1))
     else
-      echo "    FAIL: ${TEST_TRIAGE_USER} → triage on ${repo}"
+      echo "    WARNING: ${TEST_TRIAGE_USER} → triage on ${repo}"
       fail_count=$((fail_count + 1))
     fi
   done <<< "${base_repos}"
 
-  echo "    Collaborator grants: OK=${ok_count} FAIL=${fail_count}"
+  echo "    Collaborator grants: OK=${ok_count} WARNING=${fail_count}"
 
   # Verify outsider has no collaborator access on the first base repo.
   first_repo=$(echo "${base_repos}" | head -1)
