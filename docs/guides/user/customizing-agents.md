@@ -391,6 +391,43 @@ agents:
 See [Bring Your Own Agent](bring-your-own-agent.md) for the full
 composition model and config-driven registration.
 
+## Status Notifications
+
+Agent workflows post status comments on issues and PRs when they start and complete. Control this with `status_notifications` in `config.yaml`.
+
+For per-org installs, nest it under `defaults`:
+
+```yaml
+defaults:
+  status_notifications:
+    comment:
+      start: enabled      # "enabled" (default) | "disabled"
+      completion: enabled  # "enabled" (default) | "on_failure" | "disabled"
+```
+
+For per-repo installs, set it at the top level of `.fullsend/config.yaml`:
+
+```yaml
+status_notifications:
+  comment:
+    start: enabled
+    completion: enabled
+```
+
+When `status_notifications` is omitted entirely, both start and completion comments default to enabled.
+
+### Completion modes
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always post a completion comment (default) |
+| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
+| `disabled` | Never post a completion comment; silently remove the start comment |
+
+`on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
+
+In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
+
 ## Disabling Agents
 
 To disable an agent (including built-in scaffold agents) without removing
