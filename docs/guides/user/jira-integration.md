@@ -238,7 +238,7 @@ Two more scaling limits, following [ADR 0063](../../ADRs/0063-polling-based-work
 
 ## Multi-repo polling
 
-Multiple GitHub repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed.
+Multiple GitHub repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. Before adding pollers, use Jira Components or labels to segment your project so each repo's `--jql` filter only matches issues relevant to it — this avoids redundant API calls and keeps each poller's candidate window focused.
 
 ### Should each repo have its own poll workflow?
 
@@ -271,7 +271,7 @@ Each repo's poller runs its own JQL query and gets its own top-M (default 50) ca
 
 However, more pollers against the same Jira project means more API calls per cycle. Each poller independently reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
-- **Narrowing `--jql` per repo** to reduce candidate overlap. If `acme/frontend` only cares about issues labelled `frontend`, scoping the query avoids fetching and discarding backend-only issues.
+- **Narrowing `--jql` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
 - **Monitoring Jira rate limits.** Jira Cloud uses points-based quotas, and multiple pollers multiply the cost. Watch for `429` responses in workflow logs — the poller retries with backoff, but sustained rate limiting slows all repos' cycles.
 
