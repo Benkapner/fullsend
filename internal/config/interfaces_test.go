@@ -491,7 +491,7 @@ func TestPerRepoConfig_MintURL_Fallback(t *testing.T) {
 
 	t.Run("falls through to defaults when unset", func(t *testing.T) {
 		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
-		assert.Equal(t, "", cfg.ConfigMintURL())
+		assert.Equal(t, DefaultPerRepoMintURL, cfg.ConfigMintURL())
 	})
 }
 
@@ -521,7 +521,7 @@ func TestPerRepoConfig_InferenceProvider_Fallback(t *testing.T) {
 
 	t.Run("falls through to defaults when unset", func(t *testing.T) {
 		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
-		assert.Equal(t, "", cfg.ConfigInferenceProvider())
+		assert.Equal(t, DefaultPerRepoInferenceProvider, cfg.ConfigInferenceProvider())
 	})
 }
 
@@ -581,7 +581,7 @@ func TestPerRepoConfig_InferenceRegion_Fallback(t *testing.T) {
 
 	t.Run("falls through to defaults when unset", func(t *testing.T) {
 		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
-		assert.Equal(t, "", cfg.ConfigInferenceRegion())
+		assert.Equal(t, DefaultPerRepoInferenceRegion, cfg.ConfigInferenceRegion())
 	})
 }
 
@@ -774,17 +774,20 @@ func TestNewEmptyPerRepoOverlay(t *testing.T) {
 	// Should resolve defaults through parent.
 	assert.Equal(t, "1", o.ConfigVersion())
 	assert.Equal(t, "claude", o.ConfigRuntime())
-	// Mint/inference unset.
-	assert.Equal(t, "", o.ConfigMintURL())
-	assert.Equal(t, "", o.ConfigInferenceProvider())
+	// Mint/inference resolve through parent to code defaults.
+	assert.Equal(t, DefaultPerRepoMintURL, o.ConfigMintURL())
+	assert.Equal(t, DefaultPerRepoInferenceProvider, o.ConfigInferenceProvider())
+	assert.Equal(t, DefaultPerRepoInferenceRegion, o.ConfigInferenceRegion())
 
-	// Marshal should be minimal.
+	// Marshal should be minimal — code defaults must NOT leak into
+	// the serialized overlay.
 	data, err := o.Marshal()
 	require.NoError(t, err)
 	s := string(data)
 	assert.NotContains(t, s, "version:")
 	assert.NotContains(t, s, "runtime:")
 	assert.NotContains(t, s, "mint_url:")
+	assert.NotContains(t, s, "inference:")
 }
 
 // --- IsPerRepoYAML with inference block ---

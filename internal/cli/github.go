@@ -130,8 +130,12 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 				}
 			}
 
-			if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
-				return err
+			// Validate only when a non-empty mint URL is provided; an
+			// empty value is resolved to the code default later.
+			if cfg.mintURL != "" {
+				if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
+					return err
+				}
 			}
 
 			_, _, isRepo := parseTarget(cfg.target)
@@ -170,11 +174,11 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", DefaultMintURL, "token mint URL (default: hosted public mint)")
+	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint URL (resolved to hosted public mint if unset)")
 	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
-	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "vertex", "inference provider (e.g. vertex)")
+	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "", "inference provider (resolved to vertex if unset)")
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
-	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "global", "GCP region for inference")
+	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (resolved to global if unset)")
 	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name")
 	cmd.Flags().BoolVar(&cfg.skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
 	cmd.Flags().BoolVar(&cfg.publicApps, "public", false, "create public (unlisted) GitHub Apps")
@@ -287,20 +291,27 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// --- Build config files ---
 	var cfgYAML []byte
 	if presetData == nil {
-		// No preset: generate a full per-repo config.yaml with
-		// mint/inference values from flags.
+		// No preset: generate a per-repo config.yaml. Only
+		// explicitly-set flags are written to the overlay; unset
+		// values fall through overlay → base → code defaults
+		// (ADR 0069 Decision 1, same pattern as buildPresetOverlay).
 		perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
 		if cfg.runtime != "" {
 			perRepoCfg.SetRuntime(cfg.runtime)
 		}
-		// Store mint/inference settings in config (ADR 0069 Decision 1).
-		perRepoCfg.SetMintURL(cfg.mintURL)
-		perRepoCfg.SetInferenceProvider(cfg.inferenceProvider)
-		perRepoCfg.SetInferenceRegion(cfg.inferenceRegion)
-		if cfg.inferenceProject != "" {
+		if cfg.changedFlags["mint-url"] {
+			perRepoCfg.SetMintURL(cfg.mintURL)
+		}
+		if cfg.changedFlags["inference-provider"] {
+			perRepoCfg.SetInferenceProvider(cfg.inferenceProvider)
+		}
+		if cfg.changedFlags["inference-region"] {
+			perRepoCfg.SetInferenceRegion(cfg.inferenceRegion)
+		}
+		if cfg.changedFlags["inference-project"] {
 			perRepoCfg.SetInferenceProject(cfg.inferenceProject)
 		}
-		if cfg.inferenceWIFProvider != "" {
+		if cfg.changedFlags["inference-wif-provider"] {
 			perRepoCfg.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
 		}
 		if err := perRepoCfg.Validate(); err != nil {
@@ -364,9 +375,22 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// ${{ secrets.FULLSEND_GCP_PROJECT_ID }}, and
 	// ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}.
 	// See #5870 / #4977 for the migration to config-only reads.
+	//
+	// Resolve effective values: use the flag value when explicitly
+	// set, otherwise fall back to code defaults so first-time
+	// installs still get working vars/secrets without polluting
+	// the overlay (ADR 0069).
+	effectiveMintURL := cfg.mintURL
+	if effectiveMintURL == "" {
+		effectiveMintURL = config.DefaultPerRepoMintURL
+	}
+	effectiveRegion := cfg.inferenceRegion
+	if effectiveRegion == "" {
+		effectiveRegion = config.DefaultPerRepoInferenceRegion
+	}
 	repoVars := map[string]string{
-		"FULLSEND_MINT_URL":   cfg.mintURL,
-		"FULLSEND_GCP_REGION": cfg.inferenceRegion,
+		"FULLSEND_MINT_URL":   effectiveMintURL,
+		"FULLSEND_GCP_REGION": effectiveRegion,
 		forge.PerRepoGuardVar: "true",
 	}
 
@@ -571,6 +595,17 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		return err
 	}
 
+	// Resolve effective values: flags default to empty; code
+	// defaults fill in when unset (same pattern as per-repo).
+	effectiveMintURL := cfg.mintURL
+	if effectiveMintURL == "" {
+		effectiveMintURL = config.DefaultPerRepoMintURL
+	}
+	effectiveRegion := cfg.inferenceRegion
+	if effectiveRegion == "" {
+		effectiveRegion = config.DefaultPerRepoInferenceRegion
+	}
+
 	// Build config.
 	privateRepo := false
 	var inferenceProvider inference.Provider
@@ -578,7 +613,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	if cfg.inferenceProject != "" {
 		vcfg := vertex.Config{
 			ProjectID:   cfg.inferenceProject,
-			Region:      cfg.inferenceRegion,
+			Region:      effectiveRegion,
 			WIFProvider: cfg.inferenceWIFProvider,
 		}
 		inferenceProvider = vertex.New(vcfg)
@@ -608,7 +643,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	}
 
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
-	dispatcher := &skipMintDispatcher{mintURL: cfg.mintURL}
+	dispatcher := &skipMintDispatcher{mintURL: effectiveMintURL}
 
 	var vendorFn layers.VendorFunc
 	var vendorCollect layers.VendorCollectFunc
@@ -638,7 +673,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 			return err
 		}
 
-		creds, credErr := runAppSetup(ctx, client, printer, org, roles, "", cfg.mintURL, cfg.publicApps, nil, cfg.appSet, nil)
+		creds, credErr := runAppSetup(ctx, client, printer, org, roles, "", effectiveMintURL, cfg.publicApps, nil, cfg.appSet, nil)
 		if credErr != nil {
 			return credErr
 		}
