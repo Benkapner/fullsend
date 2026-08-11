@@ -19,7 +19,7 @@ import (
 )
 
 // fakeEnsurer is a test double for RepoEnsurer that records calls and
-// returns a fixed perRepoState. It lets callers verify caching and
+// returns a fixed PerRepoState. It lets callers verify caching and
 // call-count behaviour without a real forge client or CLI binary.
 type fakeEnsurer struct {
 	calls atomic.Int32
@@ -41,7 +41,7 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) (State
 	f.mu.Unlock()
 
 	f.calls.Add(1)
-	st := &perRepoState{org: org, repo: repoName}
+	st := NewPerRepoState(org, repoName, "")
 
 	f.mu.Lock()
 	f.cache[key] = st
@@ -283,9 +283,9 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 	assert.Equal(t, "test-repo-07", st.ConfigRepo())
 	assert.Equal(t, ".fullsend", st.ConfigPathPrefix())
 	assert.Equal(t, "test-repo-07", st.TriageWorkflowRepo())
-	assert.Equal(t, perRepoTriageWorkflow, st.TriageWorkflowFile())
-	assert.Equal(t, perRepoAgentWorkflow, st.AgentWorkflowFile())
-	assert.Equal(t, perRepoAgentArtifact, st.AgentArtifactName())
+	assert.Equal(t, PerRepoTriageWorkflow, st.TriageWorkflowFile())
+	assert.Equal(t, PerRepoAgentWorkflow, st.AgentWorkflowFile())
+	assert.Equal(t, PerRepoAgentArtifact, st.AgentArtifactName())
 }
 
 func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
@@ -410,6 +410,27 @@ func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 	// Verify inference flags were threaded to github setup.
 	assert.Contains(t, cliCalls[2], "--inference-project")
 	assert.Contains(t, cliCalls[2], "--inference-wif-provider")
+}
+
+func TestRepoEnsurer_DoEnsure_MintURLPopulated(t *testing.T) {
+	// Verify that doEnsure sets mintURL on the returned state from
+	// e2eCfg.MintURL (finding 5: consumer-completeness).
+	sc := &stubClient{installed: true}
+	e := &repoEnsurer{
+		e2eCfg:  e2etest.EnvConfig{MintURL: "https://preview.workers.dev"},
+		client:  sc,
+		runCLI:  noopCLI,
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-mint")
+	require.NoError(t, err)
+
+	// Verify MintURL is populated from e2eCfg.
+	provider, ok := st.(MintURLProvider)
+	require.True(t, ok, "state should implement MintURLProvider")
+	assert.Equal(t, "https://preview.workers.dev", provider.MintURL())
 }
 
 func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
