@@ -183,9 +183,11 @@ event.transition.kind == "comment_added"
 
 // Conversation-native agent on Discussion slash command (ADR 0086)
 event.entity.kind == "conversation"
-  && event.state.conversation.category.slug == "vouch-request"
   && event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
   && event.transition.comment.command == "/fs-vouch"
+  && has(event.state.conversation.category.slug)
+  && event.state.conversation.category.slug == "vouch-request"
 ```
 
 See [`examples/`](examples/) for matching `NormalizedEvent` fixtures.
