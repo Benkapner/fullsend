@@ -1,0 +1,73 @@
+name: Notify Slack on vouch request
+
+on:
+  discussion:
+    types: [created]
+
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'GitHub username (for testing)'
+        required: true
+      discussion_url:
+        description: 'Discussion URL (for testing)'
+        required: true
+
+permissions: {}
+
+jobs:
+  notify:
+    if: >-
+      github.repository_owner == 'fullsend-ai' &&
+      (github.event_name == 'workflow_dispatch' ||
+      github.event.discussion.category.slug == 'vouch-request')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Send Slack notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DISC_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.discussion_url || github.event.discussion.html_url }}
+          DISC_AUTHOR: ${{ github.event_name == 'workflow_dispatch' && inputs.username || github.event.discussion.user.login }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::error::SLACK_WEBHOOK_URL secret is not configured"
+            exit 1
+          fi
+
+          if [[ ! "$DISC_AUTHOR" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
+            echo "::error::Invalid username received"
+            exit 1
+          fi
+
+          if [[ ! "$DISC_URL" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/discussions/[0-9]+$ ]]; then
+            echo "::error::Invalid discussion URL received"
+            exit 1
+          fi
+
+          payload=$(jq -n \
+            --arg url "$DISC_URL" \
+            --arg author "$DISC_AUTHOR" \
+            '{
+              blocks: [
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: ("🤝 *New vouch request* from *" + $author + "* — <" + $url + "|View discussion>")
+                  }
+                },
+                {
+                  type: "context",
+                  elements: [
+                    {
+                      type: "mrkdwn",
+                      text: "Review the request and comment `/vouch` to approve."
+                    }
+                  ]
+                }
+              ]
+            }')
+
+          curl -sf -X POST -H 'Content-Type: application/json' \
+            -d "$payload" "$SLACK_WEBHOOK_URL"
