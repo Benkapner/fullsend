@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,54 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 	return nil
 }
 
+// MaxSpanAttrValueLen bounds every span attribute value recorded through
+// this provider. The SDK applies the limit to span attributes only —
+// event messages are bounded at their call site — counting characters,
+// not bytes (a multibyte value can reach four bytes per character on the
+// wire), and it repairs invalid UTF-8 only when it truncates: values at
+// or under the limit pass through unrepaired, so free-text attribute
+// values are repaired at their call sites (internal/cli stringAttr).
+// Both properties are pinned by TestAttrLimit_SDKBehaviorCanary. The
+// exception-event bound in internal/cli (maxSpanEventMsgLen, bytes) is
+// defined from this constant so the shared numeric default cannot drift,
+// each side applying it in its own unit. It applies only when the
+// SDK took no operator override — the first non-empty of
+// OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT and
+// OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT decides alone, and a parseable value
+// there, including -1 (unlimited), is honored as-is.
+const MaxSpanAttrValueLen = 8192
+
+// spanLimits returns the SDK span limits. NewSpanLimits collapses "env
+// unset" and an explicit "-1" (the OTel sentinel for unlimited) to the
+// same struct value, so the env vars are consulted directly: the
+// MaxSpanAttrValueLen default applies only when the deciding variable —
+// the first non-empty one — holds no parseable integer.
+func spanLimits() sdktrace.SpanLimits {
+	limits := sdktrace.NewSpanLimits()
+	if limits.AttributeValueLengthLimit < 0 && !attrValueLenConfigured() {
+		limits.AttributeValueLengthLimit = MaxSpanAttrValueLen
+	}
+	return limits
+}
+
+// attrValueLenConfigured reports whether the SDK honored an operator's
+// attribute value-length limit. It mirrors the SDK's firstInt resolution
+// exactly (sdk/trace/internal/env, v1.44.0): the first non-empty variable
+// decides alone — if its value fails strconv.Atoi, the SDK falls back to
+// its default without consulting the second variable, so a discarded
+// override is not a setting here either.
+func attrValueLenConfigured() bool {
+	for _, key := range []string{"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT"} {
+		v := os.Getenv(key)
+		if v == "" {
+			continue
+		}
+		_, err := strconv.Atoi(v)
+		return err == nil
+	}
+	return false
+}
+
 // Setup creates a TracerProvider with file and (optionally) OTLP exporters.
 // On any failure it returns a noop tracer and an empty cleanup func so the
 // run is never affected. The cleanup func shuts down the provider (flushing
@@ -100,6 +149,7 @@ func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Contex
 	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithRawSpanLimits(spanLimits()),
 		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(newFileExporter(f))),
 	}
 
