@@ -181,8 +181,7 @@ works for `pre_script` and `post_script` when you want one place to maintain
 runner-side behavior.
 
 See [Customizing Agents](../guides/user/customizing-agents.md) for harness
-composition and [openkaiden/kaiden `.fullsend`](https://github.com/openkaiden/kaiden/tree/main/.fullsend)
-for a production example.
+composition.
 
 ### Variables
 
