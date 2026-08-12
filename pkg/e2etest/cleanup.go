@@ -77,6 +77,11 @@ func CleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	// Clear per-repo install guard so enroll-all includes test-repo.
 	deleteRepoVariable(ctx, token, org, TestRepo, forge.PerRepoGuardVar, t)
 
+	// Clear leaked repo-level FULLSEND_MINT_URL left by cfmint behaviour
+	// tests (#6037). Repo variables shadow org-level ones, so a stale
+	// value pointing at a torn-down CF Worker preview breaks dispatch.
+	deleteRepoVariable(ctx, token, org, TestRepo, "FULLSEND_MINT_URL", t)
+
 	// 4. Delete stale enrollment and unenrollment branches from test-repo.
 	deleteBranch(ctx, token, org, TestRepo, "fullsend/onboard", t)
 	deleteBranch(ctx, token, org, TestRepo, "fullsend/offboard", t)
