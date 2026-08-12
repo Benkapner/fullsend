@@ -31,7 +31,9 @@ before committing. This prevents `codecov/patch` failures on first push.
 ### 1. Identify changed production files
 
 Determine which non-test Go files you changed relative to the target
-branch:
+branch. **Stage new files first** (`git add`) — `git diff --name-only`
+only sees tracked or staged files, so an unstaged new file would be
+invisible and the check would silently skip it.
 
 ```bash
 CHANGED_GO=$(git diff --name-only main -- '*.go' | grep -v '_test.go')
@@ -62,7 +64,7 @@ For each changed file, inspect coverage:
 ```bash
 for f in $CHANGED_GO; do
   echo "=== $f ==="
-  go tool cover -func=coverage.out | grep "$(basename $f)" || echo "(no coverage data)"
+  go tool cover -func=coverage.out | grep "$f" || echo "(no coverage data)"
 done
 ```
 
