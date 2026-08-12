@@ -9,24 +9,25 @@ When adding a runtime, fill in the security matrix below and register it in `run
 | Runtime | Purpose | Inference |
 |---------|---------|-----------|
 | `claude` | Production agent runs via Claude Code | Required |
+| `opencode` | OpenCode agent runs (stub — not yet functional; resolved by `runtime.Resolve()` but not in `ValidRuntimes()` until implemented) | Required |
 | `dummy` | Behaviour tests — scripted ops in real sandbox | None |
 
 ## Security feature matrix
 
-| Feature | Where it runs | Claude Code | Notes for future runtimes |
-|---------|---------------|-------------|---------------------------|
-| **Host-side context injection scan** (DeBERTa / LLM Guard, unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | Requires sandbox image with ML models; harness `security.host_scanners` |
-| **Host-side runtime content scan** (agent def, SKILL.md, plugin JSON before upload) | Host (`scanRuntimeContent`) | ✓ | Uses `security.InputPipeline()`; not part of `Runtime` interface — runner responsibility |
-| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ | `tirith_check.py`; harness `security.sandbox_hooks.tirith` |
-| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ | `ssrf_pretool.py`; default on |
-| **Canary token detection** | Sandbox Pre/PostToolUse hooks | ✓ | `canary_pretool.py` / `canary_posttool.py` |
-| **Secret redaction** | Sandbox PostToolUse hook | ✓ | `secret_redact_posttool.py` |
-| **Unicode normalization** | Sandbox PostToolUse hook | ✓ | `unicode_posttool.py` |
-| **Context suppression** | Sandbox PostToolUse hook | ✓ | `context_suppress_posttool.py` |
-| **Tool allowlist** | Sandbox PreToolUse hook | opt-in | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` |
-| **Prompt injection (DeBERTa)** | Host Path A + sandbox Path B | ✓ | Same scanner stack as context files when enabled in harness |
-| **Optional Claude sandbox hooks** | `ClaudeHooksBootstrap` type assert | ✓ only | Other runtimes must define their own hook/bootstrap extension; absence means **no** sandbox tool hooks installed |
-| **Transcript / debug artifacts** | `TranscriptHandler` | ✓ (stream-json, `claude-debug.log`) | Format-specific; not shared across runtimes |
+| Feature | Where it runs | Claude Code | OpenCode (stub) | Notes for future runtimes |
+|---------|---------------|-------------|-----------------|---------------------------|
+| **Host-side context injection scan** (DeBERTa / LLM Guard, unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | N/A — stub | Requires sandbox image with ML models; harness `security.host_scanners` |
+| **Host-side runtime content scan** (agent def, SKILL.md, plugin JSON before upload) | Host (`scanRuntimeContent`) | ✓ | N/A — stub | Uses `security.InputPipeline()`; not part of `Runtime` interface — runner responsibility |
+| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ | N/A — stub | `tirith_check.py`; harness `security.sandbox_hooks.tirith` |
+| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ | N/A — stub | `ssrf_pretool.py`; default on |
+| **Canary token detection** | Sandbox Pre/PostToolUse hooks | ✓ | N/A — stub | `canary_pretool.py` / `canary_posttool.py` |
+| **Secret redaction** | Sandbox PostToolUse hook | ✓ | N/A — stub | `secret_redact_posttool.py` |
+| **Unicode normalization** | Sandbox PostToolUse hook | ✓ | N/A — stub | `unicode_posttool.py` |
+| **Context suppression** | Sandbox PostToolUse hook | ✓ | N/A — stub | `context_suppress_posttool.py` |
+| **Tool allowlist** | Sandbox PreToolUse hook | opt-in | N/A — stub | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` |
+| **Prompt injection (DeBERTa)** | Host Path A + sandbox Path B | ✓ | N/A — stub | Same scanner stack as context files when enabled in harness |
+| **Optional Claude sandbox hooks** | `ClaudeHooksBootstrap` type assert | ✓ only | ✗ — does not implement `ClaudeHooksBootstrap` | Other runtimes must define their own hook/bootstrap extension; absence means **no** sandbox tool hooks installed |
+| **Transcript / debug artifacts** | `TranscriptHandler` | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | Format-specific; not shared across runtimes |
 
 ### Fail modes
 

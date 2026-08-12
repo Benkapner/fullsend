@@ -384,6 +384,7 @@ func TestValidRuntimes(t *testing.T) {
 	runtimes := ValidRuntimes()
 	assert.Contains(t, runtimes, "claude")
 	assert.Contains(t, runtimes, "dummy")
+	assert.NotContains(t, runtimes, "opencode", "opencode is resolved via runtime.Resolve() but not user-selectable until implemented")
 }
 
 func TestOrgConfigValidateRuntime(t *testing.T) {
@@ -396,6 +397,11 @@ func TestOrgConfigValidateRuntime(t *testing.T) {
 		},
 	}
 	require.NoError(t, cfg.Validate())
+
+	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
+	// so config validation must reject it until the runtime is implemented.
+	cfg.Defaults.Runtime = "opencode"
+	require.Error(t, cfg.Validate())
 
 	cfg.Defaults.Runtime = "invalid"
 	require.Error(t, cfg.Validate())
@@ -646,8 +652,15 @@ func TestPerRepoConfigValidate_Runtime(t *testing.T) {
 	}
 	assert.NoError(t, cfg.Validate())
 
-	cfg.Runtime = "invalid"
+	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
+	// so config validation must reject it until the runtime is implemented.
+	cfg.Runtime = "opencode"
 	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid runtime")
+
+	cfg.Runtime = "invalid"
+	err = cfg.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid runtime")
 }
