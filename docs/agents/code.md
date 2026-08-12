@@ -60,28 +60,25 @@ when reviewers ask you to verify something against a ticket during PR feedback.
 
 **Recommended configuration**
 
-If you want both agents to share one configuration — one place to edit image,
-policy, and runner scripts — point both harness wrappers at the same files in
-your `.fullsend` config repo:
+If you want both agents to share one behavior set — one place to edit image,
+policy, and runner scripts — put the same overrides in both harness files in
+your repo's `.fullsend/` directory, and point `policy:` at a single local file:
 
 ```yaml
-# .fullsend/code.yaml
+# .fullsend/code.yaml  (register as source: code.yaml in config.yaml)
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/code.yaml#sha256=…
 image: ghcr.io/your-org/your-fullsend-image@sha256:…
 policy: policies/coding.yaml
 
-# .fullsend/fix.yaml
+# .fullsend/fix.yaml  (register as source: fix.yaml in config.yaml)
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/fix.yaml#sha256=…
 image: ghcr.io/your-org/your-fullsend-image@sha256:…
-policy: policies/coding.yaml   # same policy — edit once, both agents use it
+policy: policies/coding.yaml   # same file — edit once, both agents use it
 ```
 
-The `policy` path can be a file in your `.fullsend` repo or a pinned URL
-(`https://…/policies/coding.yaml#sha256=…`) if you centralize configuration
-across repos. Teams managing multiple repositories can keep one canonical policy
-in a shared config repo and point each repo's code and fix harness wrappers at
-it. The same pattern applies to `pre_script` and `post_script` when you want a
-single place to maintain runner-side behavior.
+Keep the shared policy at `.fullsend/policies/coding.yaml`. The same pattern
+works for `pre_script` and `post_script` when you want one place to maintain
+runner-side behavior.
 
 See [Customizing Agents](../guides/user/customizing-agents.md) for harness
 composition and [openkaiden/kaiden `.fullsend`](https://github.com/openkaiden/kaiden/tree/main/.fullsend)
