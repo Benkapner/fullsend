@@ -633,6 +633,20 @@ gcloud functions logs read fullsend-mint \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --gen2 --limit=50
 ```
 
+## Cloudflare Worker rate limiting
+
+The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
+
+| Setting | Value |
+|---------|-------|
+| Binding name | `MINT_TOKEN_RATE_LIMITER` |
+| Limit | 60 requests per minute per key |
+| Key format | `{hostname}:/v1/token:{client-IP}` |
+
+The rate limit key incorporates the request hostname, so preview deployments (which produce distinct hostnames like `<alias>-<worker>.<subdomain>.workers.dev`) get isolated counters. Durable deploys use a stable hostname. When the rate limit is exceeded, the Worker returns HTTP 429 with `{"error":"rate_limited"}`.
+
+If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs a warning and continues without rate limiting (fail-open).
+
 ## See Also
 
 - [Getting Started](../getting-started/) — End-user setup (inference + GitHub)

@@ -603,6 +603,10 @@ export default {
         if (!success) {
           return errorResponse(429, "rate_limited");
         }
+      } else {
+        console.warn(
+          "MINT_TOKEN_RATE_LIMITER binding missing — rate limiting disabled",
+        );
       }
     }
 
