@@ -49,8 +49,35 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 ### Image and network policy synchronization
 
 ::: warning
-The code agent and [fix agent](fix.md) share the same container image and network policy configuration. When you change container image versions or network policy rules for one agent, you **must** apply the same changes to the other. Failing to keep them in sync causes runtime mismatches — for example, one agent may have access to a tool or network endpoint that the other lacks, leading to silent failures.
+The code agent and [fix agent](fix.md) are separate agents, but they share the same container image and network policy needs. When you customize one, keep **image** and **policy** in sync on both — otherwise one agent may succeed while the other fails with no obvious reason (for example, a package manager or registry endpoint allowed in code but not fix).
 :::
+
+**Recommended configuration**
+
+The supported way to avoid drift is to maintain **one** policy file (and typically one custom image) and reference it from both harness wrappers in your `.fullsend` config repo:
+
+```yaml
+# .fullsend/code.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/code.yaml#sha256=…
+image: ghcr.io/your-org/your-fullsend-image@sha256:…
+policy: policies/coding.yaml
+
+# .fullsend/fix.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/fix.yaml#sha256=…
+image: ghcr.io/your-org/your-fullsend-image@sha256:…
+policy: policies/coding.yaml   # same policy — edit once, both agents use it
+```
+
+The `policy` path can be a file in your `.fullsend` repo or a pinned URL
+(`https://…/policies/coding.yaml#sha256=…`) if you centralize configuration
+across repos. Teams managing multiple repositories can keep one canonical policy
+in a shared config repo and point each repo's code and fix harness wrappers at
+it. The same pattern applies to `pre_script` and `post_script` when you want a
+single place to maintain runner-side behavior.
+
+See [Customizing Agents](../guides/user/customizing-agents.md) for harness
+composition and [openkaiden/kaiden `.fullsend`](https://github.com/openkaiden/kaiden/tree/main/.fullsend)
+for a production example.
 
 ### Variables
 
