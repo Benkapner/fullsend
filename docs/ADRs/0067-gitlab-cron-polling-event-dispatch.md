@@ -319,7 +319,7 @@ This is an accepted tradeoff — the alternative (sharing a
 processed-note-IDs set or cross-reading watermarks between modes)
 adds state coupling that complicates the independent-schedule design.
 
-> **Update (2026-08, #5959):** The dual-schedule architecture above was replaced
+> **Update (2026-08, #5959):** ~~The dual-schedule architecture above was replaced
 > by a single `*/5 * * * *` schedule with automatic full-poll promotion. The
 > poller now decides at runtime whether to run a fast poll or full poll based on
 > elapsed time since the last full poll (`FULLSEND_LAST_POLL_AT_FULL`). This
@@ -334,7 +334,33 @@ adds state coupling that complicates the independent-schedule design.
 > cron-poller introduction, "Multi-frequency polling" and fast-poll MR note
 > limitation under "Slash command latency", the Free tier 60-minute interval
 > references in "GitLab tier considerations", and the "5 minutes on Premium, 60
-> minutes on Free" latency in "Consequences".
+> minutes on Free" latency in "Consequences".~~ Superseded by #6077 below.
+>
+> **Update (2026-08, #6077):** The single auto-promoting schedule from #5959
+> was reverted to two independent schedules with explicit mode selection. The
+> auto-promote logic coupled slash-command latency to full-poll duration and
+> used a single `resource_group`, causing GitLab to cancel the in-progress
+> poll when the next schedule fired. The new architecture:
+> - **Slash poll:** `*/5 * * * *` with `FULLSEND_POLL_MODE=slash` — processes
+>   only `/fs-*` slash commands, fast and lightweight.
+> - **Event poll:** `2,17,32,47 * * * *` with `FULLSEND_POLL_MODE=events` —
+>   full event discovery (labels, MR merges, non-command notes).
+> - Each schedule uses a per-mode resource group
+>   (`fullsend-poll-slash` / `fullsend-poll-events`) so they never cancel
+>   each other. Resource group process modes differ by purpose:
+>   `newest_first` for slash (latest command wins, stale polls are
+>   preempted) and `oldest_first` for events (long-running discovery
+>   completes before the next cycle starts).
+> - The `--mode` CLI flag (also `FULLSEND_POLL_MODE` env var) selects the
+>   mode explicitly; empty uses the events discovery path but does not
+>   filter `/fs-*` notes (backward compatibility with pre-dual-schedule
+>   installations where a single schedule handled all event types).
+> - The `shouldFullPoll` auto-promote logic and `FullPollInterval` are removed.
+> - Superseded sections: "MR note limitation (fast-poll)" (slash commands
+>   on MRs are now handled by the dedicated slash poll schedule, not gated
+>   behind full-poll cycles), and the "Multi-frequency polling" reference
+>   under "Slash command latency" (replaced by the independent schedule
+>   architecture above).
 
 ### Event routing
 
