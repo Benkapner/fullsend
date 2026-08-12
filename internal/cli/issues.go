@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -48,15 +49,23 @@ type issueCommentGetResult struct {
 	HTMLURL   string `json:"html_url,omitempty"`
 }
 
+// issuesGetConfig holds the flags and test overrides for "fullsend issues get".
+type issuesGetConfig struct {
+	trackerName string
+	project     string
+	number      int
+	token       string
+	jiraURL     string
+	jiraEmail   string
+
+	// Test overrides — when non-nil, used instead of creating a real
+	// tracker client. Not set by CLI flag parsing.
+	testClient tracker.Client
+	testWriter io.Writer
+}
+
 func newIssuesGetCmd() *cobra.Command {
-	var (
-		trackerName string
-		project     string
-		number      int
-		token       string
-		jiraURL     string
-		jiraEmail   string
-	)
+	var cfg issuesGetConfig
 
 	cmd := &cobra.Command{
 		Use:   "get",
@@ -68,52 +77,16 @@ For GitHub/GitLab, --project is "owner/repo". For Jira, --project is
 the Jira project key (e.g. "PROJ") and the issue number maps to
 PROJ-<number>.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tc, err := newTrackerClient(trackerName, token, jiraURL, jiraEmail)
-			if err != nil {
-				return err
-			}
-			ctx := cmd.Context()
-
-			issue, err := tc.GetIssue(ctx, project, number)
-			if err != nil {
-				return fmt.Errorf("getting issue: %w", err)
-			}
-
-			comments, err := tc.ListComments(ctx, project, number)
-			if err != nil {
-				return fmt.Errorf("listing comments: %w", err)
-			}
-
-			result := issueGetResult{
-				Number:   issue.Number,
-				Title:    issue.Title,
-				Body:     string(issue.Body),
-				URL:      issue.URL,
-				Labels:   issue.Labels,
-				Comments: make([]issueCommentGetResult, len(comments)),
-			}
-			for i, c := range comments {
-				result.Comments[i] = issueCommentGetResult{
-					ID:        c.ID,
-					Author:    c.Author,
-					Body:      string(c.Body),
-					CreatedAt: c.CreatedAt,
-					HTMLURL:   c.HTMLURL,
-				}
-			}
-
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(result)
+			return runIssuesGet(cmd.Context(), &cfg)
 		},
 	}
 
-	cmd.Flags().StringVar(&trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required)")
-	cmd.Flags().StringVar(&project, "project", "", "project identifier: owner/repo (GitHub/GitLab) or project key (Jira) (required)")
-	cmd.Flags().IntVar(&number, "number", 0, "issue number (required)")
-	cmd.Flags().StringVar(&token, "token", "", "API token (default: env var per tracker)")
-	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
-	cmd.Flags().StringVar(&jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
+	cmd.Flags().StringVar(&cfg.trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required)")
+	cmd.Flags().StringVar(&cfg.project, "project", "", "project identifier: owner/repo (GitHub/GitLab) or project key (Jira) (required)")
+	cmd.Flags().IntVar(&cfg.number, "number", 0, "issue number (required)")
+	cmd.Flags().StringVar(&cfg.token, "token", "", "API token (default: env var per tracker)")
+	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
+	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
 	_ = cmd.MarkFlagRequired("tracker")
 	_ = cmd.MarkFlagRequired("project")
 	_ = cmd.MarkFlagRequired("number")
@@ -121,18 +94,75 @@ PROJ-<number>.`,
 	return cmd
 }
 
+func runIssuesGet(ctx context.Context, cfg *issuesGetConfig) error {
+	tc := cfg.testClient
+	if tc == nil {
+		var err error
+		tc, err = newTrackerClient(cfg.trackerName, cfg.token, cfg.jiraURL, cfg.jiraEmail)
+		if err != nil {
+			return err
+		}
+	}
+
+	issue, err := tc.GetIssue(ctx, cfg.project, cfg.number)
+	if err != nil {
+		return fmt.Errorf("getting issue: %w", err)
+	}
+
+	comments, err := tc.ListComments(ctx, cfg.project, cfg.number)
+	if err != nil {
+		return fmt.Errorf("listing comments: %w", err)
+	}
+
+	result := issueGetResult{
+		Number:   issue.Number,
+		Title:    issue.Title,
+		Body:     string(issue.Body),
+		URL:      issue.URL,
+		Labels:   issue.Labels,
+		Comments: make([]issueCommentGetResult, len(comments)),
+	}
+	for i, c := range comments {
+		result.Comments[i] = issueCommentGetResult{
+			ID:        c.ID,
+			Author:    c.Author,
+			Body:      string(c.Body),
+			CreatedAt: c.CreatedAt,
+			HTMLURL:   c.HTMLURL,
+		}
+	}
+
+	w := cfg.testWriter
+	if w == nil {
+		w = os.Stdout
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
+}
+
+// issuesPostCommentConfig holds the flags and test overrides for
+// "fullsend issues post-comment".
+type issuesPostCommentConfig struct {
+	trackerName string
+	project     string
+	number      int
+	marker      string
+	result      string
+	token       string
+	jiraURL     string
+	jiraEmail   string
+	dryRun      bool
+
+	// Test overrides — when non-nil, used instead of creating a real
+	// tracker client. Not set by CLI flag parsing.
+	testClient  tracker.Client
+	testPrinter *ui.Printer
+	testBody    string // when non-empty, used instead of reading from result/stdin
+}
+
 func newIssuesPostCommentCmd() *cobra.Command {
-	var (
-		trackerName string
-		project     string
-		number      int
-		marker      string
-		result      string
-		token       string
-		jiraURL     string
-		jiraEmail   string
-		dryRun      bool
-	)
+	var cfg issuesPostCommentConfig
 
 	cmd := &cobra.Command{
 		Use:   "post-comment",
@@ -149,51 +179,66 @@ should use a unique marker (e.g. "<!-- fullsend:triage-agent -->").
 
 The --result flag accepts a file path or "-" for stdin.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			printer := ui.New(os.Stdout)
-
-			if number <= 0 {
-				return fmt.Errorf("--number must be a positive integer, got %d", number)
-			}
-			if strings.TrimSpace(marker) == "" {
-				return fmt.Errorf("--marker must not be empty")
-			}
-
-			body, err := readBody(result)
-			if err != nil {
-				return fmt.Errorf("reading comment body: %w", err)
-			}
-
-			tc, err := newTrackerClient(trackerName, token, jiraURL, jiraEmail)
-			if err != nil {
-				return err
-			}
-
-			printer.Header("Post Comment")
-
-			cfg := sticky.Config{
-				Marker: marker,
-				DryRun: dryRun,
-			}
-			_, err = postTrackerStickyComment(cmd.Context(), tc, project, number, body, cfg, printer)
-			return err
+			return runIssuesPostComment(cmd.Context(), &cfg)
 		},
 	}
 
-	cmd.Flags().StringVar(&trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required)")
-	cmd.Flags().StringVar(&project, "project", "", "project identifier: owner/repo (GitHub/GitLab) or project key (Jira) (required)")
-	cmd.Flags().IntVar(&number, "number", 0, "issue number (required)")
-	cmd.Flags().StringVar(&marker, "marker", "", "hidden HTML marker to identify this agent's comments (required)")
-	cmd.Flags().StringVar(&result, "result", "-", "path to comment body file, or '-' for stdin")
-	cmd.Flags().StringVar(&token, "token", "", "API token (default: env var per tracker)")
-	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
-	cmd.Flags().StringVar(&jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
+	cmd.Flags().StringVar(&cfg.trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required)")
+	cmd.Flags().StringVar(&cfg.project, "project", "", "project identifier: owner/repo (GitHub/GitLab) or project key (Jira) (required)")
+	cmd.Flags().IntVar(&cfg.number, "number", 0, "issue number (required)")
+	cmd.Flags().StringVar(&cfg.marker, "marker", "", "hidden HTML marker to identify this agent's comments (required)")
+	cmd.Flags().StringVar(&cfg.result, "result", "-", "path to comment body file, or '-' for stdin")
+	cmd.Flags().StringVar(&cfg.token, "token", "", "API token (default: env var per tracker)")
+	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
+	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
+	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without making API calls")
 	_ = cmd.MarkFlagRequired("tracker")
 	_ = cmd.MarkFlagRequired("project")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("marker")
 
 	return cmd
+}
+
+func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) error {
+	printer := cfg.testPrinter
+	if printer == nil {
+		printer = ui.New(os.Stdout)
+	}
+
+	if cfg.number <= 0 {
+		return fmt.Errorf("--number must be a positive integer, got %d", cfg.number)
+	}
+	if strings.TrimSpace(cfg.marker) == "" {
+		return fmt.Errorf("--marker must not be empty")
+	}
+
+	body := cfg.testBody
+	if body == "" {
+		var err error
+		body, err = readBody(cfg.result)
+		if err != nil {
+			return fmt.Errorf("reading comment body: %w", err)
+		}
+	}
+
+	tc := cfg.testClient
+	if tc == nil {
+		var err error
+		tc, err = newTrackerClient(cfg.trackerName, cfg.token, cfg.jiraURL, cfg.jiraEmail)
+		if err != nil {
+			return err
+		}
+	}
+
+	printer.Header("Post Comment")
+
+	stickyCfg := sticky.Config{
+		Marker: cfg.marker,
+		DryRun: cfg.dryRun,
+	}
+	_, err := postTrackerStickyComment(ctx, tc, cfg.project, cfg.number, body, stickyCfg, printer)
+	return err
 }
 
 // postTrackerStickyComment implements the sticky comment lifecycle using

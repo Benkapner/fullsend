@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -198,4 +202,225 @@ func TestPostTrackerStickyComment_DryRun_Update(t *testing.T) {
 	require.Len(t, comments, 1)
 	assert.Contains(t, string(comments[0].Body), "first")
 	assert.NotContains(t, string(comments[0].Body), "second")
+}
+
+// --- runIssuesGet tests ---
+
+func newFakeTrackerWithIssue(t *testing.T, project string, number int) tracker.Client {
+	t.Helper()
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	// Split project into owner/repo for the forge fake.
+	issue, err := fc.CreateIssue(context.Background(), "acme", "widgets", "Widget is broken", "details here", "bug", "p1")
+	require.NoError(t, err)
+	require.Equal(t, number, issue.Number)
+	// Add a comment.
+	_, err = fc.CreateIssueComment(context.Background(), "acme", "widgets", number, "first comment body")
+	require.NoError(t, err)
+	return tracker.NewForgeClient(fc)
+}
+
+func TestRunIssuesGet(t *testing.T) {
+	tc := newFakeTrackerWithIssue(t, "acme/widgets", 1)
+	var buf bytes.Buffer
+
+	cfg := &issuesGetConfig{
+		project:    "acme/widgets",
+		number:     1,
+		testClient: tc,
+		testWriter: &buf,
+	}
+
+	err := runIssuesGet(context.Background(), cfg)
+	require.NoError(t, err)
+
+	var result issueGetResult
+	err = json.Unmarshal(buf.Bytes(), &result)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.Number)
+	assert.Equal(t, "Widget is broken", result.Title)
+	assert.Equal(t, "details here", result.Body)
+	assert.Contains(t, result.Labels, "bug")
+	assert.Contains(t, result.Labels, "p1")
+	require.Len(t, result.Comments, 1)
+	assert.Equal(t, "first comment body", result.Comments[0].Body)
+	assert.Equal(t, "bot", result.Comments[0].Author)
+}
+
+func TestRunIssuesGet_NoComments(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	_, err := fc.CreateIssue(context.Background(), "acme", "widgets", "No comments yet", "body text")
+	require.NoError(t, err)
+	tc := tracker.NewForgeClient(fc)
+
+	var buf bytes.Buffer
+	cfg := &issuesGetConfig{
+		project:    "acme/widgets",
+		number:     1,
+		testClient: tc,
+		testWriter: &buf,
+	}
+
+	err = runIssuesGet(context.Background(), cfg)
+	require.NoError(t, err)
+
+	var result issueGetResult
+	err = json.Unmarshal(buf.Bytes(), &result)
+	require.NoError(t, err)
+
+	assert.Equal(t, "No comments yet", result.Title)
+	assert.Empty(t, result.Comments)
+}
+
+func TestRunIssuesGet_IssueNotFound(t *testing.T) {
+	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
+
+	cfg := &issuesGetConfig{
+		project:    "acme/widgets",
+		number:     999,
+		testClient: tc,
+		testWriter: io.Discard,
+	}
+
+	err := runIssuesGet(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting issue")
+}
+
+// --- runIssuesPostComment tests ---
+
+func TestRunIssuesPostComment_Create(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+
+	cfg := &issuesPostCommentConfig{
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "automated comment body",
+	}
+
+	err := runIssuesPostComment(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Verify the comment was created.
+	comments, err := tc.ListComments(context.Background(), "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "<!-- test:agent -->")
+	assert.Contains(t, string(comments[0].Body), "automated comment body")
+}
+
+func TestRunIssuesPostComment_Update(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+	ctx := context.Background()
+
+	cfg := &issuesPostCommentConfig{
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "first run",
+	}
+
+	// First run creates.
+	err := runIssuesPostComment(ctx, cfg)
+	require.NoError(t, err)
+
+	// Second run updates.
+	cfg.testBody = "second run"
+	err = runIssuesPostComment(ctx, cfg)
+	require.NoError(t, err)
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "second run")
+}
+
+func TestRunIssuesPostComment_InvalidNumber(t *testing.T) {
+	cfg := &issuesPostCommentConfig{
+		number:      0,
+		marker:      "<!-- test -->",
+		testPrinter: ui.New(io.Discard),
+		testBody:    "body",
+	}
+
+	err := runIssuesPostComment(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--number must be a positive integer")
+}
+
+func TestRunIssuesPostComment_EmptyMarker(t *testing.T) {
+	cfg := &issuesPostCommentConfig{
+		number:      1,
+		marker:      "   ",
+		testPrinter: ui.New(io.Discard),
+		testBody:    "body",
+	}
+
+	err := runIssuesPostComment(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--marker must not be empty")
+}
+
+func TestRunIssuesPostComment_DryRun(t *testing.T) {
+	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
+
+	cfg := &issuesPostCommentConfig{
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		dryRun:      true,
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "dry run body",
+	}
+
+	err := runIssuesPostComment(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// No comment should be created in dry-run mode.
+	comments, err := tc.ListComments(context.Background(), "acme/widgets", 42)
+	require.NoError(t, err)
+	assert.Empty(t, comments)
+}
+
+func TestRunIssuesPostComment_FromFile(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+
+	// Write body to a temp file.
+	dir := t.TempDir()
+	bodyFile := filepath.Join(dir, "body.txt")
+	err := os.WriteFile(bodyFile, []byte("comment from file"), 0o644)
+	require.NoError(t, err)
+
+	cfg := &issuesPostCommentConfig{
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		result:      bodyFile,
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+	}
+
+	err = runIssuesPostComment(context.Background(), cfg)
+	require.NoError(t, err)
+
+	comments, err := tc.ListComments(context.Background(), "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "comment from file")
 }
