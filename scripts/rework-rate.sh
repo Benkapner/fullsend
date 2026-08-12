@@ -9,6 +9,11 @@
 #   BOT_LOGIN      - Bot author to search for (default: fullsend-ai-coder[bot])
 #
 # Requires: gh CLI authenticated with repo access, jq
+#
+# Note: human-vs-automation classification relies on GitHub's author.type
+# field. Commits from GitHub Apps/Bots (type: "Bot") are excluded, but
+# automated processes using PATs or machine users (type: "User") will be
+# counted as human rework.
 
 set -euo pipefail
 
@@ -128,7 +133,7 @@ while IFS= read -r pr_json; do
   # Get commits after merge by non-bot authors (paginated)
   COMMITS_ERR=$(mktemp)
   if ! FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
-    --paginate --jq '.[] | select(.author == null or .author.type != "Bot") | {sha: .sha, author_login: (if .author != null then (.author.login // "unknown") else null end), parents: (.parents | length)}' 2>"$COMMITS_ERR"); then
+    --paginate --jq '.[] | select(.author == null or .author.type != "Bot") | {sha: .sha, author_login: (if .author != null then (.author.login // "unknown") else null end)}' 2>"$COMMITS_ERR"); then
     echo "    WARNING: could not fetch follow-up commits for #${PR_NUM}: $(cat "$COMMITS_ERR")"
     rm -f "$COMMITS_ERR"
     SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
@@ -141,27 +146,21 @@ while IFS= read -r pr_json; do
     continue
   fi
 
-  # Check if any single-parent follow-up commit touches the same files
+  # Check if any follow-up commit touches the same files
   FOUND_REWORK=""
   PR_HAD_ERROR=""
   while IFS= read -r commit_json; do
     COMMIT_SHA=$(echo "$commit_json" | jq -r '.sha')
     COMMIT_AUTHOR=$(echo "$commit_json" | jq -r '.author_login')
-    PARENT_COUNT=$(echo "$commit_json" | jq -r '.parents')
-
-    # Skip commits with no linked GitHub identity
-    if [ "$COMMIT_AUTHOR" = "null" ]; then
-      SKIPPED_NULL_AUTHOR=$((SKIPPED_NULL_AUTHOR + 1))
-      continue
-    fi
-
-    # Skip merge commits (2+ parents); their files list reflects the full merge, not incremental work
-    if [ "$PARENT_COUNT" -gt 1 ]; then
-      continue
-    fi
 
     # Skip the PR's own merge commit
     if [ -n "$PR_MERGE_SHA" ] && [ "$COMMIT_SHA" = "$PR_MERGE_SHA" ]; then
+      continue
+    fi
+
+    # Skip commits with no linked GitHub identity (not evaluated for overlap)
+    if [ "$COMMIT_AUTHOR" = "null" ]; then
+      SKIPPED_NULL_AUTHOR=$((SKIPPED_NULL_AUTHOR + 1))
       continue
     fi
 
@@ -215,7 +214,7 @@ if [ "$SKIPPED_ERROR" -gt 0 ]; then
   echo "Skipped (API errors): ${SKIPPED_ERROR}"
 fi
 if [ "$SKIPPED_NULL_AUTHOR" -gt 0 ]; then
-  echo "Follow-up commits with no linked GitHub identity (excluded): ${SKIPPED_NULL_AUTHOR}"
+  echo "Follow-up commits in window with no linked GitHub identity (not evaluated): ${SKIPPED_NULL_AUTHOR}"
 fi
 
 if [ ${#REWORKED_LINES[@]} -gt 0 ]; then

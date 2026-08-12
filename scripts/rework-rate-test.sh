@@ -33,6 +33,12 @@ if [[ "\${GH_FAIL}" == "true" ]]; then
   echo "simulated gh failure" >&2
   exit 1
 fi
+if [[ "\${GH_PARTIAL_FAIL}" == "true" ]] && [[ "\$*" == *"search/issues"* ]]; then
+  echo "Only the first 1000 search results are available" >&2
+  GH_PARTIAL_EXIT=1
+else
+  GH_PARTIAL_EXIT=0
+fi
 
 # Extract --jq filter if present
 JQ_FILTER=""
@@ -72,11 +78,13 @@ if [[ -n "\${JQ_FILTER}" ]]; then
 else
   echo "\${output}"
 fi
+exit "\${GH_PARTIAL_EXIT}"
 MOCK_EOF
 
 chmod +x "${MOCK_BIN}/gh"
 export PATH="${MOCK_BIN}:${PATH}"
 export GH_FAIL="false"
+export GH_PARTIAL_FAIL="false"
 
 run_case() {
   local name="$1"
@@ -131,8 +139,9 @@ EOF
 
 run_case "genuine single-parent rework detected" "Rework rate: 100.0%"
 
-# --- Test 2: Merge commit must NOT count as rework ---
-# Follow-up commit has 2 parents (merge commit) touching same file -> no rework
+# --- Test 2: Merge commit (2 parents) IS detected as rework ---
+# GitHub's commits API diffs merge commits against first parent, so the files
+# list reflects the PR's own diff. Human PR merges should count as rework.
 cat >"${FOLLOWUP_COMMITS}" <<'EOF'
 [{"sha":"merge999","author":{"type":"User","login":"human"},"parents":[{"sha":"p1"},{"sha":"p2"}]}]
 EOF
@@ -140,7 +149,7 @@ cat >"${COMMIT_DETAIL}" <<'EOF'
 {"sha":"merge999","files":[{"filename":"src/main.go"}]}
 EOF
 
-run_case "merge commit (2 parents) excluded from rework" "Rework rate: 0.0%"
+run_case "merge commit (2 parents) detected as rework" "Rework rate: 100.0%"
 
 # --- Test 3: PR's own merge SHA excluded ---
 # Follow-up commit SHA matches the PR's merge_commit_sha -> must not count
@@ -192,7 +201,44 @@ EOF
 
 run_case "null-author commit excluded with accounting" "no linked GitHub identity"
 
-# --- Test 6: API failure on bot-PR search exits non-zero ---
+# --- Test 6: Null-author commit on unrelated file is not counted ---
+cat >"${SEARCH_RESULTS}" <<'EOF'
+{"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z","pull_request":{"merged_at":"2026-01-01T10:00:00Z"}}]}
+EOF
+cat >"${PR_FILES}" <<'EOF'
+[{"filename":"src/main.go"}]
+EOF
+cat >"${PR_DETAIL}" <<'EOF'
+{"merge_commit_sha":"merge111"}
+EOF
+cat >"${FOLLOWUP_COMMITS}" <<'EOF'
+[{"sha":"null002","author":null,"parents":[{"sha":"p1"}]}]
+EOF
+cat >"${COMMIT_DETAIL}" <<'EOF'
+{"sha":"null002","files":[{"filename":"unrelated/other.go"}]}
+EOF
+
+run_case "null-author commit on unrelated file not evaluated" "Rework rate: 0.0%"
+
+# --- Test 7: Partial pagination failure continues with warning ---
+cat >"${SEARCH_RESULTS}" <<'EOF'
+{"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z","pull_request":{"merged_at":"2026-01-01T10:00:00Z"}}]}
+EOF
+cat >"${PR_FILES}" <<'EOF'
+[{"filename":"src/main.go"}]
+EOF
+cat >"${PR_DETAIL}" <<'EOF'
+{"merge_commit_sha":"merge111"}
+EOF
+cat >"${FOLLOWUP_COMMITS}" <<'EOF'
+[]
+EOF
+export GH_PARTIAL_FAIL="true"
+
+run_case "partial pagination failure continues with warning" "WARNING: pagination error"
+export GH_PARTIAL_FAIL="false"
+
+# --- Test 8: API failure on bot-PR search exits non-zero ---
 cat >"${SEARCH_RESULTS}" <<'EOF'
 {"items":[{"number":10,"title":"bot fix","closed_at":"2026-01-01T10:00:00Z","pull_request":{"merged_at":"2026-01-01T10:00:00Z"}}]}
 EOF
