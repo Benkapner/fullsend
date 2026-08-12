@@ -274,6 +274,50 @@ func TestRunIssuesGet_NoComments(t *testing.T) {
 	assert.Empty(t, result.Comments)
 }
 
+func TestRunIssuesGet_InvalidNumber(t *testing.T) {
+	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
+
+	for _, n := range []int{0, -1, -100} {
+		cfg := &issuesGetConfig{
+			project:    "acme/widgets",
+			number:     n,
+			testClient: tc,
+			testWriter: io.Discard,
+		}
+
+		err := runIssuesGet(context.Background(), cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--number must be a positive integer")
+	}
+}
+
+func TestRunIssuesGet_NilLabelsOutputAsEmptyArray(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	// Create an issue without any labels — Labels will be nil.
+	_, err := fc.CreateIssue(context.Background(), "acme", "widgets", "No labels", "body text")
+	require.NoError(t, err)
+	tc := tracker.NewForgeClient(fc)
+
+	var buf bytes.Buffer
+	cfg := &issuesGetConfig{
+		project:    "acme/widgets",
+		number:     1,
+		testClient: tc,
+		testWriter: &buf,
+	}
+
+	err = runIssuesGet(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Verify labels serializes as [] not null.
+	var raw map[string]json.RawMessage
+	err = json.Unmarshal(buf.Bytes(), &raw)
+	require.NoError(t, err)
+	assert.Equal(t, "[]", string(raw["labels"]), "nil labels should serialize as empty JSON array, not null")
+}
+
 func TestRunIssuesGet_IssueNotFound(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)

@@ -95,6 +95,10 @@ PROJ-<number>.`,
 }
 
 func runIssuesGet(ctx context.Context, cfg *issuesGetConfig) error {
+	if cfg.number <= 0 {
+		return fmt.Errorf("--number must be a positive integer, got %d", cfg.number)
+	}
+
 	tc := cfg.testClient
 	if tc == nil {
 		var err error
@@ -114,12 +118,16 @@ func runIssuesGet(ctx context.Context, cfg *issuesGetConfig) error {
 		return fmt.Errorf("listing comments: %w", err)
 	}
 
+	labels := issue.Labels
+	if labels == nil {
+		labels = []string{}
+	}
 	result := issueGetResult{
 		Number:   issue.Number,
 		Title:    issue.Title,
 		Body:     string(issue.Body),
 		URL:      issue.URL,
-		Labels:   issue.Labels,
+		Labels:   labels,
 		Comments: make([]issueCommentGetResult, len(comments)),
 	}
 	for i, c := range comments {
