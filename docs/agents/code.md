@@ -48,13 +48,21 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 ### Image and network policy synchronization
 
-::: warning
-The code agent and [fix agent](fix.md) are separate agents, but they share the same container image and network policy needs. When you customize one, keep **image** and **policy** in sync on both — otherwise one agent may succeed while the other fails with no obvious reason (for example, a package manager or registry endpoint allowed in code but not fix).
-:::
+By default, the code and [fix agent](fix.md) use the same upstream container
+image and sandbox policy. They are separate harnesses, though — you can override
+each independently when their needs diverge. For example, you might keep Jira
+endpoints out of the code agent's policy while allowing them on the fix agent
+when reviewers ask you to verify something against a ticket during PR feedback.
+
+> **Warning:** If you customize image or policy on only one agent by mistake,
+> the other may fail with no obvious reason (for example, a package manager or
+> registry endpoint allowed in code but not fix).
 
 **Recommended configuration**
 
-The supported way to avoid drift is to maintain **one** policy file (and typically one custom image) and reference it from both harness wrappers in your `.fullsend` config repo:
+If you want both agents to share one configuration — one place to edit image,
+policy, and runner scripts — point both harness wrappers at the same files in
+your `.fullsend` config repo:
 
 ```yaml
 # .fullsend/code.yaml
