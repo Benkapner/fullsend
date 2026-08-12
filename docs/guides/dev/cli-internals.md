@@ -107,8 +107,18 @@ fullsend
 │   ├── output                               # Scan agent output for leaked secrets
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
+├── issues                                   # Read and write issue content across trackers
+│   ├── get                                  #   Read issue content (title, body, comments, labels)
+│   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│   │   └── --number <int>                   #     Issue number
+│   └── post-comment                         #   Post or update a sticky comment on an issue
+│       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│       ├── --number <int>                   #     Issue number
+│       └── --marker <string>                #     Hidden HTML marker for idempotent updates
 ├── post-review                              # Post PR review comments to GitHub
-├── post-comment                             # Post issue/PR comments to GitHub
+├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format
     ├── --number <int>                       #   Issue/PR number

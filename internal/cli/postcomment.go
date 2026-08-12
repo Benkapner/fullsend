@@ -23,9 +23,14 @@ func newPostCommentCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "post-comment",
-		Short: "Post or update a sticky comment on an issue or PR",
+		Use:        "post-comment",
+		Short:      "Post or update a sticky comment on an issue or PR (deprecated: use 'fullsend issues post-comment')",
+		Deprecated: "use 'fullsend issues post-comment --tracker github' instead",
 		Long: `Posts a comment with a hidden HTML marker on an issue or pull request.
+
+DEPRECATED: This command targets GitHub only. Use
+'fullsend issues post-comment --tracker github' for GitHub, GitLab,
+or Jira support.
 
 On first run, creates a new comment. On re-runs, finds the existing
 comment by its marker and edits in-place, collapsing old content into
