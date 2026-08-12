@@ -216,14 +216,10 @@ func Install(ctx context.Context, cfg InstallConfig,
 		return result, fmt.Errorf("generating scaffold files: %w", err)
 	}
 
-	// Step 5: Commit scaffold files via the caller-provided commit function.
-	progress(repoFullName, "scaffold", "Committing scaffold files")
-	if commitErr := commitScaffold(ctx, cfg.Owner, cfg.Repo, files, cfg.Direct); commitErr != nil {
-		return result, fmt.Errorf("committing scaffold: %w", commitErr)
-	}
-	progress(repoFullName, "scaffold", "Scaffold files committed")
-
-	// Step 6: Write repository variables.
+	// Step 5: Write repository variables. Variables and secrets are
+	// written before the scaffold commit so the workflow's required
+	// secrets exist by the time an event triggers a run. This
+	// eliminates the race window described in #6122.
 	progress(repoFullName, "vars", "Configuring repository variables")
 	repoVars, err := installVarsForForge(cfg, mintURL, wifProvider)
 	if err != nil {
@@ -236,7 +232,7 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 	progress(repoFullName, "vars", fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
-	// Step 6b: Write protected CI/CD variables (GitLab only).
+	// Step 5b: Write protected CI/CD variables (GitLab only).
 	protectedVars := installProtectedVarsForForge(cfg)
 	for _, name := range maputil.SortedKeys(protectedVars) {
 		if err := client.CreateProtectedCIVariable(ctx, cfg.Owner, cfg.Repo, name, protectedVars[name]); err != nil {
@@ -244,7 +240,7 @@ func Install(ctx context.Context, cfg InstallConfig,
 		}
 	}
 
-	// Step 7: Write repository secrets. GitLab writes secrets only when
+	// Step 6: Write repository secrets. GitLab writes secrets only when
 	// inference is configured (WIF mode). Skipped when reusing existing secrets.
 	repoSecrets := installSecretsForForge(cfg, wifProvider)
 	if cfg.ReuseSecrets {
@@ -258,6 +254,15 @@ func Install(ctx context.Context, cfg InstallConfig,
 		}
 		progress(repoFullName, "secrets", fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
 	}
+
+	// Step 7: Commit scaffold files via the caller-provided commit function.
+	// Moved after variable and secret writes to ensure the workflow's
+	// required credentials exist before the workflow file goes live.
+	progress(repoFullName, "scaffold", "Committing scaffold files")
+	if commitErr := commitScaffold(ctx, cfg.Owner, cfg.Repo, files, cfg.Direct); commitErr != nil {
+		return result, fmt.Errorf("committing scaffold: %w", commitErr)
+	}
+	progress(repoFullName, "scaffold", "Scaffold files committed")
 
 	result.Success = true
 	progress(repoFullName, "done", "Installation complete")
