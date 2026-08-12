@@ -146,6 +146,7 @@ success/failure signal for outcome scorers.
 | [#5947](https://github.com/fullsend-ai/fullsend/pull/5947) Level 3 activation + sandbox OTEL denylist | Richer traces fuel later scorers. First ship reads Level 1/2 local JSONL; content-aware scorers need OTLP/backend (or a widened file contract) under the proposed L3 rules. Measure CLI is host-side after the sandbox exits. |
 | [#5944](https://github.com/fullsend-ai/fullsend/pull/5944) Span status from run outcome | Unblocks outcome scorers keyed on Status, not raw exit alone. |
 | [#2423](https://github.com/fullsend-ai/fullsend/pull/2423) Semantic observability / observer / lessons | Observer + lessons → fixtures; measurements are the online score path. |
+| [#5524](https://github.com/fullsend-ai/fullsend/pull/5524) Harness snapshot / forge join keys (ADR 0075) | Complementary join/identity proposal beside telemetry; measurements are derived scores, not primary run facts. |
 
 ## Same-job timing
 

@@ -38,6 +38,7 @@ e.g. eval/measurements/<agent>.yaml).`,
 
 			results, err := evalmeasure.MeasureAndExport(cmd.Context(), telemetryPath, registryPath, outDir)
 			if err != nil {
+				printMeasurementResults(printer, results)
 				return err
 			}
 			printMeasurementResults(printer, results)

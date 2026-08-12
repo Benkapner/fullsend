@@ -47,6 +47,11 @@ Adjacent telemetry proposals (not competing with this score path):
 - **Observer / lessons → fixtures** ([#2423](https://github.com/fullsend-ai/fullsend/pull/2423)):
   narrative analysis and golden-set promotion. This ADR is same-job
   deterministic scoring on traces.
+- **Harness snapshot / forge join keys** ([#5524](https://github.com/fullsend-ai/fullsend/pull/5524)
+  — proposed ADR 0075): sibling artifact for harness fingerprint and
+  forge/CI pointers beside telemetry. Complementary join/identity layer;
+  primary run facts belong on the OTEL trace (Level 1), while measurements
+  stay a derived sibling file.
 
 ## Options
 

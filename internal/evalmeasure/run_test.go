@@ -1,6 +1,7 @@
 package evalmeasure
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,4 +41,25 @@ func TestMeasureFile_Idempotent(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(out, MeasurementsFile))
 	require.NoError(t, err)
 	assert.Contains(t, string(b), `"name":"trace_fitness"`)
+}
+
+func TestMeasureFile_AppendBeforeLedger(t *testing.T) {
+	out := t.TempDir()
+	telemetry := filepath.Join("testdata", "complete.jsonl")
+	registry := filepath.Join("testdata", "sample-registry.yaml")
+	ledgerPath := filepath.Join(out, LedgerFile)
+
+	first, err := MeasureFile(telemetry, registry, out)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+
+	require.NoError(t, os.Remove(ledgerPath))
+
+	second, err := MeasureFile(telemetry, registry, out)
+	require.NoError(t, err)
+	require.Len(t, second, 1, "retry after missing ledger should re-score")
+
+	lines, err := os.ReadFile(filepath.Join(out, MeasurementsFile))
+	require.NoError(t, err)
+	assert.Equal(t, 2, bytes.Count(lines, []byte("\n")), "missing ledger may duplicate JSONL lines; consumers dedupe on trace_id+version")
 }
