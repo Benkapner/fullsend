@@ -69,6 +69,13 @@ export interface Env {
   /** JSON-encoded map of custom role permissions. */
   CUSTOM_ROLE_PERMISSIONS?: string;
   /**
+   * Native Workers rate limiter for POST /v1/token. Bound via
+   * [[ratelimits]] in wrangler.toml. The key includes the request
+   * hostname so preview aliases (which produce distinct hostnames)
+   * get isolated counters without extra namespace_id patching.
+   */
+  MINT_TOKEN_RATE_LIMITER: RateLimit;
+  /**
    * Dynamic secret access: Worker secrets are accessed by name.
    * PEM keys are stored as secrets named <ROLE>_APP_PEM.
    * TypeScript index signature covers these dynamic keys.
@@ -556,6 +563,15 @@ function errorResponse(status: number, message: string): Response {
   });
 }
 
+/**
+ * Extract the client IP from a Cloudflare Worker request.
+ * CF-Connecting-IP is set by the Cloudflare edge for all requests
+ * routed through Cloudflare's network.
+ */
+function clientIp(request: Request): string {
+  return request.headers.get("CF-Connecting-IP") ?? "unknown";
+}
+
 export default {
   async fetch(
     request: Request,
@@ -570,6 +586,24 @@ export default {
         503,
         "mint instance poisoned after timeout — awaiting isolate recycle",
       );
+    }
+
+    // Rate-limit POST /v1/token before WASM init to avoid wasting
+    // CPU on abusive traffic. The key includes the hostname so that
+    // preview aliases (which produce distinct hostnames like
+    // <alias>-<worker>.<subdomain>.workers.dev) get isolated
+    // counters — concurrent BT preview instances do not affect each
+    // other. Durable deploys use a stable hostname.
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/v1/token") {
+      const rl = env.MINT_TOKEN_RATE_LIMITER;
+      if (rl) {
+        const key = `${url.hostname}:/v1/token:${clientIp(request)}`;
+        const { success } = await rl.limit({ key });
+        if (!success) {
+          return errorResponse(429, "rate_limited");
+        }
+      }
     }
 
     try {
