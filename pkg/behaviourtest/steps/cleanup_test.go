@@ -429,6 +429,9 @@ type fakeCleanupSCM struct {
 	deleteRepoErr    error
 	commitFileCalled bool
 	commitFileErr    error
+	fileContent      []byte
+	getFileErr       error
+	openPRs          []forge.ChangeProposal
 }
 
 type closedIssueRecord struct {
@@ -491,7 +494,7 @@ func (f *fakeCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.
 }
 
 func (f *fakeCleanupSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
-	return nil, nil
+	return f.fileContent, f.getFileErr
 }
 
 func (f *fakeCleanupSCM) CommitFile(_ context.Context, _, _, _, _ string, _ []byte) error {
@@ -519,12 +522,24 @@ func (f *fakeCleanupSCM) CreateRepo(context.Context, string, string, string) err
 	return nil
 }
 
+func (f *fakeCleanupSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return f.openPRs, nil
+}
+
+func (f *fakeCleanupSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
+
 func (f *fakeCleanupSCM) EnsureRepoPublic(context.Context, string, string) error {
 	return nil
 }
 
 func (f *fakeCleanupSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
 	return "main", nil
+}
+
+func (f *fakeCleanupSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
 }
 
 func (f *fakeCleanupSCM) CreateFork(context.Context, string, string, string) (string, error) {
@@ -630,6 +645,62 @@ func TestCleanupScenario_ClearsDummyOps_Error(t *testing.T) {
 	assert.Contains(t, logged[0], "clear dummy script")
 }
 
+// --- Kill switch cleanup tests ---
+
+func TestCleanupScenario_DeactivatesKillSwitch(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+	}
+	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		KillSwitchActivated: true,
+		Install:             installDriver,
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+	assert.True(t, scmDriver.commitFileCalled, "should commit config to deactivate kill switch")
+}
+
+func TestCleanupScenario_SkipsKillSwitchWhenNotActivated(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		KillSwitchActivated: false,
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not commit when kill switch was not activated")
+}
+
+func TestCleanupScenario_DeactivateKillSwitch_Error(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{
+		fileContent:   []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+		commitFileErr: fmt.Errorf("commit failed"),
+	}
+	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		KillSwitchActivated: true,
+		Install:             installDriver,
+		SCM:                 scmDriver,
+		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "deactivate kill switch")
+}
+
 // fakeCleanupInstall satisfies the Install interface for cleanup tests.
 type fakeCleanupInstall struct {
 	owner string
@@ -637,7 +708,6 @@ type fakeCleanupInstall struct {
 }
 
 func (f *fakeCleanupInstall) Mode() string               { return "per-repo" }
-func (f *fakeCleanupInstall) TestRepo() string           { return f.repo }
 func (f *fakeCleanupInstall) ConfigOwner() string        { return f.owner }
 func (f *fakeCleanupInstall) ConfigRepo() string         { return f.repo }
 func (f *fakeCleanupInstall) ConfigPathPrefix() string   { return ".fullsend" }
@@ -645,3 +715,96 @@ func (f *fakeCleanupInstall) TriageWorkflowRepo() string { return f.repo }
 func (f *fakeCleanupInstall) TriageWorkflowFile() string { return "fullsend.yaml" }
 func (f *fakeCleanupInstall) AgentWorkflowFile() string  { return "reusable-triage.yml" }
 func (f *fakeCleanupInstall) AgentArtifactName() string  { return "fullsend-triage" }
+
+func TestCleanupScenario_BranchScenarioSweep(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{openPRs: []forge.ChangeProposal{
+		{Number: 71, Head: "agent/7-impl"},        // applier PR for this scenario's issue — swept
+		{Number: 72, Head: "agent/8-other-issue"}, // different issue's namespace — untouched
+	}}
+	w := &world.World{
+		RepoOwner:       "org",
+		RepoName:        "repo",
+		IssueNumber:     7,
+		SCM:             scmDriver,
+		CreatedBranches: []string{"agent/990000099-decoy"},
+		CreatedPRNumbers: []int{
+			70, // decoy PR tracked at Given time
+		},
+	}
+	CleanupScenario(w)
+
+	var closed []int
+	for _, rec := range scmDriver.closedIssues {
+		closed = append(closed, rec.number)
+	}
+	// Issue #7 itself is closed too (IssueNumber > 0 path).
+	assert.ElementsMatch(t, []int{7, 70, 71}, closed)
+
+	var deleted []string
+	for _, rec := range scmDriver.deletedBranches {
+		deleted = append(deleted, rec.branch)
+	}
+	assert.ElementsMatch(t, []string{"agent/990000099-decoy", "agent/7-impl"}, deleted)
+}
+
+func TestCleanupScenario_BranchScenarioSweep_DedupesAlreadyTrackedPR(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors the shipped "renamed into the issue namespace" scenario:
+	// the head-match assertion already tracked the applier PR before
+	// cleanup runs, so the sweep must not close/delete it a second time.
+	scmDriver := &fakeCleanupSCM{openPRs: []forge.ChangeProposal{
+		{Number: 71, Head: "agent/7-impl"},
+	}}
+	w := &world.World{
+		RepoOwner:        "org",
+		RepoName:         "repo",
+		IssueNumber:      7,
+		SCM:              scmDriver,
+		CreatedBranches:  []string{"agent/7-impl"},
+		CreatedPRNumbers: []int{71},
+	}
+	CleanupScenario(w)
+
+	closedCount := 0
+	for _, rec := range scmDriver.closedIssues {
+		if rec.number == 71 {
+			closedCount++
+		}
+	}
+	assert.Equal(t, 1, closedCount, "PR #71 must be closed exactly once")
+
+	deletedCount := 0
+	for _, rec := range scmDriver.deletedBranches {
+		if rec.branch == "agent/7-impl" {
+			deletedCount++
+		}
+	}
+	assert.Equal(t, 1, deletedCount, "branch must be deleted exactly once")
+}
+
+func TestCleanupScenario_BranchScenarioSweep_RunsWithoutBranchSteps(t *testing.T) {
+	t.Parallel()
+
+	// A code-stage scenario that dispatches without any Given branch/PR
+	// step (CreatedBranches stays nil) must still sweep the applier's
+	// namespace — the sweep is gated on IssueNumber alone.
+	scmDriver := &fakeCleanupSCM{openPRs: []forge.ChangeProposal{
+		{Number: 71, Head: "agent/7-impl"},
+	}}
+	w := &world.World{
+		RepoOwner:   "org",
+		RepoName:    "repo",
+		IssueNumber: 7,
+		SCM:         scmDriver,
+	}
+	CleanupScenario(w)
+
+	var closed []int
+	for _, rec := range scmDriver.closedIssues {
+		closed = append(closed, rec.number)
+	}
+	assert.Contains(t, closed, 71)
+}

@@ -598,6 +598,55 @@ func TestCreateBranch_Forbidden(t *testing.T) {
 	assert.True(t, forge.IsForbidden(err), "CreateBranch 403 should wrap ErrForbidden")
 }
 
+func TestCreateBranchFromSHA(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/git/refs", r.URL.Path)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "refs/heads/feature-branch", body["ref"])
+		assert.Equal(t, "abc123sha", body["sha"])
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.NoError(t, err)
+}
+
+func TestCreateBranchFromSHA_Forbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Resource not accessible by integration",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsForbidden(err), "CreateBranchFromSHA 403 should wrap ErrForbidden")
+}
+
+func TestCreateBranchFromSHA_GenericError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Reference already exists",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create branch feature-branch from SHA")
+	assert.False(t, forge.IsForbidden(err), "non-403 error should not be ErrForbidden")
+}
+
 func TestGetPullRequestInfo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
@@ -3367,6 +3416,52 @@ func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
 	assert.Equal(t, "issues", runs[0].Event)
 }
 
+func TestListWorkflowRunJobs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"jobs": []map[string]any{
+				{
+					"id":         1,
+					"name":       "dispatch / Route",
+					"status":     "completed",
+					"conclusion": "success",
+				},
+				{
+					"id":         2,
+					"name":       "dispatch / Harness run (triage)",
+					"status":     "completed",
+					"conclusion": "success",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	require.Len(t, jobs, 2)
+	assert.Equal(t, 1, jobs[0].ID)
+	assert.Equal(t, "dispatch / Route", jobs[0].Name)
+	assert.Equal(t, "completed", jobs[0].Status)
+	assert.Equal(t, "success", jobs[0].Conclusion)
+	assert.Equal(t, 2, jobs[1].ID)
+	assert.Equal(t, "dispatch / Harness run (triage)", jobs[1].Name)
+}
+
+func TestListWorkflowRunJobs_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+}
+
 func TestListWorkflowRunArtifacts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/runs/42/artifacts", r.URL.Path)
@@ -3972,6 +4067,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
 
+	t.Run("CreatePipeline", func(t *testing.T) {
+		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)

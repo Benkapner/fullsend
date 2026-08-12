@@ -31,6 +31,67 @@ Accepted
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
 
+> **Update (2026-07, #5556):** The child-pipeline output driver described in
+> this ADR was replaced by direct API-triggered pipelines
+> (`POST /projects/:id/pipeline`). The poller now creates standalone pipelines
+> with dispatch variables instead of generating child pipeline YAML. This
+> eliminates the bridge job, YAML generation, and 2-level pipeline nesting.
+> The cron-polling input driver and dispatch core are unchanged. Superseded
+> sections: "Relationship to the dispatch driver architecture" (child-pipeline
+> output driver), "Pipeline nesting" under GitLab tier considerations, and the
+> architecture diagram showing parent-child pipeline flow.
+>
+> **Trust boundary change:** With child pipelines, dispatch variables were
+> computed server-side by the trusted poller and injected via the trigger YAML
+> artifact — only the poller could produce them. With API-triggered pipelines,
+> any user with pipeline-create access on the protected branch can POST
+> arbitrary variables (STAGE, EVENT_TYPE, EVENT_PAYLOAD_B64, RESOURCE_KEY,
+> IS_FORK, MR_AUTHOR_ID, ACTOR_ID, STATUS_IID, FULLSEND_POLL_JOB_URL). The
+> in-job authorization gate and fork
+> protection read these attacker-supplied variables. Mitigation #1 is
+> implemented: the agent job uses the Pipelines API
+> (`GET /projects/:id/pipelines/$CI_PIPELINE_ID`) to fetch the server-side
+> `.source` field and `.user.id`, then branches with a deny-by-default
+> `case` statement. For API-triggered pipelines (`.source == "api"`), it
+> verifies the pipeline creator matches the bot PAT identity. MR child
+> pipelines (`.source == "parent_pipeline"`) skip this check since their
+> creator is the MR author. A missing or unrecognized `.source` aborts the
+> job (fail-closed). Both dispatch paths now depend on a successful
+> pipeline-record read. The `.source` field is server-computed and cannot
+> be overridden by pipeline variables, unlike the `CI_PIPELINE_SOURCE` env
+> var. Residual risk: `CI_API_V4_URL` and `CI_PIPELINE_ID` are still
+> overridable, so a sophisticated attacker can redirect the API calls.
+> Mitigation #2 (HMAC signing, #5572) reduces this residual risk: the
+> poller signs dispatch variables with `FULLSEND_DISPATCH_SECRET` using
+> HMAC-SHA256 and the agent job verifies the signature before trusting
+> any dispatch variable. The HMAC computation itself uses no CI-provided
+> URLs, but the verification is gated on PIPELINE_SOURCE (derived from
+> CI_API_V4_URL), so the risk is reduced rather than fully closed. `FULLSEND_DISPATCH_SECRET`
+> MUST be configured as a protected, masked CI/CD variable — pipeline
+> variables can be overridden by API-triggered pipelines, so protection
+> is required to prevent a Developer+ user from supplying their own
+> secret and computing a valid HMAC over forged variables.
+>
+> **New permission requirement:** The bot PAT must have merge or push access
+> to the protected branch to create pipelines via the API endpoint. The
+> child-pipeline path had no such requirement (the trigger ran inside an
+> existing pipeline context).
+>
+> **Pipeline visibility change:** Dispatched pipelines are first-class
+> pipelines on the default branch, not nested children. Agent failures mark
+> the latest pipeline on main as failed. The scaffold sets
+> `workflow:auto_cancel:on_new_commit:none` to prevent new commits from
+> canceling queued agent pipelines. This setting applies globally (including
+> MR pipelines) because GitLab does not scope auto_cancel per pipeline
+> source. MR dispatch jobs are fast (<30s) so the impact on MR pipeline
+> redundancy is negligible.
+>
+> **Observability trade-off:** The old `trigger: strategy: depend` mirrored
+> child pipeline pass/fail into the poll job's own status. API-triggered
+> pipelines are fire-and-forget — the poll job reports success after creating
+> the pipeline, regardless of downstream agent outcome. Dispatched pipeline
+> URLs are logged for manual inspection.
+
 ## Context
 
 Fullsend needs to detect and react to GitLab events — new issues, merge
@@ -213,6 +274,20 @@ OIDC/WIF mode additionally provides:
   cannot modify WIF attribute conditions without GCP IAM access.
 - **No token mint.** Standard GCP WIF replaces the custom mint Cloud
   Function used for GitHub.
+- **Inference credential support.** WIF mode additionally configures
+  Vertex AI inference credentials (`FULLSEND_GCP_PROJECT_ID`,
+  `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_SA`, `FULLSEND_GCP_REGION`)
+  so that agent jobs can authenticate to Vertex AI using the same
+  OIDC/WIF flow. Variable mode does not support inference credentials.
+- **OIDC issuer reachability requirement.** WIF mode requires the
+  GitLab instance's OIDC discovery endpoints to be publicly reachable
+  by GCP's Security Token Service (STS). During the WIF token exchange,
+  GCP's STS resolves the GitLab instance hostname to validate the JWT
+  issuer. Internal or private GitLab instances (e.g., those accessible
+  only via VPN or corporate DNS) will fail with
+  `Error code invalid_grant: Error connecting to the given credential's issuer`.
+  Use variable mode for GitLab instances that are not resolvable in
+  public DNS.
 
 ### Cron poller (`gitlab-poll` input driver)
 
@@ -221,8 +296,7 @@ container image, invoked by a scheduled pipeline on the protected default
 branch. It reads a timestamp watermark, queries the GitLab API for events
 since the last poll, emits a `NormalizedEvent` per detected change, passes
 events to the dispatch core for authorization and harness CEL evaluation, and
-advances the watermark. See the [companion implementation plan](../plans/gitlab-cron-polling-implementation.md)
-for detailed pseudocode and numbered steps.
+advances the watermark.
 
 Change detection for labels uses client-side state diffing — the input driver
 tracks previously-seen labels per issue and emits events only for newly-added
@@ -244,6 +318,49 @@ exits as a no-op, wasting one pipeline invocation's CI minutes.
 This is an accepted tradeoff — the alternative (sharing a
 processed-note-IDs set or cross-reading watermarks between modes)
 adds state coupling that complicates the independent-schedule design.
+
+> **Update (2026-08, #5959):** ~~The dual-schedule architecture above was replaced
+> by a single `*/5 * * * *` schedule with automatic full-poll promotion. The
+> poller now decides at runtime whether to run a fast poll or full poll based on
+> elapsed time since the last full poll (`FULLSEND_LAST_POLL_AT_FULL`). This
+> eliminates the tier distinction (Premium vs Free), the separate fast/full
+> schedules, and the `FULLSEND_POLL_MODE` variable. The fast-poll watermark
+> (`FULLSEND_LAST_POLL_AT_FAST`) is still used for slash-command-only cycles.
+> Free tier in-CI polling is no longer supported by this schedule (Free tier's
+> minimum interval is 60 minutes); Free tier users should use off-system polling
+> (`fullsend poll` on a VM or Kubernetes CronJob) as documented in "GitLab tier
+> considerations" below. Superseded sections: "Multi-frequency polling" above,
+> the "5 minutes on Premium/Ultimate, 60 minutes on Free tier" reference in the
+> cron-poller introduction, "Multi-frequency polling" and fast-poll MR note
+> limitation under "Slash command latency", the Free tier 60-minute interval
+> references in "GitLab tier considerations", and the "5 minutes on Premium, 60
+> minutes on Free" latency in "Consequences".~~ Superseded by #6077 below.
+>
+> **Update (2026-08, #6077):** The single auto-promoting schedule from #5959
+> was reverted to two independent schedules with explicit mode selection. The
+> auto-promote logic coupled slash-command latency to full-poll duration and
+> used a single `resource_group`, causing GitLab to cancel the in-progress
+> poll when the next schedule fired. The new architecture:
+> - **Slash poll:** `*/5 * * * *` with `FULLSEND_POLL_MODE=slash` — processes
+>   only `/fs-*` slash commands, fast and lightweight.
+> - **Event poll:** `2,17,32,47 * * * *` with `FULLSEND_POLL_MODE=events` —
+>   full event discovery (labels, MR merges, non-command notes).
+> - Each schedule uses a per-mode resource group
+>   (`fullsend-poll-slash` / `fullsend-poll-events`) so they never cancel
+>   each other. Resource group process modes differ by purpose:
+>   `newest_first` for slash (latest command wins, stale polls are
+>   preempted) and `oldest_first` for events (long-running discovery
+>   completes before the next cycle starts).
+> - The `--mode` CLI flag (also `FULLSEND_POLL_MODE` env var) selects the
+>   mode explicitly; empty uses the events discovery path but does not
+>   filter `/fs-*` notes (backward compatibility with pre-dual-schedule
+>   installations where a single schedule handled all event types).
+> - The `shouldFullPoll` auto-promote logic and `FullPollInterval` are removed.
+> - Superseded sections: "MR note limitation (fast-poll)" (slash commands
+>   on MRs are now handled by the dedicated slash poll schedule, not gated
+>   behind full-poll cycles), and the "Multi-frequency polling" reference
+>   under "Slash command latency" (replaced by the independent schedule
+>   architecture above).
 
 ### Event routing
 
@@ -485,9 +602,8 @@ methods rather than adding forge-conditional logic.
 | External infrastructure | Mint Cloud Function | None for event dispatch |
 | Credential types | App key + installation token | Single bot PAT |
 
-Detailed implementation guidance — including poller pseudocode, forge interface
-changes, CI/CD template scaffolding, and install flow — is in the companion
-document: [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-polling-implementation.md).
+Implementation covers poller pseudocode, forge interface changes, CI/CD
+template scaffolding, and install flow.
 
 ## References
 
@@ -497,4 +613,3 @@ document: [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-pollin
 - [ADR 0061](0061-harness-cel-dispatch.md) — harness CEL triggers, dispatch drivers, and NormalizedEvent schema
 - [ADR 0063](0063-polling-based-work-discovery.md) — polling-based work discovery via dispatch drivers (`fullsend poll`, input/output driver architecture)
 - [NormalizedEvent v1](../normative/normalized-event/v1/)
-- [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-polling-implementation.md)

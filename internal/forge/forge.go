@@ -141,6 +141,14 @@ type WorkflowRun struct {
 	CreatedAt  string
 }
 
+// WorkflowJob represents a job within a workflow run.
+type WorkflowJob struct {
+	ID         int
+	Name       string
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", etc.
+}
+
 // WorkflowArtifact is a file bundle uploaded by a workflow run.
 type WorkflowArtifact struct {
 	ID   int
@@ -405,6 +413,14 @@ type Client interface {
 	GetBranchRef(ctx context.Context, owner, repo, branch string) (sha string, err error)
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error
 
+	// CreateBranchFromSHA creates a new branch pointing at the given commit
+	// SHA. Unlike CreateBranch (which resolves the repo's default branch),
+	// this allows the caller to specify an explicit starting point — for
+	// example, an upstream HEAD when creating a branch on a stale fork.
+	// Returns forge.ErrAlreadyExists if the branch already exists,
+	// and forge.ErrForbidden on insufficient permissions.
+	CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error
+
 	// DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
 	// Returns forge.ErrNotFound if the ref does not exist.
 	DeleteRef(ctx context.Context, owner, repo, refPath string) error
@@ -540,6 +556,9 @@ type Client interface {
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 
+	// ListWorkflowRunJobs returns the jobs within a workflow run.
+	ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]WorkflowJob, error)
+
 	// ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 	ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]WorkflowArtifact, error)
 	// DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.
@@ -571,6 +590,13 @@ type Client interface {
 	// The existing RepoVariable methods model GitHub Actions variables;
 	// the CIVariable methods below model GitLab CI protected variables
 	// (branch-restricted, unmasked).
+
+	// CreatePipeline creates a new pipeline on the given ref with the
+	// given variables. Returns the pipeline metadata (ID, web URL).
+	// Used by the cron-poller to dispatch agent stages directly via
+	// the API instead of bridge jobs and child pipelines.
+	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error)
+
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
@@ -583,6 +609,12 @@ type Client interface {
 	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
 }
 
+// Pipeline represents a triggered pipeline.
+type Pipeline struct {
+	ID     int64
+	WebURL string
+}
+
 // PipelineSchedule represents a scheduled pipeline trigger.
 type PipelineSchedule struct {
 	ID           int64
@@ -591,6 +623,7 @@ type PipelineSchedule struct {
 	Cron         string
 	CronTimezone string
 	Active       bool
+	Variables    map[string]string // schedule-level pipeline variables
 }
 
 // GitHubExtensions provides GitHub-specific operations that are not

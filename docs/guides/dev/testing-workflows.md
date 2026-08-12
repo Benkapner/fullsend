@@ -24,7 +24,7 @@ definitions, and the CLI binary from your local checkout into the config repo or
 `.fullsend/` directory:
 
 ```bash
-fullsend admin install "$ORG" \
+go run ./cmd/fullsend admin install "$ORG" \
   --vendor \
   --fullsend-source "$PWD" \
   --skip-app-setup \
@@ -34,8 +34,8 @@ fullsend admin install "$ORG" \
 ```
 
 After changing reusable workflows or agent content, re-run install (or
-`fullsend github setup`) with `--vendor` to refresh vendored files.
-`fullsend github sync-scaffold` updates thin caller templates and auto-detects
+`go run ./cmd/fullsend github setup`) with `--vendor` to refresh vendored files.
+`go run ./cmd/fullsend github sync-scaffold` updates thin caller templates and auto-detects
 vendored vs layered mode from `.defaults/action.yml` presence.
 
 Runtime skips the upstream sparse checkout when `.defaults/action.yml` is

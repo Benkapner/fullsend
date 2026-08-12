@@ -24,7 +24,7 @@ func TestToNormalizedEvent_IssueNote(t *testing.T) {
 		Labels:          []string{"bug"},
 	}
 
-	ne, err := p.toNormalizedEvent(context.Background(), event)
+	ne, _, err := p.toNormalizedEvent(context.Background(), event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestToNormalizedEvent_IssueLabel(t *testing.T) {
 		ChangedLabel: "ready-to-code",
 	}
 
-	ne, err := p.toNormalizedEvent(context.Background(), event)
+	ne, _, err := p.toNormalizedEvent(context.Background(), event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestToNormalizedEvent_MRNote(t *testing.T) {
 		TargetBranch:    "main",
 	}
 
-	ne, err := p.toNormalizedEvent(context.Background(), event)
+	ne, _, err := p.toNormalizedEvent(context.Background(), event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestToNormalizedEvent_MREventMerge(t *testing.T) {
 		TargetBranch:  "main",
 	}
 
-	ne, err := p.toNormalizedEvent(context.Background(), event)
+	ne, _, err := p.toNormalizedEvent(context.Background(), event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestToNormalizedEvent_UnresolvableActorError(t *testing.T) {
 		NoteBody:     "orphaned",
 	}
 
-	_, err := p.toNormalizedEvent(context.Background(), event)
+	_, _, err := p.toNormalizedEvent(context.Background(), event)
 	if err == nil {
 		t.Fatal("expected error for unresolvable actor")
 	}
@@ -662,7 +662,7 @@ func TestToNormalizedEvent_BotActor(t *testing.T) {
 		Labels:          []string{},
 	}
 
-	ne, err := p.toNormalizedEvent(context.Background(), event)
+	ne, _, err := p.toNormalizedEvent(context.Background(), event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -4,9 +4,9 @@ sidebar_label: fullsend agent
 
 # fullsend agent
 
-Manage agent registrations in fullsend config. Add, list, update, and remove agents, or migrate legacy `customized/` overrides to config-driven agents.
+Manage agent registrations in fullsend config. Add, list, update, and remove agents.
 
-`agent add`, `agent update`, and `agent migrate-customizations` (non-dry-run) fetch remote content and resolve GitHub URLs. Authentication is via `gh` CLI or `GH_TOKEN` environment variable.
+`agent add` and `agent update` fetch remote content and resolve GitHub URLs. Authentication is via `gh` CLI or `GH_TOKEN` environment variable.
 
 ## Commands
 
@@ -16,7 +16,6 @@ Manage agent registrations in fullsend config. Add, list, update, and remove age
 | `fullsend agent list` | List registered agents |
 | `fullsend agent update <name> [sha]` | Update a URL agent to a new commit SHA |
 | `fullsend agent remove <name>` | Remove an agent from config |
-| `fullsend agent migrate-customizations` | Migrate `customized/` overrides to config-driven agents |
 
 ## `agent add`
 
@@ -90,37 +89,8 @@ fullsend agent remove triage --fullsend-dir .fullsend
 |------|---------|-------------|
 | `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 
-## `agent migrate-customizations`
-
-Scan the `customized/` directory and migrate each override to a config-driven agent. Changes are committed to a branch and delivered via pull request. Use `--dry-run` to preview changes without creating a PR.
-
-```bash
-fullsend agent migrate-customizations --fullsend-dir .fullsend --dry-run
-fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
-```
-
-### Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
-| `--repo` | | Target repository (`owner/repo`) for the migration PR (required unless `--dry-run`) |
-| `--dry-run` | `false` | Show what would change without creating a PR |
-
-### Override classification
-
-The tool classifies each override and takes the appropriate action:
-
-| Override type | Detection | Action |
-|---------------|-----------|--------|
-| Dead | Agent already registered in config | Delete `customized/` files |
-| Custom | Not in upstream scaffold | Move files to regular directories, register local path in config |
-| Modified | Standard scaffold agent, not yet in config | Generate a `base:` composition harness with the minimal diff, register in config |
-
-For modified agents, the migration produces a thin `base:` harness containing only the fields that differ from upstream.
-
 ## See also
 
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) — building custom agents and configuring existing ones
 - [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — terminology and classification
-- [Customizing with skills](../guides/user/customizing-with-skills.md) — extending agents with skills
+- [Configuring with skills](../guides/user/customizing-with-skills.md) — extending agents with skills

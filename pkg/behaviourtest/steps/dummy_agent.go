@@ -63,6 +63,17 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 			Op:          strings.TrimSpace(row.Cells[col["op"]].Value),
 			Args:        strings.TrimSpace(row.Cells[col["args"]].Value),
 		}
+		// <issue> expansion is scoped to checkout_branch: it is the only
+		// op whose args embed the scenario issue number, and keeping the
+		// substitution off the generic ops avoids surprising rewrites of
+		// paths or URLs that happen to contain the token.
+		if op.Op == "checkout_branch" {
+			args, err := expandIssuePlaceholder(w, op.Args)
+			if err != nil {
+				return err
+			}
+			op.Args = args
+		}
 		if op.Op == "write_fixture" {
 			parts := strings.SplitN(op.Args, ",", 2)
 			if len(parts) != 2 {

@@ -83,15 +83,15 @@ slots:
 ```
 ┌────────────────────────────────────────────────────────┐
 │  Layer 1: Agent Definition (system prompt)             │
-│  Source: /sandbox/claude-config/agents/<name>.md        │
+│  Source: /sandbox/claude-config/agents/<name>.md       │
 │  Loaded via: --agent flag                              │
 │  Controls: role, task, tools, disallowedTools, model,  │
-│            built-in skills list                         │
+│            built-in skills list                        │
 │  Authority: highest — repo cannot modify               │
 ├────────────────────────────────────────────────────────┤
 │  Layer 2: Project Instructions (advisory)              │
-│  Source: /sandbox/workspace/<repo>/CLAUDE.md            │
-│         /sandbox/workspace/<repo>/AGENTS.md             │
+│  Source: /sandbox/workspace/<repo>/CLAUDE.md           │
+│         /sandbox/workspace/<repo>/AGENTS.md            │
 │  Loaded via: Claude Code auto-loads from working dir   │
 │  Controls: conventions, architecture, domain context   │
 │  Authority: advisory — cannot override layer 1         │
@@ -100,12 +100,9 @@ slots:
 │  Personal: /sandbox/claude-config/skills/ (fullsend)   │
 │  Project:  <repo>/.claude/skills/ (repo)               │
 │  Precedence: personal > project (name collision →      │
-│              fullsend wins, repo version shadowed)      │
-│  Repo skills extend the agent; customized/skills/      │
-│  overrides at the config layer before upload            │
-│  ⚠ customized/ is deprecated per ADR-0064; use         │
-│  config-driven agents instead (see `fullsend agent     │
-│  migrate-customizations`)                              │
+│              fullsend wins, repo version shadowed)     │
+│  Repo skills extend the agent; use config-driven       │
+│  agent registration for org-level skill overrides      │
 └────────────────────────────────────────────────────────┘
 ```
 

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -35,9 +33,8 @@ func TestSplitOwnerRepo(t *testing.T) {
 func TestNew(t *testing.T) {
 	mc := newMockClient()
 	p := New(mc, nil, "org/sub/project", Options{
-		SlashCommandsOnly: true,
-		BotUserID:         42,
-		GitLabURL:         "https://gitlab.example.com",
+		BotUserID: 42,
+		GitLabURL: "https://gitlab.example.com",
 	})
 	if p.owner != "org/sub" {
 		t.Errorf("owner = %q, want %q", p.owner, "org/sub")
@@ -70,28 +67,18 @@ func (r *stubRouter) Route(_ *dispatch.NormalizedEvent) ([]string, error) {
 }
 
 func TestRunEmptyPoll(t *testing.T) {
-	now := time.Now()
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = now.Add(-10 * time.Minute).Format(time.RFC3339)
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
-	p := New(mc, nil, "org/project", Options{
-		OutputPath: outputPath,
-	})
+	p := New(mc, nil, "org/project", Options{Mode: "events"})
 
 	err := p.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(data) != "[]\n" {
-		t.Errorf("output = %q, want empty JSON array", string(data))
+	// No events discovered, no pipelines should be created.
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
 	}
 
 	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
@@ -99,18 +86,13 @@ func TestRunEmptyPoll(t *testing.T) {
 	}
 }
 
-func TestRunSlashCommandsOnlyMode(t *testing.T) {
+func TestRunSlashMode(t *testing.T) {
+	// When mode is "slash", the poller should use the fast watermark.
 	now := time.Now()
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FAST"] = now.Add(-5 * time.Minute).Format(time.RFC3339)
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
-	p := New(mc, nil, "org/project", Options{
-		SlashCommandsOnly: true,
-		OutputPath:        outputPath,
-	})
+	p := New(mc, nil, "org/project", Options{Mode: "slash"})
 
 	err := p.Run(context.Background())
 	if err != nil {
@@ -118,7 +100,39 @@ func TestRunSlashCommandsOnlyMode(t *testing.T) {
 	}
 
 	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FAST"]; !ok {
-		t.Error("fast watermark not updated")
+		t.Error("fast watermark not updated in slash mode")
+	}
+}
+
+func TestRunEventsMode(t *testing.T) {
+	// When mode is "events", the poller should use the full watermark.
+	mc := newMockClient()
+
+	p := New(mc, nil, "org/project", Options{Mode: "events"})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
+		t.Error("full watermark not updated in events mode")
+	}
+}
+
+func TestRunDefaultModeIsEvents(t *testing.T) {
+	// When mode is empty (default), the poller should behave like events mode.
+	mc := newMockClient()
+
+	p := New(mc, nil, "org/project", Options{})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
+		t.Error("full watermark not updated on default mode")
 	}
 }
 
@@ -165,7 +179,7 @@ func TestTrackLabelFailure(t *testing.T) {
 
 func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -177,29 +191,24 @@ func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
+	// Verify pipeline was created via API.
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("expected 1 pipeline, got %d", mc.pipelineCounter)
 	}
-	var dispatches []Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+
+	// Verify dispatch was recorded.
+	if len(p.dispatches) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(p.dispatches))
 	}
-	if len(dispatches) != 1 {
-		t.Fatalf("expected 1 dispatch, got %d", len(dispatches))
-	}
-	if dispatches[0].Stage != "triage" {
-		t.Errorf("stage = %q, want %q", dispatches[0].Stage, "triage")
+	if p.dispatches[0].Stage != "triage" {
+		t.Errorf("stage = %q, want %q", p.dispatches[0].Stage, "triage")
 	}
 
 	if len(mc.emojis) != 1 {
@@ -212,7 +221,7 @@ func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 
 func TestRunMultipleStages(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -232,26 +241,20 @@ func TestRunMultipleStages(t *testing.T) {
 	}
 	mc.memberLevel[5] = 30
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage", "code"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
+	// Verify 2 pipelines created via API.
+	if mc.pipelineCounter != 2 {
+		t.Fatalf("expected 2 pipelines, got %d", mc.pipelineCounter)
 	}
-	var dispatches []Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(dispatches) != 2 {
-		t.Fatalf("expected 2 dispatches, got %d", len(dispatches))
+
+	if len(p.dispatches) != 2 {
+		t.Fatalf("expected 2 dispatches, got %d", len(p.dispatches))
 	}
 
 	if _, ok := mc.updatedVars["FULLSEND_LABEL_STATE"]; !ok {
@@ -259,9 +262,48 @@ func TestRunMultipleStages(t *testing.T) {
 	}
 }
 
+func TestRunLabelEventThreadsActorID(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
+	}
+	mc.notes[1] = []Note{}
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 5}}
+	mc.labelEvents[1] = []ResourceLabelEvent{
+		{
+			ID:     100,
+			Action: "add",
+			Label: struct {
+				Name string `json:"name"`
+			}{Name: "ready-to-code"},
+			User: UserRef{ID: 77, Username: "alice-dev"},
+		},
+	}
+	mc.memberLevel[77] = 30
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", Options{PipelineRef: "main"})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("expected 1 pipeline, got %d", mc.pipelineCounter)
+	}
+
+	vars := mc.pipelineCalls[0].Variables
+	if vars["ACTOR_ID"] != "77" {
+		t.Errorf("ACTOR_ID: got %q, want 77 (label author threaded through Run)", vars["ACTOR_ID"])
+	}
+}
+
 func TestRunNoMatchingStages(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -273,28 +315,22 @@ func TestRunNoMatchingStages(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: nil}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(data) != "[]\n" {
-		t.Errorf("expected empty dispatches, got %q", string(data))
+	// No matching stages → no pipelines created.
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
 	}
 }
 
 func TestRunRouterError(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -306,11 +342,8 @@ func TestRunRouterError(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{err: fmt.Errorf("routing failed")}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() should not return error on router failure, got: %v", err)
@@ -319,7 +352,7 @@ func TestRunRouterError(t *testing.T) {
 
 func TestRunConversionErrorSkipsEvent(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -329,28 +362,22 @@ func TestRunConversionErrorSkipsEvent(t *testing.T) {
 		{ID: 10, Body: "note", CreatedAt: now, Author: UserRef{ID: 0}},
 	}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(data) != "[]\n" {
-		t.Errorf("expected empty dispatches for unresolvable actor, got %q", string(data))
+	// Conversion error → no pipelines created.
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines for unresolvable actor, got %d", mc.pipelineCounter)
 	}
 }
 
 func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -364,11 +391,8 @@ func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 		{ID: 11, Body: "note", CreatedAt: now, Author: UserRef{ID: 0}},
 	}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -381,7 +405,7 @@ func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 
 func TestRunNilRouter(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -393,10 +417,7 @@ func TestRunNilRouter(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
-	p := New(mc, nil, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, nil, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -405,7 +426,7 @@ func TestRunNilRouter(t *testing.T) {
 
 func TestRunIdempotentSecondPoll(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -417,52 +438,133 @@ func TestRunIdempotentSecondPoll(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("first Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	var dispatches []Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(dispatches) != 1 {
-		t.Fatalf("first run: expected 1 dispatch, got %d", len(dispatches))
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("first run: expected 1 pipeline, got %d", mc.pipelineCounter)
 	}
 
 	// Simulate persisted state being readable on next cycle.
 	mc.variables["FULLSEND_DISPATCHED_KEYS_FULL"] = mc.updatedVars["FULLSEND_DISPATCHED_KEYS_FULL"]
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]
 
-	p2 := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p2 := New(mc, router, "group/project", Options{})
 	if err := p2.Run(context.Background()); err != nil {
 		t.Fatalf("second Run() error: %v", err)
 	}
 
-	data, err = os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
+	// Second run should not create new pipelines (idempotent).
+	if mc.pipelineCounter != 1 {
+		t.Errorf("second run: expected no new pipelines (total 1), got %d", mc.pipelineCounter)
 	}
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+}
+
+func TestRunEntityDedup_MultipleNotesOnSameIssue(t *testing.T) {
+	// Two /fs-triage notes on the same issue within a single poll cycle
+	// should dispatch only one pipeline. The second note is skipped by
+	// entity-level deduplication (stage:issue-3).
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 3, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
-	if len(dispatches) != 0 {
-		t.Errorf("second run: expected 0 dispatches (idempotent), got %d", len(dispatches))
+	mc.notes[3] = []Note{
+		{ID: 100, Body: "/fs-triage first request", CreatedAt: now.Add(-2 * time.Minute), Author: UserRef{ID: 42, Username: "alice"}},
+		{ID: 101, Body: "/fs-triage second request", CreatedAt: now.Add(-1 * time.Minute), Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[3] = &Issue{IID: 3, Author: UserRef{ID: 42}}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", Options{})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Only 1 pipeline should be created despite 2 matching events.
+	if mc.pipelineCounter != 1 {
+		t.Errorf("expected 1 pipeline (entity dedup), got %d", mc.pipelineCounter)
+	}
+	if len(p.dispatches) != 1 {
+		t.Errorf("expected 1 dispatch record, got %d", len(p.dispatches))
+	}
+}
+
+func TestRunEntityDedup_DifferentIssues(t *testing.T) {
+	// Notes on different issues should each dispatch their own pipeline.
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 3, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+		{IID: 4, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 43}},
+	}
+	mc.notes[3] = []Note{
+		{ID: 100, Body: "/fs-triage", CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.notes[4] = []Note{
+		{ID: 101, Body: "/fs-triage", CreatedAt: now, Author: UserRef{ID: 43, Username: "bob"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.memberLevel[43] = 30
+	mc.issue[3] = &Issue{IID: 3, Author: UserRef{ID: 42}}
+	mc.issue[4] = &Issue{IID: 4, Author: UserRef{ID: 43}}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", Options{})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Different issues → 2 separate pipelines.
+	if mc.pipelineCounter != 2 {
+		t.Errorf("expected 2 pipelines (different entities), got %d", mc.pipelineCounter)
+	}
+}
+
+func TestRunEntityDedup_DifferentStagesSameIssue(t *testing.T) {
+	// Two notes on the same issue routed to different stages should
+	// each dispatch (entity key includes the stage).
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 5, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	mc.notes[5] = []Note{
+		{ID: 200, Body: "/fs-triage", CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[5] = &Issue{IID: 5, Author: UserRef{ID: 42}}
+
+	// Router returns two stages for the single event.
+	router := &stubRouter{stages: []string{"triage", "review"}}
+	p := New(mc, router, "group/project", Options{})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Same entity, different stages → 2 pipelines.
+	if mc.pipelineCounter != 2 {
+		t.Errorf("expected 2 pipelines (different stages), got %d", mc.pipelineCounter)
 	}
 }
 
 func TestRunLabelFailureRollback(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	since := now.Add(-10 * time.Minute)
+	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
 	mc.issues = []Issue{
@@ -486,11 +588,8 @@ func TestRunLabelFailureRollback(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[2] = &Issue{IID: 2, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)

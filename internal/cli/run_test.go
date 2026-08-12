@@ -424,7 +424,8 @@ func TestIsPerRepoYAML(t *testing.T) {
 		{"org with dispatch", "version: '1'\ndispatch:\n  platform: github\n", false},
 		{"org with repos", "version: '1'\nrepos:\n  acme/widget:\n    enabled: true\n", false},
 		{"org with dispatch and roles", "version: '1'\ndispatch:\n  platform: github\nroles:\n  - triage\n", false},
-		{"org with inference", "version: '1'\ninference:\n  provider: vertex\n", false},
+		{"per-repo with inference", "version: '1'\ninference:\n  provider: vertex\n", true},
+		{"org with inference and dispatch", "version: '1'\ninference:\n  provider: vertex\ndispatch:\n  platform: github\n", false},
 		{"org with defaults", "version: '1'\ndefaults:\n  roles:\n    - triage\n", false},
 		{"per-repo without roles", "version: '1'\nkill_switch: false\n", true},
 		{"minimal (no discriminator)", "version: '1'\n", true},
@@ -1838,6 +1839,190 @@ func TestShellSafeExpandEnv_ShellRoundtrip(t *testing.T) {
 	}
 }
 
+// TestShellSafeExpandEnv_RefusesOIDCVars verifies that OIDC credential vars
+// expand to empty in host_files templates so they cannot leak into sandbox-bound
+// files (#5832).
+func TestShellSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "allowed-value")
+
+	template := `export A="${ACTIONS_ID_TOKEN_REQUEST_URL}"
+export B="${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
+export C="${FULLSEND_GCP_OIDC_URL}"
+export D="${FULLSEND_GCP_OIDC_AUTH_FILE}"
+export E="${SAFE_VAR}"`
+
+	got := shellSafeExpandEnv(template)
+
+	assert.Contains(t, got, `export A=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export B=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export C=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export D=""`, "OIDC var must expand to empty")
+	assert.Contains(t, got, `export E="allowed-value"`, "non-OIDC var must expand normally")
+}
+
+// TestSafeExpandEnv_RefusesOIDCVars verifies that safeExpandEnv refuses OIDC
+// credential vars (expanding them to empty) while passing other vars through
+// unchanged. This covers the host_files src path expansion site (#5832).
+func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "secret-token")
+	t.Setenv("FULLSEND_GCP_OIDC_URL", "https://gcp.example.com")
+	t.Setenv("FULLSEND_GCP_OIDC_AUTH_FILE", "/tmp/auth.json")
+	t.Setenv("SAFE_VAR", "allowed-value")
+
+	// OIDC vars must expand to empty.
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_URL}"))
+	assert.Equal(t, "", safeExpandEnv("${FULLSEND_GCP_OIDC_AUTH_FILE}"))
+
+	// Non-OIDC vars must expand normally.
+	assert.Equal(t, "allowed-value", safeExpandEnv("${SAFE_VAR}"))
+
+	// Mixed usage: OIDC part disappears, safe part remains.
+	assert.Equal(t, "/prefix//suffix", safeExpandEnv("/prefix/${FULLSEND_GCP_OIDC_AUTH_FILE}/suffix"))
+}
+
+// TestReservedSandboxKeys_IncludesOIDCVars verifies that OIDC credential vars
+// are in reservedSandboxKeys so env.sandbox cannot inject them (#5832).
+func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
+	for _, key := range []string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"FULLSEND_GCP_OIDC_URL",
+		"FULLSEND_GCP_OIDC_AUTH_FILE",
+	} {
+		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
+	}
+}
+
+// TestReservedSandboxKeys_IncludesRoleSlug verifies that FULLSEND_ROLE and
+// FULLSEND_SLUG are in reservedSandboxKeys so env.sandbox cannot shadow them (#6045).
+func TestReservedSandboxKeys_IncludesRoleSlug(t *testing.T) {
+	for _, key := range []string{
+		"FULLSEND_ROLE",
+		"FULLSEND_SLUG",
+	} {
+		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
+	}
+}
+
+// TestBuildSandboxEnvLines_SkipsRoleSlug verifies that FULLSEND_ROLE and
+// FULLSEND_SLUG in env.sandbox are rejected by buildSandboxEnvLines (#6045).
+func TestBuildSandboxEnvLines_SkipsRoleSlug(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "review",
+		Slug:  "my-app",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":    "allowed",
+				"FULLSEND_ROLE": "evil",
+				"FULLSEND_SLUG": "evil-slug",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+// TestBuildRoleSlugEnvLines verifies that buildRoleSlugEnvLines generates the
+// correct export lines for FULLSEND_ROLE and FULLSEND_SLUG, including proper
+// single-quote escaping (#6045).
+func TestBuildRoleSlugEnvLines(t *testing.T) {
+	t.Run("role and slug set", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "review", Slug: "my-app"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='review'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='my-app'", lines[1])
+	})
+
+	t.Run("role set slug empty", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "coder"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "export FULLSEND_ROLE='coder'", lines[0])
+	})
+
+	t.Run("single quote escaping", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md", Role: "it's", Slug: "app'name"}
+		lines := buildRoleSlugEnvLines(h)
+		require.Len(t, lines, 2)
+		assert.Equal(t, "export FULLSEND_ROLE='it'\\''s'", lines[0])
+		assert.Equal(t, "export FULLSEND_SLUG='app'\\''name'", lines[1])
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		h := &harness.Harness{Agent: "agents/test.md"}
+		lines := buildRoleSlugEnvLines(h)
+		assert.Empty(t, lines)
+	})
+}
+
+// TestBuildSandboxEnvLines_SkipsOIDCVars verifies that OIDC credential vars
+// in env.sandbox are rejected by buildSandboxEnvLines (#5832).
+func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":                     "allowed",
+				"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://stolen.example.com",
+				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "stolen-token",
+				"FULLSEND_GCP_OIDC_URL":          "https://stolen-gcp.example.com",
+				"FULLSEND_GCP_OIDC_AUTH_FILE":    "/tmp/stolen-auth.json",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+// TestStripOIDCEnv verifies that stripOIDCEnv removes OIDC credential entries
+// from an env slice while preserving all other entries (#5832).
+func TestStripOIDCEnv(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"ACTIONS_ID_TOKEN_REQUEST_URL=https://oidc.example.com",
+		"HOME=/home/user",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN=secret",
+		"FULLSEND_GCP_OIDC_URL=https://gcp.example.com",
+		"FULLSEND_GCP_OIDC_AUTH_FILE=/tmp/auth.json",
+		"SAFE_VAR=value",
+	}
+
+	result := stripOIDCEnv(env)
+
+	assert.Equal(t, []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"SAFE_VAR=value",
+	}, result)
+}
+
+// TestOIDCDenyKeys_Completeness verifies that all four OIDC credential vars
+// are present in oidcDenyKeys (#5832).
+func TestOIDCDenyKeys_Completeness(t *testing.T) {
+	expected := []string{
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"FULLSEND_GCP_OIDC_URL",
+		"FULLSEND_GCP_OIDC_AUTH_FILE",
+	}
+	for _, key := range expected {
+		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
+	}
+	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
+}
+
 func TestNeedsCrossCompilation(t *testing.T) {
 	result := needsCrossCompilation()
 	if runtime.GOOS == "linux" {
@@ -2147,6 +2332,44 @@ func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
 		RunnerEnv: map[string]string{"FOO": "bar"},
 	}
 	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
+func TestPostScriptEnv_IncludesOutputSchema(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/path/to/schema.json",
+		},
+	}
+	env := postScriptEnv(h, "")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/path/to/schema.json")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := postScriptEnv(h, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := postScriptEnv(h, "")
 	for _, e := range env {
 		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
 			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
@@ -3154,7 +3377,7 @@ func TestSetupStatusNotifier_MintURL(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 	assert.True(t, n.HasClientFactory(), "client factory should be set when mint URL provided")
@@ -3172,7 +3395,7 @@ func TestSetupStatusNotifier_MintURLFromEnv(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 	assert.True(t, n.HasClientFactory(), "client factory should be set from FULLSEND_MINT_URL env var")
@@ -3191,7 +3414,7 @@ func TestSetupStatusNotifier_NoMintURL(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "")
 	t.Setenv("GITHUB_TOKEN", "")
 
-	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	_, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no mint URL available")
 }
@@ -3205,7 +3428,7 @@ func TestSetupStatusNotifier_InvalidRepo(t *testing.T) {
 		statusNum:  7,
 	}
 
-	_, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	_, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--status-repo must be in owner/repo format")
 }
@@ -3239,7 +3462,7 @@ func TestSetupStatusNotifier_FactoryMintSuccess(t *testing.T) {
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 	t.Setenv("GITHUB_ACTIONS", "true")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
 
 	client, err := n.InvokeClientFactory(context.Background())
@@ -3265,7 +3488,7 @@ func TestSetupStatusNotifier_FactoryMintError(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.NoError(t, err)
 
 	client, err := n.InvokeClientFactory(context.Background())
@@ -3292,7 +3515,7 @@ func TestSetupStatusNotifier_FactoryRejectsMalformedToken(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "coder", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "coder", "", sOpts, printer)
 	require.NoError(t, err)
 
 	client, err := n.InvokeClientFactory(context.Background())
@@ -3341,7 +3564,35 @@ func TestSetupStatusNotifier_ConfigYAML(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_PerRepoConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// No "defaults"/"dispatch"/"repos" key, so this parses as
+	// per-repo config (see config.IsPerRepoYAML). Per #5994, per-repo
+	// configs support status_notifications the same way org configs do.
+	configData := `version: "1"
+status_notifications:
+  comment:
+    start: enabled
+    completion: disabled
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configData), 0o644))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 }
@@ -3358,7 +3609,7 @@ func TestSetupStatusNotifier_RunIDFallback(t *testing.T) {
 
 	t.Setenv("GITHUB_RUN_ID", "")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 }
@@ -3380,7 +3631,106 @@ func TestSetupStatusNotifier_PRHeadSHA(t *testing.T) {
 	t.Setenv("GITHUB_EVENT_PATH", eventFile)
 	t.Setenv("GITHUB_RUN_ID", "run-42")
 
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_GitLab(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "abc123def456")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.example.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	// GitLab uses a static client, not a factory.
+	assert.False(t, n.HasClientFactory(), "GitLab should use a static client, not a factory")
+}
+
+func TestSetupStatusNotifier_GitLab_MergedResultsSHA(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "merged-ref-sha")
+	t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "source-branch-sha")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.example.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_GitLab_NoToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitLab token found")
+}
+
+func TestSetupStatusNotifier_GitLab_CustomBaseURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "abc123")
+	t.Setenv("CI_PIPELINE_ID", "99")
+	t.Setenv("FULLSEND_GITLAB_URL", "https://gitlab.company.com")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.other.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_GitLab_NoMintURLNeeded(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// GitLab path should succeed without any mint URL set.
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	t.Setenv("CI_COMMIT_SHA", "abc123")
+	t.Setenv("CI_PIPELINE_ID", "12345")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.example.com")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 }
@@ -4719,11 +5069,12 @@ func TestSandboxProviderNames_ExcludesUndeclaredDirectoryProviders(t *testing.T)
 
 func TestCheckProviderProfileIntegrity(t *testing.T) {
 	tests := []struct {
-		name      string
-		providers []resolve.ResolvedProvider
-		profiles  []resolve.ResolvedProfile
-		wantWarn  bool
-		wantErr   bool
+		name          string
+		providers     []resolve.ResolvedProvider
+		profiles      []resolve.ResolvedProfile
+		dirProfileIDs []string
+		wantWarn      bool
+		wantErr       bool
 	}{
 		{
 			name:      "no providers",
@@ -4733,7 +5084,7 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "providers without profiles warns",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}, FromURL: true},
 			},
 			profiles: nil,
 			wantWarn: true,
@@ -4741,43 +5092,81 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 		{
 			name: "all providers match profiles",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
-				{ID: "openai"},
+				{ID: "anthropic", FromURL: true},
+				{ID: "openai", FromURL: true},
 			},
 		},
 		{
 			name: "provider references unknown profile",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
 		},
 		{
 			name: "multiple mismatches reported together",
 			providers: []resolve.ResolvedProvider{
-				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}},
-				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}},
-				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}},
+				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}, FromURL: true},
 			},
 			profiles: []resolve.ResolvedProfile{
-				{ID: "anthropic"},
+				{ID: "anthropic", FromURL: true},
 			},
 			wantErr: true,
+		},
+		{
+			name: "local provider matched by directory profile",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles:      nil,
+			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "local provider unmatched errors",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "nonexistent"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "mixed URL and local providers all checked",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "url-p", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "local provider matched by harness profile",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "local-p", Type: "anthropic"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", LocalPath: "/tmp/anthropic.yaml"},
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles)
+			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles, tt.dirProfileIDs)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "gateway-resident")
+				assert.Contains(t, err.Error(), "unknown profile types")
 				if tt.name == "multiple mismatches reported together" {
 					assert.Contains(t, err.Error(), "missing-a")
 					assert.Contains(t, err.Error(), "missing-b")

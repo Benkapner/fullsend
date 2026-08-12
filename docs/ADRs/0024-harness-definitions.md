@@ -26,7 +26,14 @@ and the manual `.env` file convention.*
 
 *Extended by [ADR 0070](0070-portable-provider-profile-resolution.md), which
 adds `openshell.profiles` and URL-based `providers` fields to the harness schema
-for portable provider and profile resolution.*
+for portable provider and profile resolution. Superseded by
+[ADR 0075](0075-local-path-profiles-providers.md), which extends resolution to
+local filesystem paths.*
+
+*See also [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md), which
+narrows the CI workflow `env:` injection path described in "Template
+instantiation" below to infrastructure plumbing and CI-runtime-only values;
+static agent behavior defaults go through harness composition instead.*
 
 ## Context
 
@@ -435,7 +442,7 @@ security:
     secret_redact_posttool: true
 
 # Remote resource access (ADR-0038). URL-prefix allowlist for skills, agents,
-# and policies fetched from HTTPS endpoints with SHA256 integrity verification.
+# plugins, and policies fetched from HTTPS endpoints with SHA256 integrity verification.
 allowed_remote_resources:
   - https://example.com/skills/
   - https://example.com/policies/

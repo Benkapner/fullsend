@@ -1,12 +1,18 @@
 ---
+spec:
+  inputs:
+    schedule_name:
+      default: '$CI_PIPELINE_SCHEDULE_DESCRIPTION'
+---
 # fullsend-stage: poll
 
-poll-events:
+"$[[ inputs.schedule_name | expand_vars ]]":
   stage: poll
   image:
     name: ghcr.io/fullsend-ai/fullsend-runner:latest
     entrypoint: [""]
-  resource_group: fullsend-poll
+  tags: __RUNNER_TAGS__
+  resource_group: "fullsend-poll-$FULLSEND_POLL_MODE"
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
   id_tokens:
@@ -14,6 +20,7 @@ poll-events:
       aud: "fullsend"
   variables:
     FULLSEND_FORGE: "gitlab"
+    FULLSEND_POLL_MODE: "events"
   script:
     - |
       set -euo pipefail
@@ -41,7 +48,7 @@ poll-events:
         "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
         "token_url": "https://sts.googleapis.com/v1/token",
         "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
-        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
+        "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
       }
       CRED
         )
@@ -60,40 +67,36 @@ poll-events:
         exit 1
       fi
 
-      # Run the poller — outputs dispatches.json
+      # Validate FULLSEND_POLL_MODE before use in URLs and commands.
+      case "${FULLSEND_POLL_MODE:-events}" in
+        slash|events) ;;
+        *)
+          echo "ERROR: FULLSEND_POLL_MODE must be 'slash' or 'events', got '${FULLSEND_POLL_MODE:-}'"
+          exit 1
+          ;;
+      esac
+
+      # Resource group self-heal — set process_mode so stale locks from
+      # cancelled/deleted pipelines are preempted by new jobs.
+      # slash mode: newest_first (latest command wins)
+      # events mode: oldest_first (complete long-running discovery)
+      # Best-effort: failures don't block the job.
+      PROCESS_MODE="newest_first"
+      if [ "${FULLSEND_POLL_MODE:-events}" = "events" ]; then
+        PROCESS_MODE="oldest_first"
+      fi
+      curl -sf --retry 2 --retry-delay 1 --retry-all-errors \
+        -X PUT "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/resource_groups/fullsend-poll-${FULLSEND_POLL_MODE:-events}" \
+        -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "process_mode=${PROCESS_MODE}" > /dev/null 2>&1 || true
+
+      # Run the poller — dispatches pipelines directly via the GitLab API.
+      # No child pipeline generation needed: the poller creates standalone
+      # pipelines for each discovered event and logs clickable URLs.
       fullsend poll \
         --forge gitlab \
         --project "${CI_PROJECT_PATH}" \
         --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
         --fullsend-dir .fullsend \
-        --output dispatches.json
-
-      # Generate child pipeline YAML from dispatches (same image, no
-      # extra credentials needed for generation).
-      if [ ! -s dispatches.json ] || [ "$(jq 'length' dispatches.json)" = "0" ]; then
-        echo "No events to dispatch"
-        # Write a no-op child pipeline so the artifact contract is met
-        echo 'no-op: { script: ["echo No events"], rules: [{ when: always }] }' > child-pipeline.yml
-      else
-        fullsend poll generate-child-pipeline \
-          --dispatches dispatches.json \
-          --output child-pipeline.yml
-      fi
-  artifacts:
-    paths:
-      - child-pipeline.yml
-    expire_in: 1 hour
-
-# Trigger child pipelines for each dispatched event
-dispatch-agents:
-  stage: agent
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
-  needs:
-    - job: poll-events
-      artifacts: true
-  trigger:
-    include:
-      - artifact: child-pipeline.yml
-        job: poll-events
-    strategy: depend
+        --mode "${FULLSEND_POLL_MODE:-events}"

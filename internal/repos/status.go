@@ -64,7 +64,6 @@ type RepoStatus struct {
 	MintURL         string  `json:"mint_url,omitempty"`
 	ExpectedMintURL string  `json:"expected_mint_url,omitempty"`
 	Region          string  `json:"region,omitempty"`
-	ExpectedRegion  string  `json:"expected_region,omitempty"`
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 }
@@ -176,7 +175,6 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig) RepoStatus {
 		Repo:            repo,
 		ExpectedRef:     cfg.FullsendRef,
 		ExpectedMintURL: cfg.MintURL,
-		ExpectedRegion:  cfg.InferenceRegion,
 	}
 
 	state, err := ProbeRepoState(ctx, client, owner, repo, fc)
@@ -204,13 +202,8 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig) RepoStatus {
 		})
 	}
 
-	if cfg.InferenceRegion != "" && status.Region != cfg.InferenceRegion {
-		status.Drifts = append(status.Drifts, Drift{
-			Field:    "FULLSEND_GCP_REGION",
-			Expected: cfg.InferenceRegion,
-			Actual:   status.Region,
-		})
-	}
+	// InferenceRegion is now install-time-only (not in the manifest),
+	// so we no longer check for region drift here.
 
 	if cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
 		status.Drifts = append(status.Drifts, Drift{

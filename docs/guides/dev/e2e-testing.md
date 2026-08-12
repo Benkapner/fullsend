@@ -50,7 +50,7 @@ Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests
 In GitHub Actions, tests mint a cross-org installation token via the mint service:
 
 1. Workflow requests a GHA OIDC token (`id-token: write`)
-2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", target_org: "<pool org>"}` (repos omitted for installation-wide access)
+2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", target_org: "<pool org>", repos: ["*"]}` (`repos: ["*"]` is required for installation-wide cross-org access)
 3. Mint verifies the caller against `FULLSEND_FOREIGN_E2E_REPOS` on the target org ([ADR 0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md))
 
 Required repository secrets:
@@ -62,6 +62,9 @@ Required repository secrets:
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
 | `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
 | `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
+| `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the behaviour job under the same env name |
+| `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
+| `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
@@ -91,10 +94,10 @@ One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `t
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 12); do
-  fullsend mint enroll "halfsend-${i}/test-repo" \
+  go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
   for j in $(seq -w 1 12); do
-    fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
+    go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
       --project="$GCP_PROJECT" --region=us-central1
   done
 done
@@ -108,9 +111,10 @@ Each pool org must be provisioned before e2e can use it:
 
 1. Org exists with `botsend` as owner
 2. `test-repo` and `e2e-lock` repos (lock created at runtime)
-3. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
-4. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
-5. Mint enrolled: org in `ALLOWED_ORGS`, `${ORG}/e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
+3. Test actor permissions granted (see [Test actor permissions](#test-actor-permissions) below)
+4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
+5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
+6. Mint enrolled: org in `ALLOWED_ORGS`, `${ORG}/e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
 
 Use the idempotent setup script:
 
@@ -121,15 +125,58 @@ MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
 Verify foreign authorization:
 
 ```bash
-fullsend admin foreign list --org halfsend-01
+go run ./cmd/fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
 Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
-fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
+go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
 ```
+
+For repo-level grants (scoped to a specific target repo rather than the
+entire org), add `--repo`:
+
+```bash
+go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend --repo target-repo
+go run ./cmd/fullsend admin foreign list --org halfsend-NN --repo target-repo
+```
+
+See [ADR 0083](../../ADRs/0083-repo-level-foreign-allow-list.md) for details
+on repo-level foreign grants.
+
+### Test actor permissions
+
+Pool orgs grant three test actor accounts specific access levels for
+e2e testing of permission-sensitive behaviour:
+
+| Actor | Org membership | Repo permission on base `test-repo*` |
+|-------|----------------|--------------------------------------|
+| `fstest-write` | member | push (write) |
+| `fstest-triage` | member | triage |
+| `fstest-outsider` | none | public read only (no collaborator grant) |
+
+Elevated access uses direct collaborator grants (not team membership). Fork repos
+(`test-repo-fork`) are intentionally excluded — they are not base/enrolled
+targets for permission grants.
+
+The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies this
+model idempotently. To auto-accept org membership invitations, pass the
+actor PATs as environment variables:
+
+```bash
+TEST_ACTOR_WRITE_PAT=ghp_... TEST_ACTOR_TRIAGE_PAT=ghp_... \
+  MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
+```
+
+Without the PAT variables, the script pauses for manual acceptance.
+
+Accounts and PATs are managed under
+[#6024](https://github.com/fullsend-ai/fullsend/issues/6024). PATs are
+stored as repository secrets `TEST_ACTOR_WRITE_PAT`,
+`TEST_ACTOR_TRIAGE_PAT`, and `TEST_ACTOR_OUTSIDER_PAT` on
+`fullsend-ai/fullsend`.
 
 ## CI authorization
 

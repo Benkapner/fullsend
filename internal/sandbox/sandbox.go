@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/fullsend-ai/fullsend/internal/resolve"
 )
 
 const (
@@ -414,18 +414,11 @@ func ImportProfiles(dir string) error {
 		}
 	}
 
-	entries, err := os.ReadDir(dir)
+	ids, err := resolve.CollectProfileIDs(dir)
 	if err != nil {
-		return fmt.Errorf("reading profiles directory %s: %w", dir, err)
+		return err
 	}
-	for _, e := range entries {
-		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
-			continue
-		}
-		id, err := profileIDFromFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return fmt.Errorf("reading profile id from %s: %w", e.Name(), err)
-		}
+	for _, id := range ids {
 		// Best-effort delete; ignore errors (profile may not exist yet).
 		ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
 		exec.CommandContext(ctx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
@@ -445,24 +438,6 @@ func ImportProfiles(dir string) error {
 	}
 	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 	return nil
-}
-
-// profileIDFromFile reads a profile YAML file and returns its id field.
-func profileIDFromFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	var prof struct {
-		ID string `yaml:"id"`
-	}
-	if err := yaml.Unmarshal(data, &prof); err != nil {
-		return "", fmt.Errorf("parsing YAML: %w", err)
-	}
-	if prof.ID == "" {
-		return "", fmt.Errorf("profile has no id field")
-	}
-	return prof.ID, nil
 }
 
 // hashProfileDir computes a deterministic SHA-256 digest of all YAML files in

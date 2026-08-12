@@ -12,9 +12,9 @@ When you register a custom agent and give it a `trigger` expression, fullsend ha
 
 2. **Normalize.** The `gha-event` input driver converts the raw GitHub event into a [`NormalizedEvent`](../../normative/normalized-event/v1/) — a forge-neutral struct with fields like `event.entity.kind`, `event.transition.kind`, and `event.actor.role`.
 
-3. **Authorize.** `fullsend dispatch` enforces the platform authorization gate ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) before any agent is considered. Authorization is a platform-level decision — your CEL trigger does not need to implement permission checks (though you can add guards like `event.actor.role` if your agent has stricter requirements).
+3. **Authorize.** `fullsend dispatch` enforces the platform authorization gate before any agent is considered. Authorization is a platform-level decision — your CEL trigger does not need to implement permission checks (though you can add guards like `event.actor.role` if your agent has stricter requirements).
 
-4. **Enumerate.** Dispatch loads all registered agents from the merged config (`agents:` list in org and per-repo `config.yaml`, plus scaffold discovery from [ADR 0058](../../ADRs/0058-agent-registration.md)). Each harness with a non-empty `trigger` field is a candidate.
+4. **Enumerate.** Dispatch loads all registered agents from the merged config (`agents:` list in org and per-repo `config.yaml`, plus scaffold discovery). Each harness with a non-empty `trigger` field is a candidate.
 
 5. **Evaluate.** Each candidate's CEL `trigger` expression is evaluated with `event` bound to the `NormalizedEvent`. Every harness whose trigger returns `true` is selected. Multiple agents can match the same event (parallel fan-out).
 

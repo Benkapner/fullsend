@@ -62,6 +62,10 @@ Any eventual design needs to split several concerns that are easy to conflate:
 
 These splits suggest that "memory" may not be one feature. It may be several feedback paths with different trust levels, retention windows, and promotion rules.
 
+## Industry precedent
+
+[Kiro Crew](../landscape.md#kiro-crew) ships a three-tier stack — Memory (preferences/project context), Lessons (corrections promoted into "durable lessons"), Skills (repeated patterns promoted into inspectable, editable, removable artifacts) — that lands close to the stable/tactical/self-assessment split above, independently arrived at. It is a useful existence proof that the split is practically necessary rather than a theoretical nicety. But its promotion model differs from what this document is asking: Kiro Crew promotes automatically and makes the result inspectable after the fact ("you decide what your crew carries forward" is a review step that happens post hoc, by the same user who is already trusting the tool). The open question here is whether promotion needs to be gated *before* a lesson can reach a different agent — particularly across roles, per [What must be separated](#what-must-be-separated) above — rather than left to after-the-fact inspection by whoever is already running the crew.
+
 ## Constraints
 
 - **The sandbox should remain ephemeral.** Cross-run learning should not imply persistent sandbox state.

@@ -38,7 +38,7 @@ Three ADRs and the implementation in PR 792 create the building blocks that make
 - ADR 0029 replaces PEM secrets and dispatch PATs with OIDC-based credential issuance via a central token mint. The `mint-token` composite action takes a role name (triage, coder, review, fix) and returns a scoped GitHub App installation token — no PEMs or client IDs in the calling repo.
 - [ADR 0031](0031-reusable-workflows-for-action-installed-distribution.md) publishes five reusable workflows (`reusable-triage.yml`, `reusable-code.yml`, `reusable-review.yml`, `reusable-fix.yml`, `reusable-retro.yml`) and four composite actions (`fullsend`, `mint-token`, `validate-enrollment`, `setup-gcp`) from `fullsend-ai/fullsend`, enabling any repo to call fullsend infrastructure via `workflow_call` without copying workflow files. Scaffold stage workflows in `.fullsend` are now thin callers (41–66 lines) that delegate to these reusable workflows.
 - [ADR 0034](0034-centralized-shim-routing-via-dispatch.md) centralizes event-to-stage routing in `dispatch.yml` within the `.fullsend` config repo. The enrolled-repo shim (~70 lines) forwards raw event context to `dispatch.yml` via `workflow_call`; `dispatch.yml` (~370 lines) determines the stage, mints an OIDC dispatch token, validates the stage, checks the kill switch, and dispatches to the matching thin caller via `workflow_call`. Adding a new stage requires only a case branch in `dispatch.yml` — zero changes to enrolled repos.
-- ADR 0035 introduces layered content resolution: upstream defaults (agents, skills, schemas, harness, policies, scripts) are sparse-checked from `fullsend-ai/fullsend` at runtime, then org overrides from `customized/` are copied on top. The scaffold installs only org-specific files (~23 files instead of ~68).
+- ADR 0035 introduces layered content resolution: upstream defaults (agents, skills, plugins, schemas, harness, policies, scripts) are sparse-checked from `fullsend-ai/fullsend` at runtime, then org overrides from `customized/` are copied on top. The scaffold installs only org-specific files (~23 files instead of ~68).
 
 The per-org flow after PR 792:
 
@@ -253,7 +253,7 @@ fullsend admin install <owner/repo>     # per-repo installation
 
 Per-repo flags:
 - `--inference-project` — GCP project for Vertex AI inference (required)
-- `--inference-region` — GCP region for Vertex AI inference (default: `global`)
+- `--inference-region` — GCP region for Vertex AI inference (install-time only, not stored in manifest)
 - `--inference-wif-provider` — full WIF provider resource name (`projects/{number}/locations/global/.../providers/{id}`); auto-provisioned if omitted
 
 Shared flags (valid for both per-org and per-repo):
@@ -283,9 +283,9 @@ All other flags are shared between per-org and per-repo modes — per-repo can c
 4. If a mint already exists: validates PEMs, registers the org, and sets up per-repo WIF.
 5. Auto-provisions inference WIF pool/provider if `--inference-wif-provider` is omitted.
 6. Generates scaffold files (`.github/workflows/fullsend.yaml`, `.fullsend/config.yaml`, `.fullsend/customized/` directories).
-7. Commits all scaffold files to the target repo via the GitHub API.
-8. Sets repository variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`).
-9. Sets repository secrets (`FULLSEND_GCP_PROJECT_ID`, WIF credentials).
+7. Sets repository variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`).
+8. Sets repository secrets (`FULLSEND_GCP_PROJECT_ID`, WIF credentials).
+9. Commits all scaffold files to the target repo via the GitHub API. Variables and secrets are written before the commit so the workflow's required credentials exist by the time an event triggers a run (#6122).
 
 Per-repo install requires only `repo` and `workflow` OAuth scopes when reusing existing infrastructure. When creating apps, scope escalation to `admin:org` is required (same as per-org).
 

@@ -34,10 +34,9 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uvx ty check . --ignore unresolved-import --ignore unresolved-attribute
+        entry: uvx ty check --ignore unresolved-import --ignore unresolved-attribute
         language: system
         types: [python]
-        pass_filenames: false
 
   - repo: https://github.com/PyCQA/bandit
     rev: "1.9.4"
@@ -163,10 +162,11 @@ repos:
 
       - id: lint-md-links
         name: lint markdown links
-        entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
+        entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md
         language: system
-        pass_filenames: false
-        always_run: true
+        files: '\.md$'
+        exclude: '^\.'
+        pass_filenames: true
 
       - id: lint-workflow-size
         name: lint workflow file size
@@ -180,5 +180,5 @@ repos:
         name: lint-staged (web)
         entry: npx lint-staged --allow-empty
         language: system
-        files: ^(web/admin/src/|website/\.vitepress/)
+        files: ^(web/admin/src/|docs/\.vitepress/)
         pass_filenames: false

@@ -7,10 +7,12 @@ import (
 
 // Options configures the poller.
 type Options struct {
-	SlashCommandsOnly bool
-	BotUserID         int
-	OutputPath        string
-	GitLabURL         string
+	BotUserID      int
+	GitLabURL      string
+	PipelineRef    string // git ref for API-triggered pipelines (required; resolved at CLI wiring time)
+	PollJobURL     string // back-link to the poller CI job (optional; from CI_JOB_URL)
+	DispatchSecret string // HMAC shared secret for signing dispatch variables (optional; from FULLSEND_DISPATCH_SECRET)
+	Mode           string // "slash" (slash commands only) or "events" (full discovery, filters /fs-* notes); empty uses events discovery path but includes all notes for backward compatibility
 }
 
 // RoutableEvent is an intermediate representation of a detected change,
@@ -53,7 +55,7 @@ func (e RoutableEvent) Key() string {
 // LabelState tracks previously-seen labels per issue IID.
 type LabelState map[int][]string
 
-// Dispatch represents a single child pipeline dispatch record.
+// Dispatch represents a single API-triggered pipeline dispatch record.
 type Dispatch struct {
 	Stage           string `json:"stage"`
 	EventType       string `json:"event_type"`

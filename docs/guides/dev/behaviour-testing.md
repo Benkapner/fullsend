@@ -50,10 +50,14 @@ Given a dummy agent that would:
 | Column | Meaning |
 |--------|---------|
 | `description` | Human label matched by assertion steps |
-| `op` | `read_file`, `url_get`, `write_fixture` |
+| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_file`, `assert_json`, `checkout_branch` |
 | `args` | Op-specific; see below |
 
 **`write_fixture`:** `dest_path, fixtures/...` — content lives in `e2e/behaviour/fixtures/`, embedded in the committed scenario script at `.fullsend/behaviour/current-scenario.yaml`.
+
+**`checkout_branch`:** a single regex-validated branch name. Probes the remote with `git ls-remote --exit-code`; when the ref exists it is fetched and the branch is based on `FETCH_HEAD` (so the branch carries that ref's commits), when the ref is absent the branch is based on the current `HEAD`, and any other probe failure (network, auth) fails the op instead of silently falling back. The op then records one marker commit on the branch so the applier post-script has content to push — and so a wrongful push moves the target branch tip, giving `branch ... is unchanged` assertions something to detect. Deliberately a narrow capability — not a general shell op.
+
+The `<issue>` placeholder expands to the scenario's issue number in `checkout_branch` args (only that op) and in the branch step definitions' branch names and head-branch patterns; order the `an issue` step before any step using it.
 
 ### Assertion steps
 
@@ -68,9 +72,108 @@ And the agent will output issues.out with:
   """
 ```
 
+### Branch assertion steps
+
+For scenarios that drive a run through the post-scripts to a real push,
+`pkg/behaviourtest/steps/branch.go` adds SCM-level assertions. Record a
+branch tip before the run to assert it did not move afterwards:
+
+```gherkin
+Given an open pull request on branch "agent/990000099-decoy"
+And the tip of branch "agent/990000099-decoy" is recorded
+...
+Then the pull request head branch matches "agent/<issue>-.*"
+And branch "agent/990000099-decoy" is unchanged
+```
+
+`the pull request head branch matches` asserts exactly **one** open PR
+head matches the pattern. The pattern is a Go regular expression,
+anchored on both ends by the step — a literal `.` in a branch name must
+be escaped, and a pattern that could also match a fixture branch (e.g. a
+decoy inside the `agent/` namespace) makes the step fail as ambiguous.
+
+For fail-closed paths there is a failure counterpart, asserted against
+the run conclusion plus the post-script's failure comment on the
+scenario PR:
+
+```gherkin
+Then the harness "fix" workflow fails reporting "Refusing to push"
+```
+
+Pick a stable fragment of the failure-comment contract (the category
+label headline or a fixed detail phrase). No shipped scenario uses this
+step yet — the fix stage's only dispatch route is a `changes_requested`
+review from the org review bot, which the suite cannot produce — but the
+step is unit-tested and ready for a suite-reachable fail-closed path.
+
 ### Compatibility tags
 
 Use tags only for **exceptions** when a backend cannot run a scenario yet: `@skip:gitlab`, `@skip:per-org`, `@requires:per-repo`. Untagged scenarios run everywhere applicable.
+
+`@requires:capability:<name>` gates scenarios that assert behavior only present past a dependency version (e.g. an agents-repo release). Such scenarios are skipped unless the runner declares the capability in the comma-separated `BEHAVIOUR_CAPABILITIES` env var:
+
+```bash
+BEHAVIOUR_CAPABILITIES=applier-branch-namespace make behaviour-test
+```
+
+This keeps CI green until the dependency ships; flip the capability on (locally or in the CI env) once the pinned dependency includes the behavior.
+
+## Fixture authoring
+
+Every scenario that dispatches an agent stage must include a `write_fixture` row emitting `output/agent-result.json` with content that conforms to the stage's result schema. The harness post-script validates this file before performing any post-processing (labelling, commenting, PR creation). If the fixture is missing or invalid, the harness fails with `Validation failed: FAIL: output/agent-result.json not found`.
+
+### Checklist for new scenarios
+
+Before merging a scenario that dispatches an agent stage:
+
+1. Identify the agent **role** (triage, code, review, fix, retro, prioritize). The role determines which result schema applies.
+2. Create a fixture JSON file under `e2e/behaviour/fixtures/<stage>/` that satisfies the corresponding schema at `schemas/<stage>-result.schema.json` (scaffolded into target repos under `internal/scaffold/fullsend-repo/schemas/`).
+3. Add a `write_fixture` row to the dummy agent table:
+   ```
+   | Emit <stage> JSON | write_fixture | output/agent-result.json, fixtures/<stage>/<name>.json |
+   ```
+4. Add an assertion step to verify the fixture was written:
+   ```gherkin
+   And the agent will succeed to Emit <stage> JSON
+   ```
+5. Verify that fixture field values satisfy downstream CLI validation, not just the JSON schema. For example, `head_sha` in `review-result` must be a full-length 40-character hex SHA (`abcdef0123456789abcdef0123456789abcdef01`), not a short prefix.
+
+### Fixture inventory
+
+Existing fixtures under `e2e/behaviour/fixtures/`:
+
+| Fixture | Target schema | Purpose |
+|---------|---------------|---------|
+| `triage/sufficient.json` | `triage-result.schema.json` | Triage stage result with `action: "sufficient"` |
+| `dispatch/ok.json` | _(none — dispatch proof)_ | Lightweight proof-of-execution marker for dispatch scenarios |
+| `review/comment.json` | `review-result.schema.json` | Review stage result with `action: "comment"` |
+| `code/implemented.json` | `code-result.schema.json` | Code stage result targeting the default branch |
+
+The `dispatch/ok.json` fixture is not emitted as `output/agent-result.json` — it is used for auxiliary proof-of-execution files (e.g., `output/bash-routing-ok.json`). Scenarios that dispatch a **real agent stage** (triage, review, code, fix) must emit a schema-valid fixture to `output/agent-result.json`.
+
+### Adding a fixture for a new stage
+
+To add a fixture for a stage that does not yet have one (e.g., code or fix):
+
+1. Read the stage's result schema under `internal/scaffold/fullsend-repo/schemas/<stage>-result.schema.json`.
+2. Copy the closest existing fixture and adapt it to satisfy the new schema's `required` fields and `additionalProperties: false` constraint.
+3. Populate field values with plausible test data. Pay attention to:
+   - **String patterns** — schemas may enforce regex patterns (e.g., `repo` must match `^[^/]+/[^/]+$`).
+   - **Conditional requirements** — some schemas use `allOf`/`if`/`then` to require extra fields depending on the `action` value (e.g., `review-result` requires `head_sha` and `body` when `action` is `"comment"`).
+   - **Downstream validation** — the harness post-script may apply stricter checks than the schema. For example, SHAs must be full-length hex, not truncated.
+4. Place the fixture in `e2e/behaviour/fixtures/<stage>/<name>.json`.
+5. Reference it in your scenario's dummy agent table with a `write_fixture` row targeting `output/agent-result.json`.
+
+**Example:** The fork-bash-routing scenario dispatches a review agent, so it emits `review/comment.json` as the agent result:
+
+```gherkin
+Given a dummy agent that would:
+  | description          | op            | args                                                       |
+  | Prove bash routing   | write_fixture | output/bash-routing-ok.json, fixtures/dispatch/ok.json     |
+  | Emit review JSON     | write_fixture | output/agent-result.json, fixtures/review/comment.json     |
+```
+
+The first row proves execution via an auxiliary file; the second row emits the schema-valid `agent-result.json` that the harness post-script requires.
 
 ## Running locally
 
@@ -125,6 +228,9 @@ BEHAVIOUR_CI=githubactions
 BEHAVIOUR_INSTALL_MODE=per-repo
 E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
+TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
+TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
+TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
 ```
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
@@ -169,6 +275,30 @@ Background:
 ```
 
 The `Given a fork` step remaps the logical name as above and is idempotent for that actual fork repo. Each scenario then creates its own branch and PR within the fork.
+
+### Fork PR behaviour contract
+
+The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contract for `harness-dispatch`. Each CEL port PR ([#2896](https://github.com/fullsend-ai/fullsend/issues/2896)–[#2901](https://github.com/fullsend-ai/fullsend/issues/2901)) should follow this contract when adding fork-PR rows to the agent's harness behaviour feature file.
+
+| Scenario | Expected | How tested |
+|----------|----------|------------|
+| Fork PR matches CEL trigger; authorized actor | Agent runs via `harness-dispatch`; workflow completes | Positive dispatch + artifact assertion |
+| Kill switch active (`kill_switch: true`) on fork event | Empty matrix, exit 0 | Separate scenario; `the kill switch is active` step + assert agent did not run |
+| Disabled harness (`enabled: false`) on fork event | Empty matrix, exit 0 | Disabled harness in positive scenario; assert agent did not run |
+| Fork PR `synchronize` + label dispatches harness | Harness dispatched exactly 1 time; workflow completes | Separate scenario with sync commit + label |
+| CEL `is_fork` exclusion (`!event.state.change_proposal.is_fork`) | Empty matrix, exit 0 | Harness with `is_fork` guard in positive scenario; assert agent did not run |
+
+**Kill switch vs disabled harness:** These are distinct mechanisms. The **kill switch** (`kill_switch: true` in `config.yaml`) is a global emergency stop that blocks *all* harness dispatch for the repo — tested in its own scenario because no positive harness can run alongside it. A **disabled harness** (`enabled: false` per agent entry) only prevents that single agent from running — tested as a piggyback negative assertion in the positive-path scenario.
+
+**Consolidation pattern:** To conserve parallel execution slots, add negative-path harnesses (disabled agent, CEL exclusion) alongside the positive-path harness in a single scenario rather than creating separate scenarios. The positive harness wait acts as the settle window for negative assertions (piggyback pattern — see `negativeSettleDuration` in `dispatch.go`). The kill switch scenario cannot be consolidated because it blocks all harnesses.
+
+**Unauthorized-actor denial** ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) for fork PRs is tracked separately in [#5613](https://github.com/fullsend-ai/fullsend/issues/5613) and is not part of this contract.
+
+### Dispatch step reference
+
+**`a disabled custom harness "<name>" with:`** — Registers the harness YAML under `.fullsend/harness/<name>.yaml` and adds an agent entry with `enabled: false` to the repo's `config.yaml`. Use this step for negative dispatch assertions where a single agent should be excluded while other agents in the same scenario continue to run. This is *not* the kill switch; for the global emergency stop that blocks all harnesses, use `the kill switch is active`.
+
+**`the kill switch is active`** — Sets `kill_switch: true` in the repo's `config.yaml`, causing `Dispatch` to return an empty matrix for *all* agents. Use this step in a dedicated scenario where no harness should run. Because the kill switch blocks everything, it cannot share a scenario with a positive-path harness.
 
 ## Forge operational constraints
 
@@ -286,5 +416,9 @@ suiteRunner := godog.TestSuite{
 **`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
 
 **`scm.Driver.DeleteRepo` addition:** The `scm.Driver` interface now includes a `DeleteRepo(ctx context.Context, owner, repo string) error` method. `CleanupScenario` calls it to delete ephemeral fork repos after each scenario. External `scm.Driver` implementations must add this method — return `forge.ErrNotFound` when the repository does not exist.
+
+**`scm.Driver.ListOpenChangeProposals` / `scm.Driver.ListComments` additions:** `ListOpenChangeProposals(ctx, owner, repo) ([]forge.ChangeProposal, error)` returns the repository's **open** pull requests including each head branch; `ListComments(ctx, owner, repo, number) ([]forge.IssueComment, error)` returns the comments on an issue or pull request. The branch assertion steps and the scenario-cleanup namespace sweep call them. External `scm.Driver` implementations must add both methods.
+
+**`ci.Driver.WaitForFailedHarnessAgent` addition:** `WaitForFailedHarnessAgent(ctx, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)` waits for the named agent's harness run to complete with a terminal failure conclusion (artifact-first detection, job-name fallback) and errors out early when the run succeeds instead. External `ci.Driver` implementations must add this method.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.

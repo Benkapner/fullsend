@@ -70,7 +70,7 @@ agent is custom by definition — regardless of how similar it looks.
 | Add skills via `skills:` | Configured default | Skills extend knowledge. The agent's core behavior is unchanged. |
 | Add repo-level skills in `.agents/skills/` | Configured default | Repo skills are discovered automatically; no harness change needed. |
 | Add project instructions via `AGENTS.md` | Configured default | All agents read `AGENTS.md`. This is the standard customization path. |
-| Override a built-in skill via `customized/skills/` | Configured default | Documented extension point ([Customizing with Skills](../../guides/user/customizing-with-skills.md#overriding-built-in-skills)). |
+| Override a built-in skill via config-driven registration | Configured default | Documented extension point ([Configuring with Skills](../../guides/user/customizing-with-skills.md#overriding-built-in-skills)). |
 | Replace the sandbox image with one based on the default image | Configured default | The agent's behavior is unchanged; the environment is augmented. |
 | Add plugins via `plugins:` | Configured default | Plugins extend tooling without changing the agent's identity. |
 | Add host files via `host_files:` | Configured default | Additional data for the sandbox. The agent itself is unchanged. |
@@ -87,12 +87,14 @@ for a stated purpose, that override does not make the agent derived.
 
 ## See also
 
+- [Escalation ladder](escalation-ladder.md) — prove-it path before
+  deriving or replacing a core agent
 - [Agents reference](../) — default agent documentation and extension points
-- [Customizing agents](../../guides/user/customizing-agents.md) — harness
+- [Configuring agent behavior](../../guides/user/customizing-agents.md) — harness
   configuration and layered content resolution
-- [Customizing with AGENTS.md](../../guides/user/customizing-with-agents-md.md)
+- [Configuring with AGENTS.md](../../guides/user/customizing-with-agents-md.md)
   — project-wide instructions for all agents
-- [Customizing with skills](../../guides/user/customizing-with-skills.md) —
+- [Configuring with skills](../../guides/user/customizing-with-skills.md) —
   extending or replacing built-in skills
 - [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) —
   building custom agents and configuring existing ones

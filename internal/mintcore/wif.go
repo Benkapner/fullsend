@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// DefaultInferencePool is the WIF pool name used for inference workload
+// identity federation. Shared by repos (batch_install) and gcf (provisioner).
+const DefaultInferencePool = "fullsend-inference"
+
 // BuildRepoProviderID generates a GCP WIF provider ID scoped to a single repo.
 // GCP requires 4-32 chars, [a-z][a-z0-9-]*, no trailing hyphen.
 func BuildRepoProviderID(owner, repo string) string {

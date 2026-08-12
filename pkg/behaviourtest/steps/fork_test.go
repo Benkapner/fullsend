@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,19 +25,15 @@ func TestGivenFork_SetsWorldState(t *testing.T) {
 	assert.Equal(t, "repo-fork", w.ForkRepo)
 }
 
-func TestGivenFork_AutoFillsRepoFromInstall(t *testing.T) {
+func TestGivenFork_ErrorsWhenNoRepoConfigured(t *testing.T) {
 	w := &world.World{
 		Org:     "auto-org",
-		Install: &fakeInstallState{testRepo: "auto-repo"},
+		Install: &fakeInstallState{},
 		SCM:     &fakeForkSCM{forkRepo: "auto-repo-fork"},
 	}
 	err := givenFork(w, "auto-repo-fork")
-	require.NoError(t, err)
-	assert.Equal(t, "auto-org", w.RepoOwner)
-	assert.Equal(t, "auto-repo", w.RepoName)
-	assert.Equal(t, "auto-org/auto-repo", w.RepoFull)
-	assert.Equal(t, "auto-org", w.ForkOwner)
-	assert.Equal(t, "auto-repo-fork", w.ForkRepo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
 }
 
 func TestGivenFork_CreateForkError(t *testing.T) {
@@ -253,13 +250,151 @@ func TestGivenFork_LeasedRepoResolvesForkName(t *testing.T) {
 	assert.Equal(t, "test-repo-07-fork", w.ForkRepo)
 }
 
-// fakeInstallState implements install.State for fork step unit tests.
-type fakeInstallState struct {
-	testRepo string
+// --- awaitForkReady unit tests ---
+//
+// awaitForkReady has two phases:
+//   1. Resolve the default branch name via GetDefaultBranch (repo metadata).
+//   2. Poll GetBranchRef until the git ref is readable (returns a SHA).
+//
+// Phase 2 is the actual readiness signal — CreateBranch needs the
+// default-branch git ref to exist, and repo metadata can report a
+// default_branch name before the ref has been replicated.
+
+func TestGivenFork_PollsBranchRef(t *testing.T) {
+	// GetDefaultBranch succeeds immediately (repo metadata ready),
+	// but GetBranchRef fails once (git ref not yet replicated),
+	// then succeeds on the 2nd call. awaitForkReady should retry
+	// the ref poll and ultimately succeed.
+	//
+	// Calls awaitForkReady directly with poll=0 to avoid the 2s
+	// real sleep from the production forkReadyPoll constant; the
+	// givenFork → awaitForkReady wiring is proven by
+	// TestGivenFork_BranchRefImmediateSuccess.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: 1,
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called once to resolve the branch name")
+	assert.Equal(t, 2, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called 1 failure + 1 success = 2 times")
 }
 
+func TestGivenFork_BranchRefImmediateSuccess(t *testing.T) {
+	// Both GetDefaultBranch and GetBranchRef succeed on the first
+	// call — no replication delay. givenFork should return
+	// immediately without retries.
+	scmDriver := &fakeForkSCM{
+		forkRepo: "repo-fork",
+	}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		SCM:       scmDriver,
+	}
+	err := givenFork(w, "repo-fork")
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called exactly once")
+	assert.Equal(t, 1, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called exactly once on immediate success")
+}
+
+func TestAwaitForkReady_RefPollExhausted(t *testing.T) {
+	// GetDefaultBranch succeeds (repo metadata ready) but
+	// GetBranchRef always fails — simulates a fork whose git ref
+	// is never replicated. awaitForkReady should return a clear
+	// timeout error after exhausting all attempts.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not readable after 5 attempts")
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called once to resolve branch name")
+	assert.Equal(t, 5, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called exactly maxAttempts times")
+}
+
+func TestAwaitForkReady_DefaultBranchPollExhausted(t *testing.T) {
+	// GetDefaultBranch always fails — repo metadata not available.
+	// awaitForkReady should fail in the first phase before reaching
+	// the ref poll.
+	scmDriver := &fakeForkSCM{
+		getDefaultBranchFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "default branch name not available after 5 attempts")
+	assert.Equal(t, 5, scmDriver.getDefaultBranchCalls)
+	assert.Equal(t, 0, scmDriver.getBranchRefCalls,
+		"GetBranchRef should not be called if branch name resolution fails")
+}
+
+func TestAwaitForkReady_RefRetriesThenSucceeds(t *testing.T) {
+	// GetDefaultBranch succeeds immediately; GetBranchRef fails
+	// twice then succeeds on the 3rd call.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: 2,
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	err := awaitForkReady(context.Background(), w, "org", "repo-fork", 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.getDefaultBranchCalls,
+		"GetDefaultBranch should be called once")
+	assert.Equal(t, 3, scmDriver.getBranchRefCalls,
+		"GetBranchRef should be called 2 failures + 1 success = 3 times")
+}
+
+func TestAwaitForkReady_ContextCancelledDuringRefPoll(t *testing.T) {
+	// Verify that awaitForkReady respects context cancellation
+	// during the ref-polling phase and does not block indefinitely.
+	scmDriver := &fakeForkSCM{
+		getBranchRefFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	err := awaitForkReady(ctx, w, "org", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+func TestAwaitForkReady_ContextCancelledDuringBranchNamePoll(t *testing.T) {
+	// Verify that awaitForkReady respects context cancellation
+	// during the branch-name resolution phase.
+	scmDriver := &fakeForkSCM{
+		getDefaultBranchFailures: -1, // always fail
+	}
+	w := &world.World{
+		SCM: scmDriver,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	err := awaitForkReady(ctx, w, "org", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+// fakeInstallState implements install.State for fork step unit tests.
+type fakeInstallState struct{}
+
 func (f *fakeInstallState) Mode() string               { return "per-org" }
-func (f *fakeInstallState) TestRepo() string           { return f.testRepo }
 func (f *fakeInstallState) ConfigOwner() string        { return "" }
 func (f *fakeInstallState) ConfigRepo() string         { return "" }
 func (f *fakeInstallState) ConfigPathPrefix() string   { return "" }
@@ -283,6 +418,21 @@ type fakeForkSCM struct {
 	createForkPRErr    error
 	addedLabels        []addedLabelRecord
 	addIssueLabelsErr  error
+
+	// getDefaultBranchFailures controls how many times GetDefaultBranch
+	// returns an error before succeeding. Each call decrements the
+	// counter; when it reaches 0, GetDefaultBranch returns success.
+	// A value of -1 means GetDefaultBranch always fails.
+	getDefaultBranchFailures int
+	getDefaultBranchCalls    int
+
+	// getBranchRefFailures controls how many times GetBranchRef returns
+	// an error before succeeding. Works the same way as
+	// getDefaultBranchFailures: each call decrements the counter;
+	// when it reaches 0, GetBranchRef returns a SHA. A value of -1
+	// means GetBranchRef always fails.
+	getBranchRefFailures int
+	getBranchRefCalls    int
 }
 
 type addedLabelRecord struct {
@@ -388,10 +538,38 @@ func (f *fakeForkSCM) CreateRepo(context.Context, string, string, string) error 
 	return nil
 }
 
+func (f *fakeForkSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
+
 func (f *fakeForkSCM) EnsureRepoPublic(context.Context, string, string) error {
 	return nil
 }
 
 func (f *fakeForkSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	f.getDefaultBranchCalls++
+	if f.getDefaultBranchFailures == -1 {
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	if f.getDefaultBranchFailures > 0 {
+		f.getDefaultBranchFailures--
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
 	return "main", nil
+}
+
+func (f *fakeForkSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	f.getBranchRefCalls++
+	if f.getBranchRefFailures == -1 {
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	if f.getBranchRefFailures > 0 {
+		f.getBranchRefFailures--
+		return "", fmt.Errorf("github api: 409 Git Repository is empty")
+	}
+	return "abc123", nil
 }

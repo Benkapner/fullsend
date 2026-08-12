@@ -1,32 +1,31 @@
 # Documentation site
 
-The documentation site is built with **[VitePress](https://vitepress.dev/)**. Markdown source lives in `docs/`, site configuration in `website/.vitepress/config.ts`, and build output in `website/dist/`.
+The documentation site is built with **[VitePress](https://vitepress.dev/)**. Markdown source and site configuration both live in `docs/` (config in `docs/.vitepress/config.ts`), and build output goes to `docs/.vitepress/dist/`.
 
 ## Local development
 
 ```bash
-cd website
 npm ci
-npm run dev
+npm run docs:dev
 ```
 
-The dev server starts on `http://localhost:5173/docs/`. Submodules (e.g. `experiments/`) are initialized automatically via a `predev` hook — no manual `git submodule` step needed.
+The dev server starts on `http://localhost:5173/docs/`. Submodules (e.g. `experiments/`) are initialized automatically before the dev server starts -- no manual `git submodule` step needed.
 
 ## Building
 
 ```bash
-cd website
-npm run build
+npm run docs:build
 ```
 
-A `prebuild` hook runs `git submodule update --init` before the VitePress build, matching CI behavior.
+The `docs:build` script runs `git submodule update --init` before the VitePress build, matching CI behavior.
 
 ## How it works
 
 - `docs/` contains all markdown content, organized by section (agents, guides, ADRs, etc.)
-- `website/.vitepress/config.ts` defines the sidebar navigation and markdown processing
+- `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing
 - `getMarkdownFiles()` auto-discovers markdown files and subdirectory READMEs for dynamic sidebar sections (ADRs, experiments, design docs, specs, plans)
-- Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` → `../experiments`)
+- Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` -> `../experiments`)
+- The `search.options.scopes` array in `config.ts` defines the scope pills shown in the search modal. Each scope has a `label` and a list of `prefixes` (path prefixes like `/docs/guides/`). When a user activates a scope, search results are filtered to pages whose path starts with one of the scope's prefixes. Every `docs/` subfolder that produces rendered pages must appear in at least one scope; otherwise its pages become unreachable when any scope pill is active.
 
 ## Submodules
 
@@ -34,9 +33,9 @@ Some doc content lives in separate repositories linked as git submodules:
 
 | Submodule | Path | Docs symlink |
 |-----------|------|-------------|
-| [fullsend-ai/experiments](https://github.com/fullsend-ai/experiments) | `experiments/` | `docs/experiments` → `../experiments` |
+| [fullsend-ai/experiments](https://github.com/fullsend-ai/experiments) | `experiments/` | `docs/experiments` -> `../experiments` |
 
-The `predev` and `prebuild` hooks in `website/package.json` handle initialization automatically for local dev. CI uses `submodules: true` on `actions/checkout` in `.github/workflows/site-build.yml`.
+The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI uses `submodules: true` on `actions/checkout` in `.github/workflows/site-build.yml`.
 
 ## CI/CD
 
@@ -66,15 +65,17 @@ feasibility investigation for future implementation.
 The current approach — deprecation notices with migration guidance — is
 sufficient for the near term. The project has a small number of deprecated
 features, all with clear replacements and migration tooling
-(`fullsend agent migrate-customizations`, `env.runner` migration). Versioned
+(`env.runner` migration). Versioned
 docs add ongoing maintenance cost (per-release builds, backport burden) that
 is not yet justified.
 
 **When to revisit:** If a future release removes deprecated features entirely
-(e.g., `runner_env` removal, `customized/` removal), users
-on older versions will lose reference material. At that point, the git tag
-snapshot approach offers the best effort-to-value ratio: snapshot the docs at
-the last release before removal and serve them as a read-only archive.
+(e.g., `runner_env` removal), users on older versions will lose reference
+material. The `customized/` directory has already been removed (#5697, #5836,
+#5866); `runner_env` deprecation remains the primary candidate. At that point,
+the git tag snapshot approach offers the best effort-to-value ratio: snapshot
+the docs at the last release before removal and serve them as a read-only
+archive.
 
 See [#4886](https://github.com/fullsend-ai/fullsend/issues/4886) for the
 original discussion.

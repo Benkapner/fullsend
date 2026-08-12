@@ -25,9 +25,21 @@ Then follow [Getting Inference](../getting-started/getting-inference.md) and [Co
 
 If the platform operator also provides a pre-existing WIF provider, skip `inference provision` and pass `--inference-wif-provider` directly to `github setup`.
 
-If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `github setup` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
+If the platform operator distributes a vendor preset (a curated `config.base.yaml`), you can install it via `--config` instead of specifying individual flags:
 
-> This section documents the **SaaS installation profile** defined in [ADR 0033 §6](../../ADRs/0033-per-repo-installation-mode.md#6-credential-models). See the [CLI reference](../../cli/github.md#flags) for the full flag list.
+```bash
+fullsend github setup <owner/repo> \
+  --inference-project "<GCP_PROJECT>" \
+  --inference-wif-provider "<WIF_PROVIDER>" \
+  --config "<preset-path-or-url>" \
+  --config-hash "<sha256-hex>"
+```
+
+See [Configuring GitHub — Using a vendor preset](../getting-started/configuring-github.md#using-a-vendor-preset) for details.
+
+If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `admin install` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
+
+> This section documents the **SaaS installation profile** — the default variant of the Managed model, where a platform operator pre-provisions the shared GitHub Apps and mint for you. See the [CLI reference](../../cli/github.md#flags) for the full flag list.
 
 ## OAuth scope reference
 

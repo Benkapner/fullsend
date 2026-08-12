@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=575
+# lint-workflow-size: max-lines=610
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -13,6 +13,9 @@ on:
         description: 'The event action (github.event.action) forwarded by the shim'
         required: true
         type: string
+    outputs:
+      dispatched_count:
+        value: ${{ jobs.dispatch.outputs.dispatched_count }}
 
 permissions: {}
 
@@ -24,6 +27,8 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
+    outputs:
+      dispatched_count: ${{ steps.dispatch.outputs.dispatched_count }}
     steps:
       - name: Determine stage
         id: route
@@ -201,7 +206,7 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
                     STAGE="review"
                   fi
                   ;;
@@ -261,15 +266,46 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          BOT_LOGIN="fullsend-ai[bot]"
-          CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
-          MENTIONING_PRS="$(gh pr list --repo "${SOURCE_REPO}" --state open \
-            --search "${ISSUE_NUMBER} in:title,body" \
-            --json number,author \
-            --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[].number" \
-            2>/dev/null || true)"
-          if [[ -n "${MENTIONING_PRS}" ]]; then
-            echo "::notice::Open PR(s) mentioning issue #${ISSUE_NUMBER} found — skipping code dispatch"
+          # Query issues for PRs that actually close them (Fixes/Closes/Resolves
+          # keywords), not a substring search over title/body — the latter
+          # false-positives on any PR that merely references the issue (#5575).
+          # closedByPullRequestsReferences also returns MERGED PRs regardless of
+          # includeClosedPrs, so filter on .state explicitly. GraphQL's Bot.login
+          # omits the REST "[bot]" suffix, so match on __typename == "Bot" rather
+          # than a literal "fullsend-ai-coder[bot]" string — see
+          # docs/contributing/bot-identities.md for the login.
+          #
+          # NOTE (org/workflow_call mode): this job's token lacks `issues: read`
+          # (neither this job nor the shim-workflow-call.yaml caller grants it),
+          # so this query is denied and the guard fails open BY DESIGN —
+          # pre-code.sh still dedups on a minted app token. Do NOT add the scope
+          # to this job alone: a called workflow cannot exceed its caller's
+          # grant, so repos with un-reconciled shims would hard-fail. Roll out
+          # shim-first if ever wanted (per-repo mode already grants it).
+          OWNER="${SOURCE_REPO%%/*}"
+          REPO_NAME="${SOURCE_REPO##*/}"
+          GQL_ERR=$(mktemp)
+          if ! LINKED_PRS=$(gh api graphql -f query='
+            query($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                  closedByPullRequestsReferences(first: 20) {
+                    nodes { number state author { login __typename } }
+                  }
+                }
+              }
+            }' -f owner="${OWNER}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" \
+            --jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]
+                   | select(.state == "OPEN")
+                   | select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")]
+                   | .[].number' \
+            2>"${GQL_ERR}"); then
+            echo "::warning::Linked-PR query failed for issue #${ISSUE_NUMBER}: $(tr '\n' ' ' < "${GQL_ERR}" | sed 's/::/__/g')"
+            LINKED_PRS=""
+          fi
+          rm -f "${GQL_ERR}"
+          if [[ -n "${LINKED_PRS}" ]]; then
+            echo "::notice::Open PR(s) linked to close issue #${ISSUE_NUMBER} found — skipping code dispatch"
             echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
@@ -464,6 +500,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Find and trigger agent workflows for stage
+        id: dispatch
         if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ steps.oidc-mint.outputs.token }}

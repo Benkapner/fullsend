@@ -33,6 +33,12 @@ type CreateIssuesReader interface {
 	IssueCreationConfig() *CreateIssuesConfig
 }
 
+// StatusNotificationsReader provides read access to status notification
+// configuration (comment start & completion).
+type StatusNotificationsReader interface {
+	StatusNotifications() *StatusNotificationConfig
+}
+
 // --- Composite read interface ---
 
 // ConfigReader is the common read interface for fields shared by both
@@ -43,6 +49,7 @@ type ConfigReader interface {
 	KillSwitchReader
 	AllowedResourcesReader
 	CreateIssuesReader
+	StatusNotificationsReader
 	ConfigVersion() string
 	IsOrgMode() bool
 }
@@ -58,7 +65,6 @@ type OrgConfigReader interface {
 	RepoMap() map[string]RepoConfig
 	EnabledRepos() []string
 	DisabledRepos() []string
-	StatusNotifications() *StatusNotificationConfig
 }
 
 // PerRepoConfigReader extends ConfigReader with per-repo-specific
@@ -68,6 +74,12 @@ type PerRepoConfigReader interface {
 	ConfigReader
 	ConfigRoles() []string
 	ConfigRuntime() string
+	ConfigForge() string
+	ConfigMintURL() string
+	ConfigInferenceProvider() string
+	ConfigInferenceProject() string
+	ConfigInferenceRegion() string
+	ConfigInferenceWIFProvider() string
 }
 
 // --- Write superset interfaces ---
@@ -101,6 +113,11 @@ type PerRepoConfigWriter interface {
 	ConfigWriter
 	SetRoles([]string)
 	SetRuntime(string)
+	SetMintURL(string)
+	SetInferenceProvider(string)
+	SetInferenceProject(string)
+	SetInferenceRegion(string)
+	SetInferenceWIFProvider(string)
 }
 
 // --- Compile-time assertions ---
@@ -321,6 +338,18 @@ func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig {
 	return nil
 }
 
+// StatusNotifications returns the status notification configuration.
+// nil falls through to parent.
+func (c *perRepoConfig) StatusNotifications() *StatusNotificationConfig {
+	if c.Notifications != nil {
+		return c.Notifications
+	}
+	if c.parent != nil {
+		return c.parent.StatusNotifications()
+	}
+	return nil
+}
+
 // ConfigVersion returns the config schema version. Empty falls
 // through to parent (code default "1").
 func (c *perRepoConfig) ConfigVersion() string {
@@ -361,6 +390,72 @@ func (c *perRepoConfig) ConfigRuntime() string {
 	return ""
 }
 
+// ConfigForge returns the configured forge type (e.g. "github", "gitlab").
+func (c *perRepoConfig) ConfigForge() string {
+	if c.Forge != "" {
+		return c.Forge
+	}
+	if c.parent != nil {
+		return c.parent.ConfigForge()
+	}
+	return ""
+}
+
+// ConfigMintURL returns the configured token mint URL.
+func (c *perRepoConfig) ConfigMintURL() string {
+	if c.MintURL != "" {
+		return c.MintURL
+	}
+	if c.parent != nil {
+		return c.parent.ConfigMintURL()
+	}
+	return ""
+}
+
+// ConfigInferenceProvider returns the inference provider (e.g. "vertex").
+func (c *perRepoConfig) ConfigInferenceProvider() string {
+	if c.Inference != nil && c.Inference.Provider != "" {
+		return c.Inference.Provider
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceProvider()
+	}
+	return ""
+}
+
+// ConfigInferenceProject returns the GCP project ID for inference.
+func (c *perRepoConfig) ConfigInferenceProject() string {
+	if c.Inference != nil && c.Inference.Project != "" {
+		return c.Inference.Project
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceProject()
+	}
+	return ""
+}
+
+// ConfigInferenceRegion returns the GCP region for inference.
+func (c *perRepoConfig) ConfigInferenceRegion() string {
+	if c.Inference != nil && c.Inference.Region != "" {
+		return c.Inference.Region
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceRegion()
+	}
+	return ""
+}
+
+// ConfigInferenceWIFProvider returns the WIF provider resource name.
+func (c *perRepoConfig) ConfigInferenceWIFProvider() string {
+	if c.Inference != nil && c.Inference.WIFProvider != "" {
+		return c.Inference.WIFProvider
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceWIFProvider()
+	}
+	return ""
+}
+
 // --- perRepoConfig setter methods ---
 
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
@@ -381,6 +476,33 @@ func (c *perRepoConfig) SetRoles(roles []string) { c.Roles = roles }
 
 // SetRuntime replaces the configured agent runtime.
 func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
+
+// SetMintURL sets the token mint URL.
+func (c *perRepoConfig) SetMintURL(mintURL string) { c.MintURL = mintURL }
+
+// SetInferenceProvider sets the inference provider.
+func (c *perRepoConfig) SetInferenceProvider(provider string) {
+	c.ensureInference().Provider = provider
+}
+
+// SetInferenceProject sets the GCP project ID for inference.
+func (c *perRepoConfig) SetInferenceProject(project string) { c.ensureInference().Project = project }
+
+// SetInferenceRegion sets the GCP region for inference.
+func (c *perRepoConfig) SetInferenceRegion(region string) { c.ensureInference().Region = region }
+
+// SetInferenceWIFProvider sets the WIF provider resource name.
+func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
+	c.ensureInference().WIFProvider = wifProvider
+}
+
+// ensureInference lazily initializes the Inference struct.
+func (c *perRepoConfig) ensureInference() *PerRepoInferenceConfig {
+	if c.Inference == nil {
+		c.Inference = &PerRepoInferenceConfig{}
+	}
+	return c.Inference
+}
 
 // --- LoadConfig / LoadConfigWriter factories ---
 
@@ -511,16 +633,17 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 
 // IsPerRepoYAML probes raw YAML for structural markers that distinguish
 // perRepoConfig from orgConfig. orgConfig has org-only top-level keys
-// (dispatch, repos, inference, defaults); perRepoConfig never does. When
-// no org-only key is present we default to per-repo: the shared fields
-// parse identically under either parser, and this avoids silently
-// dropping the per-repo Roles field on configs that omit it.
+// (dispatch, repos, defaults); perRepoConfig never does. The "inference"
+// key is shared: orgConfig uses it for the provider name, perRepoConfig
+// uses it for nested inference backend settings. Org configs always
+// contain dispatch/repos/defaults (non-omitempty), so the remaining
+// markers are sufficient for detection.
 func IsPerRepoYAML(data []byte) bool {
 	var probe map[string]interface{}
 	if err := yaml.Unmarshal(data, &probe); err != nil {
 		return false
 	}
-	for _, key := range []string{"dispatch", "repos", "inference", "defaults"} {
+	for _, key := range []string{"dispatch", "repos", "defaults"} {
 		if _, ok := probe[key]; ok {
 			return false
 		}

@@ -55,8 +55,17 @@ func (p *panickingSCM) CloseIssue(context.Context, string, string, int) error {
 }
 func (p *panickingSCM) CreateRepo(context.Context, string, string, string) error { return nil }
 func (p *panickingSCM) EnsureRepoPublic(context.Context, string, string) error   { return nil }
+func (p *panickingSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (p *panickingSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
 func (p *panickingSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
 	return "main", nil
+}
+func (p *panickingSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
 }
 func (p *panickingSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
@@ -116,6 +125,11 @@ func TestSkipErrorForTagNames(t *testing.T) {
 		{name: "requires per-repo on per-org", tags: []string{"@requires:per-repo"}, wantErr: godog.ErrSkip, cfg: env.RunnerConfig{InstallMode: "per-org"}},
 		{name: "skip gitlab on github", tags: []string{"@skip:gitlab"}, wantErr: nil},
 		{name: "skip gitlab on gitlab", tags: []string{"@skip:gitlab"}, wantErr: godog.ErrSkip, cfg: env.RunnerConfig{SCM: "gitlab"}},
+		{name: "requires capability undeclared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: godog.ErrSkip},
+		{name: "requires capability declared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: nil,
+			cfg: env.RunnerConfig{InstallMode: "per-repo", SCM: "github", Capabilities: []string{"applier-branch-namespace"}}},
+		{name: "requires capability other declared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: godog.ErrSkip,
+			cfg: env.RunnerConfig{InstallMode: "per-repo", SCM: "github", Capabilities: []string{"something-else"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,6 +145,14 @@ func TestSkipErrorForTagNames(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSkipErrorForTagNames_MalformedCapabilityTag(t *testing.T) {
+	w := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
+	err := SkipErrorForTagNames([]string{"@requires:capability:"}, w)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, godog.ErrSkip, "an empty capability name is a tag-authoring mistake, not a normal skip")
+	assert.Contains(t, err.Error(), "needs a name")
 }
 
 // --- Before/After hook tests ---

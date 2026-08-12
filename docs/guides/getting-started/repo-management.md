@@ -19,62 +19,66 @@ fullsend across an organization. Individual repo owners should use
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP access** — for WIF provisioning and mint operations (see [Mint administration](../infrastructure/mint-administration.md))
-- **Mint enrollment** — your orgs or repos must be enrolled in a fullsend token mint service (see [Getting Started](README.md))
+- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`) must be completed separately before running `repos install`. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 ## Getting started
 
-### Creating a manifest
+### Creating a manifest via migration
 
-Generate a `repos.yaml` manifest by discovering existing installations:
-
-```bash
-fullsend repos init <org> --forge github --all \
-  --mint-project <GCP_PROJECT> \
-  --inference-project <GCP_PROJECT>
-```
-
-For a single repo:
+Migrate an org from per-org to per-repo install and generate a
+`repos.yaml` manifest:
 
 ```bash
-fullsend repos init <owner/repo> --forge github --mint-project <GCP_PROJECT>
+fullsend repos migrate <org> --project <gcp-project>
 ```
 
-Instead of `--all`, specify a subset of repos with `--repos`:
+Migrate only specific repos:
 
 ```bash
-fullsend repos init acme --forge github --repos acme/api,acme/web \
-  --mint-project <GCP_PROJECT>
+fullsend repos migrate <org> --project <gcp-project> --repo api --repo web
 ```
 
-`--repos` and `--all` are mutually exclusive.
-
-If a `repos.yaml` file already exists, pass `--force` to overwrite it:
+Preview what would be migrated without making changes:
 
 ```bash
-fullsend repos init <org> --forge github --all --force --mint-project <GCP_PROJECT>
+fullsend repos migrate <org> --project <gcp-project> --dry-run
 ```
 
-The command discovers per-repo and per-org installations, extracts
-current configuration (WIF provider, workflow ref, mint URL), and writes
-a manifest. Default values for `fullsend_ref` and `inference_region` are
-computed using the mode (most common value) across discovered repos.
+The command discovers enrolled repos from the per-org config, provisions
+WIF infrastructure per repo, installs per-repo (scaffold, variables,
+secrets), unenrolls migrated repos from per-org config, and generates
+a `repos.yaml` manifest.
+
+### Creating a manifest from scratch
+
+If you do not have an existing per-org installation to migrate from,
+`repos install` can bootstrap a new manifest for you. Pass repo names
+as positional arguments with `--forge`:
+
+```bash
+fullsend repos install acme/api acme/web --forge github --direct
+```
+
+This creates `repos.yaml` (or the path given by `-f`) with
+`version: 1`, adds the specified repos, and runs the install. The
+`--forge` flag is required when no manifest exists.
 
 ### Multi-forge manifests
 
 Every repo entry in the manifest must declare its forge (`github` or
 `gitlab`). Set `defaults.forge` to avoid repeating the forge on every
-entry. Per-repo overrides are supported for mixed-forge manifests:
+entry. Per-entry forge overrides are supported for mixed-forge manifests:
 
 ```yaml
 version: 1
-mint:
-  url: https://mint.example.com
-  project: my-project
-  region: us-central1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    fullsend_ref: v2.5.0
+  gitlab:
+    url: https://gitlab.example.com
 defaults:
   forge: github
-  fullsend_ref: v2.5.0
 repos:
   - acme/api-server            # inherits forge: github from defaults
   - acme/web-frontend
@@ -87,12 +91,11 @@ and a GitLab group with the same name are different entities, and
 mixing forges under one owner would route API calls incorrectly.
 
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. For self-hosted GitLab
-instances, set `GITLAB_API_URL` to the API base URL (e.g.
-`https://gitlab.example.com/api/v4`).
+`--gitlab-token` to `fullsend repos` subcommands. The `GITLAB_API_URL`
+environment variable is kept as a fallback for callers without a
+manifest.
 
-See `fullsend repos init --help` or the [CLI reference](../../cli/repos.md)
-for all flags.
+See the [CLI reference](../../cli/repos.md) for all flags.
 
 ### Manifest paths and URLs
 
@@ -112,10 +115,9 @@ number of parallel API calls or operations. Defaults vary by command
 (typically 4 for write operations, 8 for read-only operations). See the
 [CLI reference](../../cli/repos.md) for per-command defaults and limits.
 
-### Installing repos
+### Installing and converging repos
 
-Install fullsend on repos defined in the manifest that are not yet
-installed:
+Install and converge repos defined in the manifest:
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -123,39 +125,31 @@ fullsend repos install -f repos.yaml
 
 Install runs in three phases:
 
-1. **Parallel discovery** — check which repos are already installed by
-   verifying the guard variable and all installation components
-   (workflow file, variables, and secrets). Repos with a guard
-   variable set but other components missing are flagged for
-   partial-installation repair (see below).
-2. **Sequential WIF** — register each unique org in the token mint
-   (`EnsureOrgInMint`), then provision per-repo WIF infrastructure
-   (`ProvisionWIF` + `RegisterPerRepoWIF`). These operations modify
-   shared GCP state and are not concurrent-safe.
-3. **Parallel scaffold** — commit scaffold files and write
-   variables/secrets
+1. **Manifest add** — repos specified as positional arguments that are
+   not already in the manifest are added (requires `--forge`).
+2. **Provision** — repos not yet provisioned get scaffold files,
+   variables, and secrets. Partially-installed repos are repaired
+   automatically.
+3. **Convergence** — repos already installed are checked for variable
+   drift (synced automatically) and scaffold ref drift (upgraded
+   automatically).
 
-> **Partial installation repair:** If a previous install was interrupted
-> (guard variable set but workflow, variables, or secrets missing),
-> `repos install` detects the incomplete state and repairs it
-> automatically. No manual cleanup is needed — re-running install
-> resumes where the previous run left off.
+> **Prerequisite:** For GitHub repos and GitLab repos using WIF mode
+> (`--inference-project`), GCP infrastructure (WIF pools/providers,
+> mint enrollment) must be provisioned separately before running
+> install. GitLab repos can be installed without GCP infrastructure
+> when `--inference-project` is omitted (variable mode).
+> See `fullsend inference provision` and `fullsend mint enroll`.
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
 > PR from the fork. To avoid fork-based delivery, ensure you have write
 > (or admin) access to the target repositories before running install.
 
-Preview what would be installed without making changes:
+Preview what would change without making modifications:
 
 ```bash
 fullsend repos install -f repos.yaml --dry-run
-```
-
-Install specific repos (when orgs are already registered in the mint):
-
-```bash
-fullsend repos install acme/api acme/web --skip-mint-check
 ```
 
 Glob patterns are supported:
@@ -197,127 +191,109 @@ Use `--json` for machine-readable output:
 fullsend repos status -f repos.yaml --json
 ```
 
-### Detecting configuration drift
+### Detecting and reconciling configuration drift
 
-Show configuration differences between the manifest and actual forge
-state:
-
-```bash
-fullsend repos diff -f repos.yaml
-```
-
-The `diff` command checks **variables and managed secrets only** — it
-compares `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` variables against
-the manifest and checks that `FULLSEND_GCP_PROJECT_ID` (the only managed
-secret) exists. Because GitHub secrets are not readable, diff can only
-detect missing secrets — it cannot detect value mismatches. The WIF
-provider secret (`FULLSEND_GCP_WIF_PROVIDER`) is write-once at install
-time and is not managed by diff/sync. Diff does not check the scaffold
-workflow ref (`@ref`). To detect ref drift, use `repos status` (which
-includes the ref in its output) or run `repos upgrade --dry-run` to
-preview which repos would be upgraded.
-
-Use `--json` for machine-readable output:
+Run `repos install` to detect and fix variable drift and scaffold ref
+drift across all manifest repos:
 
 ```bash
-fullsend repos diff --json
+fullsend repos install -f repos.yaml
 ```
 
-Returns a non-zero exit code when drift exists.
-
-### Reconciling drift
-
-Apply manifest values to repos where drift was detected:
+Preview what would change without modifying anything:
 
 ```bash
-fullsend repos sync -f repos.yaml
+fullsend repos install -f repos.yaml --dry-run
 ```
 
-Preview changes first:
+The convergence phase checks variables (`FULLSEND_MINT_URL`)
+and scaffold workflow refs against the manifest.
+Variables are synced automatically; ref updates are committed as PRs
+(or direct pushes with `--direct`). Secrets are write-once at install
+time and are not reconciled.
+
+Use `repos status` for a read-only drift report (no changes applied):
 
 ```bash
-fullsend repos sync --dry-run
+fullsend repos status -f repos.yaml --json
 ```
-
-Use `--json` for machine-readable output:
-
-```bash
-fullsend repos sync -f repos.yaml --json
-```
-
-Sync reconciles variables and secrets. It does **not** touch the scaffold
-shim version (`@ref`) — use `repos upgrade` for that.
 
 ### Adding repos
 
-Add repos to the manifest and optionally install them:
+Add a new repo to the manifest and install it in one step:
 
 ```bash
-fullsend repos add acme/new-api acme/new-web --forge github
-fullsend repos add acme/new-api --forge github --install --direct
+fullsend repos install acme/new-api --forge github --direct
+```
+
+Add multiple repos:
+
+```bash
+fullsend repos install acme/new-api acme/new-web --forge github
 ```
 
 Preview what would be added:
 
 ```bash
-fullsend repos add acme/new-api --forge github --dry-run
+fullsend repos install acme/new-api --forge github --dry-run
 ```
 
 Specify which agent roles to install (defaults to
 `triage,coder,review,fix,retro,prioritize`):
 
 ```bash
-fullsend repos add acme/new-api --forge github --install --roles triage,coder,review
+fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
+
+Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
+and `--allowed-remote-resources`. The `--inference-region` flag is
+install-time only and is not stored in the manifest.
 
 ### Removing repos
 
-Remove repos from the manifest:
+Remove a repo from the manifest and tear down its installation:
 
 ```bash
-fullsend repos remove acme/old-api
+fullsend repos uninstall acme/old-api
 ```
 
 When targeting multiple repos (via globs or bulk lists), the command
 prompts for confirmation:
 
 ```bash
-fullsend repos remove "acme/*"
+fullsend repos uninstall "acme/*"
 ```
 
 In non-interactive environments (CI, piped stdin), pass `--yes` to skip
 the confirmation prompt:
 
 ```bash
-fullsend repos remove "acme/*" --yes
+fullsend repos uninstall "acme/*" --yes
 ```
 
-To also tear down fullsend from the repos (delete workflow, variables,
-secrets, and WIF) before removing them from the manifest:
+Remove from manifest only (skip teardown — useful when the repo is
+already deleted):
 
 ```bash
-fullsend repos remove acme/old-api --uninstall
-fullsend repos remove acme/old-api --uninstall --skip-wif-cleanup
+fullsend repos uninstall acme/old-api --manifest-only
+```
+
+Tear down without removing from manifest (temporary teardown):
+
+```bash
+fullsend repos uninstall acme/old-api --uninstall-only
 ```
 
 ### Rolling out a new fullsend version
 
 To upgrade the scaffold workflow ref across all manifest repos:
 
-1. Update the `fullsend_ref` in `repos.yaml` to the new version.
+1. Update `forge.github.fullsend_ref` in `repos.yaml` to the new version.
 
-2. Run the upgrade:
-
-   ```bash
-   fullsend repos upgrade -f repos.yaml
-   ```
-
-   Mint verification runs automatically as a pre-flight step. If the
-   mint deployment URL does not match the manifest, the upgrade fails
-   with a clear error. Pass `--skip-mint-check` to bypass:
+2. Run install to converge:
 
    ```bash
-   fullsend repos upgrade -f repos.yaml --skip-mint-check
+   fullsend repos install -f repos.yaml
    ```
 
 3. Review and merge the scaffold PRs in each repo.
@@ -325,68 +301,60 @@ To upgrade the scaffold workflow ref across all manifest repos:
 Preview what would change without modifying repos:
 
 ```bash
-fullsend repos upgrade --dry-run
-```
-
-Override the manifest ref for a one-off upgrade:
-
-```bash
-fullsend repos upgrade --ref v2.4.0
-```
-
-Upgrade specific repos:
-
-```bash
-fullsend repos upgrade acme/api acme/web
+fullsend repos install -f repos.yaml --dry-run
 ```
 
 Push the upgrade directly to the default branch instead of creating a PR:
 
 ```bash
-fullsend repos upgrade -f repos.yaml --direct
+fullsend repos install -f repos.yaml --direct
 ```
 
 Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
 blocked unless `--force` is set.
 
-### Verifying mint configuration
+## Troubleshooting
 
-The standalone `repos upgrade-mint` command verifies the token mint
-deployment matches the manifest without triggering an upgrade:
+### Partial secret state
 
-```bash
-fullsend repos upgrade-mint -f repos.yaml
+When only one of the two required repo secrets (`FULLSEND_GCP_PROJECT_ID`
+or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo but not both, `repos
+install` reports an error:
+
+```
+partial secret state: FULLSEND_GCP_PROJECT_ID exists but FULLSEND_GCP_WIF_PROVIDER is missing
 ```
 
-Since `repos upgrade` now runs this verification automatically, this
-command is primarily useful for one-off checks.
+This typically occurs when a previous install was interrupted or when
+secrets were manually modified. To resolve, either:
+
+- Delete the existing secret and re-run `repos install` to re-provision
+  both secrets together.
+- Manually create the missing secret with the correct value.
 
 ## Migrating from per-org mode to manifest management
 
-Organizations migrating from per-org mode
-([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)) to
-per-repo manifest management can use the following workflow.
+Organizations migrating from per-org mode to per-repo manifest management
+can use `repos migrate` — a single command that handles the full migration.
 
-### Step 1: Generate a manifest from existing installations
-
-```bash
-fullsend repos init <org> --forge github --all \
-  --mint-project <GCP_PROJECT> \
-  --inference-project <GCP_PROJECT>
-```
-
-This discovers all enrolled repos and writes `repos.yaml`.
-
-### Step 2: Install per-repo infrastructure
+### Step 1: Migrate from per-org to per-repo
 
 ```bash
-fullsend repos install -f repos.yaml
+fullsend repos migrate <org> --project <gcp-project>
 ```
 
-Each repo gets its own WIF provider, variables, secrets, and scaffold
-workflow.
+This discovers enrolled repos from the per-org config, provisions WIF
+infrastructure, installs per-repo (scaffold, variables, secrets) with
+config carried over from the org config, registers per-repo WIF in the
+mint, unenrolls migrated repos, and writes `repos.yaml`.
 
-### Step 3: Verify per-repo installations
+Preview first with `--dry-run`:
+
+```bash
+fullsend repos migrate <org> --project <gcp-project> --dry-run
+```
+
+### Step 2: Verify per-repo installations
 
 ```bash
 fullsend repos status -f repos.yaml
@@ -394,7 +362,7 @@ fullsend repos status -f repos.yaml
 
 Confirm all repos show `installed` status with no drift.
 
-### Step 4: Uninstall the per-org configuration
+### Step 3: Uninstall the per-org configuration
 
 ```bash
 fullsend github uninstall "$ORG_NAME"
@@ -428,13 +396,13 @@ fullsend github uninstall "$ORG_NAME" --yolo
 Remove a repo from the manifest and tear down its fullsend installation:
 
 ```bash
-fullsend repos remove acme/old-api --uninstall
+fullsend repos uninstall acme/old-api
 ```
 
-Or tear down without modifying the manifest:
+Tear down without modifying the manifest (temporary teardown):
 
 ```bash
-fullsend repos uninstall acme/old-api
+fullsend repos uninstall acme/old-api --uninstall-only
 ```
 
 When targeting multiple repos, a confirmation prompt appears. In
@@ -451,8 +419,8 @@ infrastructure, coordinate between roles:
 
 | Step | Role | Command |
 |------|------|---------|
-| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` |
-| 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` |
+| 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
+| 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
 | 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
@@ -465,4 +433,3 @@ commands.
 - [Per-Org Mode](org-mode.md) — Organization-mode installation (planned deprecation)
 - [CLI Reference: fullsend repos](../../cli/repos.md) — Full flag and subcommand reference
 - [Mint administration](../infrastructure/mint-administration.md) — Token mint deployment and management
-- [ADR 0057](../../ADRs/0057-repos-management.md) — Design decision for repos management

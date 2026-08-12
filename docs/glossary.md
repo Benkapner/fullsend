@@ -30,6 +30,11 @@ See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ## B
 
+### Base Composition
+
+The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; `skills` merges with deduplication by basename (child overrides); `plugins`, `providers`, and `api_servers` concatenate (base + child, no dedup at composition time); `env.runner` and `env.sandbox` merge as independent maps (child keys win); `runner_env` is deprecated in favor of `env.runner`. Replaced the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field.
+See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [ADR 0055](ADRs/0055-unified-env-var-delivery.md), [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md), and [Configuring Agent Behavior](guides/user/customizing-agents.md).
+
 ### Blast Radius
 
 The scope of damage a compromised or misbehaving agent can cause. A core design constraint: every architectural decision about sandboxing, identity scoping, and network policy is evaluated by asking "what is the blast radius if this agent is compromised?" Minimizing blast radius is the primary goal of the sandbox layer.
@@ -46,6 +51,11 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or that has no `base` at all. A custom agent is built from scratch, even if it happens to resemble a default agent. Contrast with [derived agent](#derived-agent), which starts from a default.
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
+
+### Customized Directory
+
+**Removed.** A per-org (`customized/`) or per-repo (`.fullsend/customized/`) directory whose contents were overlaid on top of upstream defaults at runtime, replacing any upstream file with a matching name. The overlay was file-level replacement only — customizing a single harness field required copying and maintaining the entire upstream YAML file. Superseded by [base composition](#base-composition) for harnesses, URL-based references for skills/agents/plugins/policies, and config-based agent registration.
+See [ADR 0035](ADRs/0035-layered-content-resolution.md) (original mechanism) and [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md) (deprecation).
 
 ## D
 
@@ -115,8 +125,8 @@ See [architecture.md](architecture.md) and [agent-architecture.md](problems/agen
 
 ### Label State Machine
 
-The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-for-triage`, `ready-to-code`, and `ready-for-review` drive agent dispatch; others such as `ready-for-merge` and `requires-manual-review` encode review outcomes. In per-repo installs, `ready-for-review` on a PR also triggers review; applying it to a standalone issue does not. Per-org installs still accept legacy issue-side review triggers pending a follow-up. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
-See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 3.
+The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-for-triage`, `ready-to-code`, and `ready-for-review` drive agent dispatch; others such as `ready-for-merge` and `requires-manual-review` encode review outcomes. Every routing label carries the `ready-` prefix, but not every `ready-` label routes: `ready-for-merge` is a review outcome that reaches dispatch without matching a stage. Per-org shims filter on this prefix, while per-repo shims allow arbitrary labels for BYOA harness agents. In per-repo installs, `ready-for-review` on a PR also triggers review; applying it to a standalone issue does not. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
+See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 3 and [Bring Your Own Agent — routing label convention](guides/user/bring-your-own-agent.md).
 
 ## M
 

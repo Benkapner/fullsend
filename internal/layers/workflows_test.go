@@ -452,7 +452,6 @@ func TestWorkflowsLayer_Install_ExecutableModes(t *testing.T) {
 	}
 
 	assert.Equal(t, "100644", modes[".github/workflows/triage.yml"])
-	assert.Equal(t, "100644", modes["customized/agents/.gitkeep"])
 	assert.Equal(t, "100644", modes["AGENTS.md"])
 }
 

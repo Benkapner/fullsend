@@ -27,7 +27,7 @@ on:
       fullsend_version:
         required: false
         type: string
-        default: "latest"
+        default: ""
       install_mode:
         required: false
         type: string
@@ -52,6 +52,8 @@ on:
           OTLP headers for ADR 0050 Level 2 trace export (baggage-style
           k=v,k=v; may carry auth, hence a secret). Optional — unset leaves
           export disabled unless the endpoint variable alone suffices.
+        required: false
+      OTEL_EXPORTER_OTLP_HEADERS:
         required: false
 
 concurrency:
@@ -115,20 +117,6 @@ jobs:
               cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
             fi
           done
-          CUSTOM_BASE="customized"
-          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-            CUSTOM_BASE=".fullsend/customized"
-          fi
-          for dir in ${LAYERED_DIRS}; do
-            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
-              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
-                | while IFS= read -r -d '' f; do
-                    rel="${f#"${CUSTOM_BASE}"/}"
-                    mkdir -p "$(dirname "${DEST}${rel}")"
-                    cp "${f}" "${DEST}${rel}"
-                  done
-            fi
-          done
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
@@ -180,12 +168,16 @@ jobs:
           # ADR 0050 Level 2: orgs opt into OTLP trace export by defining the
           # endpoint as an Actions variable (and, when the backend needs auth
           # or routing headers, the headers secret). Unset = export inert.
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
+          OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
         with:
           agent: triage
-          version: ${{ inputs.fullsend_version }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}

@@ -27,6 +27,11 @@ const (
 
 	assertNoWorkflowChecks = 3
 	assertNoWorkflowDelay  = 10 * time.Second
+
+	// harnessWorkflowFile is the workflow filename used by the harness.
+	// Used to scope fail-fast and diagnostic queries to harness runs only,
+	// avoiding false positives from unrelated workflow failures.
+	harnessWorkflowFile = "fullsend.yaml"
 )
 
 // Driver implements ci.Driver against GitHub Actions.
@@ -431,7 +436,82 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// WaitForHarnessAgent waits for a successful harness-run workflow and artifact for agent.
+// isTerminalFailure reports whether a workflow run conclusion represents a
+// real failure that should trigger fail-fast. Skipped and cancelled runs are
+// excluded because they are typically concurrency-group noise, not harness
+// failures.
+func isTerminalFailure(conclusion string) bool {
+	switch conclusion {
+	case "failure", "timed_out", "startup_failure":
+		return true
+	default:
+		return false
+	}
+}
+
+// listHarnessRunsAfter returns recent harness workflow runs created after the
+// given time. It queries only the harness workflow (fullsend.yaml) to avoid
+// false-positive fail-fast from unrelated workflow failures in the same repo.
+func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, after time.Time) []forge.WorkflowRun {
+	runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
+	if err != nil {
+		return nil
+	}
+	var matched []forge.WorkflowRun
+	for _, run := range runs {
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
+			continue
+		}
+		matched = append(matched, run)
+	}
+	return matched
+}
+
+// formatRunDiagnostics builds a human-readable summary of recent workflow
+// runs for inclusion in error messages.
+func formatRunDiagnostics(runs []forge.WorkflowRun) string {
+	if len(runs) == 0 {
+		return "no recent workflow runs found after trigger time"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "recent workflow runs (%d):", len(runs))
+	for _, r := range runs {
+		fmt.Fprintf(&b, "\n  run %d: status=%s conclusion=%s url=%s",
+			r.ID, r.Status, r.Conclusion, r.HTMLURL)
+	}
+	return b.String()
+}
+
+// harnessJobSuffix returns the job name suffix used by the harness workflow
+// matrix for a given agent. The full job name includes a caller prefix
+// (e.g. "dispatch / Harness run (pr-ping)"), so callers use HasSuffix or
+// Contains to match.
+func harnessJobSuffix(agent string) string {
+	return "Harness run (" + agent + ")"
+}
+
+// runHasAgentJob reports whether the given workflow run contains a job
+// whose name matches the harness job for agent. It also returns the job's
+// conclusion when found, and any error from the API call.
+func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID int, agent string) (found bool, conclusion string, err error) {
+	jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, runID)
+	if err != nil {
+		return false, "", fmt.Errorf("list jobs for run %d: %w", runID, err)
+	}
+	suffix := harnessJobSuffix(agent)
+	for _, j := range jobs {
+		if strings.HasSuffix(j.Name, suffix) {
+			return true, j.Conclusion, nil
+		}
+	}
+	return false, "", nil
+}
+
+// WaitForHarnessAgent waits for a successful harness-run workflow job for
+// the named agent. It fails fast only when a workflow run that contains the
+// agent's "Harness run (<agent>)" job reaches a terminal failure conclusion.
+// Sibling workflow runs that do not schedule the agent's job are ignored.
 func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
 	artifactName := "fullsend-" + agent
 	deadline := time.Now().Add(dispatchWait)
@@ -441,65 +521,172 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 			return nil, ctx.Err()
 		case <-time.After(dispatchPoll):
 		}
+
+		// Quick-success: check for the agent's artifact (a completed
+		// harness job uploads fullsend-{agent}).
 		arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
-		if err != nil {
-			continue
+		if err == nil {
+			if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
+				run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
+				if err == nil {
+					if run.Status == "completed" {
+						if run.Conclusion == "success" {
+							return run, nil
+						}
+						return nil, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
+							agent, run.Conclusion, run.ID, run.HTMLURL)
+					}
+				}
+			}
 		}
-		art := selectRepositoryArtifactAfter(arts, artifactName, after)
-		if art == nil {
-			continue
+
+		// Fail-fast: check recent harness runs for terminal failures,
+		// but only attribute failure to runs that actually scheduled
+		// this agent's harness job.
+		recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
+		for _, r := range recentRuns {
+			if r.Status != "completed" || !isTerminalFailure(r.Conclusion) {
+				continue
+			}
+			hasJob, _, _ := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+			if hasJob {
+				return nil, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
+					agent, r.ID, r.Conclusion, r.HTMLURL)
+			}
 		}
-		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
-		if err != nil {
-			continue
-		}
-		if run.Status != "completed" {
-			continue
-		}
-		if run.Conclusion != "success" {
-			return nil, fmt.Errorf("harness run for %q concluded with %q", agent, run.Conclusion)
-		}
-		return run, nil
 	}
-	return nil, fmt.Errorf("harness agent %q did not complete successfully", agent)
+
+	// Timeout: include diagnostics about recent workflow runs.
+	recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
+	return nil, fmt.Errorf("harness agent %q did not complete successfully; %s",
+		agent, formatRunDiagnostics(recentRuns))
 }
 
-// CountHarnessDispatches returns the number of fullsend-{agent} artifacts
-// that appeared after the trigger time. Each harness dispatch produces one
-// artifact, so the count reflects how many times the harness was dispatched.
-func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
+// WaitForFailedHarnessAgent waits for the named agent's harness run to
+// complete with a terminal failure conclusion. It errors out early when
+// the run completes successfully instead — callers use this to assert a
+// refuse-to-push (or similar fail-closed) path.
+//
+// Detection is artifact-first: the fullsend action uploads the
+// fullsend-<agent> artifact with `if: always()`, so it exists for failed
+// runs too, and it is the only signal that works for both standard stage
+// jobs (named e.g. "Code"/"Fix") and custom-harness matrix jobs (named
+// "Harness run (<agent>)"). The job-name scan is a fallback for
+// custom-harness runs that failed before uploading the artifact.
+func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
 	artifactName := "fullsend-" + agent
-	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
+	deadline := time.Now().Add(dispatchWait)
+	var lastJobErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(dispatchPoll):
+		}
+
+		// Artifact-first: resolve the agent's run from its artifact and
+		// inspect the run conclusion.
+		arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
+		if err == nil {
+			if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
+				run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
+				if err == nil && run.Status == "completed" {
+					if isTerminalFailure(run.Conclusion) {
+						return run, nil
+					}
+					if run.Conclusion == "success" {
+						return nil, fmt.Errorf("harness agent %q run %d concluded successfully; expected failure (url=%s)",
+							agent, run.ID, run.HTMLURL)
+					}
+				}
+			}
+		}
+
+		// Fallback: a custom-harness run can fail before uploading the
+		// artifact; attribute the failure through its matrix job name.
+		// Scans every completed run regardless of overall conclusion —
+		// not just runs already known to have failed — so a run whose
+		// agent job succeeded despite the artifact lookup missing it
+		// still fails fast instead of running out the full timeout.
+		lastJobErr = nil
+		recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
+		for i := range recentRuns {
+			run := recentRuns[i]
+			if run.Status != "completed" {
+				continue
+			}
+			hasJob, conclusion, err := d.runHasAgentJob(ctx, owner, repo, run.ID, agent)
+			if err != nil {
+				lastJobErr = err
+				continue
+			}
+			if !hasJob {
+				continue
+			}
+			if isTerminalFailure(conclusion) {
+				return &run, nil
+			}
+			if conclusion == "success" {
+				return nil, fmt.Errorf("harness agent %q job in run %d concluded successfully; expected failure (url=%s)",
+					agent, run.ID, run.HTMLURL)
+			}
+			// Skipped/cancelled jobs are concurrency noise — keep polling.
+		}
+	}
+
+	recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
+	diag := formatRunDiagnostics(recentRuns)
+	if lastJobErr != nil {
+		diag += fmt.Sprintf("; last job-listing error: %v", lastJobErr)
+	}
+	return nil, fmt.Errorf("harness agent %q did not complete with a failure; %s", agent, diag)
+}
+
+// CountHarnessDispatches returns the number of harness workflow runs that
+// scheduled the "Harness run (<agent>)" job after the trigger time.
+func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
+	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
-	for _, a := range arts {
-		if a.Name != artifactName {
+	for _, r := range allRuns {
+		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		created, parseErr := time.Parse(time.RFC3339, a.CreatedAt)
-		if parseErr == nil && !created.Before(after) {
+		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		if err != nil {
+			return 0, err
+		}
+		if hasJob {
 			count++
 		}
 	}
 	return count, nil
 }
 
-// AssertNoHarnessAgentArtifact ensures no fullsend-{agent} artifact appeared after trigger time.
+// AssertNoHarnessAgentArtifact asserts that the named agent's harness job
+// did not run after the trigger time. It checks workflow run jobs rather
+// than artifacts so that sibling runs for other agents are not mistaken
+// for evidence.
 func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error {
-	artifactName := "fullsend-" + agent
-	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 30)
+	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
 		return err
 	}
-	for _, a := range arts {
-		if a.Name != artifactName {
+	for _, r := range allRuns {
+		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		created, parseErr := time.Parse(time.RFC3339, a.CreatedAt)
-		if parseErr == nil && !created.Before(after) {
-			return fmt.Errorf("expected harness %q not to run, but repository artifact %q appeared", agent, artifactName)
+		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		if err != nil {
+			return err
+		}
+		if hasJob {
+			return fmt.Errorf("expected harness %q not to run, but job %q found in workflow run %d",
+				agent, harnessJobSuffix(agent), r.ID)
 		}
 	}
 	return nil

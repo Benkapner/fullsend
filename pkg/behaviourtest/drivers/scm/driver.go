@@ -33,6 +33,11 @@ type Driver interface {
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
+	// ListOpenChangeProposals returns the repository's open pull
+	// requests, including each proposal's head branch.
+	ListOpenChangeProposals(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error)
+	// ListComments returns the comments on an issue or pull request.
+	ListComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error)
 
 	// CreateRepo creates a new repository in the given org. It is
 	// idempotent — if a repo with the given name already exists,
@@ -44,6 +49,10 @@ type Driver interface {
 	EnsureRepoPublic(ctx context.Context, owner, repo string) error
 	// GetDefaultBranch returns the name of a repository's default branch.
 	GetDefaultBranch(ctx context.Context, owner, repo string) (string, error)
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns an error if the branch ref does not exist (e.g. the
+	// fork's Git data has not been replicated yet).
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error)
 	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
 	// if the repository does not exist.
 	DeleteRepo(ctx context.Context, owner, repo string) error

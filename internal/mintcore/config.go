@@ -32,6 +32,11 @@ type WorkerConfig struct {
 	// PerRepoWIFRepos is a comma-separated list of repos with per-repo WIF.
 	PerRepoWIFRepos string
 
+	// WorkflowHostRepos is a comma-separated list of repos whose workflows
+	// are trusted to call the mint in per-repo mode. Defaults to
+	// fullsend-ai/fullsend when empty.
+	WorkflowHostRepos string
+
 	// CustomRolePermissions is a JSON-encoded map of custom role permissions.
 	// Same format as the CUSTOM_ROLE_PERMISSIONS environment variable.
 	CustomRolePermissions string
@@ -55,10 +60,6 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 	if cfg.OIDCAudience == "" {
 		return nil, fmt.Errorf("OIDCAudience is required")
 	}
-	if cfg.AllowedOrgs == "" {
-		return nil, fmt.Errorf("AllowedOrgs is required")
-	}
-
 	// Stamp version metadata from the config so that /health and /status
 	// report the deployed version. For GCF deploys this is compiled into
 	// the source (version.go); for WASM deploys it arrives at runtime via
@@ -80,7 +81,11 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 		}
 	}
 
-	return NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, pemAccessor, oidcVerifier, httpClient)
+	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, cfg.WorkflowHostRepos, pemAccessor, oidcVerifier, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	return h, nil
 }
 
 // SplitCSV splits a comma-separated string into trimmed, non-empty entries.
@@ -102,21 +107,41 @@ func SplitCSV(s string) []string {
 // NewHandlerFromConfig creates a Handler from explicit configuration values
 // instead of reading from environment variables. The roleAppIDsJSON parameter
 // is the JSON-encoded ROLE_APP_IDS mapping; allowedRolesCSV is the
-// comma-separated ALLOWED_ROLES list (empty means all roles from roleAppIDs).
+// comma-separated ALLOWED_ROLES list (empty means all roles from roleAppIDs);
+// perRepoWIFReposCSV is the comma-separated PER_REPO_WIF_REPOS list;
+// allowedOrgsCSV is the comma-separated ALLOWED_ORGS list;
+// allowedWorkflowFilesCSV is the comma-separated ALLOWED_WORKFLOW_FILES list;
+// workflowHostReposCSV is the comma-separated WORKFLOW_HOST_REPOS list
+// (defaults to fullsend-ai/fullsend when empty).
 //
-// The caller is responsible for configuring the OIDCVerifier with the
-// appropriate AllowedOrgs, AllowedWorkflowFiles, and PerRepoWIFRepos
-// before passing it here. ParseWorkerConfig handles this automatically;
-// direct callers must do it themselves.
-func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+// The handler performs authorization (org-allowed, workflow-ref) after the
+// OIDCVerifier authenticates the token.
+func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV, workflowHostReposCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+	perRepoWIFRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(perRepoWIFReposCSV) {
+		perRepoWIFRepos[strings.ToLower(entry)] = true
+	}
+
+	workflowHostRepos := make(map[string]bool)
+	for _, entry := range SplitCSV(workflowHostReposCSV) {
+		workflowHostRepos[strings.ToLower(entry)] = true
+	}
+	if len(workflowHostRepos) == 0 {
+		workflowHostRepos["fullsend-ai/fullsend"] = true
+	}
+
 	h := &Handler{
-		httpClient:      httpClient,
-		pemAccessor:     pemAccessor,
-		oidcVerifier:    oidcVerifier,
-		githubBaseURL:   "https://api.github.com",
-		foreignCache:    make(map[string]foreignCacheEntry),
-		foreignInflight: make(map[string]*foreignInflight),
-		foreignCacheTTL: defaultForeignCacheTTL,
+		httpClient:           httpClient,
+		pemAccessor:          pemAccessor,
+		oidcVerifier:         oidcVerifier,
+		githubBaseURL:        "https://api.github.com",
+		foreignCache:         make(map[string]foreignCacheEntry),
+		foreignInflight:      make(map[string]*foreignInflight),
+		foreignCacheTTL:      defaultForeignCacheTTL,
+		perRepoWIFRepos:      perRepoWIFRepos,
+		allowedOrgs:          SplitCSV(allowedOrgsCSV),
+		allowedWorkflowFiles: SplitCSV(allowedWorkflowFilesCSV),
+		workflowHostRepos:    workflowHostRepos,
 	}
 
 	if roleAppIDsJSON != "" {

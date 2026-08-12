@@ -167,7 +167,7 @@ Check the GitHub Actions logs for agent runs in both the target repo and `.fulls
 - Do log outputs contain sensitive values from the private repo?
 - Are the harness-level [secret redaction](../user/customizing-agents.md#harness-yaml-structure) and output scanning working as expected?
 
-> **Note:** Agent output goes through the harness-level `SecretRedactor` pipeline before being applied (see [ADR 0022](../../ADRs/0022-harness-level-output-schema-enforcement.md)). This catches known secret patterns but cannot catch all forms of sensitive content — `AGENTS.md` instructions are your primary defense for context-specific information.
+> **Note:** Agent output goes through the harness-level `SecretRedactor` pipeline before being applied. This catches known secret patterns but cannot catch all forms of sensitive content — `AGENTS.md` instructions are your primary defense for context-specific information.
 
 ## What should not be deployed based on data sensitivity
 
@@ -194,6 +194,6 @@ Not all private repos are equal. A repo containing open-source code that happens
 ## See also
 
 - [Getting Started](../getting-started/) — Initial fullsend setup
-- [Customizing agents](../user/customizing-agents.md) — Harness configuration and layered overrides
+- [Configuring agent behavior](../user/customizing-agents.md) — Harness configuration and layered overrides
 - [Security threat model](../../problems/security-threat-model.md) — Threat priority and defense considerations
 - [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) — Retro agent private content leak risk

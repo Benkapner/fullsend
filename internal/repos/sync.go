@@ -28,10 +28,17 @@ type DiffResult struct {
 }
 
 // SyncResult holds the output of a sync operation.
+// FailedRepo identifies a repo that failed sync.
+type FailedRepo struct {
+	Owner string `json:"owner"`
+	Repo  string `json:"repo"`
+}
+
 type SyncResult struct {
-	Applied  []Change `json:"applied"`
-	Failed   int      `json:"failed,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
+	Applied     []Change     `json:"applied"`
+	Failed      int          `json:"failed,omitempty"`
+	FailedRepos []FailedRepo `json:"failed_repos,omitempty"`
+	Warnings    []string     `json:"warnings,omitempty"`
 }
 
 // managedVariables lists the repo variables that sync reconciles.
@@ -45,16 +52,16 @@ var managedVariables = []struct {
 	resolveFn func(cfg ResolvedConfig) string
 }{
 	{"FULLSEND_MINT_URL", func(cfg ResolvedConfig) string { return cfg.MintURL }},
-	{"FULLSEND_GCP_REGION", func(cfg ResolvedConfig) string { return cfg.InferenceRegion }},
 }
 
-// managedSecrets lists the repo secrets that sync reconciles.
+// managedSecrets is intentionally empty. Secrets are written once at
+// install time (`repos install`) and are NOT reconciled by sync.
+// GCP project ID and WIF provider are sensitive install-time-only
+// values — sync only reconciles variables.
 var managedSecrets = []struct {
 	name      string
 	resolveFn func(cfg ResolvedConfig) string
-}{
-	{"FULLSEND_GCP_PROJECT_ID", func(cfg ResolvedConfig) string { return cfg.InferenceProject }},
-}
+}{}
 
 func validateConcurrency(n int) error {
 	if n < 1 || n > 32 {
@@ -209,12 +216,12 @@ func diffRepo(ctx context.Context, cfg ResolvedConfig) ([]Change, []string, bool
 }
 
 // Sync reconciles configuration drift for installed repos by applying
-// variable and secret changes to match the manifest's desired state.
-// Variables are only written when drift is detected; secrets are always
-// written for convergence since their values cannot be read back.
+// variable changes to match the manifest's desired state. Variables are
+// only written when drift is detected. Secrets are written once at
+// install time and are not reconciled by sync.
 //
 // Sync does NOT touch scaffold shim version (@ref) or harness files.
-// Version changes are managed by `repos upgrade`.
+// Version changes are handled by the upgrade phase of repos install.
 func Sync(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string, progress ProgressFunc) (*SyncResult, error) {
 	if err := validateConcurrency(maxConcurrency); err != nil {
 		return nil, err
@@ -311,15 +318,17 @@ func Sync(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, m
 	allApplied := make([]Change, 0)
 	syncWarnings := append([]string{}, syncFilterWarnings...)
 	failedCount := 0
-	for _, r := range results {
+	var failedRepos []FailedRepo
+	for i, r := range results {
 		allApplied = append(allApplied, r.applied...)
 		syncWarnings = append(syncWarnings, r.warnings...)
 		if r.failed {
 			failedCount++
+			failedRepos = append(failedRepos, FailedRepo{Owner: resolved[i].Owner, Repo: resolved[i].Repo})
 		}
 	}
 
-	result := &SyncResult{Applied: allApplied, Failed: failedCount, Warnings: syncWarnings}
+	result := &SyncResult{Applied: allApplied, Failed: failedCount, FailedRepos: failedRepos, Warnings: syncWarnings}
 	if failedCount > 0 {
 		return result, fmt.Errorf("%d repos failed to sync", failedCount)
 	}

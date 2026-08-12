@@ -1,6 +1,7 @@
 package world
 
 import (
+	"net/http/httptest"
 	"path/filepath"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/jiramock"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 )
 
@@ -53,6 +55,19 @@ type World struct {
 	URLHarnessRepoOwner string
 	URLHarnessRepoName  string
 
+	// Branch-handling scenario state — set by branch step definitions.
+	// RecordedBranchSHAs maps branch name → tip SHA captured before a
+	// run so "branch X is unchanged" can re-check it afterwards.
+	// CreatedBranches and CreatedPRNumbers track resources the branch
+	// steps created (or discovered) so CleanupScenario can remove them.
+	// Isolation across Clone()d Worlds relies on the suite invariant
+	// that resetScenarioWorld nils these after every clone and the
+	// template World never populates them — do not set them on a
+	// template.
+	RecordedBranchSHAs map[string]string
+	CreatedBranches    []string
+	CreatedPRNumbers   []int
+
 	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
 	// for this scenario's duration. Empty when no pool is configured.
 	LeasedRepoName string
@@ -61,6 +76,16 @@ type World struct {
 	// scenarios (like other driver fields) and safe for concurrent use.
 	// Nil when lazy ensure is not configured.
 	Ensurer install.RepoEnsurer
+
+	// KillSwitchActivated records whether this scenario activated the
+	// repo-level kill switch. CleanupScenario uses this to deactivate
+	// the switch so the next scenario on this slot is not affected.
+	KillSwitchActivated bool
+
+	// Jira mock state — set by the "Given a mock Jira server" step.
+	JiraMockServer *httptest.Server
+	JiraMockState  *jiramock.State
+	JiraConfigDir  string // temp dir holding .fullsend/ layout for the poller
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,
@@ -68,7 +93,7 @@ type World struct {
 // because the production implementations are immutable wrappers:
 //   - scm/github.Driver holds only a forge.Client (concurrent-safe).
 //   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
-//   - install.perRepoState holds only immutable string fields.
+//   - install.PerRepoState holds only immutable string fields.
 //
 // Race tests in each driver package (TestConcurrentAccess,
 // TestConcurrentStateAccess) verify the real types under -race with

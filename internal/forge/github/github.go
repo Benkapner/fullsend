@@ -1627,6 +1627,27 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	return nil
 }
 
+// CreateBranchFromSHA creates a new branch pointing at the given commit SHA.
+// Unlike CreateBranch (which resolves the repo's default branch), this allows
+// the caller to specify an explicit starting point.
+// Returns forge.ErrForbidden on insufficient permissions.
+func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error {
+	payload := map[string]string{
+		"ref": "refs/heads/" + branchName,
+		"sha": sha,
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
+		}
+		return fmt.Errorf("create branch %s from SHA: %w", branchName, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
 // Returns forge.ErrNotFound (wrapped) if the ref does not exist.
 func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
@@ -3080,6 +3101,35 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	return runs, nil
 }
 
+// ListWorkflowRunJobs returns the jobs within a workflow run.
+func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID))
+	if err != nil {
+		return nil, fmt.Errorf("list workflow run jobs: %w", err)
+	}
+	var result struct {
+		Jobs []struct {
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"jobs"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode workflow run jobs: %w", err)
+	}
+	jobs := make([]forge.WorkflowJob, len(result.Jobs))
+	for i, j := range result.Jobs {
+		jobs[i] = forge.WorkflowJob{
+			ID:         j.ID,
+			Name:       j.Name,
+			Status:     j.Status,
+			Conclusion: j.Conclusion,
+		}
+	}
+	return jobs, nil
+}
+
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
 func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID))
@@ -3674,6 +3724,11 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 	}
 	resp.Body.Close()
 	return true, nil
+}
+
+// CreatePipeline is not supported on GitHub.
+func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // CreatePipelineSchedule is not supported on GitHub.

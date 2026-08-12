@@ -45,14 +45,17 @@ fullsend github setup <owner/repo> \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mint-url` | | HTTPS endpoint of the token mint service |
+| `--inference-provider` | | Inference provider; resolved to `vertex` if unset |
 | `--inference-project` | | GCP project ID for Agent Platform |
 | `--inference-wif-provider` | | Full WIF provider resource name |
-| `--inference-region` | `global` | GCP region for inference |
+| `--inference-region` | | GCP region for inference; resolved to `global` if unset |
 | `--skip-app-setup` | `false` | Skip GitHub App creation/installation |
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps |
 | `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
 | `--runtime` | `claude` | Agent runtime backend (`claude` or `dummy`; `dummy` is for behaviour test orgs only) |
+| `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only) |
+| `--config-hash` | | SHA-256 hex digest to validate the preset content (requires `--config`) |
 
 ### Required OAuth scopes
 

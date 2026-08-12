@@ -4,8 +4,10 @@ package behaviour_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -14,6 +16,7 @@ import (
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/cfmint"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -25,6 +28,10 @@ import (
 // pool.Acquire with no warning because the pool org only has test-repo-01
 // through test-repo-12 with per-repo mint enrollment.
 const poolSize = 12
+
+// suiteName identifies this test suite. It is used to derive the CF Worker
+// name so that different suites get different workers.
+const suiteName = "bt"
 
 func TestBehaviourSuite(t *testing.T) {
 	if testing.Short() {
@@ -62,24 +69,58 @@ func TestBehaviourSuite(t *testing.T) {
 	})
 
 	binary := e2etest.BuildCLIBinary(t)
-	installDriver, err := install.NewDriver(cfg, e2eCfg, client, token, binary, t.Logf)
+
+	// Construct the CF mint driver with caller-provided parameters.
+	// The driver does not hardcode pool size or test-repo-NN assumptions;
+	// the calling code passes allowed orgs, per-repo WIF repos, and
+	// workflow host repos.
+	//
+	// AllowedOrgs is explicitly empty ("") — this is per-repo mode, so
+	// we must not dual-enroll the pool org as an allowed org. The CLI's
+	// explicit-empty semantics clear ALLOWED_ORGS on the Worker.
+	//
+	// WorkflowHostRepos registers the pool repos whose vendored workflows
+	// need to mint tokens. Without this, the mint rejects
+	// job_workflow_ref values from pool repos → 401.
+	installDriver, err := cfmint.NewDriver(client, token, binary, e2eCfg.GCPProjectID, t.Logf, cfmint.Config{
+		PEMDir:            e2eCfg.CFMintPEMDir,
+		SuiteName:         suiteName,
+		AllowedOrgs:       "",
+		PerRepoWIFRepos:   buildPerRepoWIFRepos(org),
+		WorkflowHostRepos: buildWorkflowHostRepos(org),
+		AppSet:            "fullsend-test",
+	})
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
 	}
 
 	e2etest.CleanupStaleResources(ctx, client, token, org, t)
 
-	installState, err := installDriver.Install(ctx, org)
-	if err != nil {
-		t.Fatalf("installing fullsend on %s: %v", org, err)
-	}
-
+	// Register teardown before Install so that a partially deployed
+	// preview mint is cleaned up even if Install fails partway through.
+	var installState install.State
 	t.Cleanup(func() {
+		if installState == nil {
+			return
+		}
 		teardownCtx := context.Background()
 		if teardownErr := installDriver.Teardown(teardownCtx, org, installState); teardownErr != nil {
 			t.Logf("install teardown: %v", teardownErr)
 		}
 	})
+
+	installState, err = installDriver.Install(ctx, org)
+	if err != nil {
+		t.Fatalf("installing fullsend on %s: %v", org, err)
+	}
+
+	// The install state carries the mint URL from the selected driver.
+	// Thread it to the ensurer so additional pool repos use the same
+	// mint endpoint.
+	if m, ok := installState.(install.MintURLProvider); ok && m.MintURL() != "" {
+		t.Logf("using mint URL for ensurer: %s", m.MintURL())
+		e2eCfg.MintURL = m.MintURL()
+	}
 
 	pool, err := world.NewRepoPool(poolSize)
 	if err != nil {
@@ -88,7 +129,10 @@ func TestBehaviourSuite(t *testing.T) {
 
 	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, t.Logf)
 
-	testRepo := installState.TestRepo()
+	// The install driver only manages the mint lifecycle — it does not
+	// install on any specific repo. RepoName and RepoFull are set per-
+	// scenario by the ensurer when "Given the enrolled test repository"
+	// acquires a leased pool repo.
 	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
@@ -100,8 +144,6 @@ func TestBehaviourSuite(t *testing.T) {
 		Logf:         t.Logf,
 		FixturesRoot: "e2e/behaviour",
 		RepoOwner:    org,
-		RepoName:     testRepo,
-		RepoFull:     org + "/" + testRepo,
 	}
 
 	suiteRunner := godog.TestSuite{
@@ -118,4 +160,26 @@ func TestBehaviourSuite(t *testing.T) {
 	if st := suiteRunner.Run(); st != 0 {
 		t.Fatalf("behaviour suite failed with status %d", st)
 	}
+}
+
+// buildPerRepoWIFRepos constructs the --per-repo-wif-repos value from
+// the pool org and the standard BT repo naming convention.
+func buildPerRepoWIFRepos(org string) string {
+	repos := make([]string, poolSize)
+	for i := range poolSize {
+		repos[i] = fmt.Sprintf("%s/test-repo-%02d", org, i+1)
+	}
+	return strings.Join(repos, ",")
+}
+
+// buildWorkflowHostRepos constructs the --workflow-host-repos value.
+// These are the repos whose vendored workflows are allowed to mint
+// tokens. Only numbered pool repos (test-repo-01 … test-repo-12)
+// are included — singular test-repo is reserved for admin e2e.
+func buildWorkflowHostRepos(org string) string {
+	repos := make([]string, 0, poolSize)
+	for i := range poolSize {
+		repos = append(repos, fmt.Sprintf("%s/test-repo-%02d", org, i+1))
+	}
+	return strings.Join(repos, ",")
 }

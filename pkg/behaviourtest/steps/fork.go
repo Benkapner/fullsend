@@ -26,9 +26,27 @@ func registerForkSteps(sc *godog.ScenarioContext) {
 	})
 }
 
+// forkReadyMaxAttempts is how many times awaitForkReady polls
+// GetBranchRef before giving up. GitHub's fork API returns
+// before Git data is fully replicated; the default-branch git
+// ref may not be readable immediately even though GetRepo
+// already reports a default_branch name.
+const forkReadyMaxAttempts = 30
+
+// forkReadyPoll is the delay between GetBranchRef polls.
+const forkReadyPoll = 2 * time.Second
+
 // givenFork creates a fork of the enrolled test repository if absent, or
 // reuses it if it already exists. The fork is created within the same
 // organization as the source repository.
+//
+// After creation, givenFork polls GetBranchRef until the fork's
+// default-branch git ref is readable. GitHub's fork API returns before
+// the fork's Git data is fully replicated; GetRepo may report a
+// default_branch name while the underlying git ref does not yet exist.
+// Without this ref-level poll, subsequent steps (e.g. CreateBranch)
+// can fail with a 409 "Git Repository is empty" error under parallel
+// godog concurrency.
 //
 // When the world uses a leased repo (w.LeasedRepoName is set), the
 // logical fork name from the Gherkin feature file is mapped to
@@ -37,9 +55,7 @@ func registerForkSteps(sc *godog.ScenarioContext) {
 // "test-repo-07-fork". See resolveForkName.
 func givenFork(w *world.World, forkName string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
-		w.RepoFull = w.Org + "/" + w.RepoName
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before fork operations")
 	}
 
 	resolved := resolveForkName(w, forkName)
@@ -51,7 +67,76 @@ func givenFork(w *world.World, forkName string) error {
 	}
 	w.ForkOwner = w.RepoOwner
 	w.ForkRepo = forkRepo
+
+	if err := awaitForkReady(ctx, w, w.RepoOwner, forkRepo, forkReadyMaxAttempts, forkReadyPoll); err != nil {
+		return fmt.Errorf("waiting for fork %q readiness: %w", forkRepo, err)
+	}
+
 	return nil
+}
+
+// awaitForkReady waits until the fork's default-branch git ref is
+// readable — the same signal CreateBranch needs to resolve the
+// default-branch SHA. Polling GetDefaultBranch (repo metadata) is
+// insufficient because GetRepo can report a default_branch name before
+// the underlying git ref has been replicated.
+//
+// The function first resolves the default branch name, then polls
+// GetBranchRef until it returns a SHA. 409 / "empty" errors and any
+// other GetBranchRef failures are treated as retryable.
+//
+// maxAttempts and poll are explicit parameters so that unit tests can
+// pass small values to avoid real sleeps.
+func awaitForkReady(ctx context.Context, w *world.World, owner, repo string, maxAttempts int, poll time.Duration) error {
+	// Resolve the default branch name first. This may itself require
+	// retries immediately after fork creation.
+	var defaultBranch string
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		branch, err := w.SCM.GetDefaultBranch(ctx, owner, repo)
+		if err == nil {
+			defaultBranch = branch
+			break
+		}
+		if attempt == maxAttempts {
+			return fmt.Errorf(
+				"fork %s/%s default branch name not available after %d attempts",
+				owner, repo, maxAttempts,
+			)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf(
+				"context cancelled waiting for default branch name on %s/%s: %w",
+				owner, repo, ctx.Err(),
+			)
+		case <-time.After(poll):
+		}
+	}
+
+	// Poll the git ref until it is readable. This is the actual
+	// readiness signal — CreateBranch needs the ref to exist.
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err := w.SCM.GetBranchRef(ctx, owner, repo, defaultBranch)
+		if err == nil {
+			return nil
+		}
+
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf(
+					"context cancelled waiting for branch ref %s on %s/%s: %w",
+					defaultBranch, owner, repo, ctx.Err(),
+				)
+			case <-time.After(poll):
+			}
+		}
+	}
+
+	return fmt.Errorf(
+		"fork %s/%s default branch ref %q not readable after %d attempts",
+		owner, repo, defaultBranch, maxAttempts,
+	)
 }
 
 // resolveForkName maps a logical fork name from a Gherkin feature file to

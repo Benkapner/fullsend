@@ -249,6 +249,7 @@ compatibility.
 | `skills`           | Some skills wrap forge-specific APIs               |
 | `runner_env`       | Token names and event URLs differ per forge        |
 | `validation_loop`  | Validation scripts may call forge-specific tools   |
+| `policy`           | Sandbox policies may need forge-specific filesystem or process rules; network access is managed via providers (ADR-0065) but non-network policy sections can still differ per forge |
 
 #### Fields that stay at top level only (platform-neutral)
 
@@ -257,11 +258,10 @@ compatibility.
 | `agent`            | Agent definitions are forge-agnostic               |
 | `model`            | Model selection is independent of forge             |
 | `image`            | Container images are platform-neutral              |
-| `policy`           | Sandbox policies describe capabilities, not forges |
-| `host_files`       | File delivery is a runner concern, not forge        |
+| `host_files`       | File delivery is a runner concern, not forge (note: forge-specific `host_files` added in #5917) |
 | `providers`        | OpenShell providers are forge-agnostic             |
 | `api_servers`      | REST proxies abstract forge details                |
-| `plugins`          | MCP plugins are forge-agnostic                     |
+| `plugins`          | MCP plugins are forge-agnostic; can be local paths or URLs (ADR-0038) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
 | `timeout_minutes`  | Timeouts are operational, not forge-specific        |
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
@@ -465,13 +465,15 @@ operational config file.
 ```go
 // ForgeConfig holds platform-specific harness configuration.
 // This is purely declarative YAML config — it selects which
-// scripts, skills, and env vars to use per platform. It is
+// scripts, skills, host files, and env vars to use per platform. It is
 // distinct from the forge.Client interface (internal/forge/),
 // which is the runtime abstraction for forge API operations.
 type ForgeConfig struct {
     PreScript      string            `yaml:"pre_script,omitempty"`
     PostScript     string            `yaml:"post_script,omitempty"`
+    Policy         string            `yaml:"policy,omitempty"`
     Skills         []string          `yaml:"skills,omitempty"`
+    HostFiles      []HostFile        `yaml:"host_files,omitempty"` // added in #5917
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
 }
@@ -593,8 +595,8 @@ forge-specific artifact. The harness and agent definition are portable.
 
 - **Bidirectional composition.** The `base:` merge semantics had an
   inverse (`DiffHarness`, removed with the scaffold agent extraction)
-  used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
-  `migrate-customizations` command.
+  formerly used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command *(now removed)*.
 
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the
@@ -704,9 +706,8 @@ forge-specific artifact. The harness and agent definition are portable.
   key in existing config files, so v1 compatibility is preserved.
   Phase 3 (PR 6) added `omitempty` as a deprecation step; Phase 4
   completed the removal. No v2 schema bump was needed.
-  *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field. The
-  Phase 4 plan (`docs/plans/adr-0045-forge-portable-harness-phase4.md`)
-  recommends staying on v1 — removal is backward-compatible since
+  *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field.
+  Staying on v1 is safe — removal is backward-compatible since
   `yaml.Unmarshal` silently ignores unknown keys.*
 
 - **config.yaml agents: block removal timeline.** The `agents:` block is

@@ -100,9 +100,21 @@ type DispatchConfig struct {
 	MintURL  string `yaml:"mint_url,omitempty"` // informational, set when mode=oidc-mint
 }
 
-// InferenceConfig configures the inference provider used by agents.
+// InferenceConfig configures the inference provider used by agents
+// (org-mode config).
 type InferenceConfig struct {
 	Provider string `yaml:"provider"`
+}
+
+// PerRepoInferenceConfig groups inference backend settings for
+// per-repo configs. The Provider field identifies the inference
+// backend (currently only "vertex"); Project, Region, and WIFProvider
+// hold provider-specific connection details.
+type PerRepoInferenceConfig struct {
+	Provider    string `yaml:"provider,omitempty"`
+	Project     string `yaml:"project,omitempty"`
+	Region      string `yaml:"region,omitempty"`
+	WIFProvider string `yaml:"wif_provider,omitempty"`
 }
 
 // StatusNotificationConfig controls status comments posted on issues/PRs
@@ -112,7 +124,8 @@ type StatusNotificationConfig struct {
 }
 
 // CommentNotificationConfig controls start/completion comments.
-// Valid values: "enabled" (default when parent is set), "disabled".
+// Valid start values: "enabled" (default), "disabled".
+// Valid completion values: "enabled" (default), "on_failure", "disabled".
 type CommentNotificationConfig struct {
 	Start      string `yaml:"start,omitempty"`
 	Completion string `yaml:"completion,omitempty"`
@@ -450,12 +463,13 @@ func validateStatusNotifications(cfg *StatusNotificationConfig) error {
 	if cfg == nil {
 		return nil
 	}
-	validCommentValues := []string{"", "enabled", "disabled"}
-	if !slices.Contains(validCommentValues, cfg.Comment.Start) {
+	validStartValues := []string{"", "enabled", "disabled"}
+	if !slices.Contains(validStartValues, cfg.Comment.Start) {
 		return fmt.Errorf("invalid status_notifications.comment.start %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Start)
 	}
-	if !slices.Contains(validCommentValues, cfg.Comment.Completion) {
-		return fmt.Errorf("invalid status_notifications.comment.completion %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Completion)
+	validCompletionValues := []string{"", "enabled", "disabled", "on_failure"}
+	if !slices.Contains(validCompletionValues, cfg.Comment.Completion) {
+		return fmt.Errorf("invalid status_notifications.comment.completion %q: must be \"enabled\", \"on_failure\", or \"disabled\"", cfg.Comment.Completion)
 	}
 	return nil
 }
@@ -503,6 +517,7 @@ type perRepoConfig struct {
 	// where version is always required). This allows the fallback
 	// chain to inherit version from the parent layer.
 	Version    string       `yaml:"version,omitempty"`
+	Forge      string       `yaml:"forge,omitempty"`
 	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
 	Runtime    string       `yaml:"runtime,omitempty"`
 	Roles      []string     `yaml:"roles,omitempty"`
@@ -513,6 +528,20 @@ type perRepoConfig struct {
 	// marshaled as `allowed_remote_resources: []`.
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	// Notifications backs the StatusNotifications() accessor. Named
+	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
+	// because "StatusNotifications" is the established accessor name
+	// shared with orgConfig via ConfigReader, and Go forbids a field and
+	// method sharing a name on the same type.
+	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
+
+	// Mint URL for token minting (ADR 0069 Decision 1).
+	MintURL string `yaml:"mint_url,omitempty"`
+
+	// Inference groups the inference backend settings under a single
+	// top-level key. The nested struct allows future provider types
+	// beyond "vertex" without flat-key proliferation.
+	Inference *PerRepoInferenceConfig `yaml:"inference,omitempty"`
 
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
@@ -548,6 +577,99 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 			},
 		}
 	}
+	return cfg
+}
+
+// NewEmptyPerRepoOverlay creates an empty per-repo config suitable for
+// use as a stub overlay when a preset base layer is provided. No roles,
+// agents, or version are populated; the overlay inherits everything from
+// the base layer via the parent fallback chain.
+func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
+	return &perRepoConfig{
+		parent: &perRepoDefaults{},
+	}
+}
+
+// NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
+// fields from an org config. Per-repo role overrides (repos.<name>.roles)
+// take precedence over defaults.roles. Non-portable fields
+// (max_implementation_retries, auto_merge) are not carried over —
+// callers should warn separately.
+func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string) PerRepoConfigWriter {
+	// Determine roles: per-repo overrides take precedence over defaults.
+	roles := orgCfg.OrgRepoDefaults().Roles
+	if repoMap := orgCfg.RepoMap(); repoMap != nil {
+		if rc, ok := repoMap[repoName]; ok && len(rc.Roles) > 0 {
+			roles = rc.Roles
+		}
+	}
+	if roles == nil {
+		roles = PerRepoDefaultRoles()
+	} else {
+		rolesCopy := make([]string, len(roles))
+		copy(rolesCopy, roles)
+		roles = rolesCopy
+	}
+
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   roles,
+		parent:  &perRepoDefaults{},
+	}
+
+	// Agents: deep-copy org agent entries (AgentEntry.Enabled is *bool).
+	if agents := orgCfg.AgentEntries(); len(agents) > 0 {
+		copied := make([]AgentEntry, len(agents))
+		copy(copied, agents)
+		for i, a := range copied {
+			if a.Enabled != nil {
+				e := *a.Enabled
+				copied[i].Enabled = &e
+			}
+		}
+		cfg.Agents = copied
+	}
+
+	// AllowedRemoteResources: copy from org config with defaults ensured.
+	if arr := orgCfg.AllowedResources(); len(arr) > 0 {
+		cfg.AllowedRemoteResources = EnsureDefaultAllowedRemoteResources(arr)
+	} else {
+		cfg.AllowedRemoteResources = DefaultAllowedRemoteResources()
+	}
+
+	// CreateIssues: deep-copy from org config to avoid pointer aliasing.
+	if ci := orgCfg.IssueCreationConfig(); ci != nil {
+		ciCopy := *ci
+		ciCopy.AllowTargets = AllowTargets{
+			Orgs:  append([]string(nil), ci.AllowTargets.Orgs...),
+			Repos: append([]string(nil), ci.AllowTargets.Repos...),
+		}
+		cfg.CreateIssues = &ciCopy
+	} else if targetRepo != "" {
+		cfg.CreateIssues = &CreateIssuesConfig{
+			AllowTargets: AllowTargets{
+				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
+			},
+		}
+	}
+
+	// KillSwitch: only set when active (false is the default).
+	if orgCfg.IsKillSwitchActive() {
+		ks := true
+		cfg.KillSwitch = &ks
+	}
+
+	// Runtime: copy when explicitly set.
+	if rt := orgCfg.OrgRepoDefaults().Runtime; rt != "" {
+		cfg.Runtime = rt
+	}
+
+	// StatusNotifications: deep-copy from org config to avoid pointer aliasing.
+	if sn := orgCfg.StatusNotifications(); sn != nil {
+		snCopy := *sn
+		cfg.Notifications = &snCopy
+	}
+
 	return cfg
 }
 
@@ -592,13 +714,17 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 // as an empty YAML sequence (e.g. `roles: []`,
 // `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
-	Version                string              `yaml:"version,omitempty"`
-	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
-	Runtime                string              `yaml:"runtime,omitempty"`
-	Roles                  *[]string           `yaml:"roles,omitempty"`
-	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
-	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	Version                string                    `yaml:"version,omitempty"`
+	Forge                  string                    `yaml:"forge,omitempty"`
+	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
+	Runtime                string                    `yaml:"runtime,omitempty"`
+	Roles                  *[]string                 `yaml:"roles,omitempty"`
+	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
+	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
+	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
+	MintURL                string                    `yaml:"mint_url,omitempty"`
+	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -608,11 +734,18 @@ type perRepoConfigMarshal struct {
 // sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
-		Version:      c.Version,
-		KillSwitch:   c.KillSwitch,
-		Runtime:      c.Runtime,
-		Agents:       c.Agents,
-		CreateIssues: c.CreateIssues,
+		Version:             c.Version,
+		Forge:               c.Forge,
+		KillSwitch:          c.KillSwitch,
+		Runtime:             c.Runtime,
+		Agents:              c.Agents,
+		CreateIssues:        c.CreateIssues,
+		StatusNotifications: c.Notifications,
+		MintURL:             c.MintURL,
+	}
+	// Only emit inference block when at least one field is set locally.
+	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
+		h.Inference = c.Inference
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -660,6 +793,15 @@ func (c *perRepoConfig) Validate() error {
 		validRuntimes := ValidRuntimes()
 		if !slices.Contains(validRuntimes, rt) {
 			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
+		}
+	}
+	if err := validateStatusNotifications(c.Notifications); err != nil {
+		return err
+	}
+	if c.Inference != nil && c.Inference.Provider != "" {
+		validProviders := ValidProviders()
+		if !slices.Contains(validProviders, c.Inference.Provider) {
+			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
 		}
 	}
 	return nil

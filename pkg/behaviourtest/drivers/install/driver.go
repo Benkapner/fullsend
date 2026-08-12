@@ -12,8 +12,8 @@ type Driver interface {
 
 // State describes where behaviour tests find fullsend configuration after install.
 //
-// Concurrency: the perRepoState implementation is a read-only snapshot
-// whose fields (org, repo) are set at construction and never modified.
+// Concurrency: the PerRepoState implementation is a read-only snapshot
+// whose fields (org, repo, mintURL) are set at construction and never modified.
 // All accessor methods return derived constants. Sharing a single State
 // across goroutines via World.Clone is safe by design for
 // GODOG_CONCURRENCY>1. TestConcurrentStateAccess in this package
@@ -23,7 +23,6 @@ type Driver interface {
 // access or be deep-copied per scenario in World.Clone.
 type State interface {
 	Mode() string
-	TestRepo() string
 	// ConfigOwner and ConfigRepo locate commits for behaviour scripts and config reads.
 	ConfigOwner() string
 	ConfigRepo() string
@@ -38,3 +37,26 @@ type State interface {
 	// AgentArtifactName is the upload-artifact name for triage agent output.
 	AgentArtifactName() string
 }
+
+// MintURLProvider is optionally implemented by State values that carry
+// the effective mint URL. The suite uses this to thread the mint URL
+// from the install driver to the RepoEnsurer.
+type MintURLProvider interface {
+	MintURL() string
+}
+
+// CLIRunnerFunc is the signature for running a fullsend CLI command.
+// The default implementation is e2etest.TryRunCLI. Inject a custom
+// function in tests to avoid shelling out.
+type CLIRunnerFunc func(binary, token string, args ...string) (string, error)
+
+const (
+	// PerRepoTriageWorkflow is the workflow path for per-repo triage.
+	PerRepoTriageWorkflow = "fullsend.yaml"
+
+	// PerRepoAgentWorkflow is the reusable workflow for the triage agent.
+	PerRepoAgentWorkflow = "reusable-triage.yml"
+
+	// PerRepoAgentArtifact is the upload-artifact name for triage output.
+	PerRepoAgentArtifact = "fullsend-triage"
+)

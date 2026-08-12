@@ -173,15 +173,21 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Credential validation
 	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
 	assert.Contains(t, s, "FULLSEND_CREDENTIAL_MODE must be")
-	// Should NOT check CI_PIPELINE_SOURCE — child pipelines see parent_pipeline
-	assert.NotContains(t, s, `CI_PIPELINE_SOURCE`)
+	// Bot identity verification uses server-side .source from Pipelines API
+	// (deny-by-default case statement, not forgeable CI_PIPELINE_SOURCE env var)
+	assert.Contains(t, s, `jq -r '.source // empty'`)
+	assert.Contains(t, s, `parent_pipeline)`)
+	assert.Contains(t, s, "unexpected pipeline source")
+	assert.Contains(t, s, "rejecting forged dispatch")
 	// Generic runner image, not agent-specific
 	assert.Contains(t, s, "fullsend-runner:latest")
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
-	// Rules gate on STAGE being set
-	assert.Contains(t, s, `$STAGE != ""`)
+	// Rules gate on STAGE being set (truthy form — `$STAGE != ""` would
+	// match when STAGE is undefined because GitLab evaluates null != "" as true)
+	assert.Contains(t, s, "if: $STAGE")
+	assert.NotContains(t, s, `$STAGE != ""`)
 	// ENTRYPOINT override for runner image
 	assert.Contains(t, s, `entrypoint: [""]`)
 	// Uses python3 for YAML parsing (yq not in runner image)
@@ -189,6 +195,9 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "yq")
 	// No fallback to working-tree config (untrusted in MR context)
 	assert.NotContains(t, s, "cat .fullsend/config.yaml")
+	// Back-link from dispatched pipelines to poll job
+	assert.Contains(t, s, "FULLSEND_POLL_JOB_URL")
+	assert.Contains(t, s, "Dispatched by:")
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
@@ -233,8 +242,9 @@ func TestGitLabAgentTemplateForkProtection(t *testing.T) {
 	// Fork check applies only to code/fix stages
 	assert.Contains(t, s, `"code"`)
 	assert.Contains(t, s, `"fix"`)
-	// Fork check uses IS_FORK variable, not jq on event payload
-	assert.NotContains(t, s, "EVENT_PAYLOAD")
+	// Fork check uses IS_FORK variable, not jq-parsing the event payload.
+	// EVENT_PAYLOAD_B64 is referenced in the HMAC signed message (not for fork detection).
+	assert.NotRegexp(t, `jq.*EVENT_PAYLOAD`, s)
 	// Fork detection exits with error (visible failure), not silent skip
 	assert.Contains(t, s, "exit 1")
 }
@@ -278,8 +288,6 @@ func TestGitLabPollContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: poll")
 	assert.Contains(t, s, "fullsend poll")
-	assert.Contains(t, s, "dispatches.json")
-	assert.Contains(t, s, "child-pipeline.yml")
 	assert.Contains(t, s, "schedule")
 	assert.Contains(t, s, "CI_COMMIT_REF_PROTECTED")
 	// Credential validation
@@ -290,12 +298,13 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.NotContains(t, s, "https://gitlab.com")
 	// ENTRYPOINT override for runner image
 	assert.Contains(t, s, `entrypoint: [""]`)
-	// Poll and generate are merged into one job — no separate generate job
-	assert.NotContains(t, s, "generate-child-pipelines:")
-	// Child pipeline generation happens inside poll-events
-	assert.Contains(t, s, "generate-child-pipeline")
-	// No-op child pipeline handles empty dispatches (no dotenv gating —
-	// GitLab evaluates rules: at pipeline creation, before dotenv is available)
+	// No bridge job — poller dispatches pipelines directly via API
+	assert.NotContains(t, s, "dispatch-agents")
+	assert.NotContains(t, s, "trigger:")
+	assert.NotContains(t, s, "child-pipeline.yml")
+	assert.NotContains(t, s, "generate-child-pipeline")
+	assert.NotContains(t, s, "dispatches.json")
+	// No dotenv gating
 	assert.NotContains(t, s, "dispatch.env")
 	assert.NotContains(t, s, "HAS_DISPATCHES")
 }
@@ -311,10 +320,69 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	assert.Contains(t, s, "- agent")
 	assert.Contains(t, s, "fullsend-dispatch.yml")
 	assert.Contains(t, s, "fullsend-poll.yml")
+	// Auto-cancel disabled to prevent queued agent pipelines from being killed
+	assert.Contains(t, s, "auto_cancel")
+	assert.Contains(t, s, "on_new_commit: none")
+	// API-triggered pipeline rule for cron-poller dispatched pipelines
+	// Requires API source + protected branch + STAGE variable
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+	assert.NotContains(t, s, `$STAGE != ""`)
+	// Agent template included for API-triggered pipelines
+	assert.Contains(t, s, "fullsend-agent.yml")
 	// push pipelines intentionally excluded — documented in workflow comment
 	assert.Contains(t, s, "Push-triggered pipelines are intentionally excluded")
+	// no catch-all rule — workflow:rules is open-ended so adopters
+	// can add push rules without needing to remove a never gate
+	assert.NotContains(t, s, "- when: never")
 	// parent_pipeline rule removed (child pipelines don't inherit workflow:rules)
 	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "parent_pipeline"`)
+}
+
+func TestGitLabRunnerTagsPlaceholder(t *testing.T) {
+	taggedFiles := []string{
+		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/fullsend-dispatch.yml",
+		".gitlab/ci/fullsend-agent.yml",
+	}
+	for _, path := range taggedFiles {
+		content, err := GitLabPerRepoFile(path)
+		require.NoError(t, err, path)
+		assert.Contains(t, string(content), "__RUNNER_TAGS__", "%s must contain __RUNNER_TAGS__ placeholder", path)
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_WithTags(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles([]string{"docker", "linux"})
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, ".yml") {
+			s := string(f.Content)
+			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
+			if strings.Contains(s, "tags:") {
+				assert.Contains(t, s, `["docker", "linux"]`, "%s should contain formatted tags", f.Path)
+			}
+		}
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_NoTags(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil)
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, ".yml") {
+			s := string(f.Content)
+			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
+		}
+	}
+}
+
+func TestFormatRunnerTags(t *testing.T) {
+	assert.Equal(t, "[]", formatRunnerTags(nil))
+	assert.Equal(t, "[]", formatRunnerTags([]string{}))
+	assert.Equal(t, `["docker"]`, formatRunnerTags([]string{"docker"}))
+	assert.Equal(t, `["docker", "linux"]`, formatRunnerTags([]string{"docker", "linux"}))
 }
 
 func TestGitLabNoPerStageTemplates(t *testing.T) {

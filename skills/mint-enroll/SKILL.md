@@ -2,8 +2,9 @@
 name: mint-enroll
 description: >
   SRE runbook for enrolling new GitHub orgs or repos into the fullsend token
-  mint service using the fullsend CLI. Use when onboarding a new org, adding a
-  per-repo WIF provider, or re-enrolling after infrastructure changes.
+  mint service using `go run ./cmd/fullsend` from this checkout. Use when
+  onboarding a new org, adding a per-repo WIF provider, or re-enrolling after
+  infrastructure changes.
 allowed-tools: Bash
 triggers:
   - mint enroll
@@ -15,16 +16,27 @@ triggers:
 
 # Mint Service Enrollment
 
-Enroll a new GitHub org or per-repo into the fullsend token mint using the
-`fullsend mint` CLI. The mint is a stateless service (deployed on GCP Cloud
-Function or Cloudflare Worker) that exchanges GitHub OIDC JWTs for scoped
-GitHub App installation tokens.
+Enroll a new GitHub org or per-repo into the fullsend token mint using
+`go run ./cmd/fullsend mint` from this checkout. The mint is a stateless
+service (deployed on GCP Cloud Function or Cloudflare Worker) that exchanges
+GitHub OIDC JWTs for scoped GitHub App installation tokens.
 
 Follow these steps in order. Do not skip steps.
 
 **Always ask the operator for the GCP project ID.** Do not infer it from
 `gcloud config get-value project` — the local config may point at the
 wrong project.
+
+**Always run the CLI from this checkout via `go run`.** From the repo root:
+
+```bash
+go run ./cmd/fullsend <subcommand> …
+```
+
+Do **not** use a `fullsend` binary from mise, `$PATH`, `go install`, or
+another checkout. A stale CLI can rewrite hosted-mint env vars with obsolete
+merge logic (this previously dropped `e2e`/`fix` from `ALLOWED_ROLES` and
+broke e2e). See [Running the fullsend CLI](../../docs/contributing/go-code.md#running-the-fullsend-cli).
 
 ## Setup
 
@@ -44,14 +56,14 @@ MINT_REGION="us-central1"   # default; change if deployed elsewhere
 Verify the operator has the required IAM roles: Workload Identity Pool Admin,
 Cloud Functions Viewer, Cloud Run Admin. Secret Manager Admin is only needed
 for initial PEM bootstrap (`mint deploy --pem-dir`), not for enrollment.
-Per-repo enrollment additionally requires Project IAM Admin (to grant
-`roles/aiplatform.user` to the repo WIF principal).
+Enrollment does not grant any IAM roles; Vertex AI access for a repo is
+provisioned separately via `fullsend inference provision`.
 
-Verify credentials and that the fullsend CLI is available:
+Verify credentials and that this checkout's CLI builds:
 
 ```bash
 gcloud auth list --filter=status:ACTIVE --format="value(account)"
-fullsend --version
+go run ./cmd/fullsend --version
 ```
 
 ## Constraints
@@ -83,12 +95,12 @@ PEM keys and app IDs are tied to the role, not the org. Secrets use role-only na
 (`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the
 mint. `ROLE_APP_IDS` uses the same model: one GitHub App ID per role (e.g.,
 `coder` → `123456`), shared by all enrolled orgs. PEMs and app IDs must already
-exist (from `mint deploy --pem-dir` or `fullsend admin install`); enrollment
+exist (from `mint deploy --pem-dir` or `go run ./cmd/fullsend admin install`); enrollment
 does not create, copy, or modify PEM secrets or app ID mappings.
 
 Apps must be installed on the target org before the mint can produce tokens.
 An org admin installs via `https://github.com/apps/{slug}/installations/new`
-or by running `fullsend admin install`.
+or by running `go run ./cmd/fullsend admin install`.
 
 ## Enrollment Steps
 
@@ -113,13 +125,13 @@ Run `mint status` to see the current mint state, enrolled orgs, Cloud Run
 revision info, and PEM health:
 
 ```bash
-fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
+go run ./cmd/fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
 If the mint is not deployed yet, deploy it first:
 
 ```bash
-fullsend mint deploy --project="$GCP_PROJECT" --region="$MINT_REGION"
+go run ./cmd/fullsend mint deploy --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
 Check the status output for:
@@ -135,7 +147,7 @@ For per-org drill-down into PEM status (accepts org name only, not
 `owner/repo` — for per-repo enrollment, use just the org portion):
 
 ```bash
-fullsend mint status "<github-org>" --project="$GCP_PROJECT" --region="$MINT_REGION"
+go run ./cmd/fullsend mint status "<github-org>" --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
 **STOP — show the status output to the operator.** Confirm the mint is
@@ -146,7 +158,7 @@ healthy and the enrollment target is correct before proceeding.
 Preview the enrollment first with `--dry-run`:
 
 ```bash
-fullsend mint enroll "$TARGET" \
+go run ./cmd/fullsend mint enroll "$TARGET" \
   --project="$GCP_PROJECT" \
   --region="$MINT_REGION" \
   --dry-run
@@ -159,7 +171,7 @@ If the preview looks correct and the operator confirms, run the actual
 enrollment:
 
 ```bash
-fullsend mint enroll "$TARGET" \
+go run ./cmd/fullsend mint enroll "$TARGET" \
   --project="$GCP_PROJECT" \
   --region="$MINT_REGION"
 ```
@@ -185,7 +197,7 @@ If the CLI reports "Post-write verification FAILED", run `mint status` to
 diagnose:
 
 ```bash
-fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
+go run ./cmd/fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
 Common causes of verification failure:
@@ -193,7 +205,7 @@ Common causes of verification failure:
 - **Template/traffic divergence** — traffic routing step didn't complete.
   Re-run enrollment to trigger a new revision cycle.
 - **Missing shared app IDs** — the mint has no role-keyed `ROLE_APP_IDS` entries.
-  Run `mint deploy --pem-dir` or `fullsend admin install` on the mint project first.
+  Run `mint deploy --pem-dir` or `go run ./cmd/fullsend admin install` on the mint project first.
 
 ### 5. Handoff to repo admin
 
@@ -201,7 +213,7 @@ The mint SRE does not configure target repos. Inform the repo admin that
 mint-side enrollment is complete and provide:
 
 - **Mint URL**: shown in `mint status` output
-- GitHub Actions org variable `FULLSEND_MINT_URL` (set by `fullsend admin install` or manually)
+- GitHub Actions org variable `FULLSEND_MINT_URL` (set by `go run ./cmd/fullsend admin install` or manually)
 - `.github/workflows/fullsend.yaml` shim workflow in the target repo
 
 For per-repo enrollments, also provide:
@@ -211,7 +223,7 @@ For per-repo enrollments, also provide:
 
 For per-org, the `repo-maintenance` workflow in `.fullsend` handles shim
 deployment. For per-repo, the admin runs
-`fullsend admin install <owner/repo>` or configures manually.
+`go run ./cmd/fullsend admin install <owner/repo>` or configures manually.
 
 Verify that all required GitHub Apps are installed on the target org
 before the admin triggers a workflow.
@@ -226,11 +238,11 @@ Use the CLI to unenroll:
 
 ```bash
 # Dry-run first
-fullsend mint unenroll "$TARGET" \
+go run ./cmd/fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --dry-run
 
 # Actual unenroll (after operator confirms dry-run output)
-fullsend mint unenroll "$TARGET" \
+go run ./cmd/fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
@@ -247,11 +259,11 @@ add `--delete-provider` to the unenroll command:
 
 ```bash
 # Preview permanent WIF provider deletion first (repo-scoped only)
-fullsend mint unenroll "$TARGET" \
+go run ./cmd/fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider --dry-run
 
 # Permanently delete WIF provider (repo-scoped only, after dry-run confirms)
-fullsend mint unenroll "$TARGET" \
+go run ./cmd/fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider
 ```
 
@@ -280,7 +292,7 @@ gcloud run services update "$MINT_SERVICE" \
 # gcloud run services update "$MINT_SERVICE" --set-env-vars="KEY=value"
 ```
 
-Prefer `fullsend mint enroll` over manual `gcloud` env var edits — the
+Prefer `go run ./cmd/fullsend mint enroll` over manual `gcloud` env var edits — the
 CLI handles read-merge-write with REVISION-pinned traffic routing.
 
 Set these variables for the commands below:

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -30,11 +31,51 @@ import (
 // TelemetryFile is the artifact name written to the output dir.
 const TelemetryFile = "run-telemetry.jsonl"
 
+// FlushTimeout is the budget for tp.Shutdown to flush pending spans at CLI exit.
+const FlushTimeout = 5 * time.Second
+
 const scopeName = "github.com/fullsend-ai/fullsend/internal/telemetry"
 
 // newOTLPExporter is a seam over exporter construction for tests.
-var newOTLPExporter = func(ctx context.Context, endpoint string) (sdktrace.SpanExporter, error) {
-	return otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
+// The SDK reads OTEL_EXPORTER_OTLP_*ENDPOINT from the environment.
+var newOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+	retryOption := otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+		Enabled:         true,
+		InitialInterval: 250 * time.Millisecond,
+		MaxInterval:     2 * time.Second,
+	})
+	return otlptracehttp.New(ctx, retryOption)
+}
+
+func validateEndpoints(endpoint, tracesEndpoint string) error {
+	// The SDK uses TRACES_ENDPOINT when set, falling back to ENDPOINT.
+	// Validate only the value that will actually be used.
+	ep := tracesEndpoint
+	if ep == "" {
+		ep = endpoint
+	}
+	if ep == "" {
+		return nil
+	}
+
+	u, err := url.Parse(ep)
+	if err != nil {
+		return err
+	}
+
+	if u.Scheme == "" {
+		return fmt.Errorf("endpoint %q has no scheme, it is required", ep)
+	}
+
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("endpoint %q uses the %q scheme which is not supported", ep, u.Scheme)
+	}
+
+	if u.Host == "" {
+		return fmt.Errorf("endpoint %q has no host, it is required", ep)
+	}
+
+	return nil
 }
 
 // Setup creates a TracerProvider with file and (optionally) OTLP exporters.
@@ -46,7 +87,7 @@ var newOTLPExporter = func(ctx context.Context, endpoint string) (sdktrace.SpanE
 func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Context)) {
 	noop := func(context.Context) {}
 
-	if isSDKDisabled() {
+	if sdkDisable := os.Getenv("OTEL_SDK_DISABLED"); strings.EqualFold(strings.TrimSpace(sdkDisable), "true") {
 		return tracenoop.NewTracerProvider().Tracer(""), noop
 	}
 
@@ -56,22 +97,24 @@ func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Contex
 	}
 
 	res := buildResource(serviceVersion)
-
 	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(newFileExporter(f))),
 	}
 
-	if endpoint := endpointFromEnv(); endpoint != "" && !isExporterNone() {
-		if err := validateEndpoint(endpoint); err != nil {
-			fmt.Fprintf(os.Stderr, "fullsend: OTLP export skipped: %v\n", err)
-		} else if exp, err := newOTLPExporter(context.Background(), endpoint); err != nil {
-			fmt.Fprintf(os.Stderr, "fullsend: OTLP exporter failed: %v\n", err)
+	endpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	tracesEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+	if endpoint != "" || tracesEndpoint != "" {
+		if err := validateEndpoints(endpoint, tracesEndpoint); err != nil {
+			fmt.Fprintf(os.Stderr, "fullsend: OTLP endpoints validation failed: %v\n", err)
 		} else {
-			opts = append(opts, sdktrace.WithSpanProcessor(
-				&parentSampledProcessor{base: sdktrace.NewBatchSpanProcessor(exp)},
-			))
+			exp, err := newOTLPExporter(context.Background())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "fullsend: OTLP export setup failed: %v\n", err)
+			} else {
+				opts = append(opts, sdktrace.WithSpanProcessor(&parentSampledProcessor{base: sdktrace.NewBatchSpanProcessor(exp)}))
+			}
 		}
 	}
 
@@ -79,44 +122,13 @@ func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Contex
 	tracer := tp.Tracer(scopeName, trace.WithInstrumentationVersion(serviceVersion))
 
 	cleanup := func(ctx context.Context) {
-		_ = tp.Shutdown(ctx)
+		if err := tp.Shutdown(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "fullsend: telemetry flush incomplete: %v\n", err)
+		}
 		_ = f.Close()
 	}
 
 	return tracer, cleanup
-}
-
-func endpointFromEnv() string {
-	if v := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")); v != "" {
-		return v
-	}
-	return strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
-}
-
-func isSDKDisabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("OTEL_SDK_DISABLED")), "true")
-}
-
-func isExporterNone() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("OTEL_TRACES_EXPORTER")), "none")
-}
-
-func validateEndpoint(endpoint string) error {
-	u, err := url.Parse(endpoint)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("OTLP endpoint %q is not an absolute http(s) URL with a host", endpoint)
-	}
-	if p := protocolFromEnv(); p != "" && p != "http/protobuf" {
-		return fmt.Errorf("OTEL_EXPORTER_OTLP_(TRACES_)PROTOCOL %q is not supported (only http/protobuf)", p)
-	}
-	return nil
-}
-
-func protocolFromEnv() string {
-	if v := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")); v != "" {
-		return v
-	}
-	return strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"))
 }
 
 // parentSampledProcessor wraps a SpanProcessor and only forwards spans whose

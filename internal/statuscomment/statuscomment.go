@@ -33,6 +33,19 @@ type TerminationReason string
 const (
 	ReasonTerminated TerminationReason = "terminated"
 	ReasonCancelled  TerminationReason = "cancelled"
+
+	// ReasonSkipCommentFailed is used when the pre-script decided to skip
+	// the run but no completion comment ended up recorded for it, while the
+	// job otherwise completed normally (jobStatus is "success" or
+	// unknown). The missing comment could mean the notifier failed to set
+	// up (no post was ever attempted) or that PostCompletionWithDetail's
+	// own skip-reason comment failed to post — this function can't tell
+	// those apart, so the label stays outcome-neutral rather than
+	// asserting a specific cause. It's semantically distinct from a hard
+	// kill or job cancellation — the agent ran to completion — so it gets
+	// a dedicated label rather than falling through to ReasonTerminated.
+	// See PR #5736.
+	ReasonSkipCommentFailed TerminationReason = "skip_comment_failed"
 )
 
 // now is overridable in tests to fix the current time for ReconcileOrphaned.
@@ -123,11 +136,27 @@ func commentEnabled(val string) bool {
 	return val == "" || val == "enabled"
 }
 
+// shouldPostCompletion reports whether a completion comment should be
+// posted given the configured value and the agent outcome status.
+func shouldPostCompletion(val, status string) bool {
+	switch val {
+	case "on_failure":
+		return status == "failure" || status == "cancelled" || status == "skipped"
+	default:
+		return commentEnabled(val)
+	}
+}
+
 // PostStart posts a start comment on the issue/PR.
+//
+// When completion is set to "on_failure", the start comment is automatically
+// suppressed regardless of the start setting. Posting a start comment that
+// gets deleted on success would still trigger a GitHub notification pointing
+// to a deleted comment — defeating the purpose of reducing noise.
 func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	n.startTime = n.now().UTC()
 
-	if commentEnabled(n.cfg.Comment.Start) {
+	if commentEnabled(n.cfg.Comment.Start) && n.cfg.Comment.Completion != "on_failure" {
 		if err := n.refreshClient(ctx); err != nil {
 			return err
 		}
@@ -142,8 +171,18 @@ func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	return nil
 }
 
-// PostCompletion posts or edits a completion comment.
-// status should be "success", "failure", or "cancelled".
+// PostCompletion posts or edits a completion comment with no extra
+// detail. See PostCompletionWithDetail.
+func (n *Notifier) PostCompletion(ctx context.Context, description, status string) error {
+	return n.PostCompletionWithDetail(ctx, description, status, "")
+}
+
+// PostCompletionWithDetail posts or edits a completion comment.
+// status should be "success", "failure", "cancelled", or "skipped".
+//
+// detail is an optional short explanation rendered after the status label
+// (e.g. the pre-script's skip reason). It may come from script output, so
+// it is sanitized before rendering — see sanitizeDetail.
 //
 // Placement follows three rules:
 //  1. If the agent posted output after the start comment (a bot-authored
@@ -155,17 +194,18 @@ func (n *Notifier) PostStart(ctx context.Context, description string) error {
 //  3. Otherwise (other activity pushed past the start, but no agent
 //     output), a new completion comment is posted so the user sees the
 //     result while reading forward.
-func (n *Notifier) PostCompletion(ctx context.Context, description, status string) error {
+func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, status, detail string) error {
 	completionTime := n.now().UTC()
 
-	if !commentEnabled(n.cfg.Comment.Completion) {
-		// Completion comments disabled — clean up the start comment so it
-		// doesn't remain orphaned in its "Started" state.
+	if !shouldPostCompletion(n.cfg.Comment.Completion, status) {
+		// Completion comment suppressed (disabled or on_failure with success) —
+		// clean up the start comment so it doesn't remain orphaned in its
+		// "Started" state.
 		if n.startCommentID != 0 {
 			if err := n.refreshClient(ctx); err != nil {
 				n.warnf("failed to mint token for start comment cleanup: %v", err)
 			} else if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
-				n.warnf("failed to delete start comment when completion disabled: %v", err)
+				n.warnf("failed to delete start comment when completion suppressed: %v", err)
 			}
 		}
 		return nil
@@ -175,7 +215,7 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 		return err
 	}
 
-	body := n.buildCompletionBody(description, status, completionTime)
+	body := n.buildCompletionBody(description, status, detail, completionTime)
 
 	if n.startCommentID != 0 {
 		agentPosted, startIsLast, err := n.analyzeTimeline(ctx)
@@ -248,14 +288,17 @@ func (n *Notifier) buildStartBody(description string) string {
 
 	line2 := n.buildSecondLine()
 	if line2 != "" {
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(line2)
 	}
 	return b.String()
 }
 
-func (n *Notifier) buildCompletionBody(description, status string, completionTime time.Time) string {
+func (n *Notifier) buildCompletionBody(description, status, detail string, completionTime time.Time) string {
 	statusLabel := statusEmoji(status) + " " + capitalize(status)
+	if d := sanitizeDetail(detail); d != "" {
+		statusLabel += " (" + d + ")"
+	}
 
 	var b strings.Builder
 	b.WriteString(n.marker)
@@ -267,7 +310,7 @@ func (n *Notifier) buildCompletionBody(description, status string, completionTim
 
 	line2 := n.buildSecondLine()
 	if line2 != "" {
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(line2)
 	}
 	return b.String()
@@ -331,6 +374,63 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// maxDetailLen caps the rendered status detail so a verbose script cannot
+// turn the one-line status comment into a wall of text.
+const maxDetailLen = 200
+
+// sanitizeDetail makes a status detail safe to embed in the completion
+// comment. The detail can originate in script output (the pre-script skip
+// reason), which may in turn carry forge-sourced text, so it must not be
+// able to break out of the single status line, forge an HTML comment
+// marker (the `fullsend:agent-status` / `fullsend:status:terminal` tags
+// that ReconcileOrphaned depends on), or inject raw HTML.
+func sanitizeDetail(detail string) string {
+	if detail == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range detail {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			// Control characters — including the newlines that would let a
+			// reason escape the status line — collapse to a single space.
+			if !lastSpace {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		case r == ' ':
+			if !lastSpace {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		case r == '<':
+			// Blocks `<!--`, so a reason cannot forge a status marker, and
+			// blocks raw HTML generally. GitHub renders the entity as `<`.
+			b.WriteString("&lt;")
+			lastSpace = false
+		case r == '[':
+			// Blocks `[text](url)`, so a reason cannot render a link whose
+			// visible text lies about its destination — the same concern
+			// isSafeURL guards for the run URL on the line below. Bare
+			// URLs still autolink under GFM, but those display their real
+			// target.
+			b.WriteString("&#91;")
+			lastSpace = false
+		default:
+			b.WriteRune(r)
+			lastSpace = false
+		}
+	}
+
+	out := strings.TrimSpace(b.String())
+	if runes := []rune(out); len(runes) > maxDetailLen {
+		out = strings.TrimSpace(string(runes[:maxDetailLen])) + "…"
+	}
+	return out
+}
+
 func buildMarker(runID string) (string, error) {
 	if !validRunID.MatchString(runID) {
 		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
@@ -352,6 +452,8 @@ func statusEmoji(status string) string {
 		return "✅"
 	case "failure":
 		return "❌"
+	case "skipped":
+		return "⏭️"
 	default:
 		return "⚠️"
 	}
@@ -368,13 +470,41 @@ func statusEmoji(status string) string {
 // completion and interrupted comment bodies. If found in a non-terminal
 // state, it updates the comment to "Interrupted" and tags it as terminal.
 //
+// completionMode is the configured comment.completion value ("enabled",
+// "on_failure", or "disabled"). It changes what an absent marker means:
+//
+//   - "on_failure": no start comment marker is ever created, so an absent
+//     marker doesn't by itself indicate a problem. It may mean the process
+//     was hard-killed before PostCompletion could run. See PR #5736.
+//   - "" or "enabled" (the default): a status comment should exist for
+//     every run that reached the harness, win or lose. An absent marker
+//     here means the process crashed before it could post anything at
+//     all (e.g. during environment validation) — a blind spot where
+//     maintainers can't tell "no review was triggered" from "review was
+//     attempted and failed silently." See #3635.
+//   - "disabled": an explicit opt-out of all status comments. An absent
+//     marker is never synthesized in this mode, regardless of outcome.
+//
+// jobStatus is the GitHub Actions job status (e.g., "success", "failure",
+// "cancelled"). Synthesis is skipped when jobStatus is "success" or
+// empty — "success" means the run completed normally, and empty means the
+// job outcome is unknown (e.g., --job-status was omitted). wasSkipped
+// overrides this for "on_failure" mode only: it's true when the pre-script
+// itself decided to skip the run, which means jobStatus can be "success"
+// even though no completion comment ended up recorded for it (its error is
+// only logged, not propagated to the job's exit code). See PR #5736.
+//
+// agentDescription is used as the heading for a synthesized "Interrupted"
+// comment (e.g. "Code" for the code agent), so operators can tell which
+// agent failed when multiple agents run against the same issue/PR.
+//
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
 // fullsend process is killed. It does not require a Notifier instance since
 // the process that created it is gone.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason) error {
+func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -403,8 +533,42 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 		return nil
 	}
 
-	// No matching comment found — either PostStart never ran, or the comment
-	// was already deleted. Both are fine.
+	// No matching comment found. Whether that's cause for synthesizing an
+	// "Interrupted" comment depends on completionMode — see the doc
+	// comment above for the three cases. "disabled" is excluded from both
+	// branches below: the user opted out of all status comments, so an
+	// absent marker is never treated as a problem there.
+	jobFailed := jobStatus != "" && jobStatus != "success"
+	shouldSynthesize := false
+	synthReason := reason
+	switch {
+	case completionMode == "on_failure" && (wasSkipped || jobFailed):
+		shouldSynthesize = true
+		// wasSkipped with no other failure/cancellation signal means the
+		// agent ran fine — no completion comment ended up recorded for
+		// it. That's not a hard kill or cancellation, so label it
+		// distinctly rather than defaulting to ReasonTerminated. If
+		// jobStatus does show failure/cancellation, the passed-in reason
+		// already reflects that real outcome, so leave it alone.
+		if wasSkipped && !jobFailed {
+			synthReason = ReasonSkipCommentFailed
+		}
+	case commentEnabled(completionMode) && jobFailed:
+		// Default/"enabled" completion mode: a marker should always exist
+		// for a run that reached the harness. Its absence alongside a
+		// failed or cancelled job means the process crashed before it
+		// could post anything at all. See #3635.
+		shouldSynthesize = true
+	}
+
+	if shouldSynthesize {
+		endTime := now().UTC()
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason)
+		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {
+			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -442,7 +606,7 @@ func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string,
 		parts = append(parts, fmt.Sprintf("[View workflow run →](%s)", runURL))
 	}
 	if len(parts) > 0 {
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(strings.Join(parts, " · "))
 	}
 	return b.String()
@@ -456,6 +620,13 @@ func reasonLabel(reason TerminationReason, description string) (statusLabel, hea
 			heading = description
 		} else {
 			heading = "Agent run cancelled"
+		}
+	case ReasonSkipCommentFailed:
+		statusLabel = "⏭️ Skipped (no completion comment)"
+		if description != "" {
+			heading = description
+		} else {
+			heading = "Agent run skipped"
 		}
 	default:
 		statusLabel = "❌ Terminated"

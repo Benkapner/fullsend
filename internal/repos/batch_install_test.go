@@ -4,148 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
-
-// batchFakeProvisioner is a test double for WIFProvisioner that records
-// call ordering and supports per-repo error injection.
-type batchFakeProvisioner struct {
-	mu sync.Mutex
-
-	ensureOrgCalls     []string // org names
-	ensureOrgErr       error
-	ensureOrgErrForOrg map[string]error
-
-	provisionCalls  []string // repo names
-	provisionResult string
-	provisionErr    error
-	provisionErrFor map[string]error
-
-	registerCalls  []string // repo names
-	registerErr    error
-	registerErrFor map[string]error
-
-	deleteCalls []string // repo names
-	deleteErr   error
-}
-
-func (f *batchFakeProvisioner) DiscoverMint(_ context.Context) (*MintDiscovery, error) {
-	return &MintDiscovery{URL: "https://mint.example.com"}, nil
-}
-
-func (f *batchFakeProvisioner) ProvisionWIF(_ context.Context) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.provisionCalls = append(f.provisionCalls, "called")
-	if f.provisionErr != nil {
-		return "", f.provisionErr
-	}
-	if f.provisionResult == "" {
-		return fakeWIFProvider, nil
-	}
-	return f.provisionResult, nil
-}
-
-func (f *batchFakeProvisioner) RegisterPerRepoWIF(_ context.Context, repo string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.registerCalls = append(f.registerCalls, repo)
-	if err, ok := f.registerErrFor[repo]; ok {
-		return err
-	}
-	return f.registerErr
-}
-
-func (f *batchFakeProvisioner) EnsureOrgInMint(_ context.Context, _ string, org string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureOrgCalls = append(f.ensureOrgCalls, org)
-	if err, ok := f.ensureOrgErrForOrg[org]; ok {
-		return err
-	}
-	return f.ensureOrgErr
-}
-
-func (f *batchFakeProvisioner) DeletePerRepoWIF(_ context.Context, repo string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.deleteCalls = append(f.deleteCalls, repo)
-	return f.deleteErr
-}
-
-func (f *batchFakeProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	return nil
-}
-
-// perRepoProvisioner tracks calls per repo and supports per-repo error injection.
-type perRepoProvisioner struct {
-	mu sync.Mutex
-
-	ensureOrgCalls []string
-	ensureOrgErr   map[string]error
-
-	provisionCalls []string
-	provisionErr   map[string]error
-
-	registerCalls []string
-	registerErr   map[string]error
-
-	// sequenceTracker records the global ordering of WIF operations
-	// to verify serialization.
-	sequenceTracker *[]string
-}
-
-func (p *perRepoProvisioner) DiscoverMint(_ context.Context) (*MintDiscovery, error) {
-	return &MintDiscovery{URL: "https://mint.example.com"}, nil
-}
-
-func (p *perRepoProvisioner) ProvisionWIF(_ context.Context) (string, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.provisionCalls = append(p.provisionCalls, "called")
-	if p.sequenceTracker != nil {
-		*p.sequenceTracker = append(*p.sequenceTracker, "provision")
-	}
-	return fakeWIFProvider, nil
-}
-
-func (p *perRepoProvisioner) RegisterPerRepoWIF(_ context.Context, repo string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.registerCalls = append(p.registerCalls, repo)
-	if p.sequenceTracker != nil {
-		*p.sequenceTracker = append(*p.sequenceTracker, "register:"+repo)
-	}
-	if err, ok := p.registerErr[repo]; ok {
-		return err
-	}
-	return nil
-}
-
-func (p *perRepoProvisioner) EnsureOrgInMint(_ context.Context, _ string, org string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.ensureOrgCalls = append(p.ensureOrgCalls, org)
-	if p.sequenceTracker != nil {
-		*p.sequenceTracker = append(*p.sequenceTracker, "ensureOrg:"+org)
-	}
-	if err, ok := p.ensureOrgErr[org]; ok {
-		return err
-	}
-	return nil
-}
-
-func (p *perRepoProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error {
-	return nil
-}
-
-func (p *perRepoProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	return nil
-}
 
 func newBatchManifest(repos ...string) *Manifest {
 	entries := make([]RepoEntry, len(repos))
@@ -154,16 +17,12 @@ func newBatchManifest(repos ...string) *Manifest {
 	}
 	return &Manifest{
 		Version: 1,
-		Mint: MintConfig{
-			URL:     "https://mint.example.com",
-			Project: "test-project",
-			Region:  "us-central1",
-		},
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v1.0.0",
+		}},
 		Defaults: DefaultsConfig{
-			InferenceProject: "test-inference",
-			InferenceRegion:  "us-central1",
-			FullsendRef:      "v1.0.0",
-			Forge:            "github",
+			Forge: "github",
 		},
 		Repos: entries,
 	}
@@ -182,23 +41,40 @@ func newFakeClientForBatch(repos ...string) *forge.FakeClient {
 	return fc
 }
 
+// batchCfgWithDefaults returns a BatchInstallConfig pre-populated with
+// the install-time-only GCP fields that are now CLI flags (not stored
+// in the manifest). Tests that intentionally omit these values should
+// construct BatchInstallConfig directly.
+func batchCfgWithDefaults(m *Manifest) BatchInstallConfig {
+	return BatchInstallConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+}
+
 func TestBatchInstall_AllFresh(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
+		Manifest:               manifest,
+		MaxConcurrency:         2,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -212,11 +88,6 @@ func TestBatchInstall_AllFresh(t *testing.T) {
 	if len(result.Failed) != 0 {
 		t.Errorf("expected 0 failed, got %d", len(result.Failed))
 	}
-
-	// Verify EnsureOrgInMint was called once for org "acme".
-	if len(prov.ensureOrgCalls) != 1 {
-		t.Errorf("expected 1 EnsureOrgInMint call, got %d", len(prov.ensureOrgCalls))
-	}
 }
 
 func TestBatchInstall_SomeAlreadyInstalled(t *testing.T) {
@@ -226,18 +97,11 @@ func TestBatchInstall_SomeAlreadyInstalled(t *testing.T) {
 	markFullyInstalled(fc, "acme", "web")
 
 	manifest := newBatchManifest(repos...)
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -261,19 +125,12 @@ func TestBatchInstall_RepoFilter(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		RepoFilter:     []string{"acme/api"},
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.RepoFilter = []string{"acme/api"}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -291,18 +148,18 @@ func TestBatchInstall_DryRun(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		DryRun:         true,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
+		Manifest:               manifest,
+		DryRun:                 true,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -322,9 +179,6 @@ func TestBatchInstall_DryRun(t *testing.T) {
 	if len(fc.CreatedSecrets) != 0 {
 		t.Error("expected no secret writes in dry-run mode")
 	}
-	if len(prov.ensureOrgCalls) != 0 {
-		t.Error("expected no EnsureOrgInMint calls in dry-run mode")
-	}
 }
 
 func TestBatchInstall_DryRunSkipsInstalled(t *testing.T) {
@@ -333,18 +187,18 @@ func TestBatchInstall_DryRunSkipsInstalled(t *testing.T) {
 	markFullyInstalled(fc, "acme", "web")
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		DryRun:         true,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
+		Manifest:               manifest,
+		DryRun:                 true,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -360,295 +214,20 @@ func TestBatchInstall_DryRunSkipsInstalled(t *testing.T) {
 	}
 }
 
-func TestBatchInstall_WIFSerialization(t *testing.T) {
-	repos := []string{"acme/api", "acme/web", "acme/mobile"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	var sequence []string
-	prov := &perRepoProvisioner{
-		sequenceTracker: &sequence,
-	}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-
-	var scaffoldConcurrency int64
-	var maxScaffoldConcurrency int64
-	sc := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
-		cur := atomic.AddInt64(&scaffoldConcurrency, 1)
-		defer atomic.AddInt64(&scaffoldConcurrency, -1)
-		for {
-			old := atomic.LoadInt64(&maxScaffoldConcurrency)
-			if cur <= old || atomic.CompareAndSwapInt64(&maxScaffoldConcurrency, old, cur) {
-				break
-			}
-		}
-		return nil
-	}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc, noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	if len(result.Installed) != 3 {
-		t.Errorf("expected 3 installed, got %d", len(result.Installed))
-	}
-
-	// WIF operations must be sequential: ensureOrg, then alternating
-	// provision/register pairs.
-	if len(sequence) < 1 {
-		t.Fatal("expected at least 1 WIF operation recorded")
-	}
-	if sequence[0] != "ensureOrg:acme" {
-		t.Errorf("first WIF op should be ensureOrg:acme, got %s", sequence[0])
-	}
-
-	// Each repo should have a provision followed by a register.
-	provisionCount := 0
-	registerCount := 0
-	for _, op := range sequence {
-		if op == "provision" {
-			provisionCount++
-		}
-		if strings.HasPrefix(op, "register:") {
-			registerCount++
-		}
-	}
-	if provisionCount != 3 {
-		t.Errorf("expected 3 provision calls, got %d", provisionCount)
-	}
-	if registerCount != 3 {
-		t.Errorf("expected 3 register calls, got %d", registerCount)
-	}
-}
-
-func TestBatchInstall_OrgMintFailure(t *testing.T) {
-	repos := []string{"acme/api", "acme/web"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{
-		ensureOrgErr: fmt.Errorf("org registration failed"),
-	}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	// All repos in the failed org should be in Failed.
-	if len(result.Failed) != 2 {
-		t.Errorf("expected 2 failed, got %d", len(result.Failed))
-	}
-	if len(result.Installed) != 0 {
-		t.Errorf("expected 0 installed, got %d", len(result.Installed))
-	}
-}
-
-func TestBatchInstall_SkipMintCheck(t *testing.T) {
-	repos := []string{"acme/api", "acme/web"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		SkipMintCheck:  true,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	if len(result.Installed) != 2 {
-		t.Errorf("expected 2 installed, got %d", len(result.Installed))
-	}
-	if len(prov.ensureOrgCalls) != 0 {
-		t.Errorf("expected 0 EnsureOrgInMint calls with SkipMintCheck, got %d", len(prov.ensureOrgCalls))
-	}
-}
-
-func TestBatchInstall_WIFProvisionFailure(t *testing.T) {
-	repos := []string{"acme/api", "acme/web"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{
-		provisionErr: fmt.Errorf("IAM permission denied"),
-	}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	// All repos should fail at WIF provisioning.
-	if len(result.Failed) != 2 {
-		t.Errorf("expected 2 failed, got %d", len(result.Failed))
-	}
-	if len(result.Installed) != 0 {
-		t.Errorf("expected 0 installed, got %d", len(result.Installed))
-	}
-}
-
-func TestBatchInstall_RegisterWIFFailure_OneRepo(t *testing.T) {
-	repos := []string{"acme/api", "acme/web"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{
-		registerErrFor: map[string]error{
-			"acme/web": fmt.Errorf("registration failed"),
-		},
-	}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	// acme/api should succeed, acme/web should fail.
-	if len(result.Installed) != 1 {
-		t.Errorf("expected 1 installed, got %d", len(result.Installed))
-	}
-	if len(result.Failed) != 1 {
-		t.Errorf("expected 1 failed, got %d", len(result.Failed))
-	}
-	if result.Failed[0].Repo != "web" {
-		t.Errorf("expected failed repo 'web', got %s", result.Failed[0].Repo)
-	}
-
-	// Verify WIF cleanup was attempted for the failed repo.
-	if len(prov.deleteCalls) != 1 {
-		t.Errorf("expected 1 DeletePerRepoWIF call, got %d", len(prov.deleteCalls))
-	} else if prov.deleteCalls[0] != "acme/web" {
-		t.Errorf("expected DeletePerRepoWIF for acme/web, got %s", prov.deleteCalls[0])
-	}
-}
-
-func TestBatchInstall_RegisterWIFFailure_CleanupErrorInResult(t *testing.T) {
-	repos := []string{"acme/api"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{
-		registerErrFor: map[string]error{
-			"acme/api": fmt.Errorf("registration failed"),
-		},
-		deleteErr: fmt.Errorf("cleanup failed"),
-	}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	if len(result.Failed) != 1 {
-		t.Fatalf("expected 1 failed, got %d", len(result.Failed))
-	}
-
-	errMsg := result.Failed[0].Error.Error()
-	if !strings.Contains(errMsg, "cleanup also failed") {
-		t.Errorf("expected error to mention cleanup failure, got: %s", errMsg)
-	}
-}
-
-func TestBatchInstall_ScaffoldFailure_WIFCleanup(t *testing.T) {
-	repos := []string{"acme/api"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-	sc := &fakeScaffoldCommit{err: fmt.Errorf("scaffold failed")}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	if len(result.Failed) != 1 {
-		t.Fatalf("expected 1 failed, got %d", len(result.Failed))
-	}
-
-	if len(prov.deleteCalls) != 1 {
-		t.Errorf("expected 1 DeletePerRepoWIF cleanup call after scaffold failure, got %d", len(prov.deleteCalls))
-	} else if prov.deleteCalls[0] != "acme/api" {
-		t.Errorf("expected DeletePerRepoWIF for acme/api, got %s", prov.deleteCalls[0])
-	}
-}
-
 func TestBatchInstall_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	manifest := newBatchManifest()
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 1,
+		Manifest:               manifest,
+		MaxConcurrency:         1,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -662,16 +241,16 @@ func TestBatchInstall_InvalidManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	manifest := &Manifest{Version: 99}
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 1,
+		Manifest:               manifest,
+		MaxConcurrency:         1,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
 	}
 
-	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err == nil {
 		t.Fatal("expected error for invalid manifest")
 	}
@@ -681,21 +260,15 @@ func TestBatchInstall_MissingInferenceProject(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-	manifest.Defaults.InferenceProject = ""
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		SkipMintCheck:  true,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	// Omit InferenceProject from CLI flags — validation should fail.
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProject = ""
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -703,8 +276,8 @@ func TestBatchInstall_MissingInferenceProject(t *testing.T) {
 		t.Errorf("expected 2 failed repos, got %d", len(result.Failed))
 	}
 	for _, r := range result.Failed {
-		if !strings.Contains(r.Error.Error(), "inference_project is required") {
-			t.Errorf("expected inference_project error, got: %v", r.Error)
+		if !strings.Contains(r.Error.Error(), "--inference-project is required") {
+			t.Errorf("expected --inference-project error, got: %v", r.Error)
 		}
 	}
 	if len(result.Installed) != 0 {
@@ -719,197 +292,158 @@ func TestBatchInstall_MissingInferenceRegion(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-	manifest.Defaults.InferenceRegion = ""
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		SkipMintCheck:  true,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceRegion = "" // CLI flag missing
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
 	if len(result.Failed) != 1 {
 		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
 	}
-	if result.Failed[0].Error == nil || !strings.Contains(result.Failed[0].Error.Error(), "inference_region is required") {
-		t.Errorf("expected inference_region error, got: %v", result.Failed[0].Error)
+	if result.Failed[0].Error == nil || !strings.Contains(result.Failed[0].Error.Error(), "--inference-region is required") {
+		t.Errorf("expected --inference-region error, got: %v", result.Failed[0].Error)
 	}
 	if sc.called {
 		t.Error("expected no scaffold calls when inference_region is empty")
 	}
 }
 
-func TestBatchInstall_MultiOrg(t *testing.T) {
-	repos := []string{"acme/api", "other-org/service"}
+func TestBatchInstall_MissingInferenceProjectNumber(t *testing.T) {
+	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	var orgCalls []string
-	var mu sync.Mutex
-	var factoryOwners []string
-	prov := &batchFakeProvisioner{}
+	sc := &fakeScaffoldCommit{}
 
-	factory := func(resolved ResolvedConfig) WIFProvisioner {
-		mu.Lock()
-		factoryOwners = append(factoryOwners, resolved.Owner)
-		mu.Unlock()
-		return &trackingOrgProvisioner{
-			inner:    prov,
-			orgCalls: &orgCalls,
+	// Omit InferenceProjectNumber from CLI flags — validation should fail.
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProjectNumber = ""
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	}
+	for _, r := range result.Failed {
+		if !strings.Contains(r.Error.Error(), "--inference-project-number is required") {
+			t.Errorf("expected --inference-project-number error, got: %v", r.Error)
 		}
 	}
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	if len(result.Installed) != 2 {
-		t.Errorf("expected 2 installed, got %d", len(result.Installed))
-	}
-
-	// Verify factory received correct owner for each org during Phase 2.
-	orgMintOwners := make(map[string]bool)
-	for _, owner := range factoryOwners {
-		orgMintOwners[owner] = true
-	}
-	if !orgMintOwners["acme"] {
-		t.Error("factory never received resolved config with Owner=acme")
-	}
-	if !orgMintOwners["other-org"] {
-		t.Error("factory never received resolved config with Owner=other-org")
-	}
-
-	// Verify deterministic org ordering: "acme" before "other-org".
-	if len(orgCalls) != 2 {
-		t.Fatalf("expected 2 org calls, got %d", len(orgCalls))
-	}
-	if orgCalls[0] != "acme" || orgCalls[1] != "other-org" {
-		t.Errorf("expected deterministic org order [acme, other-org], got %v", orgCalls)
+	if sc.called {
+		t.Error("expected no scaffold calls when inference_project_number is empty")
 	}
 }
 
-func TestBatchInstall_TOCTOUReCheck(t *testing.T) {
+func TestBatchInstall_NonNumericInferenceProjectNumber(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	// Guard is not set during Phase 1, but gets set between Phase 1 and
-	// Phase 2 along with all other installation components.
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner {
-		// Simulate another process fully installing between Phase 1 and
-		// Phase 2 by setting all installation components.
-		markFullyInstalled(fc, "acme", "api")
-		return prov
-	}
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProjectNumber = "not-a-number"
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
-
-	// Repo should be skipped (caught by TOCTOU re-check).
-	if len(result.Skipped) != 1 {
-		t.Errorf("expected 1 skipped (TOCTOU), got %d skipped", len(result.Skipped))
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
 	}
-	if len(result.Installed) != 0 {
-		t.Errorf("expected 0 installed, got %d", len(result.Installed))
+	for _, r := range result.Failed {
+		if !strings.Contains(r.Error.Error(), "must be numeric") {
+			t.Errorf("expected numeric validation error, got: %v", r.Error)
+		}
 	}
-}
-
-func TestBatchInstall_PartialInstall_RepairsWhenComponentsMissing(t *testing.T) {
-	repos := []string{"acme/api", "acme/web"}
-	fc := newFakeClientForBatch(repos...)
-	// acme/api: guard variable set but no workflow file → partial install.
-	fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
-	// acme/web: fresh install (no guard).
-
-	manifest := newBatchManifest(repos...)
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	// Both repos should be installed (one fresh, one repaired).
-	if len(result.Installed) != 2 {
-		t.Errorf("expected 2 installed, got %d", len(result.Installed))
-	}
-	if len(result.Skipped) != 0 {
-		t.Errorf("expected 0 skipped (partial install should be repaired), got %d", len(result.Skipped))
+	if sc.called {
+		t.Error("expected no scaffold calls when inference_project_number is non-numeric")
 	}
 }
 
-func TestBatchInstall_TOCTOUReCheck_PartialInstallProceeds(t *testing.T) {
+func TestBatchInstall_InvalidInferenceProjectID(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	// Guard is not set during Phase 1, but gets set between Phase 1 and
-	// Phase 2 — however only the guard (no other components). The TOCTOU
-	// re-check should detect the partial install and proceed.
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner {
-		// Simulate a partial install between phases: only guard variable.
-		fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
-		return prov
-	}
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+	cfg.InferenceProject = "BAD"
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	}
+	for _, r := range result.Failed {
+		if !strings.Contains(r.Error.Error(), "not a valid GCP project ID") {
+			t.Errorf("expected GCP project ID validation error, got: %v", r.Error)
+		}
+	}
+	if sc.called {
+		t.Error("expected no scaffold calls when inference_project is invalid")
+	}
+}
 
-	// Repo should NOT be skipped — partial install is repaired.
-	if len(result.Skipped) != 0 {
-		t.Errorf("expected 0 skipped (partial install should be repaired), got %d", len(result.Skipped))
+func TestBatchInstall_WIFProviderFormat(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
 	}
 	if len(result.Installed) != 1 {
-		t.Errorf("expected 1 installed, got %d", len(result.Installed))
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+	}
+
+	wif := result.Installed[0].WIFProvider
+	expected := "projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/providers/gh-acme-api"
+	if wif != expected {
+		t.Errorf("WIFProvider = %q, want %q", wif, expected)
+	}
+}
+
+func TestBatchInstall_WIFProviderCollision(t *testing.T) {
+	// Two repos whose BuildRepoProviderID output collides after 32-char truncation.
+	// "gh-acme-" is 8 chars, so we need 24 more identical chars to collide.
+	longSuffix := strings.Repeat("a", 30)
+	repo1 := "acme/" + longSuffix + "-one"
+	repo2 := "acme/" + longSuffix + "-two"
+	repos := []string{repo1, repo2}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
+
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected WIF provider collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), "WIF provider collision") {
+		t.Errorf("expected collision error, got: %v", err)
 	}
 }
 
@@ -917,9 +451,6 @@ func TestBatchInstall_ScaffoldFailure_OneRepo(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 
 	callCount := int64(0)
 	sc := func(_ context.Context, _, repo string, _ []forge.TreeFile, _ bool) error {
@@ -931,14 +462,10 @@ func TestBatchInstall_ScaffoldFailure_OneRepo(t *testing.T) {
 		return nil
 	}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 1, // sequential to make the test deterministic
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 1 // sequential to make the test deterministic
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc, noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -961,18 +488,11 @@ func TestBatchInstall_NilProgress(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), nil)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), nil)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -986,18 +506,11 @@ func TestBatchInstall_DefaultConcurrency(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1013,9 +526,6 @@ func TestBatchInstall_ConcurrencyCap(t *testing.T) {
 	}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 
 	var active int32
 	var peakConcurrency int32
@@ -1035,12 +545,8 @@ func TestBatchInstall_ConcurrencyCap(t *testing.T) {
 		return nil
 	}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
 	go func() {
 		// Let scaffold goroutines accumulate, then release them all.
@@ -1049,7 +555,7 @@ func TestBatchInstall_ConcurrencyCap(t *testing.T) {
 		close(done)
 	}()
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc, noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1070,8 +576,6 @@ func TestBatchInstall_InvalidConcurrency(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
 	tests := []struct {
@@ -1085,14 +589,10 @@ func TestBatchInstall_InvalidConcurrency(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := BatchInstallConfig{
-				Manifest:       manifest,
-				MaxConcurrency: tt.concurrency,
-				Roles:          []string{"triage"},
-				Direct:         true,
-			}
+			cfg := batchCfgWithDefaults(manifest)
+			cfg.MaxConcurrency = tt.concurrency
 
-			_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+			_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 			if err == nil {
 				t.Errorf("expected error for concurrency=%d, got nil", tt.concurrency)
 			}
@@ -1105,19 +605,12 @@ func TestBatchInstall_RepoFilterCaseInsensitive(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		RepoFilter:     []string{"acme/api"},
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.RepoFilter = []string{"acme/api"}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1132,18 +625,11 @@ func TestBatchInstall_DiscoveryError(t *testing.T) {
 	fc.Errors["GetRepoVariable"] = fmt.Errorf("API rate limit")
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1161,19 +647,12 @@ func TestBatchInstall_ScaffoldErrorCollection(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
-
 	sc := &fakeScaffoldCommit{err: fmt.Errorf("scaffold failed")}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
 	}
@@ -1202,8 +681,6 @@ func TestBatchInstall_ContextCancellation_Phase1(t *testing.T) {
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1211,14 +688,10 @@ func TestBatchInstall_ContextCancellation_Phase1(t *testing.T) {
 
 	client := &contextAwareClient{FakeClient: fc}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 2,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.MaxConcurrency = 2
 
-	result, err := BatchInstall(ctx, cfg, newTestClientFactory(client), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(ctx, cfg, newTestClientFactory(client), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
 	}
@@ -1235,51 +708,75 @@ func TestBatchInstall_ContextCancellation_Phase1(t *testing.T) {
 	}
 }
 
-func TestBatchInstall_ContextCancellation_Phase2(t *testing.T) {
+func TestBatchInstall_PartialInstall_RepairsWhenComponentsMissing(t *testing.T) {
 	repos := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repos...)
+	// acme/api: guard variable set but no workflow file → partial install.
+	fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+	// acme/web: fresh install (no guard).
+
+	manifest := newBatchManifest(repos...)
+	sc := &fakeScaffoldCommit{}
+
+	cfg := batchCfgWithDefaults(manifest)
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+
+	// Both repos should be installed (one fresh, one repaired).
+	if len(result.Installed) != 2 {
+		t.Errorf("expected 2 installed, got %d", len(result.Installed))
+	}
+	if len(result.Skipped) != 0 {
+		t.Errorf("expected 0 skipped (partial install should be repaired), got %d", len(result.Skipped))
+	}
+}
+
+func TestBatchInstall_SecretReuse_SkipsValidationAndSecretWrites(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	// Set secrets on the repo so discovery detects them.
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "us-central1"
 	manifest := newBatchManifest(repos...)
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Cancel context after the first repo's WIF provisioning succeeds,
-	// so the second repo hits the ctx.Err() check at the top of the loop.
-	var provCalls int32
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner {
-		return &cancellingProvisioner{inner: prov, cancel: cancel, cancelAfter: 1, calls: &provCalls}
-	}
 	sc := &fakeScaffoldCommit{}
 
+	// Omit InferenceProject, InferenceProjectNumber, and InferenceRegion
+	// — these should not be required when secrets already exist.
 	cfg := BatchInstallConfig{
 		Manifest:       manifest,
 		MaxConcurrency: 2,
-		SkipMintCheck:  true,
 		Roles:          []string{"triage"},
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(ctx, cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
-		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
+		t.Fatalf("BatchInstall() error: %v", err)
 	}
-	// The second repo should fail due to cancelled context in the WIF loop.
-	if len(result.Failed) == 0 {
-		t.Error("expected at least 1 failed repo from cancelled context in Phase 2")
+	if len(result.Failed) != 0 {
+		t.Errorf("expected 0 failed, got %d: %v", len(result.Failed), result.Failed[0].Error)
+	}
+	if len(result.Installed) != 1 {
+		t.Errorf("expected 1 installed, got %d", len(result.Installed))
+	}
+	// Verify no new secrets were written.
+	if len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no secret writes with ReuseSecrets, got %d", len(fc.CreatedSecrets))
 	}
 }
 
-func TestBatchInstall_ContextCancellation_OrgMintLoop(t *testing.T) {
-	fc := newFakeClientForBatch("alpha/repo1", "beta/repo1")
-	manifest := newBatchManifest("alpha/repo1", "beta/repo1")
+func TestBatchInstall_SecretReuse_MissingRegionVariable(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+	manifest := newBatchManifest(repos...)
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	var orgMintCalls int32
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner {
-		return &cancellingOrgMintProvisioner{inner: prov, cancel: cancel, cancelAfter: 1, calls: &orgMintCalls}
-	}
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
@@ -1289,119 +786,147 @@ func TestBatchInstall_ContextCancellation_OrgMintLoop(t *testing.T) {
 		Direct:         true,
 	}
 
-	result, err := BatchInstall(ctx, cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
-		t.Fatalf("BatchInstall() unexpected top-level error: %v", err)
+		t.Fatalf("BatchInstall() error: %v", err)
 	}
-	if len(result.Failed) == 0 {
-		t.Error("expected at least 1 failed repo from cancelled context in org-mint loop")
+	if len(result.Failed) != 1 {
+		t.Fatalf("expected 1 failed, got %d", len(result.Failed))
+	}
+	if !strings.Contains(result.Failed[0].Error.Error(), "FULLSEND_GCP_REGION variable is missing") {
+		t.Errorf("expected region variable missing error, got: %v", result.Failed[0].Error)
 	}
 }
 
-// cancellingOrgMintProvisioner cancels a context after N EnsureOrgInMint calls.
-type cancellingOrgMintProvisioner struct {
-	inner       *batchFakeProvisioner
-	cancel      context.CancelFunc
-	cancelAfter int32
-	calls       *int32
-}
-
-func (c *cancellingOrgMintProvisioner) DiscoverMint(ctx context.Context) (*MintDiscovery, error) {
-	return c.inner.DiscoverMint(ctx)
-}
-
-func (c *cancellingOrgMintProvisioner) ProvisionWIF(ctx context.Context) (string, error) {
-	return c.inner.ProvisionWIF(ctx)
-}
-
-func (c *cancellingOrgMintProvisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error {
-	return c.inner.RegisterPerRepoWIF(ctx, repo)
-}
-
-func (c *cancellingOrgMintProvisioner) EnsureOrgInMint(ctx context.Context, url string, org string) error {
-	n := atomic.AddInt32(c.calls, 1)
-	if n >= c.cancelAfter {
-		c.cancel()
+func newGitLabBatchManifest(repos ...string) *Manifest {
+	entries := make([]RepoEntry, len(repos))
+	for i, r := range repos {
+		entries[i] = RepoEntry{Repo: r}
 	}
-	return c.inner.EnsureOrgInMint(ctx, url, org)
-}
-
-func (c *cancellingOrgMintProvisioner) DeletePerRepoWIF(ctx context.Context, repo string) error {
-	return c.inner.DeletePerRepoWIF(ctx, repo)
-}
-
-func (c *cancellingOrgMintProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	return nil
-}
-
-// cancellingProvisioner cancels a context after N ProvisionWIF calls.
-type cancellingProvisioner struct {
-	inner       *batchFakeProvisioner
-	cancel      context.CancelFunc
-	cancelAfter int32
-	calls       *int32
-}
-
-func (c *cancellingProvisioner) DiscoverMint(ctx context.Context) (*MintDiscovery, error) {
-	return c.inner.DiscoverMint(ctx)
-}
-
-func (c *cancellingProvisioner) ProvisionWIF(ctx context.Context) (string, error) {
-	n := atomic.AddInt32(c.calls, 1)
-	if n >= c.cancelAfter {
-		c.cancel()
+	return &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitLab: GitLabForgeInfra{
+			URL: "https://gitlab.example.com",
+		}},
+		Defaults: DefaultsConfig{
+			Forge: "gitlab",
+		},
+		Repos: entries,
 	}
-	return c.inner.ProvisionWIF(ctx)
 }
 
-func (c *cancellingProvisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error {
-	return c.inner.RegisterPerRepoWIF(ctx, repo)
+func TestBatchInstall_GitLab_WithInference(t *testing.T) {
+	repos := []string{"group/project"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newGitLabBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:               manifest,
+		MaxConcurrency:         2,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "528705229719",
+		InferenceRegion:        "us-central1",
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall(GitLab, inference) error: %v", err)
+	}
+	if len(result.Failed) != 0 {
+		t.Errorf("expected 0 failed, got %d: %v", len(result.Failed), result.Failed[0].Error)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+	}
+
+	// Verify WIF provider uses fixed gitlab-oidc name.
+	wif := result.Installed[0].WIFProvider
+	expected := "projects/528705229719/locations/global/workloadIdentityPools/fullsend-inference/providers/gitlab-oidc"
+	if wif != expected {
+		t.Errorf("WIFProvider = %q, want %q", wif, expected)
+	}
 }
 
-func (c *cancellingProvisioner) EnsureOrgInMint(ctx context.Context, url string, org string) error {
-	return c.inner.EnsureOrgInMint(ctx, url, org)
+func TestBatchInstall_GitLab_WithoutInference(t *testing.T) {
+	repos := []string{"group/project"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newGitLabBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 2,
+		Roles:          []string{"triage"},
+		Direct:         true,
+		// No inference flags — GitLab installs without inference.
+	}
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall(GitLab, no inference) error: %v", err)
+	}
+	if len(result.Failed) != 0 {
+		t.Errorf("expected 0 failed, got %d: %v", len(result.Failed), result.Failed[0].Error)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+	}
+	// Without inference, no WIF provider should be set.
+	if result.Installed[0].WIFProvider != "" {
+		t.Errorf("WIFProvider should be empty without inference, got %q", result.Installed[0].WIFProvider)
+	}
 }
 
-func (c *cancellingProvisioner) DeletePerRepoWIF(ctx context.Context, repo string) error {
-	return c.inner.DeletePerRepoWIF(ctx, repo)
-}
+func TestBatchInstall_GitLab_SecretReuse(t *testing.T) {
+	repos := []string{"group/project"}
+	fc := newFakeClientForBatch(repos...)
+	// Set secrets on the repo so discovery detects them.
+	fc.Secrets["group/project/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["group/project/FULLSEND_GCP_WIF_PROVIDER"] = true
+	fc.VariableValues["group/project/FULLSEND_GCP_REGION"] = "us-central1"
+	fc.VariableValues["group/project/FULLSEND_CREDENTIAL_MODE"] = "wif"
+	manifest := newGitLabBatchManifest(repos...)
 
-func (c *cancellingProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	return nil
-}
+	sc := &fakeScaffoldCommit{}
 
-// trackingOrgProvisioner delegates to an inner provisioner but tracks org calls.
-type trackingOrgProvisioner struct {
-	inner    *batchFakeProvisioner
-	mu       sync.Mutex
-	orgCalls *[]string
-}
+	// No inference flags — secrets are reused.
+	cfg := BatchInstallConfig{
+		Manifest:       manifest,
+		MaxConcurrency: 2,
+		Roles:          []string{"triage"},
+		Direct:         true,
+	}
 
-func (t *trackingOrgProvisioner) DiscoverMint(ctx context.Context) (*MintDiscovery, error) {
-	return t.inner.DiscoverMint(ctx)
-}
-
-func (t *trackingOrgProvisioner) ProvisionWIF(ctx context.Context) (string, error) {
-	return t.inner.ProvisionWIF(ctx)
-}
-
-func (t *trackingOrgProvisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error {
-	return t.inner.RegisterPerRepoWIF(ctx, repo)
-}
-
-func (t *trackingOrgProvisioner) EnsureOrgInMint(ctx context.Context, url string, org string) error {
-	t.mu.Lock()
-	*t.orgCalls = append(*t.orgCalls, org)
-	t.mu.Unlock()
-	return t.inner.EnsureOrgInMint(ctx, url, org)
-}
-
-func (t *trackingOrgProvisioner) DeletePerRepoWIF(ctx context.Context, repo string) error {
-	return t.inner.DeletePerRepoWIF(ctx, repo)
-}
-
-func (t *trackingOrgProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
-	return nil
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall(GitLab, secret reuse) error: %v", err)
+	}
+	if len(result.Failed) != 0 {
+		t.Errorf("expected 0 failed, got %d: %v", len(result.Failed), result.Failed[0].Error)
+	}
+	if len(result.Installed) != 1 {
+		t.Errorf("expected 1 installed, got %d", len(result.Installed))
+	}
+	// Verify no new secrets were written.
+	if len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no secret writes with ReuseSecrets, got %d", len(fc.CreatedSecrets))
+	}
+	// Verify discovered credential mode is preserved as "wif".
+	var credMode string
+	for _, v := range fc.Variables {
+		if v.Name == "FULLSEND_CREDENTIAL_MODE" {
+			credMode = v.Value
+			break
+		}
+	}
+	if credMode != "wif" {
+		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q (discovered mode should be preserved)", credMode, "wif")
+	}
 }
 
 func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
@@ -1411,18 +936,11 @@ func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
 	fc.Errors["GetFileContent"] = fmt.Errorf("API error during component check")
 
 	manifest := newBatchManifest(repos...)
-	prov := &batchFakeProvisioner{}
-	factory := func(_ ResolvedConfig) WIFProvisioner { return prov }
 	sc := &fakeScaffoldCommit{}
 
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
+	cfg := batchCfgWithDefaults(manifest)
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall() error: %v", err)
 	}
@@ -1432,42 +950,5 @@ func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
 	}
 	if len(result.Installed) != 0 {
 		t.Errorf("expected 0 installed, got %d", len(result.Installed))
-	}
-}
-
-func TestBatchInstall_TOCTOUReCheck_ComponentCheckError(t *testing.T) {
-	repos := []string{"acme/api"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	prov := &batchFakeProvisioner{}
-	var factoryCalls int32
-	factory := func(_ ResolvedConfig) WIFProvisioner {
-		n := atomic.AddInt32(&factoryCalls, 1)
-		if n >= 1 {
-			fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
-			fc.Errors["GetFileContent"] = fmt.Errorf("API error during TOCTOU")
-		}
-		return prov
-	}
-	sc := &fakeScaffoldCommit{}
-
-	cfg := BatchInstallConfig{
-		Manifest:       manifest,
-		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
-		Direct:         true,
-	}
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), factory, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-
-	if len(result.Failed) != 1 {
-		t.Errorf("expected 1 failed (TOCTOU component check error), got %d", len(result.Failed))
-	}
-	if len(result.Failed) > 0 && !strings.Contains(result.Failed[0].Error.Error(), "re-checking installation components") {
-		t.Errorf("expected re-checking error, got: %v", result.Failed[0].Error)
 	}
 }

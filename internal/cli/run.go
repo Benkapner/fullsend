@@ -34,6 +34,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -81,10 +82,9 @@ var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/
 // fullsend-ai/agents repository. Only these agents are eligible for the
 // runtime fallback — custom agents are never tried against the agents repo.
 //
-// This is a transitional mechanism to support agent extraction (see
-// docs/plans/agent-extraction-to-agents-repo.md). It will be removed once
-// all users have migrated to config-driven agent registration (ADR 0058
-// Phase 5 / extraction plan Step 7).
+// This is a transitional mechanism to support agent extraction. It will
+// be removed once all users have migrated to config-driven agent
+// registration (ADR 0058 Phase 5).
 var defaultAgentsRepoKnownAgents = map[string]bool{
 	"triage":     true,
 	"code":       true,
@@ -485,6 +485,40 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// When profiles or providers use local paths (from ResolveRelativeTo or
+	// base composition), ResolveHarness must still run to parse them into
+	// ResolvedProfile/ResolvedProvider — even without URL references.
+	// The lock-file and URL-resolution paths strip entries they consume;
+	// this pass handles whatever remains. Outputs are merged and deduped.
+	if len(h.OpenShellProfiles()) > 0 || hasLocalProviders(h) {
+		prev := result
+		var resolveErr error
+		result, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+			WorkspaceRoot: absFullsendDir,
+		})
+		if resolveErr != nil {
+			return fmt.Errorf("resolving local profiles/providers: %w", resolveErr)
+		}
+		result.Deps = append(prev.Deps, result.Deps...)
+		result.Profiles = append(prev.Profiles, result.Profiles...)
+		result.Providers = append(prev.Providers, result.Providers...)
+		result.Warnings = append(prev.Warnings, result.Warnings...)
+
+		// Strip path entries from h.Providers now that they've been resolved
+		// into ResolvedProviders. Only bare names should remain for
+		// sandboxProviderNames downstream.
+		bare := h.Providers[:0]
+		for _, p := range h.Providers {
+			if !harness.IsURL(p) && !harness.IsProviderPath(p) {
+				bare = append(bare, p)
+			}
+		}
+		h.Providers = bare
+	}
+	for _, w := range result.Warnings {
+		printer.StepWarn(w)
+	}
+
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
 		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
@@ -515,11 +549,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir
 		}
+		// Refuse OIDC credential vars so ${VAR} expansion in harness
+		// YAML cannot leak mint-usable credentials (#5832).
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return os.Getenv(key)
 	}
 	lookup := func(key string) (string, bool) {
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir, true
+		}
+		// Refuse OIDC credential vars (#5832).
+		// Unlike expander (which silently returns "" to produce an empty
+		// expansion), lookup returns false so ValidateRunnerEnvWith treats
+		// the reference as an unresolvable variable and fails validation.
+		if oidcDenyKeys[key] {
+			return "", false
 		}
 		return os.LookupEnv(key)
 	}
@@ -646,13 +692,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// runSkipped records that the pre-script requested a skip (issue #4718);
+	// the status-notification defer below reports it as "skipped" rather
+	// than "success", with runSkipReason as the visible explanation.
+	var runSkipped bool
+	var runSkipReason string
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
 	// post-script — and can report cancellation/failure even when the
 	// sandbox never starts. See #1859.
 	if sOpts.statusRepo != "" && sOpts.statusNum > 0 {
-		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, sOpts, printer)
+		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, forgePlatform, sOpts, printer)
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
@@ -664,14 +716,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			defer func() {
 				status := "success"
+				detail := ""
 				if ctx.Err() != nil {
 					status = "cancelled"
 				} else if runErr != nil {
 					status = "failure"
+				} else if runSkipped {
+					status = "skipped"
+					detail = runSkipReason
 				}
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
-				if err := notifier.PostCompletion(dCtx, description, status); err != nil {
+				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
 					printer.StepWarn("Failed to post completion status: " + err.Error())
 				}
 			}()
@@ -687,7 +743,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
 		defer preflightCancel()
 		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
-		preflightCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+		// Use childScriptEnv to strip OIDC credential vars (#5832).
+		preflightCmd.Env = childScriptEnv(h.RunnerEnv, "")
 		preflightOut, preflightErr := preflightCmd.CombinedOutput()
 		if preflightErr != nil {
 			printer.StepFail("Preflight dependency check failed")
@@ -721,7 +778,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Dedupe URL-resolved providers (last-wins) so shadowed entries from
 	// base composition don't trigger false integrity errors.
 	result.Providers = dedupResolvedProviders(result.Providers)
-	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
+	dirProfileIDs, err := resolve.CollectProfileIDs(filepath.Join(absFullsendDir, "profiles"))
+	if err != nil {
+		return fmt.Errorf("scanning profiles directory: %w", err)
+	}
+	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles, dirProfileIDs); intErr != nil {
 		printer.StepFail("Provider references unknown profile type")
 		return intErr
 	} else if w != "" {
@@ -867,6 +928,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		rootSpan.SetAttributes(
 			attribute.Int("exit_code", exitCode),
 		)
+		// A pre-script skip exits 0 like a success, so without this a
+		// skipped run is indistinguishable from a completed one in traces
+		// — and skip rate is the metric issue #4718 exists to move. Only
+		// set for harnesses that actually have a pre-script, so an absent
+		// attribute means "nothing could have skipped this run".
+		if h != nil && h.PreScript != "" {
+			rootSpan.SetAttributes(attribute.Bool("fullsend.prescript.skipped", runSkipped))
+		}
+		if runSkipped && runSkipReason != "" {
+			rootSpan.SetAttributes(attribute.String("fullsend.prescript.skip_reason", runSkipReason))
+		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(
 				attribute.String("gen_ai.request.model", aggMetrics.Model),
@@ -888,24 +960,55 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		rootSpan.End()
 
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
 		defer cancel()
 		tracingCleanup(flushCtx)
 	}()
 
-	// 4. Run pre-script on the host (if configured).
+	// 4. Run pre-script on the host (if configured). The pre-script may
+	// request a skip via the pre-script output protocol
+	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
+	// ends here — before sandbox creation.
+	var preResult prescript.Result
 	if h.PreScript != "" {
-		preStart := time.Now()
-		printer.StepStart("Running pre-script: " + h.PreScript)
-		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
-		preCmd.Stdout = os.Stdout
-		preCmd.Stderr = os.Stderr
-		if err := preCmd.Run(); err != nil {
-			printer.StepFail("Pre-script failed")
-			return fmt.Errorf("running pre-script: %w", err)
+		preResult, err = runPreScript(h, runDir, traceparent, printer)
+		if err != nil {
+			return err
 		}
-		printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+		// Log the outputs so non-GitHub CIs and local runs still see what
+		// the pre-script reported.
+		if line := prescript.LogLine(preResult); line != "" {
+			printer.StepDone("Pre-script outputs: " + line)
+		}
+	}
+
+	// Relay on every path that reaches the skip decision — skip, proceed,
+	// and harnesses with no pre-script at all — so an absent skipped
+	// output narrows to two cases: a CLI predating this protocol, or a run
+	// that failed before deciding. See docs/normative/prescript-output/v1.
+	if relayed, relayErr := prescript.Relay(preResult); relayErr != nil {
+		// Fail closed: a relay target exists but we could not write to it,
+		// so workflow-level gating would disagree with the decision
+		// fullsend just made — exactly the duplicate-run failure this
+		// protocol exists to prevent.
+		printer.StepFail("Failed to relay skip decision")
+		return fmt.Errorf("relaying pre-script outputs: %w", relayErr)
+	} else if relayed && h.PreScript != "" {
+		// Only worth a line when a pre-script actually produced something;
+		// otherwise this fires on every CI run and names a script that
+		// does not exist.
+		printer.StepDone("Pre-script outputs relayed to GITHUB_OUTPUT")
+	}
+
+	if preResult.Skipped {
+		runSkipped = true
+		runSkipReason = preResult.Reason
+		reason := preResult.Reason
+		if reason == "" {
+			reason = "no reason given"
+		}
+		printer.StepDone("Run skipped by pre-script: " + reason)
+		return nil
 	}
 
 	// 4a. Create sandbox.
@@ -988,7 +1091,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
+			postCmd.Env = postScriptEnv(h, traceparent)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
@@ -1560,7 +1663,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// failure sets it to false and continues (skipping step 9e),
 		// while success sets it to true immediately above. Pass the
 		// repo dir directly.
-		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1791,7 +1896,7 @@ const deprecatedImplicitFetchWarning = "Harness declares allowed_remote_resource
 // should be started, and returns a deprecation warning if the harness relies
 // on the legacy implicit opt-in via allowed_remote_resources.
 func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning string) {
-	if h.HasURLSkills() || h.AllowRuntimeFetch {
+	if h.HasURLDirResources() || h.AllowRuntimeFetch {
 		return true, ""
 	}
 	if len(h.AllowedRemoteResources) > 0 {
@@ -1807,7 +1912,7 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 	cfg.TreeFetcher = treeFetcher
 	if gitToken != "" {
 		cfg.GitToken = gitToken
-	} else if h.HasURLSkills() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
+	} else if h.HasURLDirResources() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
 		if token, err := resolveToken(); err == nil {
 			cfg.GitToken = token
 		} else {
@@ -1826,11 +1931,30 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// oidcDenyKeys lists OIDC credential env vars that must not leak into
+// user-controlled or sandbox-visible contexts. The parent harness process
+// retains these for mintAgentToken and OIDC token refresh; stripping them
+// from child scripts, expanders, and sandbox injection prevents user code
+// and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+//
+// MAINTENANCE: when new OIDC-related credential env vars are introduced
+// (e.g. by mint infrastructure changes), add them here. By convention the
+// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
+// expansion site in this file consults this map, so a single addition
+// propagates to all deny checks.
+var oidcDenyKeys = map[string]bool{
+	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
+	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
+	"FULLSEND_GCP_OIDC_URL":          true,
+	"FULLSEND_GCP_OIDC_AUTH_FILE":    true,
+}
+
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
 // shadow. These are set by the runner in bootstrapEnv and overriding them
 // from harness YAML could break sandbox operation, or are security-sensitive
 // vars that could influence sandbox execution (e.g. shared library injection,
-// auto-sourced shell startup files).
+// auto-sourced shell startup files). OIDC credential vars from oidcDenyKeys
+// are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
 	"PATH":                     true,
@@ -1846,6 +1970,16 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_OUTPUT_SCHEMA":   true,
 	"FULLSEND_OUTPUT_FILE":     true,
 	"FULLSEND_TARGET_REPO_DIR": true,
+	"FULLSEND_ROLE":            true,
+	"FULLSEND_SLUG":            true,
+}
+
+func init() {
+	// Merge OIDC credential vars into reservedSandboxKeys so a future
+	// addition to oidcDenyKeys automatically blocks sandbox injection.
+	for k := range oidcDenyKeys {
+		reservedSandboxKeys[k] = true
+	}
 }
 
 // buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
@@ -1882,6 +2016,21 @@ func buildSandboxEnvLines(h *harness.Harness) []string {
 	return lines
 }
 
+// buildRoleSlugEnvLines generates export lines for FULLSEND_ROLE and
+// FULLSEND_SLUG from the harness identity fields. Role is always emitted
+// (it is a required harness field); Slug is emitted only when set. Values
+// are single-quote-escaped using the same pattern as buildSandboxEnvLines.
+func buildRoleSlugEnvLines(h *harness.Harness) []string {
+	var lines []string
+	if h.Role != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_ROLE='%s'", strings.ReplaceAll(h.Role, "'", "'\\''")))
+	}
+	if h.Slug != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_SLUG='%s'", strings.ReplaceAll(h.Slug, "'", "'\\''")))
+	}
+	return lines
+}
+
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
 	outputDir := sandbox.SandboxWorkspace + "/output"
@@ -1898,6 +2047,10 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	lines = append(lines, runtimeEnvExports...)
 	lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_DIR=%s", outputDir))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_TARGET_REPO_DIR=%s", remoteRepositoryDir))
+
+	// Expose harness identity so skills can reference their own role/slug
+	// without hardcoding values that drift from the harness YAML. See #6045.
+	lines = append(lines, buildRoleSlugEnvLines(h)...)
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
@@ -1965,7 +2118,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
-		hostPath := os.ExpandEnv(hf.Src)
+		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
+		// credential vars in host_files src path expansion (#5832).
+		hostPath := safeExpandEnv(hf.Src)
 		if hostPath == "" {
 			if hf.Optional {
 				continue
@@ -2027,14 +2182,32 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	return nil
 }
 
+// safeExpandEnv expands ${VAR} references like os.ExpandEnv but refuses
+// OIDC credential vars (oidcDenyKeys), expanding them to empty. Use this
+// instead of os.ExpandEnv at any site where the expanded value may reach
+// user-controlled or sandbox-visible contexts. See #5832.
+func safeExpandEnv(s string) string {
+	return os.Expand(s, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
+		return os.Getenv(key)
+	})
+}
+
 // shellSafeExpandEnv expands ${VAR} references in text using the host
 // environment, escaping characters that are special inside double quotes
 // (", $, `, \) so the result is safe to source as a shell script.
 // Templates use the standard export FOO="${FOO}" pattern; this function
 // ensures substituted values cannot break out of the double-quote context.
+// OIDC credential vars are refused (expand to empty) to prevent leaking
+// mint-usable credentials into sandbox-bound files (#5832).
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
+		if oidcDenyKeys[key] {
+			return ""
+		}
 		return escapeForDoubleQuotes(os.Getenv(key))
 	})
 }
@@ -2102,7 +2275,9 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(), validationEnv(h, "", runDir)...)
+		// Strip OIDC credential vars from the full composed env so keys
+		// injected via h.RunnerEnv are also removed (#5832).
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, "", runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -2116,6 +2291,21 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, validationFailMessage(valOut, valErr)))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
+}
+
+// stripOIDCEnv returns a copy of env with OIDC credential entries removed.
+// Use this to filter os.Environ() slices in contexts where childScriptEnv is
+// not applicable (e.g., validation scripts that compose their env differently).
+// See #5832.
+func stripOIDCEnv(env []string) []string {
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
@@ -2257,6 +2447,37 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
+// runPreScript executes the harness pre-script with the pre-script output
+// protocol's file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
+// the result. See internal/prescript for the protocol (issue #4718).
+// A non-zero script exit remains a hard failure; a malformed output file
+// is also a hard failure so a mistyped skip cannot silently proceed.
+func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {
+	preStart := time.Now()
+	printer.StepStart("Running pre-script: " + h.PreScript)
+	outPath, cleanup, err := prescript.Prepare(runDir)
+	if err != nil {
+		printer.StepFail("Pre-script setup failed")
+		return prescript.Result{}, fmt.Errorf("preparing pre-script output file: %w", err)
+	}
+	defer cleanup()
+	preCmd := exec.Command(h.PreScript)
+	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
+	preCmd.Stdout = os.Stdout
+	preCmd.Stderr = os.Stderr
+	if err := preCmd.Run(); err != nil {
+		printer.StepFail("Pre-script failed")
+		return prescript.Result{}, fmt.Errorf("running pre-script: %w", err)
+	}
+	result, err := prescript.ParseFile(outPath)
+	if err != nil {
+		printer.StepFail("Pre-script output invalid")
+		return prescript.Result{}, fmt.Errorf("parsing pre-script output: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+	return result, nil
+}
+
 // childScriptEnv builds the environment for a host-side child script (pre- or
 // post-script): the harness RunnerEnv layered over the process environment,
 // plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). Any
@@ -2265,16 +2486,36 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 // match, so a stale value would shadow fullsend's own, and fullsend's trace
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
+//
+// OIDC credential vars (oidcDenyKeys) are stripped so user-authored pre/post
+// scripts and validation/preflight commands cannot mint their own tokens.
+// The parent harness process retains them for mintAgentToken. See #5832.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := append(os.Environ(), envToList(runnerEnv)...)
 	env := make([]string, 0, len(merged)+1)
 	for _, e := range merged {
-		if !strings.HasPrefix(e, "TRACEPARENT=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			continue
 		}
+		// Strip OIDC credential vars from child script env (#5832).
+		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+			continue
+		}
+		env = append(env, e)
 	}
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
+// postScriptEnv builds the environment for post-script execution.
+// It starts with childScriptEnv and conditionally appends
+// FULLSEND_OUTPUT_SCHEMA when the harness specifies a validation loop schema.
+func postScriptEnv(h *harness.Harness, traceparent string) []string {
+	env := childScriptEnv(h.RunnerEnv, traceparent)
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
 }
@@ -2875,32 +3116,45 @@ func titleCase(s string) string {
 // setupStatusNotifier creates a status comment notifier. The role parameter
 // accepts either a raw harness role (e.g. "code") or a canonical role
 // (e.g. "coder"); it is resolved via resolveRole internally.
-func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+//
+// The forgePlatform parameter selects the forge-specific code path:
+//   - "gitlab": uses GITLAB_TOKEN directly, reads CI_COMMIT_SHA and
+//     CI_PIPELINE_ID, constructs a GitLab client
+//   - default (including "github" and ""): uses mint URL, reads
+//     GITHUB_SHA and GITHUB_RUN_ID, constructs a GitHub client
+func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
 	}
 	owner, repo := parts[0], parts[1]
 
+	var notifyCfg config.StatusNotificationConfig
+	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
+	if fsCfg := tryLoadFullsendConfig(orgConfigPath, printer); fsCfg != nil {
+		// StatusNotifications is part of the shared ConfigReader interface,
+		// so this works for both orgConfig and perRepoConfig.
+		if sn := fsCfg.StatusNotifications(); sn != nil {
+			notifyCfg = *sn
+		}
+	}
+
+	if forgePlatform == "gitlab" {
+		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
+	}
+	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
+}
+
+// setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
+// a fresh token via the mint service for each API call and reads SHA/run ID
+// from GitHub Actions environment variables.
+func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner, repo, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	mintURL := sOpts.mintURL
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
 	if mintURL == "" {
 		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
-	}
-
-	var notifyCfg config.StatusNotificationConfig
-	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil {
-		// tryLoadFullsendConfig returns a ConfigWriter which may wrap either
-		// orgConfig or perRepoConfig. Only orgConfig implements OrgConfigReader
-		// (and carries StatusNotifications). When the loaded config is per-repo,
-		// this assertion intentionally falls through, leaving notifyCfg at its
-		// zero value — per-repo configs do not support status notifications.
-		if ocr, ok := orgCfg.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
-			notifyCfg = *ocr.StatusNotifications()
-		}
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -2939,6 +3193,38 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
 		}
 		return gh.New(result.Token), nil
+	})
+
+	return n, nil
+}
+
+// setupStatusNotifierGitLab creates a status notifier for GitLab. It uses
+// GITLAB_TOKEN directly (no mint service required) and reads SHA/run ID
+// from GitLab CI environment variables. Unlike the GitHub path, no token
+// format validation or CI log masking is performed: GitLab uses
+// pre-provisioned PATs (not minted tokens with a known prefix), and GitLab
+// CI auto-masks variables that have the "masked" flag set at the runner level.
+func setupStatusNotifierGitLab(notifyCfg config.StatusNotificationConfig, owner, repo string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	client, err := newGitLabClientFromEnv("status comments")
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer CI_MERGE_REQUEST_SOURCE_BRANCH_SHA for merged-results pipelines
+	// where CI_COMMIT_SHA points to the merged ref, not the source branch.
+	sha := os.Getenv("CI_COMMIT_SHA")
+	if mrSHA := os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"); mrSHA != "" {
+		sha = mrSHA
+	}
+
+	runID := os.Getenv("CI_PIPELINE_ID")
+	if runID == "" {
+		runID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+
+	n := statuscomment.New(client, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	n.SetWarnFunc(func(format string, args ...any) {
+		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 
 	return n, nil
@@ -3450,6 +3736,17 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	return allDefs, shadowed
 }
 
+// hasLocalProviders reports whether the harness has any provider entries that
+// are local file paths (not URLs and not bare provider names).
+func hasLocalProviders(h *harness.Harness) bool {
+	for _, p := range h.Providers {
+		if !harness.IsURL(p) && harness.IsProviderPath(p) {
+			return true
+		}
+	}
+	return false
+}
+
 // sandboxProviderNames returns the provider names that should be attached to
 // the sandbox: harness-declared (local) names plus URL-resolved names.
 // Directory providers not declared in the harness are excluded — they may
@@ -3516,21 +3813,24 @@ func forceRemoveAll(path string) error {
 	return os.RemoveAll(path)
 }
 
-// checkProviderProfileIntegrity validates that every URL-resolved provider
-// references a profile id that was also URL-resolved. Returns an error
-// describing the first mismatch, or nil if all references are valid.
-// Returns a non-empty warning string (no error) when providers exist but
-// no profiles were resolved.
-func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile) (warning string, err error) {
+// checkProviderProfileIntegrity validates that every provider references a
+// known profile type. Profile types are collected from three sources:
+// harness-resolved profiles (URL and local-path), and directory profiles
+// (from the profiles/ directory). Returns an error describing the first
+// mismatch, or nil if all references are valid.
+func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile, dirProfileIDs []string) (warning string, err error) {
 	if len(providers) == 0 {
 		return "", nil
 	}
-	if len(profiles) == 0 {
-		return "URL-resolved providers present but no URL-resolved profiles — referential integrity not verified", nil
-	}
-	profileIDs := make(map[string]bool, len(profiles))
+	profileIDs := make(map[string]bool, len(profiles)+len(dirProfileIDs))
 	for _, rp := range profiles {
 		profileIDs[rp.ID] = true
+	}
+	for _, id := range dirProfileIDs {
+		profileIDs[id] = true
+	}
+	if len(profileIDs) == 0 {
+		return "providers present but no profiles resolved — referential integrity not verified", nil
 	}
 	var mismatches []string
 	for _, rp := range providers {
@@ -3540,7 +3840,7 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 	}
 	if len(mismatches) > 0 {
 		return "", fmt.Errorf(
-			"providers reference unknown openshell.profiles types: %s — if these profiles are gateway-resident, move the providers to a local providers/ directory instead",
+			"providers reference unknown profile types: %s",
 			strings.Join(mismatches, ", "))
 	}
 	return "", nil

@@ -27,6 +27,14 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 	assert.Equal(t, DefaultAllowedRemoteResources(), d.AllowedResources())
 	assert.Nil(t, d.IssueCreationConfig())
 	assert.False(t, d.IsOrgMode())
+	assert.Equal(t, "", d.ConfigForge())
+
+	// Mint/inference operational defaults.
+	assert.Equal(t, DefaultPerRepoMintURL, d.ConfigMintURL())
+	assert.Equal(t, DefaultPerRepoInferenceProvider, d.ConfigInferenceProvider())
+	assert.Equal(t, "", d.ConfigInferenceProject(), "project has no code default")
+	assert.Equal(t, DefaultPerRepoInferenceRegion, d.ConfigInferenceRegion())
+	assert.Equal(t, "", d.ConfigInferenceWIFProvider(), "WIF provider has no code default")
 }
 
 // --- Unset fields resolve through parent to code defaults ---
@@ -42,6 +50,13 @@ func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
 	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
 	assert.Nil(t, cfg.IssueCreationConfig())
 	assert.False(t, cfg.IsOrgMode())
+
+	// Mint/inference fields fall through to code defaults.
+	assert.Equal(t, DefaultPerRepoMintURL, cfg.ConfigMintURL())
+	assert.Equal(t, DefaultPerRepoInferenceProvider, cfg.ConfigInferenceProvider())
+	assert.Equal(t, "", cfg.ConfigInferenceProject(), "project has no code default")
+	assert.Equal(t, DefaultPerRepoInferenceRegion, cfg.ConfigInferenceRegion())
+	assert.Equal(t, "", cfg.ConfigInferenceWIFProvider(), "WIF provider has no code default")
 }
 
 // --- Local values override parent values ---

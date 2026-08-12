@@ -43,7 +43,7 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
@@ -64,6 +64,7 @@ var embeddedMintFiles = map[string]string{
 	"mintcore/interfaces.go.embed":    "mintcore/interfaces.go",
 	"mintcore/jwks_verifier.go.embed": "mintcore/jwks_verifier.go",
 	"mintcore/patterns.go.embed":      "mintcore/patterns.go",
+	"mintcore/repos_scope.go.embed":   "mintcore/repos_scope.go",
 	"mintcore/sts_verifier.go.embed":  "mintcore/sts_verifier.go",
 	"mintcore/version.go.embed":       "mintcore/version.go",
 	"mintcore/wif.go.embed":           "mintcore/wif.go",
@@ -99,7 +100,7 @@ const (
 	// DefaultInferencePool is the WIF pool used by inference commands.
 	// Separate from the mint pool (defaultPool) so that mint and inference
 	// lifecycle operations don't interfere with each other.
-	DefaultInferencePool = "fullsend-inference"
+	DefaultInferencePool = mintcore.DefaultInferencePool
 )
 
 // Config holds the inputs for GCF mint provisioning.
@@ -190,12 +191,21 @@ func (p *Provisioner) SecretExists(ctx context.Context, role string) (bool, erro
 	return false, fmt.Errorf("checking secret %s: %w", sid, err)
 }
 
+// MintServiceAccountEmail returns the email address of the fullsend-mint
+// service account for the given GCP project.
+func MintServiceAccountEmail(projectID string) string {
+	return saName + "@" + projectID + ".iam.gserviceaccount.com"
+}
+
 // EnsureMintServiceAccount creates the mint service account if it does not
 // already exist. Call this before StoreAgentPEM so the IAM binding on
 // secrets can reference the service account.
 func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
 	if p.cfg.ProjectID == "" {
-		return fmt.Errorf("project ID is required")
+		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	return p.gcpAPI.CreateServiceAccount(ctx, p.cfg.ProjectID, saName, "Fullsend token mint Cloud Function")
 }
@@ -205,6 +215,9 @@ func (p *Provisioner) EnsureMintServiceAccount(ctx context.Context) error {
 func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []byte) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -226,7 +239,7 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 		return fmt.Errorf("adding secret version for %s: %w", sid, err)
 	}
 
-	saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+	saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 	secretResource := fmt.Sprintf("projects/%s/secrets/%s", p.cfg.ProjectID, sid)
 	if err := p.gcpAPI.SetSecretIAMBinding(ctx, secretResource,
 		"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
@@ -240,6 +253,9 @@ func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []
 func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -256,6 +272,9 @@ func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
 func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -296,6 +315,9 @@ func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) err
 func (p *Provisioner) RemoveRoleFromMint(ctx context.Context, role string) error {
 	if p.cfg.ProjectID == "" {
 		return fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
 	}
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -873,7 +895,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("uploading function source: %w", err)
 		}
 
-		saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+		saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 		fnCfg := FunctionConfig{
 			ServiceAccount: saEmail,
 			EnvVars:        envVars,
@@ -928,7 +950,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("uploading function source: %w", err)
 		}
 
-		saEmail := fmt.Sprintf("%s@%s.iam.gserviceaccount.com", saName, p.cfg.ProjectID)
+		saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
 		fnCfg := FunctionConfig{
 			ServiceAccount: saEmail,
 			EnvVars:        deployEnvVars,
@@ -1423,6 +1445,77 @@ func (p *Provisioner) waitForReady(ctx context.Context, mintURL string) error {
 	}
 }
 
+// ProvisionRepoWIFProvider creates a dedicated per-repo WIF provider without
+// granting any IAM roles. This is used by mint enrollment, which only needs
+// the WIF provider for OIDC verification — Vertex AI access is granted
+// separately by the inference provision code path.
+//
+// Returns the full WIF provider resource path. All operations are idempotent.
+func (p *Provisioner) ProvisionRepoWIFProvider(ctx context.Context) (string, error) {
+	wifProvider, _, err := p.provisionRepoWIFProvider(ctx)
+	return wifProvider, err
+}
+
+// provisionRepoWIFProvider validates the repo-scoped config and creates the
+// WIF pool plus the dedicated per-repo provider. Shared by
+// ProvisionRepoWIFProvider (mint enrollment, no IAM grant) and ProvisionWIF's
+// repo-scoped branch (which additionally grants roles/aiplatform.user), so the
+// provider config (attribute condition, audiences, issuer) cannot drift
+// between the two paths. Returns the provider resource path and the project
+// number.
+func (p *Provisioner) provisionRepoWIFProvider(ctx context.Context) (wifProvider, projectNumber string, err error) {
+	if p.cfg.ProjectID == "" {
+		return "", "", fmt.Errorf("GCP project ID is required")
+	}
+	if !gcpProjectIDPattern.MatchString(p.cfg.ProjectID) {
+		return "", "", fmt.Errorf("invalid GCP project ID: %q", p.cfg.ProjectID)
+	}
+	if p.cfg.Repo == "" {
+		return "", "", fmt.Errorf("repo is required for per-repo WIF provisioning")
+	}
+
+	parts := strings.SplitN(p.cfg.Repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
+	}
+	partsLower := [2]string{strings.ToLower(parts[0]), strings.ToLower(parts[1])}
+	if !mintcore.GitHubOrgPattern.MatchString(partsLower[0]) || strings.Contains(partsLower[0], "--") {
+		return "", "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", parts[0])
+	}
+	if !githubRepoSlugPattern.MatchString(partsLower[1]) {
+		return "", "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric, hyphens, dots, or underscores", parts[1])
+	}
+	if partsLower[1] == "." || partsLower[1] == ".." {
+		return "", "", fmt.Errorf("invalid repo name %q: cannot be \".\" or \"..\"", parts[1])
+	}
+	if strings.HasSuffix(partsLower[1], ".git") {
+		return "", "", fmt.Errorf("invalid repo name %q: cannot end with \".git\"", parts[1])
+	}
+
+	projectNumber, err = p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return "", "", fmt.Errorf("getting project number: %w", err)
+	}
+	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
+		return "", "", fmt.Errorf("creating WIF pool: %w", err)
+	}
+	providerID := mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
+	attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
+	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
+	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
+		IssuerURI:          oidcIssuer,
+		AttributeCondition: attrCondition,
+		AllowedAudiences:   audiences,
+	}); err != nil {
+		return "", "", fmt.Errorf("creating WIF provider: %w", err)
+	}
+
+	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
+		projectNumber, p.cfg.WIFPoolName, providerID)
+
+	return wifProvider, projectNumber, nil
+}
+
 // ProvisionWIF creates the WIF infrastructure (service account, pool, provider,
 // principal binding) needed for GitHub Actions to authenticate via OIDC.
 // All operations are idempotent. Returns the full WIF provider resource path
@@ -1452,72 +1545,39 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		orgs[i] = org
 	}
 
-	var projectNumber string
-	providerID := p.cfg.WIFProvider
 	if p.cfg.Repo != "" {
 		// Repo-scoped: dedicated provider per repo, no org merge.
 		// Each repo gets a unique provider ID (via BuildRepoProviderID),
 		// so no risk of clobbering another repo's WIF condition.
-		parts := strings.SplitN(p.cfg.Repo, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
-		}
-		partsLower := [2]string{strings.ToLower(parts[0]), strings.ToLower(parts[1])}
-		if !mintcore.GitHubOrgPattern.MatchString(partsLower[0]) || strings.Contains(partsLower[0], "--") {
-			return "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", parts[0])
-		}
-		if !githubRepoSlugPattern.MatchString(partsLower[1]) {
-			return "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric, hyphens, dots, or underscores", parts[1])
-		}
-		if partsLower[1] == "." || partsLower[1] == ".." {
-			return "", fmt.Errorf("invalid repo name %q: cannot be \".\" or \"..\"", parts[1])
-		}
-		if strings.HasSuffix(partsLower[1], ".git") {
-			return "", fmt.Errorf("invalid repo name %q: cannot end with \".git\"", parts[1])
-		}
-		var err error
-		projectNumber, err = p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
-		if err != nil {
-			return "", fmt.Errorf("getting project number: %w", err)
-		}
-		if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
-			return "", fmt.Errorf("creating WIF pool: %w", err)
-		}
-		providerID = mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
-		attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
-		audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
-		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
-			IssuerURI:          oidcIssuer,
-			AttributeCondition: attrCondition,
-			AllowedAudiences:   audiences,
-		}); err != nil {
-			return "", fmt.Errorf("creating WIF provider: %w", err)
-		}
-	} else {
-		// Org-scoped: shared helper merges with existing orgs.
-		wifResult, err := p.ensureWIFPoolAndProvider(ctx, orgs)
+		// Provider creation is shared with ProvisionRepoWIFProvider; only
+		// this path additionally grants Vertex AI access.
+		repoProvider, projectNumber, err := p.provisionRepoWIFProvider(ctx)
 		if err != nil {
 			return "", err
 		}
-		projectNumber = wifResult.projectNumber
-	}
-
-	if p.cfg.Repo != "" {
 		if err := p.grantRepoVertexAIAccessWithNumber(ctx, projectNumber, p.cfg.Repo); err != nil {
 			return "", err
 		}
 		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", p.cfg.Repo)
-	} else {
-		for _, org := range orgs {
-			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
-				return "", err
-			}
-		}
-		log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", len(orgs))
+		return repoProvider, nil
 	}
 
+	// Org-scoped: shared helper merges with existing orgs.
+	wifResult, err := p.ensureWIFPoolAndProvider(ctx, orgs)
+	if err != nil {
+		return "", err
+	}
+	projectNumber := wifResult.projectNumber
+
+	for _, org := range orgs {
+		if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
+			return "", err
+		}
+	}
+	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", len(orgs))
+
 	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
-		projectNumber, p.cfg.WIFPoolName, providerID)
+		projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
 
 	return wifProvider, nil
 }
@@ -1642,6 +1702,92 @@ func (p *Provisioner) RemoveRepoFromMint(ctx context.Context, repo string) error
 	return nil
 }
 
+// AddWorkflowHostRepo adds a repo to the mint's WORKFLOW_HOST_REPOS env var
+// so the mint accepts workflows hosted in that repo for per-repo callers.
+// Idempotent — skips repos already listed.
+func (p *Provisioner) AddWorkflowHostRepo(ctx context.Context, repo string) error {
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("repo must be in owner/repo format, got %q", repo)
+	}
+	if strings.Contains(repo, ",") {
+		return fmt.Errorf("repo name cannot contain commas, got %q", repo)
+	}
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	repo = strings.ToLower(repo)
+	entries := mintcore.SplitCSV(trafficEnvVars["WORKFLOW_HOST_REPOS"])
+	for _, entry := range entries {
+		if strings.ToLower(entry) == repo {
+			return nil
+		}
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+	entries = append(entries, repo)
+	updated["WORKFLOW_HOST_REPOS"] = strings.Join(entries, ",")
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("updating WORKFLOW_HOST_REPOS (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("updating WORKFLOW_HOST_REPOS: %w", err)
+	}
+	return nil
+}
+
+// RemoveWorkflowHostRepo removes a repo from WORKFLOW_HOST_REPOS.
+func (p *Provisioner) RemoveWorkflowHostRepo(ctx context.Context, repo string) error {
+	repo = strings.ToLower(repo)
+
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	existing := trafficEnvVars["WORKFLOW_HOST_REPOS"]
+	var filtered []string
+	found := false
+	for _, entry := range strings.Split(existing, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.ToLower(entry) == repo {
+			found = true
+		} else {
+			filtered = append(filtered, entry)
+		}
+	}
+
+	if !found {
+		return nil
+	}
+
+	updated := make(map[string]string, len(trafficEnvVars))
+	for k, v := range trafficEnvVars {
+		updated[k] = v
+	}
+	updated["WORKFLOW_HOST_REPOS"] = strings.Join(filtered, ",")
+
+	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
+	if err != nil {
+		if rev != "" {
+			return fmt.Errorf("removing repo from WORKFLOW_HOST_REPOS (revision %s created but traffic routing may have failed): %w", rev, err)
+		}
+		return fmt.Errorf("removing repo from WORKFLOW_HOST_REPOS: %w", err)
+	}
+	return nil
+}
+
 // DisableWIFProvider sets a WIF provider's disabled field to true.
 func (p *Provisioner) DisableWIFProvider(ctx context.Context, providerID string) error {
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
@@ -1649,6 +1795,26 @@ func (p *Provisioner) DisableWIFProvider(ctx context.Context, providerID string)
 		return fmt.Errorf("getting project number: %w", err)
 	}
 	return p.gcpAPI.DisableWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID)
+}
+
+// DeleteMintFunction permanently deletes the mint Cloud Function.
+func (p *Provisioner) DeleteMintFunction(ctx context.Context) error {
+	return p.gcpAPI.DeleteFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+}
+
+// DeleteMintServiceAccount permanently deletes the mint service account.
+func (p *Provisioner) DeleteMintServiceAccount(ctx context.Context) error {
+	saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
+	return p.gcpAPI.DeleteServiceAccount(ctx, p.cfg.ProjectID, saEmail)
+}
+
+// DeleteMintWIFPool permanently deletes the WIF pool and all its providers.
+func (p *Provisioner) DeleteMintWIFPool(ctx context.Context) error {
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return fmt.Errorf("getting project number: %w", err)
+	}
+	return p.gcpAPI.DeleteWIFPool(ctx, projectNumber, p.cfg.WIFPoolName)
 }
 
 // DeleteWIFProvider permanently deletes a WIF provider.

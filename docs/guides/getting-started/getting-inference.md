@@ -7,10 +7,14 @@ sidebar_position: 2
 The goal of this document is that you acquire a WIF provider URL to pass to the next step
 of the process ([Configuring GitHub](configuring-github.md)).
 
-Currently Fullsend only supports GCP Vertex AI inference using Workload Identity Federation (WIF).
-WIF grants short-lived tokens to requesters that meet certain requirements. In the case of Fullsend
-these requirements are to provide an OIDC Token signed by GitHub with their origin (org, repository
-and other details). If the WIF finds the request valid, it provides a short lived token.
+Fullsend supports GCP Vertex AI inference using Workload Identity Federation (WIF) on both
+GitHub and GitLab. WIF grants short-lived tokens to requesters that meet certain requirements.
+For GitHub, this requires an OIDC token signed by GitHub with its origin (org, repository and
+other details). For GitLab, the OIDC token is signed by GitLab's built-in `id_tokens` mechanism.
+If the WIF finds the request valid, it provides a short-lived token.
+
+For **GitLab repos**, inference credentials are configured via `repos install --inference-project`
+rather than the steps below. See [Operations](operations.md#gitlab) for details.
 
 You may need to create a new GCP project or reuse one. The output of this process is a WIF provider
 URL resembling:

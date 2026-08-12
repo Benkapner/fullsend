@@ -10,7 +10,7 @@ Triggered when the `ready-to-code` label is applied to an issue or via `/fs-code
 
 The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
 
-1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
+1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs that close the issue (via `Fixes`/`Closes`/`Resolves` keywords).
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has no network access (enforced by OpenShell).
 3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, and creates the PR.
 
@@ -43,8 +43,8 @@ on issues (not PRs). The code agent is also triggered automatically when the
 
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 

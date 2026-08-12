@@ -11,8 +11,9 @@ import (
 )
 
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
-// suitable for stage matching and child-pipeline triggering.
-func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (dispatch.NormalizedEvent, error) {
+// suitable for stage matching and dispatch. The returned int is the resolved
+// numeric actor ID (e.g. from the label-events API for issue_label events).
+func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (dispatch.NormalizedEvent, int, error) {
 	ne := dispatch.NormalizedEvent{
 		Repo: p.projectPath,
 		Source: dispatch.Source{
@@ -65,7 +66,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		if event.ChangedLabel != "" {
 			la, err := p.resolveLabelAuthor(ctx, event.IID, event.ChangedLabel)
 			if err != nil {
-				return dispatch.NormalizedEvent{}, fmt.Errorf("resolve label author: %w", err)
+				return dispatch.NormalizedEvent{}, 0, fmt.Errorf("resolve label author: %w", err)
 			}
 			authorID = la.ID
 			actorLogin = la.Username
@@ -78,11 +79,11 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	}
 
 	if authorID == 0 || actorLogin == "" {
-		return dispatch.NormalizedEvent{}, fmt.Errorf("unresolvable actor")
+		return dispatch.NormalizedEvent{}, 0, fmt.Errorf("unresolvable actor")
 	}
 
 	if isBot && event.Type == "issue_label" {
-		return dispatch.NormalizedEvent{}, fmt.Errorf("bot-applied label event filtered")
+		return dispatch.NormalizedEvent{}, 0, fmt.Errorf("bot-applied label event filtered")
 	}
 
 	actorKind := "human"
@@ -109,7 +110,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		}
 	}
 
-	return ne, nil
+	return ne, authorID, nil
 }
 
 // translateEventType maps a RoutableEvent type to a NormalizedEvent

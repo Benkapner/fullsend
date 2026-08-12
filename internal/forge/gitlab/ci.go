@@ -450,6 +450,11 @@ func (c *LiveClient) ListRecentWorkflowRuns(_ context.Context, _, _ string, _ in
 	return nil, forge.ErrNotSupported
 }
 
+// ListWorkflowRunJobs is not supported on GitLab (GitHub Actions concept).
+func (c *LiveClient) ListWorkflowRunJobs(_ context.Context, _, _ string, _ int) ([]forge.WorkflowJob, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // ListWorkflowRunArtifacts is not supported on GitLab (GitHub Actions concept).
 func (c *LiveClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, _ int) ([]forge.WorkflowArtifact, error) {
 	return nil, forge.ErrNotSupported
@@ -473,6 +478,48 @@ func (c *LiveClient) GetWorkflowRunLogs(_ context.Context, _, _ string, _ int) (
 // GetWorkflowRunAnnotations is not supported on GitLab (GitHub Actions concept).
 func (c *LiveClient) GetWorkflowRunAnnotations(_ context.Context, _, _ string, _ int) ([]forge.Annotation, error) {
 	return nil, forge.ErrNotSupported
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline creation (API-triggered dispatch)
+// ---------------------------------------------------------------------------
+
+// CreatePipeline creates a new pipeline on the given ref with the given
+// variables via POST /projects/:id/pipeline. Returns the pipeline ID and
+// web URL. Used by the cron-poller to dispatch agent stages directly.
+func (c *LiveClient) CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*forge.Pipeline, error) {
+	path := fmt.Sprintf("/projects/%s/pipeline", projectPath(owner, repo))
+
+	type pipelineVar struct {
+		Key          string `json:"key"`
+		Value        string `json:"value"`
+		VariableType string `json:"variable_type"`
+	}
+
+	vars := make([]pipelineVar, 0, len(variables))
+	for k, v := range variables {
+		vars = append(vars, pipelineVar{Key: k, Value: v, VariableType: "env_var"})
+	}
+
+	body := map[string]any{
+		"ref":       ref,
+		"variables": vars,
+	}
+
+	resp, err := c.post(ctx, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("create pipeline: %w", err)
+	}
+
+	var result struct {
+		ID     int64  `json:"id"`
+		WebURL string `json:"web_url"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode pipeline response: %w", err)
+	}
+
+	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +616,63 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 }
 
 // ---------------------------------------------------------------------------
+// Resource groups
+// ---------------------------------------------------------------------------
+
+// ResourceGroup represents a GitLab project resource group.
+type ResourceGroup struct {
+	Key         string `json:"key"`
+	ProcessMode string `json:"process_mode"`
+}
+
+// ListResourceGroups returns all resource groups for the project.
+// Results are paginated; the method follows pagination until all groups
+// are fetched.
+func (c *LiveClient) ListResourceGroups(ctx context.Context, owner, repo string) ([]ResourceGroup, error) {
+	const perPage = 100
+	const maxPages = 100
+	proj := projectPath(owner, repo)
+	var result []ResourceGroup
+
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/resource_groups?per_page=%d&page=%d", proj, perPage, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list resource groups page %d: %w", page, err)
+		}
+
+		var groups []ResourceGroup
+		if err := decodeJSON(resp, &groups); err != nil {
+			return nil, fmt.Errorf("decode resource groups page %d: %w", page, err)
+		}
+
+		result = append(result, groups...)
+
+		if len(groups) < perPage {
+			return result, nil
+		}
+	}
+
+	return nil, fmt.Errorf("list resource groups: pagination exceeded %d pages", maxPages)
+}
+
+// UpdateResourceGroupProcessMode sets the process_mode for a resource group.
+// Valid modes are "unordered", "oldest_first", and "newest_first".
+func (c *LiveClient) UpdateResourceGroupProcessMode(ctx context.Context, owner, repo, key, processMode string) error {
+	path := fmt.Sprintf("/projects/%s/resource_groups/%s",
+		projectPath(owner, repo), url.PathEscape(key))
+	body := map[string]any{
+		"process_mode": processMode,
+	}
+	resp, err := c.put(ctx, path, body)
+	if err != nil {
+		return fmt.Errorf("update resource group %s process_mode: %w", key, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // CI variables (branch-restricted)
 // ---------------------------------------------------------------------------
 
@@ -650,13 +754,35 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 }
 
 // ---------------------------------------------------------------------------
+// Instance metadata
+// ---------------------------------------------------------------------------
+
+// IsEnterprise checks the /metadata endpoint to determine if the GitLab
+// instance is running Enterprise Edition. Self-hosted EE instances always
+// have this set to true. Returns false on error or CE instances.
+func (c *LiveClient) IsEnterprise(ctx context.Context) bool {
+	resp, err := c.get(ctx, "/metadata")
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		Enterprise bool `json:"enterprise"`
+	}
+	if err := decodeJSON(resp, &meta); err != nil {
+		return false
+	}
+	return meta.Enterprise
+}
+
+// ---------------------------------------------------------------------------
 // Organization plan
 // ---------------------------------------------------------------------------
 
 // GetOrgPlan returns the billing plan name for a GitLab namespace.
 // Uses the Namespaces API where the plan field is documented, rather
 // than the Groups API where it is undocumented and may be absent.
-// Returns "free" if the plan field is empty.
+// Self-hosted instances typically return "default"; gitlab.com returns
+// the SaaS tier name ("free", "premium", "ultimate", etc.).
 func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/namespaces/%s", url.PathEscape(org)))
 	if err != nil {
@@ -672,4 +798,58 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 		return "free", nil
 	}
 	return ns.Plan, nil
+}
+
+// ---------------------------------------------------------------------------
+// Project Access Tokens
+// ---------------------------------------------------------------------------
+
+// ProjectAccessToken represents a GitLab project access token.
+type ProjectAccessToken struct {
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+	Token  string `json:"token"`
+}
+
+// CreateProjectAccessToken creates a project access token with the given name,
+// scopes, and access level. Returns the token (only available at creation time)
+// and the token ID. accessLevel 40 = Maintainer.
+func (c *LiveClient) CreateProjectAccessToken(ctx context.Context, owner, repo, name string, scopes []string, accessLevel int, expiresAt string) (*ProjectAccessToken, error) {
+	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
+	body := map[string]any{
+		"name":         name,
+		"scopes":       scopes,
+		"access_level": accessLevel,
+		"expires_at":   expiresAt,
+	}
+	resp, err := c.post(ctx, basePath, body)
+	if err != nil {
+		return nil, fmt.Errorf("create project access token: %w", err)
+	}
+	var token ProjectAccessToken
+	if err := decodeJSON(resp, &token); err != nil {
+		return nil, fmt.Errorf("decode project access token: %w", err)
+	}
+	return &token, nil
+}
+
+// ListProjectAccessTokens lists all project access tokens.
+func (c *LiveClient) ListProjectAccessTokens(ctx context.Context, owner, repo string) ([]ProjectAccessToken, error) {
+	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
+	resp, err := c.get(ctx, basePath)
+	if err != nil {
+		return nil, fmt.Errorf("list project access tokens: %w", err)
+	}
+	var tokens []ProjectAccessToken
+	if err := decodeJSON(resp, &tokens); err != nil {
+		return nil, fmt.Errorf("decode project access tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+// RevokeProjectAccessToken revokes (deletes) a project access token by ID.
+func (c *LiveClient) RevokeProjectAccessToken(ctx context.Context, owner, repo string, tokenID int) error {
+	path := fmt.Sprintf("/projects/%s/access_tokens/%d", projectPath(owner, repo), tokenID)
+	return c.delete_(ctx, path)
 }

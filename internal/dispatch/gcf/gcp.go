@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -97,9 +98,11 @@ type FunctionConfig struct {
 type GCFClient interface {
 	// Service account operations
 	CreateServiceAccount(ctx context.Context, projectID, saName, displayName string) error
+	DeleteServiceAccount(ctx context.Context, projectID, saEmail string) error
 
 	// WIF operations
 	CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error
+	DeleteWIFPool(ctx context.Context, projectNumber, poolID string) error
 	CreateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error
 	GetWIFProvider(ctx context.Context, projectNumber, poolID, providerID string) (*WIFProviderInfo, error)
 	UpdateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error
@@ -117,12 +120,23 @@ type GCFClient interface {
 
 	// IAM bindings
 	SetSecretIAMBinding(ctx context.Context, resource, member, role string) error
+	// ReplaceSecretIAMBinding sets the IAM binding for a role on a Secret
+	// Manager resource, replacing all existing members for that role with
+	// the specified member. This is destructive: any other members bound
+	// to the same role on the resource are removed. Use this instead of
+	// SetSecretIAMBinding when re-install with a different service account
+	// should revoke the old account's access.
+	ReplaceSecretIAMBinding(ctx context.Context, resource, member, role string) error
+	// SetProjectIAMBinding adds an IAM binding on a Cloud Resource Manager
+	// project. This is intentionally additive (unlike ReplaceSecretIAMBinding)
+	// because project-level roles may have multiple legitimate members.
 	SetProjectIAMBinding(ctx context.Context, projectID, member, role string) error
 
 	// Cloud Run IAM (for function invoker policy)
 	SetCloudRunInvoker(ctx context.Context, projectID, region, serviceName string) error
 
 	// Cloud Functions v2
+	DeleteFunction(ctx context.Context, projectID, region, functionName string) error
 	GetFunction(ctx context.Context, projectID, region, functionName string) (*FunctionInfo, error)
 	// GetCloudRunServiceURI returns the public URI of the Cloud Run service
 	// backing a Gen2 Cloud Function (same name as the function).
@@ -209,6 +223,27 @@ func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saN
 	return nil
 }
 
+// DeleteServiceAccount permanently deletes a service account.
+func (c *LiveGCFClient) DeleteServiceAccount(ctx context.Context, projectID, saEmail string) error {
+	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts/%s",
+		url.PathEscape(projectID), url.PathEscape(saEmail))
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	if err != nil {
+		return fmt.Errorf("deleting service account: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already deleted
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d deleting service account: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+	return nil
+}
+
 // CreateWIFPool creates a new WIF pool.
 func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools?workloadIdentityPoolId=%s",
@@ -235,6 +270,31 @@ func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID
 
 	if err := c.waitForIAMOperation(ctx, resp.Body); err != nil {
 		return fmt.Errorf("waiting for WIF pool creation: %w", err)
+	}
+	return nil
+}
+
+// DeleteWIFPool permanently deletes a WIF pool and all its providers.
+func (c *LiveGCFClient) DeleteWIFPool(ctx context.Context, projectNumber, poolID string) error {
+	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s",
+		url.PathEscape(projectNumber), url.PathEscape(poolID))
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	if err != nil {
+		return fmt.Errorf("deleting WIF pool: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already deleted
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d deleting WIF pool: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	if err := c.waitForIAMOperation(ctx, resp.Body); err != nil {
+		return fmt.Errorf("waiting for WIF pool deletion: %w", err)
 	}
 	return nil
 }
@@ -708,16 +768,32 @@ func (c *LiveGCFClient) DeleteWIFProvider(ctx context.Context, projectNumber, po
 
 // SetSecretIAMBinding sets an IAM binding on a Secret Manager resource.
 // Uses read-modify-write with retry on 409 Conflict (etag mismatch).
+// The member is added to the existing binding for the role (additive).
 func (c *LiveGCFClient) SetSecretIAMBinding(ctx context.Context, resource, member, role string) error {
+	return c.setSecretIAMBindingWithMode(ctx, resource, member, role, false)
+}
+
+// ReplaceSecretIAMBinding sets the IAM binding for a role on a Secret
+// Manager resource, replacing all existing members for that role with
+// the specified member. This is destructive: any other members bound
+// to the same role are silently removed. Safe for fullsend-managed bot
+// token secrets which have a single expected accessor.
+func (c *LiveGCFClient) ReplaceSecretIAMBinding(ctx context.Context, resource, member, role string) error {
+	return c.setSecretIAMBindingWithMode(ctx, resource, member, role, true)
+}
+
+// setSecretIAMBindingWithMode is the shared implementation for both additive
+// (replace=false) and replace (replace=true) Secret Manager IAM operations.
+func (c *LiveGCFClient) setSecretIAMBindingWithMode(ctx context.Context, resource, member, role string, replace bool) error {
 	if !secretResourcePattern.MatchString(resource) {
 		return fmt.Errorf("invalid secret resource path %q", resource)
 	}
-	const maxRetries = 3
+	const maxRetries = 7
 	getURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:getIamPolicy", resource)
 	setURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:setIamPolicy", resource)
 
 	for attempt := range maxRetries {
-		err := c.trySetIAMBinding(ctx, http.MethodGet, "", getURL, setURL, member, role)
+		err := c.trySetIAMBinding(ctx, http.MethodGet, "", getURL, setURL, member, role, replace)
 		if err == nil {
 			return nil
 		}
@@ -727,7 +803,7 @@ func (c *LiveGCFClient) SetSecretIAMBinding(ctx context.Context, resource, membe
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(200*(attempt+1)) * time.Millisecond):
+		case <-time.After(iamRetryDelay(attempt)):
 		}
 	}
 	return fmt.Errorf("IAM policy update failed after %d retries", maxRetries)
@@ -744,17 +820,40 @@ func isConflict(err error) bool {
 	return errors.As(err, &ce)
 }
 
+// iamRetryDelay returns the backoff duration for an IAM read-modify-write
+// retry. Uses exponential backoff with jitter: 500ms base, doubling each
+// attempt, capped at 10s. Jitter randomises 50-100% of the computed delay
+// to desynchronise concurrent callers (e.g. parallel behaviour test pool
+// repos all updating the same project IAM policy).
+//
+// Package-level var so tests can override (see secondaryRateLimitBackoff
+// in internal/forge/github for the same pattern).
+var iamRetryDelay = func(attempt int) time.Duration {
+	const (
+		baseDelay = 500 * time.Millisecond
+		maxDelay  = 10 * time.Second
+	)
+	delay := min(baseDelay<<uint(attempt), maxDelay) // 500ms, 1s, 2s, 4s, 8s, 10s, …
+	// Jitter: randomise between 50-100% of the delay.
+	half := delay / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
+}
+
 // SetProjectIAMBinding sets an IAM binding on a GCP project.
 // Uses read-modify-write with retry on 409 Conflict (etag mismatch).
+// Retries up to 7 times with exponential backoff and jitter (500ms base,
+// capped at 10s) to handle concurrent read-modify-write contention when
+// multiple callers (e.g. parallel behaviour test pool repos) update the
+// same project-level IAM policy simultaneously.
 func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, member, role string) error {
-	const maxRetries = 3
+	const maxRetries = 7
 	getURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s:getIamPolicy",
 		url.PathEscape(projectID))
 	setURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s:setIamPolicy",
 		url.PathEscape(projectID))
 
 	for attempt := range maxRetries {
-		err := c.trySetIAMBinding(ctx, http.MethodPost, "{}", getURL, setURL, member, role)
+		err := c.trySetIAMBinding(ctx, http.MethodPost, "{}", getURL, setURL, member, role, false)
 		if err == nil {
 			return nil
 		}
@@ -764,7 +863,7 @@ func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, mem
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(200*(attempt+1)) * time.Millisecond):
+		case <-time.After(iamRetryDelay(attempt)):
 		}
 	}
 	return fmt.Errorf("project IAM policy update failed after %d retries", maxRetries)
@@ -773,7 +872,9 @@ func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, mem
 // trySetIAMBinding performs a single read-modify-write IAM policy update.
 // getMethod/getBody control the getIamPolicy request (GET+"" for Secret Manager,
 // POST+"{}" for Cloud Resource Manager). setIamPolicy always uses POST.
-func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody, getURL, setURL, member, role string) error {
+// When replace is true, all existing members for the role are replaced with
+// the specified member instead of appending.
+func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody, getURL, setURL, member, role string, replace bool) error {
 	resp, err := c.Client.DoRequest(ctx, getMethod, getURL, getBody)
 	if err != nil {
 		return fmt.Errorf("getting IAM policy: %w", err)
@@ -801,13 +902,19 @@ func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody
 		if binding["role"] != role {
 			continue
 		}
-		members, _ := binding["members"].([]interface{})
-		for _, m := range members {
-			if m == member {
-				return nil
+		if replace {
+			// Replace mode: set members to only the specified member.
+			binding["members"] = []string{member}
+		} else {
+			// Additive mode: append the member if not already present.
+			members, _ := binding["members"].([]interface{})
+			for _, m := range members {
+				if m == member {
+					return nil
+				}
 			}
+			binding["members"] = append(members, member)
 		}
-		binding["members"] = append(members, member)
 		found = true
 		break
 	}
@@ -937,6 +1044,40 @@ func (c *LiveGCFClient) trySetCloudRunInvoker(ctx context.Context, baseURL strin
 		return true, fmt.Errorf("unexpected status %d setting invoker: %s", setResp.StatusCode, gcp.ExtractErrorMessage(body))
 	}
 	return true, nil
+}
+
+// DeleteFunction permanently deletes a Cloud Function v2.
+func (c *LiveGCFClient) DeleteFunction(ctx context.Context, projectID, region, functionName string) error {
+	reqURL := fmt.Sprintf("https://cloudfunctions.googleapis.com/v2/projects/%s/locations/%s/functions/%s",
+		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(functionName))
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	if err != nil {
+		return fmt.Errorf("deleting function: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already deleted
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d deleting function: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	// The response is a long-running operation.
+	var result struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decoding delete function response: %w", err)
+	}
+	if result.Name != "" {
+		if err := c.WaitForOperation(ctx, result.Name); err != nil {
+			return fmt.Errorf("waiting for function deletion: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetFunction checks if a Cloud Function exists and returns its info.

@@ -12,6 +12,8 @@ func TestMain(m *testing.M) {
 		"OIDC_AUDIENCE":          "fullsend-mint",
 		"ROLE_APP_IDS":           `{"triage":"100","coder":"200","review":"300","fullsend":"500","retro":"600","prioritize":"700"}`,
 		"ALLOWED_WORKFLOW_FILES": "*",
+		// PER_REPO_WIF_REPOS stays unset so all callers get per-org behavior
+		// (org-mode shapes) unless a test opts into per-repo mode.
 	}
 	for k, v := range defaults {
 		if os.Getenv(k) == "" {

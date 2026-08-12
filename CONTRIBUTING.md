@@ -142,6 +142,10 @@ make go-build
 
 The binary is written to `./bin/fullsend`. To run agents locally with the built binary, see [Running agents locally](docs/guides/user/running-agents-locally.md).
 
+When working from this checkout (especially mint-mutating commands), prefer
+`go run ./cmd/fullsend …` over a preinstalled binary so the CLI matches the
+branch under edit. See [Running the fullsend CLI](docs/contributing/go-code.md#running-the-fullsend-cli). End-user and operator guides continue to document the released `fullsend` binary.
+
 ## Issues
 
 When in doubt about whether something warrants a PR, start with an issue. Issues are low-friction and can graduate into PRs, problem docs, or ADRs later.

@@ -876,6 +876,61 @@ func TestOrgConfigValidate_InvalidCommentCompletion(t *testing.T) {
 	assert.Contains(t, err.Error(), "status_notifications.comment.completion")
 }
 
+func TestOrgConfigValidate_OnFailureCompletion(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Completion: "on_failure"},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate(), "on_failure should be valid for comment.completion")
+}
+
+func TestOrgConfigValidate_OnFailureStart_Rejected(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Start: "on_failure"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err, "on_failure should be rejected for comment.start")
+	assert.Contains(t, err.Error(), "status_notifications.comment.start")
+}
+
+func TestParseOrgConfig_OnFailureCompletion(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  status_notifications:
+    comment:
+      start: disabled
+      completion: on_failure
+agents: []
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "disabled", cfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "on_failure", cfg.StatusNotifications().Comment.Completion)
+}
+
 func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
 	cfg := &orgConfig{
 		Version:  "1",
@@ -905,6 +960,90 @@ func TestOrgConfigMarshal_WithoutStatusNotifications(t *testing.T) {
 		},
 		Repos: map[string]RepoConfig{},
 	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "status_notifications")
+}
+
+func TestParsePerRepoConfig_WithStatusNotifications(t *testing.T) {
+	yamlData := `
+version: "1"
+roles:
+  - triage
+status_notifications:
+  comment:
+    start: enabled
+    completion: disabled
+`
+	cfg, err := ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "enabled", cfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "disabled", cfg.StatusNotifications().Comment.Completion)
+}
+
+func TestParsePerRepoConfig_WithoutStatusNotifications(t *testing.T) {
+	yamlData := `
+version: "1"
+roles:
+  - triage
+`
+	cfg, err := ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.StatusNotifications())
+}
+
+func TestPerRepoConfig_StatusNotifications_FallsThroughToParent(t *testing.T) {
+	base, err := ParsePerRepoConfig([]byte(`
+version: "1"
+status_notifications:
+  comment:
+    start: enabled
+`))
+	require.NoError(t, err)
+
+	overlay := &perRepoConfig{parent: base}
+	require.NotNil(t, overlay.StatusNotifications())
+	assert.Equal(t, "enabled", overlay.StatusNotifications().Comment.Start)
+}
+
+func TestPerRepoConfigValidate_ValidStatusNotifications(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Notifications: &StatusNotificationConfig{
+			Comment: CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
+		},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestPerRepoConfigValidate_InvalidCommentStart(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Notifications: &StatusNotificationConfig{
+			Comment: CommentNotificationConfig{Start: "bogus"},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "status_notifications.comment.start")
+}
+
+func TestPerRepoConfigMarshal_WithStatusNotifications(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Notifications: &StatusNotificationConfig{
+			Comment: CommentNotificationConfig{Start: "enabled"},
+		},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "status_notifications:")
+	assert.Contains(t, string(data), "start: enabled")
+}
+
+func TestPerRepoConfigMarshal_WithoutStatusNotifications(t *testing.T) {
+	cfg := &perRepoConfig{Version: "1"}
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "status_notifications")
@@ -1983,4 +2122,191 @@ func TestEnsureDefaultAllowedRemoteResources(t *testing.T) {
 		_ = EnsureDefaultAllowedRemoteResources(input)
 		assert.Equal(t, inputCopy, input)
 	})
+}
+
+func TestNewPerRepoConfigFromOrg_MapsAllPortableFields(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api", "web"}, []string{"api", "web"},
+		[]string{"triage", "coder", "review"}, "vertex", "acme",
+	)
+	orgCfg.SetKillSwitch(true)
+	orgCfg.SetAgents([]AgentEntry{
+		{Source: "harness/triage.yaml"},
+		{Source: "harness/review.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/acme-corp/agents/",
+	})
+	orgCfg.SetDefaultRuntime("claude")
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+
+	// Roles from defaults.
+	assert.Equal(t, []string{"triage", "coder", "review"}, prCfg.ConfigRoles())
+
+	// Kill switch.
+	assert.True(t, prCfg.IsKillSwitchActive(), "kill_switch should be carried over")
+
+	// Runtime.
+	assert.Equal(t, "claude", prCfg.ConfigRuntime())
+
+	// Agents.
+	agents := prCfg.AgentEntries()
+	assert.Len(t, agents, 2)
+	assert.Equal(t, "harness/triage.yaml", agents[0].Source)
+	assert.Equal(t, "harness/review.yaml", agents[1].Source)
+
+	// AllowedRemoteResources (should include custom + defaults).
+	resources := prCfg.AllowedResources()
+	assert.Contains(t, resources, "https://raw.githubusercontent.com/acme-corp/agents/")
+	assert.Contains(t, resources, "https://raw.githubusercontent.com/fullsend-ai/fullsend/")
+
+	// CreateIssues from org config.
+	ci := prCfg.IssueCreationConfig()
+	require.NotNil(t, ci)
+	assert.Contains(t, ci.AllowTargets.Orgs, "acme")
+
+	// Validate.
+	assert.NoError(t, cfg.Validate())
+
+	// Marshal roundtrip.
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "kill_switch: true")
+	assert.Contains(t, string(data), "runtime: claude")
+	assert.Contains(t, string(data), "agents:")
+}
+
+func TestNewPerRepoConfigFromOrg_CarriesOverStatusNotifications(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api"}, []string{"api"},
+		[]string{"triage"}, "vertex", "acme",
+	)
+	sn := &StatusNotificationConfig{Comment: CommentNotificationConfig{Start: "enabled", Completion: "disabled"}}
+	orgCfg.(*orgConfig).Defaults.StatusNotifications = sn
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg := cfg.(PerRepoConfigReader)
+
+	require.NotNil(t, prCfg.StatusNotifications())
+	assert.Equal(t, "enabled", prCfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "disabled", prCfg.StatusNotifications().Comment.Completion)
+
+	// Deep copy: mutating the per-repo copy must not affect org config.
+	prCfg.StatusNotifications().Comment.Start = "disabled"
+	assert.Equal(t, "enabled", sn.Comment.Start, "mutating per-repo status_notifications must not affect org config")
+}
+
+func TestNewPerRepoConfigFromOrg_NoStatusNotifications(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api"}, []string{"api"},
+		[]string{"triage"}, "vertex", "acme",
+	)
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg := cfg.(PerRepoConfigReader)
+
+	assert.Nil(t, prCfg.StatusNotifications())
+}
+
+func TestNewPerRepoConfigFromOrg_PerRepoRoleOverride(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api", "web"}, []string{"api", "web"},
+		[]string{"triage", "coder", "review"}, "vertex", "acme",
+	)
+	// Set per-repo role override for "api".
+	orgCfg.SetRepo("api", RepoConfig{
+		Roles:   []string{"triage", "review"},
+		Enabled: true,
+	})
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg := cfg.(PerRepoConfigReader)
+
+	// api should get per-repo override, not defaults.
+	assert.Equal(t, []string{"triage", "review"}, prCfg.ConfigRoles())
+}
+
+func TestNewPerRepoConfigFromOrg_FallsBackToDefaultRoles(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api"}, []string{"api"},
+		[]string{"triage", "coder", "review"}, "vertex", "acme",
+	)
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg := cfg.(PerRepoConfigReader)
+
+	assert.Equal(t, []string{"triage", "coder", "review"}, prCfg.ConfigRoles())
+}
+
+func TestNewPerRepoConfigFromOrg_KillSwitchFalseOmitted(t *testing.T) {
+	orgCfg := NewOrgConfig(
+		[]string{"api"}, []string{"api"},
+		[]string{"triage"}, "vertex", "",
+	)
+	// kill_switch defaults to false — should NOT be explicitly set.
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "kill_switch",
+		"kill_switch: false should be omitted (inherit from parent)")
+}
+
+func TestNewPerRepoConfigFromOrg_DeepCopyPreventsAliasing(t *testing.T) {
+	enabled := true
+	orgCfg := NewOrgConfig(
+		[]string{"api"}, []string{"api"},
+		[]string{"triage", "coder"}, "vertex", "acme",
+	)
+	orgCfg.SetAgents([]AgentEntry{
+		{Source: "harness/triage.yaml", Enabled: &enabled},
+	})
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	prCfg := cfg.(PerRepoConfigReader)
+
+	// Mutate the per-repo copy's agent Enabled — should not affect org config.
+	prAgents := prCfg.AgentEntries()
+	*prAgents[0].Enabled = false
+	assert.True(t, enabled, "mutating per-repo agent Enabled must not affect org config")
+
+	// Mutate the per-repo copy's roles — should not affect org config.
+	prRoles := prCfg.ConfigRoles()
+	prRoles[0] = "MUTATED"
+	assert.Equal(t, "triage", orgCfg.OrgRepoDefaults().Roles[0],
+		"mutating per-repo roles must not affect org config")
+
+	// Mutate the per-repo copy's create_issues — should not affect org config.
+	ci := prCfg.IssueCreationConfig()
+	ci.AllowTargets.Orgs = append(ci.AllowTargets.Orgs, "evil-org")
+	orgCI := orgCfg.IssueCreationConfig()
+	assert.NotContains(t, orgCI.AllowTargets.Orgs, "evil-org",
+		"mutating per-repo create_issues must not affect org config")
+}
+
+func TestNewPerRepoConfigFromOrg_NoCreateIssues_UsesTargetRepo(t *testing.T) {
+	orgYAML := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - triage
+repos:
+  api:
+    enabled: true
+`
+	orgCfg, err := ParseOrgConfig([]byte(orgYAML))
+	require.NoError(t, err)
+
+	cfg := NewPerRepoConfigFromOrg(orgCfg, "api", "acme/api")
+	ci := cfg.(PerRepoConfigReader).IssueCreationConfig()
+	require.NotNil(t, ci)
+	assert.Contains(t, ci.AllowTargets.Repos, "acme/api")
+	assert.Contains(t, ci.AllowTargets.Repos, "fullsend-ai/fullsend")
 }

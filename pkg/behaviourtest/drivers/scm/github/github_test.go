@@ -292,6 +292,33 @@ func TestGetDefaultBranch_Error(t *testing.T) {
 	}
 }
 
+func TestGetBranchRef(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.BranchRefs = map[string]string{
+		"org/repo/main": "deadbeef",
+	}
+	d := New(fc)
+
+	sha, err := d.GetBranchRef(context.Background(), "org", "repo", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sha != "deadbeef" {
+		t.Errorf("expected SHA %q, got %q", "deadbeef", sha)
+	}
+}
+
+func TestGetBranchRef_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetBranchRef"] = errors.New("ref not found")
+	d := New(fc)
+
+	_, err := d.GetBranchRef(context.Background(), "org", "repo", "main")
+	if err == nil || err.Error() != "ref not found" {
+		t.Fatalf("expected ref not found error, got %v", err)
+	}
+}
+
 func TestEnsureRepoPublic_AlreadyPublic(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Repos = []forge.Repository{

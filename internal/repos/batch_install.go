@@ -3,11 +3,11 @@ package repos
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 // BatchInstallConfig holds all inputs for a multi-repo install operation.
@@ -16,7 +16,6 @@ type BatchInstallConfig struct {
 	DryRun         bool
 	RepoFilter     []string
 	MaxConcurrency int
-	SkipMintCheck  bool
 
 	// Roles is the list of agent roles to install (e.g., "triage", "coder").
 	Roles []string
@@ -29,6 +28,20 @@ type BatchInstallConfig struct {
 	// Direct controls scaffold delivery: true pushes directly to the default
 	// branch; false creates a PR.
 	Direct bool
+
+	// InferenceProject is the GCP project ID for inference. This is an
+	// install-time-only value passed via CLI flag, not stored in the
+	// manifest. Written as the FULLSEND_GCP_PROJECT_ID repo secret.
+	InferenceProject string
+
+	// InferenceProjectNumber is the numeric GCP project number used
+	// to compute the WIF provider resource name. Install-time-only,
+	// not stored in the manifest.
+	InferenceProjectNumber string
+
+	// InferenceRegion is the GCP region for inference. Install-time-only,
+	// not stored in the manifest.
+	InferenceRegion string
 }
 
 // BatchInstallResult holds the outcome of a multi-repo install operation.
@@ -38,24 +51,21 @@ type BatchInstallResult struct {
 	Failed    []InstallResult
 }
 
-// ProvisionerFactory creates a WIFProvisioner scoped to a specific repo's
-// infrastructure config (GCP project, region, org).
-type ProvisionerFactory func(cfg ResolvedConfig) WIFProvisioner
-
 // BatchInstall provisions fullsend on multiple repos from a manifest.
 //
-// It runs in three phases:
+// It runs in two phases:
 //  1. Parallel discovery: check guard variables to partition repos into
 //     toInstall and alreadyInstalled.
-//  2. Sequential WIF: EnsureOrgInMint per unique org, then ProvisionWIF
-//     and RegisterPerRepoWIF per repo. These operations modify shared GCP
-//     state and are not concurrent-safe.
-//  3. Parallel scaffold: commit scaffold files and write variables/secrets
-//     for each repo where Phase 2 succeeded.
+//  2. Parallel scaffold: commit scaffold files and write variables/secrets
+//     for each repo that passes validation.
+//
+// The WIF provider resource name is computed deterministically from
+// inference_project_number + BuildRepoProviderID(owner, repo). No GCP
+// API calls are made.
 //
 // Errors on individual repos do not abort the batch.
 func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
-	clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
+	clients ForgeClientFactory,
 	commitScaffold ScaffoldCommitFunc,
 	progress ProgressFunc) (*BatchInstallResult, error) {
 
@@ -96,10 +106,13 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 	// Phase 1: Parallel discovery — check guard variables.
 	type discoveryResult struct {
-		repo      ResolvedRepo
-		resolved  ResolvedConfig
-		installed bool
-		err       error
+		repo               ResolvedRepo
+		resolved           ResolvedConfig
+		installed          bool
+		secretsExist       bool
+		regionVarExists    bool
+		discoveredCredMode string
+		err                error
 	}
 
 	concurrency := cfg.MaxConcurrency
@@ -139,17 +152,80 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 			installed := false
 			if guardExists && guardVal == "true" {
-				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, fc)
+				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc)
 				if checkErr != nil {
 					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
 					return
 				}
 				installed = fullyInstalled
 			}
+
+			// When repo is NOT fully installed, check whether GCP
+			// secrets already exist so we can reuse them instead of
+			// requiring --inference-project / --inference-project-number.
+			// Applies to both GitHub (always uses WIF) and GitLab
+			// (uses WIF when inference is configured).
+			var secretsExist bool
+			if !installed && (resolved.Forge == ForgeGitHub || resolved.Forge == ForgeGitLab) {
+				projExists, projErr := fc.Client.RepoSecretExists(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_PROJECT_ID")
+				if projErr != nil {
+					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: projErr}
+					return
+				}
+				wifExists, wifErr := fc.Client.RepoSecretExists(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_WIF_PROVIDER")
+				if wifErr != nil {
+					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: wifErr}
+					return
+				}
+				if projExists && wifExists {
+					secretsExist = true
+					_, regionExists, regionErr := fc.Client.GetRepoVariable(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_REGION")
+					if regionErr != nil {
+						discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: regionErr}
+						return
+					}
+					var credMode string
+					if resolved.Forge == ForgeGitLab {
+						credModeVal, credModeExists, credModeErr := fc.Client.GetRepoVariable(ctx, rr.Owner, rr.Repo, "FULLSEND_CREDENTIAL_MODE")
+						if credModeErr != nil {
+							discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: credModeErr}
+							return
+						}
+						if credModeExists {
+							credMode = credModeVal
+						}
+					}
+					discoveries[idx] = discoveryResult{
+						repo:               rr,
+						resolved:           resolved,
+						secretsExist:       true,
+						regionVarExists:    regionExists,
+						discoveredCredMode: credMode,
+					}
+					return
+				} else if projExists != wifExists {
+					var exists, missing string
+					if projExists {
+						exists = "FULLSEND_GCP_PROJECT_ID"
+						missing = "FULLSEND_GCP_WIF_PROVIDER"
+					} else {
+						exists = "FULLSEND_GCP_WIF_PROVIDER"
+						missing = "FULLSEND_GCP_PROJECT_ID"
+					}
+					discoveries[idx] = discoveryResult{
+						repo:     rr,
+						resolved: resolved,
+						err:      fmt.Errorf("partial secret state: %s exists but %s is missing", exists, missing),
+					}
+					return
+				}
+			}
+
 			discoveries[idx] = discoveryResult{
-				repo:      rr,
-				resolved:  resolved,
-				installed: installed,
+				repo:         rr,
+				resolved:     resolved,
+				installed:    installed,
+				secretsExist: secretsExist,
 			}
 		}(i, r)
 	}
@@ -195,179 +271,146 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 		return result, nil
 	}
 
-	// Phase 2: Sequential WIF provisioning.
-	// First: EnsureOrgInMint once per unique org (unless SkipMintCheck).
-	failedOrgs := make(map[string]error)
-	if !cfg.SkipMintCheck {
-		orgRepresentative := make(map[string]ResolvedConfig)
-		for _, d := range toInstall {
-			if _, seen := orgRepresentative[d.resolved.Owner]; !seen {
-				orgRepresentative[d.resolved.Owner] = d.resolved
-			}
-		}
-
-		sortedOrgs := make([]string, 0, len(orgRepresentative))
-		for org := range orgRepresentative {
-			sortedOrgs = append(sortedOrgs, org)
-		}
-		sort.Strings(sortedOrgs)
-
-		for _, org := range sortedOrgs {
-			if ctx.Err() != nil {
-				failedOrgs[org] = ctx.Err()
-				continue
-			}
-			resolved := orgRepresentative[org]
-			prov := provisionerFactory(resolved)
-			progress(org, "org-mint", fmt.Sprintf("Ensuring org %s in mint", org))
-			if orgErr := prov.EnsureOrgInMint(ctx, resolved.MintURL, org); orgErr != nil {
-				failedOrgs[org] = orgErr
-				progress(org, "org-mint-error", fmt.Sprintf("Failed: %v", orgErr))
-			} else {
-				progress(org, "org-mint", fmt.Sprintf("Org %s registered in mint", org))
-			}
-		}
-	}
-
-	// Move repos from failed orgs to Failed list.
-	var wifCandidates []discoveryResult
-	for _, d := range toInstall {
-		if orgErr, failed := failedOrgs[d.resolved.Owner]; failed {
-			result.Failed = append(result.Failed, InstallResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("org mint registration failed: %w", orgErr),
-			})
-		} else {
-			wifCandidates = append(wifCandidates, d)
-		}
-	}
-
-	// Validate resolved config before WIF provisioning — fail fast on
-	// missing inference project/region to avoid orphaned GCP resources.
+	// Validate resolved config — fail fast on missing fields to avoid
+	// partial installations. GitHub repos always require inference flags.
+	// GitLab repos require them only when --inference-project is provided
+	// (inference is optional for GitLab). InferenceProject,
+	// InferenceProjectNumber, and InferenceRegion are install-time-only
+	// values from CLI flags, not from the manifest. When secrets already
+	// exist on the repo, these flags are not required — the existing
+	// secrets are reused.
 	var validCandidates []discoveryResult
-	for _, d := range wifCandidates {
+	for _, d := range toInstall {
 		fullName := d.repo.Owner + "/" + d.repo.Repo
-		if d.resolved.InferenceProject == "" {
+
+		// GitHub: inference flags are always required.
+		// GitLab: inference flags are optional, but when
+		//   --inference-project is provided, region and project-number
+		//   are also required.
+		requireInference := d.resolved.Forge == ForgeGitHub && !d.secretsExist
+		validateInference := requireInference ||
+			(d.resolved.Forge == ForgeGitLab && !d.secretsExist && cfg.InferenceProject != "")
+
+		if requireInference && cfg.InferenceProject == "" {
 			result.Failed = append(result.Failed, InstallResult{
 				Owner: d.repo.Owner,
 				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("inference_project is required but empty for %s", fullName),
+				Error: fmt.Errorf("--inference-project is required but empty for %s", fullName),
 			})
-			progress(fullName, "validate", "Missing inference_project in manifest")
+			progress(fullName, "validate", "Missing --inference-project flag")
 			continue
 		}
-		if d.resolved.InferenceRegion == "" {
+		if validateInference {
+			if !IsValidGCPProjectID(cfg.InferenceProject) {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject),
+				})
+				progress(fullName, "validate", "Invalid --inference-project: must be a valid GCP project ID")
+				continue
+			}
+			if cfg.InferenceRegion == "" {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-region is required but empty for %s", fullName),
+				})
+				progress(fullName, "validate", "Missing --inference-region flag")
+				continue
+			}
+			if !IsValidGCPRegion(cfg.InferenceRegion) {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion),
+				})
+				progress(fullName, "validate", "Invalid --inference-region: must be a valid GCP region")
+				continue
+			}
+			if cfg.InferenceProjectNumber == "" {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-project-number is required but empty for %s", fullName),
+				})
+				progress(fullName, "validate", "Missing --inference-project-number flag")
+				continue
+			}
+			if !IsNumeric(cfg.InferenceProjectNumber) {
+				result.Failed = append(result.Failed, InstallResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("--inference-project-number must be numeric, got %q for %s", cfg.InferenceProjectNumber, fullName),
+				})
+				progress(fullName, "validate", "Invalid --inference-project-number: must be numeric")
+				continue
+			}
+		}
+		needsRegion := d.resolved.Forge == ForgeGitHub || cfg.InferenceProject != ""
+		if d.secretsExist && !d.regionVarExists && cfg.InferenceRegion == "" && needsRegion {
 			result.Failed = append(result.Failed, InstallResult{
 				Owner: d.repo.Owner,
 				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("inference_region is required but empty for %s", fullName),
+				Error: fmt.Errorf("--inference-region is required for %s: secrets exist but FULLSEND_GCP_REGION variable is missing", fullName),
 			})
-			progress(fullName, "validate", "Missing inference_region in manifest")
+			progress(fullName, "validate", "Missing --inference-region flag (FULLSEND_GCP_REGION variable not found)")
+			continue
+		}
+		if cfg.InferenceRegion != "" && !IsValidGCPRegion(cfg.InferenceRegion) {
+			result.Failed = append(result.Failed, InstallResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion),
+			})
+			progress(fullName, "validate", "Invalid --inference-region: must be a valid GCP region")
 			continue
 		}
 		validCandidates = append(validCandidates, d)
 	}
 
-	// Per-repo WIF provisioning (sequential).
-	wifProviders := make(map[string]string)
-	var phase3Candidates []discoveryResult
-
-	for _, d := range validCandidates {
-		if ctx.Err() != nil {
-			result.Failed = append(result.Failed, InstallResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("context cancelled: %w", ctx.Err()),
-			})
-			continue
-		}
-
-		fullName := d.repo.Owner + "/" + d.repo.Repo
-
-		// TOCTOU re-check: guard variable may have changed since Phase 1.
-		// ForgeConfig was resolved during Phase 1 and cached in d.resolved.
-		repoClient := d.resolved.ForgeConfig.Client
-		guardVal, guardExists, guardErr := repoClient.GetRepoVariable(ctx, d.repo.Owner, d.repo.Repo, forge.PerRepoGuardVar)
-		if guardErr != nil {
-			result.Failed = append(result.Failed, InstallResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("re-checking guard variable: %w", guardErr),
-			})
-			progress(fullName, "wif", fmt.Sprintf("Guard re-check failed: %v", guardErr))
-			continue
-		}
-		if guardExists && guardVal == "true" {
-			fullyInstalled, checkErr := checkInstallComponents(ctx, repoClient, d.repo.Owner, d.repo.Repo, d.resolved.ForgeConfig)
-			if checkErr != nil {
-				result.Failed = append(result.Failed, InstallResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("re-checking installation components: %w", checkErr),
-				})
-				progress(fullName, "wif", fmt.Sprintf("Component re-check failed: %v", checkErr))
-				continue
-			}
-			if fullyInstalled {
-				result.Skipped = append(result.Skipped, InstallResult{
-					Owner:            d.repo.Owner,
-					Repo:             d.repo.Repo,
-					Success:          true,
-					AlreadyInstalled: true,
-				})
-				progress(fullName, "wif", "Installed between Phase 1 and Phase 2")
-				continue
-			}
-		}
-
-		prov := provisionerFactory(d.resolved)
-		progress(fullName, "wif", "Provisioning WIF")
-		providerName, provErr := prov.ProvisionWIF(ctx)
-		if provErr != nil {
-			result.Failed = append(result.Failed, InstallResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("provisioning WIF: %w", provErr),
-			})
-			progress(fullName, "wif", fmt.Sprintf("WIF failed: %v", provErr))
-			continue
-		}
-
-		progress(fullName, "wif", "Registering per-repo WIF")
-		if regErr := prov.RegisterPerRepoWIF(ctx, fullName); regErr != nil {
-			wifErr := fmt.Errorf("registering per-repo WIF: %w", regErr)
-			if cleanupErr := prov.DeletePerRepoWIF(ctx, fullName); cleanupErr != nil {
-				progress(fullName, "wif", fmt.Sprintf("WIF cleanup also failed: %v", cleanupErr))
-				wifErr = fmt.Errorf("registering per-repo WIF: %w (cleanup also failed: %v)", regErr, cleanupErr)
-			}
-			result.Failed = append(result.Failed, InstallResult{
-				Owner:       d.repo.Owner,
-				Repo:        d.repo.Repo,
-				Error:       wifErr,
-				WIFProvider: providerName,
-			})
-			progress(fullName, "wif", fmt.Sprintf("WIF registration failed: %v", regErr))
-			continue
-		}
-
-		wifProviders[fullName] = providerName
-		phase3Candidates = append(phase3Candidates, d)
-		progress(fullName, "wif", "WIF provisioned")
-	}
-
-	if len(phase3Candidates) == 0 {
+	if len(validCandidates) == 0 {
 		return result, nil
 	}
 
-	// Phase 3: Parallel scaffold + variable/secret writes.
-	var mu sync.Mutex
-	var wg3 sync.WaitGroup
+	// Pre-compute WIF provider names and check for collisions.
+	// BuildRepoProviderID truncates to 32 chars, so repos with long
+	// names that share a prefix could produce identical provider IDs.
+	// GitLab uses a shared "gitlab-oidc" provider (scoped via attribute
+	// conditions on the WIF pool) instead of per-repo providers.
+	type candidateWIF struct {
+		discovery   discoveryResult
+		wifProvider string
+	}
+	candidates := make([]candidateWIF, len(validCandidates))
+	wifSeen := make(map[string]string) // wifProvider → "owner/repo"
+	for i, d := range validCandidates {
+		var wif string
+		switch {
+		case d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "" && !d.secretsExist:
+			providerID := mintcore.BuildRepoProviderID(d.repo.Owner, d.repo.Repo)
+			wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
+				cfg.InferenceProjectNumber, mintcore.DefaultInferencePool, providerID)
+			fullName := d.repo.Owner + "/" + d.repo.Repo
+			if existing, ok := wifSeen[wif]; ok {
+				return nil, fmt.Errorf("WIF provider collision: repos %s and %s produce the same provider ID %q (truncated to 32 chars)", existing, fullName, providerID)
+			}
+			wifSeen[wif] = fullName
+		case d.resolved.Forge == ForgeGitLab && cfg.InferenceProject != "" && cfg.InferenceProjectNumber != "" && !d.secretsExist:
+			wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/gitlab-oidc",
+				cfg.InferenceProjectNumber, mintcore.DefaultInferencePool)
+		}
+		candidates[i] = candidateWIF{discovery: d, wifProvider: wif}
+	}
 
-	for _, d := range phase3Candidates {
-		wg3.Add(1)
-		go func(dr discoveryResult) {
-			defer wg3.Done()
+	// Phase 2: Parallel scaffold + variable/secret writes.
+	var mu sync.Mutex
+	var wg2 sync.WaitGroup
+
+	for _, c := range candidates {
+		wg2.Add(1)
+		go func(dr discoveryResult, wifProvider string) {
+			defer wg2.Done()
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -382,9 +425,6 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 			defer func() { <-sem }()
 
-			fullName := dr.repo.Owner + "/" + dr.repo.Repo
-			providerName := wifProviders[fullName]
-
 			ref := dr.resolved.FullsendRef
 			if cfg.UpstreamRef != "" {
 				ref = cfg.UpstreamRef
@@ -397,37 +437,34 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 
 			installCfg := InstallConfig{
-				Owner:            dr.repo.Owner,
-				Repo:             dr.repo.Repo,
-				Forge:            dr.resolved.Forge,
-				Roles:            roles,
-				MintURL:          dr.resolved.MintURL,
-				InferenceProject: dr.resolved.InferenceProject,
-				InferenceRegion:  dr.resolved.InferenceRegion,
-				UpstreamRef:      ref,
-				UpstreamTag:      tag,
-				SkipGuardCheck:   true,
-				SkipMintCheck:    true,
-				SkipWIF:          true,
-				WIFProvider:      providerName,
-				Direct:           cfg.Direct,
+				Owner:              dr.repo.Owner,
+				Repo:               dr.repo.Repo,
+				Forge:              dr.resolved.Forge,
+				Roles:              roles,
+				MintURL:            dr.resolved.MintURL,
+				InferenceProject:   cfg.InferenceProject,
+				InferenceRegion:    cfg.InferenceRegion,
+				UpstreamRef:        ref,
+				UpstreamTag:        tag,
+				SkipGuardCheck:     true,
+				WIFProvider:        wifProvider,
+				RunnerTags:         cfg.Manifest.Forge.GitLab.RunnerTags,
+				Direct:             cfg.Direct,
+				ReuseSecrets:       dr.secretsExist,
+				DiscoveredCredMode: dr.discoveredCredMode,
 			}
 
-			installResult, installErr := Install(ctx, installCfg, dr.resolved.ForgeConfig.Client, nil, commitScaffold, progress)
+			installResult, installErr := Install(ctx, installCfg, dr.resolved.ForgeConfig.Client, commitScaffold, progress)
 
 			mu.Lock()
 			defer mu.Unlock()
 
 			if installErr != nil {
-				prov := provisionerFactory(dr.resolved)
-				if cleanupErr := prov.DeletePerRepoWIF(ctx, fullName); cleanupErr != nil {
-					progress(fullName, "wif-cleanup", fmt.Sprintf("WIF cleanup after scaffold failure also failed: %v", cleanupErr))
-				}
 				ir := InstallResult{
 					Owner:       dr.repo.Owner,
 					Repo:        dr.repo.Repo,
 					Error:       installErr,
-					WIFProvider: providerName,
+					WIFProvider: wifProvider,
 				}
 				if installResult != nil {
 					ir.WIFProvider = installResult.WIFProvider
@@ -436,9 +473,9 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			} else {
 				result.Installed = append(result.Installed, *installResult)
 			}
-		}(d)
+		}(c.discovery, c.wifProvider)
 	}
-	wg3.Wait()
+	wg2.Wait()
 
 	return result, nil
 }

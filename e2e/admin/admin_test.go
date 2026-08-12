@@ -174,14 +174,6 @@ func TestAdminInstallUninstall(t *testing.T) {
 		".defaults/internal/scaffold/fullsend-repo/scripts/fullsend-check-output",
 		".defaults/.github/actions/mint-token/action.yml",
 		".defaults/action.yml",
-		"customized/agents/.gitkeep",
-		"customized/skills/.gitkeep",
-		"customized/schemas/.gitkeep",
-		"customized/harness/.gitkeep",
-		"customized/plugins/.gitkeep",
-		"customized/policies/.gitkeep",
-		"customized/scripts/.gitkeep",
-		"customized/env/.gitkeep",
 		"templates/shim-workflow-call.yaml",
 		"CODEOWNERS",
 	} {
@@ -522,39 +514,68 @@ Files over 64KB save fine if they contain only ASCII characters.`
 	})
 
 	// Wait for the triage workflow to be dispatched in .fullsend.
-	// The shim fires on issues.labeled with ready-for-triage and dispatches to triage.yml.
-	// The shim typically fires within ~5s of the label being applied,
-	// so 12 attempts at 5s intervals (60s total) is generous.
+	// The shim fires on issues.labeled with ready-for-triage and dispatches
+	// to triage.yml. #6005 observed 3 consecutive timeouts at the prior 60s
+	// (12 × 5s) window; GitHub Actions infrastructure latency in the chain
+	// (shim → dispatch → triage.yml) is the leading suspect, but #6005 also
+	// notes test-org state drift and a scaffold-availability race (#1269) as
+	// unconfirmed alternatives. We double the window to 120s pending the
+	// elapsed-time data logged below, and log dispatch.yml sightings
+	// periodically to help distinguish "dispatch didn't fire" from
+	// "dispatch fired but triage.yml hasn't started yet".
 	// Filter by CreatedAt to avoid false positives from previous runs.
+	const (
+		triageDispatchPollAttempts = 24 // 120s total (#6005)
+		dispatchCheckInterval      = 6  // check dispatch.yml every ~30s
+	)
 	t.Log("Waiting for triage workflow to be dispatched...")
+	pollStart := time.Now()
 	var triageRun *forge.WorkflowRun
-	for attempt := 0; attempt < 12; attempt++ {
+	for attempt := range triageDispatchPollAttempts {
 		time.Sleep(5 * time.Second)
 		runs, listErr := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, "triage.yml")
 		if listErr != nil {
 			t.Logf("Attempt %d: error listing workflow runs: %v", attempt+1, listErr)
-			continue
-		}
-		for _, run := range runs {
-			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-			if parseErr != nil {
-				t.Logf("Attempt %d: run %d has unparseable CreatedAt %q: %v", attempt+1, run.ID, run.CreatedAt, parseErr)
-				continue
+		} else {
+			for _, run := range runs {
+				runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+				if parseErr != nil {
+					t.Logf("Attempt %d: run %d has unparseable CreatedAt %q: %v", attempt+1, run.ID, run.CreatedAt, parseErr)
+					continue
+				}
+				if runTime.Before(triggerTime) {
+					t.Logf("Attempt %d: run %d created at %s is from before our issue, skipping", attempt+1, run.ID, run.CreatedAt)
+					continue
+				}
+				t.Logf("Attempt %d: found run %d (status: %s, conclusion: %s, created: %s)", attempt+1, run.ID, run.Status, run.Conclusion, run.CreatedAt)
+				r := run // avoid loop variable capture
+				triageRun = &r
+				break
 			}
-			if runTime.Before(triggerTime) {
-				t.Logf("Attempt %d: run %d created at %s is from before our issue, skipping", attempt+1, run.ID, run.CreatedAt)
-				continue
-			}
-			t.Logf("Attempt %d: found run %d (status: %s, conclusion: %s, created: %s)", attempt+1, run.ID, run.Status, run.Conclusion, run.CreatedAt)
-			r := run // avoid loop variable capture
-			triageRun = &r
-			break
 		}
 		if triageRun != nil {
 			break
 		}
+		// On every 6th attempt, check whether the dispatch workflow itself
+		// has run — this helps distinguish "dispatch didn't fire" from
+		// "dispatch fired but triage.yml hasn't started yet".
+		if (attempt+1)%dispatchCheckInterval == 0 {
+			dispatchRuns, dErr := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, "dispatch.yml")
+			if dErr != nil {
+				t.Logf("Attempt %d: error listing dispatch.yml runs: %v", attempt+1, dErr)
+			} else {
+				recentDispatches := 0
+				for _, dr := range dispatchRuns {
+					if dt, pe := time.Parse(time.RFC3339, dr.CreatedAt); pe == nil && !dt.Before(triggerTime) {
+						recentDispatches++
+					}
+				}
+				t.Logf("Attempt %d: %d recent dispatch.yml run(s) found since trigger", attempt+1, recentDispatches)
+			}
+		}
 		t.Logf("Attempt %d: no triage workflow runs found yet", attempt+1)
 	}
+	t.Logf("Triage dispatch poll ended after %s (found=%v)", time.Since(pollStart).Round(time.Second), triageRun != nil)
 	require.NotNil(t, triageRun, "triage workflow should have been dispatched in .fullsend repo")
 
 	// Wait for the workflow run to complete (up to 12 minutes: 10-minute agent

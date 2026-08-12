@@ -18,7 +18,6 @@ type fakeInstallState struct {
 }
 
 func (f *fakeInstallState) Mode() string               { return "" }
-func (f *fakeInstallState) TestRepo() string           { return "" }
 func (f *fakeInstallState) ConfigOwner() string        { return "" }
 func (f *fakeInstallState) ConfigRepo() string         { return "" }
 func (f *fakeInstallState) ConfigPathPrefix() string   { return f.prefix }

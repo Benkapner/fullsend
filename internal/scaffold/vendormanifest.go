@@ -153,6 +153,7 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/actions/setup-gcp/action.yml",
 	".github/actions/validate-enrollment/action.yml",
 	".github/scripts/install-openshell.sh",
+	".github/scripts/install-podman.sh",
 	".github/scripts/openshell-version.sh",
 }
 

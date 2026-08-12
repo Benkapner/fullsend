@@ -1,6 +1,8 @@
 package steps
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,6 +36,172 @@ func TestEnsureHarnessArtifacts_NoWorkflowRun(t *testing.T) {
 	err := ensureHarnessArtifacts(w, "agent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workflow run")
+}
+
+// --- givenKillSwitchActive tests ---
+
+func TestGivenKillSwitchActive_SetsKillSwitch(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := givenKillSwitchActive(w)
+	require.NoError(t, err)
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: true")
+	assert.True(t, w.KillSwitchActivated, "KillSwitchActivated should be set for cleanup")
+}
+
+func TestDeactivateKillSwitch_ClearsKillSwitch(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := DeactivateKillSwitch(w)
+	require.NoError(t, err)
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: false")
+}
+
+func TestDeactivateKillSwitch_GetFileContentError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: fmt.Errorf("not found"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := DeactivateKillSwitch(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestDeactivateKillSwitch_CommitFileError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
+		commitErr:   fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := DeactivateKillSwitch(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating config")
+}
+
+func TestGivenKillSwitchActive_GetFileContentError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: fmt.Errorf("not found"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := givenKillSwitchActive(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestGivenKillSwitchActive_CommitFileError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
+		commitErr:   fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		SCM:     scm,
+		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+	}
+	err := givenKillSwitchActive(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating config")
+}
+
+// fakeDispatchInstall implements install.State for dispatch step tests.
+type fakeDispatchInstall struct {
+	owner string
+	repo  string
+}
+
+func (f *fakeDispatchInstall) Mode() string               { return "per-repo" }
+func (f *fakeDispatchInstall) ConfigOwner() string        { return f.owner }
+func (f *fakeDispatchInstall) ConfigRepo() string         { return f.repo }
+func (f *fakeDispatchInstall) ConfigPathPrefix() string   { return ".fullsend" }
+func (f *fakeDispatchInstall) TriageWorkflowRepo() string { return f.repo }
+func (f *fakeDispatchInstall) TriageWorkflowFile() string { return "" }
+func (f *fakeDispatchInstall) AgentWorkflowFile() string  { return "" }
+func (f *fakeDispatchInstall) AgentArtifactName() string  { return "" }
+
+// fakeDispatchSCM implements scm.Driver for dispatch step tests.
+type fakeDispatchSCM struct {
+	fileContent      []byte
+	getFileErr       error
+	commitCalled     bool
+	committedContent []byte
+	commitErr        error
+}
+
+func (f *fakeDispatchSCM) GetFileContent(_ context.Context, _, _, _ string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
+func (f *fakeDispatchSCM) CommitFile(_ context.Context, _, _, _, _ string, content []byte) error {
+	f.commitCalled = true
+	f.committedContent = content
+	return f.commitErr
+}
+func (f *fakeDispatchSCM) CreateIssue(context.Context, string, string, string, string, ...string) (*forge.Issue, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
+	return nil
+}
+func (f *fakeDispatchSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) CreateBranch(context.Context, string, string, string) error { return nil }
+func (f *fakeDispatchSCM) DeleteBranch(context.Context, string, string, string) error { return nil }
+func (f *fakeDispatchSCM) CommitFileToBranch(context.Context, string, string, string, string, string, []byte) error {
+	return nil
+}
+func (f *fakeDispatchSCM) CreateChangeProposal(context.Context, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) SubmitPullRequestReview(context.Context, string, string, int, string) error {
+	return nil
+}
+func (f *fakeDispatchSCM) CloseIssue(context.Context, string, string, int) error { return nil }
+func (f *fakeDispatchSCM) DeleteRepo(context.Context, string, string) error      { return nil }
+func (f *fakeDispatchSCM) CreateFork(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
+	return nil
+}
+func (f *fakeDispatchSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) CreateRepo(context.Context, string, string, string) error { return nil }
+func (f *fakeDispatchSCM) EnsureRepoPublic(context.Context, string, string) error   { return nil }
+func (f *fakeDispatchSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	return "main", nil
+}
+func (f *fakeDispatchSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
 }
 
 func TestNegativeSettleDuration(t *testing.T) {
@@ -105,4 +273,138 @@ func TestNegativeSettleDuration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGivenCustomHarness_CommitsAgentFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenCustomHarness(w, "local-test", "agent: agents/triage.md\nrole: triage\nslug: local-test")
+	require.NoError(t, err)
+
+	// The agent resource should be committed under .fullsend/ on the config repo.
+	agentData := scm.files["test-org/test-repo/.fullsend/agents/triage.md"]
+	require.NotNil(t, agentData, "agent resource should be committed to config repo")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+
+	// The harness YAML should also be committed.
+	harnessData := scm.files["test-org/test-repo/.fullsend/harness/local-test.yaml"]
+	require.NotNil(t, harnessData, "harness YAML should be committed")
+}
+
+func TestGivenCustomHarness_CommitsAgentAndPolicy(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenCustomHarness(w, "local-test", "agent: agents/test.md\npolicy: policies/test.md\nrole: triage\nslug: local-test")
+	require.NoError(t, err)
+
+	agentData := scm.files["test-org/test-repo/.fullsend/agents/test.md"]
+	require.NotNil(t, agentData, "agent resource should be committed")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+
+	policyData := scm.files["test-org/test-repo/.fullsend/policies/test.md"]
+	require.NotNil(t, policyData, "policy resource should be committed")
+	assert.Contains(t, string(policyData), "Minimal policy")
+}
+
+func TestGivenCustomHarness_SkipsAbsoluteAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenCustomHarness(w, "local-test", "agent: https://example.com/agent.md\nrole: triage\nslug: local-test")
+	require.NoError(t, err)
+
+	// No extra agent file should be committed — only harness YAML and config.
+	for key := range scm.files {
+		assert.NotContains(t, key, "agent.md", "URL agent paths should not be committed as files")
+	}
+}
+
+func TestGivenDisabledCustomHarness_CommitsAgentFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenDisabledCustomHarness(w, "disabled-test", "agent: agents/triage.md\nrole: triage\nslug: disabled-test")
+	require.NoError(t, err)
+
+	agentData := scm.files["test-org/test-repo/.fullsend/agents/triage.md"]
+	require.NotNil(t, agentData, "agent resource should be committed for disabled harness")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+}
+
+func TestCommitLocalHarnessResources_CommitsAgentFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"agent: agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/.fullsend/agents/triage.md"]))
+}
+
+func TestCommitLocalHarnessResources_SkipsURLAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"agent: https://example.com/agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "URL agent paths should not be committed")
+}
+
+func TestCommitLocalHarnessResources_SkipsAbsoluteAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"agent: /absolute/agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "absolute agent paths should not be committed")
+}
+
+func TestCommitLocalHarnessResources_NoAgentField(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"role: triage\nslug: test")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "no files should be committed without agent field")
+}
+
+func TestCommitLocalHarnessResources_InvalidYAML(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "org", repo: "repo"},
+		SCM:     scm,
+	}
+	err := commitLocalHarnessResources(context.Background(), w, "test",
+		"invalid: [yaml: content")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing harness YAML")
 }

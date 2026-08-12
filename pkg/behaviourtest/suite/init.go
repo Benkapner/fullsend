@@ -95,7 +95,14 @@ func resetScenarioWorld(w *world.World) {
 	w.ForkPRBranch = ""
 	w.URLHarnessRepoOwner = ""
 	w.URLHarnessRepoName = ""
+	w.RecordedBranchSHAs = nil
+	w.CreatedBranches = nil
+	w.CreatedPRNumbers = nil
 	w.LeasedRepoName = ""
+	w.KillSwitchActivated = false
+	w.JiraMockServer = nil
+	w.JiraMockState = nil
+	w.JiraConfigDir = ""
 }
 
 func tagNames(tags []*messages.PickleTag) []string {
@@ -119,6 +126,19 @@ func SkipErrorForTagNames(tags []string, w *world.World) error {
 			return godog.ErrSkip
 		case name == "skip:gitlab" && w.Config.SCM == "gitlab":
 			return godog.ErrSkip
+		case strings.HasPrefix(name, "requires:capability:"):
+			// Skip unless the runner declares the capability via
+			// BEHAVIOUR_CAPABILITIES. Gates scenarios that assert
+			// behavior only present past a dependency version, so CI
+			// stays green until the dependency ships and the runner
+			// opts in.
+			capability := strings.TrimPrefix(name, "requires:capability:")
+			if capability == "" {
+				return fmt.Errorf("malformed tag %q: requires:capability: needs a name", tag)
+			}
+			if !w.Config.HasCapability(capability) {
+				return godog.ErrSkip
+			}
 		}
 	}
 	return nil

@@ -256,6 +256,52 @@ func TestOIDCDispatchLayer_Uninstall(t *testing.T) {
 	assert.Contains(t, buf.String(), "must be deleted manually")
 }
 
+func TestOIDCDispatchLayer_Uninstall_ContinuesOnDeleteError(t *testing.T) {
+	// When DeleteOrgVariable fails for all variables, uninstallOIDC should
+	// attempt every variable and return a combined error (errors.Join).
+	client := forge.NewFakeClient()
+	client.OrgVariables = map[string]bool{
+		"test-org/VAR_A": true,
+		"test-org/VAR_B": true,
+		"test-org/VAR_C": true,
+	}
+	client.Errors["DeleteOrgVariable"] = errors.New("permission denied")
+	dispatcher := &fakeDispatcher{
+		name:     "gcf",
+		varNames: []string{"VAR_A", "VAR_B", "VAR_C"},
+	}
+
+	layer, _ := newOIDCDispatchLayer(t, client, nil, dispatcher)
+
+	err := layer.Uninstall(context.Background())
+	require.Error(t, err)
+
+	// All three variables should have been attempted despite errors.
+	assert.Contains(t, err.Error(), "VAR_A")
+	assert.Contains(t, err.Error(), "VAR_B")
+	assert.Contains(t, err.Error(), "VAR_C")
+}
+
+func TestOIDCDispatchLayer_Uninstall_ContinuesOnExistsError(t *testing.T) {
+	// When OrgVariableExists fails, remaining variables should still be
+	// attempted and the error accumulated.
+	client := forge.NewFakeClient()
+	client.Errors["OrgVariableExists"] = errors.New("api unreachable")
+	dispatcher := &fakeDispatcher{
+		name:     "gcf",
+		varNames: []string{"VAR_X", "VAR_Y"},
+	}
+
+	layer, _ := newOIDCDispatchLayer(t, client, nil, dispatcher)
+
+	err := layer.Uninstall(context.Background())
+	require.Error(t, err)
+
+	// Both variables should be mentioned in the combined error.
+	assert.Contains(t, err.Error(), "VAR_X")
+	assert.Contains(t, err.Error(), "VAR_Y")
+}
+
 func TestOIDCDispatchLayer_Uninstall_AlreadyDeleted(t *testing.T) {
 	client := forge.NewFakeClient()
 	dispatcher := &fakeDispatcher{

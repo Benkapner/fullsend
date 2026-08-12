@@ -204,9 +204,8 @@ fullsend run code \
 
 ### Remote resource flags
 
-When your harness references URL-based skills with transitive dependencies
-(see [ADR-0038](../../ADRs/0038-universal-harness-access.md)), you can tune
-resolution limits:
+When your harness references URL-based skills with transitive dependencies,
+you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -253,6 +252,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
+| `--forge` | Forge platform (`github` or `gitlab`); auto-detected from CI env vars when omitted |
 
 Example:
 
@@ -267,8 +267,10 @@ fullsend run triage \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
 
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent reads `GITLAB_TOKEN` from the environment and does not require the mint service. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables.
+
 Status comment behavior is configured via `status_notifications` in
-`config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
+`config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
 
 ## Run from a container
 
@@ -331,32 +333,16 @@ Fullsend automatically aggregates different layers of information before running
 In case you want to test how customizations impact default agents, or you custom agents, follow the
 next steps.
 
-Start by cloning `fullsend-ai/agents` to a dedicated directory:
-
-```bash
-git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/agents/
-```
-
-Then apply your organization customizations, if any:
-
-> **Note:** The `customized/` overlay mechanism is deprecated per
-> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> Orgs that have migrated to config-driven agents should skip these
-> `cp -r customized/` steps and use the registered harness paths directly.
+If your organization uses config-driven agents registered in `config.yaml`,
+pass your `.fullsend` config repo as `--fullsend-dir`:
 
 ```bash
 git clone --depth 1 https://github.com/{org}/.fullsend.git /tmp/org-fullsend/
-cp -r /tmp/org-fullsend/customized/. /tmp/agents/
 ```
 
-And finally apply your own target repository customizations, if any:
-
-```bash
-git clone https://github.com/{org}/{target-repo} /tmp/target-repo
-cp -r /tmp/target-repo/.fullsend/customized/. /tmp/agents/
-```
-
-When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
+When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/org-fullsend/`.
+See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven
+approach.
 
 ## Platform notes
 
@@ -401,3 +387,146 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 
 **`unable to replace "host-gateway"` on macOS**
 - Set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine
+
+## Debugging network policies locally
+
+When customizing network policies, running agents locally lets you inspect
+sandbox artifacts directly instead of pushing changes and waiting for CI. This
+section describes what a local `fullsend run` produces and how to use the
+output to iterate on network policy allowlists.
+
+### Run directory structure
+
+Every `fullsend run` creates a run directory. By default this is under
+`/tmp/fullsend/`; override it with `--output-dir`:
+
+```bash
+fullsend run triage \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-triage.env \
+  --output-dir /tmp/my-debug-output
+```
+
+The run directory is printed at the end of every run under **Run directory**.
+Its layout:
+
+```
+<run-dir>/
+  logs/
+    openshell-sandbox.log    # OCSF events: network, process, policy decisions
+    openshell-gateway.log    # Gateway-side events
+  iteration-1/
+    output/                  # Agent output files (agent-result.json, etc.)
+    transcripts/             # Agent conversation transcripts (.jsonl)
+  metrics.json               # Behavioral metrics (tokens, cost, duration)
+  security/
+    findings.jsonl           # Security scan findings
+```
+
+### Key artifacts for network policy debugging
+
+**`openshell-sandbox.log`** is the primary artifact. It contains
+[OCSF](https://schema.ocsf.io/) events for every network connection, HTTP
+request, process launch, and policy evaluation that occurred inside the
+sandbox. Each event records whether the connection was allowed or denied
+and which policy rule applied.
+
+Look for `DENIED` entries to find connections your policy rejected:
+
+```bash
+grep -i DENIED <run-dir>/logs/openshell-sandbox.log
+```
+
+Each denied entry includes the destination host, port, and the binary that
+attempted the connection — enough to decide whether to add the endpoint to
+your policy.
+
+**`openshell-gateway.log`** contains gateway-side events. Useful when a
+connection fails before reaching the sandbox (e.g., provider misconfiguration
+or gateway routing issues).
+
+### Debugging workflow
+
+1. **Start with a restrictive policy.** Create or modify a policy YAML that
+   blocks the endpoint you want to test. See
+   [Building custom agents — Sandbox policy](building-custom-agents.md#step-3-define-the-sandbox-policy)
+   for the policy format.
+
+2. **Run the agent locally with `--keep-sandbox`:**
+
+   ```bash
+   fullsend run <agent> \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --env-file fullsend-gcp.env \
+     --env-file fullsend-<agent>.env \
+     --keep-sandbox \
+     --no-post-script
+   ```
+
+   `--keep-sandbox` preserves the sandbox container after the run finishes,
+   letting you exec into it for further inspection. `--no-post-script`
+   prevents side effects (issue comments, PR creation) while debugging.
+
+3. **Inspect the sandbox log for denied connections:**
+
+   ```bash
+   grep -i DENIED <run-dir>/logs/openshell-sandbox.log
+   ```
+
+   If the [analyze-transcript](https://github.com/fullsend-ai/fullsend/tree/main/skills/analyze-transcript)
+   skill is available, you can use the network analysis commands for a
+   structured view:
+
+   ```bash
+   python3 skills/analyze-transcript/analyze-transcript.py network \
+     <run-dir>/logs/openshell-sandbox.log
+
+   python3 skills/analyze-transcript/analyze-transcript.py netsearch "DENIED" \
+     <run-dir>/logs/openshell-sandbox.log
+   ```
+
+4. **Update your policy** to allow the blocked endpoints, then re-run. Each
+   cycle takes only the time to start a sandbox and run the agent — no push
+   or CI wait.
+
+5. **When done, clean up the kept sandbox:**
+
+   ```bash
+   openshell sandbox delete <sandbox-name>
+   ```
+
+   The sandbox name is printed during the run and also shown in the
+   `--keep-sandbox` warning message at the end.
+
+### Entering a kept sandbox
+
+When you pass `--keep-sandbox`, the CLI prints a command to exec into the
+sandbox:
+
+```bash
+openshell sandbox exec --tty --name <sandbox-name> -- bash
+```
+
+Inside the sandbox you can inspect the workspace, re-run commands the agent
+tried, or verify that network access works as expected for a specific host:
+
+```bash
+curl -sf https://api.example.com/healthz
+```
+
+### Tips
+
+- **Network summary:** `openshell-sandbox.log` can be large. Use
+  `grep -c DENIED` to get a count before reading individual entries.
+- **Iterate fast:** after updating your policy YAML, you do not need to
+  reinstall or reconfigure OpenShell — just re-run `fullsend run` with the
+  updated policy file.
+- **Compare runs:** diff two sandbox logs to confirm that a policy change
+  resolved the denials:
+  ```bash
+  diff <(grep DENIED run-1/logs/openshell-sandbox.log) \
+       <(grep DENIED run-2/logs/openshell-sandbox.log)
+  ```

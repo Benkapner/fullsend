@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,7 +20,6 @@ func TestCollectInstallFiles_PerOrg(t *testing.T) {
 		paths[i] = f.Path
 	}
 	assert.Contains(t, paths, ".github/workflows/triage.yml")
-	assert.Contains(t, paths, "customized/agents/.gitkeep")
 }
 
 func TestCollectInstallFiles_PerRepoPrefix(t *testing.T) {
@@ -78,7 +78,18 @@ func TestCollectPerRepoInstallFiles_Vendored(t *testing.T) {
 	assert.Contains(t, string(files[0].Content), "reusable-")
 }
 
-func TestCustomizedDirsForPrefix(t *testing.T) {
-	assert.Contains(t, customizedDirsForPrefix(""), "customized/agents")
-	assert.Contains(t, customizedDirsForPrefix(".fullsend/"), ".fullsend/customized/agents")
+func TestNoCustomizedDirsInInstallFiles(t *testing.T) {
+	files, err := CollectInstallFiles(CollectInstallFilesOptions{})
+	require.NoError(t, err)
+	for _, f := range files {
+		assert.False(t, strings.Contains(f.Path, "customized/"),
+			"install files should not include deprecated customized/ paths, got: %s", f.Path)
+	}
+
+	prFiles, err := CollectPerRepoInstallFiles(false, "", "")
+	require.NoError(t, err)
+	for _, f := range prFiles {
+		assert.False(t, strings.Contains(f.Path, "customized/"),
+			"per-repo install files should not include deprecated customized/ paths, got: %s", f.Path)
+	}
 }

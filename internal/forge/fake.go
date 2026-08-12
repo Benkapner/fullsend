@@ -58,6 +58,12 @@ type VariableRecord struct {
 	Protected                bool
 }
 
+// PipelineCallRecord records a CreatePipeline invocation.
+type PipelineCallRecord struct {
+	Owner, Repo, Ref string
+	Variables        map[string]string
+}
+
 // UpdatedCommentRecord records an issue comment update call.
 type UpdatedCommentRecord struct {
 	Owner, Repo string
@@ -96,6 +102,11 @@ type DismissedReviewRecord struct {
 	Message     string
 }
 
+// BranchSHARecord records a CreateBranchFromSHA call.
+type BranchSHARecord struct {
+	Owner, Repo, Branch, SHA string
+}
+
 // CommitFilesRecord records a CommitFiles call.
 type CommitFilesRecord struct {
 	Owner, Repo, Message string
@@ -119,6 +130,7 @@ type FakeClient struct {
 	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte        // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
+	WorkflowRunsList          map[string][]WorkflowRun // key: "owner/repo/workflow" → multiple runs (takes precedence over WorkflowRuns)
 	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
 	WorkflowRunArtifacts      map[int][]WorkflowArtifact
 	WorkflowArtifactContents  map[int][]byte
@@ -215,6 +227,11 @@ type FakeClient struct {
 	// for that call.
 	CreateReviewErrSeq []error
 
+	// CreatePipelineScheduleErrSeq is an error queue for CreatePipelineSchedule.
+	// Each call shifts the first element; when empty, falls through to
+	// Errors["CreatePipelineSchedule"]. A nil entry means no error for that call.
+	CreatePipelineScheduleErrSeq []error
+
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
@@ -230,6 +247,9 @@ type FakeClient struct {
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
+	// WorkflowRunJobs for ListWorkflowRunJobs.
+	WorkflowRunJobs map[int][]WorkflowJob // key: runID
+
 	// Annotations for GetWorkflowRunAnnotations.
 	Annotations []Annotation
 
@@ -237,6 +257,7 @@ type FakeClient struct {
 	CreatedRepos           []Repository
 	CreatedFiles           []FileRecord
 	CreatedBranches        []string // "owner/repo/branch"
+	CreatedBranchSHAs      []BranchSHARecord
 	DeletedRefs            []string // "owner/repo/refPath"
 	CreatedProposals       []ChangeProposal
 	DeletedRepos           []string // "owner/repo"
@@ -259,6 +280,8 @@ type FakeClient struct {
 	CreatedForks           []string // "owner/repo"
 	ClosedProposals        []int    // PR numbers
 	DeletedComments        []int    // comment IDs
+	CreatedPipelines       []Pipeline
+	PipelineCalls          []PipelineCallRecord
 	CreatedSchedules       []PipelineSchedule
 	DeletedScheduleIDs     []int64
 	UpdatedVariables       []VariableRecord
@@ -767,6 +790,26 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	}
 
 	f.CreatedBranches = append(f.CreatedBranches, owner+"/"+repo+"/"+branchName)
+	return nil
+}
+
+func (f *FakeClient) CreateBranchFromSHA(_ context.Context, owner, repo, branchName, sha string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.CreateBranchErrors != nil {
+		if e, ok := f.CreateBranchErrors[owner+"/"+repo]; ok {
+			return e
+		}
+	}
+	if e := f.err("CreateBranchFromSHA"); e != nil {
+		return e
+	}
+
+	f.CreatedBranches = append(f.CreatedBranches, owner+"/"+repo+"/"+branchName)
+	f.CreatedBranchSHAs = append(f.CreatedBranchSHAs, BranchSHARecord{
+		Owner: owner, Repo: repo, Branch: branchName, SHA: sha,
+	})
 	return nil
 }
 
@@ -1344,7 +1387,7 @@ func (f *FakeClient) UpdateIssueComment(_ context.Context, owner, repo string, c
 			}
 		}
 	}
-	return nil
+	return fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
 }
 
 func (f *FakeClient) DeleteIssueComment(_ context.Context, _, _ string, commentID int) error {
@@ -1529,10 +1572,27 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return nil, e
 	}
 	key := owner + "/" + repo + "/" + workflowFile
+	if f.WorkflowRunsList != nil {
+		if runs, ok := f.WorkflowRunsList[key]; ok {
+			return append([]WorkflowRun(nil), runs...), nil
+		}
+	}
 	if run, ok := f.WorkflowRuns[key]; ok {
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunJobs"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowRunJobs == nil {
+		return nil, nil
+	}
+	return append([]WorkflowJob(nil), f.WorkflowRunJobs[runID]...), nil
 }
 
 func (f *FakeClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, runID int) ([]WorkflowArtifact, error) {
@@ -1873,11 +1933,44 @@ func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch st
 	return f.ProtectedBranches[key], nil
 }
 
-func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {
+func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("CreatePipelineSchedule"); e != nil {
+	vars := make(map[string]string, len(variables))
+	for k, v := range variables {
+		vars[k] = v
+	}
+	f.PipelineCalls = append(f.PipelineCalls, PipelineCallRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+	})
+
+	if e := f.err("CreatePipeline"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
+}
+
+func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.CreatePipelineScheduleErrSeq) > 0 {
+		e := f.CreatePipelineScheduleErrSeq[0]
+		f.CreatePipelineScheduleErrSeq = f.CreatePipelineScheduleErrSeq[1:]
+		if e != nil {
+			return 0, e
+		}
+	} else if e := f.err("CreatePipelineSchedule"); e != nil {
 		return 0, e
 	}
 
@@ -1887,6 +1980,7 @@ func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref,
 		Ref:         ref,
 		Cron:        cron,
 		Active:      true,
+		Variables:   variables,
 	}
 	f.CreatedSchedules = append(f.CreatedSchedules, s)
 	key := owner + "/" + repo

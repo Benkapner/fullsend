@@ -1115,6 +1115,50 @@ func TestListRepoVariables_Pagination(t *testing.T) {
 	assert.Contains(t, vars, "LAST_VAR")
 }
 
+func TestCreatePipeline(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "main", body["ref"])
+		vars, ok := body["variables"].([]any)
+		require.True(t, ok, "variables should be an array")
+		assert.NotEmpty(t, vars)
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      99,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/99",
+		})
+	})
+
+	p, err := client.CreatePipeline(ctx, "myorg", "myrepo", "main", map[string]string{
+		"STAGE":      "triage",
+		"EVENT_TYPE": "issue_comment",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(99), p.ID)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/99", p.WebURL)
+}
+
+func TestCreatePipeline_NoVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      100,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/100",
+		})
+	})
+
+	p, err := client.CreatePipeline(ctx, "myorg", "myrepo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(100), p.ID)
+}
+
 func TestCreatePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1280,6 +1324,64 @@ func TestGetOrgPlan_NoPlanField(t *testing.T) {
 	plan, err := client.GetOrgPlan(ctx, "myorg")
 	require.NoError(t, err)
 	assert.Equal(t, "free", plan)
+}
+
+func TestIsEnterprise_True(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]interface{}{"version": "17.1.0", "enterprise": true})
+	})
+
+	assert.True(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_False(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]interface{}{"version": "17.1.0", "enterprise": false})
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_ErrorReturnsFalse(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_InvalidJSON(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not-json"))
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestGetOrgPlan_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/namespaces/myorg", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	_, err := client.GetOrgPlan(ctx, "myorg")
+	require.Error(t, err)
 }
 
 func TestUpdateCIVariable(t *testing.T) {
@@ -1463,6 +1565,11 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 
 	t.Run("ListRecentWorkflowRuns", func(t *testing.T) {
 		_, err := client.ListRecentWorkflowRuns(ctx, "o", "r", 10)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("ListWorkflowRunJobs", func(t *testing.T) {
+		_, err := client.ListWorkflowRunJobs(ctx, "o", "r", 1)
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 

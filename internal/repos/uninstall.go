@@ -11,16 +11,73 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables)
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{"FULLSEND_GCP_REGION"})
 
 var uninstallSecrets = requiredSecrets
+
+var gitlabUninstallVars = []string{
+	forge.PerRepoGuardVar,
+	"FULLSEND_BOT_TOKEN_SECRET",
+	"FULLSEND_CREDENTIAL_MODE",
+	"FULLSEND_DISPATCHED_KEYS_FAST",
+	"FULLSEND_DISPATCHED_KEYS_FULL",
+	"FULLSEND_FAILED_KEYS_FAST",
+	"FULLSEND_FAILED_KEYS_FULL",
+	"FULLSEND_FORGE",
+	"FULLSEND_FORGE_TOKEN",
+	"FULLSEND_GCP_REGION",
+	"FULLSEND_LABEL_STATE",
+	"FULLSEND_LAST_POLL_AT_FAST",
+	"FULLSEND_LAST_POLL_AT_FULL",
+	"FULLSEND_SA",
+	"FULLSEND_WIF_PROVIDER",
+}
+
+var gitlabUninstallSecrets = []string{
+	"FULLSEND_GCP_PROJECT_ID",
+	"FULLSEND_GCP_WIF_PROVIDER",
+}
+
+var gitlabScaffoldPaths = []string{
+	".gitlab-ci.yml",
+	".gitlab/ci/fullsend-agent.yml",
+	".gitlab/ci/fullsend-dispatch.yml",
+	".gitlab/ci/fullsend-poll.yml",
+	".fullsend/config.yaml",
+}
+
+// UninstallVarsForForge returns the CI/CD variable names to delete for
+// the given forge during uninstall.
+func UninstallVarsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabUninstallVars
+	}
+	return uninstallVariables
+}
+
+// UninstallSecretsForForge returns the CI/CD secret names to delete for
+// the given forge during uninstall.
+func UninstallSecretsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabUninstallSecrets
+	}
+	return uninstallSecrets
+}
+
+// ScaffoldPathsForForge returns the scaffold file paths to delete for
+// the given forge during uninstall.
+func ScaffoldPathsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabScaffoldPaths
+	}
+	return nil
+}
 
 // UninstallConfig holds all inputs for a multi-repo uninstall operation.
 type UninstallConfig struct {
 	Manifest       *Manifest
 	Repos          []string
 	DryRun         bool
-	SkipWIFCleanup bool
 	MaxConcurrency int
 }
 
@@ -33,22 +90,19 @@ type UninstallResult struct {
 	WorkflowDeleted bool
 	VarsDeleted     int
 	SecretsDeleted  int
-	WIFDeregistered bool
 }
 
 // Uninstall tears down fullsend from the specified repos.
 //
-// It runs in two phases:
-//  1. Parallel per-repo cleanup (bounded by MaxConcurrency): delete workflow
-//     file, then delete variables and secrets. If workflow deletion fails,
-//     variables and secrets are left intact.
-//  2. Sequential WIF cleanup (only for Phase 1 successes): deregister from
-//     mint's PER_REPO_WIF_REPOS and delete WIF provider. Sequential because
-//     mint env var updates are read-modify-write operations.
+// It runs in a single phase: parallel per-repo cleanup (bounded by
+// MaxConcurrency) deletes the workflow file, then deletes variables and
+// secrets.
+//
+// GCP WIF cleanup is handled separately via `inference deprovision`.
 //
 // Does NOT modify repos.yaml — use RemoveFromManifest for that.
 func Uninstall(ctx context.Context, cfg UninstallConfig,
-	clients ForgeClientFactory, provisionerFactory ProvisionerFactory,
+	clients ForgeClientFactory,
 	progress ProgressFunc) ([]UninstallResult, error) {
 
 	if len(cfg.Repos) == 0 {
@@ -84,7 +138,7 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 		return results, nil
 	}
 
-	// Phase 1: Parallel per-repo cleanup.
+	// Parallel per-repo cleanup.
 	results := make([]UninstallResult, len(parsed))
 	sem := make(chan struct{}, cfg.MaxConcurrency)
 	var wg sync.WaitGroup
@@ -116,48 +170,10 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 				results[idx] = UninstallResult{Owner: owner, Repo: repo, Error: fcErr}
 				return
 			}
-			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, ForgeConfig: fc}, progress)
+			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, Forge: forgeName, ForgeConfig: fc}, progress)
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
-
-	// Phase 2: Sequential WIF cleanup (only for Phase 1 successes).
-	if !cfg.SkipWIFCleanup && provisionerFactory != nil && cfg.Manifest != nil {
-		for i := range results {
-			if results[i].Error != nil || !results[i].WorkflowDeleted {
-				continue
-			}
-			if ctx.Err() != nil {
-				for j := i; j < len(results); j++ {
-					if results[j].Error != nil || !results[j].WorkflowDeleted {
-						continue
-					}
-					if _, ok := cfg.Manifest.ResolveConfigWithGlobs(results[j].Owner, results[j].Repo); ok {
-						results[j].Error = fmt.Errorf("WIF cleanup skipped: %w", ctx.Err())
-					}
-				}
-				break
-			}
-
-			fullName := results[i].Owner + "/" + results[i].Repo
-			resolved, ok := cfg.Manifest.ResolveConfigWithGlobs(results[i].Owner, results[i].Repo)
-			if !ok {
-				progress(fullName, "wif", "Not in manifest, skipping WIF cleanup")
-				results[i].Success = true
-				continue
-			}
-
-			prov := provisionerFactory(resolved)
-			progress(fullName, "wif", "Deregistering from mint and deleting WIF provider")
-			if err := prov.DeletePerRepoWIF(ctx, fullName); err != nil {
-				results[i].Error = fmt.Errorf("WIF cleanup: %w", err)
-				progress(fullName, "wif", fmt.Sprintf("WIF cleanup failed: %v", err))
-				continue
-			}
-			results[i].WIFDeregistered = true
-			progress(fullName, "wif", "WIF cleanup complete")
-		}
-	}
 
 	for i := range results {
 		if results[i].Error == nil {
@@ -171,20 +187,31 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) UninstallResult {
 	owner, repo := cfg.Owner, cfg.Repo
 	client := cfg.ForgeConfig.Client
-	fc := cfg.ForgeConfig
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
-	progress(fullName, "workflow", "Deleting workflow file")
-	_, err := client.DeleteFiles(ctx, owner, repo,
-		"chore: remove fullsend workflow", fc.WorkflowPaths)
+	// Delete scaffold files. For GitHub this is just the workflow paths
+	// from ForgeConfig; for GitLab the full scaffold set is needed.
+	deletePaths := ScaffoldPathsForForge(cfg.Forge)
+	if len(deletePaths) == 0 {
+		deletePaths = cfg.ForgeConfig.WorkflowPaths
+	}
+	progress(fullName, "workflow", "Deleting scaffold files")
+	deleteMsg := "chore: remove fullsend workflow"
+	if cfg.Forge == ForgeGitLab {
+		deleteMsg += " [skip ci]"
+	}
+	_, err := client.DeleteFiles(ctx, owner, repo, deleteMsg, deletePaths)
 	if err != nil {
-		result.Error = fmt.Errorf("deleting workflow: %w", err)
+		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
 	}
 	result.WorkflowDeleted = true
-	progress(fullName, "workflow", "Workflow deleted")
+	progress(fullName, "workflow", "Scaffold files deleted")
+
+	forgeVars := UninstallVarsForForge(cfg.Forge)
+	forgeSecrets := UninstallSecretsForForge(cfg.Forge)
 
 	var varsDeleted, secretsDeleted int
 	var varErr, secretErr error
@@ -193,7 +220,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	innerWg.Add(2)
 	go func() {
 		defer innerWg.Done()
-		for _, name := range uninstallVariables {
+		for _, name := range forgeVars {
 			if delErr := client.DeleteRepoVariable(ctx, owner, repo, name); delErr != nil {
 				varErr = fmt.Errorf("deleting variable %s: %w", name, delErr)
 				return
@@ -203,7 +230,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	}()
 	go func() {
 		defer innerWg.Done()
-		for _, name := range uninstallSecrets {
+		for _, name := range forgeSecrets {
 			if delErr := client.DeleteRepoSecret(ctx, owner, repo, name); delErr != nil {
 				secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
 				return

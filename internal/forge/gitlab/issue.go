@@ -157,14 +157,15 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	return nil
 }
 
-// ListIssueComments returns all notes on an issue, sorted ascending.
-// GitLab calls issue comments "notes".
+// ListIssueComments returns all notes on an issue or merge request, sorted
+// ascending. GitLab calls comments "notes". The target type (issue vs MR) is
+// controlled by WithNoteTarget.
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
 	var result []forge.IssueComment
 
 	proj := projectPath(owner, repo)
 	for page := 1; page <= 100; page++ {
-		path := fmt.Sprintf("/projects/%s/issues/%d/notes?sort=asc&per_page=100&page=%d", proj, number, page)
+		path := fmt.Sprintf("/projects/%s/%s/%d/notes?sort=asc&per_page=100&page=%d", proj, c.noteTarget, number, page)
 
 		resp, err := c.get(ctx, path)
 		if err != nil {
@@ -184,8 +185,8 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 		}
 
 		for _, r := range raw {
-			htmlURL := fmt.Sprintf("%s/-/issues/%d#note_%d",
-				c.projectWebURL(owner, repo), number, r.ID)
+			htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+				c.projectWebURL(owner, repo), c.noteTarget, number, r.ID)
 			result = append(result, forge.IssueComment{
 				ID:        r.ID,
 				HTMLURL:   htmlURL,
@@ -203,9 +204,9 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 	return result, nil
 }
 
-// CreateIssueComment creates a new note on an issue.
+// CreateIssueComment creates a new note on an issue or merge request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
-	path := fmt.Sprintf("/projects/%s/issues/%d/notes", projectPath(owner, repo), number)
+	path := fmt.Sprintf("/projects/%s/%s/%d/notes", projectPath(owner, repo), c.noteTarget, number)
 
 	resp, err := c.post(ctx, path, map[string]string{"body": body})
 	if err != nil {
@@ -224,8 +225,8 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 		return nil, fmt.Errorf("decode issue comment: %w", err)
 	}
 
-	htmlURL := fmt.Sprintf("%s/-/issues/%d#note_%d",
-		c.projectWebURL(owner, repo), number, result.ID)
+	htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+		c.projectWebURL(owner, repo), c.noteTarget, number, result.ID)
 
 	return &forge.IssueComment{
 		ID:        result.ID,
@@ -252,35 +253,43 @@ func (c *LiveClient) DeleteIssueComment(ctx context.Context, owner, repo string,
 	return c.updateOrDeleteNote(ctx, owner, repo, commentID, nil)
 }
 
-// updateOrDeleteNote finds the issue containing the given note and either
-// updates its body (when body is non-nil) or deletes it. It scans recent
-// issues ordered by update time to locate the note efficiently.
+// updateOrDeleteNote finds the issue or merge request containing the given
+// note and either updates its body (when body is non-nil) or deletes it. It
+// scans recent noteables ordered by update time to locate the note
+// efficiently. The noteable type (issue vs MR) is determined by c.noteTarget.
 //
-// Known limitation: GitLab's Notes API requires the issue IID to address a
-// note, but the forge.Client interface only passes a bare commentID. This
-// method must scan up to 1500 issues (10 pages open + 5 pages closed) to
-// locate the parent issue. On projects with more issues, the note may not
-// be found even though it exists.
+// Known limitation: GitLab's Notes API requires the noteable IID to address
+// a note, but the forge.Client interface only passes a bare commentID. This
+// method scans up to 1000 open + 500 closed noteables (issues), or 1000
+// open + 500 closed + 500 merged (MRs), to locate the parent. On projects
+// with more items, the note may not be found even though it exists.
 func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string, noteID int, body *string) error {
 	proj := projectPath(owner, repo)
 
-	// Scan open issues first (most common case).
+	// For issues the non-open states are just "closed". For MRs, GitLab
+	// distinguishes "closed" (rejected/abandoned) from "merged", so both
+	// must be scanned.
+	nonOpenStates := []string{"closed"}
+	if c.noteTarget == "merge_requests" {
+		nonOpenStates = []string{"closed", "merged"}
+	}
+
 	for page := 1; page <= 10; page++ {
-		path := fmt.Sprintf("/projects/%s/issues?state=opened&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, page)
+		path := fmt.Sprintf("/projects/%s/%s?state=opened&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, c.noteTarget, page)
 		resp, err := c.get(ctx, path)
 		if err != nil {
-			return fmt.Errorf("list issues to find note %d: %w", noteID, err)
+			return fmt.Errorf("list %s to find note %d: %w", c.noteTarget, noteID, err)
 		}
 
-		var issues []struct {
+		var noteables []struct {
 			IID int `json:"iid"`
 		}
-		if err := decodeJSON(resp, &issues); err != nil {
-			return fmt.Errorf("decode issues: %w", err)
+		if err := decodeJSON(resp, &noteables); err != nil {
+			return fmt.Errorf("decode %s: %w", c.noteTarget, err)
 		}
 
-		for _, issue := range issues {
-			err := c.tryNoteOperation(ctx, proj, issue.IID, noteID, body)
+		for _, n := range noteables {
+			err := c.tryNoteOperation(ctx, proj, n.IID, noteID, body)
 			if err == nil {
 				return nil
 			}
@@ -289,38 +298,39 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 			}
 		}
 
-		if len(issues) < 100 {
+		if len(noteables) < 100 {
 			break
 		}
 	}
 
-	// Try closed issues (the issue may have been closed after the comment was created).
-	for page := 1; page <= 5; page++ {
-		path := fmt.Sprintf("/projects/%s/issues?state=closed&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, page)
-		resp, err := c.get(ctx, path)
-		if err != nil {
-			return fmt.Errorf("list closed issues to find note %d: %w", noteID, err)
-		}
-
-		var issues []struct {
-			IID int `json:"iid"`
-		}
-		if err := decodeJSON(resp, &issues); err != nil {
-			return fmt.Errorf("decode closed issues: %w", err)
-		}
-
-		for _, issue := range issues {
-			err := c.tryNoteOperation(ctx, proj, issue.IID, noteID, body)
-			if err == nil {
-				return nil
+	for _, state := range nonOpenStates {
+		for page := 1; page <= 5; page++ {
+			path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, c.noteTarget, state, page)
+			resp, err := c.get(ctx, path)
+			if err != nil {
+				return fmt.Errorf("list %s %s to find note %d: %w", state, c.noteTarget, noteID, err)
 			}
-			if !forge.IsNotFound(err) {
-				return err
-			}
-		}
 
-		if len(issues) < 100 {
-			break
+			var noteables []struct {
+				IID int `json:"iid"`
+			}
+			if err := decodeJSON(resp, &noteables); err != nil {
+				return fmt.Errorf("decode %s %s: %w", state, c.noteTarget, err)
+			}
+
+			for _, n := range noteables {
+				err := c.tryNoteOperation(ctx, proj, n.IID, noteID, body)
+				if err == nil {
+					return nil
+				}
+				if !forge.IsNotFound(err) {
+					return err
+				}
+			}
+
+			if len(noteables) < 100 {
+				break
+			}
 		}
 	}
 
@@ -328,14 +338,18 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 	if body == nil {
 		op = "delete"
 	}
-	return fmt.Errorf("%s note %d: could not find issue containing this note", op, noteID)
+	targetLabel := "issue"
+	if c.noteTarget == "merge_requests" {
+		targetLabel = "merge request"
+	}
+	return fmt.Errorf("%s note %d: could not find %s containing this note", op, noteID, targetLabel)
 }
 
-// tryNoteOperation attempts to update or delete a note on the given issue.
+// tryNoteOperation attempts to update or delete a note on the given noteable.
 // Returns nil on success, or an error wrapping forge.ErrNotFound if the
-// note doesn't exist on this issue.
-func (c *LiveClient) tryNoteOperation(ctx context.Context, proj string, issueIID, noteID int, body *string) error {
-	notePath := fmt.Sprintf("/projects/%s/issues/%d/notes/%d", proj, issueIID, noteID)
+// note doesn't exist on this noteable.
+func (c *LiveClient) tryNoteOperation(ctx context.Context, proj string, noteableIID, noteID int, body *string) error {
+	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, c.noteTarget, noteableIID, noteID)
 
 	if body == nil {
 		return c.delete_(ctx, notePath)

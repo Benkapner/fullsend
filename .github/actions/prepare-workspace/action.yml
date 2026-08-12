@@ -43,20 +43,6 @@ runs:
             cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
           fi
         done
-        CUSTOM_BASE="customized"
-        if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-          CUSTOM_BASE=".fullsend/customized"
-        fi
-        for dir in ${LAYERED_DIRS}; do
-          if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
-            find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
-              | while IFS= read -r -d '' f; do
-                  rel="${f#"${CUSTOM_BASE}"/}"
-                  mkdir -p "$(dirname "${DEST}${rel}")"
-                  cp "${f}" "${DEST}${rel}"
-                done
-          fi
-        done
         mkdir -p .github/scripts
         cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 

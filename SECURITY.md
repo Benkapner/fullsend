@@ -17,3 +17,7 @@ Following this process will create a private advisory for our maintainers to rev
 
 ### 2. **Do Not Open Public Pull Requests, Issues, or Discussions**
 Please **do not** discuss the issue, create PRs, or start discussions about the vulnerability. This ensures the vulnerability is not widely exploited before a fix is provided.
+
+## Threat Model
+
+Our security threat model is documented at [docs/problems/security-threat-model.md](docs/problems/security-threat-model.md).

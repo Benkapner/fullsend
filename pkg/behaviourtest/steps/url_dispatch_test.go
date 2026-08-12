@@ -758,7 +758,6 @@ type fakeURLInstall struct {
 }
 
 func (f *fakeURLInstall) Mode() string               { return "per-repo" }
-func (f *fakeURLInstall) TestRepo() string           { return f.repo }
 func (f *fakeURLInstall) ConfigOwner() string        { return f.owner }
 func (f *fakeURLInstall) ConfigRepo() string         { return f.repo }
 func (f *fakeURLInstall) ConfigPathPrefix() string   { return ".fullsend" }
@@ -814,6 +813,14 @@ func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
 	return nil
 }
 
+func (f *fakeURLSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeURLSCM) ListComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+	return nil, nil
+}
+
 func (f *fakeURLSCM) EnsureRepoPublic(_ context.Context, _, _ string) error {
 	f.ensurePublicCalled = true
 	return f.ensurePublicErr
@@ -827,6 +834,10 @@ func (f *fakeURLSCM) GetDefaultBranch(_ context.Context, _, _ string) (string, e
 		return f.defaultBranch, nil
 	}
 	return "main", nil
+}
+
+func (f *fakeURLSCM) GetBranchRef(context.Context, string, string, string) (string, error) {
+	return "abc123", nil
 }
 
 func (f *fakeURLSCM) DeleteRepo(_ context.Context, _, repo string) error {

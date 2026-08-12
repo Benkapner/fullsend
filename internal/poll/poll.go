@@ -12,15 +12,17 @@ import (
 
 // Poller discovers GitLab events and dispatches agent stages.
 type Poller struct {
-	client      GitLabClient
-	router      dispatch.EventRouter
-	projectPath string
-	owner       string
-	repo        string
-	botUserID   int
-	gitlabURL   string
-	opts        Options
-	dispatches  []Dispatch
+	client            GitLabClient
+	router            dispatch.EventRouter
+	projectPath       string
+	owner             string
+	repo              string
+	botUserID         int
+	gitlabURL         string
+	opts              Options
+	dispatches        []Dispatch
+	warnedNoHMAC      bool
+	slashCommandsOnly bool
 }
 
 // New creates a Poller for the given project.
@@ -47,9 +49,24 @@ const maxEventRetries = 3
 // Run executes a single poll cycle: read watermark, discover events,
 // filter, deduplicate, convert to NormalizedEvent, route, dispatch,
 // and advance the watermark.
+//
+// Poll mode is determined by Options.Mode:
+//   - "slash": fast poll — only /fs-* slash commands via the Events API
+//   - "events": full discovery — labels, merges, non-slash notes (filters out /fs-* notes)
+//   - "": backward compatibility — uses events discovery path but does not filter /fs-* notes
 func (p *Poller) Run(ctx context.Context) error {
 	if p.client == nil {
 		return fmt.Errorf("poller requires a GitLab client (Phase 1 wiring incomplete)")
+	}
+
+	p.slashCommandsOnly = p.opts.Mode == "slash"
+	switch p.opts.Mode {
+	case "slash":
+		log.Printf("poll mode: slash (slash commands only)")
+	case "events":
+		log.Printf("poll mode: events (full discovery, /fs-* notes filtered)")
+	default:
+		log.Printf("poll mode: events (full discovery, legacy — no /fs-* filtering)")
 	}
 
 	lastPollAt, err := p.readWatermark(ctx, p.owner, p.repo)
@@ -60,7 +77,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	var events []RoutableEvent
 	var labelState LabelState
 	var minSkippedAt time.Time
-	if p.opts.SlashCommandsOnly {
+	if p.slashCommandsOnly {
 		events, minSkippedAt, err = p.discoverSlashCommands(ctx, p.owner, p.repo, lastPollAt)
 	} else {
 		events, labelState, minSkippedAt, err = p.discoverAllEvents(ctx, p.owner, p.repo, lastPollAt)
@@ -88,6 +105,15 @@ func (p *Poller) Run(ctx context.Context) error {
 	var minFailedAt time.Time
 	failedLabelEvents := make(map[int]map[string]bool)
 
+	// Entity-level deduplication: within a single poll cycle, dispatch
+	// at most one pipeline per stage+entity (e.g. "triage:issue-3").
+	// Multiple /fs-triage comments on the same issue produce distinct
+	// event Keys (note-123, note-456) but share the same entity key.
+	// Without this, each comment dispatches a separate pipeline that
+	// blocks on the same resource group. The first event per entity
+	// wins; subsequent events are skipped.
+	dispatchedEntities := make(map[string]bool)
+
 	for _, event := range events {
 		eventKey := event.Key()
 
@@ -99,13 +125,17 @@ func (p *Poller) Run(ctx context.Context) error {
 			continue
 		}
 
-		normalizedEvent, err := p.toNormalizedEvent(ctx, event)
+		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
 			log.Printf("WARNING: skipping %s event on IID %d: %v", event.Type, event.IID, err)
 			failedKeys[eventKey]++
 			trackFailure(&minFailedAt, event.UpdatedAt)
 			trackLabelFailure(failedLabelEvents, event)
 			continue
+		}
+
+		if event.Type == "issue_label" && actorID != 0 {
+			event.NoteAuthorID = actorID
 		}
 
 		var stages []string
@@ -134,6 +164,13 @@ func (p *Poller) Run(ctx context.Context) error {
 			if _, ok := previouslyDispatched[dispatchKey]; ok {
 				continue
 			}
+			// Entity-level dedup: skip if this stage+entity was
+			// already dispatched in the current poll cycle.
+			entityKey := stage + ":" + resourceKey(event)
+			if dispatchedEntities[entityKey] {
+				log.Printf("  skipping %s for %s (already dispatched for entity %s)", stage, eventKey, entityKey)
+				continue
+			}
 			allSkipped = false
 			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
@@ -145,6 +182,7 @@ func (p *Poller) Run(ctx context.Context) error {
 			dispatched++
 			anyDispatched = true
 			newDispatchedKeys[dispatchKey] = event.UpdatedAt.Unix()
+			dispatchedEntities[entityKey] = true
 			if event.UpdatedAt.After(maxUpdatedAt) {
 				maxUpdatedAt = event.UpdatedAt
 			}
@@ -167,14 +205,9 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Write dispatches before persisting keys: at-least-once delivery.
-	// If key persistence fails, events re-dispatch on the next cycle.
-	if p.opts.OutputPath != "" {
-		if err := p.writeDispatches(p.opts.OutputPath); err != nil {
-			return fmt.Errorf("write dispatches: %w", err)
-		}
-	}
-
+	// Persist dispatched keys. Pipelines were already created via API
+	// during dispatch — if key persistence fails, events may re-dispatch
+	// on the next cycle (at-least-once delivery).
 	for k, ts := range newDispatchedKeys {
 		previouslyDispatched[k] = ts
 	}
@@ -196,6 +229,14 @@ func (p *Poller) Run(ctx context.Context) error {
 		maxUpdatedAt = minSkippedAt
 	}
 	newWatermark := maxUpdatedAt.Add(-30 * time.Second)
+
+	if len(newDispatchedKeys) > 0 {
+		keys := make([]string, 0, len(newDispatchedKeys))
+		for k := range newDispatchedKeys {
+			keys = append(keys, k)
+		}
+		log.Printf("persisting %d new dispatched keys: %v", len(keys), keys)
+	}
 
 	if err := p.persistDispatchedKeys(ctx, p.owner, p.repo, previouslyDispatched, newWatermark); err != nil {
 		return fmt.Errorf("persist dispatched keys: %w", err)

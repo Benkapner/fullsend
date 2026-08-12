@@ -74,10 +74,7 @@ to Terraform vs cloud provider CLIs.
 | `repos install` | Provision fullsend on uninstalled manifest repos |
 | `repos sync` / `repos diff` | Reconcile configuration drift |
 | `repos upgrade` | Upgrade scaffold shim ref across repos |
-| `repos upgrade-mint` | Verify token mint deployment against manifest |
 | `repos remove` | Remove fullsend from specific repos |
-
-> **Note:** `repos upgrade` now includes automatic mint verification as a pre-flight step (unless `--skip-mint-check` is set). The standalone `repos upgrade-mint` command remains available for verification without triggering an upgrade.
 
 **Manifest:** a YAML file declaring desired state — mint config, default
 field values, and a list of repos (strings for defaults, objects for
@@ -88,18 +85,15 @@ local path or URL per [ADR 0038](0038-universal-harness-access.md).
 
 **Key design constraints:**
 
-- WIF provisioning and mint registration are serialized
-  (read-modify-write on Cloud Run env vars). Install uses three phases:
-  parallel discovery → sequential WIF → parallel scaffold.
+- Install uses two phases: parallel discovery → parallel scaffold.
+  GCP infrastructure (WIF, mint) is provisioned separately.
 - Version changes (`repos upgrade`) are separated from config
   reconciliation (`repos sync`) to prevent accidental upgrades.
 - Works alongside per-org installations during a migration period;
   serves as the migration path for ADR 0044 (pending) deprecation.
 
-Manifest schema, field resolution semantics, subcommand specifications,
-and implementation details are in the
-[repos management plan](../plans/repos-management.md) and
-[repos init plan](../plans/repos-init.md).
+Manifest schema, field resolution semantics, and subcommand specifications
+are covered in the sections below.
 
 ## Consequences
 
@@ -123,16 +117,29 @@ and implementation details are in the
 - ADR 0044 (pending) — per-org deprecation; repos tool replaces its deferred Option C
 - [ADR 0045](0045-forge-portable-harness-schema.md) — harness composition via `base` URLs
 - [ADR 0048](0048-automatic-updates.md) — `--upstream-ref` version pinning
-- [Implementation plan: repos management](../plans/repos-management.md)
-- [Implementation plan: repos init](../plans/repos-init.md)
+- [PR #5713](https://github.com/fullsend-ai/fullsend/pull/5713) — added forge URL fields (`forge.github.url`, `forge.gitlab.url`) to the manifest schema and `--forge-url` flag to `repos init` (now `repos migrate`); `forge.gitlab.url` is required (breaking change)
+
+> **Note:** [ADR 0074](0074-repos-command-consolidation.md) consolidates
+> the subcommands defined above into five commands (`migrate`, `install`,
+> `status`, `uninstall`, `set-default`).
 
 ## Implementation status
 
 Implemented subcommands:
 
-- `repos init` — PR #3033
-- `repos install` — PR #3033
+- `repos migrate` — PR #5816 (replaced `repos init`; one-command migration from per-org to per-repo)
+- `repos install` — PR #3033, consolidated into convergence operator in PR #5807
 - `repos status` — PR #3031
-- `repos add`, `repos remove`, `repos uninstall` — PR #4081
-- `repos upgrade`, `repos upgrade-mint` — PR #4080
-- `repos diff`, `repos sync` — PR #4079
+- `repos uninstall` — PR #4081, expanded with `--manifest-only` and `--uninstall-only` in PR #5807
+
+Consolidated in PR #5807 (absorbed into `repos install` and `repos uninstall`):
+
+- `repos add` (PR #4081) → `repos install` with positional args and `--forge`
+- `repos remove` (PR #4081) → `repos uninstall` with `--manifest-only`
+- `repos diff` (PR #4079) → `repos install --dry-run`
+- `repos sync` (PR #4079) → `repos install` convergence phase
+- `repos upgrade` (PR #4080) → `repos install` convergence phase
+
+Removed:
+
+- `repos init` (PR #3033) → replaced by `repos migrate` in PR #5816

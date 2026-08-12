@@ -41,7 +41,9 @@ orgs control over their own policy.
 1. **Optional `target_org` on mint requests.** When omitted, or when equal to the caller's
    `repository_owner` (case-insensitive), behavior uses the same `mintToken` path with no
    FOREIGN check. When `repos` is omitted, the mint issues an installation-wide token via
-   org-level installation lookup (same as the cross-org path). Callers are authenticated via
+   org-level installation lookup (same as the cross-org path). *(Note: `repos` is now
+   required — callers must send `repos: ["*"]` for installation-wide scope; see
+   [ADR 0077](0077-mint-repos-scope-hardening.md) and the [Later note](#later-note-repos-scope-hardening) below.)* Callers are authenticated via
    WIF/OIDC; only enrolled workflows that pass mint enrollment checks can reach the handler.
 
 2. **Cross-org path** applies only when `target_org` is set and differs from the caller org:
@@ -51,7 +53,7 @@ orgs control over their own policy.
    - Deny if installation lookup fails, the variable is missing/empty, or the OIDC caller
      (`repository` or bare `repository_owner`) is not on the allowlist.
    - Mint an installation token for the requested repos on the target org, or installation-wide
-     when `repos` is omitted. The `e2e` role acting on pool orgs from CI is the first consumer
+     when `repos` is omitted *(now: `repos: ["*"]`; see [Later note](#later-note-repos-scope-hardening))*. The `e2e` role acting on pool orgs from CI is the first consumer
      ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)).
 
 3. **Variable format.** Org-level GitHub Actions variable on the **target** org:
@@ -77,9 +79,25 @@ orgs control over their own policy.
   install flows; these writes are scoped to pool orgs that explicitly authorize CI via
   `FULLSEND_FOREIGN_E2E_REPOS`.
 - Installation-wide tokens (empty `repos`) are permitted on both same-org and cross-org
-  paths. Cross-org requests additionally require FOREIGN authorization on the target org.
+  paths. *(Note: `repos` is now required — use `repos: ["*"]` for installation-wide scope;
+  see [Later note](#later-note-repos-scope-hardening) below.)* Cross-org requests additionally require FOREIGN authorization on the target org.
   Same-org elevation relies on WIF/OIDC enrollment: only trusted workflows can call the mint.
 - Target orgs opt in by installing the role App and setting the FOREIGN allowlist (cross-org).
-- Same-org mint for enrolled orgs adds zero FOREIGN API calls; optional `repos` omission uses
-  org-level installation lookup when callers need installation-wide scope.
+- Same-org mint for enrolled orgs adds zero FOREIGN API calls; callers needing installation-wide
+  scope must send `repos: ["*"]` *(see [Later note](#later-note-repos-scope-hardening))*.
 - Pool org provisioning must install the e2e App and set `FULLSEND_FOREIGN_E2E_REPOS` for CI callers.
+
+## Later note (repos scope hardening)
+
+Same-org installation-wide tokens and unrestricted `repos` lists are no longer the default.
+`repos` authorization is decided in
+[ADR 0077](0077-mint-repos-scope-hardening.md). FOREIGN allowlists and `target_org`
+from this ADR are unchanged.
+
+## Later note (repo-level foreign grants)
+
+[ADR 0083](0083-repo-level-foreign-allow-list.md) extends the FOREIGN
+mechanism with repo-level `FULLSEND_FOREIGN_<ROLE>_REPOS` variables.
+Repo-level grants additionally require `actions_variables: read` on the
+target repos (in addition to the `organization_actions_variables: read`
+needed for org-level grants from this ADR).
