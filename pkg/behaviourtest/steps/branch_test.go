@@ -251,6 +251,49 @@ func TestThenHarnessWorkflowFailsReporting(t *testing.T) {
 	assert.Contains(t, err.Error(), "no comment on PR #5")
 }
 
+func TestEnsureScenarioRepo_NoRepoOwner(t *testing.T) {
+	w := &world.World{RepoName: "test-repo"}
+	err := ensureScenarioRepo(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestEnsureScenarioRepo_NoRepoName(t *testing.T) {
+	w := &world.World{RepoOwner: "test-org"}
+	err := ensureScenarioRepo(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestEnsureScenarioRepo_OK(t *testing.T) {
+	w := &world.World{RepoOwner: "org", RepoName: "repo"}
+	require.NoError(t, ensureScenarioRepo(w))
+}
+
+func TestGivenSeededRemoteBranch_NoRepo(t *testing.T) {
+	err := givenSeededRemoteBranch(&world.World{SCM: &fakeBranchSCM{}}, "branch-a")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestGivenOpenPullRequestOnBranch_NoRepo(t *testing.T) {
+	err := givenOpenPullRequestOnBranch(&world.World{SCM: &fakeBranchSCM{}}, "branch-a")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestGivenBranchTipRecorded_NoRepo(t *testing.T) {
+	err := givenBranchTipRecorded(&world.World{SCM: &fakeBranchSCM{}}, "branch-a")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestThenBranchUnchanged_NoRepo(t *testing.T) {
+	err := thenBranchUnchanged(&world.World{SCM: &fakeBranchSCM{}}, "branch-a")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
 func TestParseDummyAgentTable_ExpandsIssueInCheckoutBranchOnly(t *testing.T) {
 	w := &world.World{
 		SCM:          &fakeCleanupSCM{},
