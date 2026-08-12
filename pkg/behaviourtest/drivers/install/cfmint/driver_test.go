@@ -256,8 +256,9 @@ func TestInstall_Success(t *testing.T) {
 
 	assert.Equal(t, "per-repo", state.Mode())
 	assert.Equal(t, "my-org", state.ConfigOwner())
-	// Repo should be empty — the driver no longer targets a specific repo.
-	assert.Equal(t, "", state.TestRepo())
+	// ConfigRepo is empty — the driver only manages the mint, not a
+	// specific repo. Per-repo state is created by the RepoEnsurer.
+	assert.Equal(t, "", state.ConfigRepo())
 
 	provider, ok := state.(install.MintURLProvider)
 	require.True(t, ok)

@@ -316,8 +316,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 
 func whenPullRequestOpened(w *world.World) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
 	}
 	w.ScenarioStart = time.Now()
 	branch := fmt.Sprintf("behaviour-pr-%d", time.Now().UnixNano())

@@ -708,7 +708,6 @@ type fakeCleanupInstall struct {
 }
 
 func (f *fakeCleanupInstall) Mode() string               { return "per-repo" }
-func (f *fakeCleanupInstall) TestRepo() string           { return f.repo }
 func (f *fakeCleanupInstall) ConfigOwner() string        { return f.owner }
 func (f *fakeCleanupInstall) ConfigRepo() string         { return f.repo }
 func (f *fakeCleanupInstall) ConfigPathPrefix() string   { return ".fullsend" }

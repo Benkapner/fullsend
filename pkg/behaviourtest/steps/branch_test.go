@@ -240,7 +240,7 @@ func TestThenHarnessWorkflowFailsReporting(t *testing.T) {
 	w := branchTestWorld(scmDriver)
 	w.PRNumber = 5
 	w.ScenarioStart = time.Now()
-	w.Install = &fakeInstallState{testRepo: "test-repo"}
+	w.Install = &fakeInstallState{}
 	w.CI = &fakeBranchCI{run: &forge.WorkflowRun{ID: 9}}
 
 	require.NoError(t, thenHarnessWorkflowFailsReporting(context.Background(), w, "fix", "Refusing to push"))
@@ -254,7 +254,7 @@ func TestThenHarnessWorkflowFailsReporting(t *testing.T) {
 func TestParseDummyAgentTable_ExpandsIssueInCheckoutBranchOnly(t *testing.T) {
 	w := &world.World{
 		SCM:          &fakeCleanupSCM{},
-		Install:      &fakeInstallState{testRepo: "test-repo"},
+		Install:      &fakeInstallState{},
 		FixturesRoot: "e2e/behaviour",
 		IssueNumber:  42,
 	}
