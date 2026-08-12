@@ -396,11 +396,13 @@ func TestInstall_ScaffoldCommitFailure(t *testing.T) {
 			result.WIFProvider, fakeWIFProvider)
 	}
 
-	if len(fc.Variables) != 0 {
-		t.Error("expected no variable writes after scaffold commit failure")
+	// Variables and secrets are written before scaffold commit (#6122),
+	// so they should be present even when the commit fails.
+	if len(fc.Variables) == 0 {
+		t.Error("expected variables to be written before scaffold commit")
 	}
-	if len(fc.CreatedSecrets) != 0 {
-		t.Error("expected no secret writes after scaffold commit failure")
+	if len(fc.CreatedSecrets) == 0 {
+		t.Error("expected secrets to be written before scaffold commit")
 	}
 }
 
@@ -419,7 +421,10 @@ func TestInstall_ProgressCallbackPhases(t *testing.T) {
 		t.Fatalf("Install() returned error: %v", err)
 	}
 
-	wantPhases := []string{"scaffold", "scaffold", "scaffold", "vars", "vars", "secrets", "secrets", "done"}
+	// Variables and secrets are written before the scaffold commit (#6122)
+	// to eliminate the race window where the workflow is live but secrets
+	// don't exist yet.
+	wantPhases := []string{"scaffold", "vars", "vars", "secrets", "secrets", "scaffold", "scaffold", "done"}
 	if len(phases) != len(wantPhases) {
 		t.Fatalf("got %d phases %v, want %d phases %v", len(phases), phases, len(wantPhases), wantPhases)
 	}
@@ -495,8 +500,73 @@ func TestInstall_VariableWriteFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from variable write failure")
 	}
-	if !sc.called {
-		t.Error("scaffold commit should have been called before variable write")
+	if sc.called {
+		t.Error("scaffold commit should NOT have been called — variables are written first (#6122)")
+	}
+}
+
+func TestInstall_VarsAndSecretsBeforeCommit(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+
+	// Track call order via a scaffold commit wrapper and the progress
+	// callback to verify that variables and secrets are written before
+	// the scaffold is committed (#6122).
+	var callOrder []string
+	sc := &fakeScaffoldCommit{}
+	origFn := sc.fn()
+	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
+		callOrder = append(callOrder, "commit")
+		return origFn(ctx, owner, repo, files, direct)
+	}
+	progress := func(_, phase, msg string) {
+		if phase == "vars" && msg == "Configuring repository variables" {
+			callOrder = append(callOrder, "vars")
+		}
+		if phase == "secrets" && msg == "Configuring repository secrets" {
+			callOrder = append(callOrder, "secrets")
+		}
+	}
+
+	_, err := Install(context.Background(), cfg, fc, commitFn, progress)
+	if err != nil {
+		t.Fatalf("Install() returned error: %v", err)
+	}
+
+	// Verify that vars and secrets entries are present — without this,
+	// a progress message text change could make the test pass vacuously.
+	hasVars, hasSecrets := false, false
+	for _, entry := range callOrder {
+		if entry == "vars" {
+			hasVars = true
+		}
+		if entry == "secrets" {
+			hasSecrets = true
+		}
+	}
+	if !hasVars {
+		t.Fatalf("vars entry not found in call order: %v", callOrder)
+	}
+	if !hasSecrets {
+		t.Fatalf("secrets entry not found in call order: %v", callOrder)
+	}
+
+	// The commit must appear after both vars and secrets writes.
+	commitIdx := -1
+	for i, entry := range callOrder {
+		if entry == "commit" {
+			commitIdx = i
+			break
+		}
+	}
+	if commitIdx == -1 {
+		t.Fatal("commit not found in call order")
+	}
+	for i, entry := range callOrder {
+		if i >= commitIdx && (entry == "vars" || entry == "secrets") {
+			t.Errorf("expected %q before commit, but it appeared at index %d (commit at %d); order: %v",
+				entry, i, commitIdx, callOrder)
+		}
 	}
 }
 

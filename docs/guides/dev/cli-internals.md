@@ -264,6 +264,10 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  │                                          │              │ │
 │  │  │ Per-repo: secrets → target repo          │              │ │
 │  │  │           + FULLSEND_PER_REPO_GUARD=true │              │ │
+│  │  │                                          │              │ │
+│  │  │ NOTE: Per-repo runs Phase 6 before       │              │ │
+│  │  │ Phase 5 (vars/secrets before scaffold    │              │ │
+│  │  │ commit) to prevent a race window (#6122) │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -287,8 +291,8 @@ Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `Provis
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
 | **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | + `RegisterPerRepoWIF()` |
 | **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
-| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
-| **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` |
+| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo (committed after secrets in per-repo, see #6122) |
+| **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` (written before scaffold commit in per-repo, see #6122) |
 | **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
 
 ### Per-Org Layer Stack

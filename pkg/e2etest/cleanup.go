@@ -77,6 +77,11 @@ func CleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	// Clear per-repo install guard so enroll-all includes test-repo.
 	deleteRepoVariable(ctx, token, org, TestRepo, forge.PerRepoGuardVar, t)
 
+	// Clear leaked repo-level FULLSEND_MINT_URL left by cfmint behaviour
+	// tests (#6037). Repo variables shadow org-level ones, so a stale
+	// value pointing at a torn-down CF Worker preview breaks dispatch.
+	deleteRepoVariable(ctx, token, org, TestRepo, "FULLSEND_MINT_URL", t)
+
 	// 4. Delete stale enrollment and unenrollment branches from test-repo.
 	deleteBranch(ctx, token, org, TestRepo, "fullsend/onboard", t)
 	deleteBranch(ctx, token, org, TestRepo, "fullsend/offboard", t)
@@ -104,6 +109,16 @@ func CleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 		t.Logf("[cleanup] Warning: could not delete per-repo guard variable: %v", delErr)
 	}
 
+	// 8. Delete stale repo-level FULLSEND_MINT_URL variable from test-repo.
+	// Per-repo install drivers (e.g. cfmint) write this as a repo variable,
+	// which takes precedence over the org-level FULLSEND_MINT_URL set by
+	// admin install. Ephemeral preview mints (cfmint) are torn down at the
+	// end of their run, so a leaked repo variable points to a dead URL and
+	// breaks dispatch for any later run that reuses this org.
+	if delErr := client.DeleteRepoVariable(ctx, org, TestRepo, "FULLSEND_MINT_URL"); delErr != nil {
+		t.Logf("[cleanup] Warning: could not delete stale repo-level mint URL variable: %v", delErr)
+	}
+
 	t.Log("[cleanup] Stale resource scan complete")
 }
 
@@ -117,6 +132,14 @@ func TeardownPerRepoInstall(ctx context.Context, client forge.Client, token, org
 	deleteBranch(ctx, token, org, repo, "fullsend/onboard", log)
 	deleteBranch(ctx, token, org, repo, "fullsend/offboard", log)
 	deleteShimWorkflow(ctx, token, org, repo, log)
+	// Delete the repo-level FULLSEND_MINT_URL variable written by
+	// per-repo install drivers. It takes precedence over org-level
+	// FULLSEND_MINT_URL, so leaving it behind breaks dispatch for any
+	// later run (e.g. an org-level admin install) that reuses this repo
+	// from a shared org pool.
+	if delErr := client.DeleteRepoVariable(ctx, org, repo, "FULLSEND_MINT_URL"); delErr != nil {
+		log.Logf("[cleanup] Warning: could not delete repo-level mint URL variable: %v", delErr)
+	}
 	prs, err := client.ListRepoPullRequests(ctx, org, repo)
 	if err != nil {
 		log.Logf("[cleanup] Warning: could not list PRs: %v", err)

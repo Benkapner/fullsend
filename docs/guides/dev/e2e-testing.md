@@ -111,9 +111,10 @@ Each pool org must be provisioned before e2e can use it:
 
 1. Org exists with `botsend` as owner
 2. `test-repo` and `e2e-lock` repos (lock created at runtime)
-3. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
-4. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
-5. Mint enrolled: org in `ALLOWED_ORGS`, `${ORG}/e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
+3. Test actor permissions granted (see [Test actor permissions](#test-actor-permissions) below)
+4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
+5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
+6. Mint enrolled: org in `ALLOWED_ORGS`, `${ORG}/e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
 
 Use the idempotent setup script:
 
@@ -144,6 +145,38 @@ go run ./cmd/fullsend admin foreign list --org halfsend-NN --repo target-repo
 
 See [ADR 0083](../../ADRs/0083-repo-level-foreign-allow-list.md) for details
 on repo-level foreign grants.
+
+### Test actor permissions
+
+Pool orgs grant three test actor accounts specific access levels for
+e2e testing of permission-sensitive behaviour:
+
+| Actor | Org membership | Repo permission on base `test-repo*` |
+|-------|----------------|--------------------------------------|
+| `fstest-write` | member | push (write) |
+| `fstest-triage` | member | triage |
+| `fstest-outsider` | none | public read only (no collaborator grant) |
+
+Elevated access uses direct collaborator grants (not team membership). Fork repos
+(`test-repo-fork`) are intentionally excluded — they are not base/enrolled
+targets for permission grants.
+
+The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies this
+model idempotently. To auto-accept org membership invitations, pass the
+actor PATs as environment variables:
+
+```bash
+TEST_ACTOR_WRITE_PAT=ghp_... TEST_ACTOR_TRIAGE_PAT=ghp_... \
+  MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
+```
+
+Without the PAT variables, the script pauses for manual acceptance.
+
+Accounts and PATs are managed under
+[#6024](https://github.com/fullsend-ai/fullsend/issues/6024). PATs are
+stored as repository secrets `TEST_ACTOR_WRITE_PAT`,
+`TEST_ACTOR_TRIAGE_PAT`, and `TEST_ACTOR_OUTSIDER_PAT` on
+`fullsend-ai/fullsend`.
 
 ## CI authorization
 

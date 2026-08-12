@@ -264,6 +264,61 @@ To inspect what the poller *would* dispatch without triggering any agent workflo
 
 If you want to avoid advancing Jira checkpoints during testing, poll against a dedicated test project or use a narrowly scoped `--jql` that selects only test issues.
 
+## Dispatch record format
+
+> **Implementation detail.** Once Jira support is stabilized, users will not need to know this dispatch format — it will be an internal detail between the poll job and the `fullsend run` workflows. This section is documented now because the integration is pre-alpha and operators may need to debug or inspect dispatch records directly.
+
+The poll step writes an array of dispatch records to `dispatches.json`. Each record has the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `stage` | string | Agent stage to run (e.g., `"triage"`, `"code"`). Determined by routing rules. |
+| `event_type` | string | Jira event type that triggered the dispatch (e.g., `"comment_added"`, `"label_changed"`, `"opened"`, `"reopened"`, `"edited"`, `"closed"`). |
+| `event_payload_b64` | string | Base64-encoded JSON [NormalizedEvent](../../normative/normalized-event/v1/). Decoded example below. |
+| `resource_key` | string | Stable entity key for concurrency control, in the format `issue-{JIRA_KEY}` (e.g., `"issue-PROJ-101"` for Jira key `PROJ-101`). |
+| `is_fork` | boolean | Whether the source is a fork. Always `false` for Jira dispatches (Jira issues are work items, not change proposals). |
+| `iid` | integer | Jira's internal numeric issue ID (not the human-readable key). Used by the downstream dispatch step to set `issue.number` in the compatibility payload. |
+
+### Decoded `event_payload_b64` example
+
+The `event_payload_b64` field is a base64-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — the same forge-neutral struct that GitHub and GitLab input drivers produce. A decoded example for a `/fs-triage` comment on `PROJ-101`:
+
+```json
+{
+  "repo": "acme/platform",
+  "entity": {
+    "kind": "work_item",
+    "id": 10042,
+    "key": "PROJ-101",
+    "url": "https://myteam.atlassian.net/browse/PROJ-101"
+  },
+  "transition": {
+    "kind": "comment_added",
+    "comment": {
+      "body": "/fs-triage please triage this bug",
+      "command": "/fs-triage",
+      "instruction": "please triage this bug"
+    }
+  },
+  "actor": {
+    "id": "5f7c012e0b2a4c001f3d9876",
+    "kind": "human",
+    "role": "write",
+    "is_entity_author": false
+  },
+  "state": {
+    "labels": ["bug", "fullsend"]
+  },
+  "source": {
+    "system": "jira",
+    "raw_type": "comment",
+    "raw_action": "created"
+  }
+}
+```
+
+The `entity.key` field is required when `source.system` is `"jira"` — it carries the human-readable Jira key (e.g., `PROJ-101`) that the `resource_key` is derived from. See the [NormalizedEvent spec](../../normative/normalized-event/v1/) for the full schema.
+
 ## Actor role resolution
 
 > **Known limitation.** Roles are resolved by Jira project **role name**, not by actual granted permissions. This is intentional for the MVP — see below.
