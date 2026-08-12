@@ -23,7 +23,6 @@ type Driver interface {
 // access or be deep-copied per scenario in World.Clone.
 type State interface {
 	Mode() string
-	TestRepo() string
 	// ConfigOwner and ConfigRepo locate commits for behaviour scripts and config reads.
 	ConfigOwner() string
 	ConfigRepo() string
@@ -52,9 +51,6 @@ type MintURLProvider interface {
 type CLIRunnerFunc func(binary, token string, args ...string) (string, error)
 
 const (
-	// PerRepoTestRepo is the pre-existing repo used for per-repo install.
-	PerRepoTestRepo = "test-repo"
-
 	// PerRepoTriageWorkflow is the workflow path for per-repo triage.
 	PerRepoTriageWorkflow = "fullsend.yaml"
 

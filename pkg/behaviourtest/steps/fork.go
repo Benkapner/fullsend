@@ -55,9 +55,7 @@ const forkReadyPoll = 2 * time.Second
 // "test-repo-07-fork". See resolveForkName.
 func givenFork(w *world.World, forkName string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
-		w.RepoFull = w.Org + "/" + w.RepoName
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before fork operations")
 	}
 
 	resolved := resolveForkName(w, forkName)

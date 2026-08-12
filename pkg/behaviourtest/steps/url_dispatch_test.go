@@ -758,7 +758,6 @@ type fakeURLInstall struct {
 }
 
 func (f *fakeURLInstall) Mode() string               { return "per-repo" }
-func (f *fakeURLInstall) TestRepo() string           { return f.repo }
 func (f *fakeURLInstall) ConfigOwner() string        { return f.owner }
 func (f *fakeURLInstall) ConfigRepo() string         { return f.repo }
 func (f *fakeURLInstall) ConfigPathPrefix() string   { return ".fullsend" }

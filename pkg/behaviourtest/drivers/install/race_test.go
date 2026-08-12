@@ -27,7 +27,6 @@ func TestConcurrentStateAccess(t *testing.T) {
 
 			// Exercise every State accessor concurrently.
 			_ = st.Mode()
-			_ = st.TestRepo()
 			_ = st.ConfigOwner()
 			_ = st.ConfigRepo()
 			_ = st.ConfigPathPrefix()

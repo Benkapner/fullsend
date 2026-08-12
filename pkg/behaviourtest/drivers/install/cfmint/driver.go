@@ -2,6 +2,11 @@
 // Cloudflare Worker preview mint for behaviour tests. The preview mint is
 // self-contained: all configuration (PEMs, allowlists, provenance) is
 // passed at deploy time. Teardown abandons the preview alias.
+//
+// The driver only manages the mint lifecycle (deploy + teardown). It does
+// not run github setup, post-install validation, or per-repo teardown on
+// any target repository — that responsibility belongs to the RepoEnsurer
+// which handles leased pool repos on demand.
 package cfmint
 
 import (
@@ -13,7 +18,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
@@ -64,6 +68,7 @@ type driver struct {
 	cfg          Config
 	workerName   string
 	previewAlias string // set during Install
+	cliRunner    install.CLIRunnerFunc
 }
 
 // NewDriver creates a CF mint install driver. Returns an error if the
@@ -103,6 +108,7 @@ func NewDriver(
 		logf:         logf,
 		cfg:          cfg,
 		workerName:   WorkerName(cfg.SuiteName),
+		cliRunner:    e2etest.TryRunCLI,
 	}, nil
 }
 
@@ -147,10 +153,7 @@ func GeneratePreviewAlias() (string, error) {
 	return fmt.Sprintf("bt-%x", b), nil
 }
 
-func (d *driver) Install(ctx context.Context, org string) (install.State, error) {
-	repo := install.PerRepoTestRepo
-	target := org + "/" + repo
-
+func (d *driver) Install(_ context.Context, org string) (install.State, error) {
 	alias, err := GeneratePreviewAlias()
 	if err != nil {
 		return nil, err
@@ -162,25 +165,13 @@ func (d *driver) Install(ctx context.Context, org string) (install.State, error)
 		return nil, fmt.Errorf("deploying CF preview mint for BT: %w", err)
 	}
 
-	// Run github setup with the preview mint URL.
-	if err := common.RunGitHubSetup(d.binary, d.token, target, mintURL, d.gcpProjectID, e2etest.TryRunCLI, d.logf); err != nil {
-		d.teardownPreview()
-		return nil, err
-	}
-
-	if err := install.ValidatePerRepoPostInstall(ctx, d.client, org, repo); err != nil {
-		d.teardownPreview()
-		return nil, err
-	}
-
-	return install.NewPerRepoState(org, repo, mintURL), nil
+	// The driver only manages the mint lifecycle. Per-repo github setup
+	// and post-install validation are handled by the RepoEnsurer for each
+	// leased pool repo.
+	return install.NewPerRepoState(org, "", mintURL), nil
 }
 
-func (d *driver) Teardown(ctx context.Context, org string, state install.State) error {
-	repo := state.TestRepo()
-	d.logf("[install] tearing down per-repo install on %s/%s", org, repo)
-	e2etest.TeardownPerRepoInstall(ctx, d.client, d.token, org, repo, d.logf)
-
+func (d *driver) Teardown(_ context.Context, _ string, _ install.State) error {
 	d.teardownPreview()
 	return nil
 }
@@ -217,7 +208,7 @@ func (d *driver) deployCFMint(alias, org string) (string, error) {
 	args := DeployArgs(alias, d.workerName, d.cfg)
 
 	d.logf("[cfmint] deploying preview mint: fullsend %s", strings.Join(args, " "))
-	output, err := e2etest.TryRunCLI(d.binary, d.token, args...)
+	output, err := d.cliRunner(d.binary, d.token, args...)
 	if err != nil {
 		return "", fmt.Errorf("mint deploy --platform=cloudflare --preview=%s: %w", alias, err)
 	}
@@ -250,7 +241,7 @@ func (d *driver) teardownPreview() {
 	args := TeardownArgs(d.previewAlias, d.workerName)
 
 	d.logf("[cfmint] tearing down preview mint: fullsend %s", strings.Join(args, " "))
-	if _, err := e2etest.TryRunCLI(d.binary, d.token, args...); err != nil {
+	if _, err := d.cliRunner(d.binary, d.token, args...); err != nil {
 		// Log but don't fail — the preview is ephemeral and will
 		// expire. A teardown failure should not mask test results.
 		d.logf("[cfmint] preview mint teardown failed: %v", err)

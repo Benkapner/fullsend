@@ -1,6 +1,8 @@
 package cfmint
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,7 +105,7 @@ func TestNewDriver_OK(t *testing.T) {
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "my-org/test-repo-01,my-org/test-repo-02",
-		WorkflowHostRepos: "my-org/test-repo,my-org/test-repo-01,my-org/test-repo-02",
+		WorkflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		AppSet:            "fullsend-test",
 	})
 	require.NoError(t, err)
@@ -116,7 +118,7 @@ func TestDeployArgs_WithAppSet(t *testing.T) {
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "my-org/test-repo-01",
-		WorkflowHostRepos: "my-org/test-repo,my-org/test-repo-01",
+		WorkflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		AppSet:            "fullsend-test",
 	}
 
@@ -150,7 +152,7 @@ func TestDeployArgs_WithAppSet(t *testing.T) {
 	for i, a := range args {
 		if a == "--workflow-host-repos" {
 			require.Less(t, i+1, len(args), "--workflow-host-repos must have a value")
-			assert.Equal(t, "my-org/test-repo,my-org/test-repo-01", args[i+1])
+			assert.Equal(t, "my-org/test-repo-01,my-org/test-repo-02", args[i+1])
 			break
 		}
 	}
@@ -226,4 +228,116 @@ func TestPerRepoState_MintURL(t *testing.T) {
 	// Verify MintURLProvider interface.
 	var provider install.MintURLProvider = st
 	assert.Equal(t, st.MintURL(), provider.MintURL())
+}
+
+// newTestDriver creates a driver with a mock CLI runner for unit testing.
+// It bypasses NewDriver validation (PEM dir, suite name) since those paths
+// are already covered by TestNewDriver_* tests.
+func newTestDriver(cliRunner install.CLIRunnerFunc) *driver {
+	return &driver{
+		token:      "tok",
+		binary:     "/bin/fullsend",
+		logf:       func(string, ...any) {},
+		cfg:        Config{SuiteName: "bt"},
+		workerName: WorkerName("bt"),
+		cliRunner:  cliRunner,
+	}
+}
+
+func TestInstall_Success(t *testing.T) {
+	const wantMintURL = "https://bt-abc12345-bt-mint.fullsend-ai.workers.dev"
+	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+		return "✓ Worker deployed at " + wantMintURL, nil
+	})
+
+	state, err := d.Install(context.Background(), "my-org")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+
+	assert.Equal(t, "per-repo", state.Mode())
+	assert.Equal(t, "my-org", state.ConfigOwner())
+	// ConfigRepo is empty — the driver only manages the mint, not a
+	// specific repo. Per-repo state is created by the RepoEnsurer.
+	assert.Equal(t, "", state.ConfigRepo())
+
+	provider, ok := state.(install.MintURLProvider)
+	require.True(t, ok)
+	assert.Equal(t, wantMintURL, provider.MintURL())
+
+	// previewAlias should be set for teardown.
+	assert.NotEmpty(t, d.previewAlias)
+}
+
+func TestInstall_DeployFailure(t *testing.T) {
+	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+		return "", fmt.Errorf("deploy exploded")
+	})
+
+	state, err := d.Install(context.Background(), "my-org")
+	require.Error(t, err)
+	assert.Nil(t, state)
+	assert.Contains(t, err.Error(), "deploying CF preview mint for BT")
+}
+
+func TestInstall_NoMintURLInOutput(t *testing.T) {
+	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+		return "Deploying...\nDone", nil
+	})
+
+	state, err := d.Install(context.Background(), "my-org")
+	require.Error(t, err)
+	assert.Nil(t, state)
+	assert.Contains(t, err.Error(), "could not parse mint URL")
+}
+
+func TestTeardown_WithPreview(t *testing.T) {
+	var calledArgs []string
+	d := newTestDriver(func(_, _ string, args ...string) (string, error) {
+		calledArgs = args
+		return "", nil
+	})
+	d.previewAlias = "bt-abc12345"
+
+	err := d.Teardown(context.Background(), "my-org", nil)
+	require.NoError(t, err)
+	assert.Contains(t, calledArgs, "--preview")
+	assert.Contains(t, calledArgs, "bt-abc12345")
+}
+
+func TestTeardown_NoPreview(t *testing.T) {
+	called := false
+	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+		called = true
+		return "", nil
+	})
+	// previewAlias is empty — teardownPreview should be a no-op.
+
+	err := d.Teardown(context.Background(), "my-org", nil)
+	require.NoError(t, err)
+	assert.False(t, called, "CLI should not be called when no preview was deployed")
+}
+
+func TestTeardown_CLIFailure_LogsButDoesNotFail(t *testing.T) {
+	var logged []string
+	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+		return "", fmt.Errorf("teardown boom")
+	})
+	d.previewAlias = "bt-abc12345"
+	d.logf = func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+
+	err := d.Teardown(context.Background(), "my-org", nil)
+	require.NoError(t, err, "teardown failures should be logged, not returned")
+	assert.True(t, len(logged) > 0, "expected log output on teardown failure")
+
+	// Verify at least one log line mentions the failure.
+	var foundFailure bool
+	for _, l := range logged {
+		if strings.Contains(l, "teardown failed") {
+			foundFailure = true
+			break
+		}
+	}
+	assert.True(t, foundFailure, "expected a log line about teardown failure")
 }

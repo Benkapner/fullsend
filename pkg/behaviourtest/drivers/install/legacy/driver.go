@@ -1,6 +1,11 @@
 // Package legacy implements an install.Driver that uses a pre-configured
-// mint URL for per-repo install. This is the original install path retained
-// as a separate driver so other test configurations can select it.
+// mint URL. This is the original install path retained as a separate driver
+// so other test configurations can select it.
+//
+// The driver only manages the mint URL lifecycle. It does not run github
+// setup, post-install validation, or per-repo teardown on any target
+// repository — that responsibility belongs to the RepoEnsurer which
+// handles leased pool repos on demand.
 package legacy
 
 import (
@@ -9,11 +14,9 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
-// driver uses a pre-configured mint URL for per-repo install.
+// driver uses a pre-configured mint URL.
 type driver struct {
 	client       forge.Client
 	token        string
@@ -24,7 +27,8 @@ type driver struct {
 }
 
 // NewDriver creates a legacy install driver that uses the provided
-// mintURL for fullsend github setup.
+// mintURL. The driver only holds the mint URL; per-repo install is
+// handled by the RepoEnsurer for each leased pool repo.
 func NewDriver(
 	client forge.Client,
 	token, binary, mintURL, gcpProjectID string,
@@ -43,24 +47,15 @@ func NewDriver(
 	}, nil
 }
 
-func (d *driver) Install(ctx context.Context, org string) (install.State, error) {
-	repo := install.PerRepoTestRepo
-	target := org + "/" + repo
-
-	if err := common.RunGitHubSetup(d.binary, d.token, target, d.mintURL, d.gcpProjectID, e2etest.TryRunCLI, d.logf); err != nil {
-		return nil, err
-	}
-
-	if err := install.ValidatePerRepoPostInstall(ctx, d.client, org, repo); err != nil {
-		return nil, err
-	}
-
-	return install.NewPerRepoState(org, repo, d.mintURL), nil
+func (d *driver) Install(_ context.Context, org string) (install.State, error) {
+	// The driver only provides the mint URL. Per-repo github setup and
+	// post-install validation are handled by the RepoEnsurer for each
+	// leased pool repo.
+	return install.NewPerRepoState(org, "", d.mintURL), nil
 }
 
-func (d *driver) Teardown(ctx context.Context, org string, state install.State) error {
-	repo := state.TestRepo()
-	d.logf("[install] tearing down per-repo install on %s/%s", org, repo)
-	e2etest.TeardownPerRepoInstall(ctx, d.client, d.token, org, repo, d.logf)
+func (d *driver) Teardown(_ context.Context, _ string, _ install.State) error {
+	// The legacy driver has no mint infrastructure to tear down.
+	// Per-repo teardown is handled by the RepoEnsurer.
 	return nil
 }

@@ -51,11 +51,10 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 		return nil
 	}
 
-	// Fallback: use the suite-level install state (backward compat).
-	w.RepoOwner = w.Org
-	w.RepoName = w.Install.TestRepo()
-	w.RepoFull = w.Org + "/" + w.RepoName
-	return nil
+	// No leased repo and no ensurer — the scenario cannot proceed without
+	// a repo. The install driver only manages the mint lifecycle and does
+	// not target a specific repo.
+	return fmt.Errorf("no leased repo name or ensurer configured; use a pool to acquire a repo for each scenario")
 }
 
 func givenEnrolledRepository(w *world.World, fullName string) error {
@@ -65,9 +64,6 @@ func givenEnrolledRepository(w *world.World, fullName string) error {
 	}
 	if owner != w.Org {
 		return fmt.Errorf("repository owner %q does not match test org %q", owner, w.Org)
-	}
-	if repo != w.Install.TestRepo() {
-		return fmt.Errorf("repository %q is not the enrolled test repo %q", repo, w.Install.TestRepo())
 	}
 	w.RepoFull = fullName
 	w.RepoOwner = owner
@@ -88,9 +84,7 @@ func givenIssue(w *world.World) error {
 
 func createIssue(w *world.World, title, body string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
-		w.RepoFull = w.Org + "/" + w.RepoName
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before creating issues")
 	}
 	trigger := time.Now()
 	issue, err := w.SCM.CreateIssue(context.Background(), w.RepoOwner, w.RepoName, title, body)

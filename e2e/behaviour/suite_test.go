@@ -129,7 +129,10 @@ func TestBehaviourSuite(t *testing.T) {
 
 	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, t.Logf)
 
-	testRepo := installState.TestRepo()
+	// The install driver only manages the mint lifecycle — it does not
+	// install on any specific repo. RepoName and RepoFull are set per-
+	// scenario by the ensurer when "Given the enrolled test repository"
+	// acquires a leased pool repo.
 	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
@@ -141,8 +144,6 @@ func TestBehaviourSuite(t *testing.T) {
 		Logf:         t.Logf,
 		FixturesRoot: "e2e/behaviour",
 		RepoOwner:    org,
-		RepoName:     testRepo,
-		RepoFull:     org + "/" + testRepo,
 	}
 
 	suiteRunner := godog.TestSuite{
@@ -173,11 +174,10 @@ func buildPerRepoWIFRepos(org string) string {
 
 // buildWorkflowHostRepos constructs the --workflow-host-repos value.
 // These are the repos whose vendored workflows are allowed to mint
-// tokens. Includes the base test-repo (used for per-repo install)
-// and each numbered test-repo-NN in the pool.
+// tokens. Only numbered pool repos (test-repo-01 … test-repo-12)
+// are included — singular test-repo is reserved for admin e2e.
 func buildWorkflowHostRepos(org string) string {
-	repos := make([]string, 0, poolSize+1)
-	repos = append(repos, org+"/test-repo")
+	repos := make([]string, 0, poolSize)
 	for i := range poolSize {
 		repos = append(repos, fmt.Sprintf("%s/test-repo-%02d", org, i+1))
 	}

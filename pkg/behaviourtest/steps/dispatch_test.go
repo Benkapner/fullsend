@@ -130,7 +130,6 @@ type fakeDispatchInstall struct {
 }
 
 func (f *fakeDispatchInstall) Mode() string               { return "per-repo" }
-func (f *fakeDispatchInstall) TestRepo() string           { return f.repo }
 func (f *fakeDispatchInstall) ConfigOwner() string        { return f.owner }
 func (f *fakeDispatchInstall) ConfigRepo() string         { return f.repo }
 func (f *fakeDispatchInstall) ConfigPathPrefix() string   { return ".fullsend" }
