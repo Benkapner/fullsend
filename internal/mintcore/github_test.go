@@ -77,6 +77,17 @@ func TestFindInstallation_OrgMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "belongs to other-org")
 }
 
+func TestFindInstallation_NotFound(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockGH.Close()
+
+	_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg", "my-repo")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInstallationNotFound)
+}
+
 func TestCreateInstallationToken_Unscoped(t *testing.T) {
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/app/installations/42/access_tokens", r.URL.Path)
