@@ -68,6 +68,7 @@ type driver struct {
 	cfg          Config
 	workerName   string
 	previewAlias string // set during Install
+	cliRunner    install.CLIRunnerFunc
 }
 
 // NewDriver creates a CF mint install driver. Returns an error if the
@@ -107,6 +108,7 @@ func NewDriver(
 		logf:         logf,
 		cfg:          cfg,
 		workerName:   WorkerName(cfg.SuiteName),
+		cliRunner:    e2etest.TryRunCLI,
 	}, nil
 }
 
@@ -206,7 +208,7 @@ func (d *driver) deployCFMint(alias, org string) (string, error) {
 	args := DeployArgs(alias, d.workerName, d.cfg)
 
 	d.logf("[cfmint] deploying preview mint: fullsend %s", strings.Join(args, " "))
-	output, err := e2etest.TryRunCLI(d.binary, d.token, args...)
+	output, err := d.cliRunner(d.binary, d.token, args...)
 	if err != nil {
 		return "", fmt.Errorf("mint deploy --platform=cloudflare --preview=%s: %w", alias, err)
 	}
@@ -239,7 +241,7 @@ func (d *driver) teardownPreview() {
 	args := TeardownArgs(d.previewAlias, d.workerName)
 
 	d.logf("[cfmint] tearing down preview mint: fullsend %s", strings.Join(args, " "))
-	if _, err := e2etest.TryRunCLI(d.binary, d.token, args...); err != nil {
+	if _, err := d.cliRunner(d.binary, d.token, args...); err != nil {
 		// Log but don't fail — the preview is ephemeral and will
 		// expire. A teardown failure should not mask test results.
 		d.logf("[cfmint] preview mint teardown failed: %v", err)
