@@ -1735,13 +1735,18 @@ func TestProvisioner_Provision_PreviewBootstrap_EmptyEnvVars(t *testing.T) {
 type fakeCloudflareAPIClient struct {
 	attachDomainCalls []attachDomainCall
 	deployWAFCalls    []deployWAFCall
-	removeDomainCalls []string
+	removeDomainCalls []removeDomainCall
 	removeWAFCalls    []string
 
 	attachDomainErr error
 	deployWAFErr    error
 	removeDomainErr error
 	removeWAFErr    error
+}
+
+type removeDomainCall struct {
+	accountID string
+	hostname  string
 }
 
 type attachDomainCall struct {
@@ -1774,8 +1779,11 @@ func (f *fakeCloudflareAPIClient) DeployWAFRules(_ context.Context, zoneID strin
 	return f.deployWAFErr
 }
 
-func (f *fakeCloudflareAPIClient) RemoveCustomDomain(_ context.Context, _ string, hostname string) error {
-	f.removeDomainCalls = append(f.removeDomainCalls, hostname)
+func (f *fakeCloudflareAPIClient) RemoveCustomDomain(_ context.Context, accountID string, hostname string) error {
+	f.removeDomainCalls = append(f.removeDomainCalls, removeDomainCall{
+		accountID: accountID,
+		hostname:  hostname,
+	})
 	return f.removeDomainErr
 }
 
@@ -2009,9 +2017,10 @@ func TestProvisioner_Teardown_DurableWithCustomDomain(t *testing.T) {
 	require.Len(t, fakeCFAPI.removeWAFCalls, 1)
 	assert.Equal(t, "zone-456", fakeCFAPI.removeWAFCalls[0])
 
-	// Custom domain removed.
+	// Custom domain removed with correct accountID.
 	require.Len(t, fakeCFAPI.removeDomainCalls, 1)
-	assert.Equal(t, "mint.fullsend.sh", fakeCFAPI.removeDomainCalls[0])
+	assert.Equal(t, "abc123", fakeCFAPI.removeDomainCalls[0].accountID)
+	assert.Equal(t, "mint.fullsend.sh", fakeCFAPI.removeDomainCalls[0].hostname)
 
 	// Worker deleted.
 	require.Len(t, fake.deleteCalls, 1)
@@ -2102,6 +2111,30 @@ func TestMintWAFRules_Hardcoded(t *testing.T) {
 		assert.NotEmpty(t, r.Description,
 			"rule must have a description")
 	}
+}
+
+// --- ensureCFAPI tests ---
+
+func TestEnsureCFAPI_LazyInit(t *testing.T) {
+	// When no cfAPI is set, ensureCFAPI should create a
+	// LiveCloudflareAPIClient.
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, &fakeWranglerRunner{})
+
+	// cfAPI starts nil.
+	assert.Nil(t, p.cfAPI)
+
+	client := p.ensureCFAPI()
+	require.NotNil(t, client)
+
+	// Should be a *LiveCloudflareAPIClient.
+	_, ok := client.(*LiveCloudflareAPIClient)
+	assert.True(t, ok, "ensureCFAPI should create a LiveCloudflareAPIClient")
+
+	// Subsequent calls return the same instance.
+	assert.Equal(t, client, p.ensureCFAPI())
 }
 
 // --- helpers ---

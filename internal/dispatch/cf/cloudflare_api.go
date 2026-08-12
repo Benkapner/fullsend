@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 )
 
@@ -90,6 +91,10 @@ func MintWAFRules() []WAFRule {
 // environment variable (Bearer token).
 type LiveCloudflareAPIClient struct {
 	httpClient *http.Client
+	// baseURL overrides the Cloudflare API base URL. When empty
+	// (default), production URL https://api.cloudflare.com/client/v4
+	// is used. Set in tests to point at httptest servers.
+	baseURL string
 }
 
 // NewLiveCloudflareAPIClient creates a client that calls the
@@ -98,6 +103,16 @@ func NewLiveCloudflareAPIClient() *LiveCloudflareAPIClient {
 	return &LiveCloudflareAPIClient{
 		httpClient: http.DefaultClient,
 	}
+}
+
+// cfBaseURL returns the base URL for the Cloudflare API. When
+// baseURL is set (e.g. in tests), it is used instead of the
+// production URL.
+func (c *LiveCloudflareAPIClient) cfBaseURL() string {
+	if c.baseURL != "" {
+		return c.baseURL
+	}
+	return "https://api.cloudflare.com/client/v4"
 }
 
 // cfAPIToken reads the Cloudflare API token from the environment.
@@ -156,7 +171,7 @@ func (c *LiveCloudflareAPIClient) cfAPIRequest(ctx context.Context, method, url 
 // AttachCustomDomain registers a custom domain for a Worker via
 // PUT /accounts/{account_id}/workers/domains.
 func (c *LiveCloudflareAPIClient) AttachCustomDomain(ctx context.Context, accountID, workerName, zoneID, hostname string) error {
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/domains", accountID)
+	url := fmt.Sprintf("%s/accounts/%s/workers/domains", c.cfBaseURL(), accountID)
 	body := map[string]string{
 		"hostname":    hostname,
 		"zone_id":     zoneID,
@@ -193,7 +208,7 @@ func (c *LiveCloudflareAPIClient) DeployWAFRules(ctx context.Context, zoneID str
 
 	if rulesetID != "" {
 		// Update existing ruleset.
-		url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rulesets/%s", zoneID, rulesetID)
+		url := fmt.Sprintf("%s/zones/%s/rulesets/%s", c.cfBaseURL(), zoneID, rulesetID)
 		body := map[string]any{
 			"name":        mintWAFRulesetName,
 			"description": mintWAFRulesetDescription,
@@ -206,7 +221,7 @@ func (c *LiveCloudflareAPIClient) DeployWAFRules(ctx context.Context, zoneID str
 	}
 
 	// Create new ruleset.
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rulesets", zoneID)
+	url := fmt.Sprintf("%s/zones/%s/rulesets", c.cfBaseURL(), zoneID)
 	body := map[string]any{
 		"name":        mintWAFRulesetName,
 		"description": mintWAFRulesetDescription,
@@ -232,7 +247,7 @@ func (c *LiveCloudflareAPIClient) RemoveCustomDomain(ctx context.Context, accoun
 		return nil
 	}
 
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/domains/%s", accountID, domainID)
+	url := fmt.Sprintf("%s/accounts/%s/workers/domains/%s", c.cfBaseURL(), accountID, domainID)
 	if _, err := c.cfAPIRequest(ctx, http.MethodDelete, url, nil); err != nil {
 		return fmt.Errorf("removing custom domain %s: %w", hostname, err)
 	}
@@ -250,7 +265,7 @@ func (c *LiveCloudflareAPIClient) RemoveWAFRuleset(ctx context.Context, zoneID s
 		return nil
 	}
 
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rulesets/%s", zoneID, rulesetID)
+	url := fmt.Sprintf("%s/zones/%s/rulesets/%s", c.cfBaseURL(), zoneID, rulesetID)
 	if _, err := c.cfAPIRequest(ctx, http.MethodDelete, url, nil); err != nil {
 		return fmt.Errorf("removing WAF ruleset: %w", err)
 	}
@@ -260,7 +275,7 @@ func (c *LiveCloudflareAPIClient) RemoveWAFRuleset(ctx context.Context, zoneID s
 // findMintRulesetID searches for the mint WAF ruleset on a zone by
 // name. Returns the ruleset ID if found, or empty string if not.
 func (c *LiveCloudflareAPIClient) findMintRulesetID(ctx context.Context, zoneID string) (string, error) {
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/rulesets", zoneID)
+	url := fmt.Sprintf("%s/zones/%s/rulesets", c.cfBaseURL(), zoneID)
 	respBody, err := c.cfAPIRequest(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -287,8 +302,9 @@ func (c *LiveCloudflareAPIClient) findMintRulesetID(ctx context.Context, zoneID 
 // findCustomDomainID looks up a Worker custom domain by hostname.
 // Returns the domain ID if found, or empty string if not.
 func (c *LiveCloudflareAPIClient) findCustomDomainID(ctx context.Context, accountID, hostname string) (string, error) {
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/domains?hostname=%s", accountID, hostname)
-	respBody, err := c.cfAPIRequest(ctx, http.MethodGet, url, nil)
+	params := url.Values{"hostname": {hostname}}
+	reqURL := fmt.Sprintf("%s/accounts/%s/workers/domains?%s", c.cfBaseURL(), accountID, params.Encode())
+	respBody, err := c.cfAPIRequest(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return "", err
 	}
