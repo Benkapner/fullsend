@@ -80,12 +80,16 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 }
 
 // MaxSpanAttrValueLen bounds every span attribute value recorded through
-// this provider. The SDK applies the limit (with UTF-8-safe truncation)
-// to span attributes only — event messages are bounded at their call
-// site — and free-text attributes such as a transcript-derived model
-// name or a pre-script skip reason are otherwise unbounded. The
-// exception-event bound in internal/cli (maxSpanEventMsgLen) is defined
-// from this constant so the two cannot drift. It applies only when the
+// this provider. The SDK applies the limit to span attributes only —
+// event messages are bounded at their call site — counting characters,
+// not bytes (a multibyte value can reach four bytes per character on the
+// wire), and it repairs invalid UTF-8 only when it truncates: values at
+// or under the limit pass through unrepaired, so free-text attribute
+// values are repaired at their call sites (internal/cli stringAttr).
+// Both properties are pinned by TestAttrLimit_SDKBehaviorCanary. The
+// exception-event bound in internal/cli (maxSpanEventMsgLen, bytes) is
+// defined from this constant so the shared numeric default cannot drift,
+// each side applying it in its own unit. It applies only when the
 // SDK took no operator override — the first non-empty of
 // OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT and
 // OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT decides alone, and a parseable value

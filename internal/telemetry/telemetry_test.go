@@ -16,9 +16,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -101,6 +103,50 @@ func TestSetup_SpanAttributeValueLengthLimit(t *testing.T) {
 	}
 	require.NotEmpty(t, got, "test attribute must be exported")
 	assert.Len(t, got, MaxSpanAttrValueLen, "attribute value must be truncated to the provider limit")
+}
+
+// TestAttrLimit_SDKBehaviorCanary pins two SDK properties this package's
+// callers depend on, so an SDK upgrade that changes either fails here
+// instead of silently shifting the export contract: (1) the attribute
+// limit counts characters, not bytes — a multibyte value truncates to
+// MaxSpanAttrValueLen runes, which is more than MaxSpanAttrValueLen
+// bytes on the wire; (2) an under-limit value is returned unchanged,
+// invalid UTF-8 included — which is why free-text attribute values are
+// repaired at their call sites (internal/cli stringAttr).
+func TestAttrLimit_SDKBehaviorCanary(t *testing.T) {
+	pinOTELEnv(t)
+	record := func(val string) string {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithRawSpanLimits(spanLimits()),
+			sdktrace.WithSpanProcessor(rec),
+		)
+		_, span := tp.Tracer("t").Start(context.Background(), "s")
+		span.SetAttributes(attribute.String("k", val))
+		span.End()
+		ended := rec.Ended()
+		require.Len(t, ended, 1)
+		for _, kv := range ended[0].Attributes() {
+			if kv.Key == "k" {
+				return kv.Value.AsString()
+			}
+		}
+		t.Fatal("attribute not recorded")
+		return ""
+	}
+
+	t.Run("limit counts characters, not bytes", func(t *testing.T) {
+		got := record(strings.Repeat("é", MaxSpanAttrValueLen+100))
+		assert.Equal(t, MaxSpanAttrValueLen, utf8.RuneCountInString(got))
+		assert.Equal(t, 2*MaxSpanAttrValueLen, len(got),
+			"two-byte runes make the byte size twice the limit")
+	})
+
+	t.Run("under-limit invalid UTF-8 passes through unrepaired", func(t *testing.T) {
+		got := record("bad\xff\xfebytes")
+		assert.False(t, utf8.ValidString(got),
+			"the SDK repairs only when truncating — call sites own the repair")
+	})
 }
 
 // TestSpanLimits pins the default and the operator-env precedence,

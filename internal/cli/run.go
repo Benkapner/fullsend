@@ -912,16 +912,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var aggMetrics aggregateMetrics
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
-		attribute.String("fullsend.agent", agentName),
-		attribute.String("fullsend.work_item_id", workItemID),
+		stringAttr("fullsend.agent", agentName),
+		stringAttr("fullsend.work_item_id", workItemID),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		attribute.String("gen_ai.agent.name", agentName),
+		stringAttr("gen_ai.agent.name", agentName),
 	})
 	ctx = tid.Ctx
 	rootSpan := tid.RootSpan
 	traceparent := tid.Traceparent
 	securityTraceID := security.GenerateTraceID()
-	rootSpan.SetAttributes(attribute.String("fullsend.security_trace_id", securityTraceID))
+	rootSpan.SetAttributes(stringAttr("fullsend.security_trace_id", securityTraceID))
 
 	// validationPassed is declared before both defer closures that guard on
 	// it: the telemetry defer keys the root span's status on it (validation,
@@ -945,11 +945,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			rootSpan.SetAttributes(attribute.Bool("fullsend.prescript.skipped", runSkipped))
 		}
 		if runSkipped && runSkipReason != "" {
-			rootSpan.SetAttributes(attribute.String("fullsend.prescript.skip_reason", runSkipReason))
+			rootSpan.SetAttributes(stringAttr("fullsend.prescript.skip_reason", runSkipReason))
 		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(
-				attribute.String("gen_ai.request.model", aggMetrics.Model),
+				stringAttr("gen_ai.request.model", aggMetrics.Model),
 				attribute.Int("gen_ai.usage.input_tokens", aggMetrics.TokenUsage.Input),
 				attribute.Int("gen_ai.usage.output_tokens", aggMetrics.TokenUsage.Output),
 				attribute.Int("gen_ai.usage.cache_creation.input_tokens", aggMetrics.TokenUsage.CacheCreation),
@@ -2321,7 +2321,7 @@ func agentSpanStartAttrs(iteration int, agentName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		attribute.String("gen_ai.agent.name", agentName),
+		stringAttr("gen_ai.agent.name", agentName),
 	}
 }
 
@@ -2329,8 +2329,8 @@ func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.R
 	return []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
-		attribute.String("gen_ai.system", system),
-		attribute.String("gen_ai.request.model", m.Model),
+		stringAttr("gen_ai.system", system),
+		stringAttr("gen_ai.request.model", m.Model),
 		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
@@ -2430,9 +2430,11 @@ const maxSpanStatusMsgLen = 2000
 // unbounded one: a sandbox-create failure embeds raw supervisor/gateway/
 // container logs, the SDK never truncates event attribute values, and an
 // oversized batch can be rejected by the collector whole. The value is the
-// provider's default attribute bound so the two defaults cannot drift
-// (an operator's runtime attribute override deliberately does not move
-// this bound — the SDK never truncates event attributes); it holds the
+// provider's default attribute bound so the shared numeric default cannot
+// drift — this bound counts bytes while the SDK counts attribute
+// characters, and an operator's runtime attribute override deliberately
+// does not move this bound (the SDK never truncates event attributes).
+// It holds the
 // worst-case transcript message — maxTranscriptErrorLength plus the parser
 // suffix, grown to just under 2x by sanitization's colon-pair breaking
 // (4,014 bytes) — with room to spare. No external limit mandates it.
@@ -2463,6 +2465,16 @@ func truncateStatusMsgTo(s string, n int) string {
 		truncated = truncated[:len(truncated)-1]
 	}
 	return truncated + statusEllipsis
+}
+
+// stringAttr builds a string attribute with the value repaired to valid
+// UTF-8. The SDK's attribute limit repairs encoding only when it
+// truncates — an under-limit value passes through untouched, and one
+// invalid byte fails proto marshaling of the whole OTLP batch — so every
+// dynamic string attribute goes through this helper; literal values may
+// use attribute.String directly.
+func stringAttr(key, val string) attribute.KeyValue {
+	return attribute.String(key, strings.ToValidUTF8(val, ""))
 }
 
 // finalizeRootSpan records the run outcome on the root span and ends it:

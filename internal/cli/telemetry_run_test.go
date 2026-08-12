@@ -608,6 +608,23 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		assert.False(t, hasMarker, "no transcript marker on clean iterations")
 	})
 
+	t.Run("invalid UTF-8 in the model attribute is repaired", func(t *testing.T) {
+		// The SDK's attribute limit repairs UTF-8 only when it truncates;
+		// an under-limit invalid value would fail proto marshaling of the
+		// whole OTLP batch, so free-text attributes repair at the source.
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+		m := &agentruntime.RunMetrics{Model: "claude-\xff\xfeopus"}
+		finalizeAgentSpan(span, nil, 1, 0, "gcp.vertex_ai", m, "")
+		ended := rec.Ended()
+		require.Len(t, ended, 1)
+		s := tracetest.SpanStubFromReadOnlySpan(ended[0])
+		model := attrsOf(s)["gen_ai.request.model"].AsString()
+		assert.True(t, utf8.ValidString(model), "model attribute must be valid UTF-8")
+		assert.Contains(t, model, "opus")
+	})
+
 	t.Run("non-zero exit", func(t *testing.T) {
 		s := newRecorded(nil, 1, "")
 		assert.Equal(t, codes.Error, s.Status.Code)
@@ -735,6 +752,19 @@ func TestFinalizeSandboxSpan(t *testing.T) {
 		assert.Equal(t, codes.Ok, s.Status.Code)
 		assert.Empty(t, s.Events, "no exception event on success")
 	})
+}
+
+// TestStringAttr pins the free-text attribute guard: values are repaired
+// to valid UTF-8 at the source, because the SDK's attribute limit leaves
+// under-limit values untouched and one invalid byte fails proto marshal
+// of the whole OTLP batch.
+func TestStringAttr(t *testing.T) {
+	kv := stringAttr("k", "bad\xff\xfebytes")
+	assert.True(t, utf8.ValidString(kv.Value.AsString()))
+	assert.Equal(t, "badbytes", kv.Value.AsString())
+
+	kv = stringAttr("k", "clean value")
+	assert.Equal(t, "clean value", kv.Value.AsString(), "valid values pass through unchanged")
 }
 
 // TestRecordSanitizedError pins the exception-event contract: the message is
