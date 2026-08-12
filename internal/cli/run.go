@@ -2482,7 +2482,9 @@ func finalizeRootSpan(span trace.Span, runErr error, exitCode int, validationPas
 // span. On failure the create error — which embeds raw supervisor/
 // gateway/container logs — gets the same treatment as the agent and root
 // spans: the fuller bounded copy on the exception event, a tighter
-// valid-UTF-8 status description.
+// valid-UTF-8 status description. Log-bearing error text is "errors"
+// metadata under ADR 0050's levels, not Level 3 content — the same
+// excerpt rode this span's status unbounded before it was bounded here.
 func finalizeSandboxSpan(span trace.Span, err error) {
 	if err != nil {
 		recordSanitizedError(span, err)

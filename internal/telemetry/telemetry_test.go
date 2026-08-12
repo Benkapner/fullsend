@@ -28,12 +28,16 @@ import (
 )
 
 // pinOTELEnv clears ambient OTEL variables so tests are hermetic in CI
-// (where OTEL_EXPORTER_OTLP_TRACES_ENDPOINT may be set by org vars).
+// (where OTEL_EXPORTER_OTLP_TRACES_ENDPOINT may be set by org vars). The
+// span-limit variables are load-bearing for spanLimits, so every caller
+// gets them cleared too.
 func pinOTELEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 }
 
 func TestSetup_FileExporter(t *testing.T) {
@@ -104,8 +108,6 @@ func TestSetup_SpanAttributeValueLengthLimit(t *testing.T) {
 // collapses to the same struct value as "unset".
 func TestSpanLimits(t *testing.T) {
 	pinOTELEnv(t)
-	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
-	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	assert.Equal(t, MaxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
 		"unset env defaults to MaxSpanAttrValueLen")
 
