@@ -89,22 +89,9 @@ func TestNewDriver_FailsEarly_NoSuiteName(t *testing.T) {
 
 	_, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
 		PEMDir: dir,
-		Repo:   "test-repo-01",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SuiteName is required")
-}
-
-func TestNewDriver_FailsEarly_NoRepo(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
-
-	_, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
-		PEMDir:    dir,
-		SuiteName: "bt",
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Repo is required")
 }
 
 func TestNewDriver_OK(t *testing.T) {
@@ -118,7 +105,6 @@ func TestNewDriver_OK(t *testing.T) {
 		PerRepoWIFRepos:   "my-org/test-repo-01,my-org/test-repo-02",
 		WorkflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		AppSet:            "fullsend-test",
-		Repo:              "test-repo-01",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, d)
@@ -132,7 +118,6 @@ func TestDeployArgs_WithAppSet(t *testing.T) {
 		PerRepoWIFRepos:   "my-org/test-repo-01",
 		WorkflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		AppSet:            "fullsend-test",
-		Repo:              "test-repo-01",
 	}
 
 	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
@@ -178,7 +163,6 @@ func TestDeployArgs_WithoutAppSet(t *testing.T) {
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "my-org/test-repo-01",
 		WorkflowHostRepos: "my-org/test-repo-01",
-		Repo:              "test-repo-01",
 	}
 
 	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
@@ -228,7 +212,6 @@ func TestDriver_Implements_Install_Driver(t *testing.T) {
 		AllowedOrgs:       "",
 		PerRepoWIFRepos:   "org/repo",
 		WorkflowHostRepos: "org/repo",
-		Repo:              "test-repo-01",
 	})
 	require.NoError(t, err)
 

@@ -89,7 +89,6 @@ func TestBehaviourSuite(t *testing.T) {
 		PerRepoWIFRepos:   buildPerRepoWIFRepos(org),
 		WorkflowHostRepos: buildWorkflowHostRepos(org),
 		AppSet:            "fullsend-test",
-		Repo:              "test-repo-01",
 	})
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
@@ -130,7 +129,10 @@ func TestBehaviourSuite(t *testing.T) {
 
 	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, t.Logf)
 
-	testRepo := installState.TestRepo()
+	// The install driver only manages the mint lifecycle — it does not
+	// install on any specific repo. RepoName and RepoFull are set per-
+	// scenario by the ensurer when "Given the enrolled test repository"
+	// acquires a leased pool repo.
 	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
@@ -142,8 +144,6 @@ func TestBehaviourSuite(t *testing.T) {
 		Logf:         t.Logf,
 		FixturesRoot: "e2e/behaviour",
 		RepoOwner:    org,
-		RepoName:     testRepo,
-		RepoFull:     org + "/" + testRepo,
 	}
 
 	suiteRunner := godog.TestSuite{
