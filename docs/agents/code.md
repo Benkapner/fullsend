@@ -49,36 +49,49 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 ### Image and network policy synchronization
 
 By default, the code and [fix agent](fix.md) use the same upstream container
-image and sandbox policy. They are separate harnesses, though — you can override
-each independently when their needs diverge. For example, you might keep Jira
-endpoints out of the code agent's policy while allowing them on the fix agent
-when reviewers ask you to verify something against a ticket during PR feedback.
+image and overlapping sandbox policies (`policies/code.yaml` and
+`policies/fix.yaml` in [fullsend-ai/agents](https://github.com/fullsend-ai/agents)).
+They are separate harnesses, though — you can override each independently when
+their needs diverge. For example, you might keep Jira endpoints out of the code
+agent's policy while allowing them on the fix agent when reviewers ask you to
+verify something against a ticket during PR feedback.
 
-> **Warning:** If you customize image or policy on only one agent by mistake,
-> the other may fail with no obvious reason (for example, a package manager or
-> registry endpoint allowed in code but not fix).
+> **Warning:** If you customize image, `policy:`, or `providers:` on only one
+> agent by mistake, the other may fail with no obvious reason (for example, a
+> package manager or registry endpoint allowed in code but not fix).
 
 **Recommended configuration**
 
 If you want both agents to share one behavior set — one place to edit image,
-policy, and runner scripts — put the same overrides in both harness files in
-your repo's `.fullsend/` directory, and point `policy:` at a single local file:
+policy, providers, and runner scripts — put the same overrides in both harness
+files in your repo's `.fullsend/` directory:
 
 ```yaml
 # .fullsend/code.yaml  (register as source: code.yaml in config.yaml)
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/code.yaml#sha256=…
 image: ghcr.io/your-org/your-fullsend-image@sha256:…
-policy: policies/coding.yaml
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - github
+  - package-registries
 
 # .fullsend/fix.yaml  (register as source: fix.yaml in config.yaml)
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/fix.yaml#sha256=…
 image: ghcr.io/your-org/your-fullsend-image@sha256:…
-policy: policies/coding.yaml   # same file — edit once, both agents use it
+policy: policies/base.yaml   # same file — edit once, both agents use it
+providers:
+  - vertex-ai
+  - github
+  - package-registries
 ```
 
-Keep the shared policy at `.fullsend/policies/coding.yaml`. The same pattern
-works for `pre_script` and `post_script` when you want one place to maintain
-runner-side behavior.
+Keep the shared policy at `.fullsend/policies/base.yaml`. Network access may
+also come from `providers:` profiles listed in the harness (see
+[ADR 0065](../ADRs/0065-provider-backed-policy-composition.md)) — when
+unifying configuration, keep the `providers:` list the same on both harnesses
+too. The same pattern applies to `pre_script` and `post_script` when you want a
+single place to maintain runner-side behavior.
 
 See [Customizing Agents](../guides/user/customizing-agents.md) for harness
 composition.
