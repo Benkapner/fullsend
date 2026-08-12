@@ -508,7 +508,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		// the GitHub App installation. Surface a clear 422 so callers
 		// can diagnose misconfigured installations. Transient errors
 		// (500, 503, 429, network) propagate as 502.
-		if len(repos) > 0 && strings.Contains(err.Error(), "status 404") {
+		if len(repos) > 0 && errors.Is(err, ErrInstallationNotFound) {
 			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
 			return "", "", nil, &mintError{
 				status:  http.StatusUnprocessableEntity,
@@ -532,7 +532,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		for _, repo := range repos[1:] {
 			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
 			if otherErr != nil {
-				if strings.Contains(otherErr.Error(), "status 404") {
+				if errors.Is(otherErr, ErrInstallationNotFound) {
 					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
 					return "", "", nil, &mintError{
 						status:  http.StatusUnprocessableEntity,
