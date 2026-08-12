@@ -190,6 +190,8 @@ resolved as follows:
 | `skills`         | Merged with deduplication by basename (forge overrides top-level) | Absent (nil) = inherit; `skills: []` = no forge-specific additions (top-level skills still apply) |
 | `runner_env`     | Top-level map merged with forge map; forge keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `validation_loop`| Forge value replaces top-level value entirely        | Absent (nil) = inherit from top level; explicit empty struct = intended to mean "no validation" but requires implementation changes (see note¹) |
+| `providers`      | Top-level + forge (concatenated)                     | Absent (nil) = inherit; `providers: []` = no forge-specific additions (top-level providers still apply) |
+| `openshell`      | `profiles` concatenated (top-level + forge)          | Absent (nil) = inherit; empty `profiles: []` = no forge-specific additions |
 
 ¹ An explicit empty `validation_loop: {}` currently conflicts with
 `Validate()`, which requires `Script` when `ValidationLoop` is non-nil.
@@ -250,6 +252,8 @@ compatibility.
 | `runner_env`       | Token names and event URLs differ per forge        |
 | `validation_loop`  | Validation scripts may call forge-specific tools   |
 | `policy`           | Sandbox policies may need forge-specific filesystem or process rules; network access is managed via providers (ADR-0065) but non-network policy sections can still differ per forge |
+| `providers`        | Providers may need forge-specific entries (e.g., different API endpoints per platform); concatenated (top-level + forge) |
+| `openshell`        | OpenShell profiles may need forge-specific configuration; `profiles` concatenated (top-level + forge) |
 
 #### Fields that stay at top level only (platform-neutral)
 
@@ -259,7 +263,6 @@ compatibility.
 | `model`            | Model selection is independent of forge             |
 | `image`            | Container images are platform-neutral              |
 | `host_files`       | File delivery is a runner concern, not forge (note: forge-specific `host_files` added in #5917) |
-| `providers`        | OpenShell providers are forge-agnostic             |
 | `api_servers`      | REST proxies abstract forge details                |
 | `plugins`          | MCP plugins are forge-agnostic; can be local paths or URLs (ADR-0038) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
@@ -364,7 +367,9 @@ The same inheritance table applies to base→child merging:
 - **`validation_loop`**: child replaces base entirely (if non-nil)
 - **`host_files`**: concatenated (base + child); if both declare the same
   `dest` path, the child entry wins (last-writer-wins deduplication)
-- **`plugins`, `providers`, `api_servers`**: concatenated (base + child)
+- **`providers`**: concatenated (base + child); applies at both top level and per-forge
+- **`openshell`**: `profiles` concatenated (base + child); applies at both top level and per-forge
+- **`plugins`, `api_servers`**: concatenated (base + child)
 - **`security`**: child replaces base entirely (if non-nil)
 - **`forge` blocks**: child's `forge:` map merges key-by-key with base's
   `forge:` map. For each platform key present in both, the per-platform
@@ -473,6 +478,8 @@ type ForgeConfig struct {
     PostScript     string            `yaml:"post_script,omitempty"`
     Policy         string            `yaml:"policy,omitempty"`
     Skills         []string          `yaml:"skills,omitempty"`
+    Providers      []string          `yaml:"providers,omitempty"`
+    OpenShell      *OpenShellConfig  `yaml:"openshell,omitempty"`
     HostFiles      []HostFile        `yaml:"host_files,omitempty"` // added in #5917
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
