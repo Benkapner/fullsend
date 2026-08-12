@@ -2759,7 +2759,7 @@ func TestMintDeleteCloudflare_DryRunDurable(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", true, false, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", "", true, false, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "dry run should not deploy")
 }
@@ -2779,7 +2779,7 @@ func TestMintDeleteCloudflare_DurableTeardown(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", "", false, true, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "durable delete should not deploy")
 	assert.Len(t, fakeCF.deleteCalls, 1, "expected exactly one Delete call")
@@ -2801,7 +2801,7 @@ func TestMintDeleteCloudflare_PreviewTeardown(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", "", "", false, true, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "preview teardown should not deploy")
 }
@@ -2923,7 +2923,7 @@ func TestMintDeleteCloudflare_InvalidWorkerName(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "INVALID_NAME!", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "INVALID_NAME!", "", "", "", false, true, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --worker-name")
 }
@@ -2938,7 +2938,7 @@ func TestMintDeleteCloudflare_InvalidPreviewAlias(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "INVALID!", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "INVALID!", "", "", false, true, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --preview alias")
 }
@@ -2959,7 +2959,7 @@ func TestMintDeleteCloudflare_AuthFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { cf.WranglerWhoamiFn = oldWhoami })
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", "", false, true, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Cloudflare credentials")
 }
@@ -2979,7 +2979,7 @@ func TestMintDeleteCloudflare_DryRunPreview(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", true, false, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", "", "", true, false, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "dry run should not deploy")
 	assert.Empty(t, fakeCF.deleteCalls, "dry run should not delete")
@@ -3001,7 +3001,7 @@ func TestMintDeleteCloudflare_DefaultWorkerName(t *testing.T) {
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// Empty worker name should use default "fullsend-mint".
-	err := runMintDeleteCloudflare(context.Background(), "", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "", "", "", "", false, true, os.Stdin)
 	require.NoError(t, err)
 	assert.Len(t, fakeCF.deleteCalls, 1, "expected exactly one Delete call")
 	assert.Equal(t, "fullsend-mint", fakeCF.deleteCalls[0], "expected Delete called with default worker name")
@@ -3023,7 +3023,7 @@ func TestMintDeleteCloudflare_ConfirmationRequired(t *testing.T) {
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// stdin is not a terminal → should fail without --yolo.
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, false, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", "", false, false, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stdin is not a terminal")
 }

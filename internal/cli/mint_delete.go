@@ -27,6 +27,8 @@ func newMintDeleteCmd() *cobra.Command {
 	// Cloudflare-specific flags.
 	var workerName string
 	var preview string
+	var zoneID string
+	var customDomain string
 
 	cmd := &cobra.Command{
 		Use:   "delete",
@@ -54,9 +56,11 @@ GCP mode (--platform=gcp):
 
 Cloudflare durable mode (--platform=cloudflare):
   Deletes the durable Worker script and all associated bindings/secrets.
+  When --custom-domain is set, also removes the WAF ruleset and custom
+  domain binding before deleting the Worker. Requires --zone-id.
 
   Required flags: none (Worker name defaults to "fullsend-mint")
-  Optional: --worker-name
+  Optional: --worker-name, --zone-id, --custom-domain
 
 Cloudflare preview mode (--platform=cloudflare --preview=<alias>):
   Abandons the preview alias. The durable Worker script is not affected.
@@ -68,7 +72,7 @@ Requires confirmation (type "delete" to confirm) unless --dry-run or --yolo.`,
 			case "gcp":
 				return runMintDeleteGCP(cmd.Context(), project, region, dryRun, yolo, os.Stdin)
 			case "cloudflare":
-				return runMintDeleteCloudflare(cmd.Context(), workerName, preview, dryRun, yolo, os.Stdin)
+				return runMintDeleteCloudflare(cmd.Context(), workerName, preview, zoneID, customDomain, dryRun, yolo, os.Stdin)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -87,6 +91,8 @@ Requires confirmation (type "delete" to confirm) unless --dry-run or --yolo.`,
 	// Cloudflare-specific flags.
 	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
 	cmd.Flags().StringVar(&preview, "preview", "", "tear down a preview mint identified by this alias (Cloudflare only)")
+	cmd.Flags().StringVar(&zoneID, "zone-id", "", "Cloudflare zone ID for the custom domain (Cloudflare only, required with --custom-domain)")
+	cmd.Flags().StringVar(&customDomain, "custom-domain", "", "custom domain hostname to remove during teardown (Cloudflare only, requires --zone-id)")
 
 	return cmd
 }
@@ -241,7 +247,7 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 	return nil
 }
 
-func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias string, dryRun, yolo bool, stdin *os.File) error {
+func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, zoneID, customDomain string, dryRun, yolo bool, stdin *os.File) error {
 	accountID, err := cf.ResolveCloudflareAuth(ctx)
 	if err != nil {
 		return err
@@ -253,6 +259,14 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 
 	if previewAlias != "" && !cf.ValidatePreviewAlias(previewAlias) {
 		return fmt.Errorf("invalid --preview alias %q: must be 2-63 lowercase alphanumeric characters or hyphens", previewAlias)
+	}
+
+	// Validate custom domain flags.
+	if customDomain != "" && zoneID == "" {
+		return fmt.Errorf("--zone-id is required when --custom-domain is set")
+	}
+	if zoneID != "" && customDomain == "" {
+		return fmt.Errorf("--custom-domain is required when --zone-id is set")
 	}
 
 	printer := ui.New(os.Stdout)
@@ -280,6 +294,10 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 			printer.StepInfo(fmt.Sprintf("  Worker script %s is not affected", effectiveName))
 		} else {
 			printer.StepInfo(fmt.Sprintf("  Would delete Worker: %s", effectiveName))
+			if customDomain != "" {
+				printer.StepInfo(fmt.Sprintf("  Would remove WAF ruleset from zone %s", zoneID))
+				printer.StepInfo(fmt.Sprintf("  Would remove custom domain %s", customDomain))
+			}
 			printer.StepInfo("  All Worker bindings, secrets, and vars will be removed")
 		}
 		return nil
@@ -304,6 +322,8 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 		WorkerName:   workerName,
 		DeployMode:   deployMode,
 		PreviewAlias: previewAlias,
+		ZoneID:       zoneID,
+		CustomDomain: customDomain,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
@@ -336,6 +356,12 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 			"Worker script is preserved.",
 		)
 	} else {
+		if customDomain != "" {
+			summaryLines = append(summaryLines,
+				fmt.Sprintf("Custom domain %s removed.", customDomain),
+				"WAF ruleset removed.",
+			)
+		}
 		summaryLines = append(summaryLines,
 			"Worker and all bindings removed.",
 		)

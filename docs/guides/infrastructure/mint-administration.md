@@ -633,6 +633,51 @@ gcloud functions logs read fullsend-mint \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --gen2 --limit=50
 ```
 
+## Cloudflare Worker custom domain and WAF
+
+Durable Cloudflare Worker deployments can be attached to a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) using the `--custom-domain` and `--zone-id` flags. When a custom domain is configured, the CLI also deploys hardcoded WAF rules on the zone to provide edge protection for the `/v1/token` endpoint.
+
+### Deploying with a custom domain
+
+```bash
+fullsend mint deploy \
+  --platform cloudflare \
+  --zone-id "<ZONE_ID>" \
+  --custom-domain "mint.fullsend.sh" \
+  --pem-dir "/path/to/pems"
+```
+
+The `FULLSEND_MINT_URL` output uses the custom domain hostname (`https://mint.fullsend.sh`) instead of the default `workers.dev` URL.
+
+### Managed WAF rules
+
+Three WAF rules are automatically deployed on the custom domain's zone:
+
+| Rule | Expression | Action |
+|------|-----------|--------|
+| Block non-POST methods | `http.request.uri.path eq "/v1/token" and http.request.method ne "POST"` | Block |
+| Block oversized bodies (>64 KB) | `http.request.uri.path eq "/v1/token" and http.request.body.size gt 65536` | Block |
+| Block malformed content-type | `http.request.uri.path eq "/v1/token" and http.request.method eq "POST" and content-type does not contain "application/json"` | Block |
+
+These rules are managed by the CLI under the `fullsend-mint-waf` ruleset name. They are created or updated on deploy and removed on teardown.
+
+### Tearing down with a custom domain
+
+Pass the same `--zone-id` and `--custom-domain` flags to `mint delete` so the CLI removes the WAF ruleset and custom domain binding before deleting the Worker:
+
+```bash
+fullsend mint delete \
+  --platform cloudflare \
+  --zone-id "<ZONE_ID>" \
+  --custom-domain "mint.fullsend.sh"
+```
+
+### Requirements
+
+- `CLOUDFLARE_API_TOKEN` env var is required for custom domain and WAF API calls
+- The zone must already exist in the Cloudflare account
+- Custom domains are only supported for durable deploys — preview deploys use bare `workers.dev` hostnames
+
 ## Cloudflare Worker rate limiting
 
 The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
