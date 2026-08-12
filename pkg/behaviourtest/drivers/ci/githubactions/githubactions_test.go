@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -805,6 +806,147 @@ func TestCountHarnessDispatches_CountsFailedJob(t *testing.T) {
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
+}
+
+// settlingJobsClient wraps FakeClient so one run's job list changes after
+// the first poll, simulating a duplicate run whose harness job is still
+// executing when the count is first taken.
+type settlingJobsClient struct {
+	*forge.FakeClient
+	mu         sync.Mutex
+	settleRun  int
+	callsLeft  int // polls of settleRun before its jobs settle
+	beforeJobs []forge.WorkflowJob
+	afterJobs  []forge.WorkflowJob
+}
+
+func (c *settlingJobsClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	if runID != c.settleRun {
+		return c.FakeClient.ListWorkflowRunJobs(ctx, owner, repo, runID)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.callsLeft > 0 {
+		c.callsLeft--
+		return c.beforeJobs, nil
+	}
+	return c.afterJobs, nil
+}
+
+func TestCountHarnessDispatches_PendingDuplicateSettlesToCancelled(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	// Run 10 is a duplicate still being cancelled when the count is
+	// first taken; run 20 already succeeded. Once run 10's job settles
+	// to cancelled, only run 20 counts (#6053).
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:01Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+	client := &settlingJobsClient{
+		FakeClient: fake,
+		settleRun:  10,
+		callsLeft:  1,
+		beforeJobs: []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "in_progress"}},
+		afterJobs:  []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "cancelled"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_PendingDuplicateSettlesToSuccess(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	// A genuine double dispatch: the in-flight duplicate completes
+	// successfully instead of being cancelled, so both runs count and
+	// the exact-count assertion still catches the regression.
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:01Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+	client := &settlingJobsClient{
+		FakeClient: fake,
+		settleRun:  10,
+		callsLeft:  1,
+		beforeJobs: []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "in_progress"}},
+		afterJobs:  []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+}
+
+func TestCountHarnessDispatches_UnexpandedMatrixRunSettles(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	// Run 10 is still executing and its Route job has not expanded the
+	// harness matrix yet, so the agent's job is absent on the first
+	// poll. It must be treated as pending, not silently skipped.
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:01Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+	client := &settlingJobsClient{
+		FakeClient: fake,
+		settleRun:  10,
+		callsLeft:  1,
+		beforeJobs: []forge.WorkflowJob{{ID: 1, Name: "dispatch / Route", Status: "in_progress"}},
+		afterJobs:  []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "cancelled"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_ContextCancelledWhilePending(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 10, Status: "in_progress",
+			CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "in_progress"}},
+	}
+
+	d := &Driver{Client: client}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := d.CountHarnessDispatches(ctx, "org", "repo", "fork-pr-sync", after)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 func TestIsConcurrencySuperseded(t *testing.T) {
