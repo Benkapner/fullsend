@@ -974,7 +974,15 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 // fetched from the base URL's directory, cached content-addressed, and the
 // entry is rewritten to the local cache path.
 func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
-	if base.OpenShell == nil || len(base.OpenShell.Profiles) == 0 {
+	hasTopLevel := base.OpenShell != nil && len(base.OpenShell.Profiles) > 0
+	hasForge := false
+	for _, fc := range base.Forge {
+		if fc != nil && fc.OpenShell != nil && len(fc.OpenShell.Profiles) > 0 {
+			hasForge = true
+			break
+		}
+	}
+	if !hasTopLevel && !hasForge {
 		return nil, nil
 	}
 
@@ -985,20 +993,44 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 
 	var deps []Dependency
 
-	for i, p := range base.OpenShell.Profiles {
-		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+	if base.OpenShell != nil {
+		for i, p := range base.OpenShell.Profiles {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("openshell.profiles[%d]", i)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			base.OpenShell.Profiles[i] = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
+	// Forge-specific profiles: same fetch treatment as top-level profiles.
+	for platform, fc := range base.Forge {
+		if fc == nil || fc.OpenShell == nil {
 			continue
 		}
-		fieldName := fmt.Sprintf("openshell.profiles[%d]", i)
-		if err := validateBaseRelPath(fieldName, p); err != nil {
-			return nil, err
+		for i, p := range fc.OpenShell.Profiles {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.openshell.profiles[%d]", platform, i)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.OpenShell.Profiles[i] = cachePath
+			deps = append(deps, dep)
 		}
-		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
-		if err != nil {
-			return nil, err
-		}
-		base.OpenShell.Profiles[i] = cachePath
-		deps = append(deps, dep)
 	}
 
 	return deps, nil
@@ -1010,7 +1042,15 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 // the file is fetched from the base URL's directory, cached
 // content-addressed, and the entry is rewritten to the local cache path.
 func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
-	if len(base.Providers) == 0 {
+	hasTopLevel := len(base.Providers) > 0
+	hasForge := false
+	for _, fc := range base.Forge {
+		if fc != nil && len(fc.Providers) > 0 {
+			hasForge = true
+			break
+		}
+	}
+	if !hasTopLevel && !hasForge {
 		return nil, nil
 	}
 
@@ -1038,6 +1078,31 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 		}
 		base.Providers[i] = cachePath
 		deps = append(deps, dep)
+	}
+
+	// Forge-specific providers: same fetch treatment as top-level providers.
+	for platform, fc := range base.Forge {
+		if fc == nil {
+			continue
+		}
+		for i, p := range fc.Providers {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			if !IsProviderPath(p) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.providers[%d]", platform, i)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.Providers[i] = cachePath
+			deps = append(deps, dep)
+		}
 	}
 
 	return deps, nil
@@ -1866,6 +1931,25 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 	// Skills: base + child with child-overrides-base-by-basename
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
+	}
+
+	// Providers: base + child (concatenated)
+	if base.Providers != nil {
+		merged := make([]string, 0, len(base.Providers)+len(child.Providers))
+		merged = append(merged, base.Providers...)
+		merged = append(merged, child.Providers...)
+		child.Providers = merged
+	}
+
+	// OpenShell.Profiles: base + child (concatenated)
+	if base.OpenShell != nil && len(base.OpenShell.Profiles) > 0 {
+		if child.OpenShell == nil {
+			child.OpenShell = &OpenShellConfig{}
+		}
+		merged := make([]string, 0, len(base.OpenShell.Profiles)+len(child.OpenShell.Profiles))
+		merged = append(merged, base.OpenShell.Profiles...)
+		merged = append(merged, child.OpenShell.Profiles...)
+		child.OpenShell.Profiles = merged
 	}
 
 	// HostFiles: concatenated with last-writer-wins dedup by Dest

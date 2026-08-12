@@ -3942,6 +3942,60 @@ forge:
 	assert.Equal(t, "/run/env/forge.env", h.HostFiles[0].Dest)
 }
 
+func TestMergeForgeConfigInto_ProvidersInherited(t *testing.T) {
+	base := &ForgeConfig{
+		Providers: []string{"providers/base-github.yaml"},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, []string{"providers/base-github.yaml"}, child.Providers)
+}
+
+func TestMergeForgeConfigInto_ProvidersConcatenated(t *testing.T) {
+	base := &ForgeConfig{
+		Providers: []string{"providers/base.yaml"},
+	}
+	child := &ForgeConfig{
+		Providers: []string{"providers/child.yaml"},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, []string{"providers/base.yaml", "providers/child.yaml"}, child.Providers)
+}
+
+func TestMergeForgeConfigInto_OpenShellInherited(t *testing.T) {
+	base := &ForgeConfig{
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/base.yaml"}},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.OpenShell)
+	assert.Equal(t, []string{"profiles/base.yaml"}, child.OpenShell.Profiles)
+}
+
+func TestMergeForgeConfigInto_OpenShellConcatenated(t *testing.T) {
+	base := &ForgeConfig{
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/base.yaml"}},
+	}
+	child := &ForgeConfig{
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/child.yaml"}},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.OpenShell)
+	assert.Equal(t, []string{"profiles/base.yaml", "profiles/child.yaml"}, child.OpenShell.Profiles)
+}
+
 func TestMergeForgeConfigInto_HostFilesInherited(t *testing.T) {
 	base := &ForgeConfig{
 		HostFiles: []HostFile{
@@ -6289,6 +6343,210 @@ func TestResolveBaseProviders_InvalidBaseURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
 
+// --- Forge-level tests for resolveBaseProfiles ---
+
+func TestResolveBaseProfiles_ForgeOnlyProfiles(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"../../etc/passwd"},
+				},
+			},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "forge.github.openshell.profiles[0]")
+}
+
+func TestResolveBaseProfiles_ForgeSkipsURLs(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"https://example.com/profiles/net.yaml#sha256=abc"},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "https://example.com/profiles/net.yaml#sha256=abc", base.Forge["github"].OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_ForgeSkipsEmpty(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{""},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_ForgeSkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("e", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{cachePath},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.Forge["github"].OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_ForgeNilOpenShellSkipped(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {OpenShell: nil},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_ForgeNilConfigSkipped(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": nil,
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_ForgeInvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"profiles/net.yaml"},
+				},
+			},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// --- Forge-level tests for resolveBaseProviders ---
+
+func TestResolveBaseProviders_ForgeOnlyProviders(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"../../etc/passwd.yaml"},
+			},
+		},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "forge.github.providers[0]")
+}
+
+func TestResolveBaseProviders_ForgeSkipsURLs(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"https://example.com/providers/custom.yaml#sha256=abc"},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_ForgeSkipsBareNames(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"my-provider"},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "my-provider", base.Forge["github"].Providers[0])
+}
+
+func TestResolveBaseProviders_ForgeSkipsEmpty(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{""},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_ForgeSkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("f", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{cachePath},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.Forge["github"].Providers[0])
+}
+
+func TestResolveBaseProviders_ForgeNilConfigSkipped(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": nil,
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_ForgeInvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"providers/custom.yaml"},
+			},
+		},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
 // --- Integration tests for profiles/providers through LoadWithBase ---
 
 func TestLoadWithBase_URLBase_ProfilesFetched(t *testing.T) {
@@ -6391,6 +6649,169 @@ base: `+baseURL+`
 	}
 	assert.Len(t, providerDeps, 1)
 	assert.Equal(t, "resource", providerDeps[0].Type)
+}
+
+// --- Integration tests for forge-level profiles/providers through LoadWithBase ---
+
+func TestLoadWithBase_URLBase_ForgeProfilesFetched(t *testing.T) {
+	profileContent := []byte("id: github-profile\nnetwork:\n  egress:\n    - host: github.com\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    openshell:
+      profiles:
+      - profiles/github-net.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/profiles/github-net.yaml": profileContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Forge["github"])
+	require.NotNil(t, h.Forge["github"].OpenShell)
+	require.Len(t, h.Forge["github"].OpenShell.Profiles, 1)
+	assert.True(t, filepath.IsAbs(h.Forge["github"].OpenShell.Profiles[0]), "forge profile should be resolved to absolute cache path")
+
+	content, err := os.ReadFile(h.Forge["github"].OpenShell.Profiles[0])
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, content)
+
+	forgeDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "forge.github.openshell.profiles[") {
+			forgeDeps = append(forgeDeps, d)
+		}
+	}
+	assert.Len(t, forgeDeps, 1)
+	assert.Equal(t, "resource", forgeDeps[0].Type)
+}
+
+func TestLoadWithBase_URLBase_ForgeProvidersFetched(t *testing.T) {
+	providerContent := []byte("name: github-provider\ntype: custom\ncredentials:\n  KEY: ${GH_KEY}\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    providers:
+    - providers/github-provider.yaml
+    - bare-name
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/providers/github-provider.yaml": providerContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Forge["github"])
+	require.Len(t, h.Forge["github"].Providers, 2)
+	assert.True(t, filepath.IsAbs(h.Forge["github"].Providers[0]), "forge provider path should be resolved to absolute cache path")
+	assert.Equal(t, "bare-name", h.Forge["github"].Providers[1], "bare provider name should be unchanged")
+
+	content, err := os.ReadFile(h.Forge["github"].Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, content)
+
+	forgeDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "forge.github.providers[") {
+			forgeDeps = append(forgeDeps, d)
+		}
+	}
+	assert.Len(t, forgeDeps, 1)
+	assert.Equal(t, "resource", forgeDeps[0].Type)
+}
+
+func TestLoadWithBase_URLBase_ForgeOnlyProvidersFetched(t *testing.T) {
+	providerContent := []byte("name: forge-only\ntype: custom\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    providers:
+    - providers/forge-only.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/providers/forge-only.yaml": providerContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Forge["github"])
+	require.Len(t, h.Forge["github"].Providers, 1)
+	assert.True(t, filepath.IsAbs(h.Forge["github"].Providers[0]))
+
+	content, err := os.ReadFile(h.Forge["github"].Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, content)
+
+	assert.Empty(t, h.Providers, "top-level providers should remain empty when only forge-level exist")
+
+	forgeDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "forge.github.providers[") {
+			forgeDeps = append(forgeDeps, d)
+		}
+	}
+	assert.Len(t, forgeDeps, 1)
 }
 
 // --- SourceURL tests for profiles/providers ---

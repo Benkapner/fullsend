@@ -792,6 +792,184 @@ forge:
 	assert.Equal(t, "policies/triage-gitlab.yaml", h.Forge["gitlab"].Policy)
 }
 
+func TestResolveForge_ProvidersConcat(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Providers: []string{"providers/vertex-ai.yaml"},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"providers/github-code.yaml"},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{"providers/vertex-ai.yaml", "providers/github-code.yaml"}, h.Providers)
+}
+
+func TestResolveForge_ProvidersNilInherits(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Providers: []string{"providers/vertex-ai.yaml"},
+		Forge: map[string]*ForgeConfig{
+			"github": {},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{"providers/vertex-ai.yaml"}, h.Providers)
+}
+
+func TestResolveForge_ProvidersNilTopLevel(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"providers/github-code.yaml"},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{"providers/github-code.yaml"}, h.Providers)
+}
+
+func TestResolveForge_OpenShellConcat(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/vertex-ai.yaml"}},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{Profiles: []string{"profiles/github-code.yaml"}},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{"profiles/vertex-ai.yaml", "profiles/github-code.yaml"}, h.OpenShell.Profiles)
+}
+
+func TestResolveForge_OpenShellNilInherits(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/vertex-ai.yaml"}},
+		Forge: map[string]*ForgeConfig{
+			"github": {},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.NotNil(t, h.OpenShell)
+	assert.Equal(t, []string{"profiles/vertex-ai.yaml"}, h.OpenShell.Profiles)
+}
+
+func TestResolveForge_OpenShellNilTopLevel(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{Profiles: []string{"profiles/github-code.yaml"}},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.NotNil(t, h.OpenShell)
+	assert.Equal(t, []string{"profiles/github-code.yaml"}, h.OpenShell.Profiles)
+}
+
+func TestValidate_ForgeProviderURLWithoutHash(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"https://example.com/providers/code.yaml"},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.github.providers[0]")
+	assert.Contains(t, err.Error(), "integrity hash")
+}
+
+func TestValidate_ForgeProviderURLWithHash(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"https://example.com/providers/code.yaml#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
+			},
+		},
+	}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_ForgeOpenShellProfileURLWithoutHash(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"https://example.com/profiles/code.yaml"},
+				},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.github.openshell.profiles[0]")
+	assert.Contains(t, err.Error(), "integrity hash")
+}
+
+func TestValidate_ForgeOpenShellProfileURLWithHash(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"https://example.com/profiles/code.yaml#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
+				},
+			},
+		},
+	}
+	require.NoError(t, h.Validate())
+}
+
+func TestForgeConfig_ProvidersAndOpenShellParseFromYAML(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    providers:
+      - providers/github-code.yaml
+    openshell:
+      profiles:
+        - profiles/github-code.yaml
+  gitlab:
+    providers:
+      - providers/gitlab-code.yaml
+    openshell:
+      profiles:
+        - profiles/gitlab-code.yaml
+`
+	h, err := parseRaw([]byte(content))
+	require.NoError(t, err)
+	require.NotNil(t, h.Forge["github"])
+	assert.Equal(t, []string{"providers/github-code.yaml"}, h.Forge["github"].Providers)
+	require.NotNil(t, h.Forge["github"].OpenShell)
+	assert.Equal(t, []string{"profiles/github-code.yaml"}, h.Forge["github"].OpenShell.Profiles)
+	require.NotNil(t, h.Forge["gitlab"])
+	assert.Equal(t, []string{"providers/gitlab-code.yaml"}, h.Forge["gitlab"].Providers)
+	require.NotNil(t, h.Forge["gitlab"].OpenShell)
+	assert.Equal(t, []string{"profiles/gitlab-code.yaml"}, h.Forge["gitlab"].OpenShell.Profiles)
+}
+
 func TestLoad_WithoutForgeSection(t *testing.T) {
 	content := `
 agent: agents/test.md
