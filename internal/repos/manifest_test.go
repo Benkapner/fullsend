@@ -1145,6 +1145,29 @@ repos:
 	assert.Contains(t, err.Error(), "bitbucket")
 }
 
+func TestParseManifestBytes_EmptyAndCommentOnlyInput(t *testing.T) {
+	// yaml.Decoder.Decode returns io.EOF for empty or comment-only input.
+	// parseManifestBytes must treat this as a no-op (matching the old
+	// yaml.Unmarshal behavior) so callers like SetDefault can handle
+	// empty manifest files as zero-value manifests.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"whitespace only", "   \n\n  "},
+		{"comment only", "# this is a comment\n# another comment\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var m Manifest
+			err := parseManifestBytes([]byte(tc.input), &m)
+			require.NoError(t, err, "parseManifestBytes should treat %q as a no-op", tc.name)
+			assert.Equal(t, Manifest{}, m, "manifest should remain zero-value")
+		})
+	}
+}
+
 func TestLoadManifest_HTTPRejected(t *testing.T) {
 	_, err := LoadManifest(context.Background(), "http://example.com/repos.yaml")
 	assert.Error(t, err)
