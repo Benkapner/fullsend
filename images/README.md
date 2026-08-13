@@ -153,6 +153,12 @@ source URL for checksums.  When bumping a version:
 3. The base image digest can be updated by running
    `podman manifest inspect <image>:<tag>` and extracting the index digest.
 
+OpenShell CLI (runner) is the exception: `OPENSHELL_VERSION` is tracked by a
+Renovate customManager, and `OPENSHELL_SHA` is refreshed automatically by
+`scripts/renovate/update-openshell-sha.sh` via `postUpgradeTasks` after each
+version bump — no manual checksum download needed. See
+`.github/scripts/openshell-version.sh` for details.
+
 ## Local builds
 
 Build for your native architecture:

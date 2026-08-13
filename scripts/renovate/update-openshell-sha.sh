@@ -35,13 +35,23 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 
 curl -fsSL "https://api.github.com/repos/NVIDIA/OpenShell/commits/v${NEW_VERSION}" \
   -o "${WORKDIR}/commit.json"
-SHA=$(grep -m1 -oP '"sha":\s*"\K[0-9a-f]{40}' "${WORKDIR}/commit.json" || true)
+SHA=$(jq -r '.sha // empty' "${WORKDIR}/commit.json")
 
 if [[ ! "${SHA}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "error: resolved SHA is not a valid 40-char hex commit sha: ${SHA}" >&2
   exit 1
 fi
 
+if ! grep -q "^OPENSHELL_SHA=" "${FILE}"; then
+  echo "error: no OPENSHELL_SHA line found in ${FILE}" >&2
+  exit 1
+fi
+
 sed -i "s/^OPENSHELL_SHA=.*/OPENSHELL_SHA=${SHA}/" "${FILE}"
+
+if ! grep -q "^OPENSHELL_SHA=${SHA}$" "${FILE}"; then
+  echo "error: failed to update OPENSHELL_SHA in ${FILE}" >&2
+  exit 1
+fi
 
 echo "updated OPENSHELL_SHA to ${SHA} for v${NEW_VERSION}"
