@@ -25,6 +25,14 @@ func newTestClient(srv *httptest.Server) *LiveGCFClient {
 	return &LiveGCFClient{Client: gcp.NewClientWithHTTP(httpClient), skipUploadURLCheck: true}
 }
 
+// immediateDelay is a pollDelay function that returns immediately,
+// avoiding real sleeps in unit tests.
+func immediateDelay(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
+
 // rewriteTransport rewrites all request URLs to point at a test server,
 // preserving the original path and query string.
 type rewriteTransport struct {
@@ -1455,7 +1463,9 @@ func TestLiveGCFClient_UpdateServiceEnvVars(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		rev, err := newTestClient(srv).UpdateServiceEnvVars(context.Background(), "proj", "us-central1", "my-svc", map[string]string{
+		client := newTestClient(srv)
+		client.pollDelay = immediateDelay
+		rev, err := client.UpdateServiceEnvVars(context.Background(), "proj", "us-central1", "my-svc", map[string]string{
 			"KEY": "val",
 		})
 		require.NoError(t, err)
@@ -1646,7 +1656,9 @@ func TestLiveGCFClient_UpdateServiceEnvVars(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := newTestClient(srv).UpdateServiceEnvVars(context.Background(), "proj", "us-central1", "my-svc", map[string]string{
+		client := newTestClient(srv)
+		client.pollDelay = immediateDelay
+		_, err := client.UpdateServiceEnvVars(context.Background(), "proj", "us-central1", "my-svc", map[string]string{
 			"KEY": "val",
 		})
 		require.Error(t, err)
@@ -1849,7 +1861,9 @@ func TestLiveGCFClient_UpdateServiceEnvVars(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		rev, err := newTestClient(srv).UpdateServiceEnvVars(context.Background(), "proj", "us-central1", "my-svc", map[string]string{
+		client := newTestClient(srv)
+		client.pollDelay = immediateDelay
+		rev, err := client.UpdateServiceEnvVars(context.Background(), "proj", "us-central1", "my-svc", map[string]string{
 			"KEY": "val",
 		})
 		require.NoError(t, err)
@@ -2428,7 +2442,9 @@ func TestLiveGCFClient_WaitForOperation(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		err := newTestClient(srv).WaitForOperation(context.Background(), "operations/op-1")
+		client := newTestClient(srv)
+		client.pollDelay = immediateDelay
+		err := client.WaitForOperation(context.Background(), "operations/op-1")
 		require.NoError(t, err)
 		assert.Equal(t, 2, callCount)
 	})

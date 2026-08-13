@@ -178,6 +178,12 @@ type GCFClient interface {
 type LiveGCFClient struct {
 	*gcp.Client
 	skipUploadURLCheck bool // testing only: skip googleapis.com domain validation
+
+	// pollDelay returns a channel that fires after the given duration,
+	// used by WaitForOperation, waitForIAMOperation, and
+	// waitForCloudRunOperation for inter-poll delays. nil → time.After.
+	// Tests inject a zero-delay function to avoid real sleeps.
+	pollDelay func(time.Duration) <-chan time.Time
 }
 
 // NewLiveGCFClient creates a new LiveGCFClient. The quotaProject is
@@ -187,6 +193,15 @@ func NewLiveGCFClient(quotaProject string) *LiveGCFClient {
 	c := gcp.NewClient()
 	c.QuotaProject = quotaProject
 	return &LiveGCFClient{Client: c}
+}
+
+// getPollDelay returns the configured poll delay function, defaulting
+// to time.After when none is set.
+func (c *LiveGCFClient) getPollDelay() func(time.Duration) <-chan time.Time {
+	if c.pollDelay != nil {
+		return c.pollDelay
+	}
+	return time.After
 }
 
 // CreateServiceAccount creates a new service account.
@@ -1727,6 +1742,7 @@ func (c *LiveGCFClient) waitForCloudRunOperation(ctx context.Context, operationN
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	delay := c.getPollDelay()
 	for {
 		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
 		if err != nil {
@@ -1755,7 +1771,7 @@ func (c *LiveGCFClient) waitForCloudRunOperation(ctx context.Context, operationN
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-delay(3 * time.Second):
 		}
 	}
 }
@@ -1960,6 +1976,7 @@ func (c *LiveGCFClient) WaitForOperation(ctx context.Context, operationName stri
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
+	delay := c.getPollDelay()
 	for {
 		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
 		if err != nil {
@@ -1988,7 +2005,7 @@ func (c *LiveGCFClient) WaitForOperation(ctx context.Context, operationName stri
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-delay(5 * time.Second):
 		}
 	}
 }
@@ -2023,12 +2040,13 @@ func (c *LiveGCFClient) waitForIAMOperation(ctx context.Context, body io.Reader)
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
+	delay := c.getPollDelay()
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/%s", op.Name)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-delay(2 * time.Second):
 		}
 
 		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
