@@ -1751,6 +1751,127 @@ func TestValidate_PerRepoFullsendRefValid(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestParseGitLabFullsendRef(t *testing.T) {
+	input := `
+version: 1
+forge:
+  gitlab:
+    url: https://gitlab.example.com
+    fullsend_ref: v0.34.0
+defaults:
+  forge: gitlab
+repos:
+  - acme/frontend
+`
+	var m Manifest
+	err := yaml.Unmarshal([]byte(input), &m)
+	require.NoError(t, err)
+	assert.Equal(t, "v0.34.0", m.Forge.GitLab.FullsendRef)
+}
+
+func TestValidate_GitLabFullsendRefInvalid(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitLab: GitLabForgeInfra{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v1.0.0; rm -rf /",
+		}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/api"}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge.gitlab.fullsend_ref")
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestValidate_GitLabFullsendRefValid(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitLab: GitLabForgeInfra{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v0.34.0",
+		}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme/api"}},
+	}
+	err := m.Validate()
+	require.NoError(t, err)
+}
+
+func TestResolveConfig_GitLabFullsendRef(t *testing.T) {
+	input := `
+version: 1
+forge:
+  gitlab:
+    url: https://gitlab.example.com
+    fullsend_ref: v0.34.0
+defaults:
+  forge: gitlab
+repos:
+  - acme/frontend
+  - repo: acme/pinned
+    fullsend_ref: v0.33.0
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	t.Run("inherits forge-level ref", func(t *testing.T) {
+		cfg, found := m.ResolveConfig("acme", "frontend")
+		require.True(t, found)
+		assert.Equal(t, "gitlab", cfg.Forge)
+		assert.Equal(t, "v0.34.0", cfg.FullsendRef)
+	})
+
+	t.Run("per-repo override", func(t *testing.T) {
+		cfg, found := m.ResolveConfig("acme", "pinned")
+		require.True(t, found)
+		assert.Equal(t, "gitlab", cfg.Forge)
+		assert.Equal(t, "v0.33.0", cfg.FullsendRef)
+	})
+}
+
+func TestResolveConfig_GitLabNoFullsendRef(t *testing.T) {
+	input := `
+version: 1
+forge:
+  gitlab:
+    url: https://gitlab.example.com
+defaults:
+  forge: gitlab
+repos:
+  - acme/frontend
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	cfg, found := m.ResolveConfig("acme", "frontend")
+	require.True(t, found)
+	assert.Equal(t, "gitlab", cfg.Forge)
+	assert.Equal(t, "", cfg.FullsendRef)
+}
+
+func TestResolveConfig_GitLabFullsendRefNullOverride(t *testing.T) {
+	input := `
+version: 1
+forge:
+  gitlab:
+    url: https://gitlab.example.com
+    fullsend_ref: v0.34.0
+defaults:
+  forge: gitlab
+repos:
+  - repo: acme/unpinned
+    fullsend_ref: null
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	cfg, found := m.ResolveConfig("acme", "unpinned")
+	require.True(t, found)
+	assert.Equal(t, "", cfg.FullsendRef, "null should stop fallback chain")
+}
+
 func TestIsNumeric(t *testing.T) {
 	assert.True(t, IsNumeric("123456789"))
 	assert.True(t, IsNumeric("0"))

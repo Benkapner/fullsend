@@ -292,7 +292,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	case ForgeGitHub:
 		installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
 	case ForgeGitLab:
-		installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags)
+		installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
 	default:
 		return nil, fmt.Errorf("unsupported forge %q for scaffold generation", cfg.Forge)
 	}

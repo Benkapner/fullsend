@@ -278,6 +278,7 @@ fullsend repos set-default forge.github.mint_url ""   # removes the key
 | `forge.github.mint_url` | URL | Cloud Run endpoint URL for the token mint |
 | `forge.github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
 | `forge.gitlab.url` | URL | GitLab instance URL |
+| `forge.gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold dispatch file |
 | `forge.gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
 
 ### Flags
