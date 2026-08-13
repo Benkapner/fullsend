@@ -47,6 +47,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 // It also marks w.KillSwitchActivated so CleanupScenario deactivates the
 // switch before the slot is reused by another scenario.
 func givenKillSwitchActive(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
@@ -72,6 +75,9 @@ func givenKillSwitchActive(w *world.World) error {
 // config.yaml. Exported so CleanupScenario (in package steps) can call
 // it during scenario teardown.
 func DeactivateKillSwitch(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
@@ -93,6 +99,9 @@ func DeactivateKillSwitch(w *world.World) error {
 }
 
 func givenDisabledCustomHarness(w *world.World, name, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
 	if name == "" || doc == "" {
@@ -143,6 +152,9 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 }
 
 func givenCustomHarness(w *world.World, name, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
 	if name == "" || doc == "" {
@@ -201,6 +213,9 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 // to the config repo with the .fullsend/ prefix instead of to a hosting
 // repo at the repo root.
 func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessName, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+	}
 	var h struct {
 		Agent  string `yaml:"agent"`
 		Policy string `yaml:"policy"`

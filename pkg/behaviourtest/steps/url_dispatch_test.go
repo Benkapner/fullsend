@@ -165,8 +165,16 @@ func TestGivenHarnessHostingRepo_LeasedRepoResolvesHostName(t *testing.T) {
 	assert.Equal(t, "org", w.URLHarnessRepoOwner)
 }
 
+func TestGivenURLSourcedCustomHarness_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeURLSCM{files: map[string][]byte{}}}
+	err := givenURLSourcedCustomHarness(w, "test", "role: triage", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
 func TestGivenURLSourcedCustomHarness_Validation(t *testing.T) {
-	w := &world.World{}
+	w := &world.World{Org: "org", RepoName: "repo"}
 	require.Error(t, givenURLSourcedCustomHarness(w, "", "doc", urlHarnessOpts{}))
 	require.Error(t, givenURLSourcedCustomHarness(w, "agent", "", urlHarnessOpts{}))
 }

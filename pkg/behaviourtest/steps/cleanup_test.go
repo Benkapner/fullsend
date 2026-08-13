@@ -643,6 +643,27 @@ func TestCleanupScenario_ClearsDummyOps_Error(t *testing.T) {
 	assert.Contains(t, logged[0], "clear dummy script")
 }
 
+// --- Empty identity guard tests ---
+
+func TestCleanupScenario_ClearsDummyOps_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		// Org deliberately not set — should log instead of calling SCM.
+		DummyOps: []runtime.BehaviourOperation{{Op: "echo", Args: "hello"}},
+		SCM:      scmDriver,
+		Logf:     func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not call CommitFile with empty Org")
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "no repo configured")
+}
+
 // --- Kill switch cleanup tests ---
 
 func TestCleanupScenario_DeactivatesKillSwitch(t *testing.T) {

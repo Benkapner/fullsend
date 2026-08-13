@@ -129,6 +129,61 @@ func TestGivenKillSwitchActive_CommitFileError(t *testing.T) {
 	assert.Contains(t, err.Error(), "updating config")
 }
 
+// --- empty identity guard tests ---
+
+func TestGivenKillSwitchActive_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		org  string
+		repo string
+	}{
+		{"empty org", "", "repo"},
+		{"empty repo", "org", ""},
+		{"both empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := &world.World{Org: tc.org, RepoName: tc.repo, SCM: &fakeDispatchSCM{}}
+			err := givenKillSwitchActive(w)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "no repo configured")
+		})
+	}
+}
+
+func TestDeactivateKillSwitch_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := DeactivateKillSwitch(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestGivenCustomHarness_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := givenCustomHarness(w, "test", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestGivenDisabledCustomHarness_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := givenDisabledCustomHarness(w, "test", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestCommitLocalHarnessResources_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := commitLocalHarnessResources(context.Background(), w, "test", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
 // fakeDispatchSCM implements scm.Driver for dispatch step tests.
 type fakeDispatchSCM struct {
 	fileContent      []byte

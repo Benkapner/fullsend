@@ -105,6 +105,9 @@ func resolveHostRepoName(w *world.World, logicalName string) string {
 // enrolled test repository. The URL points to the file via
 // raw.githubusercontent.com on the default branch of the hosting repo.
 func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarnessOpts) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before URL-harness operations")
+	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
 	if name == "" || doc == "" {
