@@ -327,7 +327,7 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 		return fmt.Errorf("marshaling WIF provider payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, string(payloadBytes))
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("creating WIF provider: %w", err)
 	}
@@ -408,7 +408,7 @@ func (c *LiveGCFClient) UpdateWIFProvider(ctx context.Context, projectNumber, po
 		return fmt.Errorf("marshaling WIF provider update: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPatch, patchURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("updating WIF provider: %w", err)
 	}
@@ -433,7 +433,7 @@ func (c *LiveGCFClient) undeleteWIFProvider(ctx context.Context, projectNumber, 
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s:undelete",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, "{}")
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, "{}")
 	if err != nil {
 		return err
 	}
@@ -730,7 +730,7 @@ func (c *LiveGCFClient) enableWIFProvider(ctx context.Context, projectNumber, po
 		return fmt.Errorf("marshaling enable payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPatch, patchURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("enabling WIF provider: %w", err)
 	}
@@ -818,6 +818,35 @@ func (e *conflictError) Error() string {
 func isConflict(err error) bool {
 	var ce *conflictError
 	return errors.As(err, &ce)
+}
+
+// doWIFRequestWithRetry executes an HTTP request and retries on 429
+// (Too Many Requests) responses from the GCP IAM API. Uses iamRetryDelay
+// for exponential backoff with jitter, consistent with the retry strategy
+// used for IAM read-modify-write 409 conflicts. On success (or any
+// non-429 status), returns the response for the caller to handle.
+func (c *LiveGCFClient) doWIFRequestWithRetry(ctx context.Context, method, url, payload string) (*http.Response, error) {
+	const maxRetries = 7
+	for attempt := range maxRetries {
+		resp, err := c.Client.DoRequest(ctx, method, url, payload)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if attempt == maxRetries-1 {
+			return nil, fmt.Errorf("rate limited (HTTP 429) after %d attempts", maxRetries)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(iamRetryDelay(attempt)):
+		}
+	}
+	return nil, fmt.Errorf("rate limited (HTTP 429) after %d attempts", maxRetries)
 }
 
 // iamRetryDelay returns the backoff duration for an IAM read-modify-write
