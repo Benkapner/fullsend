@@ -861,6 +861,107 @@ func TestIsTerminalFailure(t *testing.T) {
 	}
 }
 
+func TestNew_SetsAfterFunc(t *testing.T) {
+	t.Parallel()
+
+	d := New(forge.NewFakeClient(), "tok")
+	driver, ok := d.(*Driver)
+	require.True(t, ok, "New should return *Driver")
+	assert.NotNil(t, driver.afterFunc, "afterFunc should be set by New")
+	assert.Equal(t, "tok", driver.Token)
+}
+
+func TestWaitForWorkflow_Success(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/test.yaml": {
+			ID: 10, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+
+	d := newTestDriver(client)
+	run, err := d.WaitForWorkflow(context.Background(), "org", "repo", "test.yaml", after, "")
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 10, run.ID)
+}
+
+func TestFindCompletedWorkflowRun_PollsWithTimerAfter(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	// No workflow runs — findCompletedWorkflowRunOnce always returns nil,
+	// forcing the poll loop to call timerAfter at least once.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			calls++
+			if calls >= 2 {
+				cancel()
+				return make(chan time.Time) // block — forces ctx.Done()
+			}
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	}
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := d.FindCompletedWorkflowRun(ctx, "org", "repo", "test.yaml", after)
+	require.Error(t, err)
+	assert.GreaterOrEqual(t, calls, 1, "timerAfter should have been called")
+}
+
+func TestAssertNoWorkflow_NoRunsAfterTriggerTime(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d := newTestDriver(forge.NewFakeClient())
+	err := d.AssertNoWorkflow(context.Background(), "org", "repo", "test.yaml", after)
+	require.NoError(t, err)
+}
+
+func TestDownloadNamedArtifactAfter_PollsWithTimerAfter(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	// Artifact with wrong name — won't match "wanted", forcing the poll
+	// loop to exercise both timerAfter call sites.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: "other-artifact", CreatedAt: "2026-01-02T00:00:00Z"}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			calls++
+			if calls >= 3 {
+				cancel()
+				return make(chan time.Time) // block — forces ctx.Done()
+			}
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	}
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	err := d.DownloadNamedArtifactAfter(ctx, "org", "repo", "wanted", after, t.TempDir())
+	require.Error(t, err)
+	assert.GreaterOrEqual(t, calls, 2, "timerAfter should have been called at least twice")
+}
+
 func TestTimerAfter_NilFallback(t *testing.T) {
 	t.Parallel()
 
