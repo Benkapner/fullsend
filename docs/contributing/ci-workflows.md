@@ -180,14 +180,19 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 
 The behaviour job in `e2e.yml` uploads debug artifacts on failure. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
 
-Before upload, the workflow checks out `.github/scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha`) into a separate `base-scripts/` path and runs it against `${{ runner.temp }}/behaviour-artifacts/`. PR-head code cannot replace this script. The behaviour test step also tees job output to `behaviour-test.log` in that directory so logs are redacted with the same pass.
+Before upload, the workflow checks out `.github/scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha` on `pull_request_target`; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
+
+The behaviour test step tees job output to `behaviour-test.log` in that directory (with `shell: bash` so `pipefail` propagates `make behaviour-test` failures). Upload is gated on `steps.redact.outcome == 'success'`.
 
 Redaction covers:
 
-- Plain text artifacts (JSON, JSONL, logs, feature output)
+- Plain text artifacts (JSON, JSONL, logs, feature output) — literal env secrets (including multi-line PEM lines), common token patterns, and PEM blocks
 - Nested archives (zip, tar.gz, gzip) — extract, redact, re-pack with the same size limits as behaviour artifact downloads
 - Encrypted blobs (`.gpg`, `.age`, `.enc`) — replaced with a stub (cannot scan ciphertext)
-- Binary and media files (images, video, PDF, opaque blobs) — always replaced with a stub; behaviour debug artifacts are text/JSON/logs only, and unscannable formats are an exfiltration channel (e.g. base64 secrets in a fake `.gif`)
+- Binary and media files (images, video, PDF, opaque blobs, NUL-containing `.log` files) — replaced with a stub
+- Symlinks under the artifact directory — replaced with a stub before upload
+
+**Residual limitations:** content scanning cannot catch every encoding or obfuscation of a secret in a text-classified file (base64, hex, split tokens). Same-job PR-head code could theoretically race the upload step after redaction; isolating redaction in a separate job would narrow that window further.
 
 ## Additional conventions
 

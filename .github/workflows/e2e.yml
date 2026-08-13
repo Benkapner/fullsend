@@ -252,6 +252,7 @@ jobs:
 
       - name: Run behaviour tests
         if: steps.changes.outputs.relevant != 'false'
+        shell: bash
         run: |
           mkdir -p "${{ runner.temp }}/behaviour-artifacts"
           make behaviour-test 2>&1 | tee "${{ runner.temp }}/behaviour-artifacts/behaviour-test.log"
@@ -307,7 +308,28 @@ jobs:
           TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.TEST_ACTOR_OUTSIDER_PAT }}
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
-        run: bash base-scripts/.github/scripts/redact-behaviour-artifacts.sh
+          E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+        run: |
+          exec /usr/bin/env -i \
+            PATH=/usr/bin:/bin \
+            LC_ALL=C \
+            HOME="${{ runner.temp }}" \
+            ARTIFACT_DIR="${ARTIFACT_DIR}" \
+            TEST_FULLSEND_PEM="${TEST_FULLSEND_PEM}" \
+            TEST_TRIAGE_PEM="${TEST_TRIAGE_PEM}" \
+            TEST_CODER_PEM="${TEST_CODER_PEM}" \
+            TEST_REVIEW_PEM="${TEST_REVIEW_PEM}" \
+            TEST_RETRO_PEM="${TEST_RETRO_PEM}" \
+            TEST_PRIORITIZE_PEM="${TEST_PRIORITIZE_PEM}" \
+            CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID}" \
+            CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN}" \
+            TEST_ACTOR_WRITE_PAT="${TEST_ACTOR_WRITE_PAT}" \
+            TEST_ACTOR_TRIAGE_PAT="${TEST_ACTOR_TRIAGE_PAT}" \
+            TEST_ACTOR_OUTSIDER_PAT="${TEST_ACTOR_OUTSIDER_PAT}" \
+            E2E_GCP_PROJECT_ID="${E2E_GCP_PROJECT_ID}" \
+            E2E_GCP_WIF_PROVIDER="${E2E_GCP_WIF_PROVIDER}" \
+            E2E_GCP_SERVICE_ACCOUNT="${E2E_GCP_SERVICE_ACCOUNT}" \
+            /usr/bin/bash "${{ github.workspace }}/base-scripts/.github/scripts/redact-behaviour-artifacts.sh"
 
       - name: Upload behaviour debug artifacts
         if: failure() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'

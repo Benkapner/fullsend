@@ -173,6 +173,86 @@ run_redaction_on_tree
 cp "${TMPDIR}/artifacts/exfil.gif" "${TMPDIR}/artifact.log"
 run_test "stubs-fake-media-artifact" "fake-secret-payload" "[REDACTED OPAQUE CONTENT]"
 
+echo "==> Adversarial and edge-case handling"
+rm -rf "${TMPDIR}/artifacts" "${TMPDIR}/unzipped"
+mkdir -p "${TMPDIR}/artifacts"
+PEM_BODY="MIIEowIBAAKCAQEAfakebodyline"
+cat >"${TMPDIR}/artifacts/artifact.log" <<EOF
+keep this sentinel line
+${PEM_BODY}
+EOF
+ARTIFACT_DIR="${TMPDIR}/artifacts" TEST_CODER_PEM="$(fake_pem_block "RSA" "${PEM_BODY}")" bash "${REDACT_SCRIPT}" >/dev/null
+cp "${TMPDIR}/artifacts/artifact.log" "${TMPDIR}/artifact.log"
+run_test "redacts-multiline-pem-body-line" "${PEM_BODY}" "keep this sentinel line"
+
+rm -rf "${TMPDIR}/artifacts"
+mkdir -p "${TMPDIR}/artifacts"
+printf '{"key":"%s"}\n' "$(fake_pem_block "RSA" "inlinejsonfake" | tr '\n' ' ')" >"${TMPDIR}/artifacts/embedded.json"
+printf 'keep sentinel after json pem\n' >>"${TMPDIR}/artifacts/embedded.json"
+run_redaction_on_tree
+cp "${TMPDIR}/artifacts/embedded.json" "${TMPDIR}/artifact.log"
+run_test "redacts-one-line-json-pem" "inlinejsonfake" "keep sentinel after json pem"
+
+rm -rf "${TMPDIR}/artifacts"
+mkdir -p "${TMPDIR}/artifacts"
+printf 'root:%s:0:0:root:/root:/bin/bash\n' 'x' >"${TMPDIR}/passwd-sample"
+ln -sf "${TMPDIR}/passwd-sample" "${TMPDIR}/artifacts/leak.log"
+run_redaction_on_tree
+cp "${TMPDIR}/artifacts/leak.log" "${TMPDIR}/artifact.log"
+run_test "stubs-top-level-symlink" "root:x:0:0" "[REDACTED OPAQUE CONTENT]"
+
+rm -rf "${TMPDIR}/artifacts" "${TMPDIR}/unzipped"
+mkdir -p "${TMPDIR}/artifacts/inner"
+printf 'leaked literal-secret-pem-value here\nkeep zip sentinel\n' >"${TMPDIR}/artifacts/inner/nested.log"
+(
+  cd "${TMPDIR}/artifacts/inner"
+  zip -qr "../bundle.zip" nested.log
+)
+rm -rf "${TMPDIR}/artifacts/inner"
+(
+  cd "${TMPDIR}"
+  ARTIFACT_DIR=artifacts TEST_CODER_PEM="literal-secret-pem-value" bash "${REDACT_SCRIPT}" >/dev/null
+)
+mkdir -p "${TMPDIR}/unzipped"
+unzip -q "${TMPDIR}/artifacts/bundle.zip" -d "${TMPDIR}/unzipped"
+cp "${TMPDIR}/unzipped/nested.log" "${TMPDIR}/artifact.log"
+run_test "redacts-zip-with-relative-artifact-dir" "literal-secret-pem-value" "keep zip sentinel"
+
+rm -rf "${TMPDIR}/artifacts"
+mkdir -p "${TMPDIR}/artifacts"
+printf 'keep readable sentinel\n' >"${TMPDIR}/artifacts/ok.log"
+printf 'secret-in-unreadable\n' >"${TMPDIR}/artifacts/blocked.log"
+chmod 000 "${TMPDIR}/artifacts/blocked.log"
+ARTIFACT_DIR="${TMPDIR}/artifacts" bash "${REDACT_SCRIPT}" >/dev/null
+chmod 644 "${TMPDIR}/artifacts/blocked.log"
+cp "${TMPDIR}/artifacts/ok.log" "${TMPDIR}/artifact.log"
+run_test "continues-after-unreadable-file" "secret-in-unreadable" "keep readable sentinel"
+grep -q '\[REDACTED OPAQUE CONTENT\]' "${TMPDIR}/artifacts/blocked.log" || {
+  echo "FAIL: stubs-unreadable-file"
+  echo "  expected blocked.log to be stubbed"
+  FAILURES=$((FAILURES + 1))
+}
+[ "${FAILURES}" -eq 0 ] && echo "PASS: stubs-unreadable-file"
+
+rm -rf "${TMPDIR}/artifacts"
+mkdir -p "${TMPDIR}/artifacts"
+printf 'before\0after\nkeep nul sentinel\n' >"${TMPDIR}/artifacts/binary.log"
+run_redaction_on_tree
+cp "${TMPDIR}/artifacts/binary.log" "${TMPDIR}/artifact.log"
+run_test "stubs-nul-byte-log" $'before\0after' "[REDACTED OPAQUE CONTENT]"
+
+rm -rf "${TMPDIR}/artifacts"
+mkdir -p "${TMPDIR}/artifacts"
+python3 - <<'PY' "${TMPDIR}/artifacts/oversize.gz"
+import gzip, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+with gzip.open(path, "wb") as handle:
+    handle.write(b"x" * (11 * 1024 * 1024))
+PY
+run_redaction_on_tree
+cp "${TMPDIR}/artifacts/oversize.gz" "${TMPDIR}/artifact.log"
+run_test "stubs-gzip-bomb" "xxxxxxxx" "[REDACTED OPAQUE CONTENT]"
+
 echo ""
 if [ "${FAILURES}" -gt 0 ]; then
   echo "${FAILURES} test(s) failed"
