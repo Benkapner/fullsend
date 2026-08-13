@@ -606,6 +606,20 @@ func TestCreateWithRetry_NegativeAttempts(t *testing.T) {
 	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
 }
 
+func TestCreateWithRetry_SleepsBetweenAttempts(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	var sleeps []time.Duration
+	orig := RetrySleepFn
+	RetrySleepFn = func(d time.Duration) { sleeps = append(sleeps, d) }
+	t.Cleanup(func() { RetrySleepFn = orig })
+
+	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox creation failed after 3 attempts")
+	assert.Equal(t, []time.Duration{retryInitialBackoff, retryInitialBackoff * 2}, sleeps)
+}
+
 func TestEffectiveReadyTimeout_CappedAtMax(t *testing.T) {
 	got := effectiveReadyTimeout(999 * time.Second)
 	assert.Equal(t, maxReadyTimeout, got)

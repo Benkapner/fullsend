@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -97,8 +99,7 @@ func TestRunAgent_PreScriptSkip_ReturnsBeforeSandboxCreation(t *testing.T) {
 // Without a skip, the run must still reach sandbox creation — a guard
 // against the skip path swallowing every run — and skipped=false must be
 // relayed so an absent key means only "this CLI predates the protocol".
-// The two assertions share one run: reaching sandbox creation costs the
-// full create-retry backoff.
+// The two assertions share one run.
 func TestRunAgent_PreScriptNoSkip_ProceedsToSandboxAndRelaysFalse(t *testing.T) {
 	usePreScriptStub(t)
 	out := filepath.Join(t.TempDir(), "github-output")
@@ -201,12 +202,17 @@ func TestRunPreScript_CleansUpOutputFile(t *testing.T) {
 
 // usePreScriptStub puts an openshell stub on PATH that passes the gateway
 // check but refuses sandbox creation, so a run that gets that far fails
-// recognizably.
+// recognizably. It also replaces sandbox.RetrySleepFn with a no-op so
+// retry backoff does not add real delays (see #6060).
 func usePreScriptStub(t *testing.T) {
 	t.Helper()
 	stubDir, err := filepath.Abs(filepath.Join("testdata", "prescript-stub"))
 	require.NoError(t, err)
 	t.Setenv("PATH", stubDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	orig := sandbox.RetrySleepFn
+	sandbox.RetrySleepFn = func(time.Duration) {}
+	t.Cleanup(func() { sandbox.RetrySleepFn = orig })
 }
 
 // newSkipHarnessDir builds a minimal fullsend dir whose code harness runs
