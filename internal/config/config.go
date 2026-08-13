@@ -516,8 +516,13 @@ type perRepoConfig struct {
 	// omitempty so unset version is not marshaled (unlike orgConfig,
 	// where version is always required). This allows the fallback
 	// chain to inherit version from the parent layer.
-	Version    string       `yaml:"version,omitempty"`
-	Forge      string       `yaml:"forge,omitempty"`
+	Version string `yaml:"version,omitempty"`
+	Forge   string `yaml:"forge,omitempty"`
+	// Tracker is the default issue tracker backend (github, gitlab, or
+	// jira) for `fullsend issues` commands' --tracker flag. Distinct
+	// from Forge, which is the repo's hosting platform — a repo can be
+	// hosted on GitHub but track issues in Jira.
+	Tracker    string       `yaml:"tracker,omitempty"`
 	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
 	Runtime    string       `yaml:"runtime,omitempty"`
 	Roles      []string     `yaml:"roles,omitempty"`
@@ -716,6 +721,7 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 type perRepoConfigMarshal struct {
 	Version                string                    `yaml:"version,omitempty"`
 	Forge                  string                    `yaml:"forge,omitempty"`
+	Tracker                string                    `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
@@ -736,6 +742,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:             c.Version,
 		Forge:               c.Forge,
+		Tracker:             c.Tracker,
 		KillSwitch:          c.KillSwitch,
 		Runtime:             c.Runtime,
 		Agents:              c.Agents,

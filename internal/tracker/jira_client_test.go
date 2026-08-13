@@ -3,64 +3,11 @@ package tracker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
-
-// fakeJiraClient is a hand-written fake implementing the jiraClient
-// interface, mirroring how internal/jirapoll's tests mock JiraClient.
-type fakeJiraClient struct {
-	issues   map[string]*jira.Issue
-	comments map[string][]jira.Comment
-
-	createdBody      string
-	updatedIssueKey  string
-	updatedCommentID string
-	updatedBody      string
-}
-
-func (f *fakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira.Issue, error) {
-	issue, ok := f.issues[issueIDOrKey]
-	if !ok {
-		return nil, fmt.Errorf("get issue %s: %w", issueIDOrKey, forge.ErrNotFound)
-	}
-	return issue, nil
-}
-
-func (f *fakeJiraClient) ListComments(_ context.Context, issueIDOrKey string) ([]jira.Comment, error) {
-	return f.comments[issueIDOrKey], nil
-}
-
-func (f *fakeJiraClient) CreateComment(_ context.Context, issueIDOrKey, body string) (*jira.Comment, error) {
-	f.createdBody = body
-	adf, err := jira.MarkdownToADF(body) // mirrors Jira echoing back the ADF it stored
-	if err != nil {
-		return nil, err
-	}
-	comment := jira.Comment{
-		ID:      "50001",
-		Body:    adf,
-		Author:  jira.User{DisplayName: "fullsend-bot"},
-		Created: "2026-08-06T00:00:00.000+0000",
-	}
-	if f.comments == nil {
-		f.comments = make(map[string][]jira.Comment)
-	}
-	f.comments[issueIDOrKey] = append(f.comments[issueIDOrKey], comment)
-	return &comment, nil
-}
-
-func (f *fakeJiraClient) UpdateComment(_ context.Context, issueIDOrKey, commentID, body string) error {
-	f.updatedIssueKey = issueIDOrKey
-	f.updatedCommentID = commentID
-	f.updatedBody = body
-	return nil
-}
-
-var _ jiraClient = (*fakeJiraClient)(nil)
 
 // newTestJiraClient constructs a JiraClient for tests, failing immediately
 // on a validation error so call sites can stay a single line.
@@ -74,15 +21,15 @@ func newTestJiraClient(t *testing.T, jc jiraClient, baseURL string) *JiraClient 
 }
 
 func TestNewJiraClient_RejectsCredentialBaseURL(t *testing.T) {
-	_, err := NewJiraClient(&fakeJiraClient{}, "https://user:token@acme.atlassian.net")
+	_, err := NewJiraClient(&FakeJiraClient{}, "https://user:token@acme.atlassian.net")
 	if err == nil {
 		t.Fatal("NewJiraClient with credential-bearing base URL: got nil error, want an error")
 	}
 }
 
 func TestJiraClient_GetIssue(t *testing.T) {
-	fc := &fakeJiraClient{
-		issues: map[string]*jira.Issue{
+	fc := &FakeJiraClient{
+		Issues: map[string]*jira.Issue{
 			"PROJ-42": {
 				Key: "PROJ-42",
 				Fields: jira.IssueFields{
@@ -128,7 +75,7 @@ func TestJiraClient_GetIssue(t *testing.T) {
 }
 
 func TestJiraClient_GetIssue_NotFound(t *testing.T) {
-	fc := &fakeJiraClient{issues: map[string]*jira.Issue{}}
+	fc := &FakeJiraClient{Issues: map[string]*jira.Issue{}}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	_, err := c.GetIssue(context.Background(), "PROJ", 999)
@@ -138,8 +85,8 @@ func TestJiraClient_GetIssue_NotFound(t *testing.T) {
 }
 
 func TestJiraClient_ListComments(t *testing.T) {
-	fc := &fakeJiraClient{
-		comments: map[string][]jira.Comment{
+	fc := &FakeJiraClient{
+		Comments: map[string][]jira.Comment{
 			"PROJ-42": {
 				{
 					ID:      "1",
@@ -175,8 +122,8 @@ func TestJiraClient_ListComments_EditedCommentAttributesToEditor(t *testing.T) {
 	// jirapoll/discover.go's edit-attribution logic (ADR 0054) so a
 	// rewritten comment can't be misattributed to whoever originally
 	// posted it.
-	fc := &fakeJiraClient{
-		comments: map[string][]jira.Comment{
+	fc := &FakeJiraClient{
+		Comments: map[string][]jira.Comment{
 			"PROJ-42": {
 				{
 					ID:           "1",
@@ -216,8 +163,8 @@ func TestJiraClient_ListComments_UpdateAuthorIgnoredWithoutLaterUpdatedTimestamp
 	// UpdateAuthor.AccountID alone isn't a reliable edit signal — mirror
 	// jirapoll/discover.go's defense-in-depth gate of also requiring
 	// Updated to parse and be after Created before trusting it.
-	fc := &fakeJiraClient{
-		comments: map[string][]jira.Comment{
+	fc := &FakeJiraClient{
+		Comments: map[string][]jira.Comment{
 			"PROJ-42": {
 				{
 					ID:           "1",
@@ -256,17 +203,17 @@ func TestJiraClient_ListComments_UpdateAuthorIgnoredWithoutLaterUpdatedTimestamp
 }
 
 func TestJiraClient_CreateComment(t *testing.T) {
-	fc := &fakeJiraClient{}
+	fc := &FakeJiraClient{}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	comment, err := c.CreateComment(context.Background(), "PROJ", 42, "**hello** there")
 	if err != nil {
 		t.Fatalf("CreateComment returned error: %v", err)
 	}
-	if fc.createdBody != "**hello** there" {
-		t.Errorf("underlying jira client received body %q, want %q", fc.createdBody, "**hello** there")
+	if fc.CreatedBody != "**hello** there" {
+		t.Errorf("underlying jira client received body %q, want %q", fc.CreatedBody, "**hello** there")
 	}
-	if _, ok := fc.comments["PROJ-42"]; !ok {
+	if _, ok := fc.Comments["PROJ-42"]; !ok {
 		t.Fatal("expected comment to be created against issue key PROJ-42")
 	}
 	if comment.Body != "**hello** there" {
@@ -275,20 +222,20 @@ func TestJiraClient_CreateComment(t *testing.T) {
 }
 
 func TestJiraClient_UpdateComment(t *testing.T) {
-	fc := &fakeJiraClient{}
+	fc := &FakeJiraClient{}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	if err := c.UpdateComment(context.Background(), "PROJ", 42, "50001", "updated text"); err != nil {
 		t.Fatalf("UpdateComment returned error: %v", err)
 	}
-	if fc.updatedIssueKey != "PROJ-42" {
-		t.Errorf("underlying jira client received issue key %q, want %q", fc.updatedIssueKey, "PROJ-42")
+	if fc.UpdatedIssueKey != "PROJ-42" {
+		t.Errorf("underlying jira client received issue key %q, want %q", fc.UpdatedIssueKey, "PROJ-42")
 	}
-	if fc.updatedCommentID != "50001" {
-		t.Errorf("underlying jira client received comment ID %q, want %q", fc.updatedCommentID, "50001")
+	if fc.UpdatedCommentID != "50001" {
+		t.Errorf("underlying jira client received comment ID %q, want %q", fc.UpdatedCommentID, "50001")
 	}
-	if fc.updatedBody != "updated text" {
-		t.Errorf("underlying jira client received body %q, want %q", fc.updatedBody, "updated text")
+	if fc.UpdatedBody != "updated text" {
+		t.Errorf("underlying jira client received body %q, want %q", fc.UpdatedBody, "updated text")
 	}
 }
 
@@ -296,7 +243,7 @@ func TestJiraClient_NotFoundWrapping(t *testing.T) {
 	// JiraClient must wrap forge.ErrNotFound into tracker.ErrNotFound so
 	// callers using tracker.IsNotFound get the expected result. Verify
 	// that the wrapper also preserves the underlying forge.ErrNotFound.
-	fc := &fakeJiraClient{issues: map[string]*jira.Issue{}}
+	fc := &FakeJiraClient{Issues: map[string]*jira.Issue{}}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	_, err := c.GetIssue(context.Background(), "PROJ", 999)

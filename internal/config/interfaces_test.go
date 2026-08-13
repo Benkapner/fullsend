@@ -465,6 +465,31 @@ func TestPerRepoConfig_ConfigForge(t *testing.T) {
 	})
 }
 
+func TestPerRepoConfig_ConfigTracker(t *testing.T) {
+	t.Run("returns tracker when set", func(t *testing.T) {
+		cfg := &perRepoConfig{Tracker: "jira"}
+		assert.Equal(t, "jira", cfg.ConfigTracker())
+	})
+
+	t.Run("falls through to parent", func(t *testing.T) {
+		parent := &perRepoConfig{Tracker: "gitlab"}
+		child := &perRepoConfig{parent: parent}
+		assert.Equal(t, "gitlab", child.ConfigTracker())
+	})
+
+	t.Run("returns empty when unset", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		assert.Equal(t, "", cfg.ConfigTracker())
+	})
+
+	t.Run("independent of forge", func(t *testing.T) {
+		// A repo hosted on GitHub can still track issues in Jira.
+		cfg := &perRepoConfig{Forge: "github", Tracker: "jira"}
+		assert.Equal(t, "github", cfg.ConfigForge())
+		assert.Equal(t, "jira", cfg.ConfigTracker())
+	})
+}
+
 // --- MintURL fallback ---
 
 func TestPerRepoConfig_MintURL_Fallback(t *testing.T) {

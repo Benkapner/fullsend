@@ -7,12 +7,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -342,6 +345,7 @@ func TestRunIssuesPostComment_Create(t *testing.T) {
 	tc := tracker.NewForgeClient(fc)
 
 	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -368,6 +372,7 @@ func TestRunIssuesPostComment_Update(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -422,6 +427,7 @@ func TestRunIssuesPostComment_DryRun(t *testing.T) {
 	tc := tracker.NewForgeClient(fc)
 
 	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -452,6 +458,7 @@ func TestRunIssuesPostComment_FromFile(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -467,4 +474,277 @@ func TestRunIssuesPostComment_FromFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, comments, 1)
 	assert.Contains(t, string(comments[0].Body), "comment from file")
+}
+
+func TestRunIssuesPostComment_JiraCapsStickyMaxSize(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+	ctx := context.Background()
+
+	// Sized to land in the 32-65 KiB band called out by the review: over
+	// Jira's MarkdownToADF limit (jira.MaxMarkdownBytes = 32 KiB) but
+	// under sticky's own default cap (65000), so only a tracker-aware
+	// MaxSize catches it.
+	firstBody := strings.Repeat("a", 40000)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerJira,
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    firstBody,
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	cfg.testBody = "second run"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+
+	// Combining "second run" with the collapsed 40 KB history would
+	// exceed jira.MaxMarkdownBytes, so the Jira path must trim the
+	// history rather than assembling a body that would fail once it
+	// reaches Jira's MarkdownToADF.
+	assert.LessOrEqual(t, len(comments[0].Body), jira.MaxMarkdownBytes)
+	assert.NotContains(t, string(comments[0].Body), "Previous run")
+	assert.Contains(t, string(comments[0].Body), "second run")
+}
+
+func TestRunIssuesPostComment_NonJiraKeepsDefaultStickyMaxSize(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+	ctx := context.Background()
+
+	firstBody := strings.Repeat("a", 40000)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerGitHub,
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    firstBody,
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	cfg.testBody = "second run"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+
+	// Non-Jira trackers keep sticky's default 65000-byte cap, so the same
+	// accumulated body (well under 65000) keeps its history intact.
+	assert.Contains(t, string(comments[0].Body), "Previous run")
+}
+
+func TestValidateJiraMarker_RejectsEscapedChars(t *testing.T) {
+	unsafeChars := []string{`\`, "*", "_", "`", "[", "]", "&"}
+	for _, c := range unsafeChars {
+		marker := "<!-- fullsend:post" + c + "review -->"
+		err := validateJiraMarker(marker)
+		assert.Errorf(t, err, "validateJiraMarker(%q): want error, marker contains %q which Jira's ADFToMarkdown escapes", marker, c)
+	}
+}
+
+func TestValidateJiraMarker_AllowsSafeChars(t *testing.T) {
+	safeMarkers := []string{
+		"<!-- fullsend:post-review -->",
+		"<!-- fullsend:triage-agent -->",
+		"<!-- fullsend:post:review -->",
+	}
+	for _, marker := range safeMarkers {
+		assert.NoErrorf(t, validateJiraMarker(marker), "validateJiraMarker(%q): want no error", marker)
+	}
+}
+
+func TestRunIssuesPostComment_JiraRejectsUnsafeMarker(t *testing.T) {
+	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerJira,
+		project:     "PROJ",
+		number:      42,
+		marker:      "<!-- fullsend:post_review -->",
+		testPrinter: ui.New(io.Discard),
+		testBody:    "body",
+	}
+
+	err := runIssuesPostComment(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--marker")
+}
+
+func TestRunIssuesPostComment_JiraRoundTripUpdatesInPlace(t *testing.T) {
+	// Drives postTrackerStickyComment twice through tracker.NewJiraClient
+	// (via NewFakeJiraClient) so comment bodies actually round-trip
+	// through the real jira.MarkdownToADF/ADFToMarkdown conversions,
+	// unlike the forge.NewFakeClient-backed tests above. This is the
+	// regression test for marker re-detection surviving that round trip:
+	// without it, a marker containing an escaped character would create
+	// a new comment every run instead of updating in place.
+	tc, err := tracker.NewFakeJiraClient("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: TrackerJira,
+		project:     "PROJ",
+		number:      42,
+		marker:      "<!-- fullsend:triage-agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "first run",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	cfg.testBody = "second run"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1, "second run should update the existing comment in place, not flood a new one")
+	assert.Contains(t, string(comments[0].Body), "second run")
+	assert.Contains(t, string(comments[0].Body), "Previous run")
+}
+
+// --- resolveTracker tests ---
+//
+// fullsend-ai/fullsend#5991 specifies --tracker is required unless a
+// default is supplied via config.
+
+func TestResolveTracker_FlagOverridesConfig(t *testing.T) {
+	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
+	require.NoError(t, err)
+
+	got, err := resolveTracker(TrackerGitHub, "", reader)
+	require.NoError(t, err)
+	assert.Equal(t, TrackerGitHub, got)
+}
+
+func TestResolveTracker_FallsBackToConfigReader(t *testing.T) {
+	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
+	require.NoError(t, err)
+
+	got, err := resolveTracker("", "", reader)
+	require.NoError(t, err)
+	assert.Equal(t, TrackerJira, got)
+}
+
+func TestResolveTracker_FallsBackToFullsendDirConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tracker: gitlab\n"), 0o644))
+
+	got, err := resolveTracker("", dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, TrackerGitLab, got)
+}
+
+func TestResolveTracker_NoFlagNoConfig_Errors(t *testing.T) {
+	_, err := resolveTracker("", "", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--tracker is required")
+}
+
+func TestResolveTracker_FullsendDirWithoutTrackerSet_Errors(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("runtime: claude\n"), 0o644))
+
+	_, err := resolveTracker("", dir, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--tracker is required")
+}
+
+// --- config-default --tracker integration tests ---
+
+func TestRunIssuesPostComment_TrackerFromConfig(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+
+	reader, err := config.ParsePerRepoConfig([]byte("tracker: github\n"))
+	require.NoError(t, err)
+
+	cfg := &issuesPostCommentConfig{
+		project:          "acme/widgets",
+		number:           42,
+		marker:           "<!-- test:agent -->",
+		testClient:       tc,
+		testConfigReader: reader,
+		testPrinter:      ui.New(io.Discard),
+		testBody:         "from config default",
+	}
+
+	err = runIssuesPostComment(context.Background(), cfg)
+	require.NoError(t, err)
+
+	comments, err := tc.ListComments(context.Background(), "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "from config default")
+}
+
+func TestRunIssuesPostComment_TrackerFlagOverridesConfig(t *testing.T) {
+	// --tracker jira should win over a "github" config default and
+	// trigger jira-specific marker validation, proving the flag takes
+	// priority over the config value.
+	reader, err := config.ParsePerRepoConfig([]byte("tracker: github\n"))
+	require.NoError(t, err)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName:      TrackerJira,
+		project:          "PROJ",
+		number:           42,
+		marker:           "<!-- fullsend:post_review -->", // contains an unsafe char
+		testConfigReader: reader,
+		testPrinter:      ui.New(io.Discard),
+		testBody:         "body",
+	}
+
+	err = runIssuesPostComment(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--marker")
+}
+
+func TestRunIssuesPostComment_NoTrackerNoConfig_Errors(t *testing.T) {
+	cfg := &issuesPostCommentConfig{
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		testPrinter: ui.New(io.Discard),
+		testBody:    "body",
+	}
+
+	err := runIssuesPostComment(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--tracker is required")
+}
+
+// --- cobra-level: --tracker is no longer unconditionally required ---
+
+func TestIssuesGetCmd_TrackerNotRequired(t *testing.T) {
+	cmd := newIssuesGetCmd()
+	cmd.SetArgs([]string{"--project", "acme/widgets", "--number", "1"})
+	err := cmd.Execute()
+	// No --tracker and no config default available: this should reach
+	// RunE and fail there via resolveTracker, not at cobra's
+	// required-flag validation stage.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), `required flag(s) "tracker"`)
+	assert.Contains(t, err.Error(), "--tracker is required")
+}
+
+func TestIssuesPostCommentCmd_TrackerNotRequired(t *testing.T) {
+	cmd := newIssuesPostCommentCmd()
+	cmd.SetArgs([]string{"--project", "acme/widgets", "--number", "1", "--marker", "<!-- test -->"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), `required flag(s) "tracker"`)
+	assert.Contains(t, err.Error(), "--tracker is required")
 }
