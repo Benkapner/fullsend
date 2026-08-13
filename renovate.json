@@ -36,12 +36,6 @@
       }
     },
     {
-      "description": "Automerge digest bumps for Red Hat UBI base images once required checks pass",
-      "matchPackageNames": ["/^registry\\.access\\.redhat\\.com\\/ubi10\\//"],
-      "matchUpdateTypes": ["digest"],
-      "automerge": true
-    },
-    {
       "description": "Group Cloudflare Worker packages to prevent broken lockfile-only PRs from peer dependency conflicts",
       "matchPackageNames": ["/^@cloudflare\\//", "wrangler", "miniflare"],
       "groupName": "cloudflare-workers"
