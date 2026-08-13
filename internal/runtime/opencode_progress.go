@@ -6,6 +6,18 @@ import (
 	"io"
 )
 
+// redactSummary runs a tool summary through the shared secret redactor to
+// prevent credentials from leaking to terminal output or CI annotations.
+func redactSummary(s string) string {
+	if s == "" {
+		return ""
+	}
+	if result := progressRedactor.Scan(s); result.Sanitized != "" {
+		return result.Sanitized
+	}
+	return s
+}
+
 // OpenCode ndjson envelope — every line has these fields.
 type ocEnvelope struct {
 	Type      string `json:"type"`
@@ -49,15 +61,15 @@ type ocReasoningEvent struct {
 
 // step_finish event payload.
 type ocStepFinishPart struct {
-	Reason string         `json:"reason"`
-	Cost   float64        `json:"cost"`
-	Tokens ocStepTokens   `json:"tokens"`
+	Reason string       `json:"reason"`
+	Cost   float64      `json:"cost"`
+	Tokens ocStepTokens `json:"tokens"`
 }
 
 type ocStepTokens struct {
-	Input     int        `json:"input"`
-	Output    int        `json:"output"`
-	Reasoning int        `json:"reasoning"`
+	Input     int           `json:"input"`
+	Output    int           `json:"output"`
+	Reasoning int           `json:"reasoning"`
 	Cache     ocCacheTokens `json:"cache"`
 }
 
@@ -96,14 +108,16 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 
 	var (
 		// Accumulated state for ResultEvent synthesis.
-		numTurns       int
-		totalCostUSD   float64
-		totalInput     int
-		totalOutput    int
-		totalCacheRead int
+		numTurns        int
+		totalCostUSD    float64
+		totalInput      int
+		totalOutput     int
+		totalReasoning  int
+		totalCacheRead  int
 		totalCacheWrite int
-		sawError       bool
-		lastErrorMsg   string
+		sawError        bool
+		lastErrorMsg    string
+		lastReason      string
 	)
 
 	for {
@@ -144,9 +158,9 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			// Only emit for terminal states; pending/running are intermediate.
 			switch evt.Part.State.Status {
 			case "completed":
-				onEvent(ToolUseEvent{Name: evt.Part.Tool, Summary: evt.Part.State.Title})
+				onEvent(ToolUseEvent{Name: evt.Part.Tool, Summary: redactSummary(evt.Part.State.Title)})
 			case "error":
-				onEvent(ToolUseEvent{Name: evt.Part.Tool, Summary: evt.Part.State.Error})
+				onEvent(ToolUseEvent{Name: evt.Part.Tool, Summary: redactSummary(evt.Part.State.Error)})
 			}
 
 		case "text":
@@ -169,17 +183,20 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 				continue
 			}
 			numTurns++
+			lastReason = evt.Part.Reason
 			totalCostUSD += evt.Part.Cost
 			totalInput += evt.Part.Tokens.Input
 			totalOutput += evt.Part.Tokens.Output
+			totalReasoning += evt.Part.Tokens.Reasoning
 			totalCacheRead += evt.Part.Tokens.Cache.Read
 			totalCacheWrite += evt.Part.Tokens.Cache.Write
 
 			onEvent(TokensEvent{
-				InputTokens:  evt.Part.Tokens.Input,
-				OutputTokens: evt.Part.Tokens.Output,
-				CacheRead:    evt.Part.Tokens.Cache.Read,
-				CacheWrite:   evt.Part.Tokens.Cache.Write,
+				InputTokens:     evt.Part.Tokens.Input,
+				OutputTokens:    evt.Part.Tokens.Output,
+				ReasoningTokens: evt.Part.Tokens.Reasoning,
+				CacheRead:       evt.Part.Tokens.Cache.Read,
+				CacheWrite:      evt.Part.Tokens.Cache.Write,
 			})
 
 		case "error":
@@ -203,14 +220,20 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 	}
 
 	// Synthesize ResultEvent at EOF from accumulated step_finish data.
+	// Note: unlike Claude Code (which emits an explicit result event), OpenCode
+	// has no terminal sentinel. A truncated stream that closes cleanly (io.EOF
+	// without a preceding I/O error) may produce a false-success ResultEvent.
+	// The caller should also check the process exit code for authoritative status.
 	isError := sawError || numTurns == 0
 	onEvent(ResultEvent{
 		NumTurns:                 numTurns,
 		TotalCostUSD:             totalCostUSD,
 		IsError:                  isError,
 		ErrorMessage:             lastErrorMsg,
+		Subtype:                  lastReason,
 		InputTokens:              totalInput,
 		OutputTokens:             totalOutput,
+		ReasoningTokens:          totalReasoning,
 		CacheCreationInputTokens: totalCacheWrite,
 		CacheReadInputTokens:     totalCacheRead,
 	})

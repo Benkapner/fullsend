@@ -345,6 +345,7 @@ func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error
 			metrics.TotalCostUSD = e.TotalCostUSD
 			metrics.InputTokens = e.InputTokens
 			metrics.OutputTokens = e.OutputTokens
+			metrics.ReasoningTokens = e.ReasoningTokens
 			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
 			metrics.CacheReadInputTokens = e.CacheReadInputTokens
 		case ToolUseEvent:

@@ -132,6 +132,7 @@ type aggregateMetrics struct {
 	TokenUsage   struct {
 		Input         int `json:"input"`
 		Output        int `json:"output"`
+		Reasoning     int `json:"reasoning,omitempty"`
 		CacheCreation int `json:"cache_creation"`
 		CacheRead     int `json:"cache_read"`
 	} `json:"token_usage"`
@@ -959,6 +960,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				attribute.Int("fullsend.tool_calls", aggMetrics.ToolCalls),
 				attribute.Int("fullsend.iterations", runCount),
 			)
+			if aggMetrics.TokenUsage.Reasoning > 0 {
+				rootSpan.SetAttributes(attribute.Int("gen_ai.usage.reasoning_tokens", aggMetrics.TokenUsage.Reasoning))
+			}
 		}
 
 		finalizeRootSpan(rootSpan, runErr, exitCode, validationPassed)
@@ -2326,7 +2330,7 @@ func agentSpanStartAttrs(iteration int, agentName string) []attribute.KeyValue {
 }
 
 func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.RunMetrics) []attribute.KeyValue {
-	return []attribute.KeyValue{
+	attrs := []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
 		stringAttr("gen_ai.system", system),
@@ -2338,6 +2342,10 @@ func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.R
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
+	if m.ReasoningTokens > 0 {
+		attrs = append(attrs, attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens))
+	}
+	return attrs
 }
 
 // aggregateRunMetrics folds one iteration's metrics into the cross-iteration
@@ -2348,6 +2356,7 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	agg.TotalCostUSD += m.TotalCostUSD
 	agg.TokenUsage.Input += m.InputTokens
 	agg.TokenUsage.Output += m.OutputTokens
+	agg.TokenUsage.Reasoning += m.ReasoningTokens
 	agg.TokenUsage.CacheCreation += m.CacheCreationInputTokens
 	agg.TokenUsage.CacheRead += m.CacheReadInputTokens
 	agg.ToolCalls += int(m.ToolCalls.Load())

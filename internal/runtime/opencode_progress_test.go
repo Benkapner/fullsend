@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -78,7 +79,7 @@ func TestParseOpenCodeStream_BasicRun(t *testing.T) {
 	assert.Equal(t, 1, results[0].NumTurns)
 	assert.InDelta(t, 0.015, results[0].TotalCostUSD, 0.001)
 	assert.False(t, results[0].IsError)
-	assert.Empty(t, results[0].Subtype)
+	assert.Equal(t, "tool-calls", results[0].Subtype)
 	assert.Equal(t, 100, results[0].InputTokens)
 	assert.Equal(t, 50, results[0].OutputTokens)
 
@@ -94,13 +95,13 @@ func TestParseOpenCodeStream_ErrorRun(t *testing.T) {
 
 	assert.Equal(t, "ses_err456", sessionID)
 
-	var errors []ErrorEvent
+	var errEvents []ErrorEvent
 	var tools []ToolUseEvent
 	var results []ResultEvent
 	for _, evt := range events {
 		switch e := evt.(type) {
 		case ErrorEvent:
-			errors = append(errors, e)
+			errEvents = append(errEvents, e)
 		case ToolUseEvent:
 			tools = append(tools, e)
 		case ResultEvent:
@@ -112,14 +113,14 @@ func TestParseOpenCodeStream_ErrorRun(t *testing.T) {
 	assert.Equal(t, "edit", tools[0].Name)
 	assert.Equal(t, "file not found", tools[0].Summary)
 
-	require.Len(t, errors, 1)
-	assert.Equal(t, "APIError", errors[0].ErrorType)
-	assert.Equal(t, "quota exhausted", errors[0].Message)
+	require.Len(t, errEvents, 1)
+	assert.Equal(t, "APIError", errEvents[0].ErrorType)
+	assert.Equal(t, "quota exhausted", errEvents[0].Message)
 
 	require.Len(t, results, 1)
 	assert.True(t, results[0].IsError)
 	assert.Equal(t, "quota exhausted", results[0].ErrorMessage)
-	assert.Empty(t, results[0].Subtype)
+	assert.Equal(t, "error", results[0].Subtype)
 	assert.Equal(t, 1, results[0].NumTurns)
 	assert.Equal(t, 50, results[0].InputTokens)
 	assert.Equal(t, 10, results[0].OutputTokens)
@@ -134,12 +135,18 @@ func TestParseOpenCodeStream_Reasoning(t *testing.T) {
 
 	var thinking []ThinkingEvent
 	var texts []TextEvent
+	var tokens []TokensEvent
+	var results []ResultEvent
 	for _, evt := range events {
 		switch e := evt.(type) {
 		case ThinkingEvent:
 			thinking = append(thinking, e)
 		case TextEvent:
 			texts = append(texts, e)
+		case TokensEvent:
+			tokens = append(tokens, e)
+		case ResultEvent:
+			results = append(results, e)
 		}
 	}
 
@@ -148,6 +155,16 @@ func TestParseOpenCodeStream_Reasoning(t *testing.T) {
 
 	require.Len(t, texts, 1)
 	assert.Equal(t, "Here is my answer.", texts[0].Text)
+
+	// Reasoning tokens must be captured in per-step TokensEvent.
+	require.Len(t, tokens, 1)
+	assert.Equal(t, 50, tokens[0].ReasoningTokens, "reasoning tokens should be captured per-step")
+	assert.Equal(t, 200, tokens[0].InputTokens)
+	assert.Equal(t, 100, tokens[0].OutputTokens)
+
+	// Reasoning tokens must be accumulated in the synthesized ResultEvent.
+	require.Len(t, results, 1)
+	assert.Equal(t, 50, results[0].ReasoningTokens, "reasoning tokens should be accumulated in ResultEvent")
 }
 
 func TestParseOpenCodeStream_MultiStep(t *testing.T) {
@@ -178,10 +195,10 @@ func TestParseOpenCodeStream_MultiStep(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.Equal(t, 2, results[0].NumTurns)
 	assert.InDelta(t, 0.03, results[0].TotalCostUSD, 0.001)
-	assert.Equal(t, 300, results[0].InputTokens)  // 100 + 200
-	assert.Equal(t, 100, results[0].OutputTokens)  // 30 + 70
-	assert.Equal(t, 240, results[0].CacheReadInputTokens)     // 80 + 160
-	assert.Equal(t, 35, results[0].CacheCreationInputTokens)  // 10 + 25
+	assert.Equal(t, 300, results[0].InputTokens)             // 100 + 200
+	assert.Equal(t, 100, results[0].OutputTokens)            // 30 + 70
+	assert.Equal(t, 240, results[0].CacheReadInputTokens)    // 80 + 160
+	assert.Equal(t, 35, results[0].CacheCreationInputTokens) // 10 + 25
 	assert.False(t, results[0].IsError)
 }
 
@@ -256,6 +273,100 @@ func TestParseOpenCodeStream_ReadError(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "ses_x", sid)
 	assert.Contains(t, err.Error(), "pipe broken")
+}
+
+func TestParseOpenCodeStream_SecretRedaction(t *testing.T) {
+	t.Parallel()
+
+	// Build fake tokens at runtime to avoid tripping gitleaks.
+	// The redactor's prefix patterns match ghp_ and sk-proj- prefixes.
+	ghToken := "ghp_" + strings.Repeat("x", 40)
+	skToken := "sk-proj-" + strings.Repeat("y", 40)
+
+	completedLine := fmt.Sprintf(
+		`{"type":"tool_use","timestamp":1,"sessionID":"ses_sec","part":{"tool":"bash","state":{"status":"completed","title":"$ curl -H \"Authorization: Bearer %s\""}}}`,
+		ghToken,
+	)
+	errorLine := fmt.Sprintf(
+		`{"type":"tool_use","timestamp":2,"sessionID":"ses_sec","part":{"tool":"bash","state":{"status":"error","error":"request failed: token %s is expired"}}}`,
+		skToken,
+	)
+	stepFinish := `{"type":"step_finish","timestamp":3,"sessionID":"ses_sec","part":{"reason":"stop","cost":0.01,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}`
+
+	input := completedLine + "\n" + errorLine + "\n" + stepFinish + "\n"
+
+	var events []AgentEvent
+	_, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	require.NoError(t, err)
+
+	var tools []ToolUseEvent
+	for _, evt := range events {
+		if e, ok := evt.(ToolUseEvent); ok {
+			tools = append(tools, e)
+		}
+	}
+
+	require.Len(t, tools, 2)
+
+	// Completed tool: GitHub token in title must be redacted.
+	assert.NotContains(t, tools[0].Summary, ghToken,
+		"GitHub token should be redacted from completed tool summary")
+
+	// Error tool: sk-proj token in error must be redacted.
+	assert.NotContains(t, tools[1].Summary, skToken,
+		"API key should be redacted from error tool summary")
+}
+
+func TestParseOpenCodeStream_SecretRedactionCleanPassthrough(t *testing.T) {
+	t.Parallel()
+
+	// Tool summary without any secrets should pass through unchanged.
+	input := `{"type":"tool_use","timestamp":1,"sessionID":"ses_clean","part":{"tool":"read","state":{"status":"completed","title":"main.go"}}}
+{"type":"step_finish","timestamp":2,"sessionID":"ses_clean","part":{"reason":"stop","cost":0.01,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}
+`
+	var events []AgentEvent
+	_, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	require.NoError(t, err)
+
+	var tools []ToolUseEvent
+	for _, evt := range events {
+		if e, ok := evt.(ToolUseEvent); ok {
+			tools = append(tools, e)
+		}
+	}
+
+	require.Len(t, tools, 1)
+	assert.Equal(t, "main.go", tools[0].Summary, "clean summary should pass through unchanged")
+}
+
+func TestParseOpenCodeStream_PendingRunningFiltered(t *testing.T) {
+	t.Parallel()
+
+	// pending and running tool_use states should NOT produce ToolUseEvents.
+	input := `{"type":"tool_use","timestamp":1,"sessionID":"ses_filt","part":{"tool":"bash","state":{"status":"pending","title":"$ ls"}}}
+{"type":"tool_use","timestamp":2,"sessionID":"ses_filt","part":{"tool":"bash","state":{"status":"running","title":"$ ls"}}}
+{"type":"tool_use","timestamp":3,"sessionID":"ses_filt","part":{"tool":"bash","state":{"status":"completed","title":"$ ls"}}}
+{"type":"step_finish","timestamp":4,"sessionID":"ses_filt","part":{"reason":"stop","cost":0.01,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}
+`
+	var events []AgentEvent
+	_, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	require.NoError(t, err)
+
+	var tools []ToolUseEvent
+	for _, evt := range events {
+		if e, ok := evt.(ToolUseEvent); ok {
+			tools = append(tools, e)
+		}
+	}
+
+	require.Len(t, tools, 1, "only completed status should emit ToolUseEvent")
+	assert.Equal(t, "$ ls", tools[0].Summary)
 }
 
 func TestParseOpenCodeStream_OversizedLineSkipped(t *testing.T) {

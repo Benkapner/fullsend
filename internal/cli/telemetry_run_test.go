@@ -319,6 +319,22 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", 109938))
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 11))
+
+	// reasoning_tokens should be absent when zero.
+	assert.NotContains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 0),
+		"reasoning_tokens attribute should be omitted when zero")
+}
+
+func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
+	var m agentruntime.RunMetrics
+	m.Model = "claude-opus-4-6"
+	m.InputTokens = 100
+	m.OutputTokens = 50
+	m.ReasoningTokens = 42
+
+	a := agentSpanEndAttrs(1, 0, "anthropic", &m)
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 42),
+		"reasoning_tokens attribute should be present when non-zero")
 }
 
 func TestAggregateRunMetrics(t *testing.T) {
@@ -327,6 +343,7 @@ func TestAggregateRunMetrics(t *testing.T) {
 	var m1 agentruntime.RunMetrics
 	m1.NumTurns, m1.TotalCostUSD = 5, 0.10
 	m1.InputTokens, m1.OutputTokens = 10, 100
+	m1.ReasoningTokens = 25
 	m1.CacheCreationInputTokens, m1.CacheReadInputTokens = 1000, 5000
 	m1.ToolCalls.Store(3)
 	m1.Model = "claude-opus-4-6"
@@ -335,6 +352,7 @@ func TestAggregateRunMetrics(t *testing.T) {
 	var m2 agentruntime.RunMetrics
 	m2.NumTurns, m2.TotalCostUSD = 2, 0.05
 	m2.InputTokens, m2.OutputTokens = 4, 40
+	m2.ReasoningTokens = 15
 	m2.CacheCreationInputTokens, m2.CacheReadInputTokens = 200, 900
 	m2.ToolCalls.Store(2)
 	aggregateRunMetrics(&agg, &m2, 2)
@@ -343,6 +361,7 @@ func TestAggregateRunMetrics(t *testing.T) {
 	assert.InDelta(t, 0.15, agg.TotalCostUSD, 1e-9)
 	assert.Equal(t, 14, agg.TokenUsage.Input)
 	assert.Equal(t, 140, agg.TokenUsage.Output)
+	assert.Equal(t, 40, agg.TokenUsage.Reasoning)
 	assert.Equal(t, 1200, agg.TokenUsage.CacheCreation)
 	assert.Equal(t, 5900, agg.TokenUsage.CacheRead)
 	assert.Equal(t, 5, agg.ToolCalls)

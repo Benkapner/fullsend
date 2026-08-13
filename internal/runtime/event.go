@@ -41,10 +41,11 @@ func (ToolUseEvent) agentEvent() {}
 
 // TokensEvent carries incremental token usage counters.
 type TokensEvent struct {
-	InputTokens  int
-	OutputTokens int
-	CacheRead    int
-	CacheWrite   int
+	InputTokens     int
+	OutputTokens    int
+	ReasoningTokens int
+	CacheRead       int
+	CacheWrite      int
 }
 
 func (TokensEvent) agentEvent() {}
@@ -58,6 +59,7 @@ type ResultEvent struct {
 	Subtype                  string
 	InputTokens              int
 	OutputTokens             int
+	ReasoningTokens          int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
 }
