@@ -77,6 +77,7 @@ forge:
     fullsend_ref: v2.5.0
   gitlab:
     url: https://gitlab.example.com
+    fullsend_ref: v2.5.0
 defaults:
   forge: github
 repos:
@@ -288,7 +289,8 @@ fullsend repos uninstall acme/old-api --uninstall-only
 
 To upgrade the scaffold workflow ref across all manifest repos:
 
-1. Update `forge.github.fullsend_ref` in `repos.yaml` to the new version.
+1. Update `forge.github.fullsend_ref` (or `forge.gitlab.fullsend_ref` for
+   GitLab repos) in `repos.yaml` to the new version.
 
 2. Run install to converge:
 

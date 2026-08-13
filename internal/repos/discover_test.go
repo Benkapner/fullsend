@@ -72,6 +72,52 @@ func TestBuildManifest_MixedDiscovery(t *testing.T) {
 	}
 }
 
+func TestBuildManifest_GitLab_FullsendRef(t *testing.T) {
+	repos := []DiscoveredRepo{
+		{Owner: "acme", Repo: "r1", Source: "per-repo", FullsendRef: "v3.0.0"},
+		{Owner: "acme", Repo: "r2", Source: "per-repo", FullsendRef: "v3.0.0"},
+		{Owner: "acme", Repo: "r3", Source: "per-repo", FullsendRef: "v2.9.0"},
+	}
+	m, _ := buildManifest(repos, manifestConfig{
+		Forge: ForgeGitLab,
+	})
+
+	assert.Equal(t, "v3.0.0", m.Forge.GitLab.FullsendRef)
+
+	// r3 has a different ref from the forge-level default → per-repo override.
+	var r3 RepoEntry
+	for _, e := range m.Repos {
+		if e.Repo == "acme/r3" {
+			r3 = e
+		}
+	}
+	assert.True(t, r3.FullsendRef.Set)
+	assert.Equal(t, "v2.9.0", r3.FullsendRef.Value)
+}
+
+func TestBuildManifest_GitLab_FullsendRef_CLIFallback(t *testing.T) {
+	repos := []DiscoveredRepo{
+		{Owner: "acme", Repo: "r1", Source: "new"},
+	}
+	m, _ := buildManifest(repos, manifestConfig{
+		Forge:      ForgeGitLab,
+		CLIVersion: "3.1.0",
+	})
+
+	assert.Equal(t, "v3.1.0", m.Forge.GitLab.FullsendRef)
+}
+
+func TestBuildManifest_GitLab_FullsendRef_DefaultFallback(t *testing.T) {
+	repos := []DiscoveredRepo{
+		{Owner: "acme", Repo: "r1", Source: "new"},
+	}
+	m, _ := buildManifest(repos, manifestConfig{
+		Forge: ForgeGitLab,
+	})
+
+	assert.Equal(t, config.DefaultUpstreamRef, m.Forge.GitLab.FullsendRef)
+}
+
 // --- computeMode tests ---
 
 func TestComputeMode(t *testing.T) {

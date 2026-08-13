@@ -81,6 +81,16 @@ stages:
 			content: "              head_ref: $head_ref,\n              base_ref: $base_ref,",
 			want:    "",
 		},
+		{
+			name:    "version marker comment",
+			content: "---\n# fullsend-ref: v0.34.0\n# fullsend-stage: dispatch",
+			want:    "v0.34.0",
+		},
+		{
+			name:    "version marker with pre-release",
+			content: "---\n# fullsend-ref: v0.34.0-rc1\n",
+			want:    "v0.34.0-rc1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +179,20 @@ stages:
 			name:     "head_ref in jq template is not matched",
 			input:    "              head_ref: $head_ref,\n              base_ref: $base_ref,\n",
 			newRef:   "v2.0.0",
+			wantDiff: false,
+		},
+		{
+			name:     "version marker comment updated",
+			input:    "---\n# fullsend-ref: v0.34.0\n# fullsend-stage: dispatch\n",
+			newRef:   "v0.35.0",
+			want:     "---\n# fullsend-ref: v0.35.0\n# fullsend-stage: dispatch\n",
+			wantDiff: true,
+		},
+		{
+			name:     "version marker same version no change",
+			input:    "---\n# fullsend-ref: v0.35.0\n",
+			newRef:   "v0.35.0",
+			want:     "---\n# fullsend-ref: v0.35.0\n",
 			wantDiff: false,
 		},
 	}

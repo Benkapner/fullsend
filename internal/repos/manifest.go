@@ -88,8 +88,9 @@ func ForgeSectionFromURL(forgeName, forgeURL string) ForgeSection {
 
 // GitLabForgeInfra holds GitLab-specific infrastructure settings.
 type GitLabForgeInfra struct {
-	URL        string   `yaml:"url"`
-	RunnerTags []string `yaml:"runner_tags,omitempty"`
+	URL         string   `yaml:"url"`
+	RunnerTags  []string `yaml:"runner_tags,omitempty"`
+	FullsendRef string   `yaml:"fullsend_ref,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo.
@@ -572,6 +573,9 @@ func (m *Manifest) Validate() error {
 			if err := rejectExtraneousURLParts(u, "forge.gitlab.url"); err != nil {
 				return err
 			}
+			if m.Forge.GitLab.FullsendRef != "" && !IsValidRef(m.Forge.GitLab.FullsendRef) {
+				return fmt.Errorf("forge.gitlab.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Forge.GitLab.FullsendRef)
+			}
 		}
 	}
 
@@ -775,9 +779,12 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 	// InferenceProject, InferenceProjectNumber, and InferenceRegion
 	// are install-time-only values provided via CLI flags — they are
 	// not stored in the manifest and are not populated here.
-	if cfg.Forge == ForgeGitHub {
+	switch cfg.Forge {
+	case ForgeGitHub:
 		cfg.MintURL = resolveField(entry.MintURL, m.Forge.GitHub.MintURL, "")
 		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitHub.FullsendRef, "")
+	case ForgeGitLab:
+		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitLab.FullsendRef, "")
 	}
 	return cfg
 }
