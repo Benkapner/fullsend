@@ -14,7 +14,7 @@ import (
 )
 
 func TestGivenCustomHarness_Validation(t *testing.T) {
-	w := &world.World{}
+	w := &world.World{Org: "org", RepoName: "repo"}
 	require.Error(t, givenCustomHarness(w, "", "doc"))
 	require.Error(t, givenCustomHarness(w, "agent", ""))
 }
