@@ -132,7 +132,7 @@ type aggregateMetrics struct {
 	TokenUsage   struct {
 		Input         int `json:"input"`
 		Output        int `json:"output"`
-		Reasoning     int `json:"reasoning,omitempty"`
+		Reasoning     int `json:"reasoning"`
 		CacheCreation int `json:"cache_creation"`
 		CacheRead     int `json:"cache_read"`
 	} `json:"token_usage"`
