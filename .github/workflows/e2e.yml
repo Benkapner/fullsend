@@ -290,6 +290,7 @@ jobs:
           persist-credentials: false
 
       - name: Redact secrets from behaviour debug artifacts
+        id: redact
         if: failure() && steps.changes.outputs.relevant != 'false'
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
@@ -309,7 +310,7 @@ jobs:
         run: bash base-scripts/.github/scripts/redact-behaviour-artifacts.sh
 
       - name: Upload behaviour debug artifacts
-        if: failure() && steps.changes.outputs.relevant != 'false'
+        if: failure() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}

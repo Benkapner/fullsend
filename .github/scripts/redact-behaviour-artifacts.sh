@@ -55,12 +55,7 @@ _redact_literal_token() {
     return 0
   fi
 
-  export REDACT_LITERAL_TOKEN="${token}"
-  awk '
-    BEGIN {
-      token = ENVIRON["REDACT_LITERAL_TOKEN"]
-      repl = "[REDACTED]"
-    }
+  awk -v token="${token}" -v repl="[REDACTED]" '
     {
       s = $0
       while ((i = index(s, token)) > 0) {
@@ -79,15 +74,14 @@ _redact_literal_token() {
     done
     printf '%s' "${result}"
   }
-  unset REDACT_LITERAL_TOKEN
 }
 
 _redact_patterns() {
   sed -E \
-    -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
+    -e 's/gh[a-z]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
     -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
     -e 's/x-access-token:[^@[:space:]]+/x-access-token:[REDACTED]/g' \
-    -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
+    -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gI' \
     -e 's/ya29\.[A-Za-z0-9._-]+/[REDACTED]/g'
 }
 
@@ -130,7 +124,100 @@ _redact_text_content() {
 
 _contains_nul_bytes() {
   local file="$1"
-  python3 -c "import sys; data=open(sys.argv[1], 'rb').read(8192); sys.exit(0 if b'\\x00' in data else 1)" "${file}"
+  python3 -c "import sys; data=open(sys.argv[1], 'rb').read(); sys.exit(0 if b'\\x00' in data else 1)" "${file}"
+}
+
+_sanitize_log_path() {
+  local value="$1"
+  value="${value//$'\n'/}"
+  value="${value//::/}"
+  printf '%s' "${value}"
+}
+
+_stub_opaque_file() {
+  local file="$1"
+  local reason="${2:-could not be scanned for job secrets}"
+  local tmp safe_file
+  tmp="$(mktemp)"
+  printf '%s\n' "[REDACTED OPAQUE CONTENT]" "This file was removed from behaviour debug artifacts because it ${reason}." >"${tmp}"
+  mv "${tmp}" "${file}"
+  safe_file="$(_sanitize_log_path "${file}")"
+  echo "::warning::Replaced opaque artifact file: ${safe_file}"
+}
+
+_safe_extract_archive() {
+  local archive="$1"
+  local dest="$2"
+  local format="$3"
+
+  python3 - "${archive}" "${dest}" "${format}" "${ARCHIVE_PER_FILE_LIMIT}" "${ARCHIVE_TOTAL_LIMIT}" <<'PY'
+import pathlib
+import sys
+import tarfile
+import zipfile
+
+archive, dest, fmt = sys.argv[1:4]
+per_file = int(sys.argv[4])
+total_limit = int(sys.argv[5])
+root = pathlib.Path(dest)
+root.mkdir(parents=True, exist_ok=True)
+total = 0
+
+
+def safe_child(name: str) -> pathlib.Path:
+    candidate = (root / name).resolve()
+    root_resolved = root.resolve()
+    if candidate != root_resolved and root_resolved not in candidate.parents:
+        raise ValueError(f"path traversal entry: {name}")
+    return candidate
+
+
+if fmt == "zip":
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise ValueError(f"symlink entry: {info.filename}")
+            if info.is_dir():
+                safe_child(info.filename).mkdir(parents=True, exist_ok=True)
+                continue
+            if info.file_size > per_file:
+                raise ValueError(f"entry exceeds per-file limit: {info.filename}")
+            total += info.file_size
+            if total > total_limit:
+                raise ValueError("archive exceeds total extraction limit")
+            target = safe_child(info.filename)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as dst:
+                chunk = src.read(per_file + 1)
+                if len(chunk) > per_file:
+                    raise ValueError(f"entry exceeds per-file limit: {info.filename}")
+                dst.write(chunk)
+elif fmt == "tar.gz":
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            if member.issym() or member.islnk():
+                raise ValueError(f"link entry: {member.name}")
+            if member.isdir():
+                safe_child(member.name).mkdir(parents=True, exist_ok=True)
+                continue
+            if member.size > per_file:
+                raise ValueError(f"entry exceeds per-file limit: {member.name}")
+            total += member.size
+            if total > total_limit:
+                raise ValueError("archive exceeds total extraction limit")
+            target = safe_child(member.name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            extracted = tf.extractfile(member)
+            if extracted is None:
+                continue
+            data = extracted.read(per_file + 1)
+            if len(data) > per_file:
+                raise ValueError(f"entry exceeds per-file limit: {member.name}")
+            target.write_bytes(data)
+else:
+    raise ValueError(f"unsupported archive format: {fmt}")
+PY
 }
 
 _file_kind() {
@@ -203,27 +290,6 @@ _file_kind() {
   echo text
 }
 
-_stub_opaque_file() {
-  local file="$1"
-  local reason="${2:-could not be scanned for job secrets}"
-  local tmp
-  tmp="$(mktemp)"
-  printf '%s\n' "[REDACTED OPAQUE CONTENT]" "This file was removed from behaviour debug artifacts because it ${reason}." >"${tmp}"
-  mv "${tmp}" "${file}"
-  echo "::warning::Replaced opaque artifact file: ${file}"
-}
-
-_archive_tree_within_limits() {
-  local dir="$1"
-  local size
-
-  size="$(du -sb "${dir}" | awk '{print $1}')"
-  if [ "${size}" -gt "${ARCHIVE_TOTAL_LIMIT}" ]; then
-    return 1
-  fi
-  return 0
-}
-
 _redact_zip_file() {
   local file="$1"
   local tmpdir workdir
@@ -232,15 +298,9 @@ _redact_zip_file() {
   workdir="${tmpdir}/contents"
   mkdir -p "${workdir}"
 
-  if ! unzip -q "${file}" -d "${workdir}"; then
+  if ! _safe_extract_archive "${file}" "${workdir}" zip; then
     rm -rf "${tmpdir}"
-    _stub_opaque_file "${file}" "could not be extracted as zip"
-    return 0
-  fi
-
-  if ! _archive_tree_within_limits "${workdir}"; then
-    rm -rf "${tmpdir}"
-    _stub_opaque_file "${file}" "exceeds safe extraction limits"
+    _stub_opaque_file "${file}" "could not be safely extracted as zip"
     return 0
   fi
 
@@ -258,15 +318,9 @@ _redact_tar_gz_file() {
   workdir="${tmpdir}/contents"
   mkdir -p "${workdir}"
 
-  if ! tar -xzf "${file}" -C "${workdir}"; then
+  if ! _safe_extract_archive "${file}" "${workdir}" tar.gz; then
     rm -rf "${tmpdir}"
-    _stub_opaque_file "${file}" "could not be extracted as tar.gz"
-    return 0
-  fi
-
-  if ! _archive_tree_within_limits "${workdir}"; then
-    rm -rf "${tmpdir}"
-    _stub_opaque_file "${file}" "exceeds safe extraction limits"
+    _stub_opaque_file "${file}" "could not be safely extracted as tar.gz"
     return 0
   fi
 
