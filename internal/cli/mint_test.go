@@ -2884,6 +2884,73 @@ func TestMintDeployCmd_CloudflareCustomDomainDryRun(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestMintDeployCmd_CloudflareCustomDomainWithPreviewRejected(t *testing.T) {
+	// --custom-domain + --preview should fail at CLI level before reaching
+	// the provisioner's validate(). This ensures dry-run and actual deploy
+	// produce the same error, rather than dry-run silently discarding the
+	// custom domain output.
+	withCFEnvVars(t)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--custom-domain=mint.fullsend.sh",
+		"--preview=bt-test-42",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for preview deploys",
+		"--custom-domain + --preview should be rejected at CLI level")
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainWithPreviewRejectedNonDryRun(t *testing.T) {
+	// Same rejection should happen for non-dry-run deploys.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--custom-domain=mint.fullsend.sh",
+		"--preview=bt-test-42",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for preview deploys",
+		"--custom-domain + --preview should be rejected at CLI level")
+}
+
+func TestMintDeployCmd_CustomDomainWarnsOnGCP(t *testing.T) {
+	// --custom-domain should produce a warning when used with --platform=gcp,
+	// matching the behavior of all other Cloudflare-only flags.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=gcp",
+		"--project=my-project-id",
+		"--dry-run",
+		"--custom-domain=mint.fullsend.sh",
+	})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--custom-domain is a Cloudflare flag",
+		"--custom-domain should produce a warning on GCP")
+}
+
 func TestMintDeployCmd_CloudflareCustomDomainZoneLookupFailure(t *testing.T) {
 	// Deploy with --custom-domain should fail when zone lookup fails.
 	withCFEnvVars(t)

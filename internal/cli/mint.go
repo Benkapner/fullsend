@@ -603,6 +603,7 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 			{"per-repo-wif-repos", "Cloudflare"},
 			{"workflow-host-repos", "Cloudflare"},
 			{"allowed-workflow-files", "Cloudflare"},
+			{"custom-domain", "Cloudflare"},
 		},
 		"cloudflare": {
 			{"project", "GCP"},
@@ -777,6 +778,13 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 
 	if previewAlias != "" && !cf.ValidatePreviewAlias(previewAlias) {
 		return fmt.Errorf("invalid --preview alias %q: must be 2-63 lowercase alphanumeric characters or hyphens", previewAlias)
+	}
+
+	// Custom domains are zone-scoped and apply only to durable Workers.
+	// Reject the combination early so dry-run output matches runtime
+	// validation behavior (the provisioner's validate() also rejects it).
+	if customDomain != "" && previewAlias != "" {
+		return fmt.Errorf("--custom-domain is not supported for preview deploys (custom domains apply only to durable Workers)")
 	}
 
 	printer := ui.New(os.Stdout)
