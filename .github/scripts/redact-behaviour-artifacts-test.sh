@@ -112,6 +112,15 @@ ARTIFACT_DIR="${TMPDIR}/artifacts" TEST_CODER_PEM="literal-secret-pem-value" bas
 cp "${TMPDIR}/artifacts/artifact.log" "${TMPDIR}/artifact.log"
 run_test "redacts-literal-env-secret" "literal-secret-pem-value" "Normal log line: assertion failed at step 3"
 
+cat >"${TMPDIR}/artifact.log" <<'EOF'
+dumped literal-secret\value in log
+EOF
+mkdir -p "${TMPDIR}/artifacts"
+cp "${TMPDIR}/artifact.log" "${TMPDIR}/artifacts/artifact.log"
+ARTIFACT_DIR="${TMPDIR}/artifacts" TEST_CODER_PEM='literal-secret\value' bash "${REDACT_SCRIPT}" >/dev/null
+cp "${TMPDIR}/artifacts/artifact.log" "${TMPDIR}/artifact.log"
+run_test "redacts-literal-backslash-secret" 'literal-secret\value'
+
 echo "==> Compressed artifact redaction"
 rm -rf "${TMPDIR}/artifacts"
 mkdir -p "${TMPDIR}/artifacts"

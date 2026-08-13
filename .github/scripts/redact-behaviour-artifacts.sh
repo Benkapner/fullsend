@@ -55,8 +55,10 @@ _redact_literal_token() {
     return 0
   fi
 
-  awk -v token="${token}" -v repl="[REDACTED]" '
+  REDACT_LITERAL_TOKEN="${token}" REDACT_LITERAL_REPL="[REDACTED]" awk '
     {
+      token = ENVIRON["REDACT_LITERAL_TOKEN"]
+      repl = ENVIRON["REDACT_LITERAL_REPL"]
       s = $0
       while ((i = index(s, token)) > 0) {
         s = substr(s, 1, i - 1) repl substr(s, i + length(token))
@@ -130,7 +132,14 @@ _contains_nul_bytes() {
 _sanitize_log_path() {
   local value="$1"
   value="${value//$'\n'/}"
+  value="${value//$'\r'/}"
   value="${value//::/}"
+  value="${value//%0A/}"
+  value="${value//%0a/}"
+  value="${value//%0D/}"
+  value="${value//%0d/}"
+  value="${value//%25/}"
+  value="$(printf '%s' "${value}" | sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g')"
   printf '%s' "${value}"
 }
 
