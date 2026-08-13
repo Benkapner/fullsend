@@ -88,6 +88,12 @@ type InstallConfig struct {
 	// read from the repo during discovery. Used to preserve the credential
 	// mode on re-install when InferenceProject is not provided.
 	DiscoveredCredMode string
+
+	// PrebuiltScaffoldFiles, when non-nil, replaces the embedded scaffold
+	// template collection. Used when fullsend_ref pins to a version that
+	// differs from the running binary, so templates are fetched from the
+	// fullsend-ai/fullsend repo at the pinned ref.
+	PrebuiltScaffoldFiles scaffold.InstallFiles
 }
 
 // InstallResult holds the outcome of a per-repo installation.
@@ -288,16 +294,20 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	}
 
 	var installFiles scaffold.InstallFiles
-	switch cfg.Forge {
-	case ForgeGitHub:
-		installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
-	case ForgeGitLab:
-		installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
-	default:
-		return nil, fmt.Errorf("unsupported forge %q for scaffold generation", cfg.Forge)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("collecting install files: %w", err)
+	if cfg.PrebuiltScaffoldFiles != nil {
+		installFiles = cfg.PrebuiltScaffoldFiles
+	} else {
+		switch cfg.Forge {
+		case ForgeGitHub:
+			installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
+		case ForgeGitLab:
+			installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
+		default:
+			return nil, fmt.Errorf("unsupported forge %q for scaffold generation", cfg.Forge)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("collecting install files: %w", err)
+		}
 	}
 
 	var files []forge.TreeFile

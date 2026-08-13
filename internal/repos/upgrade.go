@@ -63,20 +63,31 @@ func IsValidRef(ref string) bool {
 	return ref != "" && safeRefPattern.MatchString(ref)
 }
 
-// replaceShimRef replaces the @ref (and optional trailing # tag comment) in all
+// replaceShimRef replaces the @ref (and optional trailing annotation) in all
 // fullsend-ai/fullsend uses: lines within a workflow file, using the
-// forge-specific shim ref pattern. The newRef and newTag are formatted
-// as "newRef # newTag" when newTag is non-empty and differs from newRef.
-func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig) ([]byte, bool) {
-	suffix := newRef
-	if newTag != "" && newTag != newRef {
-		suffix = newRef + " # " + newTag
-	}
+// forge-specific shim ref pattern. GitHub uses YAML comment annotation
+// "ref # tag"; GitLab uses parenthesized "ref (tag)".
+func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig, forgeName string) ([]byte, bool) {
+	suffix := formatRefAnnotation(newRef, newTag, forgeName)
 
 	safe := strings.ReplaceAll(suffix, "$", "$$")
 	replaced := fc.ShimRefPattern.ReplaceAllString(string(content), "${1}"+safe)
 	changed := replaced != string(content)
 	return []byte(replaced), changed
+}
+
+// formatRefAnnotation formats a ref with its human-readable annotation.
+// GitHub uses YAML comment syntax ("sha # tag") since annotations appear
+// inline in uses: lines. GitLab uses parenthesized syntax ("sha (tag)")
+// since annotations appear inside YAML comment markers.
+func formatRefAnnotation(ref, tag, forgeName string) string {
+	if tag == "" || tag == ref {
+		return ref
+	}
+	if forgeName == ForgeGitLab {
+		return ref + " (" + tag + ")"
+	}
+	return ref + " # " + tag
 }
 
 // Upgrade upgrades the scaffold shim ref across repos in the manifest.
@@ -210,7 +221,7 @@ func upgradeRepo(ctx context.Context,
 	if cfg.DryRun {
 		// Check if any uses: lines would change without resolving the SHA,
 		// so DryRun never makes API calls that could fail.
-		_, changed := replaceShimRef(content, targetRef, "", fc)
+		_, changed := replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
 		if !changed {
 			result.Skipped = true
 			result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
@@ -238,12 +249,12 @@ func upgradeRepo(ctx context.Context,
 			result.Error = fmt.Errorf("resolving tag %s to SHA: %w", targetRef, err)
 			return result
 		}
-		newContent, changed = replaceShimRef(content, sha, targetRef, fc)
+		newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
 	} else {
 		if isSHARef(currentRef) {
 			progress(repoFullName, "upgrade", "SHA pinning not preserved (non-GitHub forge); switching to tag ref")
 		}
-		newContent, changed = replaceShimRef(content, targetRef, "", fc)
+		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
 	}
 	if !changed {
 		result.Skipped = true
