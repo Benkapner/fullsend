@@ -71,6 +71,7 @@ type githubSetupConfig struct {
 	runtime              string
 	configPreset         string // --config: local path or HTTPS URL to a preset
 	configHash           string // --config-hash: SHA-256 hex digest for preset validation
+	signoff              bool   // --signoff: add Signed-off-by trailer to scaffold commits
 
 	// changedFlags records which flags were explicitly set on the
 	// command line (populated by RunE before calling the setup
@@ -116,7 +117,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 			_, _, isRepoTarget := parseTarget(cfg.target)
 			if !isRepoTarget {
-				for _, name := range []string{"config", "config-hash"} {
+				for _, name := range []string{"config", "config-hash", "signoff"} {
 					if cmd.Flags().Changed(name) {
 						return fmt.Errorf("--%s is only valid for per-repo setup (fullsend github setup <owner/repo>)", name)
 					}
@@ -191,6 +192,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
+	cmd.Flags().BoolVar(&cfg.signoff, "signoff", false, "add Signed-off-by trailer to scaffold commits (requires GitHub user identity)")
 
 	return cmd
 }
@@ -402,11 +404,40 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = cfg.inferenceWIFProvider
 	}
 
+	// Resolve Signed-off-by trailer when --signoff is set.
+	//
+	// Identity resolution runs before the dry-run early return so that
+	// --dry-run --signoff validates the token's identity up front instead
+	// of silently skipping the check.
+	//
+	// Unlike sync-scaffold (which gracefully degrades when identity is
+	// unavailable), setup uses an explicit opt-in flag and hard-fails.
+	// The user explicitly requested DCO sign-off; silently omitting the
+	// trailer would cause the DCO check to fail with a confusing error.
+	var signOffTrailer string
+	if cfg.signoff {
+		id, idErr := client.GetAuthenticatedUserIdentity(ctx)
+		if idErr != nil {
+			return fmt.Errorf("--signoff requires a GitHub user identity (name and email) — this is not available for GitHub App tokens: %w", idErr)
+		}
+		if id.Name == "" || id.Email == "" {
+			return fmt.Errorf("--signoff requires a GitHub user identity with both name and email set (got name=%q, email=%q)", id.Name, id.Email)
+		}
+		trailer, trailerErr := id.SignOffTrailer()
+		if trailerErr != nil {
+			return fmt.Errorf("--signoff: %w", trailerErr)
+		}
+		signOffTrailer = trailer
+	}
+
 	if cfg.dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		for _, f := range files {
 			printer.StepDone(fmt.Sprintf("Would commit: %s (%d bytes)", f.Path, len(f.Content)))
+		}
+		if signOffTrailer != "" {
+			printer.StepDone(fmt.Sprintf("Would add trailer: %s", signOffTrailer))
 		}
 		printer.Blank()
 		printer.StepInfo("Would set repository variables:")
@@ -441,7 +472,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, cfg.direct); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer}); err != nil {
 		return err
 	}
 

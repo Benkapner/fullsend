@@ -25,19 +25,15 @@ func TestGivenFork_SetsWorldState(t *testing.T) {
 	assert.Equal(t, "repo-fork", w.ForkRepo)
 }
 
-func TestGivenFork_AutoFillsRepoFromInstall(t *testing.T) {
+func TestGivenFork_ErrorsWhenNoRepoConfigured(t *testing.T) {
 	w := &world.World{
 		Org:     "auto-org",
-		Install: &fakeInstallState{testRepo: "auto-repo"},
+		Install: &fakeInstallState{},
 		SCM:     &fakeForkSCM{forkRepo: "auto-repo-fork"},
 	}
 	err := givenFork(w, "auto-repo-fork")
-	require.NoError(t, err)
-	assert.Equal(t, "auto-org", w.RepoOwner)
-	assert.Equal(t, "auto-repo", w.RepoName)
-	assert.Equal(t, "auto-org/auto-repo", w.RepoFull)
-	assert.Equal(t, "auto-org", w.ForkOwner)
-	assert.Equal(t, "auto-repo-fork", w.ForkRepo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
 }
 
 func TestGivenFork_CreateForkError(t *testing.T) {
@@ -396,12 +392,9 @@ func TestAwaitForkReady_ContextCancelledDuringBranchNamePoll(t *testing.T) {
 }
 
 // fakeInstallState implements install.State for fork step unit tests.
-type fakeInstallState struct {
-	testRepo string
-}
+type fakeInstallState struct{}
 
 func (f *fakeInstallState) Mode() string               { return "per-org" }
-func (f *fakeInstallState) TestRepo() string           { return f.testRepo }
 func (f *fakeInstallState) ConfigOwner() string        { return "" }
 func (f *fakeInstallState) ConfigRepo() string         { return "" }
 func (f *fakeInstallState) ConfigPathPrefix() string   { return "" }

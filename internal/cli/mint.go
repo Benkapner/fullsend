@@ -405,6 +405,7 @@ func newMintDeployCmd() *cobra.Command {
 	var perRepoWIFRepos string
 	var workflowHostRepos string
 	var allowedWorkflowFiles string
+	var customDomain string
 
 	cmd := &cobra.Command{
 		Use:   "deploy",
@@ -448,7 +449,7 @@ Cloudflare mode (--platform=cloudflare):
   Required flags: none (Worker name defaults to "fullsend-mint")
   Optional: --worker-name, --preview=<alias>, --source-dir, --pem-dir,
             --app-set, --roles, --allowed-orgs, --per-repo-wif-repos,
-            --workflow-host-repos, --public
+            --workflow-host-repos, --public, --custom-domain
 
   Authentication (one of):
     - CLOUDFLARE_API_TOKEN env var (+ CLOUDFLARE_ACCOUNT_ID)
@@ -497,6 +498,12 @@ Cloudflare mode (--platform=cloudflare):
     --roles=fullsend,triage,coder,review,retro,prioritize,e2e
   Role aliases (e.g. fix→coder) are resolved automatically.
 
+  Use --custom-domain to attach a Workers Custom Domain (e.g.
+  mint.fullsend.sh) to the durable Worker. The zone ID is resolved
+  automatically from the domain name via the Cloudflare API.
+  Custom domains are only supported for durable deploys — preview
+  deploys use bare workers.dev hostnames.
+
   Use --preview=<alias> for ephemeral preview deploys. This runs
   'wrangler versions upload --preview-alias=<alias>' instead of
   'wrangler deploy', so the durable Worker script is not affected.
@@ -533,7 +540,7 @@ Cloudflare mode (--platform=cloudflare):
 				if public && cmd.Flags().Changed("per-repo-wif-repos") {
 					return fmt.Errorf("--public and --per-repo-wif-repos are mutually exclusive; use one or the other")
 				}
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -574,6 +581,10 @@ Omit to preserve existing value on redeploy; set to "" to clear`)
 Durable: omit to preserve existing binding; set to "" to clear.
 Preview: defaults to * when omitted (all basenames allowed).
 Use --allowed-workflow-files=dispatch.yml,fullsend.yml to restrict.`)
+	cmd.Flags().StringVar(&customDomain, "custom-domain", "", `hostname to attach as a Workers Custom Domain (Cloudflare only).
+When set for durable deploys, the CLI attaches the domain.
+The zone ID is resolved automatically. Not supported for preview deploys.
+Example: --custom-domain=mint.fullsend.sh`)
 
 	return cmd
 }
@@ -592,6 +603,7 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 			{"per-repo-wif-repos", "Cloudflare"},
 			{"workflow-host-repos", "Cloudflare"},
 			{"allowed-workflow-files", "Cloudflare"},
+			{"custom-domain", "Cloudflare"},
 		},
 		"cloudflare": {
 			{"project", "GCP"},
@@ -733,7 +745,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -766,6 +778,13 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 
 	if previewAlias != "" && !cf.ValidatePreviewAlias(previewAlias) {
 		return fmt.Errorf("invalid --preview alias %q: must be 2-63 lowercase alphanumeric characters or hyphens", previewAlias)
+	}
+
+	// Custom domains are zone-scoped and apply only to durable Workers.
+	// Reject the combination early so dry-run output matches runtime
+	// validation behavior (the provisioner's validate() also rejects it).
+	if customDomain != "" && previewAlias != "" {
+		return fmt.Errorf("--custom-domain is not supported for preview deploys (custom domains apply only to durable Workers)")
 	}
 
 	printer := ui.New(os.Stdout)
@@ -877,6 +896,9 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 				printer.StepInfo(fmt.Sprintf("Would set %s=%s", k, v))
 			}
 		}
+		if customDomain != "" && previewAlias == "" {
+			printer.StepInfo(fmt.Sprintf("Would attach custom domain %s (zone ID resolved at deploy time)", customDomain))
+		}
 		if pemDir != "" {
 			if _, err := validatePEMDir(pemDir, roles); err != nil {
 				return err
@@ -921,6 +943,21 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		cfSecrets = cf.PEMSecretsFromRoles(agentPEMs)
 	}
 
+	// Resolve zone ID early when custom domain is set. This validates
+	// that the domain's zone exists in the account before starting
+	// the deploy, giving the user a clear error message.
+	var resolvedZoneID string
+	if customDomain != "" && previewAlias == "" {
+		printer.StepStart(fmt.Sprintf("Resolving zone ID for %s", customDomain))
+		var zoneErr error
+		resolvedZoneID, zoneErr = cf.ResolveZoneIDForDomainFn(ctx, customDomain)
+		if zoneErr != nil {
+			printer.StepFail("Zone lookup failed")
+			return fmt.Errorf("resolving zone ID for custom domain %s: %w", customDomain, zoneErr)
+		}
+		printer.StepDone(fmt.Sprintf("Zone ID: %s", resolvedZoneID))
+	}
+
 	cfg := cf.Config{
 		AccountID:    accountID,
 		WorkerName:   workerName,
@@ -931,6 +968,8 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		Secrets:      cfSecrets,
 		Version:      version,
 		Commit:       deployCommit,
+		ZoneID:       resolvedZoneID,
+		CustomDomain: customDomain,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)

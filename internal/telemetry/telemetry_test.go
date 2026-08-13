@@ -16,8 +16,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -27,12 +30,16 @@ import (
 )
 
 // pinOTELEnv clears ambient OTEL variables so tests are hermetic in CI
-// (where OTEL_EXPORTER_OTLP_TRACES_ENDPOINT may be set by org vars).
+// (where OTEL_EXPORTER_OTLP_TRACES_ENDPOINT may be set by org vars). The
+// span-limit variables are load-bearing for spanLimits, so every caller
+// gets them cleared too.
 func pinOTELEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 }
 
 func TestSetup_FileExporter(t *testing.T) {
@@ -65,6 +72,124 @@ func TestSetup_FileExporter(t *testing.T) {
 	require.NotEmpty(t, td.ResourceSpans)
 	require.NotEmpty(t, td.ResourceSpans[0].ScopeSpans)
 	assert.Equal(t, "test-span", td.ResourceSpans[0].ScopeSpans[0].Spans[0].Name)
+}
+
+// TestSetup_SpanAttributeValueLengthLimit pins the provider-level bound on
+// attribute values: a free-text attribute (model name, skip reason) cannot
+// ride an export at arbitrary size.
+func TestSetup_SpanAttributeValueLengthLimit(t *testing.T) {
+	pinOTELEnv(t)
+	dir := t.TempDir()
+	tracer, cleanup := Setup(dir, "1.0.0-test")
+
+	_, span := tracer.Start(context.Background(), "attr-span")
+	span.SetAttributes(attribute.String("fullsend.test_attr", strings.Repeat("a", 100_000)))
+	span.End()
+	cleanup(context.Background())
+
+	data, err := os.ReadFile(filepath.Join(dir, TelemetryFile))
+	require.NoError(t, err)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+	spans := doc["resourceSpans"].([]any)[0].(map[string]any)["scopeSpans"].([]any)[0].(map[string]any)["spans"].([]any)
+	attrs := spans[0].(map[string]any)["attributes"].([]any)
+	var got string
+	for _, a := range attrs {
+		kv := a.(map[string]any)
+		if kv["key"] == "fullsend.test_attr" {
+			got = kv["value"].(map[string]any)["stringValue"].(string)
+		}
+	}
+	require.NotEmpty(t, got, "test attribute must be exported")
+	assert.Len(t, got, MaxSpanAttrValueLen, "attribute value must be truncated to the provider limit")
+}
+
+// TestAttrLimit_SDKBehaviorCanary pins two SDK properties this package's
+// callers depend on, so an SDK upgrade that changes either fails here
+// instead of silently shifting the export contract: (1) the attribute
+// limit counts characters, not bytes — a multibyte value truncates to
+// MaxSpanAttrValueLen runes, which is more than MaxSpanAttrValueLen
+// bytes on the wire; (2) an under-limit value is returned unchanged,
+// invalid UTF-8 included — which is why free-text attribute values are
+// repaired at their call sites (internal/cli stringAttr).
+func TestAttrLimit_SDKBehaviorCanary(t *testing.T) {
+	pinOTELEnv(t)
+	record := func(val string) string {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithRawSpanLimits(spanLimits()),
+			sdktrace.WithSpanProcessor(rec),
+		)
+		_, span := tp.Tracer("t").Start(context.Background(), "s")
+		span.SetAttributes(attribute.String("k", val))
+		span.End()
+		ended := rec.Ended()
+		require.Len(t, ended, 1)
+		for _, kv := range ended[0].Attributes() {
+			if kv.Key == "k" {
+				return kv.Value.AsString()
+			}
+		}
+		t.Fatal("attribute not recorded")
+		return ""
+	}
+
+	t.Run("limit counts characters, not bytes", func(t *testing.T) {
+		got := record(strings.Repeat("é", MaxSpanAttrValueLen+100))
+		assert.Equal(t, MaxSpanAttrValueLen, utf8.RuneCountInString(got))
+		assert.Equal(t, 2*MaxSpanAttrValueLen, len(got),
+			"two-byte runes make the byte size twice the limit")
+	})
+
+	t.Run("under-limit invalid UTF-8 passes through unrepaired", func(t *testing.T) {
+		got := record("bad\xff\xfebytes")
+		assert.False(t, utf8.ValidString(got),
+			"the SDK repairs only when truncating — call sites own the repair")
+	})
+}
+
+// TestSpanLimits pins the default and the operator-env precedence,
+// including the explicit "-1" (unlimited) sentinel, which the SDK
+// collapses to the same struct value as "unset".
+func TestSpanLimits(t *testing.T) {
+	pinOTELEnv(t)
+	assert.Equal(t, MaxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+		"unset env defaults to MaxSpanAttrValueLen")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "512")
+	assert.Equal(t, 512, spanLimits().AttributeValueLengthLimit,
+		"operator env setting wins over the default")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "-1")
+	assert.Equal(t, -1, spanLimits().AttributeValueLengthLimit,
+		"an explicit -1 (unlimited) is honored, not capped")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "-1")
+	assert.Equal(t, -1, spanLimits().AttributeValueLengthLimit,
+		"the generic variable's explicit -1 is honored too")
+
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "banana")
+	assert.Equal(t, MaxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+		"an unparseable value is not an operator setting; the default applies")
+
+	// The SDK's firstInt short-circuits on the first non-empty key: an
+	// unparseable specific variable falls back to the SDK default without
+	// ever consulting the generic one. The helper must mirror that, or a
+	// mixed valid/invalid override leaves attribute values unbounded.
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "garbage")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "500")
+	require.Equal(t, -1, sdktrace.NewSpanLimits().AttributeValueLengthLimit,
+		"SDK ground truth: invalid specific var short-circuits, generic var ignored")
+	assert.Equal(t, MaxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+		"an override the SDK discarded is not an operator setting; the default applies")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "512")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "garbage")
+	require.Equal(t, 512, sdktrace.NewSpanLimits().AttributeValueLengthLimit)
+	assert.Equal(t, 512, spanLimits().AttributeValueLengthLimit,
+		"a valid specific var wins regardless of the generic one")
 }
 
 func TestSetup_NoopOnBadDir(t *testing.T) {

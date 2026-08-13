@@ -15,7 +15,6 @@ func NewPerRepoState(org, repo, mintURL string) *PerRepoState {
 }
 
 func (s *PerRepoState) Mode() string               { return "per-repo" }
-func (s *PerRepoState) TestRepo() string           { return s.repo }
 func (s *PerRepoState) ConfigOwner() string        { return s.org }
 func (s *PerRepoState) ConfigRepo() string         { return s.repo }
 func (s *PerRepoState) ConfigPathPrefix() string   { return ".fullsend" }

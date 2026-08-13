@@ -56,7 +56,7 @@ func TestFakeEnsurer_ReturnsCorrectState(t *testing.T) {
 	e := newFakeEnsurer()
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-01")
 	require.NoError(t, err)
-	assert.Equal(t, "test-repo-01", st.TestRepo())
+	assert.Equal(t, "test-repo-01", st.ConfigRepo())
 	assert.Equal(t, "org", st.ConfigOwner())
 	assert.Equal(t, "per-repo", st.Mode())
 }
@@ -89,8 +89,8 @@ func TestFakeEnsurer_IndependentRepos(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotSame(t, st1, st2)
-	assert.Equal(t, "test-repo-01", st1.TestRepo())
-	assert.Equal(t, "test-repo-02", st2.TestRepo())
+	assert.Equal(t, "test-repo-01", st1.ConfigRepo())
+	assert.Equal(t, "test-repo-02", st2.ConfigRepo())
 	assert.Equal(t, int32(2), e.calls.Load())
 }
 
@@ -244,7 +244,7 @@ func TestRepoEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-05")
 	require.NoError(t, err)
-	assert.Equal(t, "test-repo-05", st.TestRepo())
+	assert.Equal(t, "test-repo-05", st.ConfigRepo())
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
 }
 
@@ -260,7 +260,7 @@ func TestRepoEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
 
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-03")
 	require.NoError(t, err)
-	assert.Equal(t, "test-repo-03", st.TestRepo())
+	assert.Equal(t, "test-repo-03", st.ConfigRepo())
 	assert.Equal(t, int32(0), sc.createRepoCalled.Load(), "should not create existing repo")
 }
 
@@ -278,7 +278,6 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "per-repo", st.Mode())
-	assert.Equal(t, "test-repo-07", st.TestRepo())
 	assert.Equal(t, "test-org", st.ConfigOwner())
 	assert.Equal(t, "test-repo-07", st.ConfigRepo())
 	assert.Equal(t, ".fullsend", st.ConfigPathPrefix())
@@ -316,7 +315,7 @@ func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-10")
 	require.NoError(t, err)
 	require.NotNil(t, st)
-	assert.Equal(t, "test-repo-10", st.TestRepo())
+	assert.Equal(t, "test-repo-10", st.ConfigRepo())
 	assert.Equal(t, "org", st.ConfigOwner())
 
 	// CLI should have been called for "github setup".
@@ -355,7 +354,7 @@ func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 	st, err := e.EnsureRepo(ctx, "org", "test-repo-new")
 	require.NoError(t, err)
 	require.NotNil(t, st)
-	assert.Equal(t, "test-repo-new", st.TestRepo())
+	assert.Equal(t, "test-repo-new", st.ConfigRepo())
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load(), "repo should be created")
 	require.Len(t, cliCalls, 1)
 	assert.Equal(t, "github", cliCalls[0][0])
@@ -676,7 +675,7 @@ func TestDoEnsure_AlreadyInstalledReVendors(t *testing.T) {
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-revendor")
 	require.NoError(t, err)
 	require.NotNil(t, st)
-	assert.Equal(t, "test-repo-revendor", st.TestRepo())
+	assert.Equal(t, "test-repo-revendor", st.ConfigRepo())
 	assert.True(t, cliCalled, "CLI should be called to re-vendor even when validation passes")
 }
 

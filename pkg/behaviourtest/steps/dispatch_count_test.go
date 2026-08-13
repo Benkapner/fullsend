@@ -27,7 +27,6 @@ func (m *mockCIDriver) CountHarnessDispatches(ctx context.Context, owner, repo, 
 type mockInstallState struct{}
 
 func (m *mockInstallState) Mode() string               { return "per-repo" }
-func (m *mockInstallState) TestRepo() string           { return "test-repo" }
 func (m *mockInstallState) ConfigOwner() string        { return "test-org" }
 func (m *mockInstallState) ConfigRepo() string         { return "test-repo" }
 func (m *mockInstallState) ConfigPathPrefix() string   { return "" }
