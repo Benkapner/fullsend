@@ -38,7 +38,7 @@ var _ forge.GitHubExtensions = (*LiveClient)(nil)
 // New creates a new GitHub client with the given personal access token.
 func New(token string) *LiveClient {
 	return &LiveClient{
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{Timeout: 60 * time.Second},
 		token:   token,
 		baseURL: "https://api.github.com",
 	}
@@ -175,6 +175,27 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 
 		resp, err := c.http.Do(req)
 		if err != nil {
+			// If the caller's context is done, propagate immediately
+			// — retrying is pointless when the parent has cancelled.
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("http %s %s: %w", method, path, err)
+			}
+			// HTTP client timeout (Client.Timeout exceeded): retry
+			// with exponential backoff, same as transient server errors.
+			if isTimeoutError(err) {
+				if attempt == maxRetries-1 {
+					return nil, fmt.Errorf("http %s %s: %w (after %d attempts)", method, path, err, maxRetries)
+				}
+				base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+				half := base / 2
+				delay := half + time.Duration(rand.Int64N(int64(half)+1))
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				continue
+			}
 			return nil, fmt.Errorf("http %s %s: %w", method, path, err)
 		}
 
@@ -248,6 +269,15 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 		return false, data
 	}
 	return false, nil
+}
+
+// isTimeoutError reports whether err is an HTTP client timeout (e.g.
+// Client.Timeout exceeded) as opposed to a caller-context cancellation.
+// Callers must check ctx.Err() first — this function only distinguishes
+// timeout transport errors from other transport errors.
+func isTimeoutError(err error) bool {
+	var te interface{ Timeout() bool }
+	return errors.As(err, &te) && te.Timeout()
 }
 
 // secondaryRateLimitBackoff is the minimum backoff for secondary rate limits
