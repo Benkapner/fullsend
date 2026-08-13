@@ -317,6 +317,27 @@ blocked unless `--force` is set.
 
 ## Troubleshooting
 
+### Unknown field errors in repos.yaml
+
+The manifest parser strictly validates field names in all sections
+(`defaults`, `forge`, `forge.github`, `forge.gitlab`, and top-level).
+Unrecognized fields are rejected with an error naming the offending key:
+
+```
+parsing manifest YAML: line 8: field fullsend_ref not found in type repos.Defaults
+```
+
+Common causes:
+
+- **Typos** — e.g., `mint_ulr` instead of `mint_url`.
+- **Deprecated or unsupported fields** — fields that were never part of the
+  manifest schema (such as the legacy `mint:` key) are rejected.
+- **Wrong nesting level** — e.g., placing `fullsend_ref` under `defaults`
+  instead of under `forge.github` or `forge.gitlab`.
+
+To fix, correct the field name or remove the unrecognized entry and re-run
+the command.
+
 ### Partial secret state
 
 When only one of the two required repo secrets (`FULLSEND_GCP_PROJECT_ID`

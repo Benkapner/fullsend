@@ -1015,10 +1015,9 @@ func TestLoadManifest_InvalidYAML(t *testing.T) {
 	assert.ErrorContains(t, err, "parsing manifest YAML")
 }
 
-func TestLoadManifest_LegacyMintKey_Ignored(t *testing.T) {
+func TestLoadManifest_LegacyMintKey_Rejected(t *testing.T) {
 	// The legacy top-level 'mint:' key was never released externally.
-	// yaml.v3 struct decoding silently ignores unknown top-level keys,
-	// so the manifest loads successfully but the mint values are dropped.
+	// Unknown top-level fields are now rejected by KnownFields(true).
 	manifest := `
 version: 1
 mint:
@@ -1035,12 +1034,138 @@ repos:
 	path := filepath.Join(dir, "repos.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
 
-	m, err := LoadManifest(context.Background(), path)
-	require.NoError(t, err)
-	assert.Equal(t, 1, m.Version)
-	assert.Len(t, m.Repos, 1)
-	// The mint values should not appear in the forge section.
-	assert.Empty(t, m.Forge.GitHub.MintURL)
+	_, err := LoadManifest(context.Background(), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint")
+}
+
+func TestLoadManifest_RejectsUnknownDefaultsField(t *testing.T) {
+	manifest := `
+version: 1
+forge:
+  github:
+    mint_url: https://mint.example.com
+defaults:
+  forge: github
+  fullsend_ref: main
+repos:
+  - acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	_, err := LoadManifest(context.Background(), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fullsend_ref")
+}
+
+func TestLoadManifest_RejectsUnknownForgeGitHubField(t *testing.T) {
+	manifest := `
+version: 1
+forge:
+  github:
+    mint_url: https://mint.example.com
+    bogus_field: val
+defaults:
+  forge: github
+repos:
+  - acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	_, err := LoadManifest(context.Background(), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bogus_field")
+}
+
+func TestLoadManifest_RejectsUnknownForgeGitLabField(t *testing.T) {
+	manifest := `
+version: 1
+forge:
+  gitlab:
+    url: https://gitlab.example.com
+    bogus_field: val
+defaults:
+  forge: gitlab
+repos:
+  - acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	_, err := LoadManifest(context.Background(), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bogus_field")
+}
+
+func TestLoadManifest_RejectsUnknownTopLevelField(t *testing.T) {
+	manifest := `
+version: 1
+forge:
+  github:
+    mint_url: https://mint.example.com
+defaults:
+  forge: github
+unknown_section: true
+repos:
+  - acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	_, err := LoadManifest(context.Background(), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown_section")
+}
+
+func TestLoadManifest_RejectsUnknownForgeSectionField(t *testing.T) {
+	manifest := `
+version: 1
+forge:
+  github:
+    mint_url: https://mint.example.com
+  bitbucket:
+    url: https://bitbucket.example.com
+defaults:
+  forge: github
+repos:
+  - acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	_, err := LoadManifest(context.Background(), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bitbucket")
+}
+
+func TestParseManifestBytes_EmptyAndCommentOnlyInput(t *testing.T) {
+	// yaml.Decoder.Decode returns io.EOF for empty or comment-only input.
+	// parseManifestBytes must treat this as a no-op (matching the old
+	// yaml.Unmarshal behavior) so callers like SetDefault can handle
+	// empty manifest files as zero-value manifests.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"whitespace only", "   \n\n  "},
+		{"comment only", "# this is a comment\n# another comment\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var m Manifest
+			err := parseManifestBytes([]byte(tc.input), &m)
+			require.NoError(t, err, "parseManifestBytes should treat %q as a no-op", tc.name)
+			assert.Equal(t, Manifest{}, m, "manifest should remain zero-value")
+		})
+	}
 }
 
 func TestLoadManifest_HTTPRejected(t *testing.T) {

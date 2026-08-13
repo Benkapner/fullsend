@@ -4,7 +4,9 @@
 package repos
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -306,7 +308,12 @@ type ResolvedConfig struct {
 }
 
 func parseManifestBytes(data []byte, m *Manifest) error {
-	return yaml.Unmarshal(data, m)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(m); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
 
 // LoadManifest reads and parses a repos.yaml manifest from a local
