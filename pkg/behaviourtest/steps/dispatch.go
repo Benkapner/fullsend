@@ -48,7 +48,7 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 // switch before the slot is reused by another scenario.
 func givenKillSwitchActive(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -61,7 +61,7 @@ func givenKillSwitchActive(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, "behaviour: activate kill switch", merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: activate kill switch", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	w.KillSwitchActivated = true
@@ -73,7 +73,7 @@ func givenKillSwitchActive(w *world.World) error {
 // it during scenario teardown.
 func DeactivateKillSwitch(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -86,7 +86,7 @@ func DeactivateKillSwitch(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -100,7 +100,7 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	}
 
 	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
 		return fmt.Errorf("committing harness: %w", err)
 	}
 
@@ -109,7 +109,7 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	}
 
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -136,7 +136,7 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, fmt.Sprintf("behaviour: register disabled harness %s", name), merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, fmt.Sprintf("behaviour: register disabled harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -151,7 +151,7 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	w.DispatchAgent = name
 
 	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
 		return fmt.Errorf("committing harness: %w", err)
 	}
 
@@ -160,7 +160,7 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	}
 
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -186,7 +186,7 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, fmt.Sprintf("behaviour: register harness %s", name), merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, fmt.Sprintf("behaviour: register harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -209,8 +209,8 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 		return fmt.Errorf("parsing harness YAML for resource paths: %w", err)
 	}
 
-	owner := w.Install.ConfigOwner()
-	repo := w.Install.ConfigRepo()
+	owner := w.Org
+	repo := w.RepoName
 
 	if h.Agent != "" && !strings.HasPrefix(h.Agent, "/") && !strings.HasPrefix(h.Agent, "https://") {
 		agentPath := filepath.Join(".fullsend", h.Agent)

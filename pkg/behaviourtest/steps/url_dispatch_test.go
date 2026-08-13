@@ -173,8 +173,9 @@ func TestGivenURLSourcedCustomHarness_Validation(t *testing.T) {
 
 func TestGivenURLSourcedCustomHarness_RequiresHostingRepo(t *testing.T) {
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
-		SCM:     &fakeURLSCM{files: map[string][]byte{}},
+		Org:      "test-org",
+		RepoName: "test-repo",
+		SCM:      &fakeURLSCM{files: map[string][]byte{}},
 	}
 	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md", urlHarnessOpts{})
 	require.Error(t, err)
@@ -187,7 +188,8 @@ func TestGivenURLSourcedCustomHarness_SetsDispatchAgent(t *testing.T) {
 		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		Org:                 "test-org",
+		RepoName:            "test-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "test-org",
 		URLHarnessRepoName:  "harness-host",
@@ -206,7 +208,8 @@ func TestGivenURLSourcedCustomHarness_URLFormat(t *testing.T) {
 		"my-org/my-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -242,7 +245,8 @@ func TestGivenURLSourcedCustomHarness_BadHash(t *testing.T) {
 		"my-org/my-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -262,7 +266,8 @@ func TestGivenURLSourcedCustomHarness_SkipAllowlist(t *testing.T) {
 		"my-org/my-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -292,7 +297,8 @@ func TestGivenURLSourcedCustomHarness_UpdatesExistingAgent(t *testing.T) {
 		"my-org/my-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents:\n  - name: url-test\n    source: harness/url-test.yaml\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -317,7 +323,8 @@ func TestGivenURLSourcedCustomHarness_AllowlistDedup(t *testing.T) {
 		"my-org/my-repo/.fullsend/config.yaml": []byte(fmt.Sprintf("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n  - %q\n", hostPrefix)),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -362,7 +369,8 @@ func TestGivenURLSourcedCustomHarness_CommitHarnessError(t *testing.T) {
 		commitFileRepo: "harness-host",
 	}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -379,7 +387,8 @@ func TestGivenURLSourcedCustomHarness_LogsDiagnostics(t *testing.T) {
 	}}
 	var logged []string
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		Org:                 "test-org",
+		RepoName:            "test-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "test-org",
 		URLHarnessRepoName:  "harness-host",
@@ -400,7 +409,8 @@ func TestGivenURLSourcedCustomHarness_InvalidConfigYAML(t *testing.T) {
 		"my-org/my-repo/.fullsend/config.yaml": []byte("invalid: [yaml: content"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -417,7 +427,8 @@ func TestGivenURLSourcedCustomHarness_FileNotAccessibleAfterCommit(t *testing.T)
 		getFileContentAlways: fmt.Errorf("file not found"),
 	}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -431,7 +442,8 @@ func TestGivenURLSourcedCustomHarness_GetConfigError(t *testing.T) {
 	stubRawHTTPClient(t)
 	scm := &fakeURLSCM{files: map[string][]byte{}} // no config file
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -453,7 +465,8 @@ func TestGivenURLSourcedCustomHarness_NonMainDefaultBranch(t *testing.T) {
 		defaultBranch: "master",
 	}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -477,7 +490,8 @@ func TestGivenURLSourcedCustomHarness_GetDefaultBranchError(t *testing.T) {
 		defaultBranchErr: fmt.Errorf("API rate limited"),
 	}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -495,7 +509,8 @@ func TestGivenURLSourcedCustomHarness_RawURLNotAccessible(t *testing.T) {
 		"my-org/my-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -569,7 +584,8 @@ func TestGivenURLSourcedCustomHarness_CommitsAgentResource(t *testing.T) {
 		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		Org:                 "test-org",
+		RepoName:            "test-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "test-org",
 		URLHarnessRepoName:  "harness-host",
@@ -669,7 +685,8 @@ func TestGivenURLSourcedCustomHarness_CommitRelativeResourcesError(t *testing.T)
 		commitFileRepo: "harness-host",
 	}
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 scm,
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -695,7 +712,8 @@ func TestGivenURLSourcedCustomHarness_RelativeResourceNotAccessible(t *testing.T
 	}
 	// Override GetFileContent to fail only for the agent resource path.
 	w := &world.World{
-		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		Org:                 "my-org",
+		RepoName:            "my-repo",
 		SCM:                 &selectiveFailSCM{fakeURLSCM: scm, failPath: "agents/triage.md", calls: &calls},
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
@@ -751,20 +769,6 @@ func TestWaitForFileAccessible_FileNotFound(t *testing.T) {
 }
 
 // --- fakes ---
-
-type fakeURLInstall struct {
-	owner string
-	repo  string
-}
-
-func (f *fakeURLInstall) Mode() string               { return "per-repo" }
-func (f *fakeURLInstall) ConfigOwner() string        { return f.owner }
-func (f *fakeURLInstall) ConfigRepo() string         { return f.repo }
-func (f *fakeURLInstall) ConfigPathPrefix() string   { return ".fullsend" }
-func (f *fakeURLInstall) TriageWorkflowRepo() string { return f.repo }
-func (f *fakeURLInstall) TriageWorkflowFile() string { return "fullsend.yaml" }
-func (f *fakeURLInstall) AgentWorkflowFile() string  { return "reusable-triage.yml" }
-func (f *fakeURLInstall) AgentArtifactName() string  { return "fullsend-triage" }
 
 // fakeURLSCM keys files by "owner/repo/path" so multi-repo tests
 // cannot silently collide.

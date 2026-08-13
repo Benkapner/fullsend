@@ -110,12 +110,7 @@ func (w *World) Clone() *World {
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"
 
 // BehaviourScriptPath returns the repo-relative path for the dummy agent script.
+// BT is per-repo only; config always lives under .fullsend/.
 func (w *World) BehaviourScriptPath() string {
-	if w.Install == nil {
-		return BehaviourScriptRepoPath
-	}
-	if prefix := w.Install.ConfigPathPrefix(); prefix != "" {
-		return filepath.Join(prefix, BehaviourScriptRepoPath)
-	}
-	return BehaviourScriptRepoPath
+	return filepath.Join(".fullsend", BehaviourScriptRepoPath)
 }

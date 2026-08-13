@@ -189,8 +189,8 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 
 	// Update config.yaml on the enrolled test repo: register agent with URL
 	// source and update allowlist.
-	cfgOwner := w.Install.ConfigOwner()
-	cfgRepo := w.Install.ConfigRepo()
+	cfgOwner := w.Org
+	cfgRepo := w.RepoName
 	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(ctx, cfgOwner, cfgRepo, cfgPath)
 	if err != nil {
