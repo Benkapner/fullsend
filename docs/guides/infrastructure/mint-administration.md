@@ -633,9 +633,9 @@ gcloud functions logs read fullsend-mint \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --gen2 --limit=50
 ```
 
-## Cloudflare Worker custom domain and WAF
+## Cloudflare Worker custom domain
 
-Durable Cloudflare Worker deployments can be attached to a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) using the `--custom-domain` flag. The zone ID is resolved automatically from the domain name via the Cloudflare API. When a custom domain is configured, the CLI also deploys hardcoded WAF rules on the zone to provide edge protection for the `/v1/token` endpoint.
+Durable Cloudflare Worker deployments can be attached to a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) using the `--custom-domain` flag. The zone ID is resolved automatically from the domain name via the Cloudflare API.
 
 ### Deploying with a custom domain
 
@@ -648,21 +648,9 @@ fullsend mint deploy \
 
 The `FULLSEND_MINT_URL` output uses the custom domain hostname (`https://mint.fullsend.sh`) instead of the default `workers.dev` URL.
 
-### Managed WAF rules
-
-Three WAF rules are automatically deployed on the custom domain's zone:
-
-| Rule | Expression | Action |
-|------|-----------|--------|
-| Block non-POST methods | `http.request.uri.path eq "/v1/token" and http.request.method ne "POST"` | Block |
-| Block oversized bodies (>64 KB) | `http.request.uri.path eq "/v1/token" and http.request.body.size gt 65536` | Block |
-| Block malformed content-type | `http.request.uri.path eq "/v1/token" and http.request.method eq "POST" and content-type does not contain "application/json"` | Block |
-
-These rules are managed by the CLI under the `fullsend-mint-waf` ruleset name. They are created or updated on deploy and removed on teardown.
-
 ### Tearing down with a custom domain
 
-Pass `--custom-domain` to `mint delete` so the CLI removes the WAF ruleset and custom domain binding before deleting the Worker:
+Pass `--custom-domain` to `mint delete` so the CLI removes the custom domain binding before deleting the Worker:
 
 ```bash
 fullsend mint delete \

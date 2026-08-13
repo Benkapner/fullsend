@@ -1734,14 +1734,10 @@ func TestProvisioner_Provision_PreviewBootstrap_EmptyEnvVars(t *testing.T) {
 
 type fakeCloudflareAPIClient struct {
 	attachDomainCalls []attachDomainCall
-	deployWAFCalls    []deployWAFCall
 	removeDomainCalls []removeDomainCall
-	removeWAFCalls    []string
 
 	attachDomainErr error
-	deployWAFErr    error
 	removeDomainErr error
-	removeWAFErr    error
 
 	// lookupZoneID controls the return value of LookupZoneID.
 	lookupZoneID    string
@@ -1760,11 +1756,6 @@ type attachDomainCall struct {
 	hostname   string
 }
 
-type deployWAFCall struct {
-	zoneID string
-	rules  []WAFRule
-}
-
 func (f *fakeCloudflareAPIClient) AttachCustomDomain(_ context.Context, accountID, workerName, zoneID, hostname string) error {
 	f.attachDomainCalls = append(f.attachDomainCalls, attachDomainCall{
 		accountID:  accountID,
@@ -1775,25 +1766,12 @@ func (f *fakeCloudflareAPIClient) AttachCustomDomain(_ context.Context, accountI
 	return f.attachDomainErr
 }
 
-func (f *fakeCloudflareAPIClient) DeployWAFRules(_ context.Context, zoneID string, rules []WAFRule) error {
-	f.deployWAFCalls = append(f.deployWAFCalls, deployWAFCall{
-		zoneID: zoneID,
-		rules:  rules,
-	})
-	return f.deployWAFErr
-}
-
 func (f *fakeCloudflareAPIClient) RemoveCustomDomain(_ context.Context, accountID string, hostname string) error {
 	f.removeDomainCalls = append(f.removeDomainCalls, removeDomainCall{
 		accountID: accountID,
 		hostname:  hostname,
 	})
 	return f.removeDomainErr
-}
-
-func (f *fakeCloudflareAPIClient) RemoveWAFRuleset(_ context.Context, zoneID string) error {
-	f.removeWAFCalls = append(f.removeWAFCalls, zoneID)
-	return f.removeWAFErr
 }
 
 func (f *fakeCloudflareAPIClient) LookupZoneID(_ context.Context, _ string) (string, error) {
@@ -1803,13 +1781,12 @@ func (f *fakeCloudflareAPIClient) LookupZoneID(_ context.Context, _ string) (str
 	return f.lookupZoneID, nil
 }
 
-// --- Custom domain + WAF tests ---
+// --- Custom domain tests ---
 
 func TestProvisioner_Provision_DurableWithCustomDomain(t *testing.T) {
 	// Given a provisioner configured with zone ID and custom domain hostname
 	// When Deploy is called in DeployDurable mode
 	// Then the Cloudflare Custom Domains API is called with the correct hostname
-	// And hardcoded WAF rulesets are deployed
 	// And the mint URL uses the custom domain
 	stubWASMBuild(t)
 	sourceDir := createFakeWorkerSourceDir(t)
@@ -1840,58 +1817,6 @@ func TestProvisioner_Provision_DurableWithCustomDomain(t *testing.T) {
 	assert.Equal(t, "test-mint", fakeCFAPI.attachDomainCalls[0].workerName)
 	assert.Equal(t, "zone-456", fakeCFAPI.attachDomainCalls[0].zoneID)
 	assert.Equal(t, "mint.fullsend.sh", fakeCFAPI.attachDomainCalls[0].hostname)
-
-	// WAF rules should be deployed with hardcoded rules.
-	require.Len(t, fakeCFAPI.deployWAFCalls, 1)
-	assert.Equal(t, "zone-456", fakeCFAPI.deployWAFCalls[0].zoneID)
-	assert.Len(t, fakeCFAPI.deployWAFCalls[0].rules, 3,
-		"should deploy 3 hardcoded WAF rules")
-}
-
-func TestProvisioner_Provision_DurableDeploysHardcodedWAFRules(t *testing.T) {
-	// Given a provisioner with a custom domain configured
-	// When Deploy is called
-	// Then hardcoded WAF rulesets are deployed — not user-provided rules
-	// And rules block non-POST, oversized bodies, malformed content-types on /v1/token
-	stubWASMBuild(t)
-	sourceDir := createFakeWorkerSourceDir(t)
-	fake := &fakeWranglerRunner{}
-	fakeCFAPI := &fakeCloudflareAPIClient{}
-
-	p := NewProvisioner(Config{
-		AccountID:    "abc123",
-		WorkerName:   "test-mint",
-		DeployMode:   DeployDurable,
-		SourceDir:    sourceDir,
-		ZoneID:       "zone-456",
-		CustomDomain: "mint.fullsend.sh",
-	}, fake)
-	p.SetCloudflareAPI(fakeCFAPI)
-
-	_, err := p.Provision(context.Background())
-	require.NoError(t, err)
-
-	require.Len(t, fakeCFAPI.deployWAFCalls, 1)
-	rules := fakeCFAPI.deployWAFCalls[0].rules
-	require.Len(t, rules, 3)
-
-	// All rules should use "block" action.
-	for _, r := range rules {
-		assert.Equal(t, "block", r.Action, "rule %q should use block action", r.Description)
-	}
-
-	// Rule 1: block non-POST on /v1/token.
-	assert.Contains(t, rules[0].Expression, "/v1/token")
-	assert.Contains(t, rules[0].Expression, `http.request.method ne "POST"`)
-
-	// Rule 2: block oversized bodies.
-	assert.Contains(t, rules[1].Expression, "/v1/token")
-	assert.Contains(t, rules[1].Expression, "http.request.body.size")
-
-	// Rule 3: block malformed content-type.
-	assert.Contains(t, rules[2].Expression, "/v1/token")
-	assert.Contains(t, rules[2].Expression, "content-type")
-	assert.Contains(t, rules[2].Expression, "application/json")
 }
 
 func TestProvisioner_Provision_PreviewSkipsCustomDomain(t *testing.T) {
@@ -1943,7 +1868,6 @@ func TestProvisioner_Provision_DurableWithoutCustomDomain(t *testing.T) {
 
 	// No CF API calls.
 	assert.Empty(t, fakeCFAPI.attachDomainCalls)
-	assert.Empty(t, fakeCFAPI.deployWAFCalls)
 }
 
 func TestProvisioner_Provision_CustomDomainAutoResolvesZoneID(t *testing.T) {
@@ -1976,8 +1900,6 @@ func TestProvisioner_Provision_CustomDomainAutoResolvesZoneID(t *testing.T) {
 	// ZoneID should have been resolved and used.
 	require.Len(t, fakeCFAPI.attachDomainCalls, 1)
 	assert.Equal(t, "auto-resolved-zone-789", fakeCFAPI.attachDomainCalls[0].zoneID)
-	require.Len(t, fakeCFAPI.deployWAFCalls, 1)
-	assert.Equal(t, "auto-resolved-zone-789", fakeCFAPI.deployWAFCalls[0].zoneID)
 }
 
 func TestProvisioner_Provision_CustomDomainZoneLookupFailure(t *testing.T) {
@@ -2028,32 +1950,9 @@ func TestProvisioner_Provision_AttachDomainError(t *testing.T) {
 	assert.Contains(t, err.Error(), "attaching custom domain")
 }
 
-func TestProvisioner_Provision_DeployWAFError(t *testing.T) {
-	stubWASMBuild(t)
-	sourceDir := createFakeWorkerSourceDir(t)
-	fake := &fakeWranglerRunner{}
-	fakeCFAPI := &fakeCloudflareAPIClient{
-		deployWAFErr: fmt.Errorf("rate limit exceeded"),
-	}
-
-	p := NewProvisioner(Config{
-		AccountID:    "abc123",
-		WorkerName:   "test-mint",
-		DeployMode:   DeployDurable,
-		SourceDir:    sourceDir,
-		ZoneID:       "zone-456",
-		CustomDomain: "mint.fullsend.sh",
-	}, fake)
-	p.SetCloudflareAPI(fakeCFAPI)
-
-	_, err := p.Provision(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "deploying WAF rules")
-}
-
 func TestProvisioner_Teardown_DurableWithCustomDomain(t *testing.T) {
-	// Durable teardown with custom domain should remove WAF rules
-	// and custom domain before deleting the Worker.
+	// Durable teardown with custom domain should remove custom domain
+	// before deleting the Worker.
 	fake := &fakeWranglerRunner{}
 	fakeCFAPI := &fakeCloudflareAPIClient{}
 
@@ -2061,17 +1960,12 @@ func TestProvisioner_Teardown_DurableWithCustomDomain(t *testing.T) {
 		AccountID:    "abc123",
 		WorkerName:   "test-mint",
 		DeployMode:   DeployDurable,
-		ZoneID:       "zone-456",
 		CustomDomain: "mint.fullsend.sh",
 	}, fake)
 	p.SetCloudflareAPI(fakeCFAPI)
 
 	err := p.Teardown(context.Background())
 	require.NoError(t, err)
-
-	// WAF rules removed first.
-	require.Len(t, fakeCFAPI.removeWAFCalls, 1)
-	assert.Equal(t, "zone-456", fakeCFAPI.removeWAFCalls[0])
 
 	// Custom domain removed with correct accountID.
 	require.Len(t, fakeCFAPI.removeDomainCalls, 1)
@@ -2099,33 +1993,10 @@ func TestProvisioner_Teardown_DurableWithoutCustomDomain(t *testing.T) {
 	require.NoError(t, err)
 
 	// No CF API calls.
-	assert.Empty(t, fakeCFAPI.removeWAFCalls)
 	assert.Empty(t, fakeCFAPI.removeDomainCalls)
 
 	// Worker deleted.
 	require.Len(t, fake.deleteCalls, 1)
-}
-
-func TestProvisioner_Teardown_RemoveWAFError(t *testing.T) {
-	fake := &fakeWranglerRunner{}
-	fakeCFAPI := &fakeCloudflareAPIClient{
-		removeWAFErr: fmt.Errorf("API error"),
-	}
-
-	p := NewProvisioner(Config{
-		AccountID:    "abc123",
-		WorkerName:   "test-mint",
-		DeployMode:   DeployDurable,
-		ZoneID:       "zone-456",
-		CustomDomain: "mint.fullsend.sh",
-	}, fake)
-	p.SetCloudflareAPI(fakeCFAPI)
-
-	err := p.Teardown(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "removing WAF ruleset")
-	// Worker should NOT be deleted when WAF removal fails.
-	assert.Empty(t, fake.deleteCalls)
 }
 
 func TestProvisioner_Teardown_RemoveDomainError(t *testing.T) {
@@ -2138,7 +2009,6 @@ func TestProvisioner_Teardown_RemoveDomainError(t *testing.T) {
 		AccountID:    "abc123",
 		WorkerName:   "test-mint",
 		DeployMode:   DeployDurable,
-		ZoneID:       "zone-456",
 		CustomDomain: "mint.fullsend.sh",
 	}, fake)
 	p.SetCloudflareAPI(fakeCFAPI)
@@ -2148,25 +2018,6 @@ func TestProvisioner_Teardown_RemoveDomainError(t *testing.T) {
 	assert.Contains(t, err.Error(), "removing custom domain")
 	// Worker should NOT be deleted when domain removal fails.
 	assert.Empty(t, fake.deleteCalls)
-}
-
-// --- MintWAFRules tests ---
-
-func TestMintWAFRules_Hardcoded(t *testing.T) {
-	rules := MintWAFRules()
-
-	// Must have exactly 3 rules.
-	require.Len(t, rules, 3)
-
-	// All rules must target /v1/token and use "block" action.
-	for _, r := range rules {
-		assert.Contains(t, r.Expression, "/v1/token",
-			"rule %q must target /v1/token", r.Description)
-		assert.Equal(t, "block", r.Action,
-			"rule %q must use block action", r.Description)
-		assert.NotEmpty(t, r.Description,
-			"rule must have a description")
-	}
 }
 
 // --- ensureCFAPI tests ---

@@ -55,9 +55,9 @@ GCP mode (--platform=gcp):
 
 Cloudflare durable mode (--platform=cloudflare):
   Deletes the durable Worker script and all associated bindings/secrets.
-  When --custom-domain is set, also removes the WAF ruleset and custom
-  domain binding before deleting the Worker. The zone ID is resolved
-  automatically from the domain name.
+  When --custom-domain is set, also removes the custom domain binding
+  before deleting the Worker. The zone ID is resolved automatically
+  from the domain name.
 
   Required flags: none (Worker name defaults to "fullsend-mint")
   Optional: --worker-name, --custom-domain
@@ -286,7 +286,6 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, cust
 		} else {
 			printer.StepInfo(fmt.Sprintf("  Would delete Worker: %s", effectiveName))
 			if customDomain != "" {
-				printer.StepInfo(fmt.Sprintf("  Would remove WAF ruleset for custom domain %s", customDomain))
 				printer.StepInfo(fmt.Sprintf("  Would remove custom domain %s", customDomain))
 			}
 			printer.StepInfo("  All Worker bindings, secrets, and vars will be removed")
@@ -308,27 +307,11 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, cust
 		printer.Blank()
 	}
 
-	// Resolve zone ID early when custom domain is set. This validates
-	// that the domain's zone exists in the account before starting
-	// the teardown, giving the user a clear error message.
-	var resolvedZoneID string
-	if customDomain != "" && previewAlias == "" {
-		printer.StepStart(fmt.Sprintf("Resolving zone ID for %s", customDomain))
-		var zoneErr error
-		resolvedZoneID, zoneErr = cf.ResolveZoneIDForDomainFn(ctx, customDomain)
-		if zoneErr != nil {
-			printer.StepFail("Zone lookup failed")
-			return fmt.Errorf("resolving zone ID for custom domain %s: %w", customDomain, zoneErr)
-		}
-		printer.StepDone(fmt.Sprintf("Zone ID: %s", resolvedZoneID))
-	}
-
 	cfg := cf.Config{
 		AccountID:    accountID,
 		WorkerName:   workerName,
 		DeployMode:   deployMode,
 		PreviewAlias: previewAlias,
-		ZoneID:       resolvedZoneID,
 		CustomDomain: customDomain,
 	}
 
@@ -365,7 +348,6 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, cust
 		if customDomain != "" {
 			summaryLines = append(summaryLines,
 				fmt.Sprintf("Custom domain %s removed.", customDomain),
-				"WAF ruleset removed.",
 			)
 		}
 		summaryLines = append(summaryLines,

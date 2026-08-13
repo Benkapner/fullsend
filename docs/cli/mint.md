@@ -66,15 +66,9 @@ If the target Worker script does not yet exist (first-time preview on a new `--w
 
 Use `--worker-name` to target a specific Worker script name.
 
-#### Custom domain and WAF
+#### Custom domain
 
-Use `--custom-domain` to attach a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) to the durable Worker. When set, the CLI also deploys hardcoded WAF rules on the zone that block:
-
-1. Non-POST methods on `/v1/token`
-2. Oversized request bodies (>64 KB) on `/v1/token`
-3. Requests with non-JSON `content-type` on `POST /v1/token`
-
-The zone ID is resolved automatically from the domain name via the Cloudflare API. Custom domains are only supported for durable deploys — preview deploys use bare `workers.dev` hostnames where zone-scoped WAF does not apply.
+Use `--custom-domain` to attach a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) to the durable Worker. The zone ID is resolved automatically from the domain name via the Cloudflare API. Custom domains are only supported for durable deploys — preview deploys use bare `workers.dev` hostnames.
 
 ```bash
 fullsend mint deploy \
@@ -84,7 +78,7 @@ fullsend mint deploy \
 
 When a custom domain is configured, the mint URL (`FULLSEND_MINT_URL`) uses the custom domain hostname instead of the `workers.dev` URL.
 
-To tear down a durable Worker with a custom domain, pass `--custom-domain` to `mint delete` so the CLI removes the WAF ruleset and domain binding before deleting the Worker.
+To tear down a durable Worker with a custom domain, pass `--custom-domain` to `mint delete` so the CLI removes the domain binding before deleting the Worker.
 
 Authentication (one of):
 - `CLOUDFLARE_API_TOKEN` env var (+ `CLOUDFLARE_ACCOUNT_ID`) — API token with Workers write permission
@@ -164,7 +158,7 @@ fullsend mint delete \
 
 ### Cloudflare durable mode (`--platform=cloudflare`)
 
-Deletes the durable Worker script and all associated bindings/secrets via `wrangler delete`. When the Worker was deployed with a custom domain, pass `--custom-domain` to also remove the WAF ruleset and custom domain binding before deleting the Worker. The zone ID is resolved automatically from the domain name.
+Deletes the durable Worker script and all associated bindings/secrets via `wrangler delete`. When the Worker was deployed with a custom domain, pass `--custom-domain` to also remove the custom domain binding before deleting the Worker.
 
 ```bash
 fullsend mint delete --platform cloudflare

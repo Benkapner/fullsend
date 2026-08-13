@@ -118,16 +118,6 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 
 - **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions (both modes)
 
-**Cloudflare Workers Custom Domain WAF:** When a durable Cloudflare Worker is deployed with `--custom-domain`, the CLI deploys managed WAF rules on the zone under the `fullsend-mint-waf` ruleset. These rules provide edge protection for `/v1/token`:
-
-| Rule | Description |
-|------|-------------|
-| Block non-POST | Rejects non-POST methods on `/v1/token` |
-| Block oversized bodies | Rejects request bodies >64 KB on `/v1/token` |
-| Block malformed content-type | Rejects `POST /v1/token` without `application/json` content-type |
-
-The rules are idempotent (create-or-update on deploy) and removed on teardown when `--custom-domain` is passed to `mint delete`. The zone ID is resolved automatically from the domain name. Rate limiting is handled separately by the Worker's native `[[ratelimits]]` binding (see [Mint Administration](../infrastructure/mint-administration.md#cloudflare-worker-rate-limiting)).
-
 ### Multi-Org Support
 
 A single mint instance can serve multiple orgs:

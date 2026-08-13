@@ -23,22 +23,6 @@ func newTestClient(t *testing.T, srv *httptest.Server) *LiveCloudflareAPIClient 
 	}
 }
 
-// --- cfAPIToken tests ---
-
-func TestCfAPIToken_Set(t *testing.T) {
-	t.Setenv("CLOUDFLARE_API_TOKEN", "my-token")
-	tok, err := cfAPIToken()
-	require.NoError(t, err)
-	assert.Equal(t, "my-token", tok)
-}
-
-func TestCfAPIToken_Missing(t *testing.T) {
-	t.Setenv("CLOUDFLARE_API_TOKEN", "")
-	_, err := cfAPIToken()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN is required")
-}
-
 // --- cfAPIRequest tests ---
 
 func TestCfAPIRequest_Success_NoBody(t *testing.T) {
@@ -88,12 +72,49 @@ func TestCfAPIRequest_NonSuccessStatus(t *testing.T) {
 	assert.Contains(t, err.Error(), "Cloudflare API returned 403")
 }
 
-func TestCfAPIRequest_MissingToken(t *testing.T) {
+func TestCfAPIRequest_MissingTokenAndWranglerFails(t *testing.T) {
+	// When CLOUDFLARE_API_TOKEN is unset and wrangler auth token fails,
+	// cfAPIRequest should return an error from resolveAPIToken.
 	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	oldFn := WranglerAuthTokenFn
+	WranglerAuthTokenFn = func(_ context.Context) (string, error) {
+		return "", assert.AnError
+	}
+	defer func() { WranglerAuthTokenFn = oldFn }()
+
 	client := &LiveCloudflareAPIClient{httpClient: http.DefaultClient}
 	_, err := client.cfAPIRequest(context.Background(), http.MethodGet, "http://unused", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN is required")
+	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN is not set")
+	assert.Contains(t, err.Error(), "wrangler auth token failed")
+}
+
+func TestCfAPIRequest_WranglerAuthFallback(t *testing.T) {
+	// When CLOUDFLARE_API_TOKEN is unset, cfAPIRequest should fall back
+	// to wrangler auth token. This is the core auth unification fix:
+	// custom-domain operations (attach, remove, zone lookup) now work
+	// with only `wrangler login`.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer wrangler-oauth-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	oldFn := WranglerAuthTokenFn
+	WranglerAuthTokenFn = func(_ context.Context) (string, error) {
+		return "wrangler-oauth-token", nil
+	}
+	defer func() { WranglerAuthTokenFn = oldFn }()
+
+	client := &LiveCloudflareAPIClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+	}
+	body, err := client.cfAPIRequest(context.Background(), http.MethodGet, srv.URL+"/test", nil)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"ok":true}`, string(body))
 }
 
 // --- NewLiveCloudflareAPIClient ---
@@ -155,130 +176,29 @@ func TestAttachCustomDomain_APIError(t *testing.T) {
 	assert.Contains(t, err.Error(), "attaching custom domain")
 }
 
-// --- DeployWAFRules ---
-
-func TestDeployWAFRules_CreateNew(t *testing.T) {
-	// The first call is GET /zones/zone-1/rulesets returning no match,
-	// the second is POST /zones/zone-1/rulesets to create.
-	callCount := 0
+func TestAttachCustomDomain_WranglerAuthFallback(t *testing.T) {
+	// AttachCustomDomain should work with wrangler auth when
+	// CLOUDFLARE_API_TOKEN is unset.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		switch callCount {
-		case 1:
-			// List rulesets — no match.
-			assert.Equal(t, http.MethodGet, r.Method)
-			assert.Equal(t, "/zones/zone-1/rulesets", r.URL.Path)
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":[{"id":"other-id","name":"other-ruleset"}]}`))
-		case 2:
-			// Create ruleset.
-			assert.Equal(t, http.MethodPost, r.Method)
-			assert.Equal(t, "/zones/zone-1/rulesets", r.URL.Path)
-			reqBody, _ := io.ReadAll(r.Body)
-			var parsed map[string]any
-			require.NoError(t, json.Unmarshal(reqBody, &parsed))
-			assert.Equal(t, mintWAFRulesetName, parsed["name"])
-			assert.Equal(t, "zone", parsed["kind"])
-			assert.Equal(t, "http_request_firewall_custom", parsed["phase"])
-			rules := parsed["rules"].([]any)
-			assert.Len(t, rules, 1)
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"success":true}`))
-		}
+		assert.Equal(t, "Bearer wrangler-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"success":true}`))
 	}))
 	defer srv.Close()
 
-	client := newTestClient(t, srv)
-	err := client.DeployWAFRules(context.Background(), "zone-1", []WAFRule{
-		{Description: "test", Expression: "test-expr", Action: "block"},
-	})
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	oldFn := WranglerAuthTokenFn
+	WranglerAuthTokenFn = func(_ context.Context) (string, error) {
+		return "wrangler-token", nil
+	}
+	defer func() { WranglerAuthTokenFn = oldFn }()
+
+	client := &LiveCloudflareAPIClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+	}
+	err := client.AttachCustomDomain(context.Background(), "acc-123", "my-worker", "zone-456", "mint.example.com")
 	require.NoError(t, err)
-	assert.Equal(t, 2, callCount)
-}
-
-func TestDeployWAFRules_UpdateExisting(t *testing.T) {
-	// The first call is GET /zones/zone-1/rulesets returning a match,
-	// the second is PUT /zones/zone-1/rulesets/{id} to update.
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		switch callCount {
-		case 1:
-			// List rulesets — match found.
-			assert.Equal(t, http.MethodGet, r.Method)
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":[{"id":"existing-rs-id","name":"` + mintWAFRulesetName + `"}]}`))
-		case 2:
-			// Update ruleset.
-			assert.Equal(t, http.MethodPut, r.Method)
-			assert.Contains(t, r.URL.Path, "/zones/zone-1/rulesets/existing-rs-id")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"success":true}`))
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.DeployWAFRules(context.Background(), "zone-1", MintWAFRules())
-	require.NoError(t, err)
-	assert.Equal(t, 2, callCount)
-}
-
-func TestDeployWAFRules_ListError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal"}`))
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.DeployWAFRules(context.Background(), "zone-1", MintWAFRules())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "searching for existing WAF ruleset")
-}
-
-func TestDeployWAFRules_CreateError(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callCount++
-		if callCount == 1 {
-			// List — no match.
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":[]}`))
-		} else {
-			// Create fails.
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"error":"bad request"}`))
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.DeployWAFRules(context.Background(), "zone-1", MintWAFRules())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "creating WAF ruleset")
-}
-
-func TestDeployWAFRules_UpdateError(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callCount++
-		if callCount == 1 {
-			// List — match found.
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":[{"id":"rs-id","name":"` + mintWAFRulesetName + `"}]}`))
-		} else {
-			// Update fails.
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"error":"forbidden"}`))
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.DeployWAFRules(context.Background(), "zone-1", MintWAFRules())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "updating WAF ruleset")
 }
 
 // --- RemoveCustomDomain ---
@@ -354,137 +274,6 @@ func TestRemoveCustomDomain_DeleteError(t *testing.T) {
 	err := client.RemoveCustomDomain(context.Background(), "acc-1", "mint.example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "removing custom domain")
-}
-
-// --- RemoveWAFRuleset ---
-
-func TestRemoveWAFRuleset_Found(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		switch callCount {
-		case 1:
-			// List rulesets.
-			assert.Equal(t, http.MethodGet, r.Method)
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":[{"id":"rs-99","name":"` + mintWAFRulesetName + `"}]}`))
-		case 2:
-			// Delete ruleset.
-			assert.Equal(t, http.MethodDelete, r.Method)
-			assert.Contains(t, r.URL.Path, "/zones/zone-1/rulesets/rs-99")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{}`))
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.RemoveWAFRuleset(context.Background(), "zone-1")
-	require.NoError(t, err)
-	assert.Equal(t, 2, callCount)
-}
-
-func TestRemoveWAFRuleset_NotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":[]}`))
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.RemoveWAFRuleset(context.Background(), "zone-1")
-	require.NoError(t, err, "should be no-op when ruleset not found")
-}
-
-func TestRemoveWAFRuleset_ListError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal"}`))
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.RemoveWAFRuleset(context.Background(), "zone-1")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "searching for WAF ruleset")
-}
-
-func TestRemoveWAFRuleset_DeleteError(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callCount++
-		if callCount == 1 {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":[{"id":"rs-99","name":"` + mintWAFRulesetName + `"}]}`))
-		} else {
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"error":"forbidden"}`))
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.RemoveWAFRuleset(context.Background(), "zone-1")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "removing WAF ruleset")
-}
-
-// --- findMintRulesetID ---
-
-func TestFindMintRulesetID_Found(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/zones/zone-1/rulesets", r.URL.Path)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":[
-			{"id":"other","name":"other-ruleset"},
-			{"id":"mint-rs","name":"` + mintWAFRulesetName + `"}
-		]}`))
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	id, err := client.findMintRulesetID(context.Background(), "zone-1")
-	require.NoError(t, err)
-	assert.Equal(t, "mint-rs", id)
-}
-
-func TestFindMintRulesetID_NotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":[{"id":"other","name":"other-ruleset"}]}`))
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	id, err := client.findMintRulesetID(context.Background(), "zone-1")
-	require.NoError(t, err)
-	assert.Empty(t, id)
-}
-
-func TestFindMintRulesetID_EmptyResult(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":[]}`))
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	id, err := client.findMintRulesetID(context.Background(), "zone-1")
-	require.NoError(t, err)
-	assert.Empty(t, id)
-}
-
-func TestFindMintRulesetID_InvalidJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`not-json`))
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	_, err := client.findMintRulesetID(context.Background(), "zone-1")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing rulesets response")
 }
 
 // --- findCustomDomainID ---

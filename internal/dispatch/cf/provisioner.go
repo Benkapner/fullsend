@@ -124,9 +124,8 @@ type Config struct {
 	// CustomDomain is the hostname to attach to the Worker as a
 	// Cloudflare Workers Custom Domain (e.g. "mint.fullsend.sh").
 	// When set for a durable deploy, the provisioner attaches the
-	// domain and deploys hardcoded WAF rules on the zone. Ignored
-	// for preview deploys (which use bare workers.dev hostnames
-	// where zone-scoped WAF does not apply).
+	// domain via the Cloudflare API. Ignored for preview deploys
+	// (which use bare workers.dev hostnames).
 	CustomDomain string
 }
 
@@ -180,9 +179,8 @@ func NewProvisioner(cfg Config, wrangler WranglerRunner) *Provisioner {
 }
 
 // SetCloudflareAPI sets the Cloudflare API client used for custom
-// domain attachment and WAF rule management. When nil (the default),
-// a LiveCloudflareAPIClient is created lazily if CustomDomain is
-// configured.
+// domain attachment. When nil (the default), a LiveCloudflareAPIClient
+// is created lazily if CustomDomain is configured.
 func (p *Provisioner) SetCloudflareAPI(client CloudflareAPIClient) {
 	p.cfAPI = client
 }
@@ -276,9 +274,8 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		return nil, fmt.Errorf("deploying worker: %w", err)
 	}
 
-	// Attach custom domain and deploy WAF rules for durable deploys.
-	// Preview deploys use bare workers.dev hostnames where zone-scoped
-	// custom domains and WAF do not apply.
+	// Attach custom domain for durable deploys. Preview deploys use
+	// bare workers.dev hostnames where custom domains do not apply.
 	if p.cfg.CustomDomain != "" && p.cfg.DeployMode == DeployDurable {
 		cfAPI := p.ensureCFAPI()
 
@@ -295,10 +292,6 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 
 		if err := cfAPI.AttachCustomDomain(ctx, p.cfg.AccountID, p.cfg.WorkerName, zoneID, p.cfg.CustomDomain); err != nil {
 			return nil, fmt.Errorf("attaching custom domain: %w", err)
-		}
-
-		if err := cfAPI.DeployWAFRules(ctx, zoneID, MintWAFRules()); err != nil {
-			return nil, fmt.Errorf("deploying WAF rules: %w", err)
 		}
 
 		// When a custom domain is configured, use it as the mint URL
@@ -349,24 +342,10 @@ func (p *Provisioner) Teardown(ctx context.Context) error {
 		// durable Worker script, which is shared with production.
 		return nil
 	case DeployDurable:
-		// Remove custom domain and WAF rules before deleting the Worker.
+		// Remove custom domain before deleting the Worker.
 		if p.cfg.CustomDomain != "" {
 			cfAPI := p.ensureCFAPI()
 
-			// Resolve zone ID from custom domain if not explicitly provided.
-			zoneID := p.cfg.ZoneID
-			if zoneID == "" {
-				var lookupErr error
-				zoneID, lookupErr = cfAPI.LookupZoneID(ctx, p.cfg.CustomDomain)
-				if lookupErr != nil {
-					return fmt.Errorf("looking up zone ID for custom domain %s: %w", p.cfg.CustomDomain, lookupErr)
-				}
-				p.cfg.ZoneID = zoneID
-			}
-
-			if err := cfAPI.RemoveWAFRuleset(ctx, zoneID); err != nil {
-				return fmt.Errorf("removing WAF ruleset: %w", err)
-			}
 			if err := cfAPI.RemoveCustomDomain(ctx, p.cfg.AccountID, p.cfg.CustomDomain); err != nil {
 				return fmt.Errorf("removing custom domain: %w", err)
 			}

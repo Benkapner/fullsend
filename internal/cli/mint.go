@@ -499,13 +499,10 @@ Cloudflare mode (--platform=cloudflare):
   Role aliases (e.g. fix→coder) are resolved automatically.
 
   Use --custom-domain to attach a Workers Custom Domain (e.g.
-  mint.fullsend.sh) to the durable Worker. When set, the CLI also
-  deploys hardcoded WAF rules on the zone (block non-POST, oversized
-  bodies, and malformed content-type on /v1/token). The zone ID is
-  resolved automatically from the domain name via the Cloudflare API.
+  mint.fullsend.sh) to the durable Worker. The zone ID is resolved
+  automatically from the domain name via the Cloudflare API.
   Custom domains are only supported for durable deploys — preview
-  deploys use bare workers.dev hostnames where zone-scoped WAF does
-  not apply.
+  deploys use bare workers.dev hostnames.
 
   Use --preview=<alias> for ephemeral preview deploys. This runs
   'wrangler versions upload --preview-alias=<alias>' instead of
@@ -585,9 +582,8 @@ Durable: omit to preserve existing binding; set to "" to clear.
 Preview: defaults to * when omitted (all basenames allowed).
 Use --allowed-workflow-files=dispatch.yml,fullsend.yml to restrict.`)
 	cmd.Flags().StringVar(&customDomain, "custom-domain", "", `hostname to attach as a Workers Custom Domain (Cloudflare only).
-When set for durable deploys, the CLI attaches the domain and deploys
-hardcoded WAF rules on the zone. The zone ID is resolved automatically.
-Not supported for preview deploys.
+When set for durable deploys, the CLI attaches the domain.
+The zone ID is resolved automatically. Not supported for preview deploys.
 Example: --custom-domain=mint.fullsend.sh`)
 
 	return cmd
@@ -894,7 +890,6 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		}
 		if customDomain != "" && previewAlias == "" {
 			printer.StepInfo(fmt.Sprintf("Would attach custom domain %s (zone ID resolved at deploy time)", customDomain))
-			printer.StepInfo("Would deploy hardcoded WAF rules on the zone")
 		}
 		if pemDir != "" {
 			if _, err := validatePEMDir(pemDir, roles); err != nil {
