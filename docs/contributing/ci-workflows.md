@@ -176,6 +176,19 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 - [ ] **Do not wire secrets before consumption code exists.** Adding a secret to `env:` in a PR that does not yet contain the code that uses it means the secret is exposed to whatever code does run — with no benefit.
 - [ ] **Verify the gate job covers the new job.** If the PR adds a new job that checks out PR-head code with secrets, confirm that job has `needs: gate` and the appropriate `if:` condition gating on `needs.gate.outputs.authorized`.
 
+### Behaviour debug artifact redaction
+
+The behaviour job in `e2e.yml` uploads debug artifacts on failure. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
+
+Before upload, the workflow checks out `.github/scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha`) into a separate `base-scripts/` path and runs it against `${{ runner.temp }}/behaviour-artifacts/`. PR-head code cannot replace this script. The behaviour test step also tees job output to `behaviour-test.log` in that directory so logs are redacted with the same pass.
+
+Redaction covers:
+
+- Plain text artifacts (JSON, JSONL, logs, feature output)
+- Nested archives (zip, tar.gz, gzip) — extract, redact, re-pack with the same size limits as behaviour artifact downloads
+- Encrypted blobs (`.gpg`, `.age`, `.enc`) — replaced with a stub (cannot scan ciphertext)
+- Binary/media files — stubbed only when embedded secrets are detected
+
 ## Additional conventions
 
 - Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.

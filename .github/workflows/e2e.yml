@@ -224,7 +224,7 @@ jobs:
             }
           fi
           # pkg/e2etest: shared pool/CLI/cleanup; pkg/behaviourtest: framework; e2e/admin: admin-only helpers
-          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"
@@ -252,7 +252,9 @@ jobs:
 
       - name: Run behaviour tests
         if: steps.changes.outputs.relevant != 'false'
-        run: make behaviour-test
+        run: |
+          mkdir -p "${{ runner.temp }}/behaviour-artifacts"
+          make behaviour-test 2>&1 | tee "${{ runner.temp }}/behaviour-artifacts/behaviour-test.log"
         env:
           BEHAVIOUR_SCM: github
           BEHAVIOUR_CI: githubactions
@@ -276,6 +278,35 @@ jobs:
           TEST_ACTOR_WRITE_PAT: ${{ secrets.TEST_ACTOR_WRITE_PAT }}
           TEST_ACTOR_TRIAGE_PAT: ${{ secrets.TEST_ACTOR_TRIAGE_PAT }}
           TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.TEST_ACTOR_OUTSIDER_PAT }}
+
+      - name: Check out redaction script from base branch
+        if: failure() && steps.changes.outputs.relevant != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Base-branch script only — PR head must not control artifact redaction (#5221).
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts/redact-behaviour-artifacts.sh
+          path: base-scripts
+          persist-credentials: false
+
+      - name: Redact secrets from behaviour debug artifacts
+        if: failure() && steps.changes.outputs.relevant != 'false'
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.TEST_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.TEST_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.TEST_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.TEST_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.TEST_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.TEST_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.TEST_CLOUDFLARE_API_TOKEN }}
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.TEST_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.TEST_ACTOR_TRIAGE_PAT }}
+          TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.TEST_ACTOR_OUTSIDER_PAT }}
+          E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+        run: bash base-scripts/.github/scripts/redact-behaviour-artifacts.sh
 
       - name: Upload behaviour debug artifacts
         if: failure() && steps.changes.outputs.relevant != 'false'
