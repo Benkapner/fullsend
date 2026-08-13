@@ -11,6 +11,12 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+// canonicalMintURL is the hardcoded mint URL used for all per-repo
+// installations during migration. Discovery from org config or org-level
+// variables is unnecessary — all per-repo installations during migration
+// should use this URL.
+const canonicalMintURL = "https://mint.fullsend.sh"
+
 // MigrateConfig holds configuration for the repos migrate command.
 type MigrateConfig struct {
 	// Org is the GitHub organization to migrate.
@@ -380,7 +386,7 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 		roles = config.PerRepoDefaultRoles()
 	}
 
-	mintURL := dr.MintURL
+	mintURL := canonicalMintURL
 	inferenceRegion := dr.InferenceRegion
 	if inferenceRegion == "" {
 		inferenceRegion = "us-central1"
