@@ -43,8 +43,11 @@ func IsBranchProtected(err error) bool {
 	return errors.Is(err, ErrBranchProtected)
 }
 
-// ErrNonFastForward indicates that a ref update was rejected because the
-// branch advanced concurrently (not a fast-forward).
+// ErrNonFastForward indicates that a commit-files operation failed due to
+// a concurrent modification race. This includes ref updates rejected as
+// non-fast-forward and stale-object errors (e.g. "Tree SHA does not exist")
+// that occur when the base tree changes between read and write.
+// commitFilesWithRetry uses this as the canonical retriable signal.
 var ErrNonFastForward = errors.New("non-fast-forward update")
 
 // IsNonFastForward reports whether err indicates a non-fast-forward rejection.
