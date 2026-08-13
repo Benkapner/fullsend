@@ -269,8 +269,8 @@ func (id *UserIdentity) SignOffTrailer() (string, error) {
 // empty after sanitization.
 func FormatSignOffTrailer(name, email string) (string, error) {
 	sanitize := strings.NewReplacer("\n", "", "\r", "", "<", "", ">", "")
-	name = sanitize.Replace(name)
-	email = sanitize.Replace(email)
+	name = strings.TrimSpace(sanitize.Replace(name))
+	email = strings.TrimSpace(sanitize.Replace(email))
 	if name == "" || email == "" {
 		return "", fmt.Errorf("sign-off identity must have non-empty name and email after sanitization (got name=%q, email=%q)", name, email)
 	}
