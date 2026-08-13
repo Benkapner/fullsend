@@ -120,6 +120,15 @@ run_redaction_on_tree
 cp "${TMPDIR}/artifacts/payload.gpg" "${TMPDIR}/artifact.log"
 run_test "stubs-encrypted-artifact" "opaque-binary-secret" "[REDACTED OPAQUE CONTENT]"
 
+rm -rf "${TMPDIR}/artifacts"
+mkdir -p "${TMPDIR}/artifacts"
+# Minimal GIF magic + base64 payload an attacker might use to bypass text redaction.
+printf 'GIF89a' >"${TMPDIR}/artifacts/exfil.gif"
+printf 'ZmFrZS1zZWNyZXQtcGF5bG9hZA==' >>"${TMPDIR}/artifacts/exfil.gif"
+run_redaction_on_tree
+cp "${TMPDIR}/artifacts/exfil.gif" "${TMPDIR}/artifact.log"
+run_test "stubs-fake-media-artifact" "ZmFrZS1zZWNyZXQtcGF5bG9hZA==" "[REDACTED OPAQUE CONTENT]"
+
 echo ""
 if [ "${FAILURES}" -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

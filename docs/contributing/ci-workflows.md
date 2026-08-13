@@ -187,7 +187,7 @@ Redaction covers:
 - Plain text artifacts (JSON, JSONL, logs, feature output)
 - Nested archives (zip, tar.gz, gzip) — extract, redact, re-pack with the same size limits as behaviour artifact downloads
 - Encrypted blobs (`.gpg`, `.age`, `.enc`) — replaced with a stub (cannot scan ciphertext)
-- Binary/media files — stubbed only when embedded secrets are detected
+- Binary and media files (images, video, PDF, opaque blobs) — always replaced with a stub; behaviour debug artifacts are text/JSON/logs only, and unscannable formats are an exfiltration channel (e.g. base64 secrets in a fake `.gif`)
 
 ## Additional conventions
 

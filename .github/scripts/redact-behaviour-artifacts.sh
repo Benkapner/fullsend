@@ -213,52 +213,6 @@ _stub_opaque_file() {
   echo "::warning::Replaced opaque artifact file: ${file}"
 }
 
-_binary_contains_secret() {
-  local file="$1"
-  python3 - "${file}" <<'PY'
-import os
-import re
-import sys
-
-path = sys.argv[1]
-data = open(path, "rb").read()
-
-patterns = [
-    re.compile(rb"gh[pousr]_[A-Za-z0-9_]{20,}"),
-    re.compile(rb"github_pat_[A-Za-z0-9_]+"),
-    re.compile(rb"x-access-token:[^@\s]+"),
-    re.compile(rb"ya29\.[A-Za-z0-9._-]+"),
-    re.compile(rb"-----BEGIN .*PRIVATE KEY.*-----", re.IGNORECASE),
-]
-
-for pattern in patterns:
-    if pattern.search(data):
-        sys.exit(0)
-
-secret_names = [
-    "TEST_FULLSEND_PEM",
-    "TEST_TRIAGE_PEM",
-    "TEST_CODER_PEM",
-    "TEST_REVIEW_PEM",
-    "TEST_RETRO_PEM",
-    "TEST_PRIORITIZE_PEM",
-    "CLOUDFLARE_ACCOUNT_ID",
-    "CLOUDFLARE_API_TOKEN",
-    "TEST_ACTOR_WRITE_PAT",
-    "TEST_ACTOR_TRIAGE_PAT",
-    "TEST_ACTOR_OUTSIDER_PAT",
-    "E2E_GCP_PROJECT_ID",
-    "E2E_GCP_WIF_PROVIDER",
-]
-for name in secret_names:
-    value = os.environ.get(name, "")
-    if value and value.encode() in data:
-        sys.exit(0)
-
-sys.exit(1)
-PY
-}
-
 _archive_tree_within_limits() {
   local dir="$1"
   local size
@@ -341,12 +295,8 @@ _redact_gzip_file() {
   fi
 
   if _contains_nul_bytes "${tmpdir}/content"; then
-    if _binary_contains_secret "${tmpdir}/content"; then
-      rm -rf "${tmpdir}"
-      _stub_opaque_file "${file}" "contained unscannable binary secrets"
-      return 0
-    fi
     rm -rf "${tmpdir}"
+    _stub_opaque_file "${file}" "contained binary content that could not be scanned for job secrets"
     return 0
   fi
 
@@ -377,17 +327,10 @@ _redact_tree() {
   done < <(find "${dir}" -type f -print0)
 }
 
-_redact_encrypted_file() {
+_redact_opaque_file() {
   local file="$1"
-  _stub_opaque_file "${file}" "is encrypted and could not be scanned for job secrets"
-}
-
-_redact_binary_file() {
-  local file="$1"
-
-  if _binary_contains_secret "${file}"; then
-    _stub_opaque_file "${file}" "contained unscannable binary secrets"
-  fi
+  local reason="$2"
+  _stub_opaque_file "${file}" "${reason}"
 }
 
 _redact_path() {
@@ -409,10 +352,10 @@ _redact_path() {
       _redact_gzip_file "${file}"
       ;;
     media | binary)
-      _redact_binary_file "${file}"
+      _redact_opaque_file "${file}" "is binary or media and could not be scanned for job secrets"
       ;;
     encrypted)
-      _redact_encrypted_file "${file}"
+      _redact_opaque_file "${file}" "is encrypted and could not be scanned for job secrets"
       ;;
   esac
 }
