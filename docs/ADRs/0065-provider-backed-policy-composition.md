@@ -40,9 +40,8 @@ binaries repeated in every combination.
 
 This duplication creates maintenance burden: when a service adds or
 changes endpoints, every policy file must be updated independently.
-The fix.yaml policy header notes shared needs with the code agent policy while
-allowing intentional divergence, making the overlap explicit without requiring
-identical files.
+The fix.yaml policy comments "Identical to the code agent policy,"
+making the redundancy explicit.
 
 OpenShell v0.0.37 introduced provider-backed policy composition
 (NVIDIA/OpenShell#1037). When a provider is attached to a sandbox and
