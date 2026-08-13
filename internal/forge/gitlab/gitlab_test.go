@@ -237,6 +237,34 @@ func TestRetryOnServerError(t *testing.T) {
 		assert.EqualValues(t, 2, attempts.Load())
 	})
 
+	t.Run("retries transient network error then succeeds", func(t *testing.T) {
+		var attempts atomic.Int32
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v4/flaky-net", func(w http.ResponseWriter, r *http.Request) {
+			n := attempts.Add(1)
+			if n == 1 {
+				// Simulate a transient network error by hijacking the connection
+				// and closing it before writing any response.
+				hj, ok := w.(http.Hijacker)
+				require.True(t, ok)
+				conn, _, err := hj.Hijack()
+				require.NoError(t, err)
+				conn.Close()
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		client, err := New("tok", WithBaseURL(srv.URL), WithAfterFunc(noWaitAfter))
+		require.NoError(t, err)
+		resp, err := client.do(context.Background(), http.MethodGet, "/flaky-net", nil)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.EqualValues(t, 2, attempts.Load())
+	})
+
 	t.Run("gives up after max retries", func(t *testing.T) {
 		var attempts atomic.Int32
 		mux := http.NewServeMux()
