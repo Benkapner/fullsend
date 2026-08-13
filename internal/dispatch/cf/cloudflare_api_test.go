@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -464,4 +465,63 @@ func TestResolveAPIToken_BothFail(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN is not set")
 	assert.Contains(t, err.Error(), "wrangler auth token failed")
+}
+
+func TestValidateHostname(t *testing.T) {
+	tests := []struct {
+		hostname string
+		valid    bool
+	}{
+		{"mint.fullsend.sh", true},
+		{"stage.mint.fullsend.sh", true},
+		{"my-mint.fullsend.sh", true},
+		{"a.co", true},
+		{"foo.example.com", true},
+		{"localhost", false},
+		{"", false},
+		{".fullsend.sh", false},
+		{"fullsend.sh.", false},
+		{"mint fullsend.sh", false},
+		{"mint!@#.fullsend.sh", false},
+		{"-mint.fullsend.sh", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.hostname, func(t *testing.T) {
+			assert.Equal(t, tc.valid, ValidateHostname(tc.hostname))
+		})
+	}
+}
+
+func TestTruncateErrorBody(t *testing.T) {
+	short := "short error"
+	assert.Equal(t, short, truncateErrorBody(short))
+
+	long := strings.Repeat("x", 600)
+	truncated := truncateErrorBody(long)
+	assert.Len(t, truncated, maxErrorBodyLen+len("…[truncated]"))
+	assert.True(t, strings.HasSuffix(truncated, "…[truncated]"))
+}
+
+func TestCfAPIRequest_ErrorResponseTruncated(t *testing.T) {
+	// Verify that large error responses are truncated in the error message.
+	t.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	largeBody := strings.Repeat("x", 1000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(largeBody))
+	}))
+	defer srv.Close()
+
+	client := &LiveCloudflareAPIClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+	}
+
+	_, err := client.cfAPIRequest(context.Background(), http.MethodGet, srv.URL+"/test", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "…[truncated]")
+	// Error message should not contain the full 1000-char body.
+	assert.Less(t, len(err.Error()), 700)
 }

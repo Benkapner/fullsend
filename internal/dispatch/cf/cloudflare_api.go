@@ -10,8 +10,41 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
+
+// maxResponseSize limits the amount of data read from Cloudflare API
+// responses. 1 MB is far larger than any expected response, but
+// prevents unbounded memory consumption if an intermediary returns
+// an unexpectedly large body.
+const maxResponseSize = 1 << 20 // 1 MB
+
+// maxErrorBodyLen limits the length of response bodies included in
+// error messages to avoid leaking unexpectedly large payloads into
+// logs.
+const maxErrorBodyLen = 512
+
+// hostnamePattern validates DNS hostnames used as custom domain values.
+// Allows standard domain labels (alphanumeric + hyphens) separated by dots,
+// with at least two labels.
+var hostnamePattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+// ValidateHostname checks whether s is a syntactically valid DNS hostname
+// suitable for use as a Workers Custom Domain value. It does not verify
+// that the domain exists or is reachable.
+func ValidateHostname(s string) bool {
+	return len(s) <= 253 && hostnamePattern.MatchString(s)
+}
+
+// truncateErrorBody returns s truncated to maxErrorBodyLen, appending
+// "…[truncated]" if the string was shortened.
+func truncateErrorBody(s string) string {
+	if len(s) <= maxErrorBodyLen {
+		return s
+	}
+	return s[:maxErrorBodyLen] + "…[truncated]"
+}
 
 // CloudflareAPIClient abstracts direct Cloudflare API calls for
 // operations not covered by wrangler: custom domain attachment.
@@ -114,7 +147,7 @@ func resolveAPIToken(ctx context.Context) (string, error) {
 // Authorization header and Content-Type. Authentication is resolved
 // via resolveAPIToken: CLOUDFLARE_API_TOKEN env var first, then
 // wrangler auth token fallback (from `wrangler login`).
-func (c *LiveCloudflareAPIClient) cfAPIRequest(ctx context.Context, method, url string, body any) ([]byte, error) {
+func (c *LiveCloudflareAPIClient) cfAPIRequest(ctx context.Context, method, reqURL string, body any) ([]byte, error) {
 	token, err := resolveAPIToken(ctx)
 	if err != nil {
 		return nil, err
@@ -129,7 +162,7 @@ func (c *LiveCloudflareAPIClient) cfAPIRequest(ctx context.Context, method, url 
 		reqBody = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
@@ -144,13 +177,13 @@ func (c *LiveCloudflareAPIClient) cfAPIRequest(ctx context.Context, method, url 
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Cloudflare API returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("Cloudflare API returned %d: %s", resp.StatusCode, truncateErrorBody(string(respBody)))
 	}
 	return respBody, nil
 }
@@ -158,7 +191,7 @@ func (c *LiveCloudflareAPIClient) cfAPIRequest(ctx context.Context, method, url 
 // AttachCustomDomain registers a custom domain for a Worker via
 // PUT /accounts/{account_id}/workers/domains.
 func (c *LiveCloudflareAPIClient) AttachCustomDomain(ctx context.Context, accountID, workerName, zoneID, hostname string) error {
-	url := fmt.Sprintf("%s/accounts/%s/workers/domains", c.cfBaseURL(), accountID)
+	reqURL := fmt.Sprintf("%s/accounts/%s/workers/domains", c.cfBaseURL(), url.PathEscape(accountID))
 	body := map[string]string{
 		"hostname":    hostname,
 		"zone_id":     zoneID,
@@ -166,7 +199,7 @@ func (c *LiveCloudflareAPIClient) AttachCustomDomain(ctx context.Context, accoun
 		"environment": "production",
 	}
 
-	_, err := c.cfAPIRequest(ctx, http.MethodPut, url, body)
+	_, err := c.cfAPIRequest(ctx, http.MethodPut, reqURL, body)
 	if err != nil {
 		return fmt.Errorf("attaching custom domain %s: %w", hostname, err)
 	}
@@ -185,8 +218,8 @@ func (c *LiveCloudflareAPIClient) RemoveCustomDomain(ctx context.Context, accoun
 		return nil
 	}
 
-	url := fmt.Sprintf("%s/accounts/%s/workers/domains/%s", c.cfBaseURL(), accountID, domainID)
-	if _, err := c.cfAPIRequest(ctx, http.MethodDelete, url, nil); err != nil {
+	reqURL := fmt.Sprintf("%s/accounts/%s/workers/domains/%s", c.cfBaseURL(), url.PathEscape(accountID), url.PathEscape(domainID))
+	if _, err := c.cfAPIRequest(ctx, http.MethodDelete, reqURL, nil); err != nil {
 		return fmt.Errorf("removing custom domain %s: %w", hostname, err)
 	}
 	return nil
@@ -196,7 +229,7 @@ func (c *LiveCloudflareAPIClient) RemoveCustomDomain(ctx context.Context, accoun
 // Returns the domain ID if found, or empty string if not.
 func (c *LiveCloudflareAPIClient) findCustomDomainID(ctx context.Context, accountID, hostname string) (string, error) {
 	params := url.Values{"hostname": {hostname}}
-	reqURL := fmt.Sprintf("%s/accounts/%s/workers/domains?%s", c.cfBaseURL(), accountID, params.Encode())
+	reqURL := fmt.Sprintf("%s/accounts/%s/workers/domains?%s", c.cfBaseURL(), url.PathEscape(accountID), params.Encode())
 	respBody, err := c.cfAPIRequest(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return "", err

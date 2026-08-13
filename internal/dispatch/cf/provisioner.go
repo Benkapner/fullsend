@@ -392,6 +392,16 @@ func (p *Provisioner) validate() error {
 	if p.cfg.CustomDomain != "" && p.cfg.DeployMode == DeployPreview {
 		return fmt.Errorf("CustomDomain is not supported for preview deploys (use durable deploy mode)")
 	}
+	// Guard against ZoneID without CustomDomain. ZoneID is only
+	// meaningful when a CustomDomain is configured — setting it
+	// alone has no effect and likely indicates a config error.
+	if p.cfg.ZoneID != "" && p.cfg.CustomDomain == "" {
+		return fmt.Errorf("CustomDomain is required when ZoneID is set")
+	}
+	// Validate custom domain hostname syntax when provided.
+	if p.cfg.CustomDomain != "" && !ValidateHostname(p.cfg.CustomDomain) {
+		return fmt.Errorf("invalid CustomDomain %q: must be a valid DNS hostname (e.g. mint.fullsend.sh)", p.cfg.CustomDomain)
+	}
 	return nil
 }
 

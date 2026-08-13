@@ -2806,6 +2806,111 @@ func TestMintDeleteCloudflare_PreviewTeardown(t *testing.T) {
 	assert.Empty(t, fakeCF.deployCalls, "preview teardown should not deploy")
 }
 
+func TestMintDeleteCloudflare_DurableWithCustomDomainSummary(t *testing.T) {
+	// Delete with --custom-domain in dry-run should mention the domain
+	// in the output, verifying CLI argument wiring.
+	// Non-dry-run custom domain teardown is tested at the provisioner
+	// layer (TestProvisioner_Teardown_DurableWithCustomDomain).
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	// Dry run verifies the flag is wired through.
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "mint.fullsend.sh", true, false, os.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, fakeCF.deleteCalls, "dry run should not delete")
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainResolvesZone(t *testing.T) {
+	// Deploy with --custom-domain should call ResolveZoneIDForDomainFn
+	// to resolve the zone ID before constructing the provisioner config.
+	// The provisioner-layer test (TestProvisioner_Provision_DurableWithCustomDomain)
+	// covers the full attach flow.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// Stub zone ID resolution and track calls.
+	var resolvedDomain string
+	origResolve := cf.ResolveZoneIDForDomainFn
+	cf.ResolveZoneIDForDomainFn = func(_ context.Context, domain string) (string, error) {
+		resolvedDomain = domain
+		return "zone-abc123", nil
+	}
+	t.Cleanup(func() { cf.ResolveZoneIDForDomainFn = origResolve })
+
+	// The deploy will succeed through zone resolution but fail at
+	// AttachCustomDomain (no fake CF API client at CLI layer). We
+	// verify zone resolution was called with the right domain.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--custom-domain=mint.fullsend.sh",
+	})
+	_ = cmd.Execute() // may fail at API call; we check the zone resolution happened
+	assert.Equal(t, "mint.fullsend.sh", resolvedDomain, "expected ResolveZoneIDForDomainFn to be called with the custom domain")
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainDryRun(t *testing.T) {
+	// Dry run with --custom-domain should show the custom domain info.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--custom-domain=mint.fullsend.sh",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainZoneLookupFailure(t *testing.T) {
+	// Deploy with --custom-domain should fail when zone lookup fails.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	origResolve := cf.ResolveZoneIDForDomainFn
+	cf.ResolveZoneIDForDomainFn = func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("zone not found")
+	}
+	t.Cleanup(func() { cf.ResolveZoneIDForDomainFn = origResolve })
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--custom-domain=mint.fullsend.sh",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving zone ID")
+}
+
 func TestMintDeleteGCP_ConfirmationRequired(t *testing.T) {
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{

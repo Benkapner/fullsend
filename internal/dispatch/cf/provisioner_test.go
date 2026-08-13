@@ -2020,6 +2020,87 @@ func TestProvisioner_Teardown_RemoveDomainError(t *testing.T) {
 	assert.Empty(t, fake.deleteCalls)
 }
 
+func TestProvisioner_Validate_ZoneIDWithoutCustomDomain(t *testing.T) {
+	// ZoneID without CustomDomain should be rejected by validate().
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+		ZoneID:     "zone-456",
+	}, &fakeWranglerRunner{})
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CustomDomain is required when ZoneID is set")
+}
+
+func TestProvisioner_Validate_InvalidCustomDomainHostname(t *testing.T) {
+	// CustomDomain with invalid hostname syntax should be rejected.
+	tests := []struct {
+		name   string
+		domain string
+	}{
+		{"spaces", "mint fullsend.sh"},
+		{"no-dots", "localhost"},
+		{"trailing-dot", "mint.fullsend.sh."},
+		{"special-chars", "mint!@#.fullsend.sh"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewProvisioner(Config{
+				AccountID:    "abc123",
+				WorkerName:   "test-mint",
+				DeployMode:   DeployDurable,
+				ZoneID:       "zone-456",
+				CustomDomain: tc.domain,
+			}, &fakeWranglerRunner{})
+
+			_, err := p.Provision(context.Background())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid CustomDomain")
+		})
+	}
+}
+
+func TestProvisioner_Validate_ValidCustomDomainHostname(t *testing.T) {
+	// Valid hostnames should pass validation (may fail later in deploy).
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+
+	tests := []struct {
+		name   string
+		domain string
+	}{
+		{"simple", "mint.fullsend.sh"},
+		{"subdomain", "stage.mint.fullsend.sh"},
+		{"hyphen", "my-mint.fullsend.sh"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeWranglerRunner{
+				deployURL: "https://test-mint.test-sub.workers.dev",
+			}
+			fakeCFAPI := &fakeCloudflareAPIClient{}
+
+			p := NewProvisioner(Config{
+				AccountID:    "abc123",
+				WorkerName:   "test-mint",
+				DeployMode:   DeployDurable,
+				SourceDir:    sourceDir,
+				ZoneID:       "zone-456",
+				CustomDomain: tc.domain,
+			}, fake)
+			p.SetCloudflareAPI(fakeCFAPI)
+
+			result, err := p.Provision(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, "https://"+tc.domain, result["FULLSEND_MINT_URL"])
+		})
+	}
+}
+
 // --- ensureCFAPI tests ---
 
 func TestEnsureCFAPI_LazyInit(t *testing.T) {
