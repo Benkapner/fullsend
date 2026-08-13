@@ -417,18 +417,16 @@ func TestCollectGitLabPerRepoInstallFiles_NoVersionMarkerWhenEmpty(t *testing.T)
 	}
 }
 
-func TestCollectGitLabPerRepoInstallFiles_TagPreferredOverRef(t *testing.T) {
-	// When both ref (SHA) and tag are provided, tag is used in the marker
+func TestCollectGitLabPerRepoInstallFiles_SHAWithTagAnnotation(t *testing.T) {
+	// When both ref (SHA) and tag differ, marker includes both
 	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.35.0")
 	require.NoError(t, err)
 
 	for _, f := range files {
 		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
 			s := string(f.Content)
-			assert.Contains(t, s, "# fullsend-ref: v0.35.0",
-				"version marker should use tag over SHA ref")
-			assert.NotContains(t, s, "abc123def",
-				"SHA should not appear in version marker when tag is available")
+			assert.Contains(t, s, "# fullsend-ref: abc123def (v0.35.0)",
+				"version marker should include SHA with tag annotation")
 			return
 		}
 	}
@@ -450,26 +448,27 @@ func TestCollectGitLabPerRepoInstallFiles_RefUsedWhenNoTag(t *testing.T) {
 }
 
 func TestFormatRunnerTags(t *testing.T) {
-	assert.Equal(t, "[]", formatRunnerTags(nil))
-	assert.Equal(t, "[]", formatRunnerTags([]string{}))
-	assert.Equal(t, `["docker"]`, formatRunnerTags([]string{"docker"}))
-	assert.Equal(t, `["docker", "linux"]`, formatRunnerTags([]string{"docker", "linux"}))
+	assert.Equal(t, "[]", FormatRunnerTags(nil))
+	assert.Equal(t, "[]", FormatRunnerTags([]string{}))
+	assert.Equal(t, `["docker"]`, FormatRunnerTags([]string{"docker"}))
+	assert.Equal(t, `["docker", "linux"]`, FormatRunnerTags([]string{"docker", "linux"}))
 }
 
 func TestFormatVersionMarker(t *testing.T) {
-	assert.Equal(t, "", formatVersionMarker("", ""))
-	assert.Equal(t, "# fullsend-ref: v0.34.0", formatVersionMarker("v0.34.0", ""))
-	assert.Equal(t, "# fullsend-ref: v0.34.0", formatVersionMarker("", "v0.34.0"))
-	assert.Equal(t, "# fullsend-ref: v0.35.0", formatVersionMarker("abc123", "v0.35.0"))
+	assert.Equal(t, "", FormatVersionMarker("", ""))
+	assert.Equal(t, "# fullsend-ref: v0.34.0", FormatVersionMarker("v0.34.0", ""))
+	assert.Equal(t, "# fullsend-ref: v0.34.0", FormatVersionMarker("", "v0.34.0"))
+	assert.Equal(t, "# fullsend-ref: abc123 (v0.35.0)", FormatVersionMarker("abc123", "v0.35.0"))
+	assert.Equal(t, "# fullsend-ref: abc123", FormatVersionMarker("abc123", "abc123"))
 }
 
 func TestInsertAfterDocStart(t *testing.T) {
 	t.Run("with document start", func(t *testing.T) {
-		result := insertAfterDocStart("---\ncontent", "# marker")
+		result := InsertAfterDocStart("---\ncontent", "# marker")
 		assert.Equal(t, "---\n# marker\ncontent", result)
 	})
 	t.Run("without document start", func(t *testing.T) {
-		result := insertAfterDocStart("content", "# marker")
+		result := InsertAfterDocStart("content", "# marker")
 		assert.Equal(t, "# marker\ncontent", result)
 	})
 }
