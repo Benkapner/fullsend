@@ -109,6 +109,10 @@ fullsend
 │   └── url                                  # Validate URLs against SSRF attacks
 ├── post-review                              # Post PR review comments to GitHub
 ├── post-comment                             # Post issue/PR comments to GitHub
+├── eval-measure                             # Score wild-run traces (eval measurements)
+│   ├── --telemetry <path>                   #   Path to run-telemetry.jsonl (required)
+│   ├── --registry <path>                    #   Agents measurement manifest YAML (required)
+│   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format
     ├── --number <int>                       #   Issue/PR number

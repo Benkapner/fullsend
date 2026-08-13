@@ -1,6 +1,7 @@
 package evalmeasure
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -35,4 +36,19 @@ func TestParseTelemetryFile_MergesLinesSameTrace(t *testing.T) {
 	assert.Len(t, traces[0].Spans, 3)
 	_, ok := traces[0].SpanByName("sandbox_create")
 	assert.True(t, ok)
+}
+
+func TestParseTelemetryFile_InvalidLine(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte("not-json\n"), 0o644))
+	_, err := ParseTelemetryFile(path)
+	require.Error(t, err)
+}
+
+func TestParseTelemetryFile_MissingFile(t *testing.T) {
+	t.Parallel()
+	_, err := ParseTelemetryFile(filepath.Join(t.TempDir(), "missing.jsonl"))
+	require.Error(t, err)
 }

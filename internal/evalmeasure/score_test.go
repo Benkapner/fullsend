@@ -46,3 +46,27 @@ func TestScoreFitness_ReviewUnknownWorkItemFails(t *testing.T) {
 	assert.Contains(t, r.Explanation, "work_item=fail")
 	assert.Contains(t, r.Explanation, "missing: work_item")
 }
+
+func TestScoreTrace_AgentMismatchReturnsNil(t *testing.T) {
+	t.Parallel()
+	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	reg := Registry{Agent: "code", Measurements: []MeasurementSpec{{ID: "em-001", Scorer: ScorerFitness, Version: 1}}}
+	assert.Empty(t, ScoreTrace(traces[0], reg))
+}
+
+func TestScoreTrace_UnknownScorerSkipped(t *testing.T) {
+	t.Parallel()
+	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	reg := Registry{
+		Agent: "triage",
+		Measurements: []MeasurementSpec{
+			{ID: "em-999", Scorer: "future_scorer", Version: 1},
+			{ID: "em-001", Scorer: ScorerFitness, Version: 1},
+		},
+	}
+	results := ScoreTrace(traces[0], reg)
+	require.Len(t, results, 1)
+	assert.Equal(t, "trace_fitness", results[0].Name)
+}

@@ -15,7 +15,9 @@ func MeasureFile(telemetryPath, registryPath, outDir string) ([]EvaluationResult
 // MeasureAndExport is MeasureFile with an explicit context (reserved for
 // future portable OTLP score export on the same OTEL_* path as ADR 0050).
 func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if outDir == "" {
 		outDir = filepath.Dir(telemetryPath)
 	}

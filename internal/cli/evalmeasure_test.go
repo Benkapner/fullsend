@@ -44,3 +44,13 @@ func TestRootCommand_HasEvalMeasureSubcommand(t *testing.T) {
 	}
 	assert.True(t, found, "expected eval-measure subcommand")
 }
+
+func TestEvalMeasureCmd_MissingRequiredFlags(t *testing.T) {
+	cmd := newRootCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"eval-measure"})
+	err := cmd.Execute()
+	require.Error(t, err)
+}

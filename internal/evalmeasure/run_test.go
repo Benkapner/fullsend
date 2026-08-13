@@ -2,6 +2,7 @@ package evalmeasure
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,4 +63,34 @@ func TestMeasureFile_AppendBeforeLedger(t *testing.T) {
 	lines, err := os.ReadFile(filepath.Join(out, MeasurementsFile))
 	require.NoError(t, err)
 	assert.Equal(t, 2, bytes.Count(lines, []byte("\n")), "missing ledger may duplicate JSONL lines; consumers dedupe on trace_id+version")
+}
+
+func TestMeasureFile_BadRegistry(t *testing.T) {
+	_, err := MeasureFile(
+		filepath.Join("testdata", "complete.jsonl"),
+		filepath.Join(t.TempDir(), "missing.yaml"),
+		t.TempDir(),
+	)
+	require.Error(t, err)
+}
+
+func TestMeasureFile_BadTelemetry(t *testing.T) {
+	_, err := MeasureFile(
+		filepath.Join(t.TempDir(), "missing.jsonl"),
+		filepath.Join("testdata", "sample-registry.yaml"),
+		t.TempDir(),
+	)
+	require.Error(t, err)
+}
+
+func TestMeasureAndExport_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := MeasureAndExport(
+		ctx,
+		filepath.Join("testdata", "complete.jsonl"),
+		filepath.Join("testdata", "sample-registry.yaml"),
+		t.TempDir(),
+	)
+	require.Error(t, err)
 }
