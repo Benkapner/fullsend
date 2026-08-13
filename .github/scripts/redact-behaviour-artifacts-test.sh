@@ -101,6 +101,13 @@ EOF
 run_redaction
 run_test "redacts-access-token-url" "ghp_secret"
 
+cat >"${TMPDIR}/artifact.log" <<'EOF'
+Authorization: Bearer abcdefghij+/=TOKENVALUE
+keep sentinel line two
+EOF
+run_redaction
+run_test "redacts-bearer-base64-chars" "abcdefghij+/=TOKENVALUE" "keep sentinel line two"
+
 echo "==> Literal secret redaction"
 cat >"${TMPDIR}/artifact.log" <<'EOF'
 dumped literal-secret-pem-value in log

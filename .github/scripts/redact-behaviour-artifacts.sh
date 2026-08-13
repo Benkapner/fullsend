@@ -96,7 +96,7 @@ _redact_patterns() {
     -e 's/gh[a-z]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
     -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
     -e 's/x-access-token:[^@[:space:]]+/x-access-token:[REDACTED]/g' \
-    -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gI' \
+    -e 's/(Bearer|token)[[:space:]]+[^[:space:]]+/\1 [REDACTED]/gI' \
     -e 's/ya29\.[A-Za-z0-9._-]+/[REDACTED]/g'
 }
 
