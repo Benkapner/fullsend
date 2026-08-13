@@ -18,6 +18,10 @@ func redactSummary(s string) string {
 	return s
 }
 
+// OpenCode ndjson event types and field paths verified against anomalyco/opencode
+// packages/opencode/src/cli/cmd/run.ts (pre-GA dev branch, 2026-08).
+// Re-verify after OpenCode releases stabilize the wire format.
+
 // OpenCode ndjson envelope — every line has these fields.
 type ocEnvelope struct {
 	Type      string `json:"type"`
@@ -103,8 +107,12 @@ type ocErrorEvent struct {
 // Unlike parseClaudeStream, OpenCode emits complete text/reasoning blocks
 // (not incremental deltas), so the parser is largely stateless. The only
 // state tracked is step_finish accumulation for ResultEvent synthesis at EOF.
+//
+// The parser does NOT emit an InitEvent because OpenCode's wire format does
+// not carry model/version metadata. The caller (OpenCodeRuntime.Run) must
+// emit InitEvent and set RunMetrics.Model from RunParams.Model.
 func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err error) {
-	br := bufio.NewReaderSize(r, 1024*1024)
+	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
 		// Accumulated state for ResultEvent synthesis.
@@ -171,6 +179,10 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			onEvent(TextEvent{Text: evt.Part.Text})
 
 		case "reasoning":
+			// NOTE: OpenCode only emits reasoning events when invoked with
+			// --thinking (non-interactive runs default to thinking=false).
+			// The wiring in OpenCodeRuntime.Run must pass --thinking for
+			// this path to fire.
 			var evt ocReasoningEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
@@ -205,17 +217,20 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 				continue
 			}
 			sawError = true
-			lastErrorMsg = evt.Error.Data.Message
+			msg := redactSummary(evt.Error.Data.Message)
+			lastErrorMsg = msg
 			onEvent(ErrorEvent{
 				ErrorType: evt.Error.Name,
-				Message:   evt.Error.Data.Message,
+				Message:   msg,
 			})
 
 		case "step_start":
 			// Silently absorbed — no useful data for AgentEvent.
 
 		default:
-			// Unknown event types are silently skipped.
+			// Unknown event types are silently skipped. If OpenCode's
+			// wire format adds new event types, this is where they will
+			// be lost. Monitor for schema drift after OpenCode releases.
 		}
 	}
 

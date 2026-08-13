@@ -1,5 +1,9 @@
 package runtime
 
+// streamBufSize is the bufio.Reader buffer size used by both NDJSON stream
+// parsers (Claude and OpenCode). Lines exceeding this size are skipped.
+const streamBufSize = 1024 * 1024 // 1 MiB
+
 // AgentEvent is the normalized event interface for runtime-agnostic rendering.
 // Each concrete event type implements this with a no-op marker method.
 type AgentEvent interface {

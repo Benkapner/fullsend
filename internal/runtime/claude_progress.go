@@ -109,7 +109,7 @@ type resultEvent struct {
 // system events, stream_event deltas (thinking, text, tool input JSON),
 // result events, errors, and assistant message fallback.
 func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
-	br := bufio.NewReaderSize(r, 1024*1024)
+	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
 		seenStreamEvent bool
