@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"strings"
 )
 
 // mintWAFRulesetName is the name used for the managed WAF ruleset
@@ -42,6 +44,13 @@ type CloudflareAPIClient interface {
 
 	// RemoveWAFRuleset removes the managed WAF ruleset from the zone.
 	RemoveWAFRuleset(ctx context.Context, zoneID string) error
+
+	// LookupZoneID resolves the Cloudflare zone ID for a given domain
+	// name by walking up the domain hierarchy. For example, given
+	// "mint.fullsend.sh", it tries "mint.fullsend.sh" then "fullsend.sh"
+	// until a matching zone is found. Returns an error if the zone is
+	// not in the account.
+	LookupZoneID(ctx context.Context, domain string) (string, error)
 }
 
 // WAFRule defines a single WAF rule in the Cloudflare Rulesets API
@@ -115,7 +124,51 @@ func (c *LiveCloudflareAPIClient) cfBaseURL() string {
 	return "https://api.cloudflare.com/client/v4"
 }
 
-// cfAPIToken reads the Cloudflare API token from the environment.
+// WranglerAuthTokenFn is the function used to run `wrangler auth token`.
+// Override in tests to avoid needing a real wrangler installation.
+var WranglerAuthTokenFn = runWranglerAuthToken
+
+// runWranglerAuthToken executes `npx wrangler auth token` and returns
+// the token string.
+func runWranglerAuthToken(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "auth", "token")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("wrangler auth token failed: %w\n%s", err, string(out))
+	}
+	// The output may contain multiple lines; the token is typically
+	// the last non-empty line.
+	token := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			token = line
+		}
+	}
+	if token == "" {
+		return "", fmt.Errorf("wrangler auth token returned empty output")
+	}
+	return token, nil
+}
+
+// resolveAPIToken returns a Cloudflare API token for direct API calls.
+// It tries CLOUDFLARE_API_TOKEN env var first, then falls back to
+// `wrangler auth token` to obtain a token from the wrangler OAuth session.
+func resolveAPIToken(ctx context.Context) (string, error) {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	if token != "" {
+		return token, nil
+	}
+	// Fall back to wrangler auth token.
+	wranglerToken, err := WranglerAuthTokenFn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("CLOUDFLARE_API_TOKEN is not set and wrangler auth token failed: %w\nSet CLOUDFLARE_API_TOKEN or run 'wrangler login' first", err)
+	}
+	return wranglerToken, nil
+}
+
+// cfAPIToken reads the Cloudflare API token from the environment or
+// wrangler OAuth session.
 func cfAPIToken() (string, error) {
 	token := os.Getenv("CLOUDFLARE_API_TOKEN")
 	if token == "" {
@@ -326,3 +379,92 @@ func (c *LiveCloudflareAPIClient) findCustomDomainID(ctx context.Context, accoun
 	}
 	return "", nil
 }
+
+// LookupZoneID resolves the Cloudflare zone ID for a domain by walking
+// up the domain hierarchy. For "mint.fullsend.sh" it tries
+// "mint.fullsend.sh", then "fullsend.sh". Returns an error if no
+// matching zone is found.
+func (c *LiveCloudflareAPIClient) LookupZoneID(ctx context.Context, domain string) (string, error) {
+	parts := strings.Split(domain, ".")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("invalid domain %q: must have at least two labels", domain)
+	}
+
+	// Walk up the domain hierarchy. For "mint.fullsend.sh":
+	//   try "mint.fullsend.sh", then "fullsend.sh"
+	for i := 0; i <= len(parts)-2; i++ {
+		candidate := strings.Join(parts[i:], ".")
+		zoneID, err := c.lookupZoneByName(ctx, candidate)
+		if err != nil {
+			return "", fmt.Errorf("looking up zone for %s: %w", candidate, err)
+		}
+		if zoneID != "" {
+			return zoneID, nil
+		}
+	}
+
+	return "", fmt.Errorf("zone not found for domain %q — ensure the domain's zone exists in your Cloudflare account", domain)
+}
+
+// lookupZoneByName queries the Cloudflare Zones API for a zone with
+// the given name. Returns the zone ID if found, or empty string if
+// no match.
+func (c *LiveCloudflareAPIClient) lookupZoneByName(ctx context.Context, name string) (string, error) {
+	params := url.Values{"name": {name}}
+	reqURL := fmt.Sprintf("%s/zones?%s", c.cfBaseURL(), params.Encode())
+	respBody, err := c.cfAPIRequest(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		Result []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("parsing zones response: %w", err)
+	}
+
+	for _, z := range result.Result {
+		if z.Name == name {
+			return z.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// ResolveZoneIDForDomain is a convenience function that creates a
+// CloudflareAPIClient and resolves the zone ID for a domain. It
+// resolves the API token from CLOUDFLARE_API_TOKEN or wrangler auth
+// token. This is intended for CLI-level use before building the
+// provisioner config.
+func ResolveZoneIDForDomain(ctx context.Context, domain string) (string, error) {
+	token, err := resolveAPIToken(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolving API token for zone lookup: %w", err)
+	}
+
+	client := &LiveCloudflareAPIClient{
+		httpClient: http.DefaultClient,
+	}
+	// Temporarily set the token in the environment for cfAPIRequest.
+	// This is safe because ResolveZoneIDForDomain is called from the
+	// CLI's main goroutine before any concurrent work begins.
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	os.Setenv("CLOUDFLARE_API_TOKEN", token)
+	defer func() {
+		if origToken == "" {
+			os.Unsetenv("CLOUDFLARE_API_TOKEN")
+		} else {
+			os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+		}
+	}()
+
+	return client.LookupZoneID(ctx, domain)
+}
+
+// ResolveZoneIDForDomainFn is the function used to resolve zone IDs
+// from domain names. Override in tests to avoid real API calls.
+var ResolveZoneIDForDomainFn = ResolveZoneIDForDomain

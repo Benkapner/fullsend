@@ -126,7 +126,7 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 | Block oversized bodies | Rejects request bodies >64 KB on `/v1/token` |
 | Block malformed content-type | Rejects `POST /v1/token` without `application/json` content-type |
 
-The rules are idempotent (create-or-update on deploy) and removed on teardown when `--custom-domain` and `--zone-id` are passed to `mint delete`. Rate limiting is handled separately by the Worker's native `[[ratelimits]]` binding (see [Mint Administration](../infrastructure/mint-administration.md#cloudflare-worker-rate-limiting)).
+The rules are idempotent (create-or-update on deploy) and removed on teardown when `--custom-domain` is passed to `mint delete`. The zone ID is resolved automatically from the domain name. Rate limiting is handled separately by the Worker's native `[[ratelimits]]` binding (see [Mint Administration](../infrastructure/mint-administration.md#cloudflare-worker-rate-limiting)).
 
 ### Multi-Org Support
 

@@ -635,14 +635,13 @@ gcloud functions logs read fullsend-mint \
 
 ## Cloudflare Worker custom domain and WAF
 
-Durable Cloudflare Worker deployments can be attached to a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) using the `--custom-domain` and `--zone-id` flags. When a custom domain is configured, the CLI also deploys hardcoded WAF rules on the zone to provide edge protection for the `/v1/token` endpoint.
+Durable Cloudflare Worker deployments can be attached to a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) using the `--custom-domain` flag. The zone ID is resolved automatically from the domain name via the Cloudflare API. When a custom domain is configured, the CLI also deploys hardcoded WAF rules on the zone to provide edge protection for the `/v1/token` endpoint.
 
 ### Deploying with a custom domain
 
 ```bash
 fullsend mint deploy \
   --platform cloudflare \
-  --zone-id "<ZONE_ID>" \
   --custom-domain "mint.fullsend.sh" \
   --pem-dir "/path/to/pems"
 ```
@@ -663,19 +662,18 @@ These rules are managed by the CLI under the `fullsend-mint-waf` ruleset name. T
 
 ### Tearing down with a custom domain
 
-Pass the same `--zone-id` and `--custom-domain` flags to `mint delete` so the CLI removes the WAF ruleset and custom domain binding before deleting the Worker:
+Pass `--custom-domain` to `mint delete` so the CLI removes the WAF ruleset and custom domain binding before deleting the Worker:
 
 ```bash
 fullsend mint delete \
   --platform cloudflare \
-  --zone-id "<ZONE_ID>" \
   --custom-domain "mint.fullsend.sh"
 ```
 
 ### Requirements
 
-- `CLOUDFLARE_API_TOKEN` env var is required for custom domain and WAF API calls
-- The zone must already exist in the Cloudflare account
+- Cloudflare authentication is required (either `CLOUDFLARE_API_TOKEN` env var or `wrangler login` session)
+- The zone must already exist in the Cloudflare account — the CLI fails early with a clear error if the zone cannot be found
 - Custom domains are only supported for durable deploys — preview deploys use bare `workers.dev` hostnames
 
 ## Cloudflare Worker rate limiting

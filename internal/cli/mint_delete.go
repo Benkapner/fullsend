@@ -27,7 +27,6 @@ func newMintDeleteCmd() *cobra.Command {
 	// Cloudflare-specific flags.
 	var workerName string
 	var preview string
-	var zoneID string
 	var customDomain string
 
 	cmd := &cobra.Command{
@@ -57,10 +56,11 @@ GCP mode (--platform=gcp):
 Cloudflare durable mode (--platform=cloudflare):
   Deletes the durable Worker script and all associated bindings/secrets.
   When --custom-domain is set, also removes the WAF ruleset and custom
-  domain binding before deleting the Worker. Requires --zone-id.
+  domain binding before deleting the Worker. The zone ID is resolved
+  automatically from the domain name.
 
   Required flags: none (Worker name defaults to "fullsend-mint")
-  Optional: --worker-name, --zone-id, --custom-domain
+  Optional: --worker-name, --custom-domain
 
 Cloudflare preview mode (--platform=cloudflare --preview=<alias>):
   Abandons the preview alias. The durable Worker script is not affected.
@@ -72,7 +72,7 @@ Requires confirmation (type "delete" to confirm) unless --dry-run or --yolo.`,
 			case "gcp":
 				return runMintDeleteGCP(cmd.Context(), project, region, dryRun, yolo, os.Stdin)
 			case "cloudflare":
-				return runMintDeleteCloudflare(cmd.Context(), workerName, preview, zoneID, customDomain, dryRun, yolo, os.Stdin)
+				return runMintDeleteCloudflare(cmd.Context(), workerName, preview, customDomain, dryRun, yolo, os.Stdin)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -91,8 +91,7 @@ Requires confirmation (type "delete" to confirm) unless --dry-run or --yolo.`,
 	// Cloudflare-specific flags.
 	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
 	cmd.Flags().StringVar(&preview, "preview", "", "tear down a preview mint identified by this alias (Cloudflare only)")
-	cmd.Flags().StringVar(&zoneID, "zone-id", "", "Cloudflare zone ID for the custom domain (Cloudflare only, required with --custom-domain)")
-	cmd.Flags().StringVar(&customDomain, "custom-domain", "", "custom domain hostname to remove during teardown (Cloudflare only, requires --zone-id)")
+	cmd.Flags().StringVar(&customDomain, "custom-domain", "", "custom domain hostname to remove during teardown (Cloudflare only, zone ID resolved automatically)")
 
 	return cmd
 }
@@ -247,7 +246,7 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 	return nil
 }
 
-func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, zoneID, customDomain string, dryRun, yolo bool, stdin *os.File) error {
+func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, customDomain string, dryRun, yolo bool, stdin *os.File) error {
 	accountID, err := cf.ResolveCloudflareAuth(ctx)
 	if err != nil {
 		return err
@@ -259,14 +258,6 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, zone
 
 	if previewAlias != "" && !cf.ValidatePreviewAlias(previewAlias) {
 		return fmt.Errorf("invalid --preview alias %q: must be 2-63 lowercase alphanumeric characters or hyphens", previewAlias)
-	}
-
-	// Validate custom domain flags.
-	if customDomain != "" && zoneID == "" {
-		return fmt.Errorf("--zone-id is required when --custom-domain is set")
-	}
-	if zoneID != "" && customDomain == "" {
-		return fmt.Errorf("--custom-domain is required when --zone-id is set")
 	}
 
 	printer := ui.New(os.Stdout)
@@ -295,7 +286,7 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, zone
 		} else {
 			printer.StepInfo(fmt.Sprintf("  Would delete Worker: %s", effectiveName))
 			if customDomain != "" {
-				printer.StepInfo(fmt.Sprintf("  Would remove WAF ruleset from zone %s", zoneID))
+				printer.StepInfo(fmt.Sprintf("  Would remove WAF ruleset for custom domain %s", customDomain))
 				printer.StepInfo(fmt.Sprintf("  Would remove custom domain %s", customDomain))
 			}
 			printer.StepInfo("  All Worker bindings, secrets, and vars will be removed")
@@ -317,12 +308,27 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, zone
 		printer.Blank()
 	}
 
+	// Resolve zone ID early when custom domain is set. This validates
+	// that the domain's zone exists in the account before starting
+	// the teardown, giving the user a clear error message.
+	var resolvedZoneID string
+	if customDomain != "" && previewAlias == "" {
+		printer.StepStart(fmt.Sprintf("Resolving zone ID for %s", customDomain))
+		var zoneErr error
+		resolvedZoneID, zoneErr = cf.ResolveZoneIDForDomainFn(ctx, customDomain)
+		if zoneErr != nil {
+			printer.StepFail("Zone lookup failed")
+			return fmt.Errorf("resolving zone ID for custom domain %s: %w", customDomain, zoneErr)
+		}
+		printer.StepDone(fmt.Sprintf("Zone ID: %s", resolvedZoneID))
+	}
+
 	cfg := cf.Config{
 		AccountID:    accountID,
 		WorkerName:   workerName,
 		DeployMode:   deployMode,
 		PreviewAlias: previewAlias,
-		ZoneID:       zoneID,
+		ZoneID:       resolvedZoneID,
 		CustomDomain: customDomain,
 	}
 

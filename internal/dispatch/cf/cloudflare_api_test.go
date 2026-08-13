@@ -559,3 +559,120 @@ func TestFindCustomDomainID_URLEncodesHostname(t *testing.T) {
 	_, err := client.findCustomDomainID(context.Background(), "acc-1", "host+with+spaces")
 	require.NoError(t, err)
 }
+
+// --- LookupZoneID tests ---
+
+func TestLookupZoneID_MatchesRootDomain(t *testing.T) {
+	// "mint.fullsend.sh" should find zone "fullsend.sh".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		w.WriteHeader(http.StatusOK)
+		if name == "fullsend.sh" {
+			w.Write([]byte(`{"result":[{"id":"zone-123","name":"fullsend.sh"}]}`))
+		} else {
+			w.Write([]byte(`{"result":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	zoneID, err := client.LookupZoneID(context.Background(), "mint.fullsend.sh")
+	require.NoError(t, err)
+	assert.Equal(t, "zone-123", zoneID)
+}
+
+func TestLookupZoneID_MatchesExactDomain(t *testing.T) {
+	// "example.com" should find zone "example.com" directly.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		w.WriteHeader(http.StatusOK)
+		if name == "example.com" {
+			w.Write([]byte(`{"result":[{"id":"zone-abc","name":"example.com"}]}`))
+		} else {
+			w.Write([]byte(`{"result":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	zoneID, err := client.LookupZoneID(context.Background(), "example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "zone-abc", zoneID)
+}
+
+func TestLookupZoneID_NotFound(t *testing.T) {
+	// Domain not in account should return a clear error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"result":[]}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.LookupZoneID(context.Background(), "unknown.example.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zone not found")
+	assert.Contains(t, err.Error(), "Cloudflare account")
+}
+
+func TestLookupZoneID_InvalidDomain(t *testing.T) {
+	client := &LiveCloudflareAPIClient{}
+	_, err := client.LookupZoneID(context.Background(), "localhost")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must have at least two labels")
+}
+
+func TestLookupZoneID_DeepSubdomain(t *testing.T) {
+	// "a.b.c.example.com" should walk up and find zone "example.com".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		w.WriteHeader(http.StatusOK)
+		if name == "example.com" {
+			w.Write([]byte(`{"result":[{"id":"zone-deep","name":"example.com"}]}`))
+		} else {
+			w.Write([]byte(`{"result":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	zoneID, err := client.LookupZoneID(context.Background(), "a.b.c.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "zone-deep", zoneID)
+}
+
+// --- resolveAPIToken tests ---
+
+func TestResolveAPIToken_EnvVar(t *testing.T) {
+	t.Setenv("CLOUDFLARE_API_TOKEN", "env-token")
+	token, err := resolveAPIToken(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "env-token", token)
+}
+
+func TestResolveAPIToken_WranglerFallback(t *testing.T) {
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	oldFn := WranglerAuthTokenFn
+	WranglerAuthTokenFn = func(_ context.Context) (string, error) {
+		return "wrangler-token", nil
+	}
+	defer func() { WranglerAuthTokenFn = oldFn }()
+
+	token, err := resolveAPIToken(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "wrangler-token", token)
+}
+
+func TestResolveAPIToken_BothFail(t *testing.T) {
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	oldFn := WranglerAuthTokenFn
+	WranglerAuthTokenFn = func(_ context.Context) (string, error) {
+		return "", assert.AnError
+	}
+	defer func() { WranglerAuthTokenFn = oldFn }()
+
+	_, err := resolveAPIToken(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN is not set")
+	assert.Contains(t, err.Error(), "wrangler auth token failed")
+}

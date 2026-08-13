@@ -282,11 +282,22 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	if p.cfg.CustomDomain != "" && p.cfg.DeployMode == DeployDurable {
 		cfAPI := p.ensureCFAPI()
 
-		if err := cfAPI.AttachCustomDomain(ctx, p.cfg.AccountID, p.cfg.WorkerName, p.cfg.ZoneID, p.cfg.CustomDomain); err != nil {
+		// Resolve zone ID from custom domain if not explicitly provided.
+		zoneID := p.cfg.ZoneID
+		if zoneID == "" {
+			var lookupErr error
+			zoneID, lookupErr = cfAPI.LookupZoneID(ctx, p.cfg.CustomDomain)
+			if lookupErr != nil {
+				return nil, fmt.Errorf("looking up zone ID for custom domain %s: %w", p.cfg.CustomDomain, lookupErr)
+			}
+			p.cfg.ZoneID = zoneID
+		}
+
+		if err := cfAPI.AttachCustomDomain(ctx, p.cfg.AccountID, p.cfg.WorkerName, zoneID, p.cfg.CustomDomain); err != nil {
 			return nil, fmt.Errorf("attaching custom domain: %w", err)
 		}
 
-		if err := cfAPI.DeployWAFRules(ctx, p.cfg.ZoneID, MintWAFRules()); err != nil {
+		if err := cfAPI.DeployWAFRules(ctx, zoneID, MintWAFRules()); err != nil {
 			return nil, fmt.Errorf("deploying WAF rules: %w", err)
 		}
 
@@ -342,7 +353,18 @@ func (p *Provisioner) Teardown(ctx context.Context) error {
 		if p.cfg.CustomDomain != "" {
 			cfAPI := p.ensureCFAPI()
 
-			if err := cfAPI.RemoveWAFRuleset(ctx, p.cfg.ZoneID); err != nil {
+			// Resolve zone ID from custom domain if not explicitly provided.
+			zoneID := p.cfg.ZoneID
+			if zoneID == "" {
+				var lookupErr error
+				zoneID, lookupErr = cfAPI.LookupZoneID(ctx, p.cfg.CustomDomain)
+				if lookupErr != nil {
+					return fmt.Errorf("looking up zone ID for custom domain %s: %w", p.cfg.CustomDomain, lookupErr)
+				}
+				p.cfg.ZoneID = zoneID
+			}
+
+			if err := cfAPI.RemoveWAFRuleset(ctx, zoneID); err != nil {
 				return fmt.Errorf("removing WAF ruleset: %w", err)
 			}
 			if err := cfAPI.RemoveCustomDomain(ctx, p.cfg.AccountID, p.cfg.CustomDomain); err != nil {
@@ -384,10 +406,6 @@ func (p *Provisioner) validate() error {
 	// Secrets here would be silently dropped.
 	if p.cfg.DeployMode == DeployDurable && len(p.cfg.Secrets) > 0 {
 		return fmt.Errorf("Config.Secrets must be empty for durable deploys; use StoreAgentPEM after deploy instead")
-	}
-	// Guard against CustomDomain without ZoneID.
-	if p.cfg.CustomDomain != "" && p.cfg.ZoneID == "" {
-		return fmt.Errorf("ZoneID is required when CustomDomain is set")
 	}
 	// Guard against preview deploy with custom domain. Custom domains
 	// are zone-scoped and apply only to durable Workers — preview
