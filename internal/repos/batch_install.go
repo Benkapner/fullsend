@@ -403,6 +403,14 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 		candidates[i] = candidateWIF{discovery: d, wifProvider: wif}
 	}
 
+	// Create a ref resolver if a GitHub client is available. SHA
+	// resolution always targets fullsend-ai/fullsend (GitHub), so a
+	// GitHub client is required regardless of the target forge.
+	var refResolver *RefResolver
+	if ghFC, ghErr := clients.ConfigFor(ForgeGitHub); ghErr == nil {
+		refResolver = NewRefResolver(ghFC.Client)
+	}
+
 	// Phase 2: Parallel scaffold + variable/secret writes.
 	var mu sync.Mutex
 	var wg2 sync.WaitGroup
@@ -426,11 +434,22 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			defer func() { <-sem }()
 
 			ref := dr.resolved.FullsendRef
-			if cfg.UpstreamRef != "" {
+			tag := cfg.UpstreamTag
+			var manifestRef string
+
+			if ref == "" && cfg.UpstreamRef != "" {
 				ref = cfg.UpstreamRef
+			} else if ref != "" {
+				manifestRef = ref
+				tag = ref
+				if refResolver != nil {
+					resolved := refResolver.Resolve(ctx, ref)
+					if resolved != ref {
+						ref = resolved
+					}
+				}
 			}
 
-			tag := cfg.UpstreamTag
 			roles := cfg.Roles
 			if len(roles) == 0 {
 				roles = config.PerRepoDefaultRoles()
@@ -452,6 +471,22 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				Direct:             cfg.Direct,
 				ReuseSecrets:       dr.secretsExist,
 				DiscoveredCredMode: dr.discoveredCredMode,
+			}
+
+			// When the manifest pins to a different version than the
+			// running binary, fetch scaffold templates from the repo
+			// at the pinned ref instead of using embedded templates.
+			if manifestRef != "" && refResolver != nil {
+				scaffoldFiles, fetchErr := FetchRemoteScaffold(
+					ctx, refResolver.client,
+					manifestRef, ref, dr.resolved.Forge,
+					cfg.Manifest.Forge.GitLab.RunnerTags,
+				)
+				if fetchErr == nil {
+					installCfg.PrebuiltScaffoldFiles = scaffoldFiles
+				} else {
+					progress(dr.repo.Owner+"/"+dr.repo.Repo, "install", fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
+				}
 			}
 
 			installResult, installErr := Install(ctx, installCfg, dr.resolved.ForgeConfig.Client, commitScaffold, progress)

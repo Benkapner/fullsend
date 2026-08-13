@@ -377,7 +377,7 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	progress(fullName, "install", "installing per-repo")
 
 	ref := dr.FullsendRef
-	if cfg.UpstreamRef != "" {
+	if ref == "" && cfg.UpstreamRef != "" {
 		ref = cfg.UpstreamRef
 	}
 
