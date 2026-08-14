@@ -218,9 +218,18 @@ func upgradeRepo(ctx context.Context,
 	}
 
 	if cfg.DryRun {
-		// Check if any uses: lines would change without resolving the SHA,
-		// so DryRun never makes API calls that could fail.
-		_, changed := replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+		// Resolve non-SHA target refs via the RefResolver for an accurate
+		// dry-run prediction. The resolver only performs read operations
+		// and is safe for DryRun.
+		dryRef := targetRef
+		dryTag := ""
+		if !isSHARef(targetRef) && resolver != nil {
+			if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
+				dryRef = sha
+				dryTag = targetRef
+			}
+		}
+		_, changed := replaceShimRef(content, dryRef, dryTag, fc, resolvedCfg.Forge)
 		if !changed {
 			result.Skipped = true
 			result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
@@ -248,10 +257,12 @@ func upgradeRepo(ctx context.Context,
 		if sha != "" && sha != targetRef {
 			// Resolution succeeded — write @<sha> with annotation.
 			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
-		} else if isSHARef(currentRef) {
+		} else if isSHARef(currentRef) && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
 			// Current repo is SHA-pinned but the resolver did not
 			// resolve the target — fall back to direct tag lookup
-			// for backwards compatibility.
+			// for backwards compatibility. This uses the target
+			// repo's forge client, so it only works for GitHub repos
+			// (fullsend-ai/fullsend is always on GitHub).
 			sha, err = client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
 			if err != nil {
 				result.Error = fmt.Errorf("resolving ref %s to SHA: %w", targetRef, err)
@@ -259,11 +270,12 @@ func upgradeRepo(ctx context.Context,
 			}
 			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
 		} else {
-			// Resolution failed and current is not SHA-pinned —
-			// write the target ref directly.
+			// Resolution failed and current is not SHA-pinned (or
+			// forge is non-GitHub) — write the target ref directly.
 			newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
 		}
 	} else {
+		// Target ref is already a SHA — write it directly.
 		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
 	}
 	if !changed {

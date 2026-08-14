@@ -437,11 +437,12 @@ func TestUpgrade_FloatingRefSameSHASkipped(t *testing.T) {
 }
 
 func TestUpgrade_DryRunFloatingRefSameSHASkipped(t *testing.T) {
-	// Dry-run with both refs "main" and matching SHAs — should skip.
-	// Exercises the dry-run !changed path with resolver.
+	// When the workflow is already SHA-pinned at the correct SHA for
+	// the target floating ref, dry-run should skip (no content change).
+	sha := "aaa111bbb222ccc333444555666777888999000aa"
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
-	fc.Refs["fullsend-ai/fullsend/heads/main"] = "aaa111bbb222ccc333444555666777888999000aa"
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
 
 	m := &Manifest{
 		Version:  1,
@@ -458,14 +459,14 @@ func TestUpgrade_DryRunFloatingRefSameSHASkipped(t *testing.T) {
 
 	r := results[0]
 	if !r.Skipped {
-		t.Errorf("expected Skipped=true in dry-run when floating ref SHAs match, got Upgraded=%v", r.Upgraded)
+		t.Errorf("expected Skipped=true in dry-run when already SHA-pinned at target, got Upgraded=%v", r.Upgraded)
 	}
 }
 
-func TestUpgrade_DryRunSameFloatingRefSkipped(t *testing.T) {
-	// When the workflow already uses the same floating ref as the target,
-	// replaceShimRef returns changed=false and both sides resolve to the
-	// same cached SHA, so the repo is correctly skipped.
+func TestUpgrade_DryRunSameFloatingRefUpgraded(t *testing.T) {
+	// When the workflow uses @main (floating ref) and the target is also
+	// "main", DryRun resolves the ref to a SHA and correctly predicts that
+	// the content will change from @main to @<sha> # main.
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
 	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
@@ -484,8 +485,8 @@ func TestUpgrade_DryRunSameFloatingRefSkipped(t *testing.T) {
 	}
 
 	r := results[0]
-	if !r.Skipped {
-		t.Errorf("expected Skipped=true when currentRef==targetRef and SHAs match, got Upgraded=%v", r.Upgraded)
+	if !r.Upgraded {
+		t.Errorf("expected Upgraded=true in dry-run when floating ref resolves to SHA, got Skipped=%v, reason=%q", r.Skipped, r.SkipReason)
 	}
 }
 
