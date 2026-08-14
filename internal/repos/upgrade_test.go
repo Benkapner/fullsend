@@ -395,20 +395,24 @@ func TestUpgrade_FloatingRefBranchResolvedToSHA(t *testing.T) {
 			r.Skipped, r.SkipReason, r.Error)
 	}
 
-	// Workflow should now reference @main (string replacement).
+	// Workflow should now reference the resolved SHA with a "main" annotation.
+	resolvedSHA := "bbb222ccc333444555666777888999000aaabbbcc"
 	content := string(committedFiles[0].Content)
-	if !strings.Contains(content, "@main") {
-		t.Errorf("expected @main in committed content, got:\n%s", content)
+	if !strings.Contains(content, "@"+resolvedSHA) {
+		t.Errorf("expected @%s in committed content, got:\n%s", resolvedSHA, content)
+	}
+	if !strings.Contains(content, "# main") {
+		t.Errorf("expected '# main' annotation in committed content, got:\n%s", content)
 	}
 }
 
 func TestUpgrade_FloatingRefSameSHASkipped(t *testing.T) {
-	// When both the target and current workflow ref are the same floating
-	// ref (e.g., both "main"), and the resolved SHAs match, the upgrade
-	// should be skipped (no drift).
+	// When the workflow is already SHA-pinned with the correct SHA for
+	// the target floating ref, the upgrade should be skipped (no drift).
+	sha := "aaa111bbb222ccc333444555666777888999000aa"
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
-	fc.Refs["fullsend-ai/fullsend/heads/main"] = "aaa111bbb222ccc333444555666777888999000aa"
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
 
 	m := &Manifest{
 		Version:  1,
@@ -433,11 +437,12 @@ func TestUpgrade_FloatingRefSameSHASkipped(t *testing.T) {
 }
 
 func TestUpgrade_DryRunFloatingRefSameSHASkipped(t *testing.T) {
-	// Dry-run with both refs "main" and matching SHAs — should skip.
-	// Exercises the dry-run !changed path with resolver.
+	// When the workflow is already SHA-pinned at the correct SHA for
+	// the target floating ref, dry-run should skip (no content change).
+	sha := "aaa111bbb222ccc333444555666777888999000aa"
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
-	fc.Refs["fullsend-ai/fullsend/heads/main"] = "aaa111bbb222ccc333444555666777888999000aa"
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
 
 	m := &Manifest{
 		Version:  1,
@@ -454,14 +459,14 @@ func TestUpgrade_DryRunFloatingRefSameSHASkipped(t *testing.T) {
 
 	r := results[0]
 	if !r.Skipped {
-		t.Errorf("expected Skipped=true in dry-run when floating ref SHAs match, got Upgraded=%v", r.Upgraded)
+		t.Errorf("expected Skipped=true in dry-run when already SHA-pinned at target, got Upgraded=%v", r.Upgraded)
 	}
 }
 
-func TestUpgrade_DryRunSameFloatingRefSkipped(t *testing.T) {
-	// When the workflow already uses the same floating ref as the target,
-	// replaceShimRef returns changed=false and both sides resolve to the
-	// same cached SHA, so the repo is correctly skipped.
+func TestUpgrade_DryRunSameFloatingRefUpgraded(t *testing.T) {
+	// When the workflow uses @main (floating ref) and the target is also
+	// "main", DryRun resolves the ref to a SHA and correctly predicts that
+	// the content will change from @main to @<sha> # main.
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
 	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
@@ -480,16 +485,18 @@ func TestUpgrade_DryRunSameFloatingRefSkipped(t *testing.T) {
 	}
 
 	r := results[0]
-	if !r.Skipped {
-		t.Errorf("expected Skipped=true when currentRef==targetRef and SHAs match, got Upgraded=%v", r.Upgraded)
+	if !r.Upgraded {
+		t.Errorf("expected Upgraded=true in dry-run when floating ref resolves to SHA, got Skipped=%v, reason=%q", r.Skipped, r.SkipReason)
 	}
 }
 
 func TestUpgrade_NonDryRunSameFloatingRefSkipped(t *testing.T) {
-	// Non-dry-run counterpart: same floating ref, same SHA → skip.
+	// Non-dry-run counterpart: workflow already SHA-pinned at the
+	// correct SHA for the target floating ref → skip.
+	sha := "bbb222ccc333444555666777888999000aaabbbcc"
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
-	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
 
 	var commitCalled bool
 	recordingCommitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
@@ -1456,11 +1463,12 @@ func TestUpgrade_SHAPinnedRepoPreservesPin(t *testing.T) {
 	}
 }
 
-func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
+func TestUpgrade_TagOnlyRepoResolvedToSHA(t *testing.T) {
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
-	// Pre-populate ref — should NOT be consulted for tag-only repos.
-	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = "def456abc789012345678901234567890abcd1234"
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = newSHA
 
 	var committedFiles []forge.TreeFile
 	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
@@ -1486,12 +1494,13 @@ func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
 	}
 
 	content := string(committedFiles[0].Content)
-	// Should contain the tag directly — no SHA, no trailing comment.
-	if !strings.Contains(content, "@v2.3.0") {
-		t.Errorf("expected @v2.3.0 in content, got:\n%s", content)
+	// When the resolver can resolve the tag, the output should be
+	// SHA-pinned with the tag as annotation — matching the install path.
+	if !strings.Contains(content, "@"+newSHA) {
+		t.Errorf("expected @%s in content, got:\n%s", newSHA, content)
 	}
-	if strings.Contains(content, "# v2.3.0") {
-		t.Errorf("tag-only repo should not have trailing comment, got:\n%s", content)
+	if !strings.Contains(content, "# v2.3.0") {
+		t.Errorf("expected '# v2.3.0' annotation in content, got:\n%s", content)
 	}
 }
 
@@ -1579,13 +1588,14 @@ func TestUpgrade_MixedPinningStyles(t *testing.T) {
 		t.Errorf("SHA-pinned repo should contain '# v2.3.0', got:\n%s", shaContent)
 	}
 
-	// Tag-only repo should have @v2.3.0 without SHA
+	// Tag-only repo should also be SHA-pinned when the resolver can
+	// resolve the tag — matching the install path's behavior.
 	tagContent := committedContent["acme-corp/tag-only"]
-	if !strings.Contains(tagContent, "@v2.3.0") {
-		t.Errorf("tag-only repo should contain @v2.3.0, got:\n%s", tagContent)
+	if !strings.Contains(tagContent, "@"+newSHA) {
+		t.Errorf("tag-only repo should contain resolved SHA @%s, got:\n%s", newSHA, tagContent)
 	}
-	if strings.Contains(tagContent, newSHA) {
-		t.Errorf("tag-only repo should not contain SHA, got:\n%s", tagContent)
+	if !strings.Contains(tagContent, "# v2.3.0") {
+		t.Errorf("tag-only repo should contain '# v2.3.0' annotation, got:\n%s", tagContent)
 	}
 }
 
@@ -1762,5 +1772,107 @@ func TestReplaceShimRef_DollarSignInRef(t *testing.T) {
 	want := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.0.0$test\n"
 	if string(result) != want {
 		t.Errorf("got %q, want %q", string(result), want)
+	}
+}
+
+func makeGitLabDispatch(ref string) []byte {
+	return []byte(fmt.Sprintf("---\n# fullsend-ref: %s\n# fullsend-stage: dispatch\n\ndispatch:\n  stage: dispatch\n", ref))
+}
+
+func TestUpgrade_GitLabFloatingRefResolvedToSHA(t *testing.T) {
+	// GitLab repos should resolve floating refs to SHAs, just like
+	// GitHub repos. Previously the forge guard prevented this.
+	resolvedSHA := "aaa111bbb222ccc333ddd444eee555fff666777aa"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.gitlab/ci/fullsend-dispatch.yml"] = makeGitLabDispatch("main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = resolvedSHA
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected GitLab floating ref to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	content := string(committedFiles[0].Content)
+	if !strings.Contains(content, resolvedSHA) {
+		t.Errorf("expected resolved SHA in content, got:\n%s", content)
+	}
+	// GitLab uses parenthesized annotation format.
+	if !strings.Contains(content, "(main)") {
+		t.Errorf("expected '(main)' annotation in content, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_TagCurrentRefFloatingTargetResolved(t *testing.T) {
+	// When the current ref is a tag but the target is a floating ref,
+	// the upgrade should resolve the floating ref to a SHA. Previously
+	// the isSHARef(currentRef) guard prevented this.
+	resolvedSHA := "ccc333ddd444eee555fff666777888999000aaabb"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v0.32.0")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = resolvedSHA
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected tag→floating upgrade, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	content := string(committedFiles[0].Content)
+	if !strings.Contains(content, "@"+resolvedSHA) {
+		t.Errorf("expected @%s in content, got:\n%s", resolvedSHA, content)
+	}
+	if !strings.Contains(content, "# main") {
+		t.Errorf("expected '# main' annotation in content, got:\n%s", content)
+	}
+	// Old tag should be gone.
+	if strings.Contains(content, "@v0.32.0") {
+		t.Errorf("content should not contain old tag @v0.32.0, got:\n%s", content)
 	}
 }
