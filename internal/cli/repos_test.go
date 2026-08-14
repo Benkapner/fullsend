@@ -18,6 +18,70 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFormatRef(t *testing.T) {
+	tests := []struct {
+		name     string
+		current  string
+		expected string
+		want     string
+	}{
+		{
+			name:     "SHA with expected ref",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "main",
+			want:     "6f8b968 (main)",
+		},
+		{
+			name:     "SHA without expected ref",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "",
+			want:     "6f8b968",
+		},
+		{
+			name:     "SHA where expected matches current",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			want:     "6f8b968",
+		},
+		{
+			name:     "branch name matching expected",
+			current:  "main",
+			expected: "main",
+			want:     "main",
+		},
+		{
+			name:     "tag matching expected",
+			current:  "v2.3.0",
+			expected: "v2.3.0",
+			want:     "v2.3.0",
+		},
+		{
+			name:     "empty current ref",
+			current:  "",
+			expected: "main",
+			want:     "—",
+		},
+		{
+			name:     "non-SHA differs from expected",
+			current:  "v1.0.0",
+			expected: "v2.0.0",
+			want:     "v1.0.0",
+		},
+		{
+			name:     "SHA with expected also a SHA",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "aabbccddee00112233445566778899aabbccddee",
+			want:     "6f8b968 (aabbccd)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatRef(tt.current, tt.expected)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestReposCommand_HasSubcommands(t *testing.T) {
 	cmd := newReposCmd()
 	names := make(map[string]bool)
@@ -659,6 +723,33 @@ func TestRenderStatusResult_NoErrorWhenAllMatch(t *testing.T) {
 
 	err := renderStatusResult(cmd, result, false)
 	require.NoError(t, err)
+}
+
+func TestPrintStatusTable_SHAWithExpectedRef(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{
+				Owner:       "gallen",
+				Repo:        "integration-service",
+				Installed:   true,
+				CurrentRef:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+				ExpectedRef: "main",
+			},
+		},
+		Summary: repos.StatusSummary{
+			Total:     1,
+			Installed: 1,
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "6f8b968 (main)")
+	assert.NotContains(t, output, "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e")
 }
 
 func TestPrintStatusTable_ColumnAlignment(t *testing.T) {

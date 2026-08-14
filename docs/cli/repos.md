@@ -208,7 +208,7 @@ fullsend repos status --repo "acme/*" --json
 **Table output** (default) shows per-repo status with columns:
 
 - **REPO** — `owner/repo` name
-- **REF** — Current workflow ref (`@v2.3.0`, `@main`, etc.)
+- **REF** — Current workflow ref. Named refs (tags, branches) display as-is (e.g., `v2.3.0`, `main`). When the ref is a commit SHA, shows a truncated 7-character SHA with the expected ref in parentheses (e.g., `6f8b968 (main)`).
 - **STATUS** — `installed`, `not installed`, or `error`
 - **DRIFT** — Fields that differ from the manifest, or `none`
 
