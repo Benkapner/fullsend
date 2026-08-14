@@ -206,6 +206,7 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+<<<<<<< HEAD
 	// --- Runtime override cleanup ---
 	// Restore the install-time runtime so a later scenario on this slot
 	// does not silently run under pi (or whatever this one selected).
@@ -241,6 +242,17 @@ func CleanupScenario(w *world.World) {
 			return RestoreAgents(w)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: restore agents: %v", err)
+		}
+	}
+
+	// --- Reaction notification cleanup ---
+	// Disable reaction notifications so the next scenario on this slot
+	// is not affected by sticky config state.
+	if reactionsEnabledInConfig(w) {
+		if err := DisableReactionNotifications(w); err != nil {
+			worldLogf(w, "behaviour cleanup: disable reaction notifications: %v", err)
+		}
+	}
 		}
 	}
 
