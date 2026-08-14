@@ -75,6 +75,12 @@ const maxADFWriteDepth = 50
 // machine-generated bodies.
 const maxMarkdownParseBytes = 32 * 1024
 
+// MaxMarkdownBytes is the exported form of maxMarkdownParseBytes, for
+// callers that assemble a markdown body destined for CreateComment/
+// UpdateComment (or MarkdownToADF directly) and need to cap its size
+// before hitting the limit at write time rather than after.
+const MaxMarkdownBytes = maxMarkdownParseBytes
+
 // adfBlockContent converts each block-level child of parent into zero or
 // more ADF block nodes (a child can expand to several siblings, e.g. a
 // flattened nested blockquote, or to none, e.g. a dropped thematic break).

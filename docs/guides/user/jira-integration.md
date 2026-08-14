@@ -31,14 +31,11 @@ A slash command is only recognized as the **first token of the comment's first l
 
 The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_changed"`) describes the Jira-side activity that **triggered** the dispatch — it is an **input** event, not a description of what the agent will do. When you see `event_type: "comment_added"` in `dispatches.json`, it means "a comment was added to a Jira issue, and that comment matched a routing rule." It says nothing about the agent's output.
 
-Currently, agents process Jira-sourced dispatches but write all results — comments, labels, status updates — back to **GitHub only**. No output is posted to Jira. The agent runs against the target GitHub repo exactly as it would for a GitHub-sourced event: triage output becomes a GitHub issue comment, code agent output becomes a pull request, and so on. The Jira issue that triggered the dispatch receives no automatic update.
+Currently, agents process Jira-sourced dispatches but write all results — comments, labels, status updates — back to **GitHub only** by default. The agent runs against the target GitHub repo exactly as it would for a GitHub-sourced event: triage output becomes a GitHub issue comment, code agent output becomes a pull request, and so on. The Jira issue that triggered the dispatch receives no automatic update.
 
-This means the person who commented `/fs-triage` on a Jira issue will not see the triage result in Jira — they need to check the linked GitHub repo. Two follow-ups track closing this gap:
+The CLI primitive for posting comments to Jira exists — `fullsend issues post-comment --tracker jira` — along with the underlying `tracker.Client` Jira implementation ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). However, the built-in agent pipeline does not use it yet: agent pre/post scripts still expect a GitHub issue number, not a Jira key ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)).
 
-- [#2264](https://github.com/fullsend-ai/fullsend/issues/2264) — agent pre/post scripts do not understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key)
-- [#5989](https://github.com/fullsend-ai/fullsend/issues/5989) — Jira comment write support and a `tracker.Client` for Jira, which would allow agents to post results back to the originating Jira issue
-
-Until both land, treat Jira as a **trigger source only**: it can start agent work, but all output appears in GitHub.
+This means the person who commented `/fs-triage` on a Jira issue will not see the triage result in Jira — they need to check the linked GitHub repo. Until agent-pipeline integration lands ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), treat Jira as a **trigger source only** for built-in agents: it can start agent work, but all output appears in GitHub. Custom agents can use `fullsend issues post-comment --tracker jira` directly to post results back to Jira.
 
 ## Prerequisites
 
@@ -60,7 +57,7 @@ Until both land, treat Jira as a **trigger source only**: it can start agent wor
 
 ## Repo configuration
 
-No special harness or config changes are needed to *receive* Jira-sourced dispatches: the Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing and triggers work unchanged. However, agent output is currently written to GitHub only — no results are posted back to Jira. See [Event semantics — input only](#event-semantics--input-only) for details and tracking issues. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
+No special harness or config changes are needed to *receive* Jira-sourced dispatches: the Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing and triggers work unchanged. However, built-in agent output is currently written to GitHub only — the CLI primitive for posting to Jira exists (`fullsend issues post-comment --tracker jira`), but the agent pipeline does not use it yet. See [Event semantics — input only](#event-semantics--input-only) for details. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
 
 If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, you are ready to go.
 
