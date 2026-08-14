@@ -136,7 +136,7 @@ AGENTS_ROOT="${AGENTS_ROOT:-}"   # set if already cloned
 if [[ -z "$AGENTS_ROOT" ]]; then
   # try common local paths, else clone shallow
   for d in "$HOME/development/agents" ./agents; do
-    [[ -d "$d/harness" ]] && AGENTS_ROOT="$d" && break
+    [[ -d "$d/harness" && -d "$d/agents" && -d "$d/schemas" ]] && AGENTS_ROOT="$d" && break
   done
 fi
 if [[ -z "$AGENTS_ROOT" ]]; then
