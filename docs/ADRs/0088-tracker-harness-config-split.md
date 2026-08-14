@@ -75,10 +75,10 @@ allowlist, `github`, `gitlab`, `jira` — a superset of `forge:`'s
 `github`/`gitlab`, since JIRA is a valid tracker but not a valid forge. A
 new `ResolveTracker(platform)` method calls the generalized resolution
 logic with `Tracker`, mirroring `ResolveForge`'s call with `Forge`: same
-pipeline ordering, same error shape. `Load()` calls `ResolveForge` before
-`ResolveTracker` — a fixed order, not an implementation detail — which is
-what makes the scalar-field precedence below well-defined rather than
-call-site accident.
+pipeline ordering, same error shape. `LoadWithOpts`/`LoadWithBase` call
+`ResolveForge` before `ResolveTracker` — a fixed order, not an
+implementation detail — which is what makes the scalar-field precedence
+below well-defined rather than call-site accident.
 
 At runtime, the effective tracker platform follows: explicit `--tracker` CLI
 flag, else the resolved forge platform (the same value `detectForgePlatform`
@@ -107,9 +107,9 @@ non-empty value always wins when a harness sets both, e.g.
 `forge.github.pre_script` and `tracker.jira.pre_script` — a designed
 precedence agent authors can depend on, not an artifact of call order.
 List- and map-shaped fields (`Skills`, `Providers`, `HostFiles`,
-`RunnerEnv`, `Env`) are unaffected by this ordering: both forge's and
-tracker's contributions are concatenated/merged per ADR 0045's existing
-rules regardless of which resolves first.
+`RunnerEnv`, `Env`, `OpenShell.Profiles`) are unaffected by this ordering:
+both forge's and tracker's contributions are concatenated/merged per
+ADR 0045's existing rules regardless of which resolves first.
 
 In practice this scalar precedence rarely needs to be exercised: the
 existing forge-dispatch pattern already handles per-platform behavior
