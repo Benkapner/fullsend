@@ -345,7 +345,7 @@ func TestRunIssuesPostComment_Create(t *testing.T) {
 	tc := tracker.NewForgeClient(fc)
 
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerGitHub,
+		trackerName: trackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -372,7 +372,7 @@ func TestRunIssuesPostComment_Update(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerGitHub,
+		trackerName: trackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -427,7 +427,7 @@ func TestRunIssuesPostComment_DryRun(t *testing.T) {
 	tc := tracker.NewForgeClient(fc)
 
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerGitHub,
+		trackerName: trackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -458,7 +458,7 @@ func TestRunIssuesPostComment_FromFile(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerGitHub,
+		trackerName: trackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -489,7 +489,7 @@ func TestRunIssuesPostComment_JiraCapsStickyMaxSize(t *testing.T) {
 	firstBody := strings.Repeat("a", 40000)
 
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerJira,
+		trackerName: trackerJira,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -524,7 +524,7 @@ func TestRunIssuesPostComment_NonJiraKeepsDefaultStickyMaxSize(t *testing.T) {
 	firstBody := strings.Repeat("a", 40000)
 
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerGitHub,
+		trackerName: trackerGitHub,
 		project:     "acme/widgets",
 		number:      42,
 		marker:      "<!-- test:agent -->",
@@ -568,7 +568,7 @@ func TestValidateJiraMarker_AllowsSafeChars(t *testing.T) {
 
 func TestRunIssuesPostComment_JiraRejectsUnsafeMarker(t *testing.T) {
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerJira,
+		trackerName: trackerJira,
 		project:     "PROJ",
 		number:      42,
 		marker:      "<!-- fullsend:post_review -->",
@@ -594,7 +594,7 @@ func TestRunIssuesPostComment_JiraRoundTripUpdatesInPlace(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &issuesPostCommentConfig{
-		trackerName: TrackerJira,
+		trackerName: trackerJira,
 		project:     "PROJ",
 		number:      42,
 		marker:      "<!-- fullsend:triage-agent -->",
@@ -623,9 +623,9 @@ func TestResolveTracker_FlagOverridesConfig(t *testing.T) {
 	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
 	require.NoError(t, err)
 
-	got, err := resolveTracker(TrackerGitHub, "", reader)
+	got, err := resolveTracker(trackerGitHub, "", reader)
 	require.NoError(t, err)
-	assert.Equal(t, TrackerGitHub, got)
+	assert.Equal(t, trackerGitHub, got)
 }
 
 func TestResolveTracker_FallsBackToConfigReader(t *testing.T) {
@@ -634,7 +634,7 @@ func TestResolveTracker_FallsBackToConfigReader(t *testing.T) {
 
 	got, err := resolveTracker("", "", reader)
 	require.NoError(t, err)
-	assert.Equal(t, TrackerJira, got)
+	assert.Equal(t, trackerJira, got)
 }
 
 func TestResolveTracker_FallsBackToFullsendDirConfig(t *testing.T) {
@@ -643,7 +643,22 @@ func TestResolveTracker_FallsBackToFullsendDirConfig(t *testing.T) {
 
 	got, err := resolveTracker("", dir, nil)
 	require.NoError(t, err)
-	assert.Equal(t, TrackerGitLab, got)
+	assert.Equal(t, trackerGitLab, got)
+}
+
+func TestResolveTracker_NormalizesCase(t *testing.T) {
+	for _, input := range []string{"GITHUB", "GitHub", "Github", "JIRA", "Jira", "GITLAB", "GitLab"} {
+		got, err := resolveTracker(input, "", nil)
+		require.NoError(t, err, "resolveTracker(%q) should succeed", input)
+		assert.Equal(t, strings.ToLower(input), got, "resolveTracker(%q) should normalize to lowercase", input)
+	}
+}
+
+func TestResolveTracker_RejectsUnknownTracker(t *testing.T) {
+	_, err := resolveTracker("servicenow", "", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported --tracker value")
+	assert.Contains(t, err.Error(), "servicenow")
 }
 
 func TestResolveTracker_NoFlagNoConfig_Errors(t *testing.T) {
@@ -698,7 +713,7 @@ func TestRunIssuesPostComment_TrackerFlagOverridesConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &issuesPostCommentConfig{
-		trackerName:      TrackerJira,
+		trackerName:      trackerJira,
 		project:          "PROJ",
 		number:           42,
 		marker:           "<!-- fullsend:post_review -->", // contains an unsafe char

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
+
+// knownTrackers is the set of recognized --tracker values. Used for
+// early validation so a typo or case mismatch produces a clear error
+// before reaching newTrackerClient.
+var knownTrackers = []string{trackerGitHub, trackerGitLab, trackerJira}
 
 func newIssuesCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -201,6 +207,15 @@ For --tracker jira, the marker must not contain backslash, *, _,
 backtick, [, ], or & — Jira's markdown round-trip escapes those
 characters, which would break marker re-detection on later runs.
 
+Trust model: marker-based comment lookup does not verify the comment
+author. In a trusted CI environment (the intended deployment) this
+is safe because only the bot writes marker-bearing comments. If
+untrusted users can post issue comments containing the marker
+string, they could cause the bot to edit their comment instead of
+creating its own. Do not use this command in environments where
+untrusted users can write arbitrary issue comments bearing your
+marker.
+
 --tracker is required unless a default is supplied via config: set
 "tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
 pointing at the directory containing it.
@@ -246,7 +261,7 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 		return err
 	}
 
-	if trackerName == TrackerJira {
+	if trackerName == trackerJira {
 		if err := validateJiraMarker(cfg.marker); err != nil {
 			return err
 		}
@@ -274,7 +289,7 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 		Marker: cfg.marker,
 		DryRun: cfg.dryRun,
 	}
-	if trackerName == TrackerJira {
+	if trackerName == trackerJira {
 		// The Jira write path routes every body through
 		// jira.MarkdownToADF, which hard-rejects input over
 		// jira.MaxMarkdownBytes. Sticky's default max size (65000,
@@ -357,7 +372,7 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 // of loading config from disk (for tests).
 func resolveTracker(trackerFlag, fullsendDir string, testConfigReader config.PerRepoConfigReader) (string, error) {
 	if trackerFlag != "" {
-		return trackerFlag, nil
+		return validateTrackerName(trackerFlag)
 	}
 
 	prc := testConfigReader
@@ -371,11 +386,24 @@ func resolveTracker(trackerFlag, fullsendDir string, testConfigReader config.Per
 
 	if prc != nil {
 		if t := prc.ConfigTracker(); t != "" {
-			return t, nil
+			return validateTrackerName(t)
 		}
 	}
 
 	return "", fmt.Errorf("--tracker is required (no default tracker configured; set \"tracker: github|gitlab|jira\" in config.yaml and pass --fullsend-dir, or pass --tracker explicitly)")
+}
+
+// validateTrackerName normalizes a tracker name to lowercase and
+// validates it against the known set. This catches case-mismatched
+// inputs (e.g. "--tracker JIRA") that would otherwise skip tracker-
+// specific protections gated on exact string comparisons and then
+// fail later in newTrackerClient with a confusing error.
+func validateTrackerName(name string) (string, error) {
+	normalized := strings.ToLower(name)
+	if !slices.Contains(knownTrackers, normalized) {
+		return "", fmt.Errorf("unsupported --tracker value %q: must be one of %s", name, strings.Join(knownTrackers, ", "))
+	}
+	return normalized, nil
 }
 
 // jiraUnsafeMarkerChars are the characters jira's mdEscaper backslash-

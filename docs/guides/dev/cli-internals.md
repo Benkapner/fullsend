@@ -660,6 +660,8 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/mint.go` | ~1022 | Mint deploy/enroll/unenroll/status |
 | `internal/cli/inference.go` | ~408 | Inference WIF provision/status |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
+| `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
+| `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
 | `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |

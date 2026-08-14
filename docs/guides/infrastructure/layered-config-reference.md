@@ -78,6 +78,7 @@ the overlay → base → code defaults chain.
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
 | `forge` | `string` | Scalar override | `""` (GitHub) |
+| `tracker` | `string` | Scalar override | `""` (none) |
 | `mint_url` | `string` | Scalar override | `DefaultPerRepoMintURL` (hosted public mint) |
 | `inference.provider` | `string` (nested) | Scalar override | `"vertex"` |
 | `inference.project` | `string` (nested) | Scalar override | `""` (empty) |
@@ -150,6 +151,17 @@ inference:
 #   inference.region: us-central1 (from base)
 #   inference.wif_provider: ...base... (from base)
 ```
+
+### `tracker` — scalar override
+
+**`tracker`** stores the default issue tracker for `fullsend issues`
+commands (`github`, `gitlab`, or `jira`). Unset (`""`) means no default
+— `--tracker` is required on every `fullsend issues` invocation. When
+set, it is used as the default for `--tracker` on both `fullsend issues
+get` and `fullsend issues post-comment`; an explicit `--tracker` flag
+overrides it. Distinct from `forge`: a repo's hosting forge does not
+imply its issue tracker (e.g. a GitHub-hosted repo may track issues in
+Jira).
 
 ### `roles` — replace if set
 
@@ -296,6 +308,7 @@ compiled-in defaults apply:
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
 | `forge` | `""` (GitHub) |
+| `tracker` | `""` (none — `--tracker` is required unless set) |
 | `mint_url` | `"https://fullsend-mint-gljhbkcloq-uc.a.run.app"` (hosted public mint) |
 | `inference.provider` | `"vertex"` |
 | `inference.project` | `""` (empty — must be provided) |

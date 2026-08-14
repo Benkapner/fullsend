@@ -10,12 +10,12 @@ import (
 )
 
 const (
-	// TrackerGitHub is the --tracker value for GitHub.
-	TrackerGitHub = "github"
-	// TrackerGitLab is the --tracker value for GitLab.
-	TrackerGitLab = "gitlab"
-	// TrackerJira is the --tracker value for Jira.
-	TrackerJira = "jira"
+	// trackerGitHub is the --tracker value for GitHub.
+	trackerGitHub = "github"
+	// trackerGitLab is the --tracker value for GitLab.
+	trackerGitLab = "gitlab"
+	// trackerJira is the --tracker value for Jira.
+	trackerJira = "jira"
 )
 
 // newTrackerClient creates a tracker.Client for the given tracker type.
@@ -31,15 +31,15 @@ const (
 // or JIRA_BASE_URL/JIRA_USER_EMAIL environment variables.
 func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracker.Client, error) {
 	switch trackerName {
-	case TrackerGitHub:
-		ghToken, err := resolveGitHubToken(token)
+	case trackerGitHub:
+		ghToken, err := resolveGitHubTrackerToken(token)
 		if err != nil {
 			return nil, err
 		}
 		fc := gh.New(ghToken)
 		return tracker.NewForgeClient(fc), nil
 
-	case TrackerGitLab:
+	case trackerGitLab:
 		glToken, err := resolveGitLabTrackerToken(token)
 		if err != nil {
 			return nil, err
@@ -50,8 +50,8 @@ func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracke
 		}
 		return tracker.NewForgeClient(fc), nil
 
-	case TrackerJira:
-		jiraToken, err := resolveJiraToken(token)
+	case trackerJira:
+		jiraToken, err := resolveJiraTrackerToken(token)
 		if err != nil {
 			return nil, err
 		}
@@ -85,14 +85,14 @@ func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracke
 		return tc, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported tracker %q: use %q, %q, or %q", trackerName, TrackerGitHub, TrackerGitLab, TrackerJira)
+		return nil, fmt.Errorf("unsupported tracker %q: use %q, %q, or %q", trackerName, trackerGitHub, trackerGitLab, trackerJira)
 	}
 }
 
-// resolveGitHubToken returns a GitHub token from the explicit override,
-// environment variables, or gh auth token — the same chain as
+// resolveGitHubTrackerToken returns a GitHub token from the explicit
+// override, environment variables, or gh auth token — the same chain as
 // resolveToken but accepting an explicit override first.
-func resolveGitHubToken(explicit string) (string, error) {
+func resolveGitHubTrackerToken(explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
@@ -108,9 +108,9 @@ func resolveGitLabTrackerToken(explicit string) (string, error) {
 	return resolveGitLabToken()
 }
 
-// resolveJiraToken returns a Jira API token from the explicit override
-// or JIRA_TOKEN environment variable.
-func resolveJiraToken(explicit string) (string, error) {
+// resolveJiraTrackerToken returns a Jira API token from the explicit
+// override or JIRA_TOKEN environment variable.
+func resolveJiraTrackerToken(explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
