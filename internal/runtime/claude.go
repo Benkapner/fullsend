@@ -129,6 +129,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 			metrics.TotalCostUSD = e.TotalCostUSD
 			metrics.InputTokens = e.InputTokens
 			metrics.OutputTokens = e.OutputTokens
+			metrics.ReasoningTokens = e.ReasoningTokens
 			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
 			metrics.CacheReadInputTokens = e.CacheReadInputTokens
 		case ToolUseEvent:
