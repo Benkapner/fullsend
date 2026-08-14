@@ -547,6 +547,9 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.Model == "" {
 		child.Model = base.Model
 	}
+	if child.Effort == "" {
+		child.Effort = base.Effort
+	}
 	if child.PreScript == "" {
 		child.PreScript = base.PreScript
 	}

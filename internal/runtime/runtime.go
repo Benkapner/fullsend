@@ -26,6 +26,7 @@ type RunParams struct {
 	SandboxName   string
 	AgentBaseName string
 	Model         string
+	Effort        string
 	RepoDir       string
 	FullsendDir   string
 	PluginDirs    []string

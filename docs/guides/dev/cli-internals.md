@@ -413,6 +413,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  claude --print --verbose                │                   │
 │  │    --output-format stream-json           │                   │
 │  │    --model {model}                       │                   │
+│  │    --effort {effort}                     │                   │
 │  │    --agent {agent}                       │                   │
 │  │    --dangerously-skip-permissions        │                   │
 │  │    'Run the agent task'                  │                   │

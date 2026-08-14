@@ -649,6 +649,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.Model != "" {
 		printer.KeyValue("Model", h.Model)
 	}
+	if h.Effort != "" {
+		printer.KeyValue("Effort", h.Effort)
+	}
 	if h.Image != "" {
 		printer.KeyValue("Image", h.Image)
 	}
@@ -1501,6 +1504,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			SandboxName:   sandboxName,
 			AgentBaseName: agentBaseName,
 			Model:         h.Model,
+			Effort:        h.Effort,
 			RepoDir:       remoteRepositoryDir,
 			FullsendDir:   absFullsendDir,
 			PluginDirs:    pluginDirs,
