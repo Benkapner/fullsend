@@ -1102,7 +1102,8 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 7. Update branch ref to point to new commit.
-	// A 422 may indicate branch protection or a non-fast-forward (e.g. auto_init race).
+	// A 422 may indicate branch protection or a non-fast-forward
+	// (concurrent modification race).
 	refPayload := map[string]string{
 		"sha": newCommit.SHA,
 	}
