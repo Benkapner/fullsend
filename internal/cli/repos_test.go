@@ -268,7 +268,6 @@ func TestRunReposStatus_EmptyManifest(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
 defaults:
   forge: github
 repos: []
@@ -286,7 +285,6 @@ func TestRunReposStatus_GitLabRequiresToken(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
 defaults:
   forge: gitlab
 repos: []
@@ -306,7 +304,6 @@ func TestRunReposStatus_GitLabWithToken(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
 defaults:
   forge: gitlab
 repos: []
@@ -731,7 +728,6 @@ const testManifestYAML = `version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
     fullsend_ref: v1.0.0
 defaults:
   forge: github
@@ -812,7 +808,6 @@ func TestRunReposInstall_FailedReposReturnError(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
     fullsend_ref: v1.0.0
 defaults:
   forge: github
@@ -873,7 +868,7 @@ func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 		fc.VariableValues[r+"/FULLSEND_GCP_REGION"] = "us-central1"
 		fc.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		fc.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
-		fc.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1")
+		fc.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0")
 	}
 	return fc
 }
@@ -956,7 +951,6 @@ func TestRunReposInstall_WithFilter(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
     fullsend_ref: v1.0.0
 defaults:
   forge: github
@@ -1194,7 +1188,6 @@ const twoRepoManifestYAML = `version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
     fullsend_ref: v1.0.0
 defaults:
   forge: github
@@ -1250,7 +1243,6 @@ func TestRunReposInstall_RequiresForgeForNewRepos(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
     fullsend_ref: v1.0.0
 defaults: {}
 repos: []
@@ -1445,7 +1437,6 @@ func TestRunReposInstall_NonGitHubForgeWarnings(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
     fullsend_ref: v1.0.0
   gitlab:
     url: https://gitlab.example.com
@@ -1642,7 +1633,6 @@ var emptyReposManifestYAML = `version: 1
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
 defaults:
   forge: github
 repos: []
@@ -1666,7 +1656,6 @@ func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
   gitlab:
     url: https://gitlab.example.com
 defaults:
@@ -1687,7 +1676,6 @@ func TestRunReposUninstall_GitLabWIFSecretPreRead(t *testing.T) {
 forge:
   github:
     mint_url: https://mint.example.com
-    inference_project_number: "123456789"
   gitlab:
     url: https://gitlab.example.com
 defaults:
