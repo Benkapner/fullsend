@@ -217,7 +217,7 @@ Issues, comments, labels (cron):
 Credentials (WIF mode):
   Pipeline job → OIDC token → GCP STS → WIF → SA → Secret Manager → bot PAT
 
-Credentials (variable mode):
+Credentials (token mode):
   Pipeline job → protected CI/CD variable FULLSEND_FORGE_TOKEN → bot PAT
 ```
 
@@ -244,7 +244,7 @@ dependency.
 The install flow selects the mode automatically: if `--gcp-project` is
 provided, OIDC/WIF is configured; otherwise, the CI/CD variable path is
 used. A `FULLSEND_CREDENTIAL_MODE` protected variable (`wif` or
-`variable`) tells pipeline templates which retrieval path to execute.
+`token`) tells pipeline templates which retrieval path to execute.
 
 Key properties shared by both modes:
 
@@ -258,7 +258,7 @@ Key properties shared by both modes:
 OIDC/WIF mode additionally provides:
 
 - **`CI_DEBUG_TRACE` defense-in-depth.** GitLab logs all CI/CD variables
-  at job initialization, *before* any script runs. In variable mode, a
+  at job initialization, *before* any script runs. In token mode, a
   Maintainer enabling `CI_DEBUG_TRACE` exposes the PAT in job logs before
   the script-level guard can abort. In WIF mode, WIF configuration
   metadata (pool IDs, project numbers, service account emails) is logged
@@ -278,7 +278,7 @@ OIDC/WIF mode additionally provides:
   Vertex AI inference credentials (`FULLSEND_GCP_PROJECT_ID`,
   `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_SA`, `FULLSEND_GCP_REGION`)
   so that agent jobs can authenticate to Vertex AI using the same
-  OIDC/WIF flow. Variable mode does not support inference credentials.
+  OIDC/WIF flow. Token mode does not support inference credentials.
 - **OIDC issuer reachability requirement.** WIF mode requires the
   GitLab instance's OIDC discovery endpoints to be publicly reachable
   by GCP's Security Token Service (STS). During the WIF token exchange,
@@ -286,7 +286,7 @@ OIDC/WIF mode additionally provides:
   issuer. Internal or private GitLab instances (e.g., those accessible
   only via VPN or corporate DNS) will fail with
   `Error code invalid_grant: Error connecting to the given credential's issuer`.
-  Use variable mode for GitLab instances that are not resolvable in
+  Use token mode for GitLab instances that are not resolvable in
   public DNS.
 
 ### Cron poller (`gitlab-poll` input driver)
@@ -470,7 +470,7 @@ injection > insider > drift > supply chain):
 - **Protected CI/CD variables.** All fullsend CI/CD variables are marked
   protected — accessible only to pipelines on protected branches.
 - **`CI_DEBUG_TRACE` guard.** Install-time validation and runtime abort if
-  debug tracing is detected. In **variable mode**, this guard is the sole
+  debug tracing is detected. In **token mode**, this guard is the sole
   defense against PAT exposure via debug tracing — GitLab logs CI/CD
   variables at job init, before any script runs. In **WIF mode**, the guard
   is defense-in-depth — even if bypassed, the PAT is not in a CI/CD
@@ -495,10 +495,10 @@ injection > insider > drift > supply chain):
 
 **Security comparison of credential modes:**
 
-| Threat vector | WIF mode | Variable mode |
+| Threat vector | WIF mode | Token mode |
 |---|---|---|
 | `CI_DEBUG_TRACE` by Maintainer | PAT not exposed (defense-in-depth) | PAT exposed at job init before script guard runs (guard limits further damage but cannot prevent initial exposure) |
-| Maintainer marks branch as protected | WIF grants token (same risk) | Variable exposed (same risk) |
+| Maintainer marks branch as protected | WIF grants token (same risk) | Token exposed (same risk) |
 | GitLab database compromise | PAT not in GitLab (in Secret Manager) | PAT stored in GitLab |
 | Admin domain separation | WIF config requires GCP IAM | All within GitLab RBAC |
 | Audit trail | GCP Data Access logs | GitLab audit logs (Premium+) |
@@ -537,7 +537,7 @@ methods rather than adding forge-conditional logic.
 - **No external infrastructure for event dispatch.** No Cloud Function, no
   webhook bridge. Self-hosted GitLab requires only outbound HTTPS.
 - **Single credential per project.** One bot PAT, stored in either GCP
-  Secret Manager (WIF mode) or as a protected CI/CD variable (variable
+  Secret Manager (WIF mode) or as a protected CI/CD variable (token
   mode). No webhook secrets, trigger tokens, or mint service changes.
 - **Stronger event authenticity.** Events read directly from the GitLab API,
   not from potentially spoofed webhook payloads.
@@ -548,7 +548,7 @@ methods rather than adding forge-conditional logic.
 - **MR review latency is unaffected.** Native `merge_request_event` provides
   sub-second triggering for the highest-frequency operation.
 - **Tier-adaptive.** Works on all GitLab tiers with graceful degradation.
-- **No GCP requirement.** Variable mode allows deployment on self-hosted
+- **No GCP requirement.** Token mode allows deployment on self-hosted
   GitLab with no cloud dependency. WIF mode reuses GCP infrastructure
   already provisioned for Vertex AI inference.
 
@@ -586,7 +586,7 @@ methods rather than adding forge-conditional logic.
    and event deduplication.
 4. **Schedule modification.** A Maintainer could retarget the schedule to a
    non-protected branch. In WIF mode, mitigated by WIF attribute conditions
-   rejecting credential retrieval. In variable mode, mitigated by protected
+   rejecting credential retrieval. In token mode, mitigated by protected
    variable status (not exposed on non-protected branches).
 5. **Missed events from API quirks.** The Notes API lacks `created_after`; the
    Events API `after` parameter is date-only. Mitigated by 30-second watermark

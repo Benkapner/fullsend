@@ -30,8 +30,7 @@ One-command migration from per-org to per-repo fullsend installation. For each r
 
 1. Check inference WIF status; provision if needed
 2. Install per-repo (scaffold workflows, variables, secrets) with config carried over from the org config
-3. Register per-repo WIF in the mint's `PER_REPO_WIF_REPOS`
-4. Unenroll from per-org config
+3. Unenroll from per-org config
 
 Generates a `repos.yaml` manifest reflecting the migrated state. Re-running after a partial migration picks up where it left off.
 
@@ -92,23 +91,26 @@ Runs in three phases:
 2. **Provision** — repos in the manifest that are not yet provisioned are installed (scaffold files, variables, secrets). Repos with a guard variable set but other components missing are repaired automatically.
 3. **Convergence** — repos that are already installed are checked for variable drift (synced automatically) and scaffold ref drift (upgraded automatically).
 
-> **Note:** GCP infrastructure (WIF pools/providers, mint registration) must be
-> provisioned separately via `inference provision` and `mint enroll` before
-> running `repos install`. The `--inference-project-number` flag (numeric GCP
-> project number) is required for GitHub repos — it is used to compute WIF
-> provider resource names deterministically. The `--inference-project` flag
-> (GCP project ID) is also required for GitHub repos and is written as the
-> `FULLSEND_GCP_PROJECT_ID` repo secret.
+> **Credential modes:** Each repo's `credential_mode` controls how it authenticates to the mint. Set this at the forge level or per-repo in `repos.yaml`:
 >
-> For **GitLab repos**, inference credentials are optional. When
-> `--inference-project` is provided, `repos install` sets
-> `FULLSEND_CREDENTIAL_MODE=wif` and writes inference secrets
-> (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`) and variables
-> (`FULLSEND_GCP_REGION`, `FULLSEND_SA`). GitLab uses a shared
-> `gitlab-oidc` WIF provider (scoped via attribute conditions) instead of
-> per-repo providers. Without `--inference-project`, GitLab repos use
-> `FULLSEND_CREDENTIAL_MODE=variable` (no inference, forge token from
-> CI/CD variable).
+> | Mode | Forges | Mechanism |
+> |------|--------|-----------|
+> | `wif` | GitHub, GitLab | OIDC token exchanged via GCP WIF provider; requires `FULLSEND_GCP_PROJECT_ID` + `FULLSEND_GCP_WIF_PROVIDER` secrets |
+> | `oidc` | GitHub | OIDC token sent directly to a public mint; requires only `FULLSEND_MINT_URL` |
+> | `token` | GitLab | Bot PAT stored as a CI/CD variable; no OIDC, no WIF |
+>
+> When `credential_mode` is not set in the manifest, repos default to `oidc` for GitHub and `token` for GitLab. Both forges default to `wif` when `--inference-project` is provided.
+>
+> **Inference flags** (`--inference-project`, `--inference-project-number`,
+> `--inference-region`) are all-or-nothing: if any one is set, all three
+> are required. When provided, the credential mode defaults to `wif` and
+> GCP secrets are written. GCP infrastructure (WIF pools/providers) must
+> be provisioned separately via `inference provision` and `mint enroll`
+> before running `repos install` with `wif` mode.
+>
+> For **GitLab repos**, inference is optional. Without the inference
+> flags, GitLab repos use `FULLSEND_CREDENTIAL_MODE=token` (forge token
+> from CI/CD variable, no GCP infrastructure needed).
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -129,8 +131,8 @@ When repos are specified as positional arguments, only those repos are processed
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
-| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required for GitHub, optional for GitLab) |
-| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required for GitHub; required for GitLab when `--inference-project` is set) |
+| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required when any inference flag is set) |
+| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required when any inference flag is set) |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; falls back to `defaults.forge` if set. |
 | `--force` | `false` | Allow scaffold ref downgrades |
 | `--inference-region` | | Per-repo GCP inference region override (install-time only, not stored in the manifest) |
@@ -141,7 +143,7 @@ When repos are specified as positional arguments, only those repos are processed
 
 ### GitLab bot token
 
-For GitLab repos, `repos install` automatically creates a project access token. In variable mode (no `--inference-project`), it is stored as the `FULLSEND_FORGE_TOKEN` CI/CD variable. In WIF mode (with `--inference-project`), it is stored in GCP Secret Manager and `FULLSEND_BOT_TOKEN_SECRET` is set as a protected CI/CD variable pointing to the secret name. Creating project access tokens requires GitLab Premium or Ultimate.
+For GitLab repos, `repos install` automatically creates a project access token. In token mode (no `--inference-project`), it is stored as the `FULLSEND_FORGE_TOKEN` CI/CD variable. In WIF mode (with `--inference-project`), it is stored in GCP Secret Manager and `FULLSEND_BOT_TOKEN_SECRET` is set as a protected CI/CD variable pointing to the secret name. Creating project access tokens requires GitLab Premium or Ultimate.
 
 On free-tier or Community Edition instances where project access tokens are not available, pass `--gitlab-bot-token` with a personal access token (PAT) that has `api` scope:
 
