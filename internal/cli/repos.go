@@ -308,6 +308,37 @@ func renderStatusResult(cmd *cobra.Command, result *repos.StatusResult, jsonOutp
 	return nil
 }
 
+// formatRef formats a ref for display in the status table. SHA-like refs
+// (40 hex characters) are truncated to 7 characters. When the expected ref
+// is set and differs from the current ref, it is appended in parentheses
+// (also truncated if it is a SHA).
+//
+// SHA detection reuses commitSHAPattern (defined in agent.go) which matches
+// exactly 40 lowercase hex characters. This intentionally differs from
+// isSHARef in internal/repos/upgrade.go, which accepts 7–40 hex chars
+// case-insensitively; the stricter check here is appropriate because Git
+// stores full SHAs as lowercase and status output always receives full refs.
+func formatRef(currentRef, expectedRef string) string {
+	if currentRef == "" {
+		return "—"
+	}
+
+	if !commitSHAPattern.MatchString(currentRef) {
+		return currentRef
+	}
+
+	display := currentRef[:7]
+	if expectedRef != "" && expectedRef != currentRef {
+		if commitSHAPattern.MatchString(expectedRef) {
+			display += " (" + expectedRef[:7] + ")"
+		} else {
+			display += " (" + expectedRef + ")"
+		}
+	}
+
+	return display
+}
+
 func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 	out := cmd.OutOrStdout()
 
@@ -318,10 +349,7 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		if len(name) > maxRepo {
 			maxRepo = len(name)
 		}
-		ref := s.CurrentRef
-		if ref == "" {
-			ref = "—"
-		}
+		ref := formatRef(s.CurrentRef, s.ExpectedRef)
 		if len(ref) > maxRef {
 			maxRef = len(ref)
 		}
@@ -330,10 +358,7 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 	fmt.Fprintf(out, "%-*s  %-*s  %-14s  %s\n", maxRepo, "REPO", maxRef, "REF", "STATUS", "DRIFT")
 	for _, s := range result.Repos {
 		name := s.Owner + "/" + s.Repo
-		ref := s.CurrentRef
-		if ref == "" {
-			ref = "—"
-		}
+		ref := formatRef(s.CurrentRef, s.ExpectedRef)
 
 		var status string
 		switch {
