@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,21 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+// instantAfter returns a timer function that fires immediately, allowing
+// poll-loop tests to run without real wall-clock sleeps.
+func instantAfter(_ time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Now()
+	return ch
+}
+
+// newTestDriver returns a Driver with instantAfter injected so poll-loop
+// tests run without real wall-clock sleeps. Update this helper when new
+// fields are added to Driver.
+func newTestDriver(client forge.Client) *Driver {
+	return &Driver{Client: client, afterFunc: instantAfter}
+}
 
 func TestDispatchDetectionWindow_AtLeast4Minutes(t *testing.T) {
 	t.Parallel()
@@ -151,7 +167,7 @@ func TestCountHarnessDispatches_NoRuns(t *testing.T) {
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
@@ -172,7 +188,7 @@ func TestCountHarnessDispatches_SingleMatch(t *testing.T) {
 		10: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
@@ -196,7 +212,7 @@ func TestCountHarnessDispatches_MultipleMatches(t *testing.T) {
 		30: {{ID: 3, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	assert.Equal(t, 3, count)
@@ -218,7 +234,7 @@ func TestCountHarnessDispatches_FiltersBeforeTime(t *testing.T) {
 		20: {{ID: 2, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
@@ -242,7 +258,7 @@ func TestCountHarnessDispatches_FiltersOtherAgents(t *testing.T) {
 		30: {{ID: 3, Name: "dispatch / Harness run (code)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
@@ -255,7 +271,7 @@ func TestCountHarnessDispatches_APIError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["ListWorkflowRuns"] = fmt.Errorf("API error")
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	_, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "API error")
@@ -282,7 +298,7 @@ func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 		},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "issue-ping", after)
 	require.NoError(t, err)
 	require.NotNil(t, run)
@@ -309,7 +325,7 @@ func TestWaitForHarnessAgent_FailFastOnFailure(t *testing.T) {
 		42: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "failure"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Nil(t, run)
@@ -336,7 +352,7 @@ func TestWaitForHarnessAgent_FailFastOnTimedOut(t *testing.T) {
 		50: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "timed_out"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Nil(t, run)
@@ -361,7 +377,7 @@ func TestWaitForHarnessAgent_FailFastOnStartupFailure(t *testing.T) {
 		60: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "startup_failure"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Nil(t, run)
@@ -391,7 +407,7 @@ func TestWaitForFailedHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 		77: {{ID: 1, Name: "dispatch / Fix", Status: "completed", Conclusion: "failure"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix", after)
 	require.NoError(t, err)
 	require.NotNil(t, run)
@@ -415,7 +431,7 @@ func TestWaitForFailedHarnessAgent_ErrorsOnSuccess(t *testing.T) {
 		},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix", after)
 	require.Error(t, err)
 	assert.Nil(t, run)
@@ -439,7 +455,7 @@ func TestWaitForFailedHarnessAgent_FallbackJobNameMatch(t *testing.T) {
 		79: {{ID: 1, Name: "dispatch / Harness run (fix-ping)", Status: "completed", Conclusion: "failure"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix-ping", after)
 	require.NoError(t, err)
 	require.NotNil(t, run)
@@ -466,7 +482,7 @@ func TestWaitForFailedHarnessAgent_FallbackErrorsOnJobSuccess(t *testing.T) {
 		80: {{ID: 1, Name: "dispatch / Harness run (fix-ping)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "fix-ping", after)
 	require.Error(t, err)
 	assert.Nil(t, run)
@@ -478,7 +494,7 @@ func TestWaitForFailedHarnessAgent_ContextCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	d := &Driver{Client: forge.NewFakeClient()}
+	d := newTestDriver(forge.NewFakeClient())
 	_, err := d.WaitForFailedHarnessAgent(ctx, "org", "repo", "fix", time.Now())
 	require.ErrorIs(t, err, context.Canceled)
 }
@@ -538,7 +554,7 @@ func TestWaitForHarnessAgent_SiblingRunFailureIgnored(t *testing.T) {
 		},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "pr-ping", after)
 	require.NoError(t, err)
 	require.NotNil(t, run)
@@ -574,7 +590,7 @@ func TestWaitForHarnessAgent_SkippedDoesNotTriggerFailFast(t *testing.T) {
 		},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	require.NotNil(t, run)
@@ -610,7 +626,7 @@ func TestWaitForHarnessAgent_CancelledDoesNotTriggerFailFast(t *testing.T) {
 		},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	require.NotNil(t, run)
@@ -646,7 +662,7 @@ func TestWaitForHarnessAgent_IgnoresRunsBeforeTriggerTime(t *testing.T) {
 		},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err)
 	require.NotNil(t, run)
@@ -668,7 +684,7 @@ func TestWaitForHarnessAgent_TimeoutIncludesDiagnostics(t *testing.T) {
 		},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	// Use a cancelled context to avoid waiting the full deadline.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -707,7 +723,7 @@ func TestWaitForHarnessAgent_BothRunsScheduleAgent_OneFailsIsFatal(t *testing.T)
 		200: {{ID: 2, Name: "dispatch / Harness run (triage)", Status: "in_progress"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Nil(t, run)
@@ -732,10 +748,240 @@ func TestCountHarnessDispatches_IgnoresRunsWithoutAgentJob(t *testing.T) {
 		20: {{ID: 2, Name: "dispatch / Harness run (pr-ping)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "pr-ping", after)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_ExcludesCancelledJob(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// Two runs for the same agent: one cancelled by concurrency group,
+	// one completed successfully. Only the successful one counts (#6053).
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "completed", Conclusion: "cancelled", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:01:00Z"},
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "cancelled"}},
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_ExcludesSkippedJob(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// Run with skipped harness job (empty matrix from CEL mismatch)
+	// plus one successful run. Only the successful one counts.
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:01:00Z"},
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "skipped"}},
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_CountsFailedJob(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// A failed job is a real dispatch — it should be counted.
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "failure"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+// settlingJobsClient wraps FakeClient so one run's job list changes after
+// the first poll, simulating a duplicate run whose harness job is still
+// executing when the count is first taken.
+type settlingJobsClient struct {
+	*forge.FakeClient
+	mu         sync.Mutex
+	settleRun  int
+	callsLeft  int // polls of settleRun before its jobs settle
+	beforeJobs []forge.WorkflowJob
+	afterJobs  []forge.WorkflowJob
+}
+
+func (c *settlingJobsClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	if runID != c.settleRun {
+		return c.FakeClient.ListWorkflowRunJobs(ctx, owner, repo, runID)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.callsLeft > 0 {
+		c.callsLeft--
+		return c.beforeJobs, nil
+	}
+	return c.afterJobs, nil
+}
+
+func TestCountHarnessDispatches_PendingDuplicateSettlesToCancelled(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	// Run 10 is a duplicate still being cancelled when the count is
+	// first taken; run 20 already succeeded. Once run 10's job settles
+	// to cancelled, only run 20 counts (#6053).
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:01Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+	client := &settlingJobsClient{
+		FakeClient: fake,
+		settleRun:  10,
+		callsLeft:  1,
+		beforeJobs: []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "in_progress"}},
+		afterJobs:  []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "cancelled"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_PendingDuplicateSettlesToSuccess(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	// A genuine double dispatch: the in-flight duplicate completes
+	// successfully instead of being cancelled, so both runs count and
+	// the exact-count assertion still catches the regression.
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:01Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+	client := &settlingJobsClient{
+		FakeClient: fake,
+		settleRun:  10,
+		callsLeft:  1,
+		beforeJobs: []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "in_progress"}},
+		afterJobs:  []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+}
+
+func TestCountHarnessDispatches_UnexpandedMatrixRunSettles(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	// Run 10 is still executing and its Route job has not expanded the
+	// harness matrix yet, so the agent's job is absent on the first
+	// poll. It must be treated as pending, not silently skipped.
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:01Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		20: {{ID: 2, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+	}
+	client := &settlingJobsClient{
+		FakeClient: fake,
+		settleRun:  10,
+		callsLeft:  1,
+		beforeJobs: []forge.WorkflowJob{{ID: 1, Name: "dispatch / Route", Status: "in_progress"}},
+		afterJobs:  []forge.WorkflowJob{{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "cancelled"}},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_ContextCancelledWhilePending(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 10, Status: "in_progress",
+			CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (fork-pr-sync)", Status: "in_progress"}},
+	}
+
+	d := &Driver{Client: client}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := d.CountHarnessDispatches(ctx, "org", "repo", "fork-pr-sync", after)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestIsConcurrencySuperseded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		conclusion string
+		want       bool
+	}{
+		{"cancelled", true},
+		{"skipped", true},
+		{"success", false},
+		{"failure", false},
+		{"timed_out", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, isConcurrencySuperseded(tt.conclusion),
+			"isConcurrencySuperseded(%q)", tt.conclusion)
+	}
 }
 
 func TestAssertNoHarnessAgentArtifact_IgnoresOtherAgentJobs(t *testing.T) {
@@ -754,7 +1000,7 @@ func TestAssertNoHarnessAgentArtifact_IgnoresOtherAgentJobs(t *testing.T) {
 		10: {{ID: 1, Name: "dispatch / Harness run (review)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
 	require.NoError(t, err, "should not fail — the run has a different agent's job")
 }
@@ -774,7 +1020,7 @@ func TestAssertNoHarnessAgentArtifact_DetectsAgentJob(t *testing.T) {
 		10: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"}},
 	}
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `expected harness "triage" not to run`)
@@ -793,7 +1039,7 @@ func TestCountHarnessDispatches_JobsAPIError(t *testing.T) {
 	}
 	client.Errors["ListWorkflowRunJobs"] = fmt.Errorf("jobs API error")
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	_, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jobs API error")
@@ -812,7 +1058,7 @@ func TestAssertNoHarnessAgentArtifact_JobsAPIError(t *testing.T) {
 	}
 	client.Errors["ListWorkflowRunJobs"] = fmt.Errorf("jobs API error")
 
-	d := &Driver{Client: client}
+	d := newTestDriver(client)
 	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jobs API error")
@@ -844,6 +1090,146 @@ func TestIsTerminalFailure(t *testing.T) {
 		assert.Equal(t, tt.want, isTerminalFailure(tt.conclusion),
 			"isTerminalFailure(%q)", tt.conclusion)
 	}
+}
+
+func TestNew_SetsAfterFunc(t *testing.T) {
+	t.Parallel()
+
+	d := New(forge.NewFakeClient(), "tok")
+	driver, ok := d.(*Driver)
+	require.True(t, ok, "New should return *Driver")
+	assert.NotNil(t, driver.afterFunc, "afterFunc should be set by New")
+	assert.Equal(t, "tok", driver.Token)
+}
+
+func TestWaitForWorkflow_Success(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/test.yaml": {
+			ID: 10, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+
+	d := newTestDriver(client)
+	run, err := d.WaitForWorkflow(context.Background(), "org", "repo", "test.yaml", after, "")
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 10, run.ID)
+}
+
+func TestFindCompletedWorkflowRun_PollsWithTimerAfter(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	// No workflow runs — findCompletedWorkflowRunOnce always returns nil,
+	// forcing the poll loop to call timerAfter at least once.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			calls++
+			if calls >= 2 {
+				cancel()
+				return make(chan time.Time) // block — forces ctx.Done()
+			}
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	}
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := d.FindCompletedWorkflowRun(ctx, "org", "repo", "test.yaml", after)
+	require.Error(t, err)
+	assert.GreaterOrEqual(t, calls, 1, "timerAfter should have been called")
+}
+
+func TestAssertNoWorkflow_NoRunsAfterTriggerTime(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d := newTestDriver(forge.NewFakeClient())
+	err := d.AssertNoWorkflow(context.Background(), "org", "repo", "test.yaml", after)
+	require.NoError(t, err)
+}
+
+func TestDownloadNamedArtifactAfter_PollsWithTimerAfter(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	// Artifact with wrong name — won't match "wanted", forcing the poll
+	// loop to exercise both timerAfter call sites.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: "other-artifact", CreatedAt: "2026-01-02T00:00:00Z"}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			calls++
+			if calls >= 3 {
+				cancel()
+				return make(chan time.Time) // block — forces ctx.Done()
+			}
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		},
+	}
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	err := d.DownloadNamedArtifactAfter(ctx, "org", "repo", "wanted", after, t.TempDir())
+	require.Error(t, err)
+	assert.GreaterOrEqual(t, calls, 2, "timerAfter should have been called at least twice")
+}
+
+func TestTimerAfter_NilFallback(t *testing.T) {
+	t.Parallel()
+
+	// A zero-value Driver (no afterFunc) should fall back to time.After.
+	d := &Driver{Client: forge.NewFakeClient()}
+	ch := d.timerAfter(1 * time.Millisecond)
+	select {
+	case <-ch:
+		// OK — fallback fired.
+	case <-time.After(2 * time.Second):
+		t.Fatal("timerAfter nil-fallback did not fire within 2s")
+	}
+}
+
+func TestWaitForHarnessAgent_NoRealSleep(t *testing.T) {
+	t.Parallel()
+	start := time.Now()
+
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: "fullsend-triage",
+			CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 99}},
+	}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/success": {ID: 99, Status: "completed",
+			Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+	}
+
+	d := newTestDriver(client)
+
+	run, err := d.WaitForHarnessAgent(context.Background(),
+		"org", "repo", "triage",
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	assert.NotNil(t, run)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"poll loop should not sleep on real wall-clock intervals")
 }
 
 func TestFormatRunDiagnostics_Empty(t *testing.T) {

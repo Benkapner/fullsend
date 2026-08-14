@@ -288,6 +288,7 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 }
 
 func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Start with installed=false to simulate a repo that exists but
 	// has not yet been set up with fullsend. The mock CLI runner flips
 	// sc.installed to true when "github setup" is invoked, simulating
@@ -326,6 +327,7 @@ func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
 }
 
 func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Full flow: repo missing → created, validation fails → CLI invoked,
 	// re-validation passes → State cached.
 	sc := &stubClient{
@@ -367,6 +369,7 @@ func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 }
 
 func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
+	speedUpValidateRetries(t)
 	// When GCPProjectID is set, provisionInference should be called
 	// before github setup.
 	sc := &stubClient{installed: false}
@@ -433,6 +436,7 @@ func TestRepoEnsurer_DoEnsure_MintURLPopulated(t *testing.T) {
 }
 
 func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
@@ -453,6 +457,7 @@ func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
 }
 
 func TestRepoEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -562,6 +567,7 @@ func TestEnsureRepoExists_CreateRepoError(t *testing.T) {
 }
 
 func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Simulates: repo exists, validation fails, CLI install runs
 	// successfully, but re-validation still fails (installed stays false).
 	sc := &stubClient{installed: false}
@@ -585,6 +591,7 @@ func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
 }
 
 func TestProvisionInference_StatusCLIError(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -611,6 +618,7 @@ func TestProvisionInference_StatusCLIError(t *testing.T) {
 }
 
 func TestProvisionInference_ParseWIFProviderError(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -766,6 +774,7 @@ func TestAwaitWorkflowReady_Timeout(t *testing.T) {
 }
 
 func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Verify that the settle function is called when install was needed.
 	sc := &stubClient{installed: false}
 	settleCalled := false
@@ -820,6 +829,7 @@ func TestDoEnsure_SettleNotCalledWhenAlreadyInstalled(t *testing.T) {
 }
 
 func TestDoEnsure_SettleError_Propagated(t *testing.T) {
+	speedUpValidateRetries(t)
 	// If the settle function fails, doEnsure should propagate the error.
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{

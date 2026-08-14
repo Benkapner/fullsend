@@ -929,6 +929,352 @@ func TestBatchInstall_GitLab_SecretReuse(t *testing.T) {
 	}
 }
 
+func TestBatchInstall_FullsendRefPrecedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		manifestRef string
+		upstreamRef string
+		wantRef     string
+	}{
+		{
+			name:        "manifest ref wins over binary",
+			manifestRef: "abc123",
+			upstreamRef: "def456",
+			wantRef:     "abc123",
+		},
+		{
+			name:        "binary fallback when manifest empty",
+			manifestRef: "",
+			upstreamRef: "def456",
+			wantRef:     "def456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repos := []string{"acme/api"}
+			fc := newFakeClientForBatch(repos...)
+			entries := []RepoEntry{{Repo: "acme/api"}}
+			manifest := &Manifest{
+				Version: 1,
+				Forge: ForgeSection{GitHub: GitHubForgeInfra{
+					MintURL:     "https://mint.example.com",
+					FullsendRef: tt.manifestRef,
+				}},
+				Defaults: DefaultsConfig{
+					Forge: "github",
+				},
+				Repos: entries,
+			}
+
+			var capturedFiles []forge.TreeFile
+			sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+				capturedFiles = files
+				return nil
+			}
+
+			cfg := batchCfgWithDefaults(manifest)
+			cfg.UpstreamRef = tt.upstreamRef
+
+			result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+			if err != nil {
+				t.Fatalf("BatchInstall() error: %v", err)
+			}
+			if len(result.Installed) != 1 {
+				t.Fatalf("expected 1 installed, got %d installed, %d failed",
+					len(result.Installed), len(result.Failed))
+			}
+			if len(capturedFiles) == 0 {
+				t.Fatal("expected scaffold files to be captured")
+			}
+			// The scaffold workflow should contain the expected ref,
+			// either from the manifest or the binary fallback.
+			content := string(capturedFiles[0].Content)
+			if !strings.Contains(content, tt.wantRef) {
+				t.Errorf("scaffold file should contain ref %q but does not:\n%s",
+					tt.wantRef, content)
+			}
+		})
+	}
+}
+
+func TestBatchInstall_SHAResolution(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	// Register a tag ref so the resolver can resolve "v0.35.0" to a SHA
+	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v0.35.0",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	// Raw callback (not fakeScaffoldCommit) to capture file content for verification.
+	var capturedFiles []forge.TreeFile
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.UpstreamRef = "binarysha0000000000000000000000000000000"
+	cfg.UpstreamTag = "v0.34.0"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d installed, %d failed",
+			len(result.Installed), len(result.Failed))
+	}
+
+	// The scaffold should contain the resolved SHA, not the tag or binary ref
+	content := string(capturedFiles[0].Content)
+	if !strings.Contains(content, "deadbeef1234567890abcdef1234567890abcdef") {
+		t.Errorf("scaffold should contain resolved SHA but does not:\n%s", content)
+	}
+	// The annotation should contain the original tag
+	if !strings.Contains(content, "v0.35.0") {
+		t.Errorf("scaffold should contain tag annotation v0.35.0 but does not:\n%s", content)
+	}
+	// Binary ref should NOT appear
+	if strings.Contains(content, "binarysha") {
+		t.Error("scaffold should not contain the binary ref")
+	}
+}
+
+func TestBatchInstall_SHAResolution_BothRefsEmpty(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	var capturedFiles []forge.TreeFile
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+	}
+	if len(capturedFiles) == 0 {
+		t.Fatal("expected scaffold files to be committed")
+	}
+}
+
+func TestBatchInstall_RemoteScaffoldFetch(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
+	// Register remote shim template content at the pinned ref
+	fc.FileContentsRef["fullsend-ai/fullsend/"+scaffoldGitHubShimPath+"@v0.35.0"] = []byte(`---
+name: fullsend-remote
+on:
+  pull_request_target:
+    types: [opened]
+permissions: {}
+jobs:
+  dispatch:
+    uses: __REUSABLE_DISPATCH__
+`)
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v0.35.0",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	var capturedFiles []forge.TreeFile
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.UpstreamRef = "binarysha0000000000000000000000000000000"
+	cfg.UpstreamTag = "v0.34.0"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d installed, %d failed",
+			len(result.Installed), len(result.Failed))
+	}
+
+	// The scaffold should use the remote template (has "fullsend-remote")
+	var foundRemoteContent bool
+	for _, f := range capturedFiles {
+		if strings.Contains(string(f.Content), "fullsend-remote") {
+			foundRemoteContent = true
+			break
+		}
+	}
+	if !foundRemoteContent {
+		t.Error("expected scaffold to use remote template content")
+	}
+}
+
+func TestBatchInstall_RemoteScaffoldFetchFallback(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
+	// Do NOT register remote template content — fetch will fail.
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v0.35.0",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	var capturedFiles []forge.TreeFile
+	// Raw callback to inspect committed scaffold content.
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.UpstreamRef = "binarysha0000000000000000000000000000000"
+	cfg.UpstreamTag = "v0.34.0"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d installed, %d failed",
+			len(result.Installed), len(result.Failed))
+	}
+	if len(capturedFiles) == 0 {
+		t.Fatal("expected scaffold files even on remote fetch fallback")
+	}
+}
+
+func TestRefResolver(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	t.Run("resolves tag to SHA", func(t *testing.T) {
+		fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "abc123def0000000000000000000000000000000"
+		r := NewRefResolver(fc)
+		got := r.Resolve(context.Background(), "v0.35.0")
+		if got != "abc123def0000000000000000000000000000000" {
+			t.Errorf("Resolve(v0.35.0) = %q, want SHA", got)
+		}
+	})
+
+	t.Run("resolves branch when tag not found", func(t *testing.T) {
+		fc.Refs["fullsend-ai/fullsend/heads/main"] = "mainsha00000000000000000000000000000000"
+		r := NewRefResolver(fc)
+		got := r.Resolve(context.Background(), "main")
+		if got != "mainsha00000000000000000000000000000000" {
+			t.Errorf("Resolve(main) = %q, want SHA", got)
+		}
+	})
+
+	t.Run("returns SHA unchanged", func(t *testing.T) {
+		r := NewRefResolver(fc)
+		sha := "abc123def0000000000000000000000000000000"
+		got := r.Resolve(context.Background(), sha)
+		if got != sha {
+			t.Errorf("Resolve(SHA) = %q, want unchanged", got)
+		}
+	})
+
+	t.Run("returns ref on error", func(t *testing.T) {
+		r := NewRefResolver(fc)
+		got := r.Resolve(context.Background(), "nonexistent-tag")
+		if got != "nonexistent-tag" {
+			t.Errorf("Resolve(nonexistent) = %q, want original", got)
+		}
+	})
+
+	t.Run("caches result", func(t *testing.T) {
+		fc2 := forge.NewFakeClient()
+		fc2.Refs["fullsend-ai/fullsend/tags/v1.0.0"] = "cached000000000000000000000000000000000"
+		r := NewRefResolver(fc2)
+		got1 := r.Resolve(context.Background(), "v1.0.0")
+		delete(fc2.Refs, "fullsend-ai/fullsend/tags/v1.0.0")
+		got2 := r.Resolve(context.Background(), "v1.0.0")
+		if got1 != got2 {
+			t.Errorf("second resolve should return cached result: got1=%q got2=%q", got1, got2)
+		}
+	})
+}
+
+func TestFetchRemoteScaffold_GitLab(t *testing.T) {
+	fc := forge.NewFakeClient()
+	ref := "v0.35.0"
+	sha := "deadbeef1234567890abcdef1234567890abcdef"
+
+	for _, sp := range scaffoldGitLabPaths {
+		content := "---\n__RUNNER_TAGS__\n"
+		if sp.outPath == ".gitlab/ci/fullsend-dispatch.yml" {
+			content = "---\n# fullsend-stage: dispatch\ntags: __RUNNER_TAGS__\n"
+		}
+		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+sp.repoPath+"@"+ref] = []byte(content)
+	}
+
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitLab, []string{"docker"})
+	if err != nil {
+		t.Fatalf("FetchRemoteScaffold() error: %v", err)
+	}
+	if len(files) != len(scaffoldGitLabPaths) {
+		t.Fatalf("expected %d files, got %d", len(scaffoldGitLabPaths), len(files))
+	}
+
+	for _, f := range files {
+		s := string(f.Content)
+		if strings.Contains(s, "__RUNNER_TAGS__") {
+			t.Errorf("%s: __RUNNER_TAGS__ was not substituted", f.Path)
+		}
+		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+			if !strings.Contains(s, "# fullsend-ref: "+sha) {
+				t.Errorf("dispatch file should contain version marker with SHA")
+			}
+		}
+	}
+}
+
+func TestFetchRemoteScaffold_UnsupportedForge(t *testing.T) {
+	fc := forge.NewFakeClient()
+	_, err := FetchRemoteScaffold(context.Background(), fc, "v1.0.0", "sha", "unsupported", nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported forge")
+	}
+}
+
 func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)

@@ -38,10 +38,25 @@ const (
 type Driver struct {
 	Client forge.Client
 	Token  string
+
+	// afterFunc is the timer function used by poll loops. It defaults to
+	// time.After in New(). Tests inject an instant-return implementation
+	// to avoid sleeping on real wall-clock intervals.
+	afterFunc func(time.Duration) <-chan time.Time
 }
 
 func New(client forge.Client, token string) ci.Driver {
-	return &Driver{Client: client, Token: token}
+	return &Driver{Client: client, Token: token, afterFunc: time.After}
+}
+
+// timerAfter returns a channel that fires after dur. It uses afterFunc
+// when set, falling back to time.After so that a zero-value Driver
+// (used in some tests) still works.
+func (d *Driver) timerAfter(dur time.Duration) <-chan time.Time {
+	if d.afterFunc != nil {
+		return d.afterFunc(dur)
+	}
+	return time.After(dur)
 }
 
 func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
@@ -51,7 +66,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(dispatchPoll):
+		case <-d.timerAfter(dispatchPoll):
 		}
 		runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, workflowFile)
 		if err != nil {
@@ -77,7 +92,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(pollInterval):
+		case <-d.timerAfter(pollInterval):
 		}
 		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, triageRun.ID)
 		if err != nil {
@@ -163,7 +178,7 @@ func (d *Driver) FindCompletedWorkflowRun(ctx context.Context, owner, repo, work
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(artifactRunPoll):
+		case <-d.timerAfter(artifactRunPoll):
 		}
 	}
 	return nil, fmt.Errorf("no completed workflow run for %s after %s", workflowFile, after.Format(time.RFC3339))
@@ -232,7 +247,7 @@ func (d *Driver) AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(assertNoWorkflowDelay):
+			case <-d.timerAfter(assertNoWorkflowDelay):
 			}
 		}
 		runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, workflowFile)
@@ -304,7 +319,7 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(artifactRunPoll):
+			case <-d.timerAfter(artifactRunPoll):
 			}
 			continue
 		}
@@ -320,7 +335,7 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(artifactRunPoll):
+		case <-d.timerAfter(artifactRunPoll):
 		}
 	}
 	return fmt.Errorf("artifact %q not found after %s", artifactName, after.Format(time.RFC3339))
@@ -492,20 +507,20 @@ func harnessJobSuffix(agent string) string {
 }
 
 // runHasAgentJob reports whether the given workflow run contains a job
-// whose name matches the harness job for agent. It also returns the job's
-// conclusion when found, and any error from the API call.
-func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID int, agent string) (found bool, conclusion string, err error) {
+// whose name matches the harness job for agent. It also returns the
+// matched job when found, and any error from the API call.
+func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID int, agent string) (bool, forge.WorkflowJob, error) {
 	jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, runID)
 	if err != nil {
-		return false, "", fmt.Errorf("list jobs for run %d: %w", runID, err)
+		return false, forge.WorkflowJob{}, fmt.Errorf("list jobs for run %d: %w", runID, err)
 	}
 	suffix := harnessJobSuffix(agent)
 	for _, j := range jobs {
 		if strings.HasSuffix(j.Name, suffix) {
-			return true, j.Conclusion, nil
+			return true, j, nil
 		}
 	}
-	return false, "", nil
+	return false, forge.WorkflowJob{}, nil
 }
 
 // WaitForHarnessAgent waits for a successful harness-run workflow job for
@@ -519,7 +534,7 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(dispatchPoll):
+		case <-d.timerAfter(dispatchPoll):
 		}
 
 		// Quick-success: check for the agent's artifact (a completed
@@ -581,7 +596,7 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(dispatchPoll):
+		case <-d.timerAfter(dispatchPoll):
 		}
 
 		// Artifact-first: resolve the agent's run from its artifact and
@@ -615,7 +630,7 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 			if run.Status != "completed" {
 				continue
 			}
-			hasJob, conclusion, err := d.runHasAgentJob(ctx, owner, repo, run.ID, agent)
+			hasJob, job, err := d.runHasAgentJob(ctx, owner, repo, run.ID, agent)
 			if err != nil {
 				lastJobErr = err
 				continue
@@ -623,10 +638,10 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 			if !hasJob {
 				continue
 			}
-			if isTerminalFailure(conclusion) {
+			if isTerminalFailure(job.Conclusion) {
 				return &run, nil
 			}
-			if conclusion == "success" {
+			if job.Conclusion == "success" {
 				return nil, fmt.Errorf("harness agent %q job in run %d concluded successfully; expected failure (url=%s)",
 					agent, run.ID, run.HTMLURL)
 			}
@@ -644,26 +659,85 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 
 // CountHarnessDispatches returns the number of harness workflow runs that
 // scheduled the "Harness run (<agent>)" job after the trigger time.
+//
+// Runs where the agent's job was cancelled or skipped are excluded.
+// GitHub's concurrency groups cancel duplicate runs when two events
+// (e.g. synchronize + labeled) race, and webhook at-least-once delivery
+// can trigger duplicate workflow runs for the same event. In both cases
+// the concurrency group cancels the superseded run, and counting it
+// would produce a false-positive exact-count assertion failure (#6053).
+//
+// The count settles before it is returned: a run whose agent job has not
+// reached a terminal conclusion — or whose job matrix has not expanded
+// yet — is polled until it completes, so an in-flight duplicate is
+// classified by its final conclusion instead of being counted while its
+// cancellation is still in progress.
 func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
+	deadline := time.Now().Add(dispatchWait)
+	for {
+		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after)
+		if err != nil {
+			return 0, err
+		}
+		if pending == 0 {
+			return count, nil
+		}
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf("harness %q dispatch count did not settle: %d run(s) still pending after %s",
+				agent, pending, dispatchWait)
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(dispatchPoll):
+		}
+	}
+}
+
+// settleHarnessDispatchCount classifies harness runs created after the
+// trigger time into counted dispatches and pending runs. A run is pending
+// when its agent job exists but has not completed, or when the run itself
+// is still executing and the agent's job has not appeared yet.
+func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, err error) {
 	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	count := 0
 	for _, r := range allRuns {
 		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
 		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		hasJob, job, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		if hasJob {
+		switch {
+		case hasJob && job.Status != "completed":
+			pending++
+		case hasJob && !isConcurrencySuperseded(job.Conclusion):
 			count++
+		case !hasJob && r.Status != "completed":
+			// The agent's matrix job does not exist until the Route
+			// job finishes expanding the matrix, so an executing run
+			// cannot be classified yet.
+			pending++
 		}
 	}
-	return count, nil
+	return count, pending, nil
+}
+
+// isConcurrencySuperseded reports whether a job conclusion indicates
+// the run was superseded by a concurrency group (cancelled or skipped).
+// These runs should not count toward dispatch totals because the
+// platform handled deduplication correctly.
+func isConcurrencySuperseded(conclusion string) bool {
+	switch conclusion {
+	case "cancelled", "skipped":
+		return true
+	default:
+		return false
+	}
 }
 
 // AssertNoHarnessAgentArtifact asserts that the named agent's harness job

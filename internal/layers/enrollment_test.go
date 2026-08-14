@@ -16,6 +16,16 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+// fakeClock implements clock with channels that resolve immediately,
+// eliminating wall-clock delays in poll/retry loops.
+type fakeClock struct{}
+
+func (fakeClock) After(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
+
 func newEnrollmentLayer(t *testing.T, client forge.Client, enabledRepos, disabledRepos []string) (*EnrollmentLayer, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -137,6 +147,7 @@ func TestEnrollmentLayer_Install_DispatchRetry(t *testing.T) {
 	}
 	repos := []string{"repo-a"}
 	layer, buf := newEnrollmentLayer(t, client, repos, nil)
+	layer.clock = fakeClock{}
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -580,6 +591,7 @@ func TestEnrollmentLayer_Install_InProgressThenCompletes(t *testing.T) {
 	}
 	repos := []string{"repo-a"}
 	layer, buf := newEnrollmentLayer(t, client, repos, nil)
+	layer.clock = fakeClock{}
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -649,6 +661,7 @@ func TestEnrollmentLayer_Install_WorkflowRegistrationWait(t *testing.T) {
 		activeAfter: 2,
 	}
 	layer, buf := newEnrollmentLayer(t, client, []string{"repo-a"}, nil)
+	layer.clock = fakeClock{}
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)

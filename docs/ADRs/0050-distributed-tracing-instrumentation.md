@@ -67,6 +67,11 @@ opt-in model:
 - Every run produces `run-telemetry.jsonl` and `run-summary.json` in the output
   directory (uploaded as GHA artifacts alongside transcripts)
 - Metadata only: span hierarchy, timing, token counts, tool names, errors
+- "Errors" covers operational error text on span statuses and exception
+  events — bounded, UTF-8-repaired, and sanitized where agent-controlled; a
+  failed sandbox create embeds excerpts of container/supervisor logs. The
+  Level 3 gate governs prompt/completion capture, which is separate from
+  error reporting.
 - No data leaves the runner. No backend required.
 
 **Level 2 — OTLP export (org opts in by setting endpoint):**

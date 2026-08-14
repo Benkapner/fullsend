@@ -27,6 +27,7 @@ func newMintDeleteCmd() *cobra.Command {
 	// Cloudflare-specific flags.
 	var workerName string
 	var preview string
+	var customDomain string
 
 	cmd := &cobra.Command{
 		Use:   "delete",
@@ -54,9 +55,12 @@ GCP mode (--platform=gcp):
 
 Cloudflare durable mode (--platform=cloudflare):
   Deletes the durable Worker script and all associated bindings/secrets.
+  When --custom-domain is set, also removes the custom domain binding
+  before deleting the Worker. The zone ID is resolved automatically
+  from the domain name.
 
   Required flags: none (Worker name defaults to "fullsend-mint")
-  Optional: --worker-name
+  Optional: --worker-name, --custom-domain
 
 Cloudflare preview mode (--platform=cloudflare --preview=<alias>):
   Abandons the preview alias. The durable Worker script is not affected.
@@ -68,7 +72,7 @@ Requires confirmation (type "delete" to confirm) unless --dry-run or --yolo.`,
 			case "gcp":
 				return runMintDeleteGCP(cmd.Context(), project, region, dryRun, yolo, os.Stdin)
 			case "cloudflare":
-				return runMintDeleteCloudflare(cmd.Context(), workerName, preview, dryRun, yolo, os.Stdin)
+				return runMintDeleteCloudflare(cmd.Context(), workerName, preview, customDomain, dryRun, yolo, os.Stdin)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -87,6 +91,7 @@ Requires confirmation (type "delete" to confirm) unless --dry-run or --yolo.`,
 	// Cloudflare-specific flags.
 	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
 	cmd.Flags().StringVar(&preview, "preview", "", "tear down a preview mint identified by this alias (Cloudflare only)")
+	cmd.Flags().StringVar(&customDomain, "custom-domain", "", "custom domain hostname to remove during teardown (Cloudflare only, zone ID resolved automatically)")
 
 	return cmd
 }
@@ -241,7 +246,7 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 	return nil
 }
 
-func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias string, dryRun, yolo bool, stdin *os.File) error {
+func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias, customDomain string, dryRun, yolo bool, stdin *os.File) error {
 	accountID, err := cf.ResolveCloudflareAuth(ctx)
 	if err != nil {
 		return err
@@ -280,6 +285,9 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 			printer.StepInfo(fmt.Sprintf("  Worker script %s is not affected", effectiveName))
 		} else {
 			printer.StepInfo(fmt.Sprintf("  Would delete Worker: %s", effectiveName))
+			if customDomain != "" {
+				printer.StepInfo(fmt.Sprintf("  Would remove custom domain %s", customDomain))
+			}
 			printer.StepInfo("  All Worker bindings, secrets, and vars will be removed")
 		}
 		return nil
@@ -304,6 +312,7 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 		WorkerName:   workerName,
 		DeployMode:   deployMode,
 		PreviewAlias: previewAlias,
+		CustomDomain: customDomain,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
@@ -336,6 +345,11 @@ func runMintDeleteCloudflare(ctx context.Context, workerName, previewAlias strin
 			"Worker script is preserved.",
 		)
 	} else {
+		if customDomain != "" {
+			summaryLines = append(summaryLines,
+				fmt.Sprintf("Custom domain %s removed.", customDomain),
+			)
+		}
 		summaryLines = append(summaryLines,
 			"Worker and all bindings removed.",
 		)

@@ -296,6 +296,8 @@ func TestThenBranchUnchanged_NoRepo(t *testing.T) {
 
 func TestParseDummyAgentTable_ExpandsIssueInCheckoutBranchOnly(t *testing.T) {
 	w := &world.World{
+		Org:          "org",
+		RepoName:     "repo",
 		SCM:          &fakeCleanupSCM{},
 		Install:      &fakeInstallState{},
 		FixturesRoot: "e2e/behaviour",

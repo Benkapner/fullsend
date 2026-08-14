@@ -115,6 +115,18 @@ type Config struct {
 
 	// Commit is the git SHA stamped on the deployed Worker.
 	Commit string
+
+	// ZoneID is the Cloudflare zone ID for the custom domain.
+	// Required when CustomDomain is set. The zone must already exist
+	// in the Cloudflare account.
+	ZoneID string
+
+	// CustomDomain is the hostname to attach to the Worker as a
+	// Cloudflare Workers Custom Domain (e.g. "mint.fullsend.sh").
+	// When set for a durable deploy, the provisioner attaches the
+	// domain via the Cloudflare API. Ignored for preview deploys
+	// (which use bare workers.dev hostnames).
+	CustomDomain string
 }
 
 // WranglerRunner abstracts wrangler CLI operations for testing.
@@ -149,6 +161,7 @@ type WranglerRunner interface {
 type Provisioner struct {
 	cfg      Config
 	wrangler WranglerRunner
+	cfAPI    CloudflareAPIClient
 }
 
 // NewProvisioner creates a new CF Provisioner with defaults applied.
@@ -163,6 +176,23 @@ func NewProvisioner(cfg Config, wrangler WranglerRunner) *Provisioner {
 		cfg.EnvVars["OIDC_AUDIENCE"] = defaultOIDCAudience
 	}
 	return &Provisioner{cfg: cfg, wrangler: wrangler}
+}
+
+// SetCloudflareAPI sets the Cloudflare API client used for custom
+// domain attachment. When nil (the default), a LiveCloudflareAPIClient
+// is created lazily if CustomDomain is configured.
+func (p *Provisioner) SetCloudflareAPI(client CloudflareAPIClient) {
+	p.cfAPI = client
+}
+
+// ensureCFAPI returns the Cloudflare API client, creating a live
+// client if none was set.
+func (p *Provisioner) ensureCFAPI() CloudflareAPIClient {
+	if p.cfAPI != nil {
+		return p.cfAPI
+	}
+	p.cfAPI = NewLiveCloudflareAPIClient()
+	return p.cfAPI
 }
 
 // Name returns the dispatcher identifier.
@@ -244,6 +274,31 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		return nil, fmt.Errorf("deploying worker: %w", err)
 	}
 
+	// Attach custom domain for durable deploys. Preview deploys use
+	// bare workers.dev hostnames where custom domains do not apply.
+	if p.cfg.CustomDomain != "" && p.cfg.DeployMode == DeployDurable {
+		cfAPI := p.ensureCFAPI()
+
+		// Resolve zone ID from custom domain if not explicitly provided.
+		zoneID := p.cfg.ZoneID
+		if zoneID == "" {
+			var lookupErr error
+			zoneID, lookupErr = cfAPI.LookupZoneID(ctx, p.cfg.CustomDomain)
+			if lookupErr != nil {
+				return nil, fmt.Errorf("looking up zone ID for custom domain %s: %w", p.cfg.CustomDomain, lookupErr)
+			}
+			p.cfg.ZoneID = zoneID
+		}
+
+		if err := cfAPI.AttachCustomDomain(ctx, p.cfg.AccountID, p.cfg.WorkerName, zoneID, p.cfg.CustomDomain); err != nil {
+			return nil, fmt.Errorf("attaching custom domain: %w", err)
+		}
+
+		// When a custom domain is configured, use it as the mint URL
+		// instead of the workers.dev URL.
+		url = "https://" + p.cfg.CustomDomain
+	}
+
 	return map[string]string{
 		"FULLSEND_MINT_URL": url,
 	}, nil
@@ -287,6 +342,14 @@ func (p *Provisioner) Teardown(ctx context.Context) error {
 		// durable Worker script, which is shared with production.
 		return nil
 	case DeployDurable:
+		// Remove custom domain before deleting the Worker.
+		if p.cfg.CustomDomain != "" {
+			cfAPI := p.ensureCFAPI()
+
+			if err := cfAPI.RemoveCustomDomain(ctx, p.cfg.AccountID, p.cfg.CustomDomain); err != nil {
+				return fmt.Errorf("removing custom domain: %w", err)
+			}
+		}
 		return p.wrangler.Delete(ctx, p.cfg.WorkerName)
 	default:
 		return fmt.Errorf("unknown deploy mode for teardown")
@@ -322,6 +385,22 @@ func (p *Provisioner) validate() error {
 	// Secrets here would be silently dropped.
 	if p.cfg.DeployMode == DeployDurable && len(p.cfg.Secrets) > 0 {
 		return fmt.Errorf("Config.Secrets must be empty for durable deploys; use StoreAgentPEM after deploy instead")
+	}
+	// Guard against preview deploy with custom domain. Custom domains
+	// are zone-scoped and apply only to durable Workers — preview
+	// deploys use bare workers.dev hostnames.
+	if p.cfg.CustomDomain != "" && p.cfg.DeployMode == DeployPreview {
+		return fmt.Errorf("CustomDomain is not supported for preview deploys (use durable deploy mode)")
+	}
+	// Guard against ZoneID without CustomDomain. ZoneID is only
+	// meaningful when a CustomDomain is configured — setting it
+	// alone has no effect and likely indicates a config error.
+	if p.cfg.ZoneID != "" && p.cfg.CustomDomain == "" {
+		return fmt.Errorf("CustomDomain is required when ZoneID is set")
+	}
+	// Validate custom domain hostname syntax when provided.
+	if p.cfg.CustomDomain != "" && !ValidateHostname(p.cfg.CustomDomain) {
+		return fmt.Errorf("invalid CustomDomain %q: must be a valid DNS hostname (e.g. mint.fullsend.sh)", p.cfg.CustomDomain)
 	}
 	return nil
 }

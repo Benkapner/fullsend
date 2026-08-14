@@ -19,6 +19,13 @@ func TestResolve(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummy.Runtime.Name())
 
+	oc, err := Resolve("opencode")
+	require.NoError(t, err)
+	assert.Equal(t, "opencode", oc.Runtime.Name())
+	assert.NotNil(t, oc.Transcripts)
+	_, isOC := oc.Transcripts.(OpenCodeRuntime)
+	assert.True(t, isOC, "Transcripts should be OpenCodeRuntime")
+
 	_, err = Resolve("unknown")
 	require.Error(t, err)
 }
@@ -56,6 +63,14 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	dummyBackend, err := ResolveFromPerRepoConfig(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
+
+	// opencode is not in ValidRuntimes() but is resolvable via Resolve().
+	// A hand-written config bypassing validation can reach the stub.
+	ocCfg := config.NewPerRepoConfig(nil, "")
+	ocCfg.SetRuntime("opencode")
+	ocBackend, err := ResolveFromPerRepoConfig(ocCfg)
+	require.NoError(t, err)
+	assert.Equal(t, "opencode", ocBackend.Runtime.Name())
 
 	invalidCfg := config.NewPerRepoConfig(nil, "")
 	invalidCfg.SetRuntime("invalid")

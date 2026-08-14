@@ -14,7 +14,7 @@ import (
 )
 
 func TestGivenCustomHarness_Validation(t *testing.T) {
-	w := &world.World{}
+	w := &world.World{Org: "org", RepoName: "repo"}
 	require.Error(t, givenCustomHarness(w, "", "doc"))
 	require.Error(t, givenCustomHarness(w, "agent", ""))
 }
@@ -45,8 +45,9 @@ func TestGivenKillSwitchActive_SetsKillSwitch(t *testing.T) {
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
 	}
 	w := &world.World{
-		SCM:     scm,
-		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
 	}
 	err := givenKillSwitchActive(w)
 	require.NoError(t, err)
@@ -60,8 +61,9 @@ func TestDeactivateKillSwitch_ClearsKillSwitch(t *testing.T) {
 		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
 	}
 	w := &world.World{
-		SCM:     scm,
-		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
 	}
 	err := DeactivateKillSwitch(w)
 	require.NoError(t, err)
@@ -74,8 +76,9 @@ func TestDeactivateKillSwitch_GetFileContentError(t *testing.T) {
 		getFileErr: fmt.Errorf("not found"),
 	}
 	w := &world.World{
-		SCM:     scm,
-		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
 	}
 	err := DeactivateKillSwitch(w)
 	require.Error(t, err)
@@ -88,8 +91,9 @@ func TestDeactivateKillSwitch_CommitFileError(t *testing.T) {
 		commitErr:   fmt.Errorf("commit failed"),
 	}
 	w := &world.World{
-		SCM:     scm,
-		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
 	}
 	err := DeactivateKillSwitch(w)
 	require.Error(t, err)
@@ -101,8 +105,9 @@ func TestGivenKillSwitchActive_GetFileContentError(t *testing.T) {
 		getFileErr: fmt.Errorf("not found"),
 	}
 	w := &world.World{
-		SCM:     scm,
-		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
 	}
 	err := givenKillSwitchActive(w)
 	require.Error(t, err)
@@ -115,28 +120,69 @@ func TestGivenKillSwitchActive_CommitFileError(t *testing.T) {
 		commitErr:   fmt.Errorf("commit failed"),
 	}
 	w := &world.World{
-		SCM:     scm,
-		Install: &fakeDispatchInstall{owner: "org", repo: "repo"},
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
 	}
 	err := givenKillSwitchActive(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating config")
 }
 
-// fakeDispatchInstall implements install.State for dispatch step tests.
-type fakeDispatchInstall struct {
-	owner string
-	repo  string
+// --- empty identity guard tests ---
+
+func TestGivenKillSwitchActive_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		org  string
+		repo string
+	}{
+		{"empty org", "", "repo"},
+		{"empty repo", "org", ""},
+		{"both empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := &world.World{Org: tc.org, RepoName: tc.repo, SCM: &fakeDispatchSCM{}}
+			err := givenKillSwitchActive(w)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "no repo configured")
+		})
+	}
 }
 
-func (f *fakeDispatchInstall) Mode() string               { return "per-repo" }
-func (f *fakeDispatchInstall) ConfigOwner() string        { return f.owner }
-func (f *fakeDispatchInstall) ConfigRepo() string         { return f.repo }
-func (f *fakeDispatchInstall) ConfigPathPrefix() string   { return ".fullsend" }
-func (f *fakeDispatchInstall) TriageWorkflowRepo() string { return f.repo }
-func (f *fakeDispatchInstall) TriageWorkflowFile() string { return "" }
-func (f *fakeDispatchInstall) AgentWorkflowFile() string  { return "" }
-func (f *fakeDispatchInstall) AgentArtifactName() string  { return "" }
+func TestDeactivateKillSwitch_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := DeactivateKillSwitch(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestGivenCustomHarness_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := givenCustomHarness(w, "test", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestGivenDisabledCustomHarness_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := givenDisabledCustomHarness(w, "test", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestCommitLocalHarnessResources_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := commitLocalHarnessResources(context.Background(), w, "test", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
 
 // fakeDispatchSCM implements scm.Driver for dispatch step tests.
 type fakeDispatchSCM struct {
@@ -280,8 +326,9 @@ func TestGivenCustomHarness_CommitsAgentFile(t *testing.T) {
 		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
 	}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
-		SCM:     scm,
+		Org:      "test-org",
+		RepoName: "test-repo",
+		SCM:      scm,
 	}
 	err := givenCustomHarness(w, "local-test", "agent: agents/triage.md\nrole: triage\nslug: local-test")
 	require.NoError(t, err)
@@ -301,8 +348,9 @@ func TestGivenCustomHarness_CommitsAgentAndPolicy(t *testing.T) {
 		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
 	}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
-		SCM:     scm,
+		Org:      "test-org",
+		RepoName: "test-repo",
+		SCM:      scm,
 	}
 	err := givenCustomHarness(w, "local-test", "agent: agents/test.md\npolicy: policies/test.md\nrole: triage\nslug: local-test")
 	require.NoError(t, err)
@@ -321,8 +369,9 @@ func TestGivenCustomHarness_SkipsAbsoluteAgentPath(t *testing.T) {
 		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
 	}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
-		SCM:     scm,
+		Org:      "test-org",
+		RepoName: "test-repo",
+		SCM:      scm,
 	}
 	err := givenCustomHarness(w, "local-test", "agent: https://example.com/agent.md\nrole: triage\nslug: local-test")
 	require.NoError(t, err)
@@ -338,8 +387,9 @@ func TestGivenDisabledCustomHarness_CommitsAgentFile(t *testing.T) {
 		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
 	}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
-		SCM:     scm,
+		Org:      "test-org",
+		RepoName: "test-repo",
+		SCM:      scm,
 	}
 	err := givenDisabledCustomHarness(w, "disabled-test", "agent: agents/triage.md\nrole: triage\nslug: disabled-test")
 	require.NoError(t, err)
@@ -352,8 +402,9 @@ func TestGivenDisabledCustomHarness_CommitsAgentFile(t *testing.T) {
 func TestCommitLocalHarnessResources_CommitsAgentFile(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "org", repo: "repo"},
-		SCM:     scm,
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
 	}
 	err := commitLocalHarnessResources(context.Background(), w, "test",
 		"agent: agents/triage.md\nrole: triage")
@@ -364,8 +415,9 @@ func TestCommitLocalHarnessResources_CommitsAgentFile(t *testing.T) {
 func TestCommitLocalHarnessResources_SkipsURLAgentPath(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "org", repo: "repo"},
-		SCM:     scm,
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
 	}
 	err := commitLocalHarnessResources(context.Background(), w, "test",
 		"agent: https://example.com/agents/triage.md\nrole: triage")
@@ -376,8 +428,9 @@ func TestCommitLocalHarnessResources_SkipsURLAgentPath(t *testing.T) {
 func TestCommitLocalHarnessResources_SkipsAbsoluteAgentPath(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "org", repo: "repo"},
-		SCM:     scm,
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
 	}
 	err := commitLocalHarnessResources(context.Background(), w, "test",
 		"agent: /absolute/agents/triage.md\nrole: triage")
@@ -388,8 +441,9 @@ func TestCommitLocalHarnessResources_SkipsAbsoluteAgentPath(t *testing.T) {
 func TestCommitLocalHarnessResources_NoAgentField(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "org", repo: "repo"},
-		SCM:     scm,
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
 	}
 	err := commitLocalHarnessResources(context.Background(), w, "test",
 		"role: triage\nslug: test")
@@ -400,8 +454,9 @@ func TestCommitLocalHarnessResources_NoAgentField(t *testing.T) {
 func TestCommitLocalHarnessResources_InvalidYAML(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "org", repo: "repo"},
-		SCM:     scm,
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
 	}
 	err := commitLocalHarnessResources(context.Background(), w, "test",
 		"invalid: [yaml: content")

@@ -143,9 +143,13 @@ func CleanupScenario(w *world.World) {
 
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
-		empty := []byte("ops: []\n")
-		if err := w.SCM.CommitFile(ctx, w.Install.ConfigOwner(), w.Install.ConfigRepo(), w.BehaviourScriptPath(), "behaviour: clear dummy agent script", empty); err != nil {
-			worldLogf(w, "behaviour cleanup: clear dummy script: %v", err)
+		if w.Org == "" || w.RepoName == "" {
+			worldLogf(w, "behaviour cleanup: clear dummy script: no repo configured; call 'Given the enrolled test repository' first")
+		} else {
+			empty := []byte("ops: []\n")
+			if err := w.SCM.CommitFile(ctx, w.Org, w.RepoName, w.BehaviourScriptPath(), "behaviour: clear dummy agent script", empty); err != nil {
+				worldLogf(w, "behaviour cleanup: clear dummy script: %v", err)
+			}
 		}
 	}
 }
