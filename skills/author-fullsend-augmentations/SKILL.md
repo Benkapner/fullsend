@@ -270,10 +270,10 @@ Typical families (names and availability change — verify each run):
 When file-level overrides exist in the checkout you are reading, prefer them
 over whole-skill forks for single-file / few-file changes.
 
-**Harness `skills:` append caveat (still verify in ADR 0045 / compose docs):**
-`base:` composition concatenates skill entries. A second entry that is a
-fork of the same skill name can load **alongside** upstream unless the
-harness replaces the entry. Say that plainly when recommending a fork.
+**Harness `skills:` merge caveat (still verify in ADR 0045 / compose docs):**
+`base:` composition merges skill entries with deduplication by basename —
+a child entry whose directory name matches a base skill **replaces** it
+(child wins), not loads alongside. Say that plainly when recommending a fork.
 
 **Do not recommend** `customized/` or `.fullsend/customized/` overlay paths.
 
