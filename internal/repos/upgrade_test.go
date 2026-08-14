@@ -262,9 +262,11 @@ func TestUpgrade_DryRun(t *testing.T) {
 	}
 }
 
-func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
+func TestUpgrade_FloatingTargetRefResolved(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// RefResolver resolves "latest" as a tag.
+	fc.Refs["fullsend-ai/fullsend/tags/latest"] = "abc123def456789012345678901234567890abcd"
 
 	m := &Manifest{
 		Version:  1,
@@ -279,12 +281,13 @@ func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "latest" (not eligible for upgrade)` {
-		t.Errorf("expected floating tag skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected floating target ref to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
 	}
 }
 
-func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
+func TestUpgrade_FloatingCurrentRefUpgraded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v0")
 
@@ -301,14 +304,17 @@ func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "v0" (not eligible for upgrade)` {
-		t.Errorf("expected floating current ref skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected floating current ref to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
 	}
 }
 
-func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
+func TestUpgrade_PartialVersionTargetUpgraded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// RefResolver resolves "v2.3" as a tag.
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3"] = "abc123def456789012345678901234567890abcd"
 
 	m := &Manifest{
 		Version:  1,
@@ -323,12 +329,13 @@ func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "v2.3" (not eligible for upgrade)` {
-		t.Errorf("expected floating tag skip for partial version, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected partial version target to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
 	}
 }
 
-func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
+func TestUpgrade_PartialVersionCurrentRefUpgraded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v1.2")
 
@@ -345,8 +352,253 @@ func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "v1.2" (not eligible for upgrade)` {
-		t.Errorf("expected floating tag skip for partial version current ref, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected partial version current ref to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
+	}
+}
+
+func TestUpgrade_FloatingRefBranchResolvedToSHA(t *testing.T) {
+	// Core regression test: repo installed at SHA-A with fullsend_ref: "main".
+	// RefResolver resolves "main" to SHA-B (branch moved).
+	// upgradeRepo must resolve the ref and reconverge — not skip.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// "main" resolves as a branch (tags/ miss, heads/ hit).
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected Upgraded=true for floating ref, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	// Workflow should now reference @main (string replacement).
+	content := string(committedFiles[0].Content)
+	if !strings.Contains(content, "@main") {
+		t.Errorf("expected @main in committed content, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_FloatingRefSameSHASkipped(t *testing.T) {
+	// When both the target and current workflow ref are the same floating
+	// ref (e.g., both "main"), and the resolved SHAs match, the upgrade
+	// should be skipped (no drift).
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "aaa111bbb222ccc333444555666777888999000aa"
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true when floating ref SHAs match, got Upgraded=%v", r.Upgraded)
+	}
+}
+
+func TestUpgrade_DryRunFloatingRefSameSHASkipped(t *testing.T) {
+	// Dry-run with both refs "main" and matching SHAs — should skip.
+	// Exercises the dry-run !changed path with resolver.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "aaa111bbb222ccc333444555666777888999000aa"
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true in dry-run when floating ref SHAs match, got Upgraded=%v", r.Upgraded)
+	}
+}
+
+func TestUpgrade_DryRunSameFloatingRefSkipped(t *testing.T) {
+	// When the workflow already uses the same floating ref as the target,
+	// replaceShimRef returns changed=false and both sides resolve to the
+	// same cached SHA, so the repo is correctly skipped.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true when currentRef==targetRef and SHAs match, got Upgraded=%v", r.Upgraded)
+	}
+}
+
+func TestUpgrade_NonDryRunSameFloatingRefSkipped(t *testing.T) {
+	// Non-dry-run counterpart: same floating ref, same SHA → skip.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
+
+	var commitCalled bool
+	recordingCommitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
+		commitCalled = true
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true when currentRef==targetRef and SHAs match, got Upgraded=%v", r.Upgraded)
+	}
+	if commitCalled {
+		t.Error("expected commitFn NOT to be called when skipping")
+	}
+}
+
+func TestUpgrade_FloatingRefResolutionFailure(t *testing.T) {
+	// When a floating ref cannot be resolved (no tags/ or heads/ entry),
+	// the upgrade should return an error, not silently skip.
+	fc := forge.NewFakeClient()
+	// SHA-pinned workflow — triggers the resolution path that can error.
+	oldSHA := "abc123def456789012345678901234567890abcd"
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// Do NOT set any refs — resolution will fail.
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Error == nil {
+		t.Fatal("expected error when floating ref resolution fails for SHA-pinned repo")
+	}
+	if r.Upgraded {
+		t.Error("should not be marked upgraded when resolution fails")
+	}
+}
+
+func TestUpgrade_SHAPinnedBranchRefResolved(t *testing.T) {
+	// SHA-pinned repo with a branch target ref ("main"). The RefResolver
+	// resolves "main" via heads/ and the SHA replaces the old pinned SHA.
+	oldSHA := "abc123def456789012345678901234567890abcd"
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// "main" resolves as a branch, not a tag.
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = newSHA
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected one upgraded result, got %+v", results)
+	}
+
+	content := string(committedFiles[0].Content)
+	// Should contain the new SHA (resolved from "main" branch).
+	if !strings.Contains(content, "@"+newSHA) {
+		t.Errorf("expected @%s in content, got:\n%s", newSHA, content)
+	}
+	// Should contain "main" as a trailing comment.
+	if !strings.Contains(content, "# main") {
+		t.Errorf("expected '# main' comment in content, got:\n%s", content)
+	}
+	// Should NOT contain the old SHA.
+	if strings.Contains(content, oldSHA) {
+		t.Errorf("content should not contain old SHA %s, got:\n%s", oldSHA, content)
 	}
 }
 
@@ -767,32 +1019,6 @@ func TestIsSemver(t *testing.T) {
 	}
 }
 
-func TestIsFloatingRef(t *testing.T) {
-	tests := []struct {
-		ref  string
-		want bool
-	}{
-		{"latest", true},
-		{"main", true},
-		{"master", true},
-		{"v0", true},
-		{"v1", true},
-		{"v2", true},
-		{"v2.3.0", false},
-		{"abc123", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.ref, func(t *testing.T) {
-			got := isFloatingRef(tt.ref)
-			if got != tt.want {
-				t.Errorf("isFloatingRef(%q) = %v, want %v", tt.ref, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestUpgrade_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -804,33 +1030,6 @@ func TestUpgrade_ContextCancellation(t *testing.T) {
 	_, err := Upgrade(ctx, cfg, newTestClientFactory(fc), noopCommitFn, nil)
 	if err == nil {
 		t.Error("expected context cancellation error")
-	}
-}
-
-func TestUpgrade_PartialVersionTag(t *testing.T) {
-	tests := []struct {
-		ref  string
-		want bool
-	}{
-		{"v0", true},
-		{"v1", true},
-		{"v99", true},
-		{"v1.0", true},
-		{"v1.2", true},
-		{"v10.20", true},
-		{"v1.0.0", false},
-		{"v1.2.3", false},
-		{"main", false},
-		{"latest", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.ref, func(t *testing.T) {
-			got := isPartialVersionTag(tt.ref)
-			if got != tt.want {
-				t.Errorf("isPartialVersionTag(%q) = %v, want %v", tt.ref, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -904,12 +1103,6 @@ func TestCompareSemver_NonSemver(t *testing.T) {
 				t.Errorf("compareSemver(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestIsFloatingRef_Empty(t *testing.T) {
-	if isFloatingRef("") {
-		t.Error("empty string should not be floating")
 	}
 }
 
@@ -1325,8 +1518,8 @@ func TestUpgrade_SHAPinnedTagResolutionError(t *testing.T) {
 	if results[0].Error == nil {
 		t.Fatal("expected error when tag resolution fails for SHA-pinned repo")
 	}
-	if !strings.Contains(results[0].Error.Error(), "resolving tag") {
-		t.Errorf("error should mention 'resolving tag', got: %v", results[0].Error)
+	if !strings.Contains(results[0].Error.Error(), "resolving ref") {
+		t.Errorf("error should mention 'resolving ref', got: %v", results[0].Error)
 	}
 	if results[0].Upgraded {
 		t.Error("should not be marked upgraded when tag resolution fails")
@@ -1455,24 +1648,6 @@ func TestUpgrade_SkipReasonMessages(t *testing.T) {
 			targetRef:  "v0.32.0",
 			currentRef: "v0.32.0",
 			wantReason: "already at v0.32.0",
-		},
-		{
-			name:       "floating target ref",
-			targetRef:  "main",
-			currentRef: "v2.1.0",
-			wantReason: `floating ref "main" (not eligible for upgrade)`,
-		},
-		{
-			name:       "floating current ref",
-			targetRef:  "v2.3.0",
-			currentRef: "latest",
-			wantReason: `floating ref "latest" (not eligible for upgrade)`,
-		},
-		{
-			name:       "partial version target",
-			targetRef:  "v2",
-			currentRef: "v2.1.0",
-			wantReason: `floating ref "v2" (not eligible for upgrade)`,
 		},
 	}
 

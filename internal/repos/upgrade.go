@@ -122,6 +122,14 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 		return nil, fmt.Errorf("concurrency must be between 1 and 32, got %d", cfg.MaxConcurrency)
 	}
 
+	// Create a ref resolver if a GitHub client is available. SHA
+	// resolution always targets fullsend-ai/fullsend (GitHub), so a
+	// GitHub client is required regardless of the target forge.
+	var refResolver *RefResolver
+	if ghFC, ghErr := clients.ConfigFor(ForgeGitHub); ghErr == nil {
+		refResolver = NewRefResolver(ghFC.Client)
+	}
+
 	results := make([]UpgradeResult, len(resolved))
 	sem := make(chan struct{}, cfg.MaxConcurrency)
 	var wg sync.WaitGroup
@@ -145,7 +153,7 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 				return
 			}
 			resolvedCfg.ForgeConfig = fc
-			result := upgradeRepo(ctx, resolvedCfg, cfg, commitFn, progress)
+			result := upgradeRepo(ctx, resolvedCfg, cfg, refResolver, commitFn, progress)
 			results[idx] = result
 		}(i, rr)
 	}
@@ -157,6 +165,7 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 func upgradeRepo(ctx context.Context,
 	resolvedCfg ResolvedConfig,
 	cfg UpgradeConfig,
+	resolver *RefResolver,
 	commitFn ScaffoldCommitFunc,
 	progress ProgressFunc) UpgradeResult {
 
@@ -182,12 +191,6 @@ func upgradeRepo(ctx context.Context,
 	}
 	result.NewRef = targetRef
 
-	if isFloatingRef(targetRef) {
-		result.Skipped = true
-		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", targetRef)
-		return result
-	}
-
 	progress(repoFullName, "read", "Reading workflow file")
 
 	content, workflowPath, err := readWorkflowContent(ctx, client, owner, repo, fc)
@@ -204,12 +207,8 @@ func upgradeRepo(ctx context.Context,
 	currentRef := extractWorkflowRef(content, fc)
 	result.OldRef = currentRef
 
-	if isFloatingRef(currentRef) {
-		result.Skipped = true
-		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", currentRef)
-		return result
-	}
-
+	// Semver downgrade check operates on the original ref strings before
+	// resolution, so it continues to work for tagged versions.
 	if !cfg.Force && isSemver(currentRef) && isSemver(targetRef) {
 		if compareSemver(currentRef, targetRef) > 0 {
 			result.Skipped = true
@@ -237,17 +236,25 @@ func upgradeRepo(ctx context.Context,
 	}
 
 	// Preserve SHA pinning: if the current ref is a SHA, resolve the target
-	// tag to its commit SHA and write @<sha> # <tag>. If the current ref is
-	// a tag, keep tag-only format (@<tag>).
+	// ref to its commit SHA and write @<sha> # <ref>. If the current ref is
+	// a tag/branch, keep the string format (@<ref>).
 	var newContent []byte
 	var changed bool
-	// SHA pinning resolves tags on fullsend-ai/fullsend (always GitHub).
+	// SHA pinning resolves refs on fullsend-ai/fullsend (always GitHub).
 	// Only resolve when the client targets GitHub's API (empty defaults to GitHub).
 	if isSHARef(currentRef) && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
-		sha, err := client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
-		if err != nil {
-			result.Error = fmt.Errorf("resolving tag %s to SHA: %w", targetRef, err)
-			return result
+		var sha string
+		if resolver != nil {
+			sha = resolver.Resolve(ctx, targetRef)
+		}
+		if sha == "" || sha == targetRef {
+			// Resolution failed or returned the ref unchanged — fall back
+			// to direct tag lookup for backwards compatibility.
+			sha, err = client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
+			if err != nil {
+				result.Error = fmt.Errorf("resolving ref %s to SHA: %w", targetRef, err)
+				return result
+			}
 		}
 		newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
 	} else {
@@ -301,32 +308,6 @@ func skipReasonForNoChange(currentRef, targetRef string) string {
 		return fmt.Sprintf("already at %s", targetRef)
 	}
 	return "no uses: lines matched for replacement"
-}
-
-// isFloatingRef returns true for refs that are not pinned versions —
-// branch names, "latest", or non-semver floating tags like "v0".
-func isFloatingRef(ref string) bool {
-	if ref == "" {
-		return false
-	}
-	lower := strings.ToLower(ref)
-	if lower == "latest" || lower == "main" || lower == "master" {
-		return true
-	}
-	// A partial semver ref (e.g., "v0", "v1", "v1.2") is floating because it
-	// does not pin to a specific patch version and cannot be reliably compared.
-	if isPartialVersionTag(ref) {
-		return true
-	}
-	return false
-}
-
-// partialVersionPattern matches version tags that are missing the patch
-// component: "v0", "v1", "v1.2", etc. Full semver (vX.Y.Z) is NOT matched.
-var partialVersionPattern = regexp.MustCompile(`^v\d+(\.\d+)?$`)
-
-func isPartialVersionTag(ref string) bool {
-	return partialVersionPattern.MatchString(ref)
 }
 
 // isSemver returns true if the ref looks like a semver version tag (vX.Y.Z with optional pre-release).

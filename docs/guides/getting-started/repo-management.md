@@ -312,8 +312,8 @@ Push the upgrade directly to the default branch instead of creating a PR:
 fullsend repos install -f repos.yaml --direct
 ```
 
-Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
-blocked unless `--force` is set.
+Floating refs (`latest`, `main`, `v0`) are no longer skipped during
+upgrades. Downgrades are blocked unless `--force` is set.
 
 ## Troubleshooting
 
