@@ -639,6 +639,41 @@ func TestValidate_ModelValid(t *testing.T) {
 	}
 }
 
+func TestValidate_EffortValid(t *testing.T) {
+	for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
+		h := &Harness{Agent: "agents/test.md", Role: "test", Effort: level}
+		require.NoError(t, h.Validate(), "level %s should be valid", level)
+	}
+}
+
+func TestValidate_EffortInvalid(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test", Effort: "ultra"}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "effort")
+	assert.Contains(t, err.Error(), "not valid")
+}
+
+func TestValidate_EffortEmpty(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test"}
+	require.NoError(t, h.Validate())
+}
+
+func TestLoad_EffortField(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+effort: high
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "high", h.Effort)
+}
+
 func TestValidate_PostScriptWithoutValidationLoop(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", Role: "test", PostScript: "scripts/post.sh"}
 	require.NoError(t, h.Validate())

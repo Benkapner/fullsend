@@ -211,6 +211,7 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/base.yaml          # Sandbox policy (filesystem, landlock, process)
 model: opus                         # LLM model override
+effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 readonly_repo: false                # Mount repo as read-only in sandbox
 providers:                           # Network access via provider profiles
   - vertex-ai                       # References providers/vertex-ai.yaml

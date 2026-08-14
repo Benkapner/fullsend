@@ -314,6 +314,10 @@ func buildRunCommand(params RunParams) string {
 		parts = append(parts, fmt.Sprintf("--model '%s'", strings.ReplaceAll(params.Model, "'", "'\\''")))
 	}
 
+	if params.Effort != "" {
+		parts = append(parts, fmt.Sprintf("--effort '%s'", strings.ReplaceAll(params.Effort, "'", "'\\''")))
+	}
+
 	for _, pd := range params.PluginDirs {
 		parts = append(parts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
 	}

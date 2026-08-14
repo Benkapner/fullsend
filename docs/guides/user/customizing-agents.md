@@ -13,6 +13,7 @@ A minimal harness configuration (based on actual fullsend agent harnesses):
 ```yaml
 agent: agents/code.md
 model: opus
+effort: high                     # optional: low, medium, high, xhigh, max (claude runtime only)
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/base.yaml
 providers:

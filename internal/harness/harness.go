@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -23,6 +24,20 @@ var (
 	validSlugName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 	envVarRef     = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
+
+// validEffortLevels are the reasoning effort levels accepted by the claude
+// CLI's --effort flag, verified against @anthropic-ai/claude-code 2.1.226
+// (the version pinned in images/sandbox/Containerfile). The CLI also accepts
+// the undocumented "ultracode" keyword, which is deliberately excluded here:
+// it opts sessions into multi-agent workflow orchestration rather than
+// selecting a reasoning effort level.
+var validEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
+// validEffortLevel reports whether level is a recognized reasoning effort level
+// for the claude CLI's --effort flag.
+func validEffortLevel(level string) bool {
+	return slices.Contains(validEffortLevels, level)
+}
 
 // ValidPluginBasename reports whether name matches the allowed plugin name pattern.
 func ValidPluginBasename(name string) bool {
@@ -303,6 +318,7 @@ type Harness struct {
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
 	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
 	Model                  string                  `yaml:"model,omitempty"`
+	Effort                 string                  `yaml:"effort,omitempty"`
 	PreScript              string                  `yaml:"pre_script,omitempty"`
 	PostScript             string                  `yaml:"post_script,omitempty"`
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
@@ -415,6 +431,9 @@ func (h *Harness) Validate() error {
 	}
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
+	}
+	if h.Effort != "" && !validEffortLevel(h.Effort) {
+		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
 	}
 	if h.Role == "" {
 		return fmt.Errorf("role field is required")
