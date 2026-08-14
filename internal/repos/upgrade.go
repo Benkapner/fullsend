@@ -223,10 +223,21 @@ func upgradeRepo(ctx context.Context,
 		// and is safe for DryRun.
 		dryRef := targetRef
 		dryTag := ""
-		if !isSHARef(targetRef) && resolver != nil {
-			if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
-				dryRef = sha
-				dryTag = targetRef
+		if !isSHARef(targetRef) {
+			if resolver != nil {
+				if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
+					dryRef = sha
+					dryTag = targetRef
+				}
+			}
+			// If the resolver did not resolve the ref, fall back to
+			// direct tag lookup for SHA-pinned GitHub repos — matching
+			// the non-DryRun path's client.GetRef fallback.
+			if dryTag == "" && isSHARef(currentRef) && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
+				if sha, getRefErr := client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef); getRefErr == nil && sha != "" {
+					dryRef = sha
+					dryTag = targetRef
+				}
 			}
 		}
 		_, changed := replaceShimRef(content, dryRef, dryTag, fc, resolvedCfg.Forge)

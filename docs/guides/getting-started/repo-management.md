@@ -345,8 +345,10 @@ Push the upgrade directly to the default branch instead of creating a PR:
 fullsend repos install -f repos.yaml --direct
 ```
 
-Floating refs (`latest`, `main`, `v0`) are no longer skipped during
-upgrades. Downgrades are blocked unless `--force` is set.
+Floating refs (`latest`, `main`, `v0`) and version tags are resolved to
+their commit SHAs during upgrades, writing the pinned format
+(`@<sha> # <ref>`) in the scaffold workflow. Downgrades are blocked
+unless `--force` is set.
 
 ## Troubleshooting
 
