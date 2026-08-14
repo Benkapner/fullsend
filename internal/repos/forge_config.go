@@ -14,11 +14,12 @@ var (
 		`(uses:\s+` + shimOwner + `/` + shimRepo + `/[^@]+@)\S+([ \t]*#.*)?`,
 	)
 	// \b prevents matching head_ref:/base_ref: in dispatch template jq scripts.
+	// The optional (?:\s+\(.*?\))? matches SHA annotations like "(v0.34.0)".
 	glWorkflowRefPattern = regexp.MustCompile(
-		`(?m)\bref:\s+['"]?(\S+?)['"]?[ \t]*$`,
+		`(?m)\bref:\s+['"]?(\S+?)['"]?(?:\s+\(.*?\))?[ \t]*$`,
 	)
 	glShimRefPattern = regexp.MustCompile(
-		`(?m)(\bref:\s+)['"]?\S+?['"]?[ \t]*$`,
+		`(?m)(\bref:\s+)['"]?\S+?['"]?(?:\s+\(.*?\))?[ \t]*$`,
 	)
 )
 

@@ -69,14 +69,23 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 // per-repo installation. The embedded .fullsend/config.yaml is excluded —
 // callers generate a config with roles and forge field instead.
 // runnerTags specifies GitLab runner tags to inject into CI job definitions.
-func CollectGitLabPerRepoInstallFiles(runnerTags []string) (InstallFiles, error) {
-	tagYAML := formatRunnerTags(runnerTags)
+// upstreamRef and upstreamTag control the version marker embedded in the
+// dispatch file for upgrade/status drift detection.
+func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstreamTag string) (InstallFiles, error) {
+	tagYAML := FormatRunnerTags(runnerTags)
+	versionMarker := FormatVersionMarker(upstreamRef, upstreamTag)
 	var files InstallFiles
 	err := WalkGitLabPerRepo(func(path string, content []byte) error {
 		if path == ".fullsend/config.yaml" {
 			return nil
 		}
 		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
+		// Embed a version marker in the dispatch file so that
+		// extractWorkflowRef (via glWorkflowRefPattern) can detect
+		// the installed version for status and upgrade operations.
+		if path == ".gitlab/ci/fullsend-dispatch.yml" && versionMarker != "" {
+			rendered = InsertAfterDocStart(rendered, versionMarker)
+		}
 		files = append(files, InstallFile{
 			Path:    path,
 			Content: []byte(rendered),
@@ -90,8 +99,41 @@ func CollectGitLabPerRepoInstallFiles(runnerTags []string) (InstallFiles, error)
 	return files, nil
 }
 
+// formatVersionMarker returns a YAML comment line containing the version
+// for drift detection. The comment uses "fullsend-ref:" which is matched
+// by glWorkflowRefPattern (\bref:) because the hyphen before "ref"
+// creates a word boundary. Returns "" when no version is available.
+//
+// When both upstreamRef (a commit SHA) and upstreamTag (a human-readable
+// version) are set and differ, the marker includes a parenthesized
+// annotation: "# fullsend-ref: <sha> (<tag>)".
+func FormatVersionMarker(upstreamRef, upstreamTag string) string {
+	if upstreamRef == "" && upstreamTag == "" {
+		return ""
+	}
+	if upstreamRef != "" && upstreamTag != "" && upstreamTag != upstreamRef {
+		return "# fullsend-ref: " + upstreamRef + " (" + upstreamTag + ")"
+	}
+	version := upstreamTag
+	if version == "" {
+		version = upstreamRef
+	}
+	return "# fullsend-ref: " + version
+}
+
+// insertAfterDocStart inserts a line after the YAML document start
+// marker (---\n). If no document start marker is present, the line
+// is prepended.
+func InsertAfterDocStart(content, line string) string {
+	const docStart = "---\n"
+	if strings.HasPrefix(content, docStart) {
+		return docStart + line + "\n" + content[len(docStart):]
+	}
+	return line + "\n" + content
+}
+
 // formatRunnerTags formats runner tags as a YAML inline list.
-func formatRunnerTags(tags []string) string {
+func FormatRunnerTags(tags []string) string {
 	if len(tags) == 0 {
 		return "[]"
 	}

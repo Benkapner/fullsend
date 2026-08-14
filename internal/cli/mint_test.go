@@ -2286,8 +2286,12 @@ func TestMintDeployCmd_NoWarningForCorrectPlatformFlags(t *testing.T) {
 // --- lookupAppID tests ---
 
 func TestLookupAppID_Success(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/apps/fullsend-ai-coder", r.URL.Path)
+		assert.Empty(t, r.Header.Get("Authorization"), "unauthenticated request should have no Authorization header")
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintln(w, `{"id": 12345, "slug": "fullsend-ai-coder", "client_id": "Iv1.abc123"}`)
 	}))
@@ -2358,6 +2362,9 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 		{"TooManyRequests", http.StatusTooManyRequests},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GH_TOKEN", "")
+			t.Setenv("GITHUB_TOKEN", "")
+
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.code)
 			}))
@@ -2370,8 +2377,90 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 			_, err := lookupAppID(context.Background(), "some-app")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "rate limit")
+			assert.Contains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN")
 		})
 	}
+}
+
+func TestLookupAppID_AuthenticatedWithGHToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_test_token_123")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghp_test_token_123", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 99, appID)
+}
+
+func TestLookupAppID_AuthenticatedWithGITHUBToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "ghs_fallback_token")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghs_fallback_token", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 77}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 77, appID)
+}
+
+func TestLookupAppID_GHTokenTakesPrecedence(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_primary")
+	t.Setenv("GITHUB_TOKEN", "ghs_secondary")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghp_primary", r.Header.Get("Authorization"),
+			"GH_TOKEN should take precedence over GITHUB_TOKEN")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 55}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 55, appID)
+}
+
+func TestLookupAppID_RateLimitAuthenticated(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_some_token")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	_, err := lookupAppID(context.Background(), "some-app")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limit")
+	assert.NotContains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN",
+		"authenticated rate limit error should not suggest setting a token")
 }
 
 // --- verifyPEMMatchesApp tests ---
@@ -2759,7 +2848,7 @@ func TestMintDeleteCloudflare_DryRunDurable(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", true, false, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", true, false, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "dry run should not deploy")
 }
@@ -2779,7 +2868,7 @@ func TestMintDeleteCloudflare_DurableTeardown(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", false, true, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "durable delete should not deploy")
 	assert.Len(t, fakeCF.deleteCalls, 1, "expected exactly one Delete call")
@@ -2801,9 +2890,181 @@ func TestMintDeleteCloudflare_PreviewTeardown(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", "", false, true, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "preview teardown should not deploy")
+}
+
+func TestMintDeleteCloudflare_DurableWithCustomDomainSummary(t *testing.T) {
+	// Delete with --custom-domain in dry-run should mention the domain
+	// in the output, verifying CLI argument wiring.
+	// Non-dry-run custom domain teardown is tested at the provisioner
+	// layer (TestProvisioner_Teardown_DurableWithCustomDomain).
+	origFactory := mintCFWranglerFactory
+	fakeCF := &fakeCFWranglerRunner{}
+	mintCFWranglerFactory = func(string) cf.WranglerRunner { return fakeCF }
+	defer func() { mintCFWranglerFactory = origFactory }()
+
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	defer func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	}()
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	// Dry run verifies the flag is wired through.
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "mint.fullsend.sh", true, false, os.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, fakeCF.deleteCalls, "dry run should not delete")
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainResolvesZone(t *testing.T) {
+	// Deploy with --custom-domain should call ResolveZoneIDForDomainFn
+	// to resolve the zone ID before constructing the provisioner config.
+	// The provisioner-layer test (TestProvisioner_Provision_DurableWithCustomDomain)
+	// covers the full attach flow.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// Stub zone ID resolution and track calls.
+	var resolvedDomain string
+	origResolve := cf.ResolveZoneIDForDomainFn
+	cf.ResolveZoneIDForDomainFn = func(_ context.Context, domain string) (string, error) {
+		resolvedDomain = domain
+		return "zone-abc123", nil
+	}
+	t.Cleanup(func() { cf.ResolveZoneIDForDomainFn = origResolve })
+
+	// The deploy will succeed through zone resolution but fail at
+	// AttachCustomDomain (no fake CF API client at CLI layer). We
+	// verify zone resolution was called with the right domain.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--custom-domain=mint.fullsend.sh",
+	})
+	_ = cmd.Execute() // may fail at API call; we check the zone resolution happened
+	assert.Equal(t, "mint.fullsend.sh", resolvedDomain, "expected ResolveZoneIDForDomainFn to be called with the custom domain")
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainDryRun(t *testing.T) {
+	// Dry run with --custom-domain should show the custom domain info.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--custom-domain=mint.fullsend.sh",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainWithPreviewRejected(t *testing.T) {
+	// --custom-domain + --preview should fail at CLI level before reaching
+	// the provisioner's validate(). This ensures dry-run and actual deploy
+	// produce the same error, rather than dry-run silently discarding the
+	// custom domain output.
+	withCFEnvVars(t)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--custom-domain=mint.fullsend.sh",
+		"--preview=bt-test-42",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for preview deploys",
+		"--custom-domain + --preview should be rejected at CLI level")
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainWithPreviewRejectedNonDryRun(t *testing.T) {
+	// Same rejection should happen for non-dry-run deploys.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--custom-domain=mint.fullsend.sh",
+		"--preview=bt-test-42",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for preview deploys",
+		"--custom-domain + --preview should be rejected at CLI level")
+}
+
+func TestMintDeployCmd_CustomDomainWarnsOnGCP(t *testing.T) {
+	// --custom-domain should produce a warning when used with --platform=gcp,
+	// matching the behavior of all other Cloudflare-only flags.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=gcp",
+		"--project=my-project-id",
+		"--dry-run",
+		"--custom-domain=mint.fullsend.sh",
+	})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--custom-domain is a Cloudflare flag",
+		"--custom-domain should produce a warning on GCP")
+}
+
+func TestMintDeployCmd_CloudflareCustomDomainZoneLookupFailure(t *testing.T) {
+	// Deploy with --custom-domain should fail when zone lookup fails.
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	origResolve := cf.ResolveZoneIDForDomainFn
+	cf.ResolveZoneIDForDomainFn = func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("zone not found")
+	}
+	t.Cleanup(func() { cf.ResolveZoneIDForDomainFn = origResolve })
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--custom-domain=mint.fullsend.sh",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving zone ID")
 }
 
 func TestMintDeleteGCP_ConfirmationRequired(t *testing.T) {
@@ -2923,7 +3184,7 @@ func TestMintDeleteCloudflare_InvalidWorkerName(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "INVALID_NAME!", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "INVALID_NAME!", "", "", false, true, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --worker-name")
 }
@@ -2938,7 +3199,7 @@ func TestMintDeleteCloudflare_InvalidPreviewAlias(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "INVALID!", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "INVALID!", "", false, true, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --preview alias")
 }
@@ -2959,7 +3220,7 @@ func TestMintDeleteCloudflare_AuthFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { cf.WranglerWhoamiFn = oldWhoami })
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", false, true, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Cloudflare credentials")
 }
@@ -2979,7 +3240,7 @@ func TestMintDeleteCloudflare_DryRunPreview(t *testing.T) {
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", true, false, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", "", true, false, os.Stdin)
 	require.NoError(t, err)
 	assert.Empty(t, fakeCF.deployCalls, "dry run should not deploy")
 	assert.Empty(t, fakeCF.deleteCalls, "dry run should not delete")
@@ -3001,7 +3262,7 @@ func TestMintDeleteCloudflare_DefaultWorkerName(t *testing.T) {
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// Empty worker name should use default "fullsend-mint".
-	err := runMintDeleteCloudflare(context.Background(), "", "", false, true, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "", "", "", false, true, os.Stdin)
 	require.NoError(t, err)
 	assert.Len(t, fakeCF.deleteCalls, 1, "expected exactly one Delete call")
 	assert.Equal(t, "fullsend-mint", fakeCF.deleteCalls[0], "expected Delete called with default worker name")
@@ -3023,7 +3284,7 @@ func TestMintDeleteCloudflare_ConfirmationRequired(t *testing.T) {
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// stdin is not a terminal → should fail without --yolo.
-	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", false, false, os.Stdin)
+	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", false, false, os.Stdin)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stdin is not a terminal")
 }
@@ -3830,6 +4091,10 @@ func TestValidateMintSetupRole(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "e2e", role)
 
+	role, err = validateMintSetupRole("scribe")
+	require.NoError(t, err)
+	assert.Equal(t, "scribe", role)
+
 	_, err = validateMintSetupRole("fix")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "coder")
@@ -3838,6 +4103,7 @@ func TestValidateMintSetupRole(t *testing.T) {
 	_, err = validateMintSetupRole("unknown")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported role")
+	assert.Contains(t, err.Error(), "scribe")
 }
 
 func TestValidateAppSlug(t *testing.T) {

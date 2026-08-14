@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -75,6 +76,17 @@ func TestFindInstallation_OrgMismatch(t *testing.T) {
 	_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg", "my-repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "belongs to other-org")
+}
+
+func TestFindInstallation_NotFound(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockGH.Close()
+
+	_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg", "my-repo")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInstallationNotFound)
 }
 
 func TestCreateInstallationToken_Unscoped(t *testing.T) {
@@ -147,7 +159,7 @@ func TestCreateInstallationToken_UnknownRole(t *testing.T) {
 }
 
 func TestRolePermissions_AllRolesPresent(t *testing.T) {
-	expectedRoles := []string{"triage", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e"}
+	expectedRoles := []string{"triage", "scribe", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e"}
 	allPerms := RolePermissions()
 	for _, role := range expectedRoles {
 		perms, ok := allPerms[role]
@@ -156,6 +168,16 @@ func TestRolePermissions_AllRolesPresent(t *testing.T) {
 		_, hasMetadata := perms["metadata"]
 		assert.True(t, hasMetadata, "role %q should have metadata permission", role)
 	}
+}
+
+func TestRolePermissions_Scribe(t *testing.T) {
+	perms := RolePermissionsFor("scribe")
+	require.NotNil(t, perms)
+	assert.Equal(t, "read", perms["contents"])
+	assert.Equal(t, "write", perms["issues"])
+	assert.Equal(t, "read", perms["metadata"])
+	assert.Empty(t, perms["organization_projects"])
+	assert.Empty(t, perms["pull_requests"])
 }
 
 func TestRolePermissions_E2e(t *testing.T) {
@@ -215,6 +237,19 @@ func TestRolePermissionsFor(t *testing.T) {
 func TestHasRole(t *testing.T) {
 	assert.True(t, HasRole("coder"))
 	assert.False(t, HasRole("nonexistent"))
+}
+
+func TestBuiltInRoles_IncludesScribe(t *testing.T) {
+	roles := BuiltInRoles()
+	assert.Contains(t, roles, "scribe")
+	assert.Contains(t, roles, "triage")
+	assert.Contains(t, roles, "coder")
+	// BuiltInRoles is sorted for stable CLI error messages.
+	assert.Equal(t, append([]string(nil), roles...), func() []string {
+		cp := append([]string(nil), roles...)
+		sort.Strings(cp)
+		return cp
+	}())
 }
 
 func TestCustomRolePermissions(t *testing.T) {

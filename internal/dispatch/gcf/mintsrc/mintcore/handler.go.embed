@@ -373,7 +373,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to mint token: org=%s target_org=%s role=%s err=%v", callerOrg, targetOrg, req.Role, err)
 		var me *mintError
 		if errors.As(err, &me) {
-			writeError(w, me.status, "mint failed")
+			msg := "mint failed"
+			// Surface the user-facing message when the error explicitly
+			// provides one. Only errors that set userMsg opt into this;
+			// all others keep the generic message to avoid leaking
+			// internal details.
+			if me.userMsg != "" {
+				msg = me.userMsg
+			}
+			writeError(w, me.status, msg)
 		} else {
 			writeError(w, http.StatusInternalServerError, "internal error")
 		}
@@ -496,7 +504,53 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
+		// A 404 from FindInstallation means the repo is not covered by
+		// the GitHub App installation. Surface a clear 422 so callers
+		// can diagnose misconfigured installations. Transient errors
+		// (500, 503, 429, network) propagate as 502.
+		if len(repos) > 0 && errors.Is(err, ErrInstallationNotFound) {
+			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
+			return "", "", nil, &mintError{
+				status:  http.StatusUnprocessableEntity,
+				msg:     umsg,
+				userMsg: umsg,
+			}
+		}
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+	}
+
+	// Verify all requested repos are covered by the same installation.
+	// If the GitHub App uses selected-repository installation mode,
+	// repos not in the selection return 404 from the installation
+	// lookup. Detecting this upfront produces a clear error instead
+	// of a confusing 422 from CreateInstallationToken.
+	//
+	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
+	// Transient failures (500, 503, 429, network errors) are propagated
+	// as 502, matching the repos[0] error path above.
+	if len(repos) > 1 {
+		for _, repo := range repos[1:] {
+			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
+			if otherErr != nil {
+				if errors.Is(otherErr, ErrInstallationNotFound) {
+					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
+					return "", "", nil, &mintError{
+						status:  http.StatusUnprocessableEntity,
+						msg:     umsg,
+						userMsg: umsg,
+					}
+				}
+				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
+			}
+			if otherID != installationID {
+				umsg := fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0])
+				return "", "", nil, &mintError{
+					status:  http.StatusUnprocessableEntity,
+					msg:     umsg,
+					userMsg: umsg,
+				}
+			}
+		}
 	}
 
 	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
@@ -784,9 +838,14 @@ func (h *Handler) lookupRoleAppID(role string) (string, error) {
 }
 
 // mintError is an HTTP-aware error carrying a status code for the response.
+// userMsg, when non-empty, is a client-safe message that the response
+// boundary surfaces instead of the generic "mint failed". Errors that
+// do not set userMsg keep the generic message, preventing accidental
+// disclosure of internal details.
 type mintError struct {
-	status int
-	msg    string
+	status  int
+	msg     string
+	userMsg string
 }
 
 func (e *mintError) Error() string { return e.msg }

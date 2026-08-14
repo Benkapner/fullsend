@@ -1730,6 +1730,401 @@ func TestProvisioner_Provision_PreviewBootstrap_EmptyEnvVars(t *testing.T) {
 		"preview deploy should receive ROLE_APP_IDS")
 }
 
+// --- FakeCloudflareAPIClient ---
+
+type fakeCloudflareAPIClient struct {
+	attachDomainCalls []attachDomainCall
+	removeDomainCalls []removeDomainCall
+
+	attachDomainErr error
+	removeDomainErr error
+
+	// lookupZoneID controls the return value of LookupZoneID.
+	lookupZoneID    string
+	lookupZoneIDErr error
+}
+
+type removeDomainCall struct {
+	accountID string
+	hostname  string
+}
+
+type attachDomainCall struct {
+	accountID  string
+	workerName string
+	zoneID     string
+	hostname   string
+}
+
+func (f *fakeCloudflareAPIClient) AttachCustomDomain(_ context.Context, accountID, workerName, zoneID, hostname string) error {
+	f.attachDomainCalls = append(f.attachDomainCalls, attachDomainCall{
+		accountID:  accountID,
+		workerName: workerName,
+		zoneID:     zoneID,
+		hostname:   hostname,
+	})
+	return f.attachDomainErr
+}
+
+func (f *fakeCloudflareAPIClient) RemoveCustomDomain(_ context.Context, accountID string, hostname string) error {
+	f.removeDomainCalls = append(f.removeDomainCalls, removeDomainCall{
+		accountID: accountID,
+		hostname:  hostname,
+	})
+	return f.removeDomainErr
+}
+
+func (f *fakeCloudflareAPIClient) LookupZoneID(_ context.Context, _ string) (string, error) {
+	if f.lookupZoneIDErr != nil {
+		return "", f.lookupZoneIDErr
+	}
+	return f.lookupZoneID, nil
+}
+
+// --- Custom domain tests ---
+
+func TestProvisioner_Provision_DurableWithCustomDomain(t *testing.T) {
+	// Given a provisioner configured with zone ID and custom domain hostname
+	// When Deploy is called in DeployDurable mode
+	// Then the Cloudflare Custom Domains API is called with the correct hostname
+	// And the mint URL uses the custom domain
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		deployURL: "https://test-mint.test-sub.workers.dev",
+	}
+	fakeCFAPI := &fakeCloudflareAPIClient{}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployDurable,
+		SourceDir:    sourceDir,
+		ZoneID:       "zone-456",
+		CustomDomain: "mint.fullsend.sh",
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	result, err := p.Provision(context.Background())
+	require.NoError(t, err)
+
+	// Mint URL should be the custom domain, not workers.dev.
+	assert.Equal(t, "https://mint.fullsend.sh", result["FULLSEND_MINT_URL"])
+
+	// Custom domain should be attached.
+	require.Len(t, fakeCFAPI.attachDomainCalls, 1)
+	assert.Equal(t, "abc123", fakeCFAPI.attachDomainCalls[0].accountID)
+	assert.Equal(t, "test-mint", fakeCFAPI.attachDomainCalls[0].workerName)
+	assert.Equal(t, "zone-456", fakeCFAPI.attachDomainCalls[0].zoneID)
+	assert.Equal(t, "mint.fullsend.sh", fakeCFAPI.attachDomainCalls[0].hostname)
+}
+
+func TestProvisioner_Provision_PreviewSkipsCustomDomain(t *testing.T) {
+	// Given DeployPreview mode with custom domain would be invalid
+	// When Provision is called
+	// Then validation rejects the config
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-run-42",
+		SourceDir:    sourceDir,
+		ZoneID:       "zone-456",
+		CustomDomain: "mint.fullsend.sh",
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for preview deploys")
+}
+
+func TestProvisioner_Provision_DurableWithoutCustomDomain(t *testing.T) {
+	// Without CustomDomain, no CF API calls should be made.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		deployURL: "https://test-mint.test-sub.workers.dev",
+	}
+	fakeCFAPI := &fakeCloudflareAPIClient{}
+
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+		SourceDir:  sourceDir,
+		// No ZoneID or CustomDomain.
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	result, err := p.Provision(context.Background())
+	require.NoError(t, err)
+
+	// Should use workers.dev URL.
+	assert.Equal(t, "https://test-mint.test-sub.workers.dev", result["FULLSEND_MINT_URL"])
+
+	// No CF API calls.
+	assert.Empty(t, fakeCFAPI.attachDomainCalls)
+}
+
+func TestProvisioner_Provision_CustomDomainAutoResolvesZoneID(t *testing.T) {
+	// CustomDomain without ZoneID should auto-resolve via LookupZoneID.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		deployURL: "https://test-mint.test-sub.workers.dev",
+	}
+	fakeCFAPI := &fakeCloudflareAPIClient{
+		lookupZoneID: "auto-resolved-zone-789",
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployDurable,
+		SourceDir:    sourceDir,
+		CustomDomain: "mint.fullsend.sh",
+		// ZoneID intentionally empty — should be auto-resolved.
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	result, err := p.Provision(context.Background())
+	require.NoError(t, err)
+
+	// Mint URL should be the custom domain.
+	assert.Equal(t, "https://mint.fullsend.sh", result["FULLSEND_MINT_URL"])
+
+	// ZoneID should have been resolved and used.
+	require.Len(t, fakeCFAPI.attachDomainCalls, 1)
+	assert.Equal(t, "auto-resolved-zone-789", fakeCFAPI.attachDomainCalls[0].zoneID)
+}
+
+func TestProvisioner_Provision_CustomDomainZoneLookupFailure(t *testing.T) {
+	// When zone lookup fails, Provision should return a clear error.
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{
+		deployURL: "https://test-mint.test-sub.workers.dev",
+	}
+	fakeCFAPI := &fakeCloudflareAPIClient{
+		lookupZoneIDErr: fmt.Errorf("zone not found for domain %q — ensure the domain's zone exists in your Cloudflare account", "mint.fullsend.sh"),
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployDurable,
+		SourceDir:    sourceDir,
+		CustomDomain: "mint.fullsend.sh",
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "looking up zone ID for custom domain")
+}
+
+func TestProvisioner_Provision_AttachDomainError(t *testing.T) {
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{}
+	fakeCFAPI := &fakeCloudflareAPIClient{
+		attachDomainErr: fmt.Errorf("domain already in use"),
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployDurable,
+		SourceDir:    sourceDir,
+		ZoneID:       "zone-456",
+		CustomDomain: "mint.fullsend.sh",
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "attaching custom domain")
+}
+
+func TestProvisioner_Teardown_DurableWithCustomDomain(t *testing.T) {
+	// Durable teardown with custom domain should remove custom domain
+	// before deleting the Worker.
+	fake := &fakeWranglerRunner{}
+	fakeCFAPI := &fakeCloudflareAPIClient{}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployDurable,
+		CustomDomain: "mint.fullsend.sh",
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	err := p.Teardown(context.Background())
+	require.NoError(t, err)
+
+	// Custom domain removed with correct accountID.
+	require.Len(t, fakeCFAPI.removeDomainCalls, 1)
+	assert.Equal(t, "abc123", fakeCFAPI.removeDomainCalls[0].accountID)
+	assert.Equal(t, "mint.fullsend.sh", fakeCFAPI.removeDomainCalls[0].hostname)
+
+	// Worker deleted.
+	require.Len(t, fake.deleteCalls, 1)
+	assert.Equal(t, "test-mint", fake.deleteCalls[0])
+}
+
+func TestProvisioner_Teardown_DurableWithoutCustomDomain(t *testing.T) {
+	// Without CustomDomain, teardown should just delete the Worker.
+	fake := &fakeWranglerRunner{}
+	fakeCFAPI := &fakeCloudflareAPIClient{}
+
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	err := p.Teardown(context.Background())
+	require.NoError(t, err)
+
+	// No CF API calls.
+	assert.Empty(t, fakeCFAPI.removeDomainCalls)
+
+	// Worker deleted.
+	require.Len(t, fake.deleteCalls, 1)
+}
+
+func TestProvisioner_Teardown_RemoveDomainError(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	fakeCFAPI := &fakeCloudflareAPIClient{
+		removeDomainErr: fmt.Errorf("domain not found"),
+	}
+
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployDurable,
+		CustomDomain: "mint.fullsend.sh",
+	}, fake)
+	p.SetCloudflareAPI(fakeCFAPI)
+
+	err := p.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "removing custom domain")
+	// Worker should NOT be deleted when domain removal fails.
+	assert.Empty(t, fake.deleteCalls)
+}
+
+func TestProvisioner_Validate_ZoneIDWithoutCustomDomain(t *testing.T) {
+	// ZoneID without CustomDomain should be rejected by validate().
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		DeployMode: DeployDurable,
+		ZoneID:     "zone-456",
+	}, &fakeWranglerRunner{})
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CustomDomain is required when ZoneID is set")
+}
+
+func TestProvisioner_Validate_InvalidCustomDomainHostname(t *testing.T) {
+	// CustomDomain with invalid hostname syntax should be rejected.
+	tests := []struct {
+		name   string
+		domain string
+	}{
+		{"spaces", "mint fullsend.sh"},
+		{"no-dots", "localhost"},
+		{"trailing-dot", "mint.fullsend.sh."},
+		{"special-chars", "mint!@#.fullsend.sh"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewProvisioner(Config{
+				AccountID:    "abc123",
+				WorkerName:   "test-mint",
+				DeployMode:   DeployDurable,
+				ZoneID:       "zone-456",
+				CustomDomain: tc.domain,
+			}, &fakeWranglerRunner{})
+
+			_, err := p.Provision(context.Background())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid CustomDomain")
+		})
+	}
+}
+
+func TestProvisioner_Validate_ValidCustomDomainHostname(t *testing.T) {
+	// Valid hostnames should pass validation (may fail later in deploy).
+	stubWASMBuild(t)
+	sourceDir := createFakeWorkerSourceDir(t)
+
+	tests := []struct {
+		name   string
+		domain string
+	}{
+		{"simple", "mint.fullsend.sh"},
+		{"subdomain", "stage.mint.fullsend.sh"},
+		{"hyphen", "my-mint.fullsend.sh"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeWranglerRunner{
+				deployURL: "https://test-mint.test-sub.workers.dev",
+			}
+			fakeCFAPI := &fakeCloudflareAPIClient{}
+
+			p := NewProvisioner(Config{
+				AccountID:    "abc123",
+				WorkerName:   "test-mint",
+				DeployMode:   DeployDurable,
+				SourceDir:    sourceDir,
+				ZoneID:       "zone-456",
+				CustomDomain: tc.domain,
+			}, fake)
+			p.SetCloudflareAPI(fakeCFAPI)
+
+			result, err := p.Provision(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, "https://"+tc.domain, result["FULLSEND_MINT_URL"])
+		})
+	}
+}
+
+// --- ensureCFAPI tests ---
+
+func TestEnsureCFAPI_LazyInit(t *testing.T) {
+	// When no cfAPI is set, ensureCFAPI should create a
+	// LiveCloudflareAPIClient.
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, &fakeWranglerRunner{})
+
+	// cfAPI starts nil.
+	assert.Nil(t, p.cfAPI)
+
+	client := p.ensureCFAPI()
+	require.NotNil(t, client)
+
+	// Should be a *LiveCloudflareAPIClient.
+	_, ok := client.(*LiveCloudflareAPIClient)
+	assert.True(t, ok, "ensureCFAPI should create a LiveCloudflareAPIClient")
+
+	// Subsequent calls return the same instance.
+	assert.Equal(t, client, p.ensureCFAPI())
+}
+
 // --- helpers ---
 
 func createFakeWorkerSourceDir(t *testing.T) string {

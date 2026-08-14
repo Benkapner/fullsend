@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -100,6 +101,10 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 
 	inferenceWIFFlag := cmd.Flags().Lookup("inference-wif-provider")
 	require.NotNil(t, inferenceWIFFlag, "expected --inference-wif-provider flag")
+
+	signoffFlag := cmd.Flags().Lookup("signoff")
+	require.NotNil(t, signoffFlag, "expected --signoff flag")
+	assert.Equal(t, "false", signoffFlag.DefValue)
 }
 
 func TestGitHubSetupCmd_UsesDefaultMintURL(t *testing.T) {
@@ -945,6 +950,134 @@ func TestRunGitHubSetupPerRepo(t *testing.T) {
 	}
 	assert.Equal(t, "my-project", secretNames["FULLSEND_GCP_PROJECT_ID"])
 	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+}
+
+// newSignoffTestSetup returns a pre-configured fake client and base config
+// for signoff tests. Override fields on the returned values as needed.
+func newSignoffTestSetup(t *testing.T) (*forge.FakeClient, githubSetupConfig) {
+	t.Helper()
+	t.Setenv("GH_TOKEN", "test-token")
+
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.AuthenticatedUserIdentity = &forge.UserIdentity{
+		Name:  "Test User",
+		Email: "test@example.com",
+	}
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+
+	cfg := githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+	}
+	return client, cfg
+}
+
+func TestRunGitHubSetupPerRepo_SignoffAddsTrailer(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	cfg.signoff = true
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.NoError(t, err)
+
+	// Verify the commit message contains the Signed-off-by trailer.
+	require.NotEmpty(t, client.CommittedFilesToBranch)
+	commitMsg := client.CommittedFilesToBranch[0].Message
+	assert.Contains(t, commitMsg, "Signed-off-by: Test User <test@example.com>")
+}
+
+func TestRunGitHubSetupPerRepo_WithoutSignoffOmitsTrailer(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	cfg.signoff = false
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.NoError(t, err)
+
+	// Verify the commit message does NOT contain a Signed-off-by trailer.
+	require.NotEmpty(t, client.CommittedFilesToBranch)
+	commitMsg := client.CommittedFilesToBranch[0].Message
+	assert.NotContains(t, commitMsg, "Signed-off-by")
+}
+
+func TestRunGitHubSetupPerRepo_SignoffMissingIdentity(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	client.AuthenticatedUserIdentity = nil // simulates a bot token
+	cfg.signoff = true
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--signoff requires a GitHub user identity")
+}
+
+func TestRunGitHubSetupPerRepo_SignoffDirect(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	cfg.signoff = true
+	cfg.direct = true
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.NoError(t, err)
+
+	// Direct mode commits to the default branch.
+	require.NotEmpty(t, client.CommittedFiles)
+	commitMsg := client.CommittedFiles[0].Message
+	assert.Contains(t, commitMsg, "Signed-off-by: Test User <test@example.com>")
+}
+
+func TestGitHubSetupCmd_SignoffRejectedForOrgTarget(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme", "--signoff"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--signoff is only valid for per-repo setup")
+}
+
+func TestRunGitHubSetupPerRepo_SignoffEmptyIdentityFields(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	client.AuthenticatedUserIdentity = &forge.UserIdentity{Name: "", Email: ""}
+	cfg.signoff = true
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--signoff requires a GitHub user identity with both name and email set")
+}
+
+func TestRunGitHubSetupPerRepo_DryRunSignoffShowsTrailer(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	cfg.signoff = true
+	cfg.dryRun = true
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.NoError(t, err)
+
+	// Dry run should display the trailer that would be added.
+	assert.Contains(t, buf.String(), "Signed-off-by: Test User <test@example.com>")
+	// Nothing should actually be committed.
+	assert.Empty(t, client.CommittedFiles)
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_DryRunSignoffMissingIdentity(t *testing.T) {
+	client, cfg := newSignoffTestSetup(t)
+	client.AuthenticatedUserIdentity = nil
+	cfg.signoff = true
+	cfg.dryRun = true
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--signoff requires a GitHub user identity")
 }
 
 func TestGitHubSetCmd_OrgTargetDefaultsToConfigRepo(t *testing.T) {

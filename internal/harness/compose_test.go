@@ -107,7 +107,7 @@ skills:
 	require.NoError(t, err)
 
 	// Skills concatenated: base + child (no name collision)
-	assert.Equal(t, []string{"skill-a", "skill-b", "skill-c"}, h.Skills)
+	assert.Equal(t, []string{"skill-a", "skill-b", "skill-c"}, SkillSources(h.Skills))
 }
 
 // TestLoadWithBase_ChildSkillOverridesBaseByBasename verifies that a child
@@ -136,8 +136,8 @@ skills:
 
 	// Child's code-implementation replaces base's, pr-review stays
 	require.Len(t, h.Skills, 2)
-	assert.Equal(t, "skills/code-implementation", h.Skills[0])
-	assert.Equal(t, "/cache/sha256/def456/pr-review", h.Skills[1])
+	assert.Equal(t, "skills/code-implementation", h.Skills[0].Source)
+	assert.Equal(t, "/cache/sha256/def456/pr-review", h.Skills[1].Source)
 }
 
 // TestLoadWithBase_ChildSkillOverride_PreservesOrder verifies that when a
@@ -172,38 +172,46 @@ skills:
 		"local/skill-b",
 		"/cache/skill-c",
 		"local/skill-d",
-	}, h.Skills)
+	}, SkillSources(h.Skills))
 }
 
 // TestMergeSkills verifies the mergeSkills helper directly.
 func TestMergeSkills(t *testing.T) {
+	se := func(sources ...string) []SkillEntry {
+		entries := make([]SkillEntry, len(sources))
+		for i, s := range sources {
+			entries[i] = SkillEntry{Source: s}
+		}
+		return entries
+	}
+
 	tests := []struct {
 		name  string
-		base  []string
-		child []string
+		base  []SkillEntry
+		child []SkillEntry
 		want  []string
 	}{
 		{
 			name:  "no overlap appends",
-			base:  []string{"/base/skill-a"},
-			child: []string{"/child/skill-b"},
+			base:  se("/base/skill-a"),
+			child: se("/child/skill-b"),
 			want:  []string{"/base/skill-a", "/child/skill-b"},
 		},
 		{
 			name:  "child overrides base by basename",
-			base:  []string{"/base/skill-a", "/base/skill-b"},
-			child: []string{"/child/skill-a"},
+			base:  se("/base/skill-a", "/base/skill-b"),
+			child: se("/child/skill-a"),
 			want:  []string{"/child/skill-a", "/base/skill-b"},
 		},
 		{
 			name:  "nil base",
 			base:  nil,
-			child: []string{"/child/skill-a"},
+			child: se("/child/skill-a"),
 			want:  []string{"/child/skill-a"},
 		},
 		{
 			name:  "nil child",
-			base:  []string{"/base/skill-a"},
+			base:  se("/base/skill-a"),
 			child: nil,
 			want:  []string{"/base/skill-a"},
 		},
@@ -215,21 +223,21 @@ func TestMergeSkills(t *testing.T) {
 		},
 		{
 			name:  "full override",
-			base:  []string{"/cache/sha256/abc/code-implementation"},
-			child: []string{"skills/code-implementation"},
+			base:  se("/cache/sha256/abc/code-implementation"),
+			child: se("skills/code-implementation"),
 			want:  []string{"skills/code-implementation"},
 		},
 		{
 			name:  "duplicate child basename deduplicates",
-			base:  []string{"/base/skill-a"},
-			child: []string{"/child1/skill-b", "/child2/skill-b"},
+			base:  se("/base/skill-a"),
+			child: se("/child1/skill-b", "/child2/skill-b"),
 			want:  []string{"/base/skill-a", "/child2/skill-b"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := mergeSkills(tt.base, tt.child)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want, SkillSources(got))
 		})
 	}
 }
@@ -450,7 +458,7 @@ skills:
 	// C provides image (inherited through B to A)
 	assert.Equal(t, "c-image", h.Image)
 	// Skills concatenated: c + b + a
-	assert.Equal(t, []string{"skill-c", "skill-b", "skill-a"}, h.Skills)
+	assert.Equal(t, []string{"skill-c", "skill-b", "skill-a"}, SkillSources(h.Skills))
 }
 
 func TestLoadWithBase_CycleDetection(t *testing.T) {
@@ -583,10 +591,10 @@ forge:
 	require.NoError(t, err)
 
 	// GitHub forge merged, then resolved
-	assert.Equal(t, "base-pre.sh", h.PreScript)    // from base forge
-	assert.Equal(t, "child-post.sh", h.PostScript) // from child forge
-	assert.Contains(t, h.Skills, "gh-skill-base")  // base skills
-	assert.Contains(t, h.Skills, "gh-skill-child") // child skills
+	assert.Equal(t, "base-pre.sh", h.PreScript)                  // from base forge
+	assert.Equal(t, "child-post.sh", h.PostScript)               // from child forge
+	assert.Contains(t, SkillSources(h.Skills), "gh-skill-base")  // base skills
+	assert.Contains(t, SkillSources(h.Skills), "gh-skill-child") // child skills
 	assert.Equal(t, "base-value1", h.RunnerEnv["GH_KEY1"])
 	assert.Equal(t, "child-value2", h.RunnerEnv["GH_KEY2"])
 
@@ -1135,7 +1143,7 @@ func TestMergeForgeBlocks(t *testing.T) {
 	base := map[string]*ForgeConfig{
 		"github": {
 			PreScript: "base-pre.sh",
-			Skills:    []string{"base-skill"},
+			Skills:    []SkillEntry{{Source: "base-skill"}},
 			RunnerEnv: map[string]string{"KEY1": "base1"},
 		},
 		"gitlab": {
@@ -1145,7 +1153,7 @@ func TestMergeForgeBlocks(t *testing.T) {
 	child := map[string]*ForgeConfig{
 		"github": {
 			PostScript: "child-post.sh",
-			Skills:     []string{"child-skill"},
+			Skills:     []SkillEntry{{Source: "child-skill"}},
 			RunnerEnv:  map[string]string{"KEY2": "child2"},
 		},
 	}
@@ -1157,7 +1165,7 @@ func TestMergeForgeBlocks(t *testing.T) {
 	require.NotNil(t, gh)
 	assert.Equal(t, "base-pre.sh", gh.PreScript)    // inherited
 	assert.Equal(t, "child-post.sh", gh.PostScript) // from child
-	assert.Equal(t, []string{"base-skill", "child-skill"}, gh.Skills)
+	assert.Equal(t, []string{"base-skill", "child-skill"}, SkillSources(gh.Skills))
 	assert.Equal(t, "base1", gh.RunnerEnv["KEY1"])  // inherited
 	assert.Equal(t, "child2", gh.RunnerEnv["KEY2"]) // from child
 
@@ -3515,10 +3523,10 @@ base: `+baseURL+`
 
 	// Skill resolved from cache
 	require.Len(t, h.Skills, 1)
-	assert.True(t, filepath.IsAbs(h.Skills[0]))
+	assert.True(t, filepath.IsAbs(h.Skills[0].Source))
 
 	// Verify content from cache
-	cachedSkillMD := filepath.Join(h.Skills[0], "SKILL.md")
+	cachedSkillMD := filepath.Join(h.Skills[0].Source, "SKILL.md")
 	content, err := os.ReadFile(cachedSkillMD)
 	require.NoError(t, err)
 	assert.Equal(t, skillContent, content)
@@ -3658,7 +3666,7 @@ func TestResolveBaseResources_SkipsURLFields(t *testing.T) {
 	base := &Harness{
 		Agent:  "https://example.com/agents/remote.md",
 		Policy: "https://example.com/policies/remote.yaml",
-		Skills: []string{"https://example.com/skills/foo"},
+		Skills: []SkillEntry{{Source: "https://example.com/skills/foo"}},
 	}
 	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.NoError(t, err)
@@ -3667,7 +3675,7 @@ func TestResolveBaseResources_SkipsURLFields(t *testing.T) {
 	assert.Empty(t, deps)
 	assert.Equal(t, "https://example.com/agents/remote.md", base.Agent)
 	assert.Equal(t, "https://example.com/policies/remote.yaml", base.Policy)
-	assert.Equal(t, "https://example.com/skills/foo", base.Skills[0])
+	assert.Equal(t, "https://example.com/skills/foo", base.Skills[0].Source)
 }
 
 func TestResolveBaseResources_RejectsAbsolutePath(t *testing.T) {
@@ -3682,7 +3690,7 @@ func TestResolveBaseResources_RejectsAbsolutePath(t *testing.T) {
 }
 
 func TestResolveBaseResources_RejectsAbsoluteSkillPath(t *testing.T) {
-	base := &Harness{Skills: []string{"/etc/passwd"}}
+	base := &Harness{Skills: []SkillEntry{{Source: "/etc/passwd"}}}
 	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
@@ -3720,7 +3728,7 @@ func TestResolveBaseResources_RejectsNullBytesInPolicy(t *testing.T) {
 }
 
 func TestResolveBaseResources_RejectsTraversalInSkill(t *testing.T) {
-	base := &Harness{Skills: []string{"../escape"}}
+	base := &Harness{Skills: []SkillEntry{{Source: "../escape"}}}
 	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not contain path traversal")
@@ -3821,11 +3829,11 @@ base: `+baseURL+`
 
 	// Forge skill resolved from cache and merged into h.Skills via ResolveForge
 	require.NotEmpty(t, h.Skills)
-	assert.True(t, filepath.IsAbs(h.Skills[len(h.Skills)-1]),
+	assert.True(t, filepath.IsAbs(h.Skills[len(h.Skills)-1].Source),
 		"forge skill should be resolved to absolute cache path")
 
 	// Verify content from cache
-	skillMD := filepath.Join(h.Skills[len(h.Skills)-1], "SKILL.md")
+	skillMD := filepath.Join(h.Skills[len(h.Skills)-1].Source, "SKILL.md")
 	content, err := os.ReadFile(skillMD)
 	require.NoError(t, err)
 	assert.Equal(t, skillContent, content)
@@ -3942,6 +3950,60 @@ forge:
 	assert.Equal(t, "/run/env/forge.env", h.HostFiles[0].Dest)
 }
 
+func TestMergeForgeConfigInto_ProvidersInherited(t *testing.T) {
+	base := &ForgeConfig{
+		Providers: []string{"providers/base-github.yaml"},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, []string{"providers/base-github.yaml"}, child.Providers)
+}
+
+func TestMergeForgeConfigInto_ProvidersConcatenated(t *testing.T) {
+	base := &ForgeConfig{
+		Providers: []string{"providers/base.yaml"},
+	}
+	child := &ForgeConfig{
+		Providers: []string{"providers/child.yaml"},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, []string{"providers/base.yaml", "providers/child.yaml"}, child.Providers)
+}
+
+func TestMergeForgeConfigInto_OpenShellInherited(t *testing.T) {
+	base := &ForgeConfig{
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/base.yaml"}},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.OpenShell)
+	assert.Equal(t, []string{"profiles/base.yaml"}, child.OpenShell.Profiles)
+}
+
+func TestMergeForgeConfigInto_OpenShellConcatenated(t *testing.T) {
+	base := &ForgeConfig{
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/base.yaml"}},
+	}
+	child := &ForgeConfig{
+		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/child.yaml"}},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.OpenShell)
+	assert.Equal(t, []string{"profiles/base.yaml", "profiles/child.yaml"}, child.OpenShell.Profiles)
+}
+
 func TestMergeForgeConfigInto_HostFilesInherited(t *testing.T) {
 	base := &ForgeConfig{
 		HostFiles: []HostFile{
@@ -4026,6 +4088,198 @@ allowed_remote_resources:
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestLoadWithBase_URLBase_SkillOverrideValueResolved(t *testing.T) {
+	overrideContent := []byte("# Custom security sub-agent")
+
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+skills:
+  - https://github.com/org/repo/tree/main/skills/pr-review#sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:
+      sub-agents/security.md: overrides/security.md
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			w.Write(baseContent)
+		case "/overrides/security.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write(overrideContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+  - https://github.com/org/repo/
+`)
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fpolicy,
+		OrgAllowlist:  []string{server.URL + "/", "https://github.com/org/repo/"},
+	})
+	require.NoError(t, err)
+
+	// The override value should have been fetched and cached
+	require.Len(t, h.Skills, 1)
+	overrideVal := h.Skills[0].Overrides["sub-agents/security.md"]
+	require.NotNil(t, overrideVal)
+	assert.True(t, strings.Contains(*overrideVal, "cache"), "override value should be a cache path, got %q", *overrideVal)
+
+	// Should have a dependency for the override file
+	var foundOverride bool
+	for _, d := range deps {
+		if d.Field == "skills[0].overrides[sub-agents/security.md]" {
+			foundOverride = true
+			assert.Equal(t, "resource", d.Type)
+		}
+	}
+	assert.True(t, foundOverride, "override file should appear in dependencies")
+}
+
+func TestLoadWithBase_URLBase_SkillOverrideValuePathTraversal(t *testing.T) {
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+skills:
+  - https://github.com/org/repo/tree/main/skills/pr-review#sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:
+      sub-agents/security.md: ../../../etc/passwd
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			w.Write(baseContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+  - https://github.com/org/repo/
+`)
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fpolicy,
+		OrgAllowlist:  []string{server.URL + "/", "https://github.com/org/repo/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestLoadWithBase_URLBase_ForgeSkillOverrideValueResolved(t *testing.T) {
+	overrideContent := []byte("# Custom forge override")
+
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+forge:
+  github:
+    skills:
+      - https://github.com/org/repo/tree/main/skills/pr-review#sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:
+          sub-agents/security.md: overrides/gh-security.md
+`)
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.WriteHeader(http.StatusOK)
+			w.Write(baseContent)
+		case "/overrides/gh-security.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write(overrideContent)
+		case "/agents/remote.md":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("You are a test agent.\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+  - https://github.com/org/repo/
+`)
+
+	fpolicy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		ForgePlatform: "github",
+		FetchPolicy:   fpolicy,
+		OrgAllowlist:  []string{server.URL + "/", "https://github.com/org/repo/"},
+	})
+	require.NoError(t, err)
+
+	// After forge merge, the skill should be in top-level Skills with resolved override
+	require.Len(t, h.Skills, 1)
+	overrideVal := h.Skills[0].Overrides["sub-agents/security.md"]
+	require.NotNil(t, overrideVal)
+	assert.True(t, strings.Contains(*overrideVal, "cache"), "forge override value should be a cache path, got %q", *overrideVal)
+
+	var foundOverride bool
+	for _, d := range deps {
+		if strings.Contains(d.Field, "overrides[sub-agents/security.md]") {
+			foundOverride = true
+			assert.Equal(t, "resource", d.Type)
+		}
+	}
+	assert.True(t, foundOverride, "forge override file should appear in dependencies")
 }
 
 func TestLoadWithBase_URLBase_ForgeHostFilePathTraversal(t *testing.T) {
@@ -4443,6 +4697,33 @@ func TestMergeBaseIntoChild_EnvInheritedWhenChildNil(t *testing.T) {
 	require.NotNil(t, child.Env)
 	assert.Equal(t, "val", child.Env.Runner["R"])
 	assert.Equal(t, "val", child.Env.Sandbox["S"])
+}
+
+func TestMergeBaseIntoChild_EffortInherited(t *testing.T) {
+	base := &Harness{Effort: "high"}
+	child := &Harness{}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "high", child.Effort)
+}
+
+func TestMergeBaseIntoChild_EffortChildWins(t *testing.T) {
+	base := &Harness{Effort: "high"}
+	child := &Harness{Effort: "low"}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "low", child.Effort)
+}
+
+func TestMergeBaseIntoChild_EffortEmptyBaseNoEffect(t *testing.T) {
+	base := &Harness{}
+	child := &Harness{Effort: "max"}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "max", child.Effort)
 }
 
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {
@@ -5349,12 +5630,12 @@ skills:
 	// The child's skill should be resolved to a local cache path (not
 	// the relative "skills/pr-review" that would need local resolution).
 	require.Len(t, h.Skills, 1)
-	assert.True(t, filepath.IsAbs(h.Skills[0]),
-		"skill should be resolved to an absolute cache path, got %q", h.Skills[0])
+	assert.True(t, filepath.IsAbs(h.Skills[0].Source),
+		"skill should be resolved to an absolute cache path, got %q", h.Skills[0].Source)
 
 	// The cached skill directory should contain all files, including
 	// subdirectories (the fix for #5305).
-	skillDir := h.Skills[0]
+	skillDir := h.Skills[0].Source
 	assert.FileExists(t, filepath.Join(skillDir, "SKILL.md"))
 	assert.FileExists(t, filepath.Join(skillDir, "meta-prompt.md"))
 	assert.FileExists(t, filepath.Join(skillDir, "sub-agents", "correctness.md"))
@@ -5710,26 +5991,26 @@ skills:
 
 	// Both should be absolute paths.
 	for i, skill := range h.Skills {
-		assert.True(t, filepath.IsAbs(skill),
-			"skills[%d] should be an absolute path, got %q", i, skill)
+		assert.True(t, filepath.IsAbs(skill.Source),
+			"skills[%d] should be an absolute path, got %q", i, skill.Source)
 	}
 
 	// The base skill (index 0) should be the pre-resolved path, untouched.
-	assert.Equal(t, baseSkillDir, h.Skills[0],
+	assert.Equal(t, baseSkillDir, h.Skills[0].Source,
 		"base skill should remain at its pre-resolved absolute path")
-	assert.FileExists(t, filepath.Join(h.Skills[0], "SKILL.md"))
-	baseSkillContent, err := os.ReadFile(filepath.Join(h.Skills[0], "SKILL.md"))
+	assert.FileExists(t, filepath.Join(h.Skills[0].Source, "SKILL.md"))
+	baseSkillContent, err := os.ReadFile(filepath.Join(h.Skills[0].Source, "SKILL.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "# Base Skill", string(baseSkillContent))
 
 	// The child skill (index 1) should be resolved to a cache path.
-	assert.NotEqual(t, "skills/child-skill", h.Skills[1],
+	assert.NotEqual(t, "skills/child-skill", h.Skills[1].Source,
 		"child skill should be resolved, not remain relative")
-	assert.FileExists(t, filepath.Join(h.Skills[1], "SKILL.md"))
-	childSkillContent, err := os.ReadFile(filepath.Join(h.Skills[1], "SKILL.md"))
+	assert.FileExists(t, filepath.Join(h.Skills[1].Source, "SKILL.md"))
+	childSkillContent, err := os.ReadFile(filepath.Join(h.Skills[1].Source, "SKILL.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "# Child Skill", string(childSkillContent))
-	assert.FileExists(t, filepath.Join(h.Skills[1], "meta-prompt.md"))
+	assert.FileExists(t, filepath.Join(h.Skills[1].Source, "meta-prompt.md"))
 
 	// Dependencies should include the child skill fetch (but not the
 	// base skill, which was already an absolute path).
@@ -5832,13 +6113,13 @@ skills:
 	require.NoError(t, err)
 
 	require.Len(t, h.Skills, 1, "child's same-basename skill should override the base's, not sit alongside it")
-	assert.True(t, filepath.IsAbs(h.Skills[0]), "overriding skill should be resolved to an absolute path, got %q", h.Skills[0])
-	assert.NotEqual(t, baseSkillDir, h.Skills[0], "should not resolve to the base's skill directory")
+	assert.True(t, filepath.IsAbs(h.Skills[0].Source), "overriding skill should be resolved to an absolute path, got %q", h.Skills[0].Source)
+	assert.NotEqual(t, baseSkillDir, h.Skills[0].Source, "should not resolve to the base's skill directory")
 
-	content, err := os.ReadFile(filepath.Join(h.Skills[0], "SKILL.md"))
+	content, err := os.ReadFile(filepath.Join(h.Skills[0].Source, "SKILL.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "# Child Skill", string(content), "overriding skill should fetch the child's content, not the base's")
-	assert.FileExists(t, filepath.Join(h.Skills[0], "meta-prompt.md"))
+	assert.FileExists(t, filepath.Join(h.Skills[0].Source, "meta-prompt.md"))
 }
 
 func TestLoadWithBase_SourceURL_WithBase_ScriptResolutionError(t *testing.T) {
@@ -6051,16 +6332,16 @@ func TestResolveBaseResources_ForgeSkillSkipsURLAndEmpty(t *testing.T) {
 	base := &Harness{
 		Forge: map[string]*ForgeConfig{
 			"gitlab": {
-				Skills: []string{"", "https://example.com/skills/remote", cachePath},
+				Skills: []SkillEntry{{Source: ""}, {Source: "https://example.com/skills/remote"}, {Source: cachePath}},
 			},
 		},
 	}
 	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
-	assert.Equal(t, "", base.Forge["gitlab"].Skills[0])
-	assert.Equal(t, "https://example.com/skills/remote", base.Forge["gitlab"].Skills[1])
-	assert.Equal(t, cachePath, base.Forge["gitlab"].Skills[2])
+	assert.Equal(t, "", base.Forge["gitlab"].Skills[0].Source)
+	assert.Equal(t, "https://example.com/skills/remote", base.Forge["gitlab"].Skills[1].Source)
+	assert.Equal(t, cachePath, base.Forge["gitlab"].Skills[2].Source)
 }
 
 func TestResolveBaseHostFiles_ForgeNilEntry(t *testing.T) {
@@ -6289,6 +6570,210 @@ func TestResolveBaseProviders_InvalidBaseURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
 
+// --- Forge-level tests for resolveBaseProfiles ---
+
+func TestResolveBaseProfiles_ForgeOnlyProfiles(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"../../etc/passwd"},
+				},
+			},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "forge.github.openshell.profiles[0]")
+}
+
+func TestResolveBaseProfiles_ForgeSkipsURLs(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"https://example.com/profiles/net.yaml#sha256=abc"},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "https://example.com/profiles/net.yaml#sha256=abc", base.Forge["github"].OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_ForgeSkipsEmpty(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{""},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_ForgeSkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("e", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{cachePath},
+				},
+			},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.Forge["github"].OpenShell.Profiles[0])
+}
+
+func TestResolveBaseProfiles_ForgeNilOpenShellSkipped(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {OpenShell: nil},
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_ForgeNilConfigSkipped(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": nil,
+		},
+	}
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_ForgeInvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"profiles/net.yaml"},
+				},
+			},
+		},
+	}
+	_, err := resolveBaseProfiles(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// --- Forge-level tests for resolveBaseProviders ---
+
+func TestResolveBaseProviders_ForgeOnlyProviders(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"../../etc/passwd.yaml"},
+			},
+		},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "forge.github.providers[0]")
+}
+
+func TestResolveBaseProviders_ForgeSkipsURLs(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"https://example.com/providers/custom.yaml#sha256=abc"},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_ForgeSkipsBareNames(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"my-provider"},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "my-provider", base.Forge["github"].Providers[0])
+}
+
+func TestResolveBaseProviders_ForgeSkipsEmpty(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{""},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_ForgeSkipsCachePath(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("f", 64))
+	require.NoError(t, err)
+
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{cachePath},
+			},
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, cachePath, base.Forge["github"].Providers[0])
+}
+
+func TestResolveBaseProviders_ForgeNilConfigSkipped(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": nil,
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_ForgeInvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"providers/custom.yaml"},
+			},
+		},
+	}
+	_, err := resolveBaseProviders(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
 // --- Integration tests for profiles/providers through LoadWithBase ---
 
 func TestLoadWithBase_URLBase_ProfilesFetched(t *testing.T) {
@@ -6391,6 +6876,169 @@ base: `+baseURL+`
 	}
 	assert.Len(t, providerDeps, 1)
 	assert.Equal(t, "resource", providerDeps[0].Type)
+}
+
+// --- Integration tests for forge-level profiles/providers through LoadWithBase ---
+
+func TestLoadWithBase_URLBase_ForgeProfilesFetched(t *testing.T) {
+	profileContent := []byte("id: github-profile\nnetwork:\n  egress:\n    - host: github.com\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    openshell:
+      profiles:
+      - profiles/github-net.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/profiles/github-net.yaml": profileContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Forge["github"])
+	require.NotNil(t, h.Forge["github"].OpenShell)
+	require.Len(t, h.Forge["github"].OpenShell.Profiles, 1)
+	assert.True(t, filepath.IsAbs(h.Forge["github"].OpenShell.Profiles[0]), "forge profile should be resolved to absolute cache path")
+
+	content, err := os.ReadFile(h.Forge["github"].OpenShell.Profiles[0])
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, content)
+
+	forgeDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "forge.github.openshell.profiles[") {
+			forgeDeps = append(forgeDeps, d)
+		}
+	}
+	assert.Len(t, forgeDeps, 1)
+	assert.Equal(t, "resource", forgeDeps[0].Type)
+}
+
+func TestLoadWithBase_URLBase_ForgeProvidersFetched(t *testing.T) {
+	providerContent := []byte("name: github-provider\ntype: custom\ncredentials:\n  KEY: ${GH_KEY}\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    providers:
+    - providers/github-provider.yaml
+    - bare-name
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/providers/github-provider.yaml": providerContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Forge["github"])
+	require.Len(t, h.Forge["github"].Providers, 2)
+	assert.True(t, filepath.IsAbs(h.Forge["github"].Providers[0]), "forge provider path should be resolved to absolute cache path")
+	assert.Equal(t, "bare-name", h.Forge["github"].Providers[1], "bare provider name should be unchanged")
+
+	content, err := os.ReadFile(h.Forge["github"].Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, content)
+
+	forgeDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "forge.github.providers[") {
+			forgeDeps = append(forgeDeps, d)
+		}
+	}
+	assert.Len(t, forgeDeps, 1)
+	assert.Equal(t, "resource", forgeDeps[0].Type)
+}
+
+func TestLoadWithBase_URLBase_ForgeOnlyProvidersFetched(t *testing.T) {
+	providerContent := []byte("name: forge-only\ntype: custom\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    providers:
+    - providers/forge-only.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/providers/forge-only.yaml": providerContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Forge["github"])
+	require.Len(t, h.Forge["github"].Providers, 1)
+	assert.True(t, filepath.IsAbs(h.Forge["github"].Providers[0]))
+
+	content, err := os.ReadFile(h.Forge["github"].Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, content)
+
+	assert.Empty(t, h.Providers, "top-level providers should remain empty when only forge-level exist")
+
+	forgeDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "forge.github.providers[") {
+			forgeDeps = append(forgeDeps, d)
+		}
+	}
+	assert.Len(t, forgeDeps, 1)
 }
 
 // --- SourceURL tests for profiles/providers ---

@@ -93,6 +93,12 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 						entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
 					}
 				}
+				if entryForge == ForgeGitLab {
+					gl := cfg.Manifest.Forge.GitLab
+					if state.FullsendRef != "" && state.FullsendRef != gl.FullsendRef && !entries[i].FullsendRef.Set {
+						entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
+					}
+				}
 			}
 		}
 	}
@@ -275,6 +281,7 @@ var ValidDefaultKeys = []string{
 	"forge.github.mint_url",
 	"forge.github.fullsend_ref",
 	"forge.gitlab.url",
+	"forge.gitlab.fullsend_ref",
 	"forge.gitlab.runner_tags",
 }
 
@@ -339,6 +346,8 @@ func SetDefault(manifestPath, key, value string) error {
 		m.Forge.GitHub.FullsendRef = value
 	case "forge.gitlab.url":
 		m.Forge.GitLab.URL = value
+	case "forge.gitlab.fullsend_ref":
+		m.Forge.GitLab.FullsendRef = value
 	case "forge.gitlab.runner_tags":
 		if value == "" {
 			m.Forge.GitLab.RunnerTags = nil
@@ -367,7 +376,7 @@ func validateDefaultValue(key, value string) error {
 				return err
 			}
 		}
-	case "forge.github.fullsend_ref":
+	case "forge.github.fullsend_ref", "forge.gitlab.fullsend_ref":
 		if !IsValidRef(value) {
 			return fmt.Errorf("%s %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", key, value)
 		}

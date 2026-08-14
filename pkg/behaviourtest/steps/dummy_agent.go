@@ -33,6 +33,9 @@ func registerDummyAgentSteps(sc *godog.ScenarioContext) {
 }
 
 func parseDummyAgentTable(w *world.World, table *godog.Table) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before dummy-agent operations")
+	}
 	if len(table.Rows) < 2 {
 		return fmt.Errorf("dummy agent table requires a header and at least one row")
 	}
@@ -97,7 +100,7 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 	}
 
 	message := fmt.Sprintf("behaviour: set dummy agent script (%s)", time.Now().UTC().Format(time.RFC3339))
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), w.BehaviourScriptPath(), message, data); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, w.BehaviourScriptPath(), message, data); err != nil {
 		return fmt.Errorf("committing behaviour script: %w", err)
 	}
 

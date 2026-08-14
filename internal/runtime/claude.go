@@ -129,6 +129,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 			metrics.TotalCostUSD = e.TotalCostUSD
 			metrics.InputTokens = e.InputTokens
 			metrics.OutputTokens = e.OutputTokens
+			metrics.ReasoningTokens = e.ReasoningTokens
 			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
 			metrics.CacheReadInputTokens = e.CacheReadInputTokens
 		case ToolUseEvent:
@@ -311,6 +312,10 @@ func buildRunCommand(params RunParams) string {
 
 	if params.Model != "" {
 		parts = append(parts, fmt.Sprintf("--model '%s'", strings.ReplaceAll(params.Model, "'", "'\\''")))
+	}
+
+	if params.Effort != "" {
+		parts = append(parts, fmt.Sprintf("--effort '%s'", strings.ReplaceAll(params.Effort, "'", "'\\''")))
 	}
 
 	for _, pd := range params.PluginDirs {

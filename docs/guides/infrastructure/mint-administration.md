@@ -633,6 +633,37 @@ gcloud functions logs read fullsend-mint \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --gen2 --limit=50
 ```
 
+## Cloudflare Worker custom domain
+
+Durable Cloudflare Worker deployments can be attached to a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) using the `--custom-domain` flag. The zone ID is resolved automatically from the domain name via the Cloudflare API.
+
+### Deploying with a custom domain
+
+```bash
+fullsend mint deploy \
+  --platform cloudflare \
+  --custom-domain "mint.fullsend.sh" \
+  --pem-dir "/path/to/pems"
+```
+
+The `FULLSEND_MINT_URL` output uses the custom domain hostname (`https://mint.fullsend.sh`) instead of the default `workers.dev` URL.
+
+### Tearing down with a custom domain
+
+Pass `--custom-domain` to `mint delete` so the CLI removes the custom domain binding before deleting the Worker:
+
+```bash
+fullsend mint delete \
+  --platform cloudflare \
+  --custom-domain "mint.fullsend.sh"
+```
+
+### Requirements
+
+- Cloudflare authentication is required (either `CLOUDFLARE_API_TOKEN` env var or `wrangler login` session)
+- The zone must already exist in the Cloudflare account — the CLI fails early with a clear error if the zone cannot be found
+- Custom domains are only supported for durable deploys — preview deploys use bare `workers.dev` hostnames
+
 ## Cloudflare Worker rate limiting
 
 The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.

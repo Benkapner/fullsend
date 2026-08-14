@@ -676,6 +676,51 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return err
 	}
 
+	// Writeback: when forge-level fullsend_ref was empty and repos
+	// were installed, write the binary's version back to repos.yaml
+	// so future installs and status checks have a baseline.
+	// Exception to ADR-0057 manual-maintenance: authorized by #6190.
+	if !opts.dryRun && len(result.Installed) > 0 {
+		writebackRef := upstreamTag
+		if writebackRef == "" {
+			writebackRef = upstreamRef
+		}
+		if writebackRef != "" {
+			ghEmpty := manifest.Forge.GitHub.FullsendRef == ""
+			glEmpty := manifest.Forge.GitLab.FullsendRef == ""
+			if ghEmpty || glEmpty {
+				var hasGH, hasGL bool
+				for _, r := range result.Installed {
+					rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+					if !ok {
+						continue
+					}
+					if rc.Forge == repos.ForgeGitHub {
+						hasGH = true
+					} else if rc.Forge == repos.ForgeGitLab {
+						hasGL = true
+					}
+				}
+				if hasGH && ghEmpty {
+					if wbErr := repos.SetDefault(opts.manifest, "forge.github.fullsend_ref", writebackRef); wbErr == nil {
+						manifest.Forge.GitHub.FullsendRef = writebackRef
+						printer.StepDone(fmt.Sprintf("Wrote fullsend_ref=%s to manifest (GitHub)", writebackRef))
+					} else {
+						printer.StepWarn(fmt.Sprintf("failed to write fullsend_ref to manifest (GitHub): %v", wbErr))
+					}
+				}
+				if hasGL && glEmpty {
+					if wbErr := repos.SetDefault(opts.manifest, "forge.gitlab.fullsend_ref", writebackRef); wbErr == nil {
+						manifest.Forge.GitLab.FullsendRef = writebackRef
+						printer.StepDone(fmt.Sprintf("Wrote fullsend_ref=%s to manifest (GitLab)", writebackRef))
+					} else {
+						printer.StepWarn(fmt.Sprintf("failed to write fullsend_ref to manifest (GitLab): %v", wbErr))
+					}
+				}
+			}
+		}
+	}
+
 	// GitLab post-install: set up bot token and pipeline schedules for
 	// newly installed GitLab repos. Bot token failures are treated as install
 	// failures because the repo is non-functional without FULLSEND_FORGE_TOKEN.

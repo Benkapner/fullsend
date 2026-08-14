@@ -109,7 +109,7 @@ type resultEvent struct {
 // system events, stream_event deltas (thinking, text, tool input JSON),
 // result events, errors, and assistant message fallback.
 func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
-	br := bufio.NewReaderSize(r, 1024*1024)
+	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
 		seenStreamEvent bool
@@ -345,6 +345,7 @@ func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error
 			metrics.TotalCostUSD = e.TotalCostUSD
 			metrics.InputTokens = e.InputTokens
 			metrics.OutputTokens = e.OutputTokens
+			metrics.ReasoningTokens = e.ReasoningTokens
 			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
 			metrics.CacheReadInputTokens = e.CacheReadInputTokens
 		case ToolUseEvent:

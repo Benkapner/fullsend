@@ -1080,6 +1080,63 @@ repos:
 	assert.Contains(t, cfgYAML, "completion: disabled")
 }
 
+func TestMigrateRepo_AlwaysUsesCanonicalMintURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		orgMintURL string // from dispatch_settings
+		orgVarURL  string // from FULLSEND_MINT_URL org var
+	}{
+		{"org config has custom URL", "https://custom.example.com", ""},
+		{"org variable has custom URL", "", "https://other.example.com"},
+		{"both set to non-canonical", "https://a.example.com", "https://b.example.com"},
+		{"neither set", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			orgYAML := `version: "1"
+dispatch:
+  platform: github-actions`
+			if tt.orgMintURL != "" {
+				orgYAML += "\n  mint_url: " + tt.orgMintURL
+			}
+			orgYAML += `
+repos:
+  api:
+    enabled: true`
+			setOrgConfig(fc, "acme", orgYAML)
+			setWorkflowFile(fc, "acme", "api",
+				"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+			if tt.orgVarURL != "" {
+				fc.OrgVariables = map[string]bool{
+					"acme/FULLSEND_MINT_URL": true,
+				}
+				fc.OrgVariableValues = map[string]string{
+					"acme/FULLSEND_MINT_URL": tt.orgVarURL,
+				}
+			}
+
+			prov := newFakeProvisioner()
+			prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+			result, err := Migrate(context.Background(), MigrateConfig{
+				Org:     "acme",
+				Project: "my-project",
+			}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, nopProgress)
+
+			require.NoError(t, err)
+			require.Len(t, result.Migrated, 1)
+
+			// Verify the canonical mint URL was written to the repo variable,
+			// regardless of what was discovered from org config or org vars.
+			mintVar := fc.VariableValues["acme/api/FULLSEND_MINT_URL"]
+			assert.Equal(t, "https://mint.fullsend.sh", mintVar,
+				"migrateRepo should always use the canonical mint URL")
+		})
+	}
+}
+
 func TestMigrate_NilMintRegistrar_SkipsRegistration(t *testing.T) {
 	fc := forge.NewFakeClient()
 	setOrgConfig(fc, "acme", `
