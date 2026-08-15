@@ -331,14 +331,14 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Query issues for PRs that actually close them (Fixes/Closes/Resolves
+          # Query for PRs that actually close this issue (Fixes/Closes/Resolves
           # keywords), not a substring search over title/body — the latter
           # false-positives on any PR that merely references the issue (#5575).
           # closedByPullRequestsReferences also returns MERGED PRs regardless of
-          # includeClosedPrs, so filter on .state explicitly. GraphQL's Bot.login
-          # omits the REST "[bot]" suffix, so match on __typename == "Bot" rather
-          # than a literal "fullsend-ai-coder[bot]" string — see
-          # docs/contributing/bot-identities.md for the login.
+          # includeClosedPrs, so filter on .state explicitly. Exclude the code-
+          # agent bot via __typename + login so it can re-dispatch even when it
+          # already has an open PR (#5974); other bots (e.g. Renovate) still
+          # block. See docs/contributing/bot-identities.md for the login format.
           OWNER="${SOURCE_REPO%%/*}"
           REPO_NAME="${SOURCE_REPO##*/}"
           GQL_ERR=$(mktemp)
@@ -355,14 +355,14 @@ jobs:
             --jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]
                    | select(.state == "OPEN")
                    | select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")]
-                   | .[].number' \
+                   | map("#\(.number)") | join(", ")' \
             2>"${GQL_ERR}"); then
             echo "::warning::Linked-PR query failed for issue #${ISSUE_NUMBER}: $(tr '\n' ' ' < "${GQL_ERR}" | sed 's/::/__/g')"
             LINKED_PRS=""
           fi
           rm -f "${GQL_ERR}"
           if [[ -n "${LINKED_PRS}" ]]; then
-            echo "::notice::Open PR(s) linked to close issue #${ISSUE_NUMBER} found — skipping code dispatch"
+            echo "::notice::Skipping code dispatch — issue #${ISSUE_NUMBER} has open PR(s) ${LINKED_PRS}"
             echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
