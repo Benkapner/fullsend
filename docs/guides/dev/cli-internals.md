@@ -117,7 +117,15 @@ fullsend
 │       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
 │       ├── --number <int>                   #     Issue number
 │       └── --marker <string>                #     Hidden HTML marker for idempotent updates
-├── post-review                              # Post PR review comments to GitHub
+├── post-review                              # Post PR/MR review comments to GitHub or GitLab
+│   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
+│   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
+│   ├── --repo <owner/repo>                  #   Repository in owner/repo format
+│   ├── --pr <int>                           #   Pull request / merge request number
+│   ├── --result <path>                      #   Path to review result file, or '-' for stdin
+│   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN or $GITLAB_TOKEN)
+│   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
+│   └── --dry-run                            #   Print what would be posted without API calls
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format
@@ -639,7 +647,7 @@ var executableFiles = map[string]struct{}{
 │     ▼                                                           │
 │  11. Repeat steps 4-6 with role=review                          │
 │      ├── Review agent examines diff                             │
-│      └── Posts review comments via GitHub App bot               │
+│      └── Posts review comments via forge API (GitHub App or GitLab token) │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```

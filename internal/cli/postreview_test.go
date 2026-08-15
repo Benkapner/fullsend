@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1045,6 +1046,139 @@ func TestFormatFindingComment(t *testing.T) {
 		assert.Contains(t, body, "Consider renaming.")
 		assert.NotContains(t, body, "Suggested fix:")
 	})
+}
+
+func TestResolvePostReviewClient_GitHubDefault(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp-test-token")
+	t.Setenv("GITHUB_TOKEN", "")
+	client, err := resolvePostReviewClient("", "", "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_GitHubExplicit(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	client, err := resolvePostReviewClient("github", "ghp-explicit-token", "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_GitHubWithBaseURL(t *testing.T) {
+	client, err := resolvePostReviewClient("github", "ghp-test", "https://ghes.example.com")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_GitLab(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
+	client, err := resolvePostReviewClient("gitlab", "", "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_GitLabExplicitToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	client, err := resolvePostReviewClient("gitlab", "glpat-explicit", "https://gitlab.example.com")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_GitLabNoToken(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	_, err := resolvePostReviewClient("gitlab", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GitLab token")
+}
+
+func TestResolvePostReviewClient_UnsupportedForge(t *testing.T) {
+	_, err := resolvePostReviewClient("bitbucket", "token", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported forge")
+	assert.Contains(t, err.Error(), "bitbucket")
+}
+
+func TestResolvePostReviewClient_GitHubNoToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("PATH", "/nonexistent")
+	_, err := resolvePostReviewClient("github", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token found")
+	assert.Contains(t, err.Error(), "--token")
+}
+
+func TestResolvePostReviewClient_GitLabExplicitTokenNoBaseURL(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_API_URL", "")
+	client, err := resolvePostReviewClient("gitlab", "glpat-explicit", "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_DefaultForgeWithBaseURL(t *testing.T) {
+	client, err := resolvePostReviewClient("", "ghp-test", "https://ghes.example.com")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_CaseSensitive(t *testing.T) {
+	_, err := resolvePostReviewClient("GitHub", "token", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported forge")
+}
+
+func TestResolvePostReviewClient_InvalidBaseURL(t *testing.T) {
+	_, err := resolvePostReviewClient("github", "token", "http://insecure.example.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must use https")
+}
+
+func TestResolvePostReviewClient_BaseURLNoHost(t *testing.T) {
+	_, err := resolvePostReviewClient("github", "token", "https://")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --base-url")
+}
+
+func TestResolvePostReviewClient_BaseURLMalformed(t *testing.T) {
+	_, err := resolvePostReviewClient("github", "token", "not-a-url")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --base-url")
+}
+
+func TestResolvePostReviewClient_GitLabNoTokenMessage(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	_, err := resolvePostReviewClient("gitlab", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--token")
+	assert.NotContains(t, err.Error(), "--gitlab-token")
+}
+
+func TestResolvePostReviewClient_GitLabFallsBackToEnvURL(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "glpat-test")
+	t.Setenv("GITLAB_API_URL", "https://gitlab.corp.example.com")
+	client, err := resolvePostReviewClient("gitlab", "", "")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestResolvePostReviewClient_GitLabUsesNoteTargetMergeRequests(t *testing.T) {
+	var requestedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"id":1,"web_url":"http://example.com"}`)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GITLAB_TOKEN", "glpat-test")
+	t.Setenv("GITLAB_API_URL", srv.URL)
+	client, err := resolvePostReviewClient("gitlab", "", "")
+	require.NoError(t, err)
+
+	_, _ = client.CreateIssueComment(context.Background(), "owner", "repo", 1, "test")
+	assert.Contains(t, requestedPath, "/merge_requests/",
+		"GitLab client should route comments to merge_requests, not issues")
 }
 
 func TestSanitizeReviewResult_RedactsSecretsInBody(t *testing.T) {
