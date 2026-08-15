@@ -345,10 +345,11 @@ Push the upgrade directly to the default branch instead of creating a PR:
 fullsend repos install -f repos.yaml --direct
 ```
 
-Floating refs (`latest`, `main`, `v0`) and version tags are resolved to
-their commit SHAs during upgrades, writing the pinned format
-(`@<sha> # <ref>`) in the scaffold workflow. Downgrades are blocked
-unless `--force` is set.
+Repos that are already SHA-pinned (`@<sha> # <ref>`) preserve their
+pinning style during upgrades — the target ref is resolved to a commit
+SHA and written as `@<sha> # <ref>`. Non-SHA-pinned repos keep their
+string ref format (e.g., `@v2.3.0`). Downgrades are blocked unless
+`--force` is set.
 
 ## Troubleshooting
 
