@@ -87,20 +87,41 @@ type foreignInflight struct {
 	err       error
 }
 
+// VerifierFactory constructs an OIDCVerifier given the resolved OIDC
+// audience string. NewHandler calls this factory after reading
+// OIDC_AUDIENCE from getEnv, so verifier implementations never depend
+// on getEnv themselves — keeping WASM binary size minimal.
+type VerifierFactory func(audience string) (OIDCVerifier, error)
+
 // NewHandler creates a Handler with the given dependencies.
 // Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES, ALLOWED_ORGS,
-// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS) are
-// read once at construction time via the injected getEnv function.
-// Native entrypoints (GCF, standalone) pass os.Getenv; the CF Worker
-// WASM host passes a callback that looks up Worker bindings by name.
+// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS,
+// OIDC_AUDIENCE) are read once at construction time via the injected
+// getEnv function. Native entrypoints (GCF, standalone) pass os.Getenv;
+// the CF Worker WASM host passes a callback that looks up Worker
+// bindings by name.
 //
-// The OIDCVerifier is injected by the caller so different verification
-// strategies can be used (STSVerifier for the Cloud Function, JWKSVerifier
-// for devmint/standalone/Worker). The handler performs authorization
-// (org-allowed, workflow-ref) after the verifier authenticates the token.
-func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+// The VerifierFactory is called with the resolved OIDC audience so
+// different verification strategies can be used (STSVerifier for the
+// Cloud Function, JWKSVerifier for devmint/standalone/Worker). The
+// handler performs authorization (org-allowed, workflow-ref) after the
+// verifier authenticates the token.
+func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, verifierFactory VerifierFactory, httpClient HTTPDoer) (*Handler, error) {
 	if getEnv == nil {
-		return nil, fmt.Errorf("getEnv must not be nil")
+		return nil, errors.New("getEnv must not be nil")
+	}
+
+	// Resolve OIDC audience centrally so verifiers receive the string
+	// directly and never depend on getEnv — critical for WASM binary
+	// size (passing getEnv into verifiers pulls in closure dependencies).
+	audience := getEnv("OIDC_AUDIENCE")
+	if audience == "" {
+		return nil, errors.New("OIDC_AUDIENCE must be configured")
+	}
+
+	oidcVerifier, err := verifierFactory(audience)
+	if err != nil {
+		return nil, fmt.Errorf("creating OIDC verifier: %w", err)
 	}
 
 	// Register custom role permissions before processing ALLOWED_ROLES

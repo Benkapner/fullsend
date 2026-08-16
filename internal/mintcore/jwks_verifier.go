@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -46,21 +47,17 @@ type JWKSVerifier struct {
 // JWKSVerifierConfig configures a new JWKSVerifier.
 type JWKSVerifierConfig struct {
 	IssuerURL  string
-	GetEnv     func(string) string
+	Audience   string
 	HTTPClient HTTPDoer
 }
 
 // NewJWKSVerifier creates a verifier that validates tokens from issuerURL
-// against the OIDC audience read from getEnv("OIDC_AUDIENCE"). Returns an
-// error if the audience is empty — misconfiguration is caught at construction
-// time, not on first Verify(). If httpClient is nil, http.DefaultClient is used.
+// against the given OIDC audience. Returns an error if the audience is
+// empty — misconfiguration is caught at construction time, not on first
+// Verify(). If httpClient is nil, http.DefaultClient is used.
 func NewJWKSVerifier(opts JWKSVerifierConfig) (*JWKSVerifier, error) {
-	if opts.GetEnv == nil {
-		return nil, fmt.Errorf("GetEnv must not be nil")
-	}
-	audience := opts.GetEnv("OIDC_AUDIENCE")
-	if audience == "" {
-		return nil, fmt.Errorf("OIDC_AUDIENCE must be configured")
+	if opts.Audience == "" {
+		return nil, errors.New("OIDC_AUDIENCE must be configured")
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
@@ -68,7 +65,7 @@ func NewJWKSVerifier(opts JWKSVerifierConfig) (*JWKSVerifier, error) {
 	}
 	return &JWKSVerifier{
 		issuerURL:  opts.IssuerURL,
-		audience:   audience,
+		audience:   opts.Audience,
 		httpClient: httpClient,
 	}, nil
 }

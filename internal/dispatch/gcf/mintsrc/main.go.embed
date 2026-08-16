@@ -50,17 +50,18 @@ func init() {
 
 	gcpProjectNum := os.Getenv("GCP_PROJECT_NUMBER")
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+	wifPoolName := os.Getenv("WIF_POOL_NAME")
+	defaultWIFProvider := os.Getenv("WIF_PROVIDER_NAME")
 
-	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-		HTTPClient:         httpClient,
-		GetEnv:             os.Getenv,
-		GCPProjectNum:      gcpProjectNum,
-		WIFPoolName:        os.Getenv("WIF_POOL_NAME"),
-		DefaultWIFProvider: os.Getenv("WIF_PROVIDER_NAME"),
-		PerRepoWIFRepos:    perRepoWIFRepos,
-	})
-	if err != nil {
-		log.Fatalf("initializing STS verifier: %v", err)
+	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
+		return mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
+			HTTPClient:         httpClient,
+			Audience:           audience,
+			GCPProjectNum:      gcpProjectNum,
+			WIFPoolName:        wifPoolName,
+			DefaultWIFProvider: defaultWIFProvider,
+			PerRepoWIFRepos:    perRepoWIFRepos,
+		})
 	}
 
 	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
@@ -68,7 +69,7 @@ func init() {
 		gcpProjectNum,
 	)
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifier, httpClient)
+	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, httpClient)
 	if err != nil {
 		log.Fatalf("initializing handler: %v", err)
 	}

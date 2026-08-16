@@ -59,7 +59,7 @@ func newTestSTSVerifier(t *testing.T, stsURL string) *STSVerifier {
 	t.Helper()
 	v, err := NewSTSVerifier(STSVerifierConfig{
 		STSURL:             stsURL,
-		GetEnv:             audienceGetEnv("fullsend-mint"),
+		Audience:           "fullsend-mint",
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "fullsend-provider",
@@ -154,7 +154,7 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
 	v, err := NewSTSVerifier(STSVerifierConfig{
-		GetEnv:             audienceGetEnv("fullsend-mint"),
+		Audience:           "fullsend-mint",
 		DefaultWIFProvider: "default-provider",
 		PerRepoWIFRepos:    map[string]bool{"myorg/special-repo": true},
 	})
