@@ -1929,7 +1929,7 @@ def build_queue(
 
 
 def maybe_check_merge_queue(items: list[dict[str, Any]], fetcher: MergeQueueChecker) -> None:
-    """Second pass: check merge-queue membership for all open PRs."""
+    """Second pass: hits the merge-queue API for all open PRs."""
     for item in items:
         if item["kind"] == "pull":
             item["in_merge_queue"] = fetcher.is_in_merge_queue(
