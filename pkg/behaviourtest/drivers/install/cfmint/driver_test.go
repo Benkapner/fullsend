@@ -204,7 +204,7 @@ func TestTeardownArgs(t *testing.T) {
 	}
 }
 
-func TestDriver_Implements_Install_Driver(t *testing.T) {
+func TestDriver_Implements_Install_MintDriver(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
 
@@ -217,8 +217,8 @@ func TestDriver_Implements_Install_Driver(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify it implements install.Driver.
-	var _ install.Driver = d
+	// Verify it implements install.MintDriver.
+	var _ install.MintDriver = d
 }
 
 func TestPerRepoState_MintURL(t *testing.T) {
