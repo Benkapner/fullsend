@@ -208,13 +208,16 @@ scenario or when `-v` output from multiple scenarios would interleave.
 
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-### Lazy create+install (`RepoEnsurer`)
+### Repo allocation via unified Driver
 
-The `Given the enrolled test repository` step lazily creates and installs numbered pool repos (`test-repo-NN`) on demand via `RepoEnsurer`. When a scenario leases a repo name from the pool and an ensurer is configured, the step calls `EnsureRepo(ctx, org, repoName)` which:
+The `Given the enrolled test repository` step allocates a repo via `Driver.AllocateRepo(ctx)`. The unified `install.Driver` (constructed by a `Factory` during suite setup) owns pool leasing and lazy create+install internally:
 
-1. Creates the repo if it does not exist (the forge's `auto_init` provides the initial commit).
-2. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
-3. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
+1. Leases a slot from the internal pool (blocks until one is free or ctx is cancelled).
+2. Calls the `RepoEnsurer` to create the repo if it does not exist (the forge's `auto_init` provides the initial commit).
+3. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
+4. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
+
+The After hook calls `Driver.DeallocateRepo` to return the slot. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
 
 Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
 
@@ -395,23 +398,33 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 
 ### API changes
 
-**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, w)` to `InitScenario(sc, template, pool)` starting in the release that includes this change. Instead of passing a single `*world.World`, callers now pass a template `*world.World` (cloned per scenario) and a `*world.RepoPool` (used to lease unique repo names). Update your `suite_test.go` accordingly:
+**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)` starting in the release that includes this change. The `*world.RepoPool` parameter is removed — repo leasing is now handled internally by the unified `install.Driver` on `template.Driver`. Callers construct a `Driver` via a `Factory` and set it on the template World:
 
 ```go
-pool, err := world.NewRepoPool(12)
+factory := cfmint.NewFactory(cfmint.Config{...}, poolSize)
+driver, err := factory(org, client, token, binary, gcpProjectID, t.Logf)
 if err != nil {
-    t.Fatalf("creating repo pool: %v", err)
+    t.Fatalf("creating driver: %v", err)
 }
+t.Cleanup(func() {
+    if err := driver.Finalize(context.Background()); err != nil {
+        t.Logf("driver finalize: %v", err)
+    }
+})
 
-template := &world.World{ /* ... driver fields ... */ }
+template := &world.World{Driver: driver, /* ... other fields ... */}
 
 suiteRunner := godog.TestSuite{
     ScenarioInitializer: func(sc *godog.ScenarioContext) {
-        suite.InitScenario(sc, template, pool)
+        suite.InitScenario(sc, template)
     },
     // ...
 }
 ```
+
+**`install.Driver` renamed to `install.MintDriver`:** The old `install.Driver` interface (with `Install`/`Teardown`) is now `install.MintDriver`. The name `install.Driver` is used for the new unified interface with `AllocateRepo`/`DeallocateRepo`/`Finalize`/`Capacity`. External code that referenced `install.Driver` for the mint lifecycle must update to `install.MintDriver`.
+
+**`world.World.Ensurer` replaced with `world.World.Driver`:** The `Ensurer install.RepoEnsurer` field on `World` is replaced by `Driver install.Driver` (the unified driver). External code that set `w.Ensurer` must set `w.Driver` instead — the driver handles both pool leasing and ensure internally.
 
 **`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
 

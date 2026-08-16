@@ -1,4 +1,4 @@
-// Package cfmint implements an install.Driver that deploys a temporary
+// Package cfmint implements an install.MintDriver that deploys a temporary
 // Cloudflare Worker preview mint for behaviour tests. The preview mint is
 // self-contained: all configuration (PEMs, allowlists, provenance) is
 // passed at deploy time. Teardown abandons the preview alias.
@@ -7,6 +7,9 @@
 // not run github setup, post-install validation, or per-repo teardown on
 // any target repository — that responsibility belongs to the RepoEnsurer
 // which handles leased pool repos on demand.
+//
+// NewFactory returns an install.Factory that constructs a unified
+// install.Driver (composed driver) closing over PEM/pool config.
 package cfmint
 
 import (
@@ -20,6 +23,69 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
+
+// Compile-time check that driver implements install.MintDriver.
+var _ install.MintDriver = (*driver)(nil)
+
+// NewFactory returns an install.Factory that closes over the cfmint
+// Config and poolSize. When the factory is called, it deploys a CF
+// preview mint, creates a RepoEnsurer with the deployed mint URL,
+// and returns a unified install.Driver (composed driver).
+//
+// The caller provides the poolSize (number of test-repo-NN repos in
+// the pool org). The factory handles mint deploy, ensurer creation,
+// and composed driver construction internally — the suite does not
+// need to compose these pieces by hand.
+func NewFactory(cfg Config, poolSize int) install.Factory {
+	return func(
+		org string,
+		client forge.Client,
+		token, binary, gcpProjectID string,
+		logf func(string, ...any),
+	) (install.Driver, error) {
+		mintDriver, err := NewDriver(client, token, binary, gcpProjectID, logf, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
+		}
+
+		return buildFromMint(org, mintDriver, client, token, binary, gcpProjectID, poolSize, logf)
+	}
+}
+
+// buildFromMint deploys the mint and constructs the composed driver.
+// Extracted from NewFactory so the deploy → compose path can be
+// tested with a fake MintDriver (NewFactory hard-codes NewDriver,
+// which requires real PEM files and an external binary).
+func buildFromMint(
+	org string,
+	mintDriver install.MintDriver,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	poolSize int,
+	logf func(string, ...any),
+) (install.Driver, error) {
+	ctx := context.Background()
+	mintState, err := mintDriver.Install(ctx, org)
+	if err != nil {
+		return nil, fmt.Errorf("cfmint factory: deploying mint: %w", err)
+	}
+
+	// Extract the mint URL for the ensurer.
+	var mintURL string
+	if m, ok := mintState.(install.MintURLProvider); ok {
+		mintURL = m.MintURL()
+	}
+
+	// Create the ensurer with the deployed mint URL.
+	e2eCfg := e2etest.EnvConfig{
+		MintURL:      mintURL,
+		GCPProjectID: gcpProjectID,
+	}
+	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, logf)
+
+	// Construct and return the composed driver.
+	return install.NewComposedDriver(org, mintDriver, mintState, ensurer, poolSize, logf)
+}
 
 // Config holds parameters for the CF mint driver. The caller provides
 // these from test-infra data; the driver does not hardcode org/repo/pool
@@ -78,7 +144,7 @@ func NewDriver(
 	token, binary, gcpProjectID string,
 	logf func(string, ...any),
 	cfg Config,
-) (install.Driver, error) {
+) (install.MintDriver, error) {
 	if cfg.PEMDir == "" {
 		return nil, fmt.Errorf("cfmint: PEMDir is required (no PEMs materialized)")
 	}

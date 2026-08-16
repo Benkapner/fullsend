@@ -1,13 +1,65 @@
 package install
 
-import "context"
+import (
+	"context"
 
-// Driver provisions and tears down fullsend in an acquired pool org.
-// Driver is used only during suite setup (single-threaded) and is not
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
+
+// MintDriver provisions and tears down fullsend in an acquired pool org.
+// MintDriver is used only during suite setup (single-threaded) and is not
 // shared across concurrent scenarios.
-type Driver interface {
+//
+// Renamed from Driver to free the Driver name for the unified surface
+// that owns both mint lifecycle and repo allocation (#6169). Transitional
+// until #6170 folds pool/ensurer into concrete driver types.
+type MintDriver interface {
 	Install(ctx context.Context, org string) (State, error)
 	Teardown(ctx context.Context, org string, state State) error
+}
+
+// Factory constructs a unified Driver for a given org. Driver-specific
+// inputs (PEMs, allowlists, pool size) are closed over by the factory
+// function. Factory performs suite setup (e.g. preview mint deploy)
+// before returning so setup failures fail the suite before scenarios run.
+type Factory func(
+	org string,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	logf func(string, ...any),
+) (Driver, error)
+
+// Driver owns mint/environment lifecycle and test-repo allocation for
+// behaviour tests. The suite constructs exactly one Driver via a Factory
+// and threads it through World; scenarios call AllocateRepo to lease a
+// ready repo and DeallocateRepo to return it. Finalize tears down
+// suite-scoped resources and reclaims any outstanding leases.
+//
+// Implementations must be safe for concurrent use by multiple godog
+// scenarios (GODOG_CONCURRENCY > 1).
+type Driver interface {
+	// AllocateRepo leases a slot and makes that repo ready (create if
+	// missing, install if needed). Blocks until a slot is free or ctx
+	// is cancelled. Returns the repo name only (org is fixed for the
+	// driver / World).
+	AllocateRepo(ctx context.Context) (repoName string, err error)
+
+	// DeallocateRepo returns a previously allocated repo. Errors on
+	// unknown name or double-release.
+	DeallocateRepo(ctx context.Context, repoName string) error
+
+	// Finalize always tears down suite-scoped resources (e.g. preview
+	// mint). If leases are still outstanding, it reclaims them (logging
+	// the names), completes teardown, and returns an error so leaked
+	// After-hooks fail CI without stranding resources.
+	Finalize(ctx context.Context) error
+
+	// Capacity is the max concurrent outstanding allocations (the
+	// driver's real parallelism ceiling). Suite may default concurrency
+	// to Capacity() or honor GODOG_CONCURRENCY. If concurrency exceeds
+	// Capacity(), excess workers block in AllocateRepo — the suite
+	// emits an advisory warning but does not fail.
+	Capacity() int
 }
 
 // State describes where behaviour tests find fullsend configuration after install.
