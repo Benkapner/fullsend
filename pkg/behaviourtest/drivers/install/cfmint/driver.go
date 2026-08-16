@@ -43,35 +43,48 @@ func NewFactory(cfg Config, poolSize int) install.Factory {
 		token, binary, gcpProjectID string,
 		logf func(string, ...any),
 	) (install.Driver, error) {
-		// 1. Create the mint driver.
 		mintDriver, err := NewDriver(client, token, binary, gcpProjectID, logf, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
 		}
 
-		// 2. Deploy the mint (suite setup).
-		ctx := context.Background()
-		mintState, err := mintDriver.Install(ctx, org)
-		if err != nil {
-			return nil, fmt.Errorf("cfmint factory: deploying mint: %w", err)
-		}
-
-		// 3. Extract the mint URL for the ensurer.
-		var mintURL string
-		if m, ok := mintState.(install.MintURLProvider); ok {
-			mintURL = m.MintURL()
-		}
-
-		// 4. Create the ensurer with the deployed mint URL.
-		e2eCfg := e2etest.EnvConfig{
-			MintURL:      mintURL,
-			GCPProjectID: gcpProjectID,
-		}
-		ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, logf)
-
-		// 5. Construct and return the composed driver.
-		return install.NewComposedDriver(org, mintDriver, mintState, ensurer, poolSize, logf)
+		return buildFromMint(org, mintDriver, client, token, binary, gcpProjectID, poolSize, logf)
 	}
+}
+
+// buildFromMint deploys the mint and constructs the composed driver.
+// Extracted from NewFactory so the deploy → compose path can be
+// tested with a fake MintDriver (NewFactory hard-codes NewDriver,
+// which requires real PEM files and an external binary).
+func buildFromMint(
+	org string,
+	mintDriver install.MintDriver,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	poolSize int,
+	logf func(string, ...any),
+) (install.Driver, error) {
+	ctx := context.Background()
+	mintState, err := mintDriver.Install(ctx, org)
+	if err != nil {
+		return nil, fmt.Errorf("cfmint factory: deploying mint: %w", err)
+	}
+
+	// Extract the mint URL for the ensurer.
+	var mintURL string
+	if m, ok := mintState.(install.MintURLProvider); ok {
+		mintURL = m.MintURL()
+	}
+
+	// Create the ensurer with the deployed mint URL.
+	e2eCfg := e2etest.EnvConfig{
+		MintURL:      mintURL,
+		GCPProjectID: gcpProjectID,
+	}
+	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, logf)
+
+	// Construct and return the composed driver.
+	return install.NewComposedDriver(org, mintDriver, mintState, ensurer, poolSize, logf)
 }
 
 // Config holds parameters for the CF mint driver. The caller provides
