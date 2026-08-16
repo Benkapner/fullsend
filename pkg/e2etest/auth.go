@@ -39,13 +39,20 @@ func runningInGitHubActions() bool {
 	return os.Getenv("GITHUB_ACTIONS") == "true"
 }
 
-// resolveMintURL returns the mint endpoint from FULLSEND_MINT_URL or the hosted
-// default (same as fullsend admin --mint-url).
+// DefaultE2EMintURL is the per-org enrolled dev mint used by CI pool orgs.
+// Distinct from cli.DefaultMintURL (community mint at mint.fullsend.sh), which
+// does not support per-org installs.
+const DefaultE2EMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
+
+// resolveMintURL returns the mint endpoint from FULLSEND_MINT_URL or the
+// e2e-specific default. The e2e default is the per-org enrolled dev mint
+// (DefaultE2EMintURL), not the community hostname (cli.DefaultMintURL),
+// because CI pool orgs are enrolled on the dev mint.
 func resolveMintURL() string {
 	if u := os.Getenv("FULLSEND_MINT_URL"); u != "" {
 		return u
 	}
-	return cli.DefaultMintURL
+	return DefaultE2EMintURL
 }
 
 // DefaultHostedMintGCPProject is the GCP project hosting the public mint service.
@@ -61,9 +68,9 @@ func MintEnrollProjectID(cfg EnvConfig) string {
 	}
 	mintURL := strings.TrimSpace(cfg.MintURL)
 	if mintURL == "" {
-		mintURL = cli.DefaultMintURL
+		mintURL = DefaultE2EMintURL
 	}
-	if cli.IsHostedMintURL(mintURL) {
+	if mintURL == DefaultE2EMintURL || cli.IsHostedMintURL(mintURL) {
 		return DefaultHostedMintGCPProject
 	}
 	return strings.TrimSpace(cfg.GCPProjectID)
