@@ -99,6 +99,22 @@ type foreignInflight struct {
 // for devmint/standalone/Worker). The handler performs authorization
 // (org-allowed, workflow-ref) after the verifier authenticates the token.
 func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+	if getEnv == nil {
+		return nil, fmt.Errorf("getEnv must not be nil")
+	}
+
+	// Register custom role permissions before processing ALLOWED_ROLES
+	// so that HasRole sees them during validation.
+	if raw := getEnv("CUSTOM_ROLE_PERMISSIONS"); raw != "" {
+		var perms map[string]map[string]string
+		if err := json.Unmarshal([]byte(raw), &perms); err != nil {
+			return nil, fmt.Errorf("failed to parse CUSTOM_ROLE_PERMISSIONS: %w", err)
+		}
+		if err := RegisterCustomRolePermissions(perms); err != nil {
+			return nil, fmt.Errorf("registering custom role permissions: %w", err)
+		}
+	}
+
 	perRepoWIFRepos := make(map[string]bool)
 	for _, entry := range SplitCSV(getEnv("PER_REPO_WIF_REPOS")) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true

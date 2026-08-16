@@ -31,10 +31,6 @@ func buildHandler() (http.Handler, error) {
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	})
 
-	if err := registerCustomPermissions(); err != nil {
-		return nil, err
-	}
-
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
 	if err != nil {
 		return nil, fmt.Errorf("initializing PEM accessor: %w", err)
@@ -138,27 +134,6 @@ func parseLocalRoles(raw string) (map[string]bool, error) {
 		}
 	}
 	return roles, nil
-}
-
-func registerCustomPermissions() error {
-	raw := os.Getenv("CUSTOM_ROLE_PERMISSIONS")
-	if raw == "" {
-		return nil
-	}
-	var perms map[string]map[string]string
-	if err := json.Unmarshal([]byte(raw), &perms); err != nil {
-		return fmt.Errorf("failed to parse CUSTOM_ROLE_PERMISSIONS: %w", err)
-	}
-	if err := mintcore.RegisterCustomRolePermissions(perms); err != nil {
-		return fmt.Errorf("registering custom role permissions: %w", err)
-	}
-	roles := make([]string, 0, len(perms))
-	for r := range perms {
-		roles = append(roles, r)
-	}
-	sort.Strings(roles)
-	log.Printf("custom role permissions registered: %v", roles)
-	return nil
 }
 
 func sortedKeys(m map[string]bool) []string {

@@ -382,6 +382,51 @@ func TestNewHandler_CustomGetEnv_EmptyAllowedOrgs(t *testing.T) {
 	}
 }
 
+func TestNewHandler_CustomGetEnv_NilGetEnv(t *testing.T) {
+	_, err := NewHandler(nil, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	if err == nil {
+		t.Fatal("expected error for nil getEnv")
+	}
+	if !strings.Contains(err.Error(), "getEnv must not be nil") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewHandler_CustomGetEnv_CustomRolePermissions(t *testing.T) {
+	bindings := map[string]string{
+		"ROLE_APP_IDS":            `{"triage":"100","custom-role":"200"}`,
+		"CUSTOM_ROLE_PERMISSIONS": `{"custom-role":{"contents":"read","metadata":"read"}}`,
+		"ALLOWED_WORKFLOW_FILES":  "*",
+	}
+	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	if !h.checkAllowedRole("custom-role") {
+		t.Fatal("custom-role should be allowed")
+	}
+	if !HasRole("custom-role") {
+		t.Fatal("custom-role should be registered")
+	}
+	// Clean up custom roles to avoid polluting other tests.
+	t.Cleanup(func() { RegisterCustomRolePermissions(nil) })
+}
+
+func TestNewHandler_CustomGetEnv_InvalidCustomRolePermissions(t *testing.T) {
+	bindings := map[string]string{
+		"ROLE_APP_IDS":            `{"triage":"100"}`,
+		"CUSTOM_ROLE_PERMISSIONS": "not-json",
+		"ALLOWED_WORKFLOW_FILES":  "*",
+	}
+	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	if err == nil {
+		t.Fatal("expected error for invalid CUSTOM_ROLE_PERMISSIONS JSON")
+	}
+	if !strings.Contains(err.Error(), "CUSTOM_ROLE_PERMISSIONS") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestNewHandler_OsGetEnv(t *testing.T) {
 	// Verify that passing os.Getenv works the same as before.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)

@@ -1,8 +1,10 @@
 // Binary mint-wasm is the Cloudflare Worker WASM host for mintcore.
 // It registers two global JavaScript functions:
 //
-//   - mintcoreInitMint(configJSON, fetchCallback, pemCallback) — initializes
-//     the mint handler from explicit Worker binding config (not os.Getenv).
+//   - mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback) — initializes
+//     the mint handler using a JS callback for environment lookups (same
+//     pattern as PEM/fetch callbacks). Native entrypoints pass os.Getenv;
+//     the Worker passes a callback that reads CF Worker bindings by name.
 //
 //   - mintcoreHandleFetch(method, url, headersJSON, body) — maps a Fetch API
 //     request into an http.Request, calls Handler.ServeHTTP with a buffered
@@ -37,56 +39,30 @@ func main() {
 }
 
 // initMint initializes the mint handler from Worker bindings.
-// JS signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback) => string
+// JS signature: mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback) => string
 // Returns "" on success or an error message string on failure.
+//
+// getEnvCallback is a synchronous JS function: (key: string) => string.
+// The Worker passes a callback that looks up CF Worker bindings by name,
+// matching the os.Getenv contract used by native entrypoints. Mintcore
+// decides which keys to read — the JS side does not serialize a config map.
 func initMint(_ js.Value, args []js.Value) interface{} {
 	if len(args) < 3 {
-		return "mintcoreInitMint requires 3 arguments: configJSON, fetchCallback, pemCallback"
+		return "mintcoreInitMint requires 3 arguments: getEnvCallback, fetchCallback, pemCallback"
 	}
 
-	configJSON := args[0].String()
+	getEnvFn := args[0]
 	fetchFn := args[1]
 	pemFn := args[2]
 
-	var bindings map[string]string
-	if err := json.Unmarshal([]byte(configJSON), &bindings); err != nil {
-		return fmt.Sprintf("failed to parse config: %v", err)
-	}
-
-	// Validate required bindings before proceeding.
-	if bindings["ROLE_APP_IDS"] == "" {
-		return "ROLE_APP_IDS is required"
-	}
-	oidcAudience := bindings["OIDC_AUDIENCE"]
-	if oidcAudience == "" {
-		return "OIDC_AUDIENCE is required"
-	}
-
-	// Stamp version metadata from bindings so that /health and /status
-	// report the deployed version. For GCF deploys this is compiled into
-	// the source (version.go); for WASM deploys it arrives at runtime via
-	// the config JSON because the binary is precompiled.
-	if v := bindings["VERSION"]; v != "" {
-		mintcore.Version = v
-	}
-	if c := bindings["COMMIT"]; c != "" {
-		mintcore.Commit = c
-	}
-
-	// Register custom role permissions before constructing the handler,
-	// so HasRole sees them during ALLOWED_ROLES validation.
-	if raw := bindings["CUSTOM_ROLE_PERMISSIONS"]; raw != "" {
-		var perms map[string]map[string]string
-		if err := json.Unmarshal([]byte(raw), &perms); err != nil {
-			return fmt.Sprintf("failed to parse CUSTOM_ROLE_PERMISSIONS: %v", err)
+	// Build a Go getEnv func backed by the JS callback.
+	getEnv := func(key string) string {
+		result := getEnvFn.Invoke(key)
+		if result.Type() == js.TypeString {
+			return result.String()
 		}
-		if err := mintcore.RegisterCustomRolePermissions(perms); err != nil {
-			return fmt.Sprintf("registering custom role permissions: %v", err)
-		}
+		return ""
 	}
-
-	// Build a getEnv callback that looks up Worker bindings by name.
-	getEnv := func(key string) string { return bindings[key] }
 
 	fetchDoer, err := mintcore.NewHostFetchDoer(fetchFn)
 	if err != nil {
@@ -98,6 +74,7 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
+	oidcAudience := getEnv("OIDC_AUDIENCE")
 	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
 		IssuerURL:  "https://token.actions.githubusercontent.com",
 		Audience:   oidcAudience,

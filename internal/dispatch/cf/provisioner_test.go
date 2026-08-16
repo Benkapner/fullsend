@@ -217,9 +217,7 @@ func TestProvisioner_Provision_EnvVars(t *testing.T) {
 func TestProvisioner_Provision_StampsVersion(t *testing.T) {
 	stubWASMBuild(t)
 	sourceDir := createFakeWorkerSourceDir(t)
-	fake := &fakeWranglerRunner{
-		captureFiles: []string{"src/version.ts"},
-	}
+	fake := &fakeWranglerRunner{}
 
 	p := NewProvisioner(Config{
 		AccountID:  "abc123",
@@ -233,12 +231,7 @@ func TestProvisioner_Provision_StampsVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 1)
 
-	// Version is stamped into src/version.ts (captured during Deploy
-	// before the temp copy is cleaned up).
-	versionTS := fake.deployCalls[0].fileContents["src/version.ts"]
-	assert.Contains(t, versionTS, `"1.2.3"`)
-	assert.Contains(t, versionTS, `"deadbeef"`)
-
+	// Version is now stamped via -ldflags in BuildWASMFn.
 	// Env vars should NOT contain version fields.
 	_, hasVersion := fake.deployCalls[0].envVars["FULLSEND_VERSION"]
 	_, hasCommit := fake.deployCalls[0].envVars["FULLSEND_COMMIT"]
@@ -249,9 +242,7 @@ func TestProvisioner_Provision_StampsVersion(t *testing.T) {
 func TestProvisioner_Provision_OmitsEmptyVersion(t *testing.T) {
 	stubWASMBuild(t)
 	sourceDir := createFakeWorkerSourceDir(t)
-	fake := &fakeWranglerRunner{
-		captureFiles: []string{"src/version.ts"},
-	}
+	fake := &fakeWranglerRunner{}
 
 	p := NewProvisioner(Config{
 		AccountID:  "abc123",
@@ -263,10 +254,6 @@ func TestProvisioner_Provision_OmitsEmptyVersion(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 1)
-
-	// version.ts should still be written (with empty values).
-	versionTS := fake.deployCalls[0].fileContents["src/version.ts"]
-	assert.Contains(t, versionTS, `""`)
 
 	// Env vars should NOT contain version fields.
 	_, hasVersion := fake.deployCalls[0].envVars["FULLSEND_VERSION"]
@@ -525,13 +512,13 @@ func TestEnsureWASMArtifacts_AlreadyPresent(t *testing.T) {
 	// Should be a no-op — no build functions called.
 	buildCalled := false
 	origBuild := BuildWASMFn
-	BuildWASMFn = func(outPath string) error {
+	BuildWASMFn = func(outPath, _, _ string) error {
 		buildCalled = true
 		return nil
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir)
+	err := ensureWASMArtifacts(dir, "", "")
 	require.NoError(t, err)
 	assert.False(t, buildCalled, "should not build when WASM is already present")
 }
@@ -540,7 +527,7 @@ func TestEnsureWASMArtifacts_MissingBoth(t *testing.T) {
 	stubWASMBuild(t)
 	dir := t.TempDir()
 
-	err := ensureWASMArtifacts(dir)
+	err := ensureWASMArtifacts(dir, "", "")
 	require.NoError(t, err)
 
 	// Both files should now exist.
@@ -556,7 +543,7 @@ func TestEnsureWASMArtifacts_MissingWASMOnly(t *testing.T) {
 	// Pre-stage wasm_exec.js but not mintcore.wasm.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "wasm_exec.js"), []byte("exec"), 0o644))
 
-	err := ensureWASMArtifacts(dir)
+	err := ensureWASMArtifacts(dir, "", "")
 	require.NoError(t, err)
 	assert.True(t, fileExistsAndNonEmpty(filepath.Join(dir, "mintcore.wasm")))
 }
@@ -564,7 +551,7 @@ func TestEnsureWASMArtifacts_MissingWASMOnly(t *testing.T) {
 func TestEnsureWASMArtifacts_BuildError(t *testing.T) {
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath string) error {
+	BuildWASMFn = func(outPath, _, _ string) error {
 		return fmt.Errorf("go build failed")
 	}
 	CopyWASMExecFn = func(destPath string) error {
@@ -576,7 +563,7 @@ func TestEnsureWASMArtifacts_BuildError(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	err := ensureWASMArtifacts(dir)
+	err := ensureWASMArtifacts(dir, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auto-building mintcore.wasm")
 }
@@ -602,8 +589,7 @@ func TestProvisioner_Provision_SourceDirNotModified(t *testing.T) {
 	// generated files — deploy operates on a temp copy.
 	_, err = os.Stat(filepath.Join(sourceDir, "mintcore.wasm"))
 	assert.True(t, os.IsNotExist(err), "original source dir should not have mintcore.wasm")
-	_, err = os.Stat(filepath.Join(sourceDir, "src", "version.ts"))
-	assert.True(t, os.IsNotExist(err), "original source dir should not have generated version.ts")
+	// Version is now stamped via -ldflags, no generated files needed.
 
 	// But the temp copy (deploy dir) should have WASM artifacts.
 	require.Len(t, fake.deployCalls, 1)
@@ -1104,45 +1090,9 @@ func TestResolveWorkersSubdomain_UsesOverride(t *testing.T) {
 	assert.Equal(t, "test-sub", sub)
 }
 
-// --- writeVersionTS tests ---
-
-func TestWriteVersionTS(t *testing.T) {
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
-
-	err := writeVersionTS(dir, "2.0.0", "abc123")
-	require.NoError(t, err)
-
-	data, err := os.ReadFile(filepath.Join(dir, "src", "version.ts"))
-	require.NoError(t, err)
-	assert.Contains(t, string(data), `export const FULLSEND_VERSION = "2.0.0"`)
-	assert.Contains(t, string(data), `export const FULLSEND_COMMIT = "abc123"`)
-	assert.Contains(t, string(data), "Generated at deploy time")
-}
-
-func TestWriteVersionTS_EmptyValues(t *testing.T) {
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
-
-	err := writeVersionTS(dir, "", "")
-	require.NoError(t, err)
-
-	data, err := os.ReadFile(filepath.Join(dir, "src", "version.ts"))
-	require.NoError(t, err)
-	assert.Contains(t, string(data), `export const FULLSEND_VERSION = ""`)
-	assert.Contains(t, string(data), `export const FULLSEND_COMMIT = ""`)
-}
-
-func TestWriteVersionTS_CreatesSrcDir(t *testing.T) {
-	dir := t.TempDir()
-	// Don't create src/ — writeVersionTS should create it.
-
-	err := writeVersionTS(dir, "1.0.0", "fff")
-	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(dir, "src", "version.ts"))
-	require.NoError(t, err)
-}
+// writeVersionTS tests removed — version is now stamped via -ldflags
+// in BuildWASMFn, matching the GCF approach of compiling version data
+// into the source.
 
 // --- DefaultWorkerSourceDir tests ---
 
@@ -1580,7 +1530,7 @@ func TestWriteSecretsFile_NilSecrets(t *testing.T) {
 func TestEnsureWASMArtifacts_CopyExecError(t *testing.T) {
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath string) error {
+	BuildWASMFn = func(outPath, _, _ string) error {
 		return os.WriteFile(outPath, []byte("wasm"), 0o644)
 	}
 	CopyWASMExecFn = func(destPath string) error {
@@ -1592,7 +1542,7 @@ func TestEnsureWASMArtifacts_CopyExecError(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	err := ensureWASMArtifacts(dir)
+	err := ensureWASMArtifacts(dir, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying wasm_exec.js")
 }
@@ -2143,7 +2093,7 @@ func stubWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath string) error {
+	BuildWASMFn = func(outPath, _, _ string) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	CopyWASMExecFn = func(destPath string) error {

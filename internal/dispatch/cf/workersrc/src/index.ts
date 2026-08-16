@@ -4,16 +4,17 @@
 // token minting, path routing) stays in Go via the mintcore WASM module.
 // This adapter handles I/O only:
 //   - Worker secrets -> PEM key access (via pemCallback)
-//   - Worker env vars -> mint configuration (via configJSON)
+//   - Worker env vars -> config lookup (via getEnvCallback)
 //   - Host fetch -> outbound HTTP (via fetchCallback)
 //   - Fetch Request/Response mapping for mintcoreHandleFetch
 //
 // The WASM module is compiled from cmd/mint-wasm with
 // GOOS=js GOARCH=wasm and registers two global functions via syscall/js:
 //
-//   - mintcoreInitMint(configJSON, fetchCallback, pemCallback): string
-//     Initializes the mint handler with explicit config and host callbacks.
-//     Returns "" on success or an error message on failure.
+//   - mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback): string
+//     Initializes the mint handler using a sync getEnv callback for config
+//     lookups (same pattern as PEM/fetch). Returns "" on success or an
+//     error message on failure.
 //
 //   - mintcoreHandleFetch(method, url, headersJSON, body): Promise<{status, headers, body}>
 //     Routes a Fetch request through Go's http.Handler (ServeHTTP).
@@ -29,12 +30,6 @@
 // copied into this directory at build time. The Go class it exports
 // bootstraps the Go runtime and provides the import object required
 // by the WASM binary.
-// Deploy-time version constants. The CF provisioner generates this file
-// (writeVersionTS) with the version/commit stamped at deploy time —
-// mirroring how the GCF provisioner writes version.go into the zip.
-// The values are compiled into the Worker bundle so they cannot diverge
-// from the deployed code via admin changes to environment variables.
-import { FULLSEND_VERSION, FULLSEND_COMMIT } from "./version";
 import "../wasm_exec.js";
 
 // ES module import of the compiled WASM binary. Wrangler handles this
@@ -98,28 +93,23 @@ class ConfigError extends Error {
 }
 
 /**
- * Validate that all required Worker environment bindings are present
- * and non-empty. Call this before any WASM work so that persistent
- * misconfig fails fast with a clear message instead of burning
- * cycles on WebAssembly.instantiate + go.run.
+ * Create a synchronous getEnv callback for the WASM module.
  *
- * Throws ConfigError listing every missing field (not just the first).
+ * The Go side wraps this into a `func(string) string` and passes it to
+ * NewHandler. Mintcore decides which keys to read (ROLE_APP_IDS,
+ * OIDC_AUDIENCE, ALLOWED_ROLES, etc.) — the JS side simply looks up
+ * the key in the Worker env bindings.
+ *
+ * Returns "" for missing or non-string bindings, matching os.Getenv
+ * behavior for unset variables.
  */
-function validateEnv(env: Env): void {
-  const required: Array<{ key: keyof Env; label: string }> = [
-    { key: "ROLE_APP_IDS", label: "ROLE_APP_IDS" },
-    { key: "OIDC_AUDIENCE", label: "OIDC_AUDIENCE" },
-  ];
-  const missing = required.filter((f) => {
-    const v = env[f.key];
-    return typeof v !== "string" || v === "";
-  });
-  if (missing.length > 0) {
-    const names = missing.map((f) => f.label).join(", ");
-    throw new ConfigError(
-      `missing required Worker env: ${names}`,
-    );
-  }
+function createGetEnvCallback(
+  env: Env,
+): (key: string) => string {
+  return (key: string): string => {
+    const v = env[key];
+    return typeof v === "string" ? v : "";
+  };
 }
 
 /**
@@ -152,36 +142,6 @@ function detectRoleSecretCollisions(roleAppIDs: Record<string, string>): void {
       `role name secret collision after hyphen→underscore normalization: ${collisions.join("; ")}`,
     );
   }
-}
-
-/**
- * Build the WASM configuration from Worker environment bindings.
- * Returns a JSON string keyed by environment variable names.
- * The Go side unmarshals this into a map[string]string and passes
- * a lookup function to NewHandler, eliminating the need for a
- * separate WorkerConfig struct.
- *
- * ALLOWED_WORKFLOW_FILES defaults to "" (empty) when the env var is
- * absent or blank.  Go's SplitCSV("") produces an empty allowlist,
- * which is fail-closed — matching the standalone mint (cmd/mint).
- * Operators must set the env var explicitly to allow workflow files.
- */
-function buildWasmConfig(env: Env): string {
-  return JSON.stringify({
-    ROLE_APP_IDS: env.ROLE_APP_IDS,
-    ALLOWED_ORGS: env.ALLOWED_ORGS ?? "",
-    OIDC_AUDIENCE: env.OIDC_AUDIENCE,
-    ALLOWED_ROLES: env.ALLOWED_ROLES ?? "",
-    ALLOWED_WORKFLOW_FILES: env.ALLOWED_WORKFLOW_FILES ?? "",
-    PER_REPO_WIF_REPOS: env.PER_REPO_WIF_REPOS ?? "",
-    WORKFLOW_HOST_REPOS: env.WORKFLOW_HOST_REPOS ?? "",
-    CUSTOM_ROLE_PERMISSIONS: env.CUSTOM_ROLE_PERMISSIONS ?? "",
-    // Version constants are imported from the generated version.ts file
-    // (written by writeVersionTS at deploy time) rather than read from
-    // env vars, so they cannot diverge from the deployed code.
-    VERSION: FULLSEND_VERSION,
-    COMMIT: FULLSEND_COMMIT,
-  });
 }
 
 /**
@@ -330,7 +290,7 @@ const HANDLE_FETCH_TIMEOUT_MS = 25_000;
  *
  * The WASM bridge (cmd/mint-wasm) registers two functions on globalThis:
  *
- *   - mintcoreInitMint(configJSON, fetchCallback, pemCallback): string
+ *   - mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback): string
  *   - mintcoreHandleFetch(method, url, headersJSON, body): Promise<{status, headers, body}>
  */
 class GoWasm {
@@ -396,10 +356,14 @@ class GoWasm {
     wasmModule: WebAssembly.Module,
     env: Env,
   ): Promise<void> {
-    // Validate required env fields before any WASM work. Missing
-    // required config is deterministic — fail fast with a clear
-    // message instead of burning cycles on instantiate + go.run.
-    validateEnv(env);
+    // Quick-check: ROLE_APP_IDS must be present before WASM init.
+    // This is an early-exit optimization — mintcore validates all
+    // required fields itself, but catching a missing ROLE_APP_IDS
+    // here avoids wasting cycles on WebAssembly.instantiate + go.run
+    // for the most common misconfiguration.
+    if (typeof env.ROLE_APP_IDS !== "string" || env.ROLE_APP_IDS === "") {
+      throw new ConfigError("missing required Worker env: ROLE_APP_IDS");
+    }
 
     // Validate ROLE_APP_IDS is a non-null JSON object before passing
     // to Go. Detect role names that would collide after
@@ -449,9 +413,9 @@ class GoWasm {
       console.error("Go WASM runtime error:", msg);
     });
 
-    // Initialize the mint handler with config and I/O callbacks.
-    // Signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback)
-    const configJSON = buildWasmConfig(env);
+    // Initialize the mint handler with getEnv and I/O callbacks.
+    // Signature: mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback)
+    const getEnvCallback = createGetEnvCallback(env);
     const fetchCallback = createFetchCallback();
     const pemCallback = createPemCallback(env);
 
@@ -459,7 +423,7 @@ class GoWasm {
       "mintcoreInitMint"
     ] as
       | ((
-          config: string,
+          getEnv: (key: string) => string,
           fetch: unknown,
           pem: unknown,
         ) => string)
@@ -471,7 +435,7 @@ class GoWasm {
       );
     }
 
-    const initErr = mintcoreInitMint(configJSON, fetchCallback, pemCallback);
+    const initErr = mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback);
     if (initErr) {
       // Go-returned init errors are deterministic for the same env
       // (bad config, invalid role-app-ID JSON, etc.). Classify as
