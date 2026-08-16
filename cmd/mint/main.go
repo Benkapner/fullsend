@@ -40,7 +40,7 @@ func buildHandler() (http.Handler, error) {
 		return nil, fmt.Errorf("initializing PEM accessor: %w", err)
 	}
 
-	handler, err := mintcore.NewHandler(pemAccessor, verifier)
+	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifier, &http.Client{Timeout: 30 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("initializing handler: %w", err)
 	}

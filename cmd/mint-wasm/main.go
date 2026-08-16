@@ -48,10 +48,45 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	fetchFn := args[1]
 	pemFn := args[2]
 
-	var cfg mintcore.WorkerConfig
-	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+	var bindings map[string]string
+	if err := json.Unmarshal([]byte(configJSON), &bindings); err != nil {
 		return fmt.Sprintf("failed to parse config: %v", err)
 	}
+
+	// Validate required bindings before proceeding.
+	if bindings["ROLE_APP_IDS"] == "" {
+		return "ROLE_APP_IDS is required"
+	}
+	oidcAudience := bindings["OIDC_AUDIENCE"]
+	if oidcAudience == "" {
+		return "OIDC_AUDIENCE is required"
+	}
+
+	// Stamp version metadata from bindings so that /health and /status
+	// report the deployed version. For GCF deploys this is compiled into
+	// the source (version.go); for WASM deploys it arrives at runtime via
+	// the config JSON because the binary is precompiled.
+	if v := bindings["VERSION"]; v != "" {
+		mintcore.Version = v
+	}
+	if c := bindings["COMMIT"]; c != "" {
+		mintcore.Commit = c
+	}
+
+	// Register custom role permissions before constructing the handler,
+	// so HasRole sees them during ALLOWED_ROLES validation.
+	if raw := bindings["CUSTOM_ROLE_PERMISSIONS"]; raw != "" {
+		var perms map[string]map[string]string
+		if err := json.Unmarshal([]byte(raw), &perms); err != nil {
+			return fmt.Sprintf("failed to parse CUSTOM_ROLE_PERMISSIONS: %v", err)
+		}
+		if err := mintcore.RegisterCustomRolePermissions(perms); err != nil {
+			return fmt.Sprintf("registering custom role permissions: %v", err)
+		}
+	}
+
+	// Build a getEnv callback that looks up Worker bindings by name.
+	getEnv := func(key string) string { return bindings[key] }
 
 	fetchDoer, err := mintcore.NewHostFetchDoer(fetchFn)
 	if err != nil {
@@ -65,11 +100,11 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 
 	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
 		IssuerURL:  "https://token.actions.githubusercontent.com",
-		Audience:   cfg.OIDCAudience,
+		Audience:   oidcAudience,
 		HTTPClient: fetchDoer,
 	})
 
-	h, err := mintcore.ParseWorkerConfig(cfg, pemAccessor, verifier, fetchDoer)
+	h, err := mintcore.NewHandler(getEnv, pemAccessor, verifier, fetchDoer)
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}

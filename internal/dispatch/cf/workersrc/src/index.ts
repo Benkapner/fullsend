@@ -156,30 +156,31 @@ function detectRoleSecretCollisions(roleAppIDs: Record<string, string>): void {
 
 /**
  * Build the WASM configuration from Worker environment bindings.
- * Returns a JSON string matching the mintcore.WorkerConfig struct.
- * Field names use PascalCase to match Go's default JSON encoding
- * (the struct has no json tags).
+ * Returns a JSON string keyed by environment variable names.
+ * The Go side unmarshals this into a map[string]string and passes
+ * a lookup function to NewHandler, eliminating the need for a
+ * separate WorkerConfig struct.
  *
- * AllowedWorkflowFiles defaults to "" (empty) when the env var is
+ * ALLOWED_WORKFLOW_FILES defaults to "" (empty) when the env var is
  * absent or blank.  Go's SplitCSV("") produces an empty allowlist,
  * which is fail-closed — matching the standalone mint (cmd/mint).
  * Operators must set the env var explicitly to allow workflow files.
  */
 function buildWasmConfig(env: Env): string {
   return JSON.stringify({
-    RoleAppIDs: env.ROLE_APP_IDS,
-    AllowedOrgs: env.ALLOWED_ORGS ?? "",
-    OIDCAudience: env.OIDC_AUDIENCE,
-    AllowedRoles: env.ALLOWED_ROLES ?? "",
-    AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "",
-    PerRepoWIFRepos: env.PER_REPO_WIF_REPOS ?? "",
-    WorkflowHostRepos: env.WORKFLOW_HOST_REPOS ?? "",
-    CustomRolePermissions: env.CUSTOM_ROLE_PERMISSIONS ?? "",
+    ROLE_APP_IDS: env.ROLE_APP_IDS,
+    ALLOWED_ORGS: env.ALLOWED_ORGS ?? "",
+    OIDC_AUDIENCE: env.OIDC_AUDIENCE,
+    ALLOWED_ROLES: env.ALLOWED_ROLES ?? "",
+    ALLOWED_WORKFLOW_FILES: env.ALLOWED_WORKFLOW_FILES ?? "",
+    PER_REPO_WIF_REPOS: env.PER_REPO_WIF_REPOS ?? "",
+    WORKFLOW_HOST_REPOS: env.WORKFLOW_HOST_REPOS ?? "",
+    CUSTOM_ROLE_PERMISSIONS: env.CUSTOM_ROLE_PERMISSIONS ?? "",
     // Version constants are imported from the generated version.ts file
     // (written by writeVersionTS at deploy time) rather than read from
     // env vars, so they cannot diverge from the deployed code.
-    Version: FULLSEND_VERSION,
-    Commit: FULLSEND_COMMIT,
+    VERSION: FULLSEND_VERSION,
+    COMMIT: FULLSEND_COMMIT,
   });
 }
 

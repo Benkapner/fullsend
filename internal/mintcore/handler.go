@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -89,22 +88,24 @@ type foreignInflight struct {
 }
 
 // NewHandler creates a Handler with the given dependencies.
-// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES,
-// ALLOWED_ORGS, ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS) are read once at
-// construction time. The OIDCVerifier is injected by the caller so different
-// verification strategies can be used (STSVerifier for the Cloud Function,
-// JWKSVerifier for devmint). The handler performs authorization (org-allowed,
-// workflow-ref) after the verifier authenticates the token.
-func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-
+// Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES, ALLOWED_ORGS,
+// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS) are
+// read once at construction time via the injected getEnv function.
+// Native entrypoints (GCF, standalone) pass os.Getenv; the CF Worker
+// WASM host passes a callback that looks up Worker bindings by name.
+//
+// The OIDCVerifier is injected by the caller so different verification
+// strategies can be used (STSVerifier for the Cloud Function, JWKSVerifier
+// for devmint/standalone/Worker). The handler performs authorization
+// (org-allowed, workflow-ref) after the verifier authenticates the token.
+func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
 	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
+	for _, entry := range SplitCSV(getEnv("PER_REPO_WIF_REPOS")) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
 	workflowHostRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(os.Getenv("WORKFLOW_HOST_REPOS")) {
+	for _, entry := range SplitCSV(getEnv("WORKFLOW_HOST_REPOS")) {
 		workflowHostRepos[strings.ToLower(entry)] = true
 	}
 	if len(workflowHostRepos) == 0 {
@@ -120,12 +121,12 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
 		perRepoWIFRepos:      perRepoWIFRepos,
-		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
-		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
+		allowedOrgs:          ParseAllowedOrgs(getEnv("ALLOWED_ORGS")),
+		allowedWorkflowFiles: SplitCSV(getEnv("ALLOWED_WORKFLOW_FILES")),
 		workflowHostRepos:    workflowHostRepos,
 	}
 
-	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
+	if raw := getEnv("ROLE_APP_IDS"); raw != "" {
 		var ids map[string]string
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
 			return nil, fmt.Errorf("failed to parse ROLE_APP_IDS: %w", err)
@@ -139,7 +140,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		roleSet[role] = true
 	}
 
-	if raw := os.Getenv("ALLOWED_ROLES"); raw != "" {
+	if raw := getEnv("ALLOWED_ROLES"); raw != "" {
 		for _, entry := range strings.Split(raw, ",") {
 			if trimmed := strings.TrimSpace(entry); trimmed != "" {
 				if !RolePattern.MatchString(trimmed) {
