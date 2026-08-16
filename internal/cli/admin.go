@@ -38,7 +38,7 @@ import (
 // DefaultMintURL is the hosted public mint URL used when --mint-url is not
 // explicitly provided. Users who self-host a mint can override this via
 // the --mint-url flag.
-const DefaultMintURL = "https://mint.fullsend.sh"
+const DefaultMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
 
 // adminMintDiscovery holds the results of a mint infrastructure discovery call.
 type adminMintDiscovery struct {
@@ -197,17 +197,6 @@ func validateWIFProvider(raw string) error {
 	return nil
 }
 
-// IsHostedMintURL reports whether raw is the hosted community mint URL
-// (mint.fullsend.sh). This check is also used by pkg/e2etest to resolve
-// the GCP project for hosted-mint enrollment.
-func IsHostedMintURL(raw string) bool {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(parsed.Hostname(), "mint.fullsend.sh")
-}
-
 func validateMintURL(raw string) error {
 	if err := validateMintURLHTTPS(raw); err != nil {
 		return err
@@ -217,12 +206,11 @@ func validateMintURL(raw string) error {
 		return err
 	}
 	host := parsed.Hostname()
-	if strings.EqualFold(host, "mint.fullsend.sh") ||
-		strings.HasSuffix(host, ".run.app") ||
-		strings.HasSuffix(host, ".cloudfunctions.net") {
-		return nil
+	if !strings.HasSuffix(host, ".run.app") &&
+		!strings.HasSuffix(host, ".cloudfunctions.net") {
+		return fmt.Errorf("--mint-url must be a Cloud Run URL (.run.app or .cloudfunctions.net), got host %q", host)
 	}
-	return fmt.Errorf("--mint-url must be a hosted mint or Cloud Run URL (.fullsend.sh, .run.app, or .cloudfunctions.net), got host %q", host)
+	return nil
 }
 
 func validateSkipMintCheck(mintURL string) error {

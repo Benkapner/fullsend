@@ -12,24 +12,15 @@ import (
 
 func TestMintEnrollProjectID(t *testing.T) {
 	t.Setenv("E2E_GCP_MINT_PROJECT_ID", "")
-
-	// Pool-org install mint (DefaultPoolOrgInstallMintURL) → hosted project.
 	cfg := EnvConfig{
-		MintURL:      DefaultPoolOrgInstallMintURL,
+		MintURL:      cli.DefaultMintURL,
 		GCPProjectID: "inference-only-project",
 	}
 	assert.Equal(t, DefaultHostedMintGCPProject, MintEnrollProjectID(cfg))
 
-	// Community mint (cli.DefaultMintURL / mint.fullsend.sh) → hosted project
-	// via IsHostedMintURL.
-	cfg.MintURL = cli.DefaultMintURL
-	assert.Equal(t, DefaultHostedMintGCPProject, MintEnrollProjectID(cfg))
-
-	// Env override takes precedence.
 	t.Setenv("E2E_GCP_MINT_PROJECT_ID", "override-mint-project")
 	assert.Equal(t, "override-mint-project", MintEnrollProjectID(cfg))
 
-	// Custom (non-hosted) mint → inference project.
 	t.Setenv("E2E_GCP_MINT_PROJECT_ID", "")
 	cfg.MintURL = "https://mint.example.com"
 	assert.Equal(t, "inference-only-project", MintEnrollProjectID(cfg))
@@ -46,7 +37,7 @@ func TestMintEnrollProjectID_EmptyWithoutHostedMint(t *testing.T) {
 
 func TestMintEnrollProjectID_RespectsEnvOverride(t *testing.T) {
 	t.Setenv("E2E_GCP_MINT_PROJECT_ID", "from-env")
-	cfg := EnvConfig{MintURL: DefaultPoolOrgInstallMintURL}
+	cfg := EnvConfig{MintURL: cli.DefaultMintURL}
 	assert.Equal(t, "from-env", MintEnrollProjectID(cfg))
 	_ = os.Unsetenv("E2E_GCP_MINT_PROJECT_ID")
 }
