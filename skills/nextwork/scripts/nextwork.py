@@ -920,6 +920,14 @@ def classify_pr(
             eliminated=True,
         )
 
+    # Merge-queue membership is authoritative regardless of labels.
+    if item.get("in_merge_queue"):
+        return Classification(
+            status="waiting_merge_queue",
+            reason="Already enqueued in the merge queue",
+            eliminated=True,
+        )
+
     inflight = classify_inflight_agent(comments, stale_hours, now)
     if inflight:
         return inflight
@@ -980,12 +988,6 @@ def classify_pr(
         )
 
     if "ready-for-merge" in labels:
-        if item.get("in_merge_queue"):
-            return Classification(
-                status="waiting_merge_queue",
-                reason="Already enqueued in the merge queue",
-                eliminated=True,
-            )
         if checks_pending:
             return Classification(
                 status="waiting_ci",
@@ -1927,9 +1929,9 @@ def build_queue(
 
 
 def maybe_check_merge_queue(items: list[dict[str, Any]], fetcher: MergeQueueChecker) -> None:
-    """Second pass: only hits the merge-queue API for PRs labeled ready-for-merge."""
+    """Second pass: hits the merge-queue API for all open PRs."""
     for item in items:
-        if item["kind"] == "pull" and "ready-for-merge" in item.get("labels", []):
+        if item["kind"] == "pull":
             item["in_merge_queue"] = fetcher.is_in_merge_queue(
                 item["repo"],
                 item["number"],
@@ -2552,9 +2554,9 @@ def main(argv: list[str] | None = None) -> None:
         quiet=args.quiet,
     )
     maybe_check_merge_queue(items, fetcher)
-    # Merge-queue membership can change ready_to_merge -> waiting_merge_queue; reclassify.
+    # Merge-queue membership can change any status -> waiting_merge_queue; reclassify.
     for item in items:
-        if item["kind"] == "pull" and "ready-for-merge" in item.get("labels", []):
+        if item["kind"] == "pull" and item.get("in_merge_queue"):
             classification = classify_item(
                 item,
                 user,

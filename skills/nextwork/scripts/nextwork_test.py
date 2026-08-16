@@ -1174,6 +1174,20 @@ class TestClassifyPr(unittest.TestCase):
         self.assertEqual(result.status, "waiting_merge_queue")
         self.assertTrue(result.eliminated)
 
+    def test_waiting_merge_queue_without_ready_for_merge_label(self):
+        """Merge-queue detection works regardless of which labels are present."""
+        item = make_pr(labels=["requires-manual-review"], in_merge_queue=True)
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_merge_queue")
+        self.assertTrue(result.eliminated)
+
+    def test_waiting_merge_queue_no_labels(self):
+        """Merge-queue detection works even with no control labels at all."""
+        item = make_pr(labels=[], in_merge_queue=True)
+        result = classify_pr(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "waiting_merge_queue")
+        self.assertTrue(result.eliminated)
+
     def test_waiting_fix_bot_author(self):
         item = make_pr(
             author="fullsend-ai-coder[bot]",
@@ -2212,15 +2226,18 @@ class TestParseArgs(unittest.TestCase):
 
 
 class TestMaybeCheckMergeQueue(unittest.TestCase):
-    def test_sets_flag_only_for_ready_for_merge_prs(self):
+    def test_checks_all_prs_regardless_of_labels(self):
         class StubFetcher:
+            def __init__(self):
+                self.calls = []
+
             def is_in_merge_queue(self, repo, number, *, base_branch=None):
-                self.seen = (repo, number, base_branch)
-                return number == 2
+                self.calls.append((repo, number, base_branch))
+                return number == 1
 
         stub = StubFetcher()
         items = [
-            {"kind": "pull", "repo": "a/b", "number": 1, "labels": ["ready-for-review"]},
+            {"kind": "pull", "repo": "a/b", "number": 1, "labels": ["requires-manual-review"]},
             {
                 "kind": "pull",
                 "repo": "a/b",
@@ -2231,10 +2248,14 @@ class TestMaybeCheckMergeQueue(unittest.TestCase):
             {"kind": "issue", "repo": "a/b", "number": 3, "labels": ["ready-for-merge"]},
         ]
         maybe_check_merge_queue(items, stub)
-        self.assertNotIn("in_merge_queue", items[0])
-        self.assertTrue(items[1]["in_merge_queue"])
-        self.assertEqual(stub.seen, ("a/b", 2, "release"))
+        self.assertTrue(items[0]["in_merge_queue"])
+        self.assertFalse(items[1]["in_merge_queue"])
+        # Issues are skipped.
         self.assertNotIn("in_merge_queue", items[2])
+        # Both PRs checked (regardless of labels), issue skipped.
+        self.assertEqual(len(stub.calls), 2)
+        self.assertIn(("a/b", 1, None), stub.calls)
+        self.assertIn(("a/b", 2, "release"), stub.calls)
 
 
 class TestFetchErrors(unittest.TestCase):
