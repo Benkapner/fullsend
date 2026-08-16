@@ -13,9 +13,9 @@ import (
 func TestMintEnrollProjectID(t *testing.T) {
 	t.Setenv("E2E_GCP_MINT_PROJECT_ID", "")
 
-	// E2E dev mint (DefaultE2EMintURL) → hosted project.
+	// Pool-org install mint (DefaultPoolOrgInstallMintURL) → hosted project.
 	cfg := EnvConfig{
-		MintURL:      DefaultE2EMintURL,
+		MintURL:      DefaultPoolOrgInstallMintURL,
 		GCPProjectID: "inference-only-project",
 	}
 	assert.Equal(t, DefaultHostedMintGCPProject, MintEnrollProjectID(cfg))
@@ -46,7 +46,7 @@ func TestMintEnrollProjectID_EmptyWithoutHostedMint(t *testing.T) {
 
 func TestMintEnrollProjectID_RespectsEnvOverride(t *testing.T) {
 	t.Setenv("E2E_GCP_MINT_PROJECT_ID", "from-env")
-	cfg := EnvConfig{MintURL: DefaultE2EMintURL}
+	cfg := EnvConfig{MintURL: DefaultPoolOrgInstallMintURL}
 	assert.Equal(t, "from-env", MintEnrollProjectID(cfg))
 	_ = os.Unsetenv("E2E_GCP_MINT_PROJECT_ID")
 }
@@ -84,7 +84,7 @@ func TestResolveMintURL(t *testing.T) {
 	assert.Equal(t, "https://custom-mint.example.com", resolveMintURL())
 
 	t.Setenv("FULLSEND_MINT_URL", "")
-	assert.Equal(t, DefaultE2EMintURL, resolveMintURL())
+	assert.Equal(t, cli.DefaultMintURL, resolveMintURL())
 }
 
 func TestResolveLocalToken_FromGHToken(t *testing.T) {
