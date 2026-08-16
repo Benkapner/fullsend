@@ -1805,6 +1805,8 @@ func TestDefaultMintURL_IsHostedCommunity(t *testing.T) {
 func TestIsHostedMintURL(t *testing.T) {
 	assert.True(t, IsHostedMintURL("https://mint.fullsend.sh"))
 	assert.True(t, IsHostedMintURL("https://mint.fullsend.sh/v1/token"))
+	assert.True(t, IsHostedMintURL("https://mint.fullsend.sh:443"))
+	assert.True(t, IsHostedMintURL("https://Mint.Fullsend.SH"))
 	assert.False(t, IsHostedMintURL("https://evil.example.com"))
 	assert.False(t, IsHostedMintURL("https://fullsend-mint-abc123.run.app"))
 	assert.False(t, IsHostedMintURL(""))

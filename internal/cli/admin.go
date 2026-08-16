@@ -205,7 +205,7 @@ func IsHostedMintURL(raw string) bool {
 	if err != nil {
 		return false
 	}
-	return parsed.Host == "mint.fullsend.sh"
+	return strings.EqualFold(parsed.Hostname(), "mint.fullsend.sh")
 }
 
 func validateMintURL(raw string) error {
@@ -216,8 +216,8 @@ func validateMintURL(raw string) error {
 	if err != nil {
 		return err
 	}
-	host := parsed.Host
-	if host == "mint.fullsend.sh" ||
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "mint.fullsend.sh") ||
 		strings.HasSuffix(host, ".run.app") ||
 		strings.HasSuffix(host, ".cloudfunctions.net") {
 		return nil

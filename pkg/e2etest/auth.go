@@ -42,6 +42,12 @@ func runningInGitHubActions() bool {
 // DefaultPoolOrgInstallMintURL is the per-org enrolled dev mint written to
 // pool orgs by admin e2e install tests. Distinct from resolveMintURL() /
 // cli.DefaultMintURL, which is used for CI cross-org e2e locking.
+//
+// This intentionally stays on the raw Cloud Run URL rather than
+// mint.fullsend.sh because admin install tests write a concrete mint URL
+// into the pool org's config. The community hostname is a convenience alias
+// managed outside GCP — e2e tests pin to the underlying Cloud Run service
+// to avoid depending on DNS resolution of that alias in CI.
 const DefaultPoolOrgInstallMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
 
 // resolveMintURL returns the mint endpoint from FULLSEND_MINT_URL or the hosted
