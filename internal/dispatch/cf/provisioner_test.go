@@ -503,6 +503,42 @@ func TestProvisioner_Teardown_DurableDeletesWorker(t *testing.T) {
 
 // --- WASM auto-staging tests ---
 
+func TestWasmLDFlags(t *testing.T) {
+	t.Run("includes strip flags and version stamps", func(t *testing.T) {
+		flags := wasmLDFlags("1.2.3", "abc123")
+		assert.Contains(t, flags, "-s -w")
+		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.Version=1.2.3")
+		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.Commit=abc123")
+	})
+
+	t.Run("empty version and commit", func(t *testing.T) {
+		flags := wasmLDFlags("", "")
+		assert.Contains(t, flags, "-s -w")
+		assert.Contains(t, flags, "Version=")
+		assert.Contains(t, flags, "Commit=")
+	})
+}
+
+func TestEnsureWASMArtifacts_ForwardsVersionCommit(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-stage wasm_exec.js so only the build function is called.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wasm_exec.js"), []byte("exec"), 0o644))
+
+	var capturedVersion, capturedCommit string
+	origBuild := BuildWASMFn
+	BuildWASMFn = func(outPath, version, commit string) error {
+		capturedVersion = version
+		capturedCommit = commit
+		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
+	}
+	t.Cleanup(func() { BuildWASMFn = origBuild })
+
+	err := ensureWASMArtifacts(dir, "2.0.0", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, "2.0.0", capturedVersion, "version should be forwarded to BuildWASMFn")
+	assert.Equal(t, "deadbeef", capturedCommit, "commit should be forwarded to BuildWASMFn")
+}
+
 func TestEnsureWASMArtifacts_AlreadyPresent(t *testing.T) {
 	dir := t.TempDir()
 	// Pre-stage both files.

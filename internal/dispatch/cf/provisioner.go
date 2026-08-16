@@ -506,16 +506,24 @@ func ensureWASMArtifacts(dir, version, commit string) error {
 	return nil
 }
 
+// wasmLDFlags returns the -ldflags value for compiling the mintcore WASM
+// binary. Includes -s -w to strip debug info (reduces gzip size by ~30%)
+// and -X flags to stamp version metadata into the binary.
+func wasmLDFlags(version, commit string) string {
+	return fmt.Sprintf(
+		"-s -w "+
+			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Version=%s "+
+			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Commit=%s",
+		version, commit)
+}
+
 // buildWASM compiles the mintcore WASM binary from cmd/mint-wasm.
 // The binary is written to outPath. Version and commit are stamped
 // into the binary via -ldflags (mintcore.Version and mintcore.Commit),
 // matching the GCF approach of compiling version data into the source.
+// Debug info is stripped (-s -w) to reduce the gzip size.
 func buildWASM(outPath, version, commit string) error {
-	ldflags := fmt.Sprintf(
-		"-X github.com/fullsend-ai/fullsend/internal/mintcore.Version=%s "+
-			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Commit=%s",
-		version, commit)
-	cmd := exec.Command("go", "build", "-ldflags", ldflags, "-o", outPath, ".")
+	cmd := exec.Command("go", "build", "-ldflags", wasmLDFlags(version, commit), "-o", outPath, ".")
 	cmd.Dir = filepath.Join(findRepoRoot(), "cmd", "mint-wasm")
 	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
 	output, err := cmd.CombinedOutput()
