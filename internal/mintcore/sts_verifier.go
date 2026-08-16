@@ -25,12 +25,12 @@ type stsResponse struct {
 // STSVerifierConfig configures a new STSVerifier.
 type STSVerifierConfig struct {
 	HTTPClient         HTTPDoer
+	GetEnv             func(string) string
 	STSURL             string
 	GCPProjectNum      string
 	WIFPoolName        string
 	DefaultWIFProvider string
 	PerRepoWIFRepos    map[string]bool
-	OIDCAudience       string
 }
 
 // STSVerifier validates OIDC tokens by exchanging them with GCP STS
@@ -47,8 +47,17 @@ type STSVerifier struct {
 	oidcAudience       string
 }
 
-// NewSTSVerifier creates a verifier that validates tokens via GCP STS exchange.
-func NewSTSVerifier(opts STSVerifierConfig) *STSVerifier {
+// NewSTSVerifier creates a verifier that validates tokens via GCP STS
+// exchange. OIDC_AUDIENCE is read from getEnv at construction time; an
+// empty value returns an error so misconfiguration is caught at startup.
+func NewSTSVerifier(opts STSVerifierConfig) (*STSVerifier, error) {
+	if opts.GetEnv == nil {
+		return nil, fmt.Errorf("GetEnv must not be nil")
+	}
+	oidcAudience := opts.GetEnv("OIDC_AUDIENCE")
+	if oidcAudience == "" {
+		return nil, fmt.Errorf("OIDC_AUDIENCE must be configured")
+	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -68,8 +77,8 @@ func NewSTSVerifier(opts STSVerifierConfig) *STSVerifier {
 		wifPoolName:        opts.WIFPoolName,
 		defaultWIFProvider: opts.DefaultWIFProvider,
 		perRepoWIFRepos:    perRepo,
-		oidcAudience:       opts.OIDCAudience,
-	}
+		oidcAudience:       oidcAudience,
+	}, nil
 }
 
 // Verify pre-validates the JWT claims, then exchanges the token with GCP STS.

@@ -25,11 +25,14 @@ func buildHandler() (http.Handler, error) {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
 
-	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
 		IssuerURL:  "https://token.actions.githubusercontent.com",
-		Audience:   os.Getenv("OIDC_AUDIENCE"),
+		GetEnv:     os.Getenv,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("initializing JWKS verifier: %w", err)
+	}
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
 	if err != nil {
@@ -60,7 +63,7 @@ func buildHandler() (http.Handler, error) {
 }
 
 func run(ctx context.Context) error {
-	missing := checkRequired("ROLE_APP_IDS", "OIDC_AUDIENCE", "PEM_DIR")
+	missing := checkRequired("ROLE_APP_IDS", "PEM_DIR")
 	if len(missing) > 0 {
 		return fmt.Errorf("required environment variables not set: %s", strings.Join(missing, ", "))
 	}

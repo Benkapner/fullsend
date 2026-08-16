@@ -57,13 +57,15 @@ func newTestSTSServer(t *testing.T) *httptest.Server {
 
 func newTestSTSVerifier(t *testing.T, stsURL string) *STSVerifier {
 	t.Helper()
-	return NewSTSVerifier(STSVerifierConfig{
+	v, err := NewSTSVerifier(STSVerifierConfig{
 		STSURL:             stsURL,
+		GetEnv:             audienceGetEnv("fullsend-mint"),
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "fullsend-provider",
-		OIDCAudience:       "fullsend-mint",
 	})
+	require.NoError(t, err)
+	return v
 }
 
 func TestSTSVerifier_ValidToken(t *testing.T) {
@@ -151,10 +153,12 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 // handler level — authorization is now the handler's responsibility.
 
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
-	v := NewSTSVerifier(STSVerifierConfig{
+	v, err := NewSTSVerifier(STSVerifierConfig{
+		GetEnv:             audienceGetEnv("fullsend-mint"),
 		DefaultWIFProvider: "default-provider",
 		PerRepoWIFRepos:    map[string]bool{"myorg/special-repo": true},
 	})
+	require.NoError(t, err)
 
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/.fullsend"))
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/regular-repo"))

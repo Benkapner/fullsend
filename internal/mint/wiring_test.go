@@ -24,13 +24,16 @@ func TestInitWiring(t *testing.T) {
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 
-	verifier := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
+	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
 		HTTPClient:         httpClient,
+		GetEnv:             os.Getenv,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "test-pool",
 		DefaultWIFProvider: "test-provider",
-		OIDCAudience:       "fullsend-mint",
 	})
+	if err != nil {
+		t.Fatalf("NewSTSVerifier: %v", err)
+	}
 
 	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
 		&http.Client{Timeout: 5 * time.Second},

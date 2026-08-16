@@ -17,6 +17,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// audienceGetEnv returns a getEnv function that returns the given audience
+// for "OIDC_AUDIENCE" and empty string for all other keys.
+func audienceGetEnv(audience string) func(string) string {
+	return func(key string) string {
+		if key == "OIDC_AUDIENCE" {
+			return audience
+		}
+		return ""
+	}
+}
+
 type testOIDCServer struct {
 	server *httptest.Server
 	key    *rsa.PrivateKey
@@ -106,10 +117,11 @@ func (s *testOIDCServer) signJWT(t *testing.T, headerOverrides, claimsOverrides 
 
 func TestJWKSVerifier_ValidToken(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
-		Audience:  "fullsend-mint",
+		GetEnv:    audienceGetEnv("fullsend-mint"),
 	})
+	require.NoError(t, err)
 	token := s.signJWT(t, nil, nil)
 
 	claims, err := v.Verify(t.Context(), token)
@@ -122,45 +134,50 @@ func TestJWKSVerifier_ValidToken(t *testing.T) {
 
 func TestJWKSVerifier_InvalidFormat(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
-	_, err := v.Verify(t.Context(), "not-a-jwt")
+	_, err = v.Verify(t.Context(), "not-a-jwt")
 	assert.ErrorContains(t, err, "expected 3 segments")
 }
 
 func TestJWKSVerifier_WrongAlgorithm(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	token := s.signJWT(t, map[string]interface{}{"alg": "HS256"}, nil)
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "unsupported signing algorithm")
 }
 
 func TestJWKSVerifier_WrongIssuer(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, map[string]interface{}{"iss": "https://evil.com"})
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "unexpected issuer")
 }
 
 func TestJWKSVerifier_WrongAudience(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, map[string]interface{}{"aud": "wrong-audience"})
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "audience mismatch")
 }
 
 func TestJWKSVerifier_ExpiredToken(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	past := time.Now().Add(-10 * time.Minute).Unix()
 	token := s.signJWT(t, nil, map[string]interface{}{
@@ -168,50 +185,54 @@ func TestJWKSVerifier_ExpiredToken(t *testing.T) {
 		"exp": past,
 	})
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "token expired")
 }
 
 func TestJWKSVerifier_FutureToken(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	future := time.Now().Add(10 * time.Minute).Unix()
 	token := s.signJWT(t, nil, map[string]interface{}{"iat": future})
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "token issued in the future")
 }
 
 func TestJWKSVerifier_MissingRepository(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, map[string]interface{}{"repository": ""})
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "missing repository claim")
 }
 
 func TestJWKSVerifier_InvalidSignature(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, nil)
 
 	// Tamper with the signature
 	parts := token[:len(token)-4] + "XXXX"
-	_, err := v.Verify(t.Context(), parts)
+	_, err = v.Verify(t.Context(), parts)
 	assert.ErrorContains(t, err, "invalid JWT signature")
 }
 
 func TestJWKSVerifier_UnknownKid(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
 
 	token := s.signJWT(t, map[string]interface{}{"kid": "unknown-key"}, nil)
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	assert.ErrorContains(t, err, "not found in JWKS")
 }
 
@@ -249,10 +270,11 @@ func TestJWKSVerifier_KeyRotation(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	v := NewJWKSVerifier(JWKSVerifierConfig{
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
-		Audience:  "fullsend-mint",
+		GetEnv:    audienceGetEnv("fullsend-mint"),
 	})
+	require.NoError(t, err)
 
 	signToken := func(kid string, key *rsa.PrivateKey) string {
 		now := time.Now()
@@ -287,10 +309,11 @@ func TestJWKSVerifier_KeyRotation(t *testing.T) {
 
 func TestJWKSVerifier_AudienceArray(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
-		Audience:  "fullsend-mint",
+		GetEnv:    audienceGetEnv("fullsend-mint"),
 	})
+	require.NoError(t, err)
 	token := s.signJWT(t, nil, map[string]interface{}{
 		"aud": []string{"other", "fullsend-mint"},
 	})
@@ -313,8 +336,9 @@ func TestJWKSVerifier_JWKSURIOriginMismatch(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL, Audience: "fullsend-mint"})
-	err := v.refreshKeys(t.Context())
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
+	err = v.refreshKeys(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match issuer origin")
 }
@@ -332,8 +356,9 @@ func TestJWKSVerifier_DiscoveryIssuerMismatch(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	v := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL, Audience: "fullsend-mint"})
-	err := v.refreshKeys(t.Context())
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL, GetEnv: audienceGetEnv("fullsend-mint")})
+	require.NoError(t, err)
+	err = v.refreshKeys(t.Context())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "issuer mismatch in discovery document")
 }
@@ -341,27 +366,34 @@ func TestJWKSVerifier_DiscoveryIssuerMismatch(t *testing.T) {
 // NOTE: OrgNotAllowed, WorkflowNotAllowed, EmptyOrgList tests moved to handler level.
 // Authorization (AuthorizeToken, ValidateWorkflowRef) is now the handler's responsibility.
 
-func TestJWKSVerifier_EmptyAudience_FailsClosed(t *testing.T) {
+func TestJWKSVerifier_EmptyAudience_FailsAtConstruction(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{
+	_, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
+		GetEnv:    audienceGetEnv(""),
 	})
-	token := s.signJWT(t, nil, nil)
-
-	_, err := v.Verify(t.Context(), token)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OIDC audience must be configured")
+	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
+}
+
+func TestJWKSVerifier_NilGetEnv_FailsAtConstruction(t *testing.T) {
+	_, err := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL: "https://example.com",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GetEnv must not be nil")
 }
 
 func TestJWKSVerifier_MissingIat(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v := NewJWKSVerifier(JWKSVerifierConfig{
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
-		Audience:  "fullsend-mint",
+		GetEnv:    audienceGetEnv("fullsend-mint"),
 	})
+	require.NoError(t, err)
 	token := s.signJWT(t, nil, map[string]interface{}{"iat": 0})
 
-	_, err := v.Verify(t.Context(), token)
+	_, err = v.Verify(t.Context(), token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing iat claim")
 }
@@ -399,10 +431,11 @@ func TestJWKSVerifier_StaleKeyFallback(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	v := NewJWKSVerifier(JWKSVerifierConfig{
+	v, vErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
-		Audience:  "fullsend-mint",
+		GetEnv:    audienceGetEnv("fullsend-mint"),
 	})
+	require.NoError(t, vErr)
 
 	signToken := func() string {
 		now := time.Now()
@@ -469,10 +502,11 @@ func TestJWKSVerifier_StaleKeyRejectedAfterMaxStaleness(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	v := NewJWKSVerifier(JWKSVerifierConfig{
+	v, vErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
-		Audience:  "fullsend-mint",
+		GetEnv:    audienceGetEnv("fullsend-mint"),
 	})
+	require.NoError(t, vErr)
 
 	signToken := func() string {
 		now := time.Now()
