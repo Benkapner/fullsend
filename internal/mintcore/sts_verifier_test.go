@@ -152,6 +152,17 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 // NOTE: PerRepoBypassesOrgCheck, NonPerRepoStillRequiresOrg tests moved to
 // handler level — authorization is now the handler's responsibility.
 
+func TestNewSTSVerifier_EmptyAudience(t *testing.T) {
+	_, err := NewSTSVerifier(STSVerifierConfig{
+		GCPProjectNum:      "123456",
+		WIFPoolName:        "pool",
+		DefaultWIFProvider: "provider",
+		// Audience intentionally omitted → empty.
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
+}
+
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
 	v, err := NewSTSVerifier(STSVerifierConfig{
 		Audience:           "fullsend-mint",

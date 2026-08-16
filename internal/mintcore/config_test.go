@@ -452,6 +452,57 @@ func TestNewHandler_CustomGetEnv_InvalidCustomRolePermissions(t *testing.T) {
 	}
 }
 
+func TestNewHandler_CustomGetEnv_EmptyOIDCAudience(t *testing.T) {
+	bindings := map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+		// OIDC_AUDIENCE intentionally omitted → empty string.
+	}
+	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+	if err == nil {
+		t.Fatal("expected error for empty OIDC_AUDIENCE")
+	}
+	if !strings.Contains(err.Error(), "OIDC_AUDIENCE must be configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewHandler_CustomGetEnv_VerifierFactoryError(t *testing.T) {
+	bindings := map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+		"OIDC_AUDIENCE":          "fullsend-mint",
+	}
+	failFactory := func(_ string) (OIDCVerifier, error) {
+		return nil, fmt.Errorf("verifier construction failed")
+	}
+	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, failFactory, &http.Client{})
+	if err == nil {
+		t.Fatal("expected error when verifier factory fails")
+	}
+	if !strings.Contains(err.Error(), "creating OIDC verifier") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewHandler_CustomGetEnv_RegisterCustomRolePermissionsError(t *testing.T) {
+	// Use a built-in role name in CUSTOM_ROLE_PERMISSIONS to trigger a
+	// collision error from RegisterCustomRolePermissions.
+	bindings := map[string]string{
+		"ROLE_APP_IDS":            `{"triage":"100"}`,
+		"CUSTOM_ROLE_PERMISSIONS": `{"triage":{"contents":"read"}}`,
+		"ALLOWED_WORKFLOW_FILES":  "*",
+		"OIDC_AUDIENCE":           "fullsend-mint",
+	}
+	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+	if err == nil {
+		t.Fatal("expected error when custom role collides with built-in")
+	}
+	if !strings.Contains(err.Error(), "registering custom role permissions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestNewHandler_OsGetEnv(t *testing.T) {
 	// Verify that passing os.Getenv works the same as before.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
