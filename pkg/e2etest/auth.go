@@ -63,7 +63,7 @@ func MintEnrollProjectID(cfg EnvConfig) string {
 	if mintURL == "" {
 		mintURL = cli.DefaultMintURL
 	}
-	if mintURL == cli.DefaultMintURL {
+	if cli.IsHostedMintURL(mintURL) {
 		return DefaultHostedMintGCPProject
 	}
 	return strings.TrimSpace(cfg.GCPProjectID)

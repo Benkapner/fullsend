@@ -20,17 +20,17 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 
 ## Hosted mint
 
-The fullsend team operates a public hosted mint service. If your organization is enrolled, you can use it directly without deploying your own.
+The fullsend team operates a public hosted community mint service. Install the shared public GitHub Apps and use the CLI defaults — no separate enrollment step is required.
 
 **Platform GCP project:** The hosted mint currently runs in GCP project `it-gcp-konflux-dev-fullsend` (region `us-central1`).
 
 **Mint URL:**
 
 ```
-https://fullsend-mint-gljhbkcloq-uc.a.run.app
+https://mint.fullsend.sh
 ```
 
-Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `FULLSEND_MINT_URL` repository/org variable in GitHub. If you are using the hosted mint, the rest of this guide (deploying, enrolling, troubleshooting) is handled by the fullsend team — you do not need to manage mint infrastructure yourself.
+The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repository/org variable in GitHub explicitly. If you are using the hosted community mint, the rest of this guide (deploying, enrolling, troubleshooting) is for platform operators managing self-hosted mints — you do not need to manage mint infrastructure yourself.
 
 ## Prerequisites
 

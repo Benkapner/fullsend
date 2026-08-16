@@ -19,7 +19,7 @@ fullsend across an organization. Individual repo owners should use
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP prerequisites** (WIF mode only) — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`) must be completed separately before running `repos install`. OIDC and token modes do not require GCP infrastructure. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+- **GCP prerequisites** (WIF mode only) — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 ## Getting started
 
@@ -112,7 +112,7 @@ Set `credential_mode` at the forge level or per-repo in the manifest:
 forge:
   github:
     credential_mode: oidc
-    mint_url: https://fullsend-mint-example.run.app
+    mint_url: https://mint.fullsend.sh
   gitlab:
     credential_mode: token
     url: https://gitlab.example.com
@@ -169,11 +169,12 @@ Install runs in three phases:
    drift (synced automatically) and scaffold ref drift (upgraded
    automatically).
 
-> **Prerequisite:** For repos using `wif` credential mode, GCP
-> infrastructure (WIF pools/providers, mint enrollment) must be
-> provisioned separately before running install. Repos using `oidc`
-> or `token` mode do not require GCP infrastructure.
-> See `fullsend inference provision` and `fullsend mint enroll`.
+> **Prerequisite:** For repos using `wif` credential mode, GCP WIF
+> provisioning (`fullsend inference provision`) must be completed
+> before running install. For self-managed mints, also run
+> `fullsend mint enroll`. The hosted community mint needs no
+> enrollment. Repos using `oidc` or `token` mode do not require
+> GCP infrastructure.
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold

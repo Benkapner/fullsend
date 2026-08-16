@@ -8,7 +8,7 @@ package config
 const (
 	// DefaultPerRepoMintURL is the hosted public mint used when no
 	// mint_url is configured in config.yaml or config.base.yaml.
-	DefaultPerRepoMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
+	DefaultPerRepoMintURL = "https://mint.fullsend.sh"
 
 	// DefaultPerRepoInferenceProvider is the default inference backend.
 	DefaultPerRepoInferenceProvider = "vertex"
