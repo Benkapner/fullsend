@@ -309,7 +309,7 @@ compiled-in defaults apply:
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
 | `forge` | `""` (GitHub) |
 | `tracker` | `""` (none — `--tracker` is required unless set) |
-| `mint_url` | `"https://fullsend-mint-gljhbkcloq-uc.a.run.app"` (hosted public mint) |
+| `mint_url` | `"https://mint.fullsend.sh"` (hosted public mint) |
 | `inference.provider` | `"vertex"` |
 | `inference.project` | `""` (empty — must be provided) |
 | `inference.region` | `"global"` |
