@@ -60,7 +60,7 @@ if [ -z "$BOT_PRS" ]; then
 fi
 
 if [ "$BOT_PRS_EXIT" -ne 0 ]; then
-  echo "WARNING: pagination error during bot PR fetch ($(cat "$BOT_PRS_ERR" | head -1)). Continuing with partial results."
+  echo "WARNING: pagination error during bot PR fetch ($(head -1 "$BOT_PRS_ERR")). Continuing with partial results."
 fi
 rm -f "$BOT_PRS_ERR"
 
@@ -149,6 +149,8 @@ while IFS= read -r pr_json; do
   # Check if any follow-up commit touches the same files
   FOUND_REWORK=""
   PR_HAD_ERROR=""
+  PR_HAD_EVALUABLE=""
+  PR_HAD_NULL_AUTHOR=""
   while IFS= read -r commit_json; do
     COMMIT_SHA=$(echo "$commit_json" | jq -r '.sha')
     COMMIT_AUTHOR=$(echo "$commit_json" | jq -r '.author_login')
@@ -161,9 +163,11 @@ while IFS= read -r pr_json; do
     # Skip commits with no linked GitHub identity (not evaluated for overlap)
     if [ "$COMMIT_AUTHOR" = "null" ]; then
       SKIPPED_NULL_AUTHOR=$((SKIPPED_NULL_AUTHOR + 1))
+      PR_HAD_NULL_AUTHOR="yes"
       continue
     fi
 
+    PR_HAD_EVALUABLE="yes"
     COMMIT_FILES_ERR=$(mktemp)
     if ! COMMIT_FILES=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" --paginate \
       --jq '.files[].filename' 2>"$COMMIT_FILES_ERR"); then
@@ -179,12 +183,16 @@ while IFS= read -r pr_json; do
     if [ -n "$OVERLAP" ]; then
       FOUND_REWORK="yes"
       REWORKED_LINES+=("  #${PR_NUM} - ${PR_TITLE}")
-      REWORKED_LINES+=("    Follow-up: ${COMMIT_SHA:0:7} by @${COMMIT_AUTHOR} (same files: $(echo "$OVERLAP" | head -3 | tr '\n' ', '))")
+      REWORKED_LINES+=("    Follow-up: ${COMMIT_SHA:0:7} by @${COMMIT_AUTHOR} (same files: $(head -n 3 <<<"$OVERLAP" | tr '\n' ', '))")
       break
     fi
   done <<< "$FOLLOWUP_COMMITS"
 
   if [ -n "$PR_HAD_ERROR" ] && [ -z "$FOUND_REWORK" ]; then
+    SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
+    continue
+  fi
+  if [ -n "$PR_HAD_NULL_AUTHOR" ] && [ -z "$PR_HAD_EVALUABLE" ] && [ -z "$FOUND_REWORK" ]; then
     SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
     continue
   fi

@@ -218,7 +218,7 @@ cat >"${COMMIT_DETAIL}" <<'EOF'
 {"sha":"null002","files":[{"filename":"unrelated/other.go"}]}
 EOF
 
-run_case "null-author commit on unrelated file not evaluated" "Rework rate: 0.0%"
+run_case "null-author-only PR not counted as checked" "Agent PRs checked: 0"
 
 # --- Test 7: Partial pagination failure continues with warning ---
 cat >"${SEARCH_RESULTS}" <<'EOF'
