@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -904,7 +905,7 @@ repos:
 	require.NoError(t, err)
 	assert.Len(t, warnings, 3, "should warn about non-portable fields and missing region")
 
-	var foundRetries, foundAutoMerge bool
+	var foundRetries, foundAutoMerge, foundRegionDefault bool
 	for _, w := range warnings {
 		if assert.ObjectsAreEqual("defaults.max_implementation_retries=3 has no per-repo equivalent and will not be carried over", w) {
 			foundRetries = true
@@ -912,9 +913,13 @@ repos:
 		if assert.ObjectsAreEqual("defaults.auto_merge=true has no per-repo equivalent and will not be carried over", w) {
 			foundAutoMerge = true
 		}
+		if strings.Contains(w, "defaulting to") && strings.Contains(w, "global") {
+			foundRegionDefault = true
+		}
 	}
 	assert.True(t, foundRetries, "should warn about max_implementation_retries")
 	assert.True(t, foundAutoMerge, "should warn about auto_merge")
+	assert.True(t, foundRegionDefault, "should warn about defaulting region to global")
 }
 
 func TestMigrate_CarriesOverStatusNotifications(t *testing.T) {

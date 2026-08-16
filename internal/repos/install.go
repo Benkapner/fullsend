@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
-	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -83,17 +82,6 @@ type InstallConfig struct {
 	// be overwritten. When true, InferenceProject and WIFProvider may be
 	// empty and secret writes are skipped.
 	ReuseSecrets bool
-
-	// CredentialMode controls how the repo authenticates to the mint.
-	// Valid values: "wif" (GCP WIF), "oidc" (direct OIDC to public mint),
-	// "token" (GitLab bot PAT). When empty, defaults to "oidc" for
-	// GitHub and "token" for GitLab.
-	CredentialMode string
-
-	// DiscoveredCredMode is the existing FULLSEND_CREDENTIAL_MODE value
-	// read from the repo during discovery. Used to preserve the credential
-	// mode on re-install when InferenceProject is not provided.
-	DiscoveredCredMode string
 
 	// PrebuiltScaffoldFiles, when non-nil, replaces the embedded scaffold
 	// template collection. Used when fullsend_ref pins to a version that
@@ -188,6 +176,9 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 
 	mintURL := cfg.MintURL
+	if cfg.Forge == ForgeGitHub && mintURL == "" {
+		return result, fmt.Errorf("internal error: mint URL not resolved for GitHub repo (public mode should default, private mode should fail validation)")
+	}
 	wifProvider := cfg.WIFProvider
 	result.WIFProvider = wifProvider
 
@@ -207,20 +198,8 @@ func Install(ctx context.Context, cfg InstallConfig,
 		return result, fmt.Errorf("invalid GCP region %q", cfg.InferenceRegion)
 	}
 
-	if cfg.CredentialMode != "" && !IsValidCredentialMode(cfg.Forge, cfg.CredentialMode) {
-		return result, fmt.Errorf("invalid credential mode %q for forge %q; valid modes: %v",
-			cfg.CredentialMode, cfg.Forge, ValidCredentialModesFor(cfg.Forge))
-	}
-
-	credMode := resolveCredentialMode(cfg.Forge, cfg.CredentialMode, cfg.InferenceProject, cfg.DiscoveredCredMode)
-
-	// Validate WIF provider when secrets will be written. Only WIF mode
-	// requires GCP WIF infrastructure. OIDC and token modes skip WIF.
-	needsWIF := credMode == CredModeWIF
-	if !cfg.ReuseSecrets && needsWIF {
-		if cfg.InferenceProject == "" {
-			return result, fmt.Errorf("inference project required for WIF credential mode; set --inference-project or use a different credential mode")
-		}
+	// Validate WIF provider when inference secrets will be written.
+	if !cfg.ReuseSecrets && cfg.InferenceProject != "" {
 		if wifProvider == "" {
 			return result, fmt.Errorf("WIF provider required for repository secret configuration; set WIFProvider or enable WIF provisioning")
 		}
@@ -252,16 +231,7 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 	progress(repoFullName, "vars", fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
-	// Step 5b: Write protected CI/CD variables (GitLab only).
-	protectedVars := installProtectedVarsForForge(cfg)
-	for _, name := range maputil.SortedKeys(protectedVars) {
-		if err := client.CreateProtectedCIVariable(ctx, cfg.Owner, cfg.Repo, name, protectedVars[name]); err != nil {
-			return result, fmt.Errorf("setting protected variable %s: %w", name, err)
-		}
-	}
-
-	// Step 6: Write repository secrets. GitLab writes secrets only when
-	// inference is configured (WIF mode). Skipped when reusing existing secrets.
+	// Step 6: Write repository secrets. Skipped when reusing existing secrets.
 	repoSecrets := installSecretsForForge(cfg, wifProvider)
 	if cfg.ReuseSecrets {
 		progress(repoFullName, "secrets", "Reusing existing repository secrets")
@@ -342,16 +312,11 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 }
 
 func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, error) {
-	credMode := resolveCredentialMode(cfg.Forge, cfg.CredentialMode, cfg.InferenceProject, cfg.DiscoveredCredMode)
-
 	switch cfg.Forge {
 	case ForgeGitHub:
 		vars := map[string]string{
 			"FULLSEND_MINT_URL":   mintURL,
 			forge.PerRepoGuardVar: "true",
-		}
-		if credMode != "" {
-			vars["FULLSEND_CREDENTIAL_MODE"] = credMode
 		}
 		if cfg.InferenceRegion != "" {
 			vars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
@@ -360,7 +325,6 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 	case ForgeGitLab:
 		now := time.Now().UTC().Format(time.RFC3339)
 		vars := map[string]string{
-			"FULLSEND_CREDENTIAL_MODE":   credMode,
 			"FULLSEND_FORGE":             "gitlab",
 			"FULLSEND_LAST_POLL_AT_FAST": now,
 			"FULLSEND_LAST_POLL_AT_FULL": now,
@@ -376,24 +340,12 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 	}
 }
 
-func installProtectedVarsForForge(cfg InstallConfig) map[string]string {
-	credMode := resolveCredentialMode(cfg.Forge, cfg.CredentialMode, cfg.InferenceProject, cfg.DiscoveredCredMode)
-	if cfg.Forge == ForgeGitLab && credMode == CredModeWIF && cfg.InferenceProject != "" {
-		vars := map[string]string{
-			"FULLSEND_SA": gcf.MintServiceAccountEmail(cfg.InferenceProject),
-		}
-		if cfg.WIFProvider != "" {
-			vars["FULLSEND_WIF_PROVIDER"] = cfg.WIFProvider
-		}
-		return vars
-	}
-	return nil
-}
-
+// installSecretsForForge returns the inference secrets to write.
+// Returns nil when InferenceProject is not set (the batch_install
+// layer validates that InferenceProject is provided for repos
+// without existing secrets).
 func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]string {
-	credMode := resolveCredentialMode(cfg.Forge, cfg.CredentialMode, cfg.InferenceProject, cfg.DiscoveredCredMode)
-
-	if credMode != CredModeWIF {
+	if cfg.InferenceProject == "" {
 		return nil
 	}
 
@@ -415,41 +367,7 @@ var requiredVariables = []string{"FULLSEND_MINT_URL"}
 // and uninstall.
 var requiredSecrets = []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROVIDER"}
 
-var gitlabRequiredVariables = []string{"FULLSEND_CREDENTIAL_MODE", "FULLSEND_FORGE"}
-
-// resolveCredentialMode determines the effective credential mode for
-// a repo. When mode is set explicitly, it is returned as-is. Otherwise:
-// GitHub defaults to "wif" when inferenceProject is set, otherwise
-// "oidc". GitLab defaults to "wif" when inferenceProject is set,
-// otherwise to discoveredMode (if valid) or "token".
-func resolveCredentialMode(forgeName, mode, inferenceProject, discoveredMode string) string {
-	if mode != "" {
-		return mode
-	}
-	switch forgeName {
-	case ForgeGitHub:
-		if inferenceProject != "" {
-			return CredModeWIF
-		}
-		if discoveredMode == CredModeWIF || discoveredMode == CredModeOIDC {
-			return discoveredMode
-		}
-		return CredModeOIDC
-	case ForgeGitLab:
-		if inferenceProject != "" {
-			return CredModeWIF
-		}
-		// Normalize legacy "variable" → "token".
-		if discoveredMode == "variable" {
-			return CredModeToken
-		}
-		if discoveredMode == CredModeWIF || discoveredMode == CredModeToken {
-			return discoveredMode
-		}
-		return CredModeToken
-	}
-	return mode
-}
+var gitlabRequiredVariables = []string{"FULLSEND_FORGE"}
 
 func requiredVarsForForge(forgeName string) []string {
 	if forgeName == ForgeGitLab {
@@ -458,11 +376,8 @@ func requiredVarsForForge(forgeName string) []string {
 	return requiredVariables
 }
 
-func requiredSecretsForForge(forgeName, credMode string) []string {
-	if credMode == CredModeWIF {
-		return requiredSecrets
-	}
-	return nil
+func requiredSecretsForForge() []string {
+	return requiredSecrets
 }
 
 // checkInstallComponents verifies that all per-repo installation
@@ -488,38 +403,19 @@ func checkInstallComponents(ctx context.Context, client forge.Client, owner, rep
 	}
 
 	// Variables (forge-specific).
-	credMode := ""
 	for _, varName := range requiredVarsForForge(forgeName) {
-		val, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
+		_, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
 		if err != nil {
 			return false, fmt.Errorf("checking variable %s: %w", varName, err)
 		}
 		if !exists {
 			return false, nil
 		}
-		if varName == "FULLSEND_CREDENTIAL_MODE" {
-			credMode = val
-		}
-	}
-
-	// GitHub's requiredVarsForForge doesn't include FULLSEND_CREDENTIAL_MODE
-	// (it's omitted for WIF repos). Read it explicitly so OIDC repos
-	// don't get flagged as needing WIF secrets. Pre-existing WIF repos
-	// installed before credential_mode was written default to WIF.
-	if forgeName == ForgeGitHub && credMode == "" {
-		val, exists, err := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_CREDENTIAL_MODE")
-		if err != nil {
-			return false, fmt.Errorf("checking variable FULLSEND_CREDENTIAL_MODE: %w", err)
-		}
-		if exists {
-			credMode = val
-		} else {
-			credMode = CredModeWIF
-		}
 	}
 
 	// Secrets (existence check only — values cannot be read back).
-	for _, secretName := range requiredSecretsForForge(forgeName, credMode) {
+	// Inference secrets are always required.
+	for _, secretName := range requiredSecretsForForge() {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
 		if err != nil {
 			return false, fmt.Errorf("checking secret %s: %w", secretName, err)

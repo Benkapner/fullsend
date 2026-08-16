@@ -38,13 +38,9 @@ fullsend repos install -f repos.yaml "$OWNER/$REPO" \
 
 | Key | Storage Type | Description | Example value |
 |-----|-------------|-------------|---------------|
-| `FULLSEND_CREDENTIAL_MODE` | CI/CD variable | Credential retrieval mode | `wif` or `token` |
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
-| `FULLSEND_SA` | CI/CD variable | Service account email for WIF impersonation | `fullsend-mint@project.iam.gserviceaccount.com` |
-| `FULLSEND_WIF_PROVIDER` | CI/CD variable | Full WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
-| `FULLSEND_BOT_TOKEN_SECRET` | CI/CD variable | Secret Manager secret ID for bot PAT (WIF mode only) | `fullsend-bot-token-group--project` |
-| `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference (WIF mode only) | `my-gcp-project` |
-| `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name (WIF mode only) | `projects/123456789/locations/global/...` |
+| `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
+| `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
 
 ## Syncing workflow templates
 
@@ -74,7 +70,7 @@ To remove fullsend from a single repository:
 
 1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
-3. Remove the `FULLSEND_MINT_URL` repository variable (if set) — no separate unenrollment is needed for the hosted community mint
+3. Contact the fullsend team to unenroll the repo from the hosted mint
 
 **GitLab repos:**
 
@@ -82,9 +78,8 @@ To remove fullsend from a single repository:
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
 4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
-5. For WIF-mode repos: delete the bot token Secret Manager secret (named `fullsend-bot-token-<owner>--<repo>`) from the GCP project
 
-If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
+If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of GitHub step 3. See the [standalone commands](#standalone-commands) table for details.
 
 ## Standalone commands
 
@@ -121,7 +116,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
 | Developer | `fullsend agent remove <name>` | Unregister an agent from config |
 
-The typical handoff for self-managed mints: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. For the hosted community mint, enrollment is automatic — install the shared Apps and use the CLI defaults.
+The typical handoff: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`.
 
 ### Per-command IAM role breakdown
 
