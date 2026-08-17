@@ -614,7 +614,7 @@ func withFakeWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := cf.BuildWASMFn
 	origCopy := cf.CopyWASMExecFn
-	cf.BuildWASMFn = func(outPath string) error {
+	cf.BuildWASMFn = func(outPath, _, _ string) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	cf.CopyWASMExecFn = func(destPath string) error {
