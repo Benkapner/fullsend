@@ -49,10 +49,11 @@ This design is rigid in two ways:
    top-level block and its own parallel resolution/merge/compose code.
 
 The harness already has a CEL expression engine for `trigger:` expressions
-([ADR 0061](0061-harness-cel-dispatch.md)), evaluated against the same
-`NormalizedEvent` that carries `source.system`, `entity.kind`, and other
-event properties. A general conditional-config mechanism can reuse this
-infrastructure.
+([ADR 0061](0061-harness-cel-dispatch.md)), evaluated against
+`normevent.Event` (`internal/normevent`) — a typed struct with fields like
+`Source.System` (`SourceSystem`), `Entity.Kind` (`EntityKind`),
+`Transition.Kind` (`TransitionKind`), and others. A general
+conditional-config mechanism can reuse this infrastructure.
 
 ### Related work
 
@@ -66,9 +67,10 @@ infrastructure.
 Add an `overlays:` list field to the harness schema. Each entry
 has a `when:` CEL expression (same environment as `trigger:`, evaluated
 against the `event` variable) and the same override fields as
-`ForgeConfig`. At resolution time, all entries whose `when` evaluates to
-true are merged into the harness in declaration order, using the same
-merge semantics as `mergeForgeConfig` (ADR 0045):
+`ForgeConfig`. At resolution time, the **first** entry whose `when`
+evaluates to true is merged into the harness using the same merge
+semantics as `mergeForgeConfig` (ADR 0045). Remaining entries are not
+evaluated.
 
 ```yaml
 overlays:
@@ -86,16 +88,30 @@ overlays:
     JIRA_TOKEN: ${JIRA_TOKEN}
 ```
 
-Multiple entries may match a single event. They are applied sequentially
-(first to last). For scalar fields (`pre_script`, `post_script`,
-`policy`), later matching entries override earlier ones. For list and map
-fields (`skills`, `runner_env`, `providers`, `host_files`, etc.), the same
-concatenate/merge semantics from ADR 0045 apply: each matching entry's
-values are merged into the accumulating result. This includes
-field-specific deduplication where ADR 0045 defines it — for example,
-`mergeSkills` deduplicates by basename (a later entry with the same
-basename overrides an earlier one). Fields without explicit dedup rules
-concatenate without deduplication.
+First-match-wins keeps the mental model simple: exactly one overlay (or
+none) applies to any given event. When an agent needs config from
+multiple concerns (e.g. JIRA-specific scripts *and* GitHub-specific
+runner env), the harness author creates a combined entry for that
+scenario:
+
+```yaml
+overlays:
+- when: event.source.system == "jira" && runtime.forge == "github"
+  pre_script: scripts/pre-jira.sh
+  skills:
+    - skills/jira-issue-read
+  runner_env:
+    GH_TOKEN: ${GH_TOKEN}
+    JIRA_TOKEN: ${JIRA_TOKEN}
+- when: event.source.system == "github"
+  pre_script: scripts/pre-gh.sh
+  skills:
+    - skills/github-issue-triage
+  runner_env:
+    GH_TOKEN: ${GH_TOKEN}
+```
+
+More specific entries go first; broader fallbacks go last.
 
 `forge:` and `overlays:` must not coexist in the same harness —
 `Validate()` rejects a harness that declares both. `forge:` continues to
@@ -105,27 +121,48 @@ warning when `forge:` is present, recommending migration to
 
 ### Resolution pipeline
 
-`LoadWithOpts` and `LoadWithBase` gain an `Event map[string]any` field in
-their options structs. The pipeline becomes:
+`LoadWithOpts` and `LoadWithBase` gain `Event normevent.Event` and
+`Config map[string]any` fields in their options structs. The pipeline
+becomes:
 
 ```
 Unmarshal → validateForge → validateOverlays →
-ResolveForge(platform) → ResolveOverlays(event) → Validate
+ResolveForge(platform) → ResolveOverlays(event, config) → Validate
 ```
 
-`ResolveOverlays(event)` evaluates each entry's `when` against
-the event data. Like `ResolveForge`, it nils out the field after
-resolution (consumed). When `Event` is nil, `ResolveOverlays` is
-a no-op (no entries match), paralleling `ResolveForge` when
-`ForgePlatform` is empty.
+`ResolveOverlays(event, config)` evaluates each entry's `when`
+against the CEL environment (see below). The first entry whose
+`when` returns true is merged; remaining entries are skipped. Like
+`ResolveForge`, it nils out the field after resolution (consumed).
+When `Event` is nil, `ResolveOverlays` is a no-op (no entries
+match), paralleling `ResolveForge` when `ForgePlatform` is empty.
+
+### CEL environment
+
+The overlay `when` expressions are evaluated in the same CEL
+environment as `trigger:` ([ADR 0061](0061-harness-cel-dispatch.md)),
+extended with additional variables:
+
+| Variable | Type | Source |
+|---|---|---|
+| `event` | `normevent.Event` | The triggering event — same typed struct from `internal/normevent` with fields like `source.system` (`SourceSystem`), `entity.kind` (`EntityKind`), `transition.kind` (`TransitionKind`), etc. |
+| `runtime.forge` | `string` | The effective forge platform, resolved with precedence: (1) `--forge` CLI flag, (2) `config.forge` from config.yaml, (3) CI env vars (`GITHUB_ACTIONS`, `GITLAB_CI`). Today `detectForgePlatform()` only checks (1) and (3); this ADR adds (2) so `runtime.forge` always reflects the configured platform whether or not the agent runs in CI. |
+| `config` | `map[string]any` | The full per-repo config from `config.yaml` (`perRepoConfig`). Available for overlays that need to condition on repo-level settings beyond forge. |
+
+This means an overlay can condition on the event origin, the runtime
+platform, repo-level settings, or any combination. Most overlay
+`when` expressions should reference `runtime.forge` and/or `event`
+fields — `config` is available but typically not needed in `when`
+expressions since `runtime.forge` already incorporates `config.forge`.
 
 ### Base composition
 
 `mergeBaseIntoChild` concatenates `overlays` lists (base entries
 first, child entries appended), the same way it handles `plugins`,
-`providers`, and `api_servers`. Since resolution applies entries in
-order and later matching entries override earlier ones for scalars,
-child entries naturally take precedence over base entries.
+`providers`, and `api_servers`. With first-match-wins, a child entry
+that matches shadows all base entries — child entries go last in the
+concatenated list, but more-specific child `when` expressions can be
+ordered before base fallbacks by the harness author.
 
 The mutual exclusion between `forge:` and `overlays:` applies to the
 **post-merge** result — the harness as seen by `Validate()` after
@@ -170,19 +207,20 @@ maps to an overlay that conditions on the forge platform:
 
 ```yaml
 overlays:
-- when: forge.platform == "github"
+- when: runtime.forge == "github"
   pre_script: scripts/pre-gh.sh
 ```
 
 The mapping is mechanical — each forge key becomes a `when` expression
-checking `forge.platform` — but note the conditioning axis differs from
-`event.source.system`. `forge.platform` reflects the detected forge
-platform (from the CI environment or `--forge` flag), while
+checking `runtime.forge` — but note the conditioning axis differs from
+`event.source.system`. `runtime.forge` reflects the effective forge
+platform (from `--forge` flag, `config.forge`, or CI env vars — see
+the CEL environment table above), while
 `event.source.system` identifies the event origin. These diverge for
 cross-system events: a JIRA issue triggering work on GitHub Actions has
-`forge.platform == "github"` but `event.source.system == "jira"`.
+`runtime.forge == "github"` but `event.source.system == "jira"`.
 
-To support this, the overlay CEL environment exposes `forge.platform`
+To support this, the overlay CEL environment exposes `runtime.forge`
 alongside the existing `event` variable, so overlays can faithfully
 replicate `forge:` conditioning when needed.
 
@@ -196,10 +234,10 @@ replicate `forge:` conditioning when needed.
 - The CEL expression engine is already present (`trigger.go`,
   `github.com/google/cel-go`); `overlays` reuses it rather than
   introducing a new expression language or matching mechanism.
-- Multiple matching entries compose naturally: a harness can have a
-  "GitHub setup" entry and a "JIRA read" entry that both match when a
-  JIRA issue triggers a GitHub PR, layering both sets of config onto the
-  base harness.
+- First-match-wins means exactly one overlay (or none) applies per
+  event, making the resolved harness easy to predict. Cross-concern
+  scenarios (e.g. JIRA-triggered agent on GitHub) require a dedicated
+  combined entry rather than implicit layering.
 - The harness composition guide (`docs/contributing/harness-composition.md`)
   gains `validateOverlays`, `ResolveOverlays`, and the
   `overlays` concatenation in `mergeBaseIntoChild` as new
