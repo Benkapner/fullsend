@@ -23,6 +23,23 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 
 **Interface documentation:** When extending a Go interface with new methods (e.g., adding methods to `ci.Driver` in `pkg/behaviourtest/drivers/ci/driver.go`), check `docs/guides/dev/` for documentation that lists or enumerates the interface's methods (e.g., `behaviour-drivers.md`). If found, update the method list to include all current methods, not just the newly added one. The `lint-interface-doc-sync` pre-commit hook enforces this for `ci.Driver`.
 
+## WASM binary size constraints
+
+Files in `internal/mintcore/` and `cmd/mint-wasm/` are compiled to a WASM binary (`GOOS=js GOARCH=wasm`) for the Cloudflare Worker adapter. The compiled binary must stay within CF Workers size limits:
+
+| Tier | Gzip limit | Makefile behavior |
+|------|-----------|-------------------|
+| Workers Free | 3 MB | Warning |
+| Workers Paid | 10 MB | Hard fail (`exit 1`) |
+
+The `make wasm-build` target enforces these limits automatically — run it after any change to `internal/mintcore/` or `cmd/mint-wasm/` to verify the binary stays within bounds.
+
+**Keep the WASM dependency graph minimal.** Because the Go WASM compiler includes the transitive closure of all referenced packages, small-looking changes can cause large binary size increases:
+
+- **Do not pass closures or function values** (`func(string) string`, `func() error`, etc.) into structs that are compiled into the WASM binary. Closure capture pulls the entire dependency graph of the captured variables into the binary. Prefer passing resolved values (strings, ints, config structs with only data fields) instead.
+- **Avoid importing heavy packages** in `internal/mintcore/` files that are WASM-compiled. Packages like `net/http`, `crypto/x509`, or cloud SDKs carry large dependency trees. Use build tags (`//go:build js` / `//go:build !js`) to isolate platform-specific implementations.
+- **Use the `VerifierFactory` pattern** (see `internal/mintcore/`) when WASM-compiled code needs behavior that depends on runtime configuration. The factory constructs verifiers from plain data rather than captured closures, keeping the dependency graph bounded.
+
 When making changes to Go code under `cmd/` or `internal/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
