@@ -23,6 +23,7 @@ stages:
       aud: "fullsend"
   variables:
     FULLSEND_FORGE: "gitlab"
+    CODE_ALLOWED_TARGET_BRANCHES: ''
   script:
     - |
       set -euo pipefail
