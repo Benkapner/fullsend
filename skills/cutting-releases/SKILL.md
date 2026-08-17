@@ -180,8 +180,13 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   workflows. It is automatically moved by the release workflow after
   GoReleaser completes (skipped for pre-release tags).
 - **The `fullsend-ai/agents` repo** is tagged with the same version
-  automatically. After GoReleaser completes, the release workflow
-  pushes the tag to agents using an org-owned GitHub App token
-  (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). That tag push
-  triggers agents' own `release.yml`, which creates a GitHub Release
-  and moves its `v0` floating tag.
+  after the release workflow validates agents against the new binary.
+  After GoReleaser completes, the `validate-agents` job runs agents'
+  functional tests (via a cross-repo reusable workflow call) against
+  the release tag. Only if those tests pass does the `tag-agents` job
+  push the tag to agents using an org-owned GitHub App token
+  (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). If validation or
+  tagging fails, a Slack notification is sent and the fullsend release
+  still ships — only the agents tag is blocked. That tag push triggers
+  agents' own `release.yml`, which creates a GitHub Release and moves
+  its `v0` floating tag.
