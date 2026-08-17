@@ -156,10 +156,11 @@ repo baseline and overrides)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
-- Tracker/forge split: a `tracker:` block, sibling to `forge:` and sharing
-  its resolution/merge/composition logic, lets a harness declare the
-  platform it reads its triggering issue from separately from the platform
-  it writes code changes to (e.g. `tracker.jira` alongside `forge.github`)
+- CEL-guarded overlays: an `overlays:` list of CEL-guarded config
+  overlays generalizes the `forge:` block, letting harness authors
+  condition scripts, skills, env vars, and other fields on any event
+  property (source system, event type, etc.) rather than only the forge
+  platform. `forge:` is deprecated but remains functional
   ([ADR 0088](ADRs/0088-tracker-harness-config-split.md)).
 
 **Open questions:**
