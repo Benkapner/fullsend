@@ -218,9 +218,29 @@ func upgradeRepo(ctx context.Context,
 	}
 
 	if cfg.DryRun {
-		// Check if any uses: lines would change without resolving the SHA,
-		// so DryRun never makes API calls that could fail.
-		_, changed := replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+		dryRef := targetRef
+		dryTag := ""
+		if !isSHARef(targetRef) && isSHARef(currentRef) {
+			// Only resolve for SHA-pinned repos to preserve their
+			// pinning. Non-SHA-pinned repos keep their string ref
+			// format, so DryRun skips API calls for them entirely.
+			if resolver != nil {
+				if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
+					dryRef = sha
+					dryTag = targetRef
+				}
+			}
+			// If the resolver did not resolve the ref, fall back to
+			// direct tag lookup for SHA-pinned GitHub repos — matching
+			// the non-DryRun path's client.GetRef fallback.
+			if dryTag == "" && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
+				if sha, getRefErr := client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef); getRefErr == nil && sha != "" {
+					dryRef = sha
+					dryTag = targetRef
+				}
+			}
+		}
+		_, changed := replaceShimRef(content, dryRef, dryTag, fc, resolvedCfg.Forge)
 		if !changed {
 			result.Skipped = true
 			result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
@@ -228,39 +248,57 @@ func upgradeRepo(ctx context.Context,
 		}
 		result.Upgraded = true
 		msg := fmt.Sprintf("Would upgrade %s → %s", currentRef, targetRef)
-		if isSHARef(currentRef) {
-			msg += " (SHA will be resolved at upgrade time)"
+		if !isSHARef(targetRef) && isSHARef(currentRef) && dryTag == "" {
+			if resolvedCfg.Forge != ForgeGitHub && resolvedCfg.Forge != "" {
+				progress(repoFullName, "warning",
+					fmt.Sprintf("Cannot preserve SHA pinning on %s forge; writing %s as tag ref", resolvedCfg.Forge, targetRef))
+			} else {
+				msg += " (SHA will be resolved at upgrade time)"
+			}
 		}
 		progress(repoFullName, "dry-run", msg)
 		return result
 	}
 
-	// Preserve SHA pinning: if the current ref is a SHA, resolve the target
-	// ref to its commit SHA and write @<sha> # <ref>. If the current ref is
-	// a tag/branch, keep the string format (@<ref>).
+	// Determine the new workflow content based on pinning style.
+	// Only SHA-pinned repos get SHA resolution; non-SHA-pinned repos
+	// keep their string ref format during upgrade.
 	var newContent []byte
 	var changed bool
-	// SHA pinning resolves refs on fullsend-ai/fullsend (always GitHub).
-	// Only resolve when the client targets GitHub's API (empty defaults to GitHub).
-	if isSHARef(currentRef) && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
+	if isSHARef(targetRef) {
+		// Target ref is already a SHA — write it directly.
+		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+	} else if isSHARef(currentRef) {
+		// Current ref is SHA-pinned — resolve target to SHA to
+		// preserve pinning. SHA resolution targets
+		// fullsend-ai/fullsend (always GitHub).
 		var sha string
 		if resolver != nil {
 			sha = resolver.Resolve(ctx, targetRef)
 		}
-		if sha == "" || sha == targetRef {
-			// Resolution failed or returned the ref unchanged — fall back
-			// to direct tag lookup for backwards compatibility.
+		if sha != "" && sha != targetRef {
+			// Resolution succeeded — write @<sha> with annotation.
+			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
+		} else if resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "" {
+			// Resolver did not resolve — fall back to direct tag
+			// lookup for GitHub repos.
 			sha, err = client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
 			if err != nil {
 				result.Error = fmt.Errorf("resolving ref %s to SHA: %w", targetRef, err)
 				return result
 			}
+			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
+		} else {
+			// Non-GitHub forge and resolution failed — cannot
+			// preserve SHA pinning. Log a warning and write the
+			// target ref as a string.
+			progress(repoFullName, "warning",
+				fmt.Sprintf("Cannot preserve SHA pinning on %s forge; writing %s as tag ref", resolvedCfg.Forge, targetRef))
+			newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
 		}
-		newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
 	} else {
-		if isSHARef(currentRef) {
-			progress(repoFullName, "upgrade", "SHA pinning not preserved (non-GitHub forge); switching to tag ref")
-		}
+		// Not SHA-pinned — write the target ref string directly,
+		// preserving the repo's non-pinned format.
 		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
 	}
 	if !changed {

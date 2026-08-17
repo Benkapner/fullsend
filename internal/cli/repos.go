@@ -49,9 +49,8 @@ type reposMigrateConfig struct {
 	manifest    string
 
 	// Test overrides
-	testClient        forge.Client
-	testProvisioner   repos.InferenceProvisioner
-	testMintRegistrar repos.MintRegistrar
+	testClient      forge.Client
+	testProvisioner repos.InferenceProvisioner
 }
 
 func newReposMigrateCmd() *cobra.Command {
@@ -65,8 +64,7 @@ func newReposMigrateCmd() *cobra.Command {
 For each repo enrolled in the org's per-org config (.fullsend config repo):
   1. Check inference WIF status; provision if needed
   2. Install per-repo (scaffold, variables, secrets) with config carried over
-  3. Register per-repo WIF in the mint's PER_REPO_WIF_REPOS
-  4. Unenroll from per-org config
+  3. Unenroll from per-org config
 
 Generates a repos.yaml manifest reflecting the migrated state.
 
@@ -127,13 +125,6 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		provisioner = newGCPInferenceProvisioner(cfg.project)
 	}
 
-	var mintReg repos.MintRegistrar
-	if cfg.testMintRegistrar != nil {
-		mintReg = cfg.testMintRegistrar
-	} else {
-		mintReg = newGCPMintRegistrar(cfg.project)
-	}
-
 	upstreamRef, upstreamTag := resolveUpstreamRef()
 
 	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
@@ -180,7 +171,7 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		CLIVersion:     version,
 	}
 
-	result, err := repos.Migrate(ctx, migrateCfg, clients, provisioner, mintReg, scaffoldCommitFn, progressFn)
+	result, err := repos.Migrate(ctx, migrateCfg, clients, provisioner, scaffoldCommitFn, progressFn)
 	if err != nil {
 		return err
 	}
@@ -317,6 +308,37 @@ func renderStatusResult(cmd *cobra.Command, result *repos.StatusResult, jsonOutp
 	return nil
 }
 
+// formatRef formats a ref for display in the status table. SHA-like refs
+// (40 hex characters) are truncated to 7 characters. When the expected ref
+// is set and differs from the current ref, it is appended in parentheses
+// (also truncated if it is a SHA).
+//
+// SHA detection reuses commitSHAPattern (defined in agent.go) which matches
+// exactly 40 lowercase hex characters. This intentionally differs from
+// isSHARef in internal/repos/upgrade.go, which accepts 7–40 hex chars
+// case-insensitively; the stricter check here is appropriate because Git
+// stores full SHAs as lowercase and status output always receives full refs.
+func formatRef(currentRef, expectedRef string) string {
+	if currentRef == "" {
+		return "—"
+	}
+
+	if !commitSHAPattern.MatchString(currentRef) {
+		return currentRef
+	}
+
+	display := currentRef[:7]
+	if expectedRef != "" && expectedRef != currentRef {
+		if commitSHAPattern.MatchString(expectedRef) {
+			display += " (" + expectedRef[:7] + ")"
+		} else {
+			display += " (" + expectedRef + ")"
+		}
+	}
+
+	return display
+}
+
 func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 	out := cmd.OutOrStdout()
 
@@ -327,10 +349,7 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		if len(name) > maxRepo {
 			maxRepo = len(name)
 		}
-		ref := s.CurrentRef
-		if ref == "" {
-			ref = "—"
-		}
+		ref := formatRef(s.CurrentRef, s.ExpectedRef)
 		if len(ref) > maxRef {
 			maxRef = len(ref)
 		}
@@ -339,10 +358,7 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 	fmt.Fprintf(out, "%-*s  %-*s  %-14s  %s\n", maxRepo, "REPO", maxRef, "REF", "STATUS", "DRIFT")
 	for _, s := range result.Repos {
 		name := s.Owner + "/" + s.Repo
-		ref := s.CurrentRef
-		if ref == "" {
-			ref = "—"
-		}
+		ref := formatRef(s.CurrentRef, s.ExpectedRef)
 
 		var status string
 		switch {
@@ -410,7 +426,8 @@ type reposInstallConfig struct {
 	allowedRemoteResources []string
 
 	// Test overrides
-	testClient forge.Client
+	testClient          forge.Client
+	testProjectNumberFn func(ctx context.Context, projectID string) (string, error)
 }
 
 func newReposInstallCmd() *cobra.Command {
@@ -450,9 +467,9 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
-	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference (written as FULLSEND_GCP_PROJECT_ID secret)")
-	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number for WIF provider computation")
-	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (install-time only, not stored in manifest)")
+	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference")
+	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number (auto-derived from --inference-project when omitted)")
+	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (default: global)")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
@@ -485,6 +502,30 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	printer := ui.New(os.Stdout)
+
+	// Default --inference-region to "global" (matching admin install)
+	// when --inference-project is set but --inference-region is not.
+	if opts.inferenceProject != "" && opts.inferenceRegion == "" {
+		opts.inferenceRegion = "global"
+	}
+
+	// Derive --inference-project-number from --inference-project via
+	// the GCP Resource Manager API when not explicitly provided.
+	if opts.inferenceProject != "" && opts.inferenceProjectNumber == "" {
+		var projectNumber string
+		var lookupErr error
+		if opts.testProjectNumberFn != nil {
+			projectNumber, lookupErr = opts.testProjectNumberFn(ctx, opts.inferenceProject)
+		} else {
+			gcpClient := gcf.NewLiveGCFClient(opts.inferenceProject)
+			projectNumber, lookupErr = gcpClient.GetProjectNumber(ctx, opts.inferenceProject)
+		}
+		if lookupErr != nil {
+			return fmt.Errorf("deriving project number from %q: %w (use --inference-project-number to specify it manually)", opts.inferenceProject, lookupErr)
+		}
+		opts.inferenceProjectNumber = projectNumber
+		printer.StepDone(fmt.Sprintf("Derived project number %s from project %s", projectNumber, opts.inferenceProject))
+	}
 
 	printer.StepStart("Loading manifest")
 	manifest, err := repos.LoadManifest(ctx, opts.manifest)
@@ -748,16 +789,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				continue
 			}
 
-			// Build WIF config when inference is configured (WIF mode).
-			var wifCfg *botTokenWIFConfig
-			if opts.inferenceProject != "" {
-				wifCfg = &botTokenWIFConfig{
-					GCPClient: gcf.NewLiveGCFClient(opts.inferenceProject),
-					ProjectID: opts.inferenceProject,
-				}
-			}
-
-			_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken, wifCfg)
+			_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken)
 			if botErr != nil {
 				printer.StepWarn(fmt.Sprintf("[%s] Bot token setup failed: %v", repoFullName, botErr))
 				postInstallFailed++
@@ -933,8 +965,7 @@ type reposUninstallConfig struct {
 	uninstallOnly bool
 	gitlabToken   string
 
-	testClient           forge.Client
-	testGCPClientFactory func(projectID string) gcf.GCFClient
+	testClient forge.Client
 }
 
 func newReposUninstallCmd() *cobra.Command {
@@ -1051,36 +1082,6 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			return err
 		}
 
-		// Pre-uninstall: gather GCP project IDs for GitLab WIF repos
-		// so we can delete Secret Manager secrets after teardown. The
-		// FULLSEND_SA variable is deleted during uninstall, so we read
-		// it now.
-		gcpProjectByRepo := make(map[string]string)
-		if !opts.dryRun {
-			for _, repoName := range concreteRepos {
-				parts := strings.SplitN(repoName, "/", 2)
-				if len(parts) != 2 {
-					continue
-				}
-				owner, repo := parts[0], parts[1]
-				rc, ok := manifest.ResolveConfigWithGlobs(owner, repo)
-				if !ok || rc.Forge != repos.ForgeGitLab {
-					continue
-				}
-				fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
-				if fcErr != nil {
-					continue
-				}
-				sa, found, readErr := fc.Client.GetRepoVariable(ctx, owner, repo, "FULLSEND_SA")
-				if readErr != nil || !found {
-					continue
-				}
-				if projectID := projectIDFromSAEmail(sa); projectID != "" {
-					gcpProjectByRepo[repoName] = projectID
-				}
-			}
-		}
-
 		teardownCfg := repos.UninstallConfig{
 			Manifest:       manifest,
 			Repos:          concreteRepos,
@@ -1109,14 +1110,8 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			}
 		}
 
-		// GitLab post-uninstall: clean up pipeline schedules, bot tokens,
-		// and Secret Manager secrets.
+		// GitLab post-uninstall: clean up pipeline schedules and bot tokens.
 		if !opts.dryRun {
-			newGCPClient := opts.testGCPClientFactory
-			if newGCPClient == nil {
-				newGCPClient = func(pid string) gcf.GCFClient { return gcf.NewLiveGCFClient(pid) }
-			}
-
 			for _, r := range results {
 				if !r.Success {
 					continue
@@ -1142,12 +1137,6 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 					printer.StepWarn(fmt.Sprintf("[%s] GitLab client type assertion failed — bot token cleanup skipped", repoFullName))
 				}
 
-				// Best-effort: delete the bot token Secret Manager
-				// secret if we know the GCP project from the pre-
-				// uninstall variable read.
-				if projectID, ok := gcpProjectByRepo[repoFullName]; ok {
-					cleanupGitLabBotTokenSecret(ctx, newGCPClient(projectID), printer, projectID, r.Owner, r.Repo)
-				}
 			}
 		}
 	} else {
@@ -1281,23 +1270,4 @@ func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo str
 		return "", fmt.Errorf("provisioning WIF: %w", err)
 	}
 	return wifProvider, nil
-}
-
-// gcpMintRegistrar implements repos.MintRegistrar by calling
-// the GCF provisioner's RegisterPerRepoWIF.
-type gcpMintRegistrar struct {
-	provisioner *gcf.Provisioner
-}
-
-func newGCPMintRegistrar(project string) *gcpMintRegistrar {
-	gcpClient := gcf.NewLiveGCFClient(project)
-	return &gcpMintRegistrar{
-		provisioner: gcf.NewProvisioner(gcf.Config{
-			ProjectID: project,
-		}, gcpClient),
-	}
-}
-
-func (m *gcpMintRegistrar) RegisterPerRepoWIF(ctx context.Context, repo string) error {
-	return m.provisioner.RegisterPerRepoWIF(ctx, repo)
 }

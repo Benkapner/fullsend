@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -106,13 +107,12 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 
 	// Phase 1: Parallel discovery — check guard variables.
 	type discoveryResult struct {
-		repo               ResolvedRepo
-		resolved           ResolvedConfig
-		installed          bool
-		secretsExist       bool
-		regionVarExists    bool
-		discoveredCredMode string
-		err                error
+		repo            ResolvedRepo
+		resolved        ResolvedConfig
+		installed       bool
+		secretsExist    bool
+		regionVarExists bool
+		err             error
 	}
 
 	concurrency := cfg.MaxConcurrency
@@ -163,8 +163,6 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			// When repo is NOT fully installed, check whether GCP
 			// secrets already exist so we can reuse them instead of
 			// requiring --inference-project / --inference-project-number.
-			// Applies to both GitHub (always uses WIF) and GitLab
-			// (uses WIF when inference is configured).
 			var secretsExist bool
 			if !installed && (resolved.Forge == ForgeGitHub || resolved.Forge == ForgeGitLab) {
 				projExists, projErr := fc.Client.RepoSecretExists(ctx, rr.Owner, rr.Repo, "FULLSEND_GCP_PROJECT_ID")
@@ -184,23 +182,11 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 						discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: regionErr}
 						return
 					}
-					var credMode string
-					if resolved.Forge == ForgeGitLab {
-						credModeVal, credModeExists, credModeErr := fc.Client.GetRepoVariable(ctx, rr.Owner, rr.Repo, "FULLSEND_CREDENTIAL_MODE")
-						if credModeErr != nil {
-							discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: credModeErr}
-							return
-						}
-						if credModeExists {
-							credMode = credModeVal
-						}
-					}
 					discoveries[idx] = discoveryResult{
-						repo:               rr,
-						resolved:           resolved,
-						secretsExist:       true,
-						regionVarExists:    regionExists,
-						discoveredCredMode: credMode,
+						repo:            rr,
+						resolved:        resolved,
+						secretsExist:    true,
+						regionVarExists: regionExists,
 					}
 					return
 				} else if projExists != wifExists {
@@ -271,83 +257,62 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 		return result, nil
 	}
 
-	// Validate resolved config — fail fast on missing fields to avoid
-	// partial installations. GitHub repos always require inference flags.
-	// GitLab repos require them only when --inference-project is provided
-	// (inference is optional for GitLab). InferenceProject,
-	// InferenceProjectNumber, and InferenceRegion are install-time-only
-	// values from CLI flags, not from the manifest. When secrets already
-	// exist on the repo, these flags are not required — the existing
-	// secrets are reused.
+	// Inference flags validation: all three must be present when any
+	// is set. The CLI layer defaults --inference-region to "global"
+	// and auto-derives --inference-project-number from the project
+	// ID, so users only need to pass --inference-project. This
+	// validation acts as a safety net for callers that bypass the
+	// CLI (e.g. tests calling BatchInstall directly).
+	inferenceFlags := []struct{ name, val string }{
+		{"--inference-project", cfg.InferenceProject},
+		{"--inference-project-number", cfg.InferenceProjectNumber},
+		{"--inference-region", cfg.InferenceRegion},
+	}
+	var inferenceSet, inferenceMissing []string
+	for _, f := range inferenceFlags {
+		if f.val != "" {
+			inferenceSet = append(inferenceSet, f.name)
+		} else {
+			inferenceMissing = append(inferenceMissing, f.name)
+		}
+	}
+	if len(inferenceSet) > 0 && len(inferenceMissing) > 0 {
+		return nil, fmt.Errorf("incomplete inference flags: %s set but %s missing — all three are required when any is specified",
+			strings.Join(inferenceSet, ", "), strings.Join(inferenceMissing, ", "))
+	}
+
+	// Validate inference flag formats when provided.
+	if cfg.InferenceProject != "" {
+		if !IsValidGCPProjectID(cfg.InferenceProject) {
+			return nil, fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
+		}
+		if !IsValidGCPRegion(cfg.InferenceRegion) {
+			return nil, fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
+		}
+		if !IsNumeric(cfg.InferenceProjectNumber) {
+			return nil, fmt.Errorf("--inference-project-number must be numeric, got %q", cfg.InferenceProjectNumber)
+		}
+	}
+
+	// Per-repo validation: repos without existing secrets require
+	// inference flags. When secrets already exist on the repo,
+	// inference flags are not required — the existing secrets are
+	// reused.
 	var validCandidates []discoveryResult
 	for _, d := range toInstall {
 		fullName := d.repo.Owner + "/" + d.repo.Repo
 
-		// GitHub: inference flags are always required.
-		// GitLab: inference flags are optional, but when
-		//   --inference-project is provided, region and project-number
-		//   are also required.
-		requireInference := d.resolved.Forge == ForgeGitHub && !d.secretsExist
-		validateInference := requireInference ||
-			(d.resolved.Forge == ForgeGitLab && !d.secretsExist && cfg.InferenceProject != "")
-
-		if requireInference && cfg.InferenceProject == "" {
+		if !d.secretsExist && cfg.InferenceProject == "" {
 			result.Failed = append(result.Failed, InstallResult{
 				Owner: d.repo.Owner,
 				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("--inference-project is required but empty for %s", fullName),
+				Error: fmt.Errorf("--inference-project is required for %s (inference secrets are always needed)", fullName),
 			})
-			progress(fullName, "validate", "Missing --inference-project flag")
+			progress(fullName, "validate", "Inference flags required")
 			continue
 		}
-		if validateInference {
-			if !IsValidGCPProjectID(cfg.InferenceProject) {
-				result.Failed = append(result.Failed, InstallResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject),
-				})
-				progress(fullName, "validate", "Invalid --inference-project: must be a valid GCP project ID")
-				continue
-			}
-			if cfg.InferenceRegion == "" {
-				result.Failed = append(result.Failed, InstallResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-region is required but empty for %s", fullName),
-				})
-				progress(fullName, "validate", "Missing --inference-region flag")
-				continue
-			}
-			if !IsValidGCPRegion(cfg.InferenceRegion) {
-				result.Failed = append(result.Failed, InstallResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion),
-				})
-				progress(fullName, "validate", "Invalid --inference-region: must be a valid GCP region")
-				continue
-			}
-			if cfg.InferenceProjectNumber == "" {
-				result.Failed = append(result.Failed, InstallResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-project-number is required but empty for %s", fullName),
-				})
-				progress(fullName, "validate", "Missing --inference-project-number flag")
-				continue
-			}
-			if !IsNumeric(cfg.InferenceProjectNumber) {
-				result.Failed = append(result.Failed, InstallResult{
-					Owner: d.repo.Owner,
-					Repo:  d.repo.Repo,
-					Error: fmt.Errorf("--inference-project-number must be numeric, got %q for %s", cfg.InferenceProjectNumber, fullName),
-				})
-				progress(fullName, "validate", "Invalid --inference-project-number: must be numeric")
-				continue
-			}
-		}
-		needsRegion := d.resolved.Forge == ForgeGitHub || cfg.InferenceProject != ""
+
+		needsRegion := cfg.InferenceProject != ""
 		if d.secretsExist && !d.regionVarExists && cfg.InferenceRegion == "" && needsRegion {
 			result.Failed = append(result.Failed, InstallResult{
 				Owner: d.repo.Owner,
@@ -355,15 +320,6 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				Error: fmt.Errorf("--inference-region is required for %s: secrets exist but FULLSEND_GCP_REGION variable is missing", fullName),
 			})
 			progress(fullName, "validate", "Missing --inference-region flag (FULLSEND_GCP_REGION variable not found)")
-			continue
-		}
-		if cfg.InferenceRegion != "" && !IsValidGCPRegion(cfg.InferenceRegion) {
-			result.Failed = append(result.Failed, InstallResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion),
-			})
-			progress(fullName, "validate", "Invalid --inference-region: must be a valid GCP region")
 			continue
 		}
 		validCandidates = append(validCandidates, d)
@@ -456,21 +412,20 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 
 			installCfg := InstallConfig{
-				Owner:              dr.repo.Owner,
-				Repo:               dr.repo.Repo,
-				Forge:              dr.resolved.Forge,
-				Roles:              roles,
-				MintURL:            dr.resolved.MintURL,
-				InferenceProject:   cfg.InferenceProject,
-				InferenceRegion:    cfg.InferenceRegion,
-				UpstreamRef:        ref,
-				UpstreamTag:        tag,
-				SkipGuardCheck:     true,
-				WIFProvider:        wifProvider,
-				RunnerTags:         cfg.Manifest.Forge.GitLab.RunnerTags,
-				Direct:             cfg.Direct,
-				ReuseSecrets:       dr.secretsExist,
-				DiscoveredCredMode: dr.discoveredCredMode,
+				Owner:            dr.repo.Owner,
+				Repo:             dr.repo.Repo,
+				Forge:            dr.resolved.Forge,
+				Roles:            roles,
+				MintURL:          dr.resolved.MintURL,
+				InferenceProject: cfg.InferenceProject,
+				InferenceRegion:  cfg.InferenceRegion,
+				UpstreamRef:      ref,
+				UpstreamTag:      tag,
+				SkipGuardCheck:   true,
+				WIFProvider:      wifProvider,
+				RunnerTags:       cfg.Manifest.Forge.GitLab.RunnerTags,
+				Direct:           cfg.Direct,
+				ReuseSecrets:     dr.secretsExist,
 			}
 
 			// When the manifest pins to a different version than the

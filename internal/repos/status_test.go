@@ -38,6 +38,12 @@ func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, regi
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_MINT_URL"] = mintURL
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_GCP_REGION"] = region
 
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_WIF_PROVIDER"] = true
+
 	workflow := fmt.Sprintf(`name: fullsend
 on:
   workflow_dispatch:
@@ -871,12 +877,11 @@ func TestStatus_GlobExpandError(t *testing.T) {
 	}
 }
 
-func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
+func TestStatus_DefaultMintURL_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "",
 			FullsendRef: "v2.3.0",
 		}},
 		Defaults: DefaultsConfig{
@@ -885,7 +890,7 @@ func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://some-mint.example.com", "us-central1")
+	populateInstalledRepo(fc, "org", "repo", "v2.3.0", DefaultPublicMintURL, "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -893,7 +898,7 @@ func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
 	}
 
 	if len(result.Repos[0].Drifts) != 0 {
-		t.Errorf("expected no drift when manifest mint URL is empty, got %v", result.Repos[0].Drifts)
+		t.Errorf("expected no drift when using default public mint URL, got %v", result.Repos[0].Drifts)
 	}
 }
 

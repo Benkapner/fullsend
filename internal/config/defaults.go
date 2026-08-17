@@ -38,6 +38,9 @@ func (d *perRepoDefaults) ConfigRuntime() string { return "claude" }
 // ConfigForge returns the default forge (empty — auto-detected).
 func (d *perRepoDefaults) ConfigForge() string { return "" }
 
+// ConfigTracker returns the default issue tracker (empty — no default).
+func (d *perRepoDefaults) ConfigTracker() string { return "" }
+
 // IsKillSwitchActive returns the default kill switch state (off).
 func (d *perRepoDefaults) IsKillSwitchActive() bool { return false }
 

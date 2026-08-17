@@ -205,9 +205,10 @@ func validateMintURL(raw string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.HasSuffix(parsed.Host, ".run.app") &&
-		!strings.HasSuffix(parsed.Host, ".cloudfunctions.net") {
-		return fmt.Errorf("--mint-url must be a Cloud Run URL (.run.app or .cloudfunctions.net), got host %q", parsed.Host)
+	host := parsed.Hostname()
+	if !strings.HasSuffix(host, ".run.app") &&
+		!strings.HasSuffix(host, ".cloudfunctions.net") {
+		return fmt.Errorf("--mint-url must be a Cloud Run URL (.run.app or .cloudfunctions.net), got host %q", host)
 	}
 	return nil
 }

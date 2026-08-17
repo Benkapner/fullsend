@@ -1,4 +1,4 @@
-// Package legacy implements an install.Driver that uses a pre-configured
+// Package legacy implements an install.MintDriver that uses a pre-configured
 // mint URL. This is the original install path retained as a separate driver
 // so other test configurations can select it.
 //
@@ -33,7 +33,7 @@ func NewDriver(
 	client forge.Client,
 	token, binary, mintURL, gcpProjectID string,
 	logf func(string, ...any),
-) (install.Driver, error) {
+) (install.MintDriver, error) {
 	if mintURL == "" {
 		return nil, fmt.Errorf("legacy: mintURL is required")
 	}

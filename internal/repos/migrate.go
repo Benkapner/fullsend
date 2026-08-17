@@ -11,11 +11,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// canonicalMintURL is the hardcoded mint URL used for all per-repo
-// installations during migration. Discovery from org config or org-level
-// variables is unnecessary — all per-repo installations during migration
-// should use this URL.
-const canonicalMintURL = "https://mint.fullsend.sh"
+// canonicalMintURL is the mint URL used for all per-repo installations
+// during migration. Reuses the public-mode default from manifest.go.
+const canonicalMintURL = DefaultPublicMintURL
 
 // MigrateConfig holds configuration for the repos migrate command.
 type MigrateConfig struct {
@@ -77,15 +75,6 @@ type InferenceProvisioner interface {
 	Provision(ctx context.Context, owner, repo string) (wifProvider string, err error)
 }
 
-// MintRegistrar abstracts mint enrollment for per-repo WIF. CLI
-// implementations call real GCP APIs to add repos to PER_REPO_WIF_REPOS;
-// tests provide stubs.
-type MintRegistrar interface {
-	// RegisterPerRepoWIF adds a repo to the mint's PER_REPO_WIF_REPOS
-	// environment variable. The repo must be in "owner/repo" format.
-	RegisterPerRepoWIF(ctx context.Context, repo string) error
-}
-
 // Migrate orchestrates the full migration of an org from per-org to
 // per-repo install. For each enrolled repo it:
 //  1. Checks if already per-repo installed (skips if so)
@@ -96,7 +85,7 @@ type MintRegistrar interface {
 // At the end, it generates a repos.yaml manifest from the discovered state.
 // Individual repo failures do not abort the batch.
 func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
-	provisioner InferenceProvisioner, mintReg MintRegistrar,
+	provisioner InferenceProvisioner,
 	commitScaffold ScaffoldCommitFunc,
 	progress ProgressFunc) (*MigrateResult, error) {
 
@@ -271,24 +260,6 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 		wg.Wait()
 	}
 
-	// Step 3.5: Register per-repo WIF in mint (serialized to avoid
-	// read-modify-write race on PER_REPO_WIF_REPOS env var).
-	// Mint registration failure is non-fatal: the repo is already
-	// installed and should be unenrolled. The operator can retry
-	// mint enrollment separately via `mint enroll`.
-	if mintReg != nil && len(result.Migrated) > 0 {
-		for i, mr := range result.Migrated {
-			fullName := mr.Owner + "/" + mr.Repo
-			progress(fullName, "mint", "registering per-repo WIF in mint")
-			if regErr := mintReg.RegisterPerRepoWIF(ctx, fullName); regErr != nil {
-				progress(fullName, "mint", fmt.Sprintf("warning: mint registration failed (%v) — run 'mint enroll' to retry", regErr))
-				result.Migrated[i].Error = fmt.Errorf("mint registration failed (repo installed, enroll separately): %w", regErr)
-			} else {
-				progress(fullName, "mint", "registered in mint")
-			}
-		}
-	}
-
 	// Step 4: Unenroll successfully migrated repos from per-org config.
 	// Also unenroll skipped repos (already per-repo installed) that are
 	// still enabled in per-org config, so re-runs after unenroll failure
@@ -389,7 +360,8 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	mintURL := canonicalMintURL
 	inferenceRegion := dr.InferenceRegion
 	if inferenceRegion == "" {
-		inferenceRegion = "us-central1"
+		inferenceRegion = config.DefaultPerRepoInferenceRegion
+		progress(fullName, "warning", fmt.Sprintf("FULLSEND_GCP_REGION not discovered from org variables — defaulting to %q", inferenceRegion))
 	}
 
 	// Build per-repo config from org config to carry over portable

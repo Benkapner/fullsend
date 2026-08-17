@@ -172,7 +172,6 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "fullsend workspace prepare")
 	// Credential validation
 	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
-	assert.Contains(t, s, "FULLSEND_CREDENTIAL_MODE must be")
 	// Bot identity verification uses server-side .source from Pipelines API
 	// (deny-by-default case statement, not forgeable CI_PIPELINE_SOURCE env var)
 	assert.Contains(t, s, `jq -r '.source // empty'`)
@@ -198,6 +197,9 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Back-link from dispatched pipelines to poll job
 	assert.Contains(t, s, "FULLSEND_POLL_JOB_URL")
 	assert.Contains(t, s, "Dispatched by:")
+	// Harness passthrough variables must be declared so os.Expand doesn't
+	// reject unset variables during harness env validation (#6273).
+	assert.Contains(t, s, "CODE_ALLOWED_TARGET_BRANCHES")
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
@@ -275,11 +277,9 @@ func TestGitLabAgentTemplateCredentialValidation(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "CI_DEBUG_TRACE")
-	assert.Contains(t, s, "FULLSEND_CREDENTIAL_MODE")
 	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
-	assert.Contains(t, s, "'wif' or 'variable'")
-	// OIDC token file must NOT be deleted before gcloud secrets
-	assert.NotContains(t, s, "trap - EXIT")
+	// Inference WIF setup is unconditional when FULLSEND_GCP_WIF_PROVIDER is set
+	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER")
 }
 
 func TestGitLabPollContent(t *testing.T) {
@@ -292,7 +292,6 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.Contains(t, s, "CI_COMMIT_REF_PROTECTED")
 	// Credential validation
 	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
-	assert.Contains(t, s, "FULLSEND_CREDENTIAL_MODE must be")
 	// Defaults to CI_SERVER_URL, not hardcoded gitlab.com
 	assert.Contains(t, s, "CI_SERVER_URL")
 	assert.NotContains(t, s, "https://gitlab.com")
@@ -471,6 +470,31 @@ func TestInsertAfterDocStart(t *testing.T) {
 		result := InsertAfterDocStart("content", "# marker")
 		assert.Equal(t, "# marker\ncontent", result)
 	})
+}
+
+// TestGitLabAgentTemplateHarnessPassthroughVars validates that harness
+// passthrough variables declared in the GitHub reusable workflows are also
+// present in the GitLab agent template's variables: section. When a harness
+// YAML uses ${VAR} passthrough syntax, the harness engine's os.Expand rejects
+// unset variables. GitHub workflows set these to ” in their env: blocks; the
+// GitLab template must do the same or the agent aborts at env validation (#6273).
+func TestGitLabAgentTemplateHarnessPassthroughVars(t *testing.T) {
+	// Variables that GitHub reusable workflows set for harness passthrough.
+	// When adding a new ${VAR} passthrough to a multi-forge harness, add it
+	// here so the test catches a missing GitLab declaration.
+	passthroughVars := []string{
+		"CODE_ALLOWED_TARGET_BRANCHES",
+	}
+
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	for _, v := range passthroughVars {
+		assert.Contains(t, s, v,
+			"GitLab agent template must declare %s in variables: section — "+
+				"harness env.runner uses ${%s} passthrough which fails on unset vars (#6273)", v, v)
+	}
 }
 
 func TestGitLabNoPerStageTemplates(t *testing.T) {

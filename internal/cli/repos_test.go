@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -17,6 +16,70 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFormatRef(t *testing.T) {
+	tests := []struct {
+		name     string
+		current  string
+		expected string
+		want     string
+	}{
+		{
+			name:     "SHA with expected ref",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "main",
+			want:     "6f8b968 (main)",
+		},
+		{
+			name:     "SHA without expected ref",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "",
+			want:     "6f8b968",
+		},
+		{
+			name:     "SHA where expected matches current",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			want:     "6f8b968",
+		},
+		{
+			name:     "branch name matching expected",
+			current:  "main",
+			expected: "main",
+			want:     "main",
+		},
+		{
+			name:     "tag matching expected",
+			current:  "v2.3.0",
+			expected: "v2.3.0",
+			want:     "v2.3.0",
+		},
+		{
+			name:     "empty current ref",
+			current:  "",
+			expected: "main",
+			want:     "—",
+		},
+		{
+			name:     "non-SHA differs from expected",
+			current:  "v1.0.0",
+			expected: "v2.0.0",
+			want:     "v1.0.0",
+		},
+		{
+			name:     "SHA with expected also a SHA",
+			current:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+			expected: "aabbccddee00112233445566778899aabbccddee",
+			want:     "6f8b968 (aabbccd)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatRef(tt.current, tt.expected)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
 
 func TestReposCommand_HasSubcommands(t *testing.T) {
 	cmd := newReposCmd()
@@ -661,6 +724,33 @@ func TestRenderStatusResult_NoErrorWhenAllMatch(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestPrintStatusTable_SHAWithExpectedRef(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{
+				Owner:       "gallen",
+				Repo:        "integration-service",
+				Installed:   true,
+				CurrentRef:  "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+				ExpectedRef: "main",
+			},
+		},
+		Summary: repos.StatusSummary{
+			Total:     1,
+			Installed: 1,
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "6f8b968 (main)")
+	assert.NotContains(t, output, "6f8b968a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e")
+}
+
 func TestPrintStatusTable_ColumnAlignment(t *testing.T) {
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{
@@ -1129,7 +1219,6 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 		testClient:  fc,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mint_url")
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
@@ -1306,6 +1395,107 @@ func TestRunReposInstall_InvalidInferenceProjectNumber(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--inference-project-number must be numeric")
+}
+
+func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	opts := &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		// No inferenceProjectNumber — should be auto-derived.
+		// No inferenceRegion — should default to "global".
+		testClient: fc,
+		testProjectNumberFn: func(_ context.Context, projectID string) (string, error) {
+			if projectID != "inf-proj" {
+				t.Errorf("expected project ID inf-proj, got %s", projectID)
+			}
+			return "987654321", nil
+		},
+	}
+	err := runReposInstall(context.Background(), opts)
+	require.NoError(t, err)
+
+	// Verify derived values. runReposInstall sets these on opts before
+	// constructing BatchInstallConfig (which copies them verbatim), so
+	// asserting here confirms the derivation logic. The require.NoError
+	// above also provides indirect coverage: BatchInstall's all-or-nothing
+	// validation would fail if the values were missing or empty.
+	assert.Equal(t, "987654321", opts.inferenceProjectNumber,
+		"project number should be auto-derived from testProjectNumberFn")
+	assert.Equal(t, "global", opts.inferenceRegion,
+		"inference region should default to global")
+}
+
+func TestRunReposInstall_ExplicitProjectNumberSkipsLookup(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	lookupCalled := false
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "111222333",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			lookupCalled = true
+			return "999", nil
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, lookupCalled,
+		"project number lookup should be skipped when --inference-project-number is explicit")
+}
+
+func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	opts := &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		// inferenceRegion left empty — should default to "global".
+		testClient: fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			return "123456789", nil
+		},
+	}
+	err := runReposInstall(context.Background(), opts)
+	require.NoError(t, err)
+	assert.Equal(t, "global", opts.inferenceRegion,
+		"inference region should default to global when --inference-project is set")
+}
+
+func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		testClient:       fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("API unavailable")
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deriving project number")
+	assert.Contains(t, err.Error(), "API unavailable")
+	assert.Contains(t, err.Error(), "--inference-project-number")
 }
 
 func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {
@@ -1669,38 +1859,4 @@ repos:
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to uninstall")
-}
-
-func TestRunReposUninstall_GitLabWIFSecretPreRead(t *testing.T) {
-	m := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-  gitlab:
-    url: https://gitlab.example.com
-defaults:
-  forge: gitlab
-repos:
-  - acme/repo
-`
-	manifestPath := writeTestManifest(t, m)
-	fc := newInstalledFakeClientCLI("acme/repo")
-	fc.VariableValues["acme/repo/FULLSEND_SA"] = "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
-
-	fakeGCP := gcf.NewFakeGCFClient()
-	err := runReposUninstall(context.Background(), &reposUninstallConfig{
-		manifest:    manifestPath,
-		yes:         true,
-		concurrency: 4,
-		testClient:  fc,
-		testGCPClientFactory: func(projectID string) gcf.GCFClient {
-			require.Equal(t, "my-gcp-project", projectID)
-			return fakeGCP
-		},
-	}, []string{"acme/repo"})
-	require.NoError(t, err)
-
-	deleted := gcf.DeletedSecretIDs(fakeGCP)
-	require.Len(t, deleted, 1)
-	assert.Equal(t, "fullsend-bot-token-acme--repo", deleted[0])
 }

@@ -75,6 +75,7 @@ type PerRepoConfigReader interface {
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string
+	ConfigTracker() string
 	ConfigMintURL() string
 	ConfigInferenceProvider() string
 	ConfigInferenceProject() string
@@ -397,6 +398,22 @@ func (c *perRepoConfig) ConfigForge() string {
 	}
 	if c.parent != nil {
 		return c.parent.ConfigForge()
+	}
+	return ""
+}
+
+// ConfigTracker returns the configured default issue tracker (e.g.
+// "github", "gitlab", "jira"), used as the default for `fullsend
+// issues` commands' --tracker flag when it is not set explicitly.
+// Distinct from ConfigForge: a repo's hosting forge (github/gitlab)
+// does not imply its issue tracker (e.g. a GitHub-hosted repo may
+// track issues in Jira).
+func (c *perRepoConfig) ConfigTracker() string {
+	if c.Tracker != "" {
+		return c.Tracker
+	}
+	if c.parent != nil {
+		return c.parent.ConfigTracker()
 	}
 	return ""
 }

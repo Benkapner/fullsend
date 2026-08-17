@@ -232,6 +232,7 @@ export default defineConfig({
               link: "/guides/user/building-custom-agents",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
+            { text: "Issue Commands", link: "/guides/user/issues-commands" },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
             { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },
             { text: "Tracing with MLflow", link: "/guides/user/tracing-with-mlflow" },

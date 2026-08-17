@@ -210,6 +210,24 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 		})
 	}
 
+	// Inference secrets are always required.
+	for _, secretName := range requiredSecretsForForge() {
+		exists, secretErr := client.RepoSecretExists(ctx, owner, repo, secretName)
+		if secretErr != nil {
+			if status.Error == "" {
+				status.Error = fmt.Sprintf("checking secret %s: %v", secretName, secretErr)
+			}
+			break
+		}
+		if !exists {
+			status.Drifts = append(status.Drifts, Drift{
+				Field:    secretName,
+				Expected: "present",
+				Actual:   "missing",
+			})
+		}
+	}
+
 	// Resolve the manifest's fullsend_ref to a commit SHA for
 	// comparison. This handles floating refs like "main" — if the
 	// branch has moved, the resolved SHA differs from the installed

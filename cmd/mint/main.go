@@ -25,14 +25,13 @@ func buildHandler() (http.Handler, error) {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
 
-	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		Audience:   os.Getenv("OIDC_AUDIENCE"),
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-	})
-
-	if err := registerCustomPermissions(); err != nil {
-		return nil, err
+	jwksClient := &http.Client{Timeout: 30 * time.Second}
+	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
+		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+			IssuerURL:  "https://token.actions.githubusercontent.com",
+			Audience:   audience,
+			HTTPClient: jwksClient,
+		})
 	}
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
@@ -40,7 +39,7 @@ func buildHandler() (http.Handler, error) {
 		return nil, fmt.Errorf("initializing PEM accessor: %w", err)
 	}
 
-	handler, err := mintcore.NewHandler(pemAccessor, verifier)
+	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, &http.Client{Timeout: 30 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("initializing handler: %w", err)
 	}
@@ -64,7 +63,7 @@ func buildHandler() (http.Handler, error) {
 }
 
 func run(ctx context.Context) error {
-	missing := checkRequired("ROLE_APP_IDS", "OIDC_AUDIENCE", "PEM_DIR")
+	missing := checkRequired("ROLE_APP_IDS", "PEM_DIR")
 	if len(missing) > 0 {
 		return fmt.Errorf("required environment variables not set: %s", strings.Join(missing, ", "))
 	}
@@ -138,27 +137,6 @@ func parseLocalRoles(raw string) (map[string]bool, error) {
 		}
 	}
 	return roles, nil
-}
-
-func registerCustomPermissions() error {
-	raw := os.Getenv("CUSTOM_ROLE_PERMISSIONS")
-	if raw == "" {
-		return nil
-	}
-	var perms map[string]map[string]string
-	if err := json.Unmarshal([]byte(raw), &perms); err != nil {
-		return fmt.Errorf("failed to parse CUSTOM_ROLE_PERMISSIONS: %w", err)
-	}
-	if err := mintcore.RegisterCustomRolePermissions(perms); err != nil {
-		return fmt.Errorf("registering custom role permissions: %w", err)
-	}
-	roles := make([]string, 0, len(perms))
-	for r := range perms {
-		roles = append(roles, r)
-	}
-	sort.Strings(roles)
-	log.Printf("custom role permissions registered: %v", roles)
-	return nil
 }
 
 func sortedKeys(m map[string]bool) []string {
