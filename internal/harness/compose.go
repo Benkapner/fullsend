@@ -749,10 +749,8 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		deps = append(deps, dep)
 	}
 
-	for platform, fc := range base.Forge {
-		if fc == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
 		forgeScripts := []struct {
 			name string
 			ptr  *string
@@ -900,10 +898,8 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 	// Forge-specific skills: same fetch treatment as top-level skills.
 	// resolveBaseScripts already handles forge scripts and forge policy;
 	// skills are directories (fetched via fetchBaseSkill) and belong here.
-	for platform, fc := range base.Forge {
-		if fc == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
 		for i, skill := range fc.Skills {
 			if skill.Source != "" && !IsURL(skill.Source) && !isFullsendCachePath(skill.Source, opts.WorkspaceRoot) {
 				fieldName := fmt.Sprintf("forge.%s.skills[%d]", platform, i)
@@ -978,10 +974,8 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 	// Forge-specific host_files: same fetch treatment as top-level
 	// host_files. Entries with ${VAR} expansion are left unchanged
 	// (resolved at bootstrap time on the host).
-	for platform, fc := range base.Forge {
-		if fc == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
 		for i := range fc.HostFiles {
 			src := fc.HostFiles[i].Src
 			if src == "" || strings.Contains(src, "${") || IsURL(src) || isFullsendCachePath(src, opts.WorkspaceRoot) {
@@ -1011,11 +1005,8 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	hasTopLevel := base.OpenShell != nil && len(base.OpenShell.Profiles) > 0
 	hasForge := false
-	for _, fc := range base.Forge {
-		if fc != nil && fc.OpenShell != nil && len(fc.OpenShell.Profiles) > 0 {
-			hasForge = true
-			break
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil && fc.OpenShell != nil && len(fc.OpenShell.Profiles) > 0 {
+		hasForge = true
 	}
 	if !hasTopLevel && !hasForge {
 		return nil, nil
@@ -1047,10 +1038,8 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 	}
 
 	// Forge-specific profiles: same fetch treatment as top-level profiles.
-	for platform, fc := range base.Forge {
-		if fc == nil || fc.OpenShell == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil && fc.OpenShell != nil {
+		platform := opts.ForgePlatform
 		for i, p := range fc.OpenShell.Profiles {
 			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
 				continue
@@ -1079,11 +1068,8 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	hasTopLevel := len(base.Providers) > 0
 	hasForge := false
-	for _, fc := range base.Forge {
-		if fc != nil && len(fc.Providers) > 0 {
-			hasForge = true
-			break
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil && len(fc.Providers) > 0 {
+		hasForge = true
 	}
 	if !hasTopLevel && !hasForge {
 		return nil, nil
@@ -1116,10 +1102,8 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 	}
 
 	// Forge-specific providers: same fetch treatment as top-level providers.
-	for platform, fc := range base.Forge {
-		if fc == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
 		for i, p := range fc.Providers {
 			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
 				continue
