@@ -22,6 +22,8 @@ func TestValidRoles(t *testing.T) {
 	assert.Contains(t, roles, "retro")
 	assert.Contains(t, roles, "prioritize")
 	assert.Contains(t, roles, "e2e")
+	assert.NotContains(t, roles, "scribe",
+		"scribe is mint-only until scaffold/workflow wiring lands; must not pass roles: config validation")
 }
 
 func TestValidRoles_RecognizedByMintcore(t *testing.T) {
@@ -29,6 +31,27 @@ func TestValidRoles_RecognizedByMintcore(t *testing.T) {
 		assert.True(t, mintcore.HasRole(role),
 			"ValidRoles() contains %q but mintcore.HasRole is false — role lists may have drifted (see issue tracking consolidation)", role)
 	}
+}
+
+func TestPerRepoConfigValidate_RejectsMintOnlyScribeRole(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   []string{"triage", "scribe"},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid role "scribe"`)
+}
+
+func TestOrgConfigValidate_RejectsMintOnlyScribeRole(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"triage", "scribe"}},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid role "scribe"`)
 }
 
 func TestPerRepoDefaultRoles(t *testing.T) {

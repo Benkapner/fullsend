@@ -178,6 +178,12 @@ type GCFClient interface {
 type LiveGCFClient struct {
 	*gcp.Client
 	skipUploadURLCheck bool // testing only: skip googleapis.com domain validation
+
+	// pollDelay returns a channel that fires after the given duration,
+	// used by WaitForOperation, waitForIAMOperation, and
+	// waitForCloudRunOperation for inter-poll delays. nil → time.After.
+	// Tests inject a zero-delay function to avoid real sleeps.
+	pollDelay func(time.Duration) <-chan time.Time
 }
 
 // NewLiveGCFClient creates a new LiveGCFClient. The quotaProject is
@@ -187,6 +193,15 @@ func NewLiveGCFClient(quotaProject string) *LiveGCFClient {
 	c := gcp.NewClient()
 	c.QuotaProject = quotaProject
 	return &LiveGCFClient{Client: c}
+}
+
+// getPollDelay returns the configured poll delay function, defaulting
+// to time.After when none is set.
+func (c *LiveGCFClient) getPollDelay() func(time.Duration) <-chan time.Time {
+	if c.pollDelay != nil {
+		return c.pollDelay
+	}
+	return time.After
 }
 
 // CreateServiceAccount creates a new service account.
@@ -327,7 +342,7 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 		return fmt.Errorf("marshaling WIF provider payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, string(payloadBytes))
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("creating WIF provider: %w", err)
 	}
@@ -408,7 +423,7 @@ func (c *LiveGCFClient) UpdateWIFProvider(ctx context.Context, projectNumber, po
 		return fmt.Errorf("marshaling WIF provider update: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPatch, patchURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("updating WIF provider: %w", err)
 	}
@@ -433,7 +448,7 @@ func (c *LiveGCFClient) undeleteWIFProvider(ctx context.Context, projectNumber, 
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s:undelete",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, "{}")
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, "{}")
 	if err != nil {
 		return err
 	}
@@ -730,7 +745,7 @@ func (c *LiveGCFClient) enableWIFProvider(ctx context.Context, projectNumber, po
 		return fmt.Errorf("marshaling enable payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPatch, patchURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("enabling WIF provider: %w", err)
 	}
@@ -818,6 +833,35 @@ func (e *conflictError) Error() string {
 func isConflict(err error) bool {
 	var ce *conflictError
 	return errors.As(err, &ce)
+}
+
+// doWIFRequestWithRetry executes an HTTP request and retries on 429
+// (Too Many Requests) responses from the GCP IAM API. Uses iamRetryDelay
+// for exponential backoff with jitter, consistent with the retry strategy
+// used for IAM read-modify-write 409 conflicts. On success (or any
+// non-429 status), returns the response for the caller to handle.
+func (c *LiveGCFClient) doWIFRequestWithRetry(ctx context.Context, method, url, payload string) (*http.Response, error) {
+	const maxRetries = 7
+	for attempt := range maxRetries {
+		resp, err := c.Client.DoRequest(ctx, method, url, payload)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if attempt == maxRetries-1 {
+			return nil, fmt.Errorf("rate limited (HTTP 429) after %d attempts", maxRetries)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(iamRetryDelay(attempt)):
+		}
+	}
+	return nil, fmt.Errorf("rate limited (HTTP 429) after %d attempts", maxRetries)
 }
 
 // iamRetryDelay returns the backoff duration for an IAM read-modify-write
@@ -1698,6 +1742,7 @@ func (c *LiveGCFClient) waitForCloudRunOperation(ctx context.Context, operationN
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	delay := c.getPollDelay()
 	for {
 		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
 		if err != nil {
@@ -1726,7 +1771,7 @@ func (c *LiveGCFClient) waitForCloudRunOperation(ctx context.Context, operationN
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-delay(3 * time.Second):
 		}
 	}
 }
@@ -1931,6 +1976,7 @@ func (c *LiveGCFClient) WaitForOperation(ctx context.Context, operationName stri
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
+	delay := c.getPollDelay()
 	for {
 		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
 		if err != nil {
@@ -1959,7 +2005,7 @@ func (c *LiveGCFClient) WaitForOperation(ctx context.Context, operationName stri
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-delay(5 * time.Second):
 		}
 	}
 }
@@ -1994,12 +2040,13 @@ func (c *LiveGCFClient) waitForIAMOperation(ctx context.Context, body io.Reader)
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
+	delay := c.getPollDelay()
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/%s", op.Name)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-delay(2 * time.Second):
 		}
 
 		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")

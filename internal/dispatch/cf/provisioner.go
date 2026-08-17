@@ -55,14 +55,13 @@ var _ dispatch.Dispatcher = (*Provisioner)(nil)
 // auto-builds at deploy time when missing. For local development,
 // `make wasm-stage` can pre-stage them into workersrc/.
 //
-//go:embed workersrc/src/index.ts workersrc/src/version.ts workersrc/wrangler.toml workersrc/package.json workersrc/tsconfig.json workersrc/wasm.d.ts workersrc/wasm_exec.d.ts
+//go:embed workersrc/src/index.ts workersrc/wrangler.toml workersrc/package.json workersrc/tsconfig.json workersrc/wasm.d.ts workersrc/wasm_exec.d.ts
 var embeddedWorkerSource embed.FS
 
 // embeddedWorkerFiles lists the embedded files for extraction.
 // Maps embedded path (under workersrc/) to extraction path.
 var embeddedWorkerFiles = []string{
 	"workersrc/src/index.ts",
-	"workersrc/src/version.ts",
 	"workersrc/wrangler.toml",
 	"workersrc/package.json",
 	"workersrc/tsconfig.json",
@@ -231,18 +230,14 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	// (no manual `make wasm-stage` required). When both files are
 	// already present (e.g. from a prior `make wasm-stage`), this
 	// is a no-op.
-	if err := ensureWASMArtifacts(sourceDir); err != nil {
+	if err := ensureWASMArtifacts(sourceDir, p.cfg.Version, p.cfg.Commit); err != nil {
 		return nil, fmt.Errorf("staging WASM artifacts: %w", err)
 	}
 
-	// Stamp version metadata into the Worker source at deploy time so
-	// the WASM module can report them via /health and /status. This
-	// mirrors the GCF approach (writeVersionGoToZip) — version data is
-	// compiled into the deployed bundle and cannot diverge via admin
-	// action on environment variables.
-	if err := writeVersionTS(sourceDir, p.cfg.Version, p.cfg.Commit); err != nil {
-		return nil, fmt.Errorf("writing version.ts: %w", err)
-	}
+	// Version metadata is stamped into the WASM binary via -ldflags
+	// during go build (see buildWASM). No runtime injection needed —
+	// the version is compiled into mintcore.Version / mintcore.Commit,
+	// matching how writeVersionGoToZip works for GCF deploys.
 
 	// For preview deploys, check whether the Worker script exists. If it
 	// does not, perform a one-time minimal durable deploy so that the
@@ -411,13 +406,13 @@ func (p *Provisioner) validate() error {
 //
 // When SourceDir points to a checkout directory, the source is copied
 // to a temp directory so that auto-staged WASM artifacts and generated
-// version.ts do not pollute the checkout.
+// WASM artifacts do not pollute the checkout.
 func (p *Provisioner) resolveSourceDir() (string, func(), error) {
 	if p.cfg.SourceDir != "" {
 		if err := validateSourceDir(p.cfg.SourceDir); err != nil {
 			return "", nil, err
 		}
-		// Copy to temp dir so WASM staging and version.ts generation
+		// Copy to temp dir so WASM staging
 		// do not modify the original source directory.
 		tmpDir, err := os.MkdirTemp("", "fullsend-cf-worker-*")
 		if err != nil {
@@ -474,19 +469,28 @@ var wasmArtifacts = []string{"mintcore.wasm", "wasm_exec.js"}
 
 // BuildWASMFn is the function used to compile mintcore.wasm from
 // cmd/mint-wasm. Override in tests to avoid requiring a full Go
-// toolchain and the mint-wasm source tree.
+// toolchain and the mint-wasm source tree. The version and commit
+// parameters are stamped into the binary via -ldflags, mirroring
+// how writeVersionGoToZip works for GCF deploys.
 var BuildWASMFn = buildWASM
 
 // CopyWASMExecFn is the function used to copy wasm_exec.js from the
 // Go toolchain into the Worker source directory. Override in tests.
 var CopyWASMExecFn = copyWASMExec
 
+// execCombinedOutputFn runs a prepared *exec.Cmd and returns its
+// combined stdout+stderr. Override in tests to avoid requiring a
+// real cross-compile toolchain.
+var execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
+	return cmd.CombinedOutput()
+}
+
 // ensureWASMArtifacts checks whether mintcore.wasm and wasm_exec.js
 // are present in dir. If either is missing, it auto-builds/copies
 // them so that `mint deploy --platform=cloudflare` is self-contained.
 // When both are already present (e.g. from `make wasm-stage`), this
 // is a no-op.
-func ensureWASMArtifacts(dir string) error {
+func ensureWASMArtifacts(dir, version, commit string) error {
 	wasmPath := filepath.Join(dir, "mintcore.wasm")
 	execPath := filepath.Join(dir, "wasm_exec.js")
 
@@ -497,7 +501,7 @@ func ensureWASMArtifacts(dir string) error {
 	}
 
 	if !wasmOK {
-		if err := BuildWASMFn(wasmPath); err != nil {
+		if err := BuildWASMFn(wasmPath, version, commit); err != nil {
 			return fmt.Errorf("auto-building mintcore.wasm: %w", err)
 		}
 	}
@@ -509,13 +513,27 @@ func ensureWASMArtifacts(dir string) error {
 	return nil
 }
 
+// wasmLDFlags returns the -ldflags value for compiling the mintcore WASM
+// binary. Includes -s -w to strip debug info (reduces gzip size by ~30%)
+// and -X flags to stamp version metadata into the binary.
+func wasmLDFlags(version, commit string) string {
+	return fmt.Sprintf(
+		"-s -w "+
+			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Version=%s "+
+			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Commit=%s",
+		version, commit)
+}
+
 // buildWASM compiles the mintcore WASM binary from cmd/mint-wasm.
-// The binary is written to outPath. Requires Go toolchain.
-func buildWASM(outPath string) error {
-	cmd := exec.Command("go", "build", "-o", outPath, ".")
+// The binary is written to outPath. Version and commit are stamped
+// into the binary via -ldflags (mintcore.Version and mintcore.Commit),
+// matching the GCF approach of compiling version data into the source.
+// Debug info is stripped (-s -w) to reduce the gzip size.
+func buildWASM(outPath, version, commit string) error {
+	cmd := exec.Command("go", "build", "-ldflags", wasmLDFlags(version, commit), "-o", outPath, ".")
 	cmd.Dir = filepath.Join(findRepoRoot(), "cmd", "mint-wasm")
 	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
-	output, err := cmd.CombinedOutput()
+	output, err := execCombinedOutputFn(cmd)
 	if err != nil {
 		return fmt.Errorf("go build cmd/mint-wasm: %s\n%s", err, string(output))
 	}
@@ -598,24 +616,6 @@ func copyDir(src, dst string) error {
 		}
 		return os.WriteFile(destPath, data, 0o644)
 	})
-}
-
-// writeVersionTS writes a generated version.ts into the Worker source
-// directory with the provided version and commit values. This stamps
-// the version identity directly into the deployed source code —
-// mirroring how writeVersionGoToZip works for GCF deploys — so it
-// cannot drift from the running code via admin changes to env vars.
-func writeVersionTS(dir, version, commit string) error {
-	src := fmt.Sprintf(
-		"// Generated at deploy time by the CF provisioner. Do not edit.\n"+
-			"export const FULLSEND_VERSION = %q;\n"+
-			"export const FULLSEND_COMMIT = %q;\n",
-		version, commit)
-	destPath := filepath.Join(dir, "src", "version.ts")
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("creating directory for version.ts: %w", err)
-	}
-	return os.WriteFile(destPath, []byte(src), 0o644)
 }
 
 // validateSourceDir checks that a source directory contains the

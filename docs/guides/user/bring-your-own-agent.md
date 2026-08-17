@@ -211,6 +211,7 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/base.yaml          # Sandbox policy (filesystem, landlock, process)
 model: opus                         # LLM model override
+effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 readonly_repo: false                # Mount repo as read-only in sandbox
 providers:                           # Network access via provider profiles
   - vertex-ai                       # References providers/vertex-ai.yaml
@@ -466,6 +467,49 @@ Any harness field can be overridden. The [field merge rules](#field-merge-rules-
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Replace validation or security config** — child replaces the entire block.
 
+### Tuning agents with augmentation skills
+
+Before you fork a whole agent or replace a built-in skill, decide what you
+are actually changing:
+
+| Goal | Prefer |
+|------|--------|
+| Domain rules, linting, or constraints that sit *alongside* defaults | A **unique-named** augmentation skill (append via harness `skills:`) |
+| Shorter or reformatted human-facing output (comments, summaries) | Augmentation skill with **field ownership** and hard limits — not soft "be concise" |
+| New review dimension under an orchestrator (for example `pr-review`) | A **sub-agent** file under that skill's `sub-agents/`, plus whatever registration the current platform requires |
+| Replace most of a skill's procedure | Whole-skill override / derived harness — heavier; you stop inheriting upstream edits |
+
+**What to think about when authoring:**
+
+1. **Discover first** — read the target agent's harness, agent definition,
+   schema, post-script, and any shipped skills under
+   [fullsend-ai/agents](https://github.com/fullsend-ai/agents). Do not guess
+   field names or roster lists from memory.
+2. **Unique skill names** — a repo skill with the same directory name as a
+   built-in is ignored (see [skill precedence](customizing-with-skills.md#skill-precedence)).
+3. **Specificity wins** — vague augmentations lose to hard default
+   instructions. Own exact fields; use word limits and templates.
+4. **Sub-agents ≠ wrapper skills** — if you need a new review dimension,
+   ship `sub-agents/<name>.md` (and parent dispatch updates when the
+   orchestrator uses a fixed roster). Do not invent a parallel
+   `*/SKILL.md` that embeds the same content.
+5. **Prefer the lightest shipping path** the current docs support —
+   upstream contribution, file-level skill override when available, or
+   whole-skill fork only when that is still required.
+
+> **Planned:** File-level overrides inside a pinned skill directory (add or
+> replace a single `sub-agents/<name>.md` without vendoring the whole tree)
+> are tracked in [#6158](https://github.com/fullsend-ai/fullsend/issues/6158)
+> / [#6157](https://github.com/fullsend-ai/fullsend/issues/6157). Until that
+> lands, fixed-roster sub-agent changes usually need an upstream PR or a
+> whole-skill pin.
+
+**Authoring help:** the contributor skill
+[`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
+walks this discovery and conflict analysis. Use it when writing or reviewing
+augmentation skills and sub-agents. Details also live in
+[Configuring with skills](customizing-with-skills.md#authoring-skills-that-augment-defaults).
+
 ## Testing locally
 
 Before registering, verify your agent works locally. Use `fullsend run` as a development and debugging tool — it runs your agent directly without going through dispatch:
@@ -585,7 +629,8 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
-- [Configuring with Skills](customizing-with-skills.md) — creating and managing skills
+- [Configuring with Skills](customizing-with-skills.md) — creating and managing skills; [authoring augmentations](customizing-with-skills.md#authoring-skills-that-augment-defaults)
+- [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring agent behavior](customizing-agents.md) — harness configurations and `base:` composition
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory

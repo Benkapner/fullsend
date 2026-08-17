@@ -17,7 +17,8 @@ Fullsend is a platform for fully autonomous agentic development for Git-hosted o
 - **Go coverage gate:** When changing Go production code (files under `cmd/` or `internal/` that are not `_test.go`), you **must** verify approximate patch coverage meets the 80% threshold from [`.codecov.yml`](.codecov.yml) before considering verification done. `make go-test` passing alone is not sufficient — it does not enforce Codecov thresholds. See [Verifying patch coverage locally](docs/contributing/go-code.md#verifying-patch-coverage-locally) for the exact commands. If coverage is below threshold, add tests for uncovered new/changed lines and re-check within the same run.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
 - When adding a new doc under `docs/`, check `docs/.vitepress/config.ts` sidebar config. Sections using `getMarkdownFiles()` are auto-discovered. All other sections need a manual `{ text, link }` entry. Also add the new folder's prefix to `search.options.scopes` in the same file so the folder's pages are reachable when search scope pills are active.
-- When removing or renaming a CLI command, public API, or user-facing feature, grep all documentation files under `docs/` for references to the old name and update or remove them. Pay special attention to `docs/cli/`, `docs/guides/`, and any getting-started or operations guides that walk through the removed workflow.
+- When removing, renaming, or changing the behavior or output format of a CLI command, public API, or user-facing feature, grep all documentation files under `docs/` for references and update them to reflect the current behavior. Pay special attention to `docs/cli/`, `docs/guides/`, and any getting-started or operations guides.
+- When adding a new skill under `skills/`, check the user-facing guides for relevant cross-reference opportunities: `docs/guides/user/customizing-with-skills.md` (skill catalog and usage), `docs/guides/user/bring-your-own-agent.md` (agent composition and tuning), and `docs/guides/README.md` (guide index). Add a brief cross-reference or section pointer if the new skill fills a gap in those guides.
 
 ## Topic-specific guidance
 
@@ -25,7 +26,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 
 | File | When to read |
 |------|-------------|
-| [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, suite-timeout policy, and preferring `go run` for the CLI |
+| [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, suite-timeout policy, WASM binary size constraints, and preferring `go run` for the CLI |
 | [Behaviour Testing](docs/guides/dev/behaviour-testing.md) | Modifying behaviour test repo provisioning, fork handling, or workflow dispatch — covers forge API constraints (`auto_init`, fork name derivation, Actions readiness, CI timeout budgeting) |
 | [Workflow Contracts](docs/contributing/workflow-contracts.md) | Changing GHA reusable workflows — covers dispatch sync, secret/input threading across installation-mode chains, and review rules |
 | [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls, jq patterns, and stdout contamination in command substitution |

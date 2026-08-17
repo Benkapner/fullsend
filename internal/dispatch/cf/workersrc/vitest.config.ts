@@ -7,8 +7,8 @@ export default defineWorkersConfig({
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
           // Minimal env bindings for smoke testing. These satisfy
-          // validateEnv() and mintcoreInitMint() so the WASM bridge
-          // can boot. "coder" is a canonical mintcore role — using a
+          // the inline ROLE_APP_IDS presence check and mintcoreInitMint()
+          // so the WASM bridge can boot. "coder" is a canonical mintcore role — using a
           // non-canonical name (e.g. "test") causes mintcoreInitMint
           // to fail because HasRole() rejects unknown roles, and the
           // ConfigError is cached permanently.

@@ -18,7 +18,6 @@ var uninstallSecrets = requiredSecrets
 var gitlabUninstallVars = []string{
 	forge.PerRepoGuardVar,
 	"FULLSEND_BOT_TOKEN_SECRET",
-	"FULLSEND_CREDENTIAL_MODE",
 	"FULLSEND_DISPATCHED_KEYS_FAST",
 	"FULLSEND_DISPATCHED_KEYS_FULL",
 	"FULLSEND_FAILED_KEYS_FAST",

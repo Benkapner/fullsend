@@ -155,7 +155,9 @@ var githubAPIBaseURL = "https://api.github.com"
 var githubHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // lookupAppID fetches the numeric app ID for a public GitHub App by slug.
-// It makes an unauthenticated GET request to the GitHub API.
+// When GH_TOKEN or GITHUB_TOKEN is set in the environment, the request is
+// authenticated (5,000 requests/hour). Otherwise it falls back to an
+// unauthenticated request (60 requests/hour, shared by source IP).
 func lookupAppID(ctx context.Context, slug string) (int, error) {
 	url := githubAPIBaseURL + "/apps/" + url.PathEscape(slug)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -163,6 +165,16 @@ func lookupAppID(ctx context.Context, slug string) (int, error) {
 		return 0, fmt.Errorf("creating request for app %s: %w", slug, err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+
+	// Authenticate if a token is available, lifting the rate limit from
+	// 60/hour (unauthenticated, shared by IP) to 5,000/hour.
+	token := os.Getenv("GH_TOKEN")
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := githubHTTPClient.Do(req)
 	if err != nil {
@@ -177,7 +189,10 @@ func lookupAppID(ctx context.Context, slug string) (int, error) {
 		return 0, fmt.Errorf("GitHub App %q not found — ensure the app exists and is publicly visible", slug)
 	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		return 0, fmt.Errorf("GitHub API rate limit exceeded for app %s — unauthenticated requests are limited to 60/hour; try again later", slug)
+		if token != "" {
+			return 0, fmt.Errorf("GitHub API rate limit exceeded for app %s — try again later", slug)
+		}
+		return 0, fmt.Errorf("GitHub API rate limit exceeded for app %s — unauthenticated requests are limited to 60/hour; set GH_TOKEN or GITHUB_TOKEN and try again", slug)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("GitHub API returned %d for app %s", resp.StatusCode, slug)

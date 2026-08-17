@@ -68,7 +68,8 @@ func (f *fakePEMAccessor) AccessPEM(_ context.Context, role string) ([]byte, err
 
 func mustNewHandler(t *testing.T, pemAccessor PEMAccessor, verifier OIDCVerifier) *Handler {
 	t.Helper()
-	h, err := NewHandler(pemAccessor, verifier)
+	factory := func(_ string) (OIDCVerifier, error) { return verifier, nil }
+	h, err := NewHandler(os.Getenv, pemAccessor, factory, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -119,11 +120,14 @@ func newTestOIDCEnv(t *testing.T, pemAccessor PEMAccessor) *testOIDCEnv {
 	t.Cleanup(env.server.Close)
 	env.issuerURL = env.server.URL
 
-	verifier := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL: env.server.URL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
-	})
-	h, err := NewHandler(pemAccessor, verifier)
+	issuerURL := env.server.URL
+	factory := func(audience string) (OIDCVerifier, error) {
+		return NewJWKSVerifier(JWKSVerifierConfig{
+			IssuerURL: issuerURL,
+			Audience:  audience,
+		})
+	}
+	h, err := NewHandler(os.Getenv, pemAccessor, factory, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("creating handler: %v", err)
 	}
@@ -2160,14 +2164,17 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 	}))
 	defer stsServer.Close()
 
-	verifier := NewSTSVerifier(STSVerifierConfig{
+	verifier, vErr := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
+		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "github-oidc",
-		OIDCAudience:       "fullsend-mint",
 	})
+	if vErr != nil {
+		t.Fatalf("NewSTSVerifier: %v", vErr)
+	}
 	h := mustNewHandler(t, pemAccessor, verifier)
 
 	// Build a minimal valid OIDC token with the correct claims.
@@ -2251,17 +2258,20 @@ func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 	}))
 	defer stsServer.Close()
 
-	verifier := NewSTSVerifier(STSVerifierConfig{
+	verifier2, vErr2 := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
+		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "github-oidc",
-		OIDCAudience:       "fullsend-mint",
 	})
+	if vErr2 != nil {
+		t.Fatalf("NewSTSVerifier: %v", vErr2)
+	}
 	h := mustNewHandler(t, &fakePEMAccessor{
 		pems: map[string][]byte{"coder": pemData},
-	}, verifier)
+	}, verifier2)
 	h.allowedWorkflowFiles = []string{"dispatch.yml"}
 
 	buildToken := func(workflowRef string) string {
@@ -2450,10 +2460,13 @@ func TestHandler_RestrictedWorkflowFiles(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	verifier := NewJWKSVerifier(JWKSVerifierConfig{
+	verifier, vErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if vErr != nil {
+		t.Fatalf("NewJWKSVerifier: %v", vErr)
+	}
 	h := mustNewHandler(t, pemAccessor, verifier)
 	h.allowedWorkflowFiles = []string{"dispatch.yml"}
 
@@ -2516,10 +2529,14 @@ func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 		pems: map[string][]byte{"coder": pemData},
 	})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"ci.yml", "dispatch.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/custom-repo": true}
 	env.handler.workflowHostRepos = map[string]bool{"test-org/custom-repo": true}
@@ -2594,10 +2611,14 @@ func TestHandler_UpstreamWorkflowRef(t *testing.T) {
 		pems: map[string][]byte{"coder": pemData},
 	})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"dispatch.yml"}
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2654,10 +2675,14 @@ func TestHandler_PublicMintMode(t *testing.T) {
 		pems: map[string][]byte{"coder": pemData},
 	})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"dispatch.yml"}
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2706,10 +2731,14 @@ func TestHandler_PublicMintRejectsLegacyFullsendRef(t *testing.T) {
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"*"}
 
 	token := env.signToken(t, map[string]interface{}{
@@ -2735,10 +2764,14 @@ func TestHandler_PublicMintRejectsPerRepoSelfWorkflow(t *testing.T) {
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"*"}
 
 	token := env.signToken(t, map[string]interface{}{
@@ -2763,10 +2796,14 @@ func TestHandler_PerRepoCrossRepoRef(t *testing.T) {
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"dispatch.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/repo-a": true}
 
@@ -2792,10 +2829,14 @@ func TestHandler_NonWorkflowPath(t *testing.T) {
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"*"}
 
 	token := env.signToken(t, map[string]interface{}{
@@ -2820,10 +2861,14 @@ func TestHandler_PerRepoUnregistered(t *testing.T) {
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"dispatch.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/registered-repo": true}
 
@@ -2857,10 +2902,14 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 		pems: map[string][]byte{"coder": pemData},
 	})
 
-	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
 		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
+	if fvErr != nil {
+		t.Fatalf("creating JWKS verifier: %v", fvErr)
+	}
+	env.handler.oidcVerifier = freshVerifier
 	env.handler.allowedWorkflowFiles = []string{"ci.yml"}
 	env.handler.perRepoWIFRepos = map[string]bool{"test-org/my-repo": true}
 	env.handler.workflowHostRepos = map[string]bool{"test-org/my-repo": true}
@@ -2927,18 +2976,21 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	}))
 	defer stsServer.Close()
 
-	verifier := NewSTSVerifier(STSVerifierConfig{
+	verifier3, vErr3 := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
+		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "github-oidc",
-		OIDCAudience:       "fullsend-mint",
 		PerRepoWIFRepos:    map[string]bool{"test-org/custom-repo": true},
 	})
+	if vErr3 != nil {
+		t.Fatalf("NewSTSVerifier: %v", vErr3)
+	}
 	h := mustNewHandler(t, &fakePEMAccessor{
 		pems: map[string][]byte{"coder": pemData},
-	}, verifier)
+	}, verifier3)
 	h.allowedWorkflowFiles = []string{"ci.yml", "dispatch.yml"}
 	h.perRepoWIFRepos = map[string]bool{"test-org/custom-repo": true}
 	h.workflowHostRepos = map[string]bool{"test-org/custom-repo": true}

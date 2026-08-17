@@ -4,7 +4,9 @@
 package repos
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +29,14 @@ const maxManifestBytes = 1 << 20 // 1 MB
 const (
 	ForgeGitHub = "github"
 	ForgeGitLab = "gitlab"
+)
+
+// Mint mode constants control the default mint URL for GitHub repos.
+const (
+	MintModePublic  = "public"
+	MintModePrivate = "private"
+
+	DefaultPublicMintURL = "https://mint.fullsend.sh"
 )
 
 // validForges is the set of accepted forge values.
@@ -66,6 +76,7 @@ type ForgeSection struct {
 type GitHubForgeInfra struct {
 	URL         string `yaml:"url,omitempty"`
 	MintURL     string `yaml:"mint_url,omitempty"`
+	MintMode    string `yaml:"mint_mode,omitempty"`
 	FullsendRef string `yaml:"fullsend_ref,omitempty"`
 }
 
@@ -88,8 +99,9 @@ func ForgeSectionFromURL(forgeName, forgeURL string) ForgeSection {
 
 // GitLabForgeInfra holds GitLab-specific infrastructure settings.
 type GitLabForgeInfra struct {
-	URL        string   `yaml:"url"`
-	RunnerTags []string `yaml:"runner_tags,omitempty"`
+	URL         string   `yaml:"url"`
+	RunnerTags  []string `yaml:"runner_tags,omitempty"`
+	FullsendRef string   `yaml:"fullsend_ref,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo.
@@ -111,6 +123,7 @@ type RepoEntry struct {
 	// forge-level default.
 	FullsendRef NullableString `yaml:"fullsend_ref,omitempty"`
 	MintURL     NullableString `yaml:"mint_url,omitempty"`
+	MintMode    NullableString `yaml:"mint_mode,omitempty"`
 
 	// AllowedRemoteResources overrides the defaults.allowed_remote_resources
 	// list. A non-nil slice replaces the default; nil (omitted) inherits.
@@ -148,6 +161,10 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 			if err := decodeNullable(val, &r.MintURL); err != nil {
 				return fmt.Errorf("decoding mint_url: %w", err)
 			}
+		case "mint_mode":
+			if err := decodeNullable(val, &r.MintMode); err != nil {
+				return fmt.Errorf("decoding mint_mode: %w", err)
+			}
 		case "allowed_remote_resources":
 			if val.Tag == "!!null" {
 				// Explicit null: treat as empty override (no inheritance).
@@ -169,7 +186,7 @@ func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
 // semantics for AllowedRemoteResources.
 func (r RepoEntry) MarshalYAML() (interface{}, error) {
 	hasOverrides := r.Forge.Set || r.FullsendRef.Set ||
-		r.MintURL.Set || r.AllowedRemoteResources != nil
+		r.MintURL.Set || r.MintMode.Set || r.AllowedRemoteResources != nil
 	if !hasOverrides {
 		return r.Repo, nil
 	}
@@ -198,6 +215,7 @@ func (r RepoEntry) MarshalYAML() (interface{}, error) {
 	appendNullable("forge", r.Forge)
 	appendNullable("fullsend_ref", r.FullsendRef)
 	appendNullable("mint_url", r.MintURL)
+	appendNullable("mint_mode", r.MintMode)
 
 	if r.AllowedRemoteResources != nil {
 		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: "allowed_remote_resources"}
@@ -300,12 +318,18 @@ type ResolvedConfig struct {
 	Forge                  string
 	ForgeConfig            ForgeConfig
 	MintURL                string
+	MintMode               string
 	FullsendRef            string
 	AllowedRemoteResources []string
 }
 
 func parseManifestBytes(data []byte, m *Manifest) error {
-	return yaml.Unmarshal(data, m)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(m); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
 
 // LoadManifest reads and parses a repos.yaml manifest from a local
@@ -444,8 +468,8 @@ func fetchManifestURL(ctx context.Context, rawURL string, skipIPCheck bool) ([]b
 // Validate checks the manifest for structural correctness:
 //   - version must be 1
 //   - forge.github.url defaults to https://github.com when unset;
-//     mint_url is required when at least one repo resolves to
-//     forge: github
+//     mint_url defaults to DefaultPublicMintURL in public mode,
+//     and is required in private mode
 //   - forge.gitlab.url is required when at least one repo resolves to
 //     forge: gitlab
 //   - each repo entry must have a valid owner/repo or owner/glob format
@@ -505,6 +529,40 @@ func (m *Manifest) Validate() error {
 			}
 		}
 
+		// Validate per-repo mint_mode override.
+		if entry.MintMode.Set && !entry.MintMode.Null && entry.MintMode.Value != "" {
+			if entry.MintMode.Value != MintModePublic && entry.MintMode.Value != MintModePrivate {
+				return fmt.Errorf("repos[%d]: per-repo mint_mode must be %q or %q, got %q", i, MintModePublic, MintModePrivate, entry.MintMode.Value)
+			}
+			if entryForge != ForgeGitHub {
+				return fmt.Errorf("repos[%d]: mint_mode is only supported for GitHub repos", i)
+			}
+		}
+
+		// Reject per-repo mint_url on non-GitHub repos.
+		if entry.MintURL.Set && !entry.MintURL.Null && entry.MintURL.Value != "" && entryForge != ForgeGitHub {
+			return fmt.Errorf("repos[%d]: mint_url is only supported for GitHub repos", i)
+		}
+
+		// Cross-field: mint_url must resolve to a non-empty value for
+		// GitHub repos. In private mode there is no builtin default; in
+		// public mode the default is applied only when the field is
+		// omitted — explicit null clears it.
+		if entryForge == ForgeGitHub {
+			resolvedMode := resolveField(entry.MintMode, m.Forge.GitHub.MintMode, MintModePublic)
+			if resolvedMode == MintModePrivate {
+				resolvedURL := resolveField(entry.MintURL, m.Forge.GitHub.MintURL, "")
+				if resolvedURL == "" {
+					return fmt.Errorf("repos[%d]: mint_url is required when mint_mode is %q", i, MintModePrivate)
+				}
+			} else {
+				resolvedURL := resolveField(entry.MintURL, m.Forge.GitHub.MintURL, DefaultPublicMintURL)
+				if resolvedURL == "" {
+					return fmt.Errorf("repos[%d]: mint_url must not be null in public mode (omit to use the default %s)", i, DefaultPublicMintURL)
+				}
+			}
+		}
+
 		// Validate per-repo fullsend_ref override.
 		if entry.FullsendRef.Set && !entry.FullsendRef.Null && entry.FullsendRef.Value != "" {
 			if !IsValidRef(entry.FullsendRef.Value) {
@@ -550,12 +608,23 @@ func (m *Manifest) Validate() error {
 			if err := rejectExtraneousURLParts(u, "forge.github.url"); err != nil {
 				return err
 			}
-			if m.Forge.GitHub.MintURL == "" {
-				return fmt.Errorf("forge.github.mint_url is required when GitHub repos are present")
+			mintMode := m.Forge.GitHub.MintMode
+			if mintMode == "" {
+				mintMode = MintModePublic
 			}
-			mu, err := url.Parse(m.Forge.GitHub.MintURL)
+			if mintMode != MintModePublic && mintMode != MintModePrivate {
+				return fmt.Errorf("forge.github.mint_mode must be %q or %q, got %q", MintModePublic, MintModePrivate, mintMode)
+			}
+			mintURL := m.Forge.GitHub.MintURL
+			if mintURL == "" && mintMode == MintModePublic {
+				mintURL = DefaultPublicMintURL
+			}
+			if mintURL == "" {
+				return fmt.Errorf("forge.github.mint_url is required when mint_mode is %q", MintModePrivate)
+			}
+			mu, err := url.Parse(mintURL)
 			if err != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("forge.github.mint_url must be a valid HTTPS URL, got %q", m.Forge.GitHub.MintURL)
+				return fmt.Errorf("forge.github.mint_url must be a valid HTTPS URL, got %q", mintURL)
 			}
 			if m.Forge.GitHub.FullsendRef != "" && !IsValidRef(m.Forge.GitHub.FullsendRef) {
 				return fmt.Errorf("forge.github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Forge.GitHub.FullsendRef)
@@ -571,6 +640,9 @@ func (m *Manifest) Validate() error {
 			}
 			if err := rejectExtraneousURLParts(u, "forge.gitlab.url"); err != nil {
 				return err
+			}
+			if m.Forge.GitLab.FullsendRef != "" && !IsValidRef(m.Forge.GitLab.FullsendRef) {
+				return fmt.Errorf("forge.gitlab.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Forge.GitLab.FullsendRef)
 			}
 		}
 	}
@@ -775,9 +847,20 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 	// InferenceProject, InferenceProjectNumber, and InferenceRegion
 	// are install-time-only values provided via CLI flags — they are
 	// not stored in the manifest and are not populated here.
-	if cfg.Forge == ForgeGitHub {
-		cfg.MintURL = resolveField(entry.MintURL, m.Forge.GitHub.MintURL, "")
+	switch cfg.Forge {
+	case ForgeGitHub:
+		cfg.MintMode = resolveField(entry.MintMode, m.Forge.GitHub.MintMode, MintModePublic)
+		if cfg.MintMode != MintModePrivate {
+			cfg.MintMode = MintModePublic
+		}
+		mintURLDefault := ""
+		if cfg.MintMode == MintModePublic {
+			mintURLDefault = DefaultPublicMintURL
+		}
+		cfg.MintURL = resolveField(entry.MintURL, m.Forge.GitHub.MintURL, mintURLDefault)
 		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitHub.FullsendRef, "")
+	case ForgeGitLab:
+		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitLab.FullsendRef, "")
 	}
 	return cfg
 }

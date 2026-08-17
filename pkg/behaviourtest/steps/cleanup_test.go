@@ -614,12 +614,11 @@ func TestCleanupScenario_ClearsDummyOps(t *testing.T) {
 	t.Parallel()
 
 	scmDriver := &fakeCleanupSCM{}
-	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
 	w := &world.World{
+		Org:       "org",
 		RepoOwner: "org",
 		RepoName:  "repo",
 		DummyOps:  []runtime.BehaviourOperation{{Op: "echo", Args: "hello"}},
-		Install:   installDriver,
 		SCM:       scmDriver,
 	}
 	CleanupScenario(w)
@@ -631,18 +630,38 @@ func TestCleanupScenario_ClearsDummyOps_Error(t *testing.T) {
 
 	var logged []string
 	scmDriver := &fakeCleanupSCM{commitFileErr: fmt.Errorf("commit failed")}
-	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
 	w := &world.World{
+		Org:       "org",
 		RepoOwner: "org",
 		RepoName:  "repo",
 		DummyOps:  []runtime.BehaviourOperation{{Op: "echo", Args: "hello"}},
-		Install:   installDriver,
 		SCM:       scmDriver,
 		Logf:      func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
 	CleanupScenario(w)
 	require.Len(t, logged, 1)
 	assert.Contains(t, logged[0], "clear dummy script")
+}
+
+// --- Empty identity guard tests ---
+
+func TestCleanupScenario_ClearsDummyOps_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		// Org deliberately not set — should log instead of calling SCM.
+		DummyOps: []runtime.BehaviourOperation{{Op: "echo", Args: "hello"}},
+		SCM:      scmDriver,
+		Logf:     func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not call CommitFile with empty Org")
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "no repo configured")
 }
 
 // --- Kill switch cleanup tests ---
@@ -653,12 +672,11 @@ func TestCleanupScenario_DeactivatesKillSwitch(t *testing.T) {
 	scmDriver := &fakeCleanupSCM{
 		fileContent: []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
 	}
-	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
 	w := &world.World{
+		Org:                 "org",
 		RepoOwner:           "org",
 		RepoName:            "repo",
 		KillSwitchActivated: true,
-		Install:             installDriver,
 		SCM:                 scmDriver,
 	}
 	CleanupScenario(w)
@@ -687,12 +705,11 @@ func TestCleanupScenario_DeactivateKillSwitch_Error(t *testing.T) {
 		fileContent:   []byte("version: \"1\"\nkill_switch: true\nroles:\n  - triage\n"),
 		commitFileErr: fmt.Errorf("commit failed"),
 	}
-	installDriver := &fakeCleanupInstall{owner: "org", repo: "repo"}
 	w := &world.World{
+		Org:                 "org",
 		RepoOwner:           "org",
 		RepoName:            "repo",
 		KillSwitchActivated: true,
-		Install:             installDriver,
 		SCM:                 scmDriver,
 		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
@@ -700,21 +717,6 @@ func TestCleanupScenario_DeactivateKillSwitch_Error(t *testing.T) {
 	require.Len(t, logged, 1)
 	assert.Contains(t, logged[0], "deactivate kill switch")
 }
-
-// fakeCleanupInstall satisfies the Install interface for cleanup tests.
-type fakeCleanupInstall struct {
-	owner string
-	repo  string
-}
-
-func (f *fakeCleanupInstall) Mode() string               { return "per-repo" }
-func (f *fakeCleanupInstall) ConfigOwner() string        { return f.owner }
-func (f *fakeCleanupInstall) ConfigRepo() string         { return f.repo }
-func (f *fakeCleanupInstall) ConfigPathPrefix() string   { return ".fullsend" }
-func (f *fakeCleanupInstall) TriageWorkflowRepo() string { return f.repo }
-func (f *fakeCleanupInstall) TriageWorkflowFile() string { return "fullsend.yaml" }
-func (f *fakeCleanupInstall) AgentWorkflowFile() string  { return "reusable-triage.yml" }
-func (f *fakeCleanupInstall) AgentArtifactName() string  { return "fullsend-triage" }
 
 func TestCleanupScenario_BranchScenarioSweep(t *testing.T) {
 	t.Parallel()

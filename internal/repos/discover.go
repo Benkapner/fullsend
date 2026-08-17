@@ -95,6 +95,17 @@ func discoverRepo(ctx context.Context, client forge.Client,
 					d.MintURL = v
 				}
 			}
+			// Read GCP region from org variables so migrate receives it
+			// instead of falling back to the wrong default.
+			{
+				v, exists, err := client.GetOrgVariable(ctx, owner, "FULLSEND_GCP_REGION")
+				if err != nil {
+					progress(fullName, "discover", fmt.Sprintf("warning: could not read org variable FULLSEND_GCP_REGION: %v", err))
+				}
+				if err == nil && exists {
+					d.InferenceRegion = v
+				}
+			}
 			d.FullsendRef = ref
 			return d, nil
 		}
@@ -161,8 +172,22 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 		if gitlabURL == "" {
 			todos = append(todos, "forge.gitlab.url: set the GitLab instance URL (e.g. https://gitlab.example.com)")
 		}
+
+		fullsendRef := cfg.FullsendRef
+		if fullsendRef == "" {
+			fullsendRef = computeMode(repos, func(d DiscoveredRepo) string { return d.FullsendRef })
+		}
+		if fullsendRef == "" {
+			if cfg.CLIVersion != "" && cfg.CLIVersion != "dev" {
+				fullsendRef = "v" + strings.TrimPrefix(cfg.CLIVersion, "v")
+			} else {
+				fullsendRef = config.DefaultUpstreamRef
+			}
+		}
+
 		manifest.Forge.GitLab = GitLabForgeInfra{
-			URL: gitlabURL,
+			URL:         gitlabURL,
+			FullsendRef: fullsendRef,
 		}
 	}
 
@@ -177,6 +202,12 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 				entry.MintURL = NullableString{Set: true, Value: d.MintURL}
 			}
 			if d.FullsendRef != "" && d.FullsendRef != gh.FullsendRef {
+				entry.FullsendRef = NullableString{Set: true, Value: d.FullsendRef}
+			}
+		}
+		if forgeName == ForgeGitLab {
+			gl := manifest.Forge.GitLab
+			if d.FullsendRef != "" && d.FullsendRef != gl.FullsendRef {
 				entry.FullsendRef = NullableString{Set: true, Value: d.FullsendRef}
 			}
 		}

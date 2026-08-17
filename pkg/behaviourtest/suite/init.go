@@ -9,67 +9,62 @@ import (
 	"github.com/cucumber/godog"
 	messages "github.com/cucumber/messages/go/v21"
 
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 // InitScenario registers tag-based skips, Before/After hooks, and shared steps.
-// Each scenario receives its own World cloned from template. If pool is non-nil,
-// a repo name is leased from it for the scenario's duration.
-func InitScenario(sc *godog.ScenarioContext, template *world.World, pool *world.RepoPool) {
+// Each scenario receives its own World cloned from template. The unified
+// install.Driver on template.Driver handles repo allocation/deallocation;
+// scenarios that need a repo call AllocateRepo in a step (e.g. "Given the
+// enrolled test repository"), and the After hook deallocates on cleanup.
+func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template, pool)
+		return beforeScenario(ctx, tagNames(scenario.Tags), template)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
-		return afterScenario(ctx, pool, err)
+		return afterScenario(ctx, template.Driver, err)
 	})
 	steps.Register(sc)
 }
 
-// beforeScenario clones the template World, resets scenario fields, and
-// optionally acquires a pool lease. Extracted for unit testing without
-// live godog infrastructure.
-func beforeScenario(ctx context.Context, tags []string, template *world.World, pool *world.RepoPool) (context.Context, error) {
+// beforeScenario clones the template World, resets scenario fields.
+// Repo allocation is handled by the step (via Driver.AllocateRepo),
+// not by the Before hook.
+func beforeScenario(ctx context.Context, tags []string, template *world.World) (context.Context, error) {
 	if err := SkipErrorForTagNames(tags, template); err != nil {
 		return ctx, err
 	}
 	w := template.Clone()
 	resetScenarioWorld(w)
 
-	if pool != nil {
-		name, err := pool.Acquire(ctx)
-		if err != nil {
-			return ctx, fmt.Errorf("acquiring pool repo name: %w", err)
-		}
-		w.LeasedRepoName = name
-	}
-
 	ctx = world.WithWorld(ctx, w)
 	return ctx, nil
 }
 
-// afterScenario runs scenario cleanup and releases the pool lease.
-// Extracted for unit testing. Release errors are surfaced as test
-// failures rather than panicking the godog runner.
+// afterScenario runs scenario cleanup and deallocates the repo if one was
+// allocated. Deallocation errors are surfaced as test failures rather than
+// panicking the godog runner.
 //
-// pool.Release is deferred so the lease is returned even if
-// CleanupScenario panics. Named return values allow the deferred
-// closure to surface a release error when no scenario error exists.
-func afterScenario(ctx context.Context, pool *world.RepoPool, scenarioErr error) (_ context.Context, retErr error) {
+// driver.DeallocateRepo is deferred so the lease is returned even if
+// steps.CleanupScenario panics. Named return values allow the deferred
+// closure to surface a deallocation error when no scenario error exists.
+func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error) (_ context.Context, retErr error) {
 	retErr = scenarioErr
 	w := world.FromContext(ctx)
 	if w == nil {
 		return ctx, retErr
 	}
-	if pool != nil && w.LeasedRepoName != "" {
+	if driver != nil && w.LeasedRepoName != "" {
 		name := w.LeasedRepoName
 		defer func() {
-			if releaseErr := pool.Release(name); releaseErr != nil {
+			if deallocErr := driver.DeallocateRepo(ctx, name); deallocErr != nil {
 				if w.Logf != nil {
-					w.Logf("releasing pool repo name: %v", releaseErr)
+					w.Logf("deallocating repo: %v", deallocErr)
 				}
 				if retErr == nil {
-					retErr = fmt.Errorf("releasing pool repo name: %w", releaseErr)
+					retErr = fmt.Errorf("deallocating repo: %w", deallocErr)
 				}
 			}
 		}()

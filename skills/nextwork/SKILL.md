@@ -228,10 +228,8 @@ like production dispatch: first whitespace token of the first comment line.
   itself is older than `--stale-hours` (default 6h); raw age still uses
   `--triage-stale-hours` (default 72h).
 - `waiting_ci` and `waiting_merge_queue` are not flipped by `--stale-hours`.
-- Merge-queue membership is only checked for PRs labeled `ready-for-merge`
-  (to avoid an extra API call per PR); the check uses the PR's `baseRefName`
-  when available (not only the repo default branch). Other PRs never report
-  `in_merge_queue`.
+- Merge-queue membership is checked for all open PRs; the check uses the
+  PR's `baseRefName` when available (not only the repo default branch).
 - Linked-PR detection scans open PRs only when an issue reaches that check
   (after blockers / assignment / sub-issues). The scan is capped at five
   GraphQL pages (~500 PRs) per repo; beyond that, some links may be missed.

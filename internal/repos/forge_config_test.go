@@ -81,6 +81,26 @@ stages:
 			content: "              head_ref: $head_ref,\n              base_ref: $base_ref,",
 			want:    "",
 		},
+		{
+			name:    "version marker comment",
+			content: "---\n# fullsend-ref: v0.34.0\n# fullsend-stage: dispatch",
+			want:    "v0.34.0",
+		},
+		{
+			name:    "version marker with pre-release",
+			content: "---\n# fullsend-ref: v0.34.0-rc1\n",
+			want:    "v0.34.0-rc1",
+		},
+		{
+			name:    "version marker with SHA and tag annotation",
+			content: "---\n# fullsend-ref: abc123def (v0.34.0)\n",
+			want:    "abc123def",
+		},
+		{
+			name:    "version marker SHA annotation in full dispatch file",
+			content: "---\n# fullsend-ref: abc123def (v0.35.0)\n# fullsend-stage: dispatch\n\ndispatch:\n  stage: dispatch\n",
+			want:    "abc123def",
+		},
 	}
 
 	for _, tt := range tests {
@@ -145,11 +165,11 @@ stages:
 			wantDiff: true,
 		},
 		{
-			name:     "SHA ref with tag comment",
+			name:     "SHA ref with tag annotation",
 			input:    "    ref: abc123\n",
 			newRef:   "def456",
 			newTag:   "v2.0.0",
-			want:     "    ref: def456 # v2.0.0\n",
+			want:     "    ref: def456 (v2.0.0)\n",
 			wantDiff: true,
 		},
 		{
@@ -171,11 +191,33 @@ stages:
 			newRef:   "v2.0.0",
 			wantDiff: false,
 		},
+		{
+			name:     "version marker comment updated",
+			input:    "---\n# fullsend-ref: v0.34.0\n# fullsend-stage: dispatch\n",
+			newRef:   "v0.35.0",
+			want:     "---\n# fullsend-ref: v0.35.0\n# fullsend-stage: dispatch\n",
+			wantDiff: true,
+		},
+		{
+			name:     "version marker same version no change",
+			input:    "---\n# fullsend-ref: v0.35.0\n",
+			newRef:   "v0.35.0",
+			want:     "---\n# fullsend-ref: v0.35.0\n",
+			wantDiff: false,
+		},
+		{
+			name:     "version marker with SHA annotation replaced",
+			input:    "---\n# fullsend-ref: abc123 (v0.34.0)\n",
+			newRef:   "def456",
+			newTag:   "v0.35.0",
+			want:     "---\n# fullsend-ref: def456 (v0.35.0)\n",
+			wantDiff: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag, fc)
+			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag, fc, ForgeGitLab)
 			if changed != tt.wantDiff {
 				t.Errorf("changed = %v, want %v", changed, tt.wantDiff)
 			}

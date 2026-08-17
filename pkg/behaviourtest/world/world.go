@@ -72,10 +72,11 @@ type World struct {
 	// for this scenario's duration. Empty when no pool is configured.
 	LeasedRepoName string
 
-	// Ensurer lazily creates and installs repos on demand. Shared across
-	// scenarios (like other driver fields) and safe for concurrent use.
-	// Nil when lazy ensure is not configured.
-	Ensurer install.RepoEnsurer
+	// Driver is the unified install driver that owns repo allocation,
+	// deallocation, and suite-scoped teardown. Shared across scenarios
+	// (like other driver fields) and safe for concurrent use.
+	// Nil when no driver is configured.
+	Driver install.Driver
 
 	// KillSwitchActivated records whether this scenario activated the
 	// repo-level kill switch. CleanupScenario uses this to deactivate
@@ -110,12 +111,7 @@ func (w *World) Clone() *World {
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"
 
 // BehaviourScriptPath returns the repo-relative path for the dummy agent script.
+// BT is per-repo only; config always lives under .fullsend/.
 func (w *World) BehaviourScriptPath() string {
-	if w.Install == nil {
-		return BehaviourScriptRepoPath
-	}
-	if prefix := w.Install.ConfigPathPrefix(); prefix != "" {
-		return filepath.Join(prefix, BehaviourScriptRepoPath)
-	}
-	return BehaviourScriptRepoPath
+	return filepath.Join(".fullsend", BehaviourScriptRepoPath)
 }

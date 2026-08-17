@@ -132,6 +132,7 @@ Create `.fullsend/harness/my-agent.yaml`:
 ```yaml
 agent: agents/my-agent.md
 model: opus
+effort: high                        # optional: low, medium, high, xhigh, max (claude runtime only)
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/my-agent.yaml
 role: my-agent

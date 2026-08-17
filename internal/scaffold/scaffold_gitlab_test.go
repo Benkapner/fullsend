@@ -176,7 +176,6 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "fullsend workspace prepare")
 	// Credential validation
 	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
-	assert.Contains(t, s, "FULLSEND_CREDENTIAL_MODE must be")
 	// Bot identity verification uses server-side .source from Pipelines API
 	// (deny-by-default case statement, not forgeable CI_PIPELINE_SOURCE env var)
 	assert.Contains(t, s, `jq -r '.source // empty'`)
@@ -202,6 +201,9 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Back-link from dispatched pipelines to poll job
 	assert.Contains(t, s, "FULLSEND_POLL_JOB_URL")
 	assert.Contains(t, s, "Dispatched by:")
+	// Harness passthrough variables must be declared so os.Expand doesn't
+	// reject unset variables during harness env validation (#6273).
+	assert.Contains(t, s, "CODE_ALLOWED_TARGET_BRANCHES")
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
@@ -279,11 +281,9 @@ func TestGitLabAgentTemplateCredentialValidation(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "CI_DEBUG_TRACE")
-	assert.Contains(t, s, "FULLSEND_CREDENTIAL_MODE")
 	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
-	assert.Contains(t, s, "'wif' or 'variable'")
-	// OIDC token file must NOT be deleted before gcloud secrets
-	assert.NotContains(t, s, "trap - EXIT")
+	// Inference WIF setup is unconditional when FULLSEND_GCP_WIF_PROVIDER is set
+	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER")
 }
 
 func TestGitLabPollContent(t *testing.T) {
@@ -296,7 +296,6 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.Contains(t, s, "CI_COMMIT_REF_PROTECTED")
 	// Credential validation
 	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
-	assert.Contains(t, s, "FULLSEND_CREDENTIAL_MODE must be")
 	// Defaults to CI_SERVER_URL, not hardcoded gitlab.com
 	assert.Contains(t, s, "CI_SERVER_URL")
 	assert.NotContains(t, s, "https://gitlab.com")
@@ -356,7 +355,7 @@ func TestGitLabRunnerTagsPlaceholder(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_WithTags(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles([]string{"docker", "linux"})
+	files, err := CollectGitLabPerRepoInstallFiles([]string{"docker", "linux"}, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -371,7 +370,7 @@ func TestCollectGitLabPerRepoInstallFiles_WithTags(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_NoTags(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil)
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -382,11 +381,124 @@ func TestCollectGitLabPerRepoInstallFiles_NoTags(t *testing.T) {
 	}
 }
 
+func TestCollectGitLabPerRepoInstallFiles_VersionMarker(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "v0.34.0", "v0.34.0")
+	require.NoError(t, err)
+
+	var dispatchContent string
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+			dispatchContent = string(f.Content)
+			break
+		}
+	}
+	require.NotEmpty(t, dispatchContent, "dispatch file should exist")
+	assert.Contains(t, dispatchContent, "# fullsend-ref: v0.34.0",
+		"dispatch file should contain version marker")
+	// Marker must appear after YAML document start marker
+	assert.True(t, strings.HasPrefix(dispatchContent, "---\n"),
+		"dispatch file must start with YAML document start marker")
+	idx := strings.Index(dispatchContent, "# fullsend-ref: v0.34.0")
+	assert.Greater(t, idx, 0, "version marker should appear after ---")
+
+	// Other files should NOT contain the version marker
+	for _, f := range files {
+		if f.Path != ".gitlab/ci/fullsend-dispatch.yml" {
+			assert.NotContains(t, string(f.Content), "fullsend-ref:",
+				"%s should not contain version marker", f.Path)
+		}
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_NoVersionMarkerWhenEmpty(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		assert.NotContains(t, string(f.Content), "fullsend-ref:",
+			"%s should not contain version marker when ref is empty", f.Path)
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_SHAWithTagAnnotation(t *testing.T) {
+	// When both ref (SHA) and tag differ, marker includes both
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.35.0")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+			s := string(f.Content)
+			assert.Contains(t, s, "# fullsend-ref: abc123def (v0.35.0)",
+				"version marker should include SHA with tag annotation")
+			return
+		}
+	}
+	t.Fatal("dispatch file not found in collected files")
+}
+
+func TestCollectGitLabPerRepoInstallFiles_RefUsedWhenNoTag(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "v0.34.0", "")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+			assert.Contains(t, string(f.Content), "# fullsend-ref: v0.34.0",
+				"version marker should use ref when tag is empty")
+			return
+		}
+	}
+	t.Fatal("dispatch file not found in collected files")
+}
+
 func TestFormatRunnerTags(t *testing.T) {
-	assert.Equal(t, "[]", formatRunnerTags(nil))
-	assert.Equal(t, "[]", formatRunnerTags([]string{}))
-	assert.Equal(t, `["docker"]`, formatRunnerTags([]string{"docker"}))
-	assert.Equal(t, `["docker", "linux"]`, formatRunnerTags([]string{"docker", "linux"}))
+	assert.Equal(t, "[]", FormatRunnerTags(nil))
+	assert.Equal(t, "[]", FormatRunnerTags([]string{}))
+	assert.Equal(t, `["docker"]`, FormatRunnerTags([]string{"docker"}))
+	assert.Equal(t, `["docker", "linux"]`, FormatRunnerTags([]string{"docker", "linux"}))
+}
+
+func TestFormatVersionMarker(t *testing.T) {
+	assert.Equal(t, "", FormatVersionMarker("", ""))
+	assert.Equal(t, "# fullsend-ref: v0.34.0", FormatVersionMarker("v0.34.0", ""))
+	assert.Equal(t, "# fullsend-ref: v0.34.0", FormatVersionMarker("", "v0.34.0"))
+	assert.Equal(t, "# fullsend-ref: abc123 (v0.35.0)", FormatVersionMarker("abc123", "v0.35.0"))
+	assert.Equal(t, "# fullsend-ref: abc123", FormatVersionMarker("abc123", "abc123"))
+}
+
+func TestInsertAfterDocStart(t *testing.T) {
+	t.Run("with document start", func(t *testing.T) {
+		result := InsertAfterDocStart("---\ncontent", "# marker")
+		assert.Equal(t, "---\n# marker\ncontent", result)
+	})
+	t.Run("without document start", func(t *testing.T) {
+		result := InsertAfterDocStart("content", "# marker")
+		assert.Equal(t, "# marker\ncontent", result)
+	})
+}
+
+// TestGitLabAgentTemplateHarnessPassthroughVars validates that harness
+// passthrough variables declared in the GitHub reusable workflows are also
+// present in the GitLab agent template's variables: section. When a harness
+// YAML uses ${VAR} passthrough syntax, the harness engine's os.Expand rejects
+// unset variables. GitHub workflows set these to ” in their env: blocks; the
+// GitLab template must do the same or the agent aborts at env validation (#6273).
+func TestGitLabAgentTemplateHarnessPassthroughVars(t *testing.T) {
+	// Variables that GitHub reusable workflows set for harness passthrough.
+	// When adding a new ${VAR} passthrough to a multi-forge harness, add it
+	// here so the test catches a missing GitLab declaration.
+	passthroughVars := []string{
+		"CODE_ALLOWED_TARGET_BRANCHES",
+	}
+
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	for _, v := range passthroughVars {
+		assert.Contains(t, s, v,
+			"GitLab agent template must declare %s in variables: section — "+
+				"harness env.runner uses ${%s} passthrough which fails on unset vars (#6273)", v, v)
+	}
 }
 
 func TestGitLabNoPerStageTemplates(t *testing.T) {

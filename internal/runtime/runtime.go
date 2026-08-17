@@ -16,6 +16,7 @@ type RunMetrics struct {
 	TotalCostUSD             float64 `json:"total_cost_usd"`
 	InputTokens              int     `json:"input_tokens"`
 	OutputTokens             int     `json:"output_tokens"`
+	ReasoningTokens          int     `json:"reasoning_tokens"`
 	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
 	Model                    string  `json:"model"`
@@ -26,6 +27,7 @@ type RunParams struct {
 	SandboxName   string
 	AgentBaseName string
 	Model         string
+	Effort        string
 	RepoDir       string
 	FullsendDir   string
 	PluginDirs    []string

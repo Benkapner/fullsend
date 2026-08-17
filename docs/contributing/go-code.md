@@ -23,6 +23,23 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 
 **Interface documentation:** When extending a Go interface with new methods (e.g., adding methods to `ci.Driver` in `pkg/behaviourtest/drivers/ci/driver.go`), check `docs/guides/dev/` for documentation that lists or enumerates the interface's methods (e.g., `behaviour-drivers.md`). If found, update the method list to include all current methods, not just the newly added one. The `lint-interface-doc-sync` pre-commit hook enforces this for `ci.Driver`.
 
+## WASM binary size constraints
+
+Files in `internal/mintcore/` and `cmd/mint-wasm/` are compiled to a WASM binary (`GOOS=js GOARCH=wasm`) for the Cloudflare Worker adapter. The compiled binary must stay within CF Workers size limits:
+
+| Tier | Gzip limit | Makefile behavior |
+|------|-----------|-------------------|
+| Workers Free | 3 MB | Warning |
+| Workers Paid | 10 MB | Hard fail (`exit 1`) |
+
+The `make wasm-build` target enforces these limits automatically — run it after any change to `internal/mintcore/` or `cmd/mint-wasm/` to verify the binary stays within bounds.
+
+**Keep the WASM dependency graph minimal.** Because the Go WASM compiler includes the transitive closure of all referenced packages, small-looking changes can cause large binary size increases:
+
+- **Do not pass closures or function values** (`func(string) string`, `func() error`, etc.) into structs that are compiled into the WASM binary. Closure capture pulls the entire dependency graph of the captured variables into the binary. Prefer passing resolved values (strings, ints, config structs with only data fields) instead.
+- **Avoid importing heavy packages** in `internal/mintcore/` files that are WASM-compiled. Packages like `net/http`, `crypto/x509`, or cloud SDKs carry large dependency trees. Use build tags (`//go:build js` / `//go:build !js`) to isolate platform-specific implementations.
+- **Use the `VerifierFactory` pattern** (see `internal/mintcore/`) when WASM-compiled code needs behavior that depends on runtime configuration. The factory constructs verifiers from plain data rather than captured closures, keeping the dependency graph bounded.
+
 When making changes to Go code under `cmd/` or `internal/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
@@ -156,6 +173,64 @@ This applies to all `require` functions (`require.NoError`, `require.Equal`, `re
 ### Why synthetic stubs don't work
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
+
+## Error handling and naming conventions
+
+### Use typed constants over string literals
+
+When the codebase defines constants for a value, use them instead of repeating string literals. For example, `repos.ForgeGitHub` and `repos.ForgeGitLab` (defined in `internal/repos/manifest.go`) should be used wherever a forge type is compared or assigned — not the raw strings `"github"` or `"gitlab"`.
+
+Before introducing a string literal for a domain value, search for existing constants:
+
+```bash
+grep -rn 'const.*Forge' internal/
+```
+
+The same applies to credential modes (`repos.CredModeWIF`), tracker types, and other enumerated values. Using typed constants avoids silent breakage when a value is renamed and makes it clear which values are valid.
+
+### Prefer sentinel errors for programmatic error checking
+
+When callers need to distinguish error conditions (e.g., "token not found" vs "unsupported forge"), define a package-level sentinel error and check it with `errors.Is`:
+
+```go
+// Package-level sentinel — unexported, starts with "err".
+var errGitLabTokenMissing = errors.New("no GitLab token found: set GITLAB_TOKEN or pass --gitlab-token")
+
+func resolveGitLabToken() (string, error) {
+    if token := os.Getenv("GITLAB_TOKEN"); token != "" {
+        return token, nil
+    }
+    return "", errGitLabTokenMissing
+}
+
+// Caller checks the sentinel:
+token, err := resolveGitLabToken()
+if errors.Is(err, errGitLabTokenMissing) {
+    // handle missing token specifically
+}
+```
+
+**Do not** match errors by substring: `strings.Contains(err.Error(), "token")` couples error handling to message wording and breaks when messages change. Use `errors.Is` or `errors.As` for all programmatic error checks.
+
+See `internal/cli/forge_client.go` (`errGitLabTokenMissing`), `internal/cli/admin.go` (`errMintNotFound`), and `internal/cli/lock.go` (`errHarnessNotFound`) for examples of this pattern in the codebase.
+
+### Use `%q` for values in error messages
+
+Format user-provided or enumerated values with `%q` so they are consistently quoted in output. This makes error messages unambiguous when values contain spaces or are empty:
+
+```go
+// Good — %q adds quotes automatically.
+return fmt.Errorf("unsupported forge %q", forgeName)
+
+// Bad — manual escaping is inconsistent and easy to forget.
+return fmt.Errorf("unsupported forge \"%s\"", forgeName)
+```
+
+This matches the pattern in `internal/cli/tracker_client.go` and `internal/cli/forge_client.go`.
+
+### Consistent error message content
+
+When multiple code paths produce errors for the same condition across different forges or providers, ensure they mention the same remediation options. For example, if one "no token found" error suggests both the environment variable and the `--token` flag, other forge-specific token errors should do the same — so users see consistent guidance regardless of which code path triggers.
 
 ## Running the fullsend CLI
 

@@ -1,8 +1,10 @@
 // Binary mint-wasm is the Cloudflare Worker WASM host for mintcore.
 // It registers two global JavaScript functions:
 //
-//   - mintcoreInitMint(configJSON, fetchCallback, pemCallback) — initializes
-//     the mint handler from explicit Worker binding config (not os.Getenv).
+//   - mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback) — initializes
+//     the mint handler using a JS callback for environment lookups (same
+//     pattern as PEM/fetch callbacks). Native entrypoints pass os.Getenv;
+//     the Worker passes a callback that reads CF Worker bindings by name.
 //
 //   - mintcoreHandleFetch(method, url, headersJSON, body) — maps a Fetch API
 //     request into an http.Request, calls Handler.ServeHTTP with a buffered
@@ -37,20 +39,29 @@ func main() {
 }
 
 // initMint initializes the mint handler from Worker bindings.
-// JS signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback) => string
+// JS signature: mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback) => string
 // Returns "" on success or an error message string on failure.
+//
+// getEnvCallback is a synchronous JS function: (key: string) => string.
+// The Worker passes a callback that looks up CF Worker bindings by name,
+// matching the os.Getenv contract used by native entrypoints. Mintcore
+// decides which keys to read — the JS side does not serialize a config map.
 func initMint(_ js.Value, args []js.Value) interface{} {
 	if len(args) < 3 {
-		return "mintcoreInitMint requires 3 arguments: configJSON, fetchCallback, pemCallback"
+		return "mintcoreInitMint requires 3 arguments: getEnvCallback, fetchCallback, pemCallback"
 	}
 
-	configJSON := args[0].String()
+	getEnvFn := args[0]
 	fetchFn := args[1]
 	pemFn := args[2]
 
-	var cfg mintcore.WorkerConfig
-	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-		return fmt.Sprintf("failed to parse config: %v", err)
+	// Build a Go getEnv func backed by the JS callback.
+	getEnv := func(key string) string {
+		result := getEnvFn.Invoke(key)
+		if result.Type() == js.TypeString {
+			return result.String()
+		}
+		return ""
 	}
 
 	fetchDoer, err := mintcore.NewHostFetchDoer(fetchFn)
@@ -63,13 +74,15 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		Audience:   cfg.OIDCAudience,
-		HTTPClient: fetchDoer,
-	})
+	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
+		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+			IssuerURL:  "https://token.actions.githubusercontent.com",
+			Audience:   audience,
+			HTTPClient: fetchDoer,
+		})
+	}
 
-	h, err := mintcore.ParseWorkerConfig(cfg, pemAccessor, verifier, fetchDoer)
+	h, err := mintcore.NewHandler(getEnv, pemAccessor, verifierFactory, fetchDoer)
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}

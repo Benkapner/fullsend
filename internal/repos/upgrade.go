@@ -63,20 +63,31 @@ func IsValidRef(ref string) bool {
 	return ref != "" && safeRefPattern.MatchString(ref)
 }
 
-// replaceShimRef replaces the @ref (and optional trailing # tag comment) in all
+// replaceShimRef replaces the @ref (and optional trailing annotation) in all
 // fullsend-ai/fullsend uses: lines within a workflow file, using the
-// forge-specific shim ref pattern. The newRef and newTag are formatted
-// as "newRef # newTag" when newTag is non-empty and differs from newRef.
-func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig) ([]byte, bool) {
-	suffix := newRef
-	if newTag != "" && newTag != newRef {
-		suffix = newRef + " # " + newTag
-	}
+// forge-specific shim ref pattern. GitHub uses YAML comment annotation
+// "ref # tag"; GitLab uses parenthesized "ref (tag)".
+func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig, forgeName string) ([]byte, bool) {
+	suffix := formatRefAnnotation(newRef, newTag, forgeName)
 
 	safe := strings.ReplaceAll(suffix, "$", "$$")
 	replaced := fc.ShimRefPattern.ReplaceAllString(string(content), "${1}"+safe)
 	changed := replaced != string(content)
 	return []byte(replaced), changed
+}
+
+// formatRefAnnotation formats a ref with its human-readable annotation.
+// GitHub uses YAML comment syntax ("sha # tag") since annotations appear
+// inline in uses: lines. GitLab uses parenthesized syntax ("sha (tag)")
+// since annotations appear inside YAML comment markers.
+func formatRefAnnotation(ref, tag, forgeName string) string {
+	if tag == "" || tag == ref {
+		return ref
+	}
+	if forgeName == ForgeGitLab {
+		return ref + " (" + tag + ")"
+	}
+	return ref + " # " + tag
 }
 
 // Upgrade upgrades the scaffold shim ref across repos in the manifest.
@@ -111,6 +122,14 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 		return nil, fmt.Errorf("concurrency must be between 1 and 32, got %d", cfg.MaxConcurrency)
 	}
 
+	// Create a ref resolver if a GitHub client is available. SHA
+	// resolution always targets fullsend-ai/fullsend (GitHub), so a
+	// GitHub client is required regardless of the target forge.
+	var refResolver *RefResolver
+	if ghFC, ghErr := clients.ConfigFor(ForgeGitHub); ghErr == nil {
+		refResolver = NewRefResolver(ghFC.Client)
+	}
+
 	results := make([]UpgradeResult, len(resolved))
 	sem := make(chan struct{}, cfg.MaxConcurrency)
 	var wg sync.WaitGroup
@@ -134,7 +153,7 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 				return
 			}
 			resolvedCfg.ForgeConfig = fc
-			result := upgradeRepo(ctx, resolvedCfg, cfg, commitFn, progress)
+			result := upgradeRepo(ctx, resolvedCfg, cfg, refResolver, commitFn, progress)
 			results[idx] = result
 		}(i, rr)
 	}
@@ -146,6 +165,7 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 func upgradeRepo(ctx context.Context,
 	resolvedCfg ResolvedConfig,
 	cfg UpgradeConfig,
+	resolver *RefResolver,
 	commitFn ScaffoldCommitFunc,
 	progress ProgressFunc) UpgradeResult {
 
@@ -171,12 +191,6 @@ func upgradeRepo(ctx context.Context,
 	}
 	result.NewRef = targetRef
 
-	if isFloatingRef(targetRef) {
-		result.Skipped = true
-		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", targetRef)
-		return result
-	}
-
 	progress(repoFullName, "read", "Reading workflow file")
 
 	content, workflowPath, err := readWorkflowContent(ctx, client, owner, repo, fc)
@@ -193,12 +207,8 @@ func upgradeRepo(ctx context.Context,
 	currentRef := extractWorkflowRef(content, fc)
 	result.OldRef = currentRef
 
-	if isFloatingRef(currentRef) {
-		result.Skipped = true
-		result.SkipReason = fmt.Sprintf("floating ref %q (not eligible for upgrade)", currentRef)
-		return result
-	}
-
+	// Semver downgrade check operates on the original ref strings before
+	// resolution, so it continues to work for tagged versions.
 	if !cfg.Force && isSemver(currentRef) && isSemver(targetRef) {
 		if compareSemver(currentRef, targetRef) > 0 {
 			result.Skipped = true
@@ -208,9 +218,29 @@ func upgradeRepo(ctx context.Context,
 	}
 
 	if cfg.DryRun {
-		// Check if any uses: lines would change without resolving the SHA,
-		// so DryRun never makes API calls that could fail.
-		_, changed := replaceShimRef(content, targetRef, "", fc)
+		dryRef := targetRef
+		dryTag := ""
+		if !isSHARef(targetRef) && isSHARef(currentRef) {
+			// Only resolve for SHA-pinned repos to preserve their
+			// pinning. Non-SHA-pinned repos keep their string ref
+			// format, so DryRun skips API calls for them entirely.
+			if resolver != nil {
+				if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
+					dryRef = sha
+					dryTag = targetRef
+				}
+			}
+			// If the resolver did not resolve the ref, fall back to
+			// direct tag lookup for SHA-pinned GitHub repos — matching
+			// the non-DryRun path's client.GetRef fallback.
+			if dryTag == "" && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
+				if sha, getRefErr := client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef); getRefErr == nil && sha != "" {
+					dryRef = sha
+					dryTag = targetRef
+				}
+			}
+		}
+		_, changed := replaceShimRef(content, dryRef, dryTag, fc, resolvedCfg.Forge)
 		if !changed {
 			result.Skipped = true
 			result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
@@ -218,32 +248,58 @@ func upgradeRepo(ctx context.Context,
 		}
 		result.Upgraded = true
 		msg := fmt.Sprintf("Would upgrade %s → %s", currentRef, targetRef)
-		if isSHARef(currentRef) {
-			msg += " (SHA will be resolved at upgrade time)"
+		if !isSHARef(targetRef) && isSHARef(currentRef) && dryTag == "" {
+			if resolvedCfg.Forge != ForgeGitHub && resolvedCfg.Forge != "" {
+				progress(repoFullName, "warning",
+					fmt.Sprintf("Cannot preserve SHA pinning on %s forge; writing %s as tag ref", resolvedCfg.Forge, targetRef))
+			} else {
+				msg += " (SHA will be resolved at upgrade time)"
+			}
 		}
 		progress(repoFullName, "dry-run", msg)
 		return result
 	}
 
-	// Preserve SHA pinning: if the current ref is a SHA, resolve the target
-	// tag to its commit SHA and write @<sha> # <tag>. If the current ref is
-	// a tag, keep tag-only format (@<tag>).
+	// Determine the new workflow content based on pinning style.
+	// Only SHA-pinned repos get SHA resolution; non-SHA-pinned repos
+	// keep their string ref format during upgrade.
 	var newContent []byte
 	var changed bool
-	// SHA pinning resolves tags on fullsend-ai/fullsend (always GitHub).
-	// Only resolve when the client targets GitHub's API (empty defaults to GitHub).
-	if isSHARef(currentRef) && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
-		sha, err := client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
-		if err != nil {
-			result.Error = fmt.Errorf("resolving tag %s to SHA: %w", targetRef, err)
-			return result
+	if isSHARef(targetRef) {
+		// Target ref is already a SHA — write it directly.
+		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+	} else if isSHARef(currentRef) {
+		// Current ref is SHA-pinned — resolve target to SHA to
+		// preserve pinning. SHA resolution targets
+		// fullsend-ai/fullsend (always GitHub).
+		var sha string
+		if resolver != nil {
+			sha = resolver.Resolve(ctx, targetRef)
 		}
-		newContent, changed = replaceShimRef(content, sha, targetRef, fc)
+		if sha != "" && sha != targetRef {
+			// Resolution succeeded — write @<sha> with annotation.
+			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
+		} else if resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "" {
+			// Resolver did not resolve — fall back to direct tag
+			// lookup for GitHub repos.
+			sha, err = client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
+			if err != nil {
+				result.Error = fmt.Errorf("resolving ref %s to SHA: %w", targetRef, err)
+				return result
+			}
+			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
+		} else {
+			// Non-GitHub forge and resolution failed — cannot
+			// preserve SHA pinning. Log a warning and write the
+			// target ref as a string.
+			progress(repoFullName, "warning",
+				fmt.Sprintf("Cannot preserve SHA pinning on %s forge; writing %s as tag ref", resolvedCfg.Forge, targetRef))
+			newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+		}
 	} else {
-		if isSHARef(currentRef) {
-			progress(repoFullName, "upgrade", "SHA pinning not preserved (non-GitHub forge); switching to tag ref")
-		}
-		newContent, changed = replaceShimRef(content, targetRef, "", fc)
+		// Not SHA-pinned — write the target ref string directly,
+		// preserving the repo's non-pinned format.
+		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
 	}
 	if !changed {
 		result.Skipped = true
@@ -290,32 +346,6 @@ func skipReasonForNoChange(currentRef, targetRef string) string {
 		return fmt.Sprintf("already at %s", targetRef)
 	}
 	return "no uses: lines matched for replacement"
-}
-
-// isFloatingRef returns true for refs that are not pinned versions —
-// branch names, "latest", or non-semver floating tags like "v0".
-func isFloatingRef(ref string) bool {
-	if ref == "" {
-		return false
-	}
-	lower := strings.ToLower(ref)
-	if lower == "latest" || lower == "main" || lower == "master" {
-		return true
-	}
-	// A partial semver ref (e.g., "v0", "v1", "v1.2") is floating because it
-	// does not pin to a specific patch version and cannot be reliably compared.
-	if isPartialVersionTag(ref) {
-		return true
-	}
-	return false
-}
-
-// partialVersionPattern matches version tags that are missing the patch
-// component: "v0", "v1", "v1.2", etc. Full semver (vX.Y.Z) is NOT matched.
-var partialVersionPattern = regexp.MustCompile(`^v\d+(\.\d+)?$`)
-
-func isPartialVersionTag(ref string) bool {
-	return partialVersionPattern.MatchString(ref)
 }
 
 // isSemver returns true if the ref looks like a semver version tag (vX.Y.Z with optional pre-release).

@@ -4699,6 +4699,33 @@ func TestMergeBaseIntoChild_EnvInheritedWhenChildNil(t *testing.T) {
 	assert.Equal(t, "val", child.Env.Sandbox["S"])
 }
 
+func TestMergeBaseIntoChild_EffortInherited(t *testing.T) {
+	base := &Harness{Effort: "high"}
+	child := &Harness{}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "high", child.Effort)
+}
+
+func TestMergeBaseIntoChild_EffortChildWins(t *testing.T) {
+	base := &Harness{Effort: "high"}
+	child := &Harness{Effort: "low"}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "low", child.Effort)
+}
+
+func TestMergeBaseIntoChild_EffortEmptyBaseNoEffect(t *testing.T) {
+	base := &Harness{}
+	child := &Harness{Effort: "max"}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "max", child.Effort)
+}
+
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")

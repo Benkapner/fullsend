@@ -38,10 +38,25 @@ const (
 type Driver struct {
 	Client forge.Client
 	Token  string
+
+	// afterFunc is the timer function used by poll loops. It defaults to
+	// time.After in New(). Tests inject an instant-return implementation
+	// to avoid sleeping on real wall-clock intervals.
+	afterFunc func(time.Duration) <-chan time.Time
 }
 
 func New(client forge.Client, token string) ci.Driver {
-	return &Driver{Client: client, Token: token}
+	return &Driver{Client: client, Token: token, afterFunc: time.After}
+}
+
+// timerAfter returns a channel that fires after dur. It uses afterFunc
+// when set, falling back to time.After so that a zero-value Driver
+// (used in some tests) still works.
+func (d *Driver) timerAfter(dur time.Duration) <-chan time.Time {
+	if d.afterFunc != nil {
+		return d.afterFunc(dur)
+	}
+	return time.After(dur)
 }
 
 func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
@@ -51,7 +66,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(dispatchPoll):
+		case <-d.timerAfter(dispatchPoll):
 		}
 		runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, workflowFile)
 		if err != nil {
@@ -77,7 +92,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(pollInterval):
+		case <-d.timerAfter(pollInterval):
 		}
 		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, triageRun.ID)
 		if err != nil {
@@ -163,7 +178,7 @@ func (d *Driver) FindCompletedWorkflowRun(ctx context.Context, owner, repo, work
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(artifactRunPoll):
+		case <-d.timerAfter(artifactRunPoll):
 		}
 	}
 	return nil, fmt.Errorf("no completed workflow run for %s after %s", workflowFile, after.Format(time.RFC3339))
@@ -232,7 +247,7 @@ func (d *Driver) AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(assertNoWorkflowDelay):
+			case <-d.timerAfter(assertNoWorkflowDelay):
 			}
 		}
 		runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, workflowFile)
@@ -304,7 +319,7 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(artifactRunPoll):
+			case <-d.timerAfter(artifactRunPoll):
 			}
 			continue
 		}
@@ -320,7 +335,7 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(artifactRunPoll):
+		case <-d.timerAfter(artifactRunPoll):
 		}
 	}
 	return fmt.Errorf("artifact %q not found after %s", artifactName, after.Format(time.RFC3339))
@@ -519,7 +534,7 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(dispatchPoll):
+		case <-d.timerAfter(dispatchPoll):
 		}
 
 		// Quick-success: check for the agent's artifact (a completed
@@ -581,7 +596,7 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(dispatchPoll):
+		case <-d.timerAfter(dispatchPoll):
 		}
 
 		// Artifact-first: resolve the agent's run from its artifact and

@@ -204,7 +204,7 @@ func TestTeardownArgs(t *testing.T) {
 	}
 }
 
-func TestDriver_Implements_Install_Driver(t *testing.T) {
+func TestDriver_Implements_Install_MintDriver(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
 
@@ -217,8 +217,8 @@ func TestDriver_Implements_Install_Driver(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify it implements install.Driver.
-	var _ install.Driver = d
+	// Verify it implements install.MintDriver.
+	var _ install.MintDriver = d
 }
 
 func TestPerRepoState_MintURL(t *testing.T) {
@@ -315,6 +315,97 @@ func TestTeardown_NoPreview(t *testing.T) {
 	err := d.Teardown(context.Background(), "my-org", nil)
 	require.NoError(t, err)
 	assert.False(t, called, "CLI should not be called when no preview was deployed")
+}
+
+// --- NewFactory / buildFromMint tests ---
+
+// testMintDriver is a fake MintDriver for testing buildFromMint
+// without shelling out. Distinct from composed_test.go's fakeMintDriver
+// because that lives in package install, not package cfmint.
+type testMintDriver struct {
+	installState install.State
+	installErr   error
+	teardownErr  error
+}
+
+func (m *testMintDriver) Install(_ context.Context, _ string) (install.State, error) {
+	return m.installState, m.installErr
+}
+
+func (m *testMintDriver) Teardown(_ context.Context, _ string, _ install.State) error {
+	return m.teardownErr
+}
+
+// plainState is a minimal install.State that does NOT implement
+// MintURLProvider. Used to test the "no mint URL" branch.
+type plainState struct{}
+
+func (plainState) Mode() string               { return "per-repo" }
+func (plainState) ConfigOwner() string        { return "org" }
+func (plainState) ConfigRepo() string         { return "" }
+func (plainState) ConfigPathPrefix() string   { return ".fullsend" }
+func (plainState) TriageWorkflowRepo() string { return "org/repo" }
+func (plainState) TriageWorkflowFile() string { return "fullsend.yaml" }
+func (plainState) AgentWorkflowFile() string  { return "reusable-triage.yml" }
+func (plainState) AgentArtifactName() string  { return "fullsend-triage" }
+
+func TestNewFactory_ReturnsNonNilFactory(t *testing.T) {
+	f := NewFactory(Config{SuiteName: "bt"}, 3)
+	assert.NotNil(t, f)
+}
+
+func TestNewFactory_CreateDriverFails(t *testing.T) {
+	// Invalid config (no PEMDir) → NewDriver returns an error.
+	f := NewFactory(Config{SuiteName: "bt"}, 3)
+
+	_, err := f("org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cfmint factory: creating mint driver")
+}
+
+func TestBuildFromMint_HappyPath(t *testing.T) {
+	mint := &testMintDriver{
+		installState: install.NewPerRepoState("org", "", "https://mint.test"),
+	}
+
+	d, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, 3, d.Capacity())
+}
+
+func TestBuildFromMint_InstallFails(t *testing.T) {
+	mint := &testMintDriver{
+		installErr: fmt.Errorf("deploy boom"),
+	}
+
+	_, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cfmint factory: deploying mint")
+	assert.Contains(t, err.Error(), "deploy boom")
+}
+
+func TestBuildFromMint_NoMintURLProvider(t *testing.T) {
+	// State that does not implement MintURLProvider — the code should
+	// continue with an empty mint URL.
+	mint := &testMintDriver{
+		installState: plainState{},
+	}
+
+	d, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 2, t.Logf)
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, 2, d.Capacity())
+}
+
+func TestBuildFromMint_InvalidPoolSize(t *testing.T) {
+	mint := &testMintDriver{
+		installState: install.NewPerRepoState("org", "", "https://mint.test"),
+	}
+
+	_, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 0, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "capacity must be positive")
 }
 
 func TestTeardown_CLIFailure_LogsButDoesNotFail(t *testing.T) {

@@ -26,7 +26,7 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (reconcile-repos, topissues, gitlint-rules)"
+	@echo "  script-test          - Run shell script tests (reconcile-repos, topissues, gitlint-rules, artifact redaction)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
 	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
@@ -124,7 +124,7 @@ go-tidy:
 
 wasm-build:
 	@echo "==> Building mintcore WASM binary (GOOS=js GOARCH=wasm)..."
-	cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build -o mint.wasm .
+	cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build -ldflags "-s -w" -o mint.wasm .
 	@raw_size=$$(wc -c < cmd/mint-wasm/mint.wasm); \
 	gz_size=$$(gzip -c cmd/mint-wasm/mint.wasm | wc -c); \
 	raw_mb=$$(echo "scale=2; $$raw_size / 1048576" | bc); \
@@ -179,6 +179,7 @@ endef
 
 script-test:
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
+	$(call run-timed,bash .github/scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)

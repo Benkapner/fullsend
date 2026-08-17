@@ -614,7 +614,7 @@ func withFakeWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := cf.BuildWASMFn
 	origCopy := cf.CopyWASMExecFn
-	cf.BuildWASMFn = func(outPath string) error {
+	cf.BuildWASMFn = func(outPath, _, _ string) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	cf.CopyWASMExecFn = func(destPath string) error {
@@ -2286,8 +2286,12 @@ func TestMintDeployCmd_NoWarningForCorrectPlatformFlags(t *testing.T) {
 // --- lookupAppID tests ---
 
 func TestLookupAppID_Success(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/apps/fullsend-ai-coder", r.URL.Path)
+		assert.Empty(t, r.Header.Get("Authorization"), "unauthenticated request should have no Authorization header")
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintln(w, `{"id": 12345, "slug": "fullsend-ai-coder", "client_id": "Iv1.abc123"}`)
 	}))
@@ -2358,6 +2362,9 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 		{"TooManyRequests", http.StatusTooManyRequests},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GH_TOKEN", "")
+			t.Setenv("GITHUB_TOKEN", "")
+
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.code)
 			}))
@@ -2370,8 +2377,90 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 			_, err := lookupAppID(context.Background(), "some-app")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "rate limit")
+			assert.Contains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN")
 		})
 	}
+}
+
+func TestLookupAppID_AuthenticatedWithGHToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_test_token_123")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghp_test_token_123", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 99}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 99, appID)
+}
+
+func TestLookupAppID_AuthenticatedWithGITHUBToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "ghs_fallback_token")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghs_fallback_token", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 77}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 77, appID)
+}
+
+func TestLookupAppID_GHTokenTakesPrecedence(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_primary")
+	t.Setenv("GITHUB_TOKEN", "ghs_secondary")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghp_primary", r.Header.Get("Authorization"),
+			"GH_TOKEN should take precedence over GITHUB_TOKEN")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 55}`)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 55, appID)
+}
+
+func TestLookupAppID_RateLimitAuthenticated(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_some_token")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	_, err := lookupAppID(context.Background(), "some-app")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limit")
+	assert.NotContains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN",
+		"authenticated rate limit error should not suggest setting a token")
 }
 
 // --- verifyPEMMatchesApp tests ---
@@ -4002,6 +4091,10 @@ func TestValidateMintSetupRole(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "e2e", role)
 
+	role, err = validateMintSetupRole("scribe")
+	require.NoError(t, err)
+	assert.Equal(t, "scribe", role)
+
 	_, err = validateMintSetupRole("fix")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "coder")
@@ -4010,6 +4103,7 @@ func TestValidateMintSetupRole(t *testing.T) {
 	_, err = validateMintSetupRole("unknown")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported role")
+	assert.Contains(t, err.Error(), "scribe")
 }
 
 func TestValidateAppSlug(t *testing.T) {
