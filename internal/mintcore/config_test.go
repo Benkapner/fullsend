@@ -507,6 +507,7 @@ func TestNewHandler_OsGetEnv(t *testing.T) {
 	// Verify that passing os.Getenv works the same as before.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
 	h, err := NewHandler(os.Getenv, &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
 	if err != nil {
