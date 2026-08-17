@@ -86,8 +86,10 @@ providers:
   - package-registries
 ```
 
-Keep the shared policy at `.fullsend/policies/base.yaml`. Network access may
-also come from `providers:` profiles listed in the harness (see
+Keep the shared policy at `.fullsend/policies/base.yaml`. The policy file
+defines non-network sandbox restrictions only — filesystem access, landlock, and
+process identity. Network access is controlled through `providers:` profiles
+listed in the harness (see
 [ADR 0065](../ADRs/0065-provider-backed-policy-composition.md)) — when
 unifying configuration, keep the `providers:` list the same on both harnesses
 too. The same pattern applies to `pre_script` and `post_script` when you want a
