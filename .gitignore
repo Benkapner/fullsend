@@ -27,3 +27,4 @@ docs/superpowers/
 docs/.vitepress/cache/
 docs/.vitepress/.temp/
 docs/.vitepress/dist/
+coverage.out
