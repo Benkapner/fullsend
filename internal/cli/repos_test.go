@@ -1420,7 +1420,11 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 	err := runReposInstall(context.Background(), opts)
 	require.NoError(t, err)
 
-	// Verify derived values reached the BatchInstall layer via opts.
+	// Verify derived values. runReposInstall sets these on opts before
+	// constructing BatchInstallConfig (which copies them verbatim), so
+	// asserting here confirms the derivation logic. The require.NoError
+	// above also provides indirect coverage: BatchInstall's all-or-nothing
+	// validation would fail if the values were missing or empty.
 	assert.Equal(t, "987654321", opts.inferenceProjectNumber,
 		"project number should be auto-derived from testProjectNumberFn")
 	assert.Equal(t, "global", opts.inferenceRegion,
