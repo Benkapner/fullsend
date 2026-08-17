@@ -110,11 +110,11 @@ When repos are specified as positional arguments, only those repos are processed
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
-| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret; required when any inference flag is set) |
-| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (required when any inference flag is set) |
+| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret) |
+| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (auto-derived from `--inference-project` when omitted) |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; falls back to `defaults.forge` if set. |
 | `--force` | `false` | Allow scaffold ref downgrades |
-| `--inference-region` | | Per-repo GCP inference region override (install-time only, not stored in the manifest) |
+| `--inference-region` | | Per-repo GCP inference region override (default: global when `--inference-project` is set; install-time only, not stored in the manifest) |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |

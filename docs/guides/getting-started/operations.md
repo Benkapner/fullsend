@@ -32,8 +32,7 @@ For GitLab repos, re-run `repos install` with updated values to converge configu
 
 ```bash
 fullsend repos install -f repos.yaml "$OWNER/$REPO" \
-  --inference-project "<GCP_PROJECT>" \
-  --inference-project-number "<GCP_PROJECT_NUMBER>"
+  --inference-project "<GCP_PROJECT>"
 ```
 
 | Key | Storage Type | Description | Example value |

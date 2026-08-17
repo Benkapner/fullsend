@@ -426,7 +426,8 @@ type reposInstallConfig struct {
 	allowedRemoteResources []string
 
 	// Test overrides
-	testClient forge.Client
+	testClient          forge.Client
+	testProjectNumberFn func(ctx context.Context, projectID string) (string, error)
 }
 
 func newReposInstallCmd() *cobra.Command {
@@ -466,9 +467,9 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
-	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference; requires all three --inference-* flags")
-	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number; requires all three --inference-* flags")
-	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference; requires all three --inference-* flags")
+	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference")
+	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number (auto-derived from --inference-project when omitted)")
+	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (default: global)")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
@@ -501,6 +502,30 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	printer := ui.New(os.Stdout)
+
+	// Default --inference-region to "global" (matching admin install)
+	// when --inference-project is set but --inference-region is not.
+	if opts.inferenceProject != "" && opts.inferenceRegion == "" {
+		opts.inferenceRegion = "global"
+	}
+
+	// Derive --inference-project-number from --inference-project via
+	// the GCP Resource Manager API when not explicitly provided.
+	if opts.inferenceProject != "" && opts.inferenceProjectNumber == "" {
+		var projectNumber string
+		var lookupErr error
+		if opts.testProjectNumberFn != nil {
+			projectNumber, lookupErr = opts.testProjectNumberFn(ctx, opts.inferenceProject)
+		} else {
+			gcpClient := gcf.NewLiveGCFClient(opts.inferenceProject)
+			projectNumber, lookupErr = gcpClient.GetProjectNumber(ctx, opts.inferenceProject)
+		}
+		if lookupErr != nil {
+			return fmt.Errorf("deriving project number from %q: %w (use --inference-project-number to specify it manually)", opts.inferenceProject, lookupErr)
+		}
+		opts.inferenceProjectNumber = projectNumber
+		printer.StepDone(fmt.Sprintf("Derived project number %s from project %s", projectNumber, opts.inferenceProject))
+	}
 
 	printer.StepStart("Loading manifest")
 	manifest, err := repos.LoadManifest(ctx, opts.manifest)
