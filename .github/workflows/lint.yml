@@ -156,7 +156,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install harness-eval
-        run: pip install -q "harness-eval==7.9.0"
+        run: pip install -q "harness-eval==7.9.1"
 
       - name: Lint repo root
         run: harness-eval harness-lint . --preset recommended --fail-on-error --baseline .harness-eval-baseline.json
