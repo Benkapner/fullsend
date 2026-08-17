@@ -18,6 +18,7 @@ Fullsend is a platform for fully autonomous agentic development for Git-hosted o
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
 - When adding a new doc under `docs/`, check `docs/.vitepress/config.ts` sidebar config. Sections using `getMarkdownFiles()` are auto-discovered. All other sections need a manual `{ text, link }` entry. Also add the new folder's prefix to `search.options.scopes` in the same file so the folder's pages are reachable when search scope pills are active.
 - When removing, renaming, or changing the behavior or output format of a CLI command, public API, or user-facing feature, grep all documentation files under `docs/` for references and update them to reflect the current behavior. Pay special attention to `docs/cli/`, `docs/guides/`, and any getting-started or operations guides.
+- When adding a new skill under `skills/`, check the user-facing guides for relevant cross-reference opportunities: `docs/guides/user/customizing-with-skills.md` (skill catalog and usage), `docs/guides/user/bring-your-own-agent.md` (agent composition and tuning), and `docs/guides/README.md` (guide index). Add a brief cross-reference or section pointer if the new skill fills a gap in those guides.
 
 ## Topic-specific guidance
 
