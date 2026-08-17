@@ -206,7 +206,6 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
-<<<<<<< HEAD
 	// --- Runtime override cleanup ---
 	// Restore the install-time runtime so a later scenario on this slot
 	// does not silently run under pi (or whatever this one selected).
@@ -251,8 +250,6 @@ func CleanupScenario(w *world.World) {
 	if reactionsEnabledInConfig(w) {
 		if err := DisableReactionNotifications(w); err != nil {
 			worldLogf(w, "behaviour cleanup: disable reaction notifications: %v", err)
-		}
-	}
 		}
 	}
 

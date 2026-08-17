@@ -87,6 +87,7 @@ type MinimizedCommentRecord struct {
 
 // ReactionRecord records an AddIssueReaction call.
 type ReactionRecord struct {
+	ID          int64
 	Owner, Repo string
 	Number      int
 	Content     string
@@ -1460,6 +1461,7 @@ func (f *FakeClient) AddIssueReaction(_ context.Context, owner, repo string, num
 	}
 	f.reactionCounter++
 	f.AddedReactions = append(f.AddedReactions, ReactionRecord{
+		ID:      f.reactionCounter,
 		Owner:   owner,
 		Repo:    repo,
 		Number:  number,
@@ -1510,9 +1512,13 @@ func (f *FakeClient) ListIssueReactions(_ context.Context, owner, repo string, n
 	if e := f.err("ListIssueReactions"); e != nil {
 		return nil, e
 	}
+	deleted := make(map[int64]bool, len(f.DeletedReactions))
+	for _, id := range f.DeletedReactions {
+		deleted[id] = true
+	}
 	var reactions []Reaction
 	for _, r := range f.AddedReactions {
-		if r.Owner == owner && r.Repo == repo && r.Number == number {
+		if r.Owner == owner && r.Repo == repo && r.Number == number && !deleted[r.ID] {
 			reactions = append(reactions, Reaction{
 				Content: r.Content,
 				User:    f.AuthenticatedUser,
