@@ -1401,7 +1401,7 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api")
 
-	err := runReposInstall(context.Background(), &reposInstallConfig{
+	opts := &reposInstallConfig{
 		manifest:         manifestPath,
 		concurrency:      4,
 		roles:            []string{"triage"},
@@ -1416,8 +1416,15 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 			}
 			return "987654321", nil
 		},
-	})
+	}
+	err := runReposInstall(context.Background(), opts)
 	require.NoError(t, err)
+
+	// Verify derived values reached the BatchInstall layer via opts.
+	assert.Equal(t, "987654321", opts.inferenceProjectNumber,
+		"project number should be auto-derived from testProjectNumberFn")
+	assert.Equal(t, "global", opts.inferenceRegion,
+		"inference region should default to global")
 }
 
 func TestRunReposInstall_ExplicitProjectNumberSkipsLookup(t *testing.T) {
@@ -1448,7 +1455,7 @@ func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api")
 
-	err := runReposInstall(context.Background(), &reposInstallConfig{
+	opts := &reposInstallConfig{
 		manifest:         manifestPath,
 		concurrency:      4,
 		roles:            []string{"triage"},
@@ -1459,8 +1466,11 @@ func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
 		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
 			return "123456789", nil
 		},
-	})
+	}
+	err := runReposInstall(context.Background(), opts)
 	require.NoError(t, err)
+	assert.Equal(t, "global", opts.inferenceRegion,
+		"inference region should default to global when --inference-project is set")
 }
 
 func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
