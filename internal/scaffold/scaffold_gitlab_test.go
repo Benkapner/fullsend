@@ -197,6 +197,9 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Back-link from dispatched pipelines to poll job
 	assert.Contains(t, s, "FULLSEND_POLL_JOB_URL")
 	assert.Contains(t, s, "Dispatched by:")
+	// Harness passthrough variables must be declared so os.Expand doesn't
+	// reject unset variables during harness env validation (#6273).
+	assert.Contains(t, s, "CODE_ALLOWED_TARGET_BRANCHES")
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
@@ -467,6 +470,31 @@ func TestInsertAfterDocStart(t *testing.T) {
 		result := InsertAfterDocStart("content", "# marker")
 		assert.Equal(t, "# marker\ncontent", result)
 	})
+}
+
+// TestGitLabAgentTemplateHarnessPassthroughVars validates that harness
+// passthrough variables declared in the GitHub reusable workflows are also
+// present in the GitLab agent template's variables: section. When a harness
+// YAML uses ${VAR} passthrough syntax, the harness engine's os.Expand rejects
+// unset variables. GitHub workflows set these to ” in their env: blocks; the
+// GitLab template must do the same or the agent aborts at env validation (#6273).
+func TestGitLabAgentTemplateHarnessPassthroughVars(t *testing.T) {
+	// Variables that GitHub reusable workflows set for harness passthrough.
+	// When adding a new ${VAR} passthrough to a multi-forge harness, add it
+	// here so the test catches a missing GitLab declaration.
+	passthroughVars := []string{
+		"CODE_ALLOWED_TARGET_BRANCHES",
+	}
+
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	for _, v := range passthroughVars {
+		assert.Contains(t, s, v,
+			"GitLab agent template must declare %s in variables: section — "+
+				"harness env.runner uses ${%s} passthrough which fails on unset vars (#6273)", v, v)
+	}
 }
 
 func TestGitLabNoPerStageTemplates(t *testing.T) {
