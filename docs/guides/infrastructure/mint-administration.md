@@ -27,7 +27,7 @@ The fullsend team operates a public hosted mint service. If your organization is
 **Mint URL:**
 
 ```
-https://fullsend-mint-gljhbkcloq-uc.a.run.app
+https://mint.fullsend.sh
 ```
 
 Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `FULLSEND_MINT_URL` repository/org variable in GitHub. If you are using the hosted mint, the rest of this guide (deploying, enrolling, troubleshooting) is handled by the fullsend team — you do not need to manage mint infrastructure yourself.
