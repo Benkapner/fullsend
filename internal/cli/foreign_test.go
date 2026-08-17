@@ -9,12 +9,21 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
+
+// noWaitAfter returns a channel that is immediately ready, eliminating
+// real sleeps in retry loops during tests.
+func noWaitAfter(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
 
 func TestParseForeignVariableName(t *testing.T) {
 	role, ok := parseForeignVariableName("FULLSEND_FOREIGN_E2E_REPOS")
@@ -236,6 +245,10 @@ func runForeignCmd(t *testing.T, srvURL string, args ...string) (string, error) 
 	t.Helper()
 	t.Setenv("GH_TOKEN", "test-token")
 	t.Setenv("GITHUB_API_URL", srvURL)
+
+	old := testAfterFunc
+	testAfterFunc = noWaitAfter
+	t.Cleanup(func() { testAfterFunc = old })
 
 	var buf bytes.Buffer
 	root := newRootCmd()
