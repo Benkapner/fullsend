@@ -77,6 +77,7 @@ REWORKED=0
 SKIPPED_WINDOW=0
 SKIPPED_ERROR=0
 SKIPPED_NULL_AUTHOR=0
+SKIPPED_NO_IDENTITY=0
 REWORKED_LINES=()
 
 while IFS= read -r pr_json; do
@@ -193,7 +194,7 @@ while IFS= read -r pr_json; do
     continue
   fi
   if [ -n "$PR_HAD_NULL_AUTHOR" ] && [ -z "$PR_HAD_EVALUABLE" ] && [ -z "$FOUND_REWORK" ]; then
-    SKIPPED_ERROR=$((SKIPPED_ERROR + 1))
+    SKIPPED_NO_IDENTITY=$((SKIPPED_NO_IDENTITY + 1))
     continue
   fi
 
@@ -220,6 +221,9 @@ if [ "$SKIPPED_WINDOW" -gt 0 ]; then
 fi
 if [ "$SKIPPED_ERROR" -gt 0 ]; then
   echo "Skipped (API errors): ${SKIPPED_ERROR}"
+fi
+if [ "$SKIPPED_NO_IDENTITY" -gt 0 ]; then
+  echo "Skipped (no evaluable human identity in follow-up window): ${SKIPPED_NO_IDENTITY}"
 fi
 if [ "$SKIPPED_NULL_AUTHOR" -gt 0 ]; then
   echo "Follow-up commits in window with no linked GitHub identity (not evaluated): ${SKIPPED_NULL_AUTHOR}"
