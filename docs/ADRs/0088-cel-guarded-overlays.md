@@ -91,7 +91,11 @@ Multiple entries may match a single event. They are applied sequentially
 `policy`), later matching entries override earlier ones. For list and map
 fields (`skills`, `runner_env`, `providers`, `host_files`, etc.), the same
 concatenate/merge semantics from ADR 0045 apply: each matching entry's
-values are merged into the accumulating result.
+values are merged into the accumulating result. This includes
+field-specific deduplication where ADR 0045 defines it — for example,
+`mergeSkills` deduplicates by basename (a later entry with the same
+basename overrides an earlier one). Fields without explicit dedup rules
+concatenate without deduplication.
 
 `forge:` and `overlays:` must not coexist in the same harness —
 `Validate()` rejects a harness that declares both. `forge:` continues to
@@ -123,6 +127,17 @@ first, child entries appended), the same way it handles `plugins`,
 order and later matching entries override earlier ones for scalars,
 child entries naturally take precedence over base entries.
 
+The mutual exclusion between `forge:` and `overlays:` applies to the
+**post-merge** result — the harness as seen by `Validate()` after
+`mergeBaseIntoChild` runs. This means a base harness using `forge:`
+and a child using `overlays:` (or vice versa) would produce a merged
+harness containing both, which `Validate()` rejects. To migrate
+incrementally, the base harness must convert from `forge:` to
+`overlays:` before any child can adopt `overlays:`. This is a
+deliberate constraint: mixing the two mechanisms in a composed
+harness would create ambiguous resolution order between
+`ResolveForge` and `ResolveOverlays`.
+
 ### Validation
 
 Each `overlays` entry requires:
@@ -151,16 +166,25 @@ forge:
     pre_script: scripts/pre-gh.sh
 ```
 
-is equivalent to:
+maps to an overlay that conditions on the forge platform:
 
 ```yaml
 overlays:
-- when: event.source.system == "github"
+- when: forge.platform == "github"
   pre_script: scripts/pre-gh.sh
 ```
 
 The mapping is mechanical — each forge key becomes a `when` expression
-checking `event.source.system`.
+checking `forge.platform` — but note the conditioning axis differs from
+`event.source.system`. `forge.platform` reflects the detected forge
+platform (from the CI environment or `--forge` flag), while
+`event.source.system` identifies the event origin. These diverge for
+cross-system events: a JIRA issue triggering work on GitHub Actions has
+`forge.platform == "github"` but `event.source.system == "jira"`.
+
+To support this, the overlay CEL environment exposes `forge.platform`
+alongside the existing `event` variable, so overlays can faithfully
+replicate `forge:` conditioning when needed.
 
 ## Consequences
 

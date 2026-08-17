@@ -161,7 +161,7 @@ repo baseline and overrides)
   condition scripts, skills, env vars, and other fields on any event
   property (source system, event type, etc.) rather than only the forge
   platform. `forge:` is deprecated but remains functional
-  ([ADR 0088](ADRs/0088-tracker-harness-config-split.md)).
+  ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 
 **Open questions:**
 
