@@ -156,11 +156,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install harness-eval
-        run: pip install -q "harness-eval==6.3.0"
+        run: pip install -q "harness-eval==7.9.0"
 
       - name: Lint repo root
-        run: harness-eval lint . --preset recommended --fail-on-error --baseline .harness-eval-baseline.json
+        run: harness-eval harness-lint . --preset recommended --fail-on-error --baseline .harness-eval-baseline.json
 
       - name: Lint scaffold
         if: always()
-        run: harness-eval lint internal/scaffold/fullsend-repo --preset recommended --fail-on-error
+        run: harness-eval harness-lint internal/scaffold/fullsend-repo --preset recommended --fail-on-error
