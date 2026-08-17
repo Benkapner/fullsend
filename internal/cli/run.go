@@ -26,6 +26,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/envfile"
+	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -2391,7 +2392,7 @@ func resolveWorkItemID() string {
 	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
 		return prNum
 	}
-	return "unknown"
+	return evalmeasure.UnknownSentinel
 }
 
 // telemetryExitCode maps the run's final state to the exit code recorded on
@@ -3726,11 +3727,37 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
 		return "", nil, false
 	}
-	if composeOpts.FetchPolicy.Offline {
+	path, dep, ok := fetchPinnedAgentsRepoFile(ctx, "harness/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "agent "+agentName)
+	if !ok {
 		return "", nil, false
 	}
+	return path, []harness.Dependency{dep}, true
+}
+
+// tryAgentsRepoMeasurementManifest SHA-pins eval/measurements/<agent>.yaml
+// from fullsend-ai/agents (same pin, allowlist, hash, and audit as harness
+// fallback). Missing manifests (HTTP 404) skip; network errors warn.
+func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, bool) {
+	normalizedName := strings.ToLower(agentName)
+	if !defaultAgentsRepoKnownAgents[normalizedName] {
+		return "", false
+	}
+	path, _, ok := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName)
+	return path, ok
+}
+
+// fetchPinnedAgentsRepoFile resolves tags/DefaultUpstreamRef to a commit SHA
+// and fetches relPath from fullsend-ai/agents. All errors are non-fatal.
+func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
+	var none harness.Dependency
+	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
+		return "", none, false
+	}
+	if composeOpts.FetchPolicy.Offline {
+		return "", none, false
+	}
 	if forgeClient == nil {
-		return "", nil, false
+		return "", none, false
 	}
 
 	allowlist := composeOpts.OrgAllowlist
@@ -3739,30 +3766,34 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, err))
-		return "", nil, false
+		return "", none, false
 	}
 	if !commitSHAPattern.MatchString(tagSHA) {
 		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, tagSHA))
-		return "", nil, false
+		return "", none, false
 	}
 
-	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/harness/" + normalizedName + ".yaml"
+	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/" + relPath
 
 	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
-		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", agentName))
-		return "", nil, false
+		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", noun))
+		return "", none, false
 	}
 
 	shortSHA := tagSHA
 	if len(shortSHA) > 12 {
 		shortSHA = shortSHA[:12]
 	}
-	printer.StepStart(fmt.Sprintf("Fetching agent %s from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
+	printer.StepStart(fmt.Sprintf("Fetching %s from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 
 	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
 	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Failed to fetch agent %s from agents repo: %v", agentName, err))
-		return "", nil, false
+		if isFetchHTTPStatus(err, http.StatusNotFound) {
+			printer.StepInfo(fmt.Sprintf("No %s at %s/%s@%s (HTTP 404); skipping", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
+		} else {
+			printer.StepWarn(fmt.Sprintf("Failed to fetch %s from agents repo: %v", noun, err))
+		}
+		return "", none, false
 	}
 
 	// Content is fetched once and used directly — no self-referential hash
@@ -3773,13 +3804,13 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 
 	if err := fetch.CachePut(composeOpts.WorkspaceRoot, rawURL, content); err != nil {
 		printer.StepWarn(fmt.Sprintf("Failed to cache agents repo content: %v", err))
-		return "", nil, false
+		return "", none, false
 	}
 
 	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
 	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for agent %s: %v", agentName, err))
-		return "", nil, false
+		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for %s: %v", noun, err))
+		return "", none, false
 	}
 	localPath := filepath.Join(cachePath, "content")
 
@@ -3806,8 +3837,13 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 		Type:      "file",
 	}
 
-	printer.StepDone(fmt.Sprintf("Agent %s resolved from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
-	return localPath, []harness.Dependency{dep}, true
+	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
+	return localPath, dep, true
+}
+
+func isFetchHTTPStatus(err error, code int) bool {
+	var httpErr fetch.HTTPStatusError
+	return errors.As(err, &httpErr) && httpErr.Status == code
 }
 
 // containedLocalPath resolves a relative source path against baseDir and

@@ -47,6 +47,20 @@ func TestScoreFitness_ReviewUnknownWorkItemFails(t *testing.T) {
 	assert.Contains(t, r.Explanation, "missing: work_item")
 }
 
+func TestScoreFitness_PrescriptSkippedExcluded(t *testing.T) {
+	t.Parallel()
+	traces, err := ParseTelemetryFile(filepath.Join("testdata", "prescript-skipped.jsonl"))
+	require.NoError(t, err)
+	r := ScoreFitness(traces[0])
+	assert.Equal(t, "triage", r.Agent)
+	assert.Equal(t, LabelSkip, r.Label)
+	assert.NotEqual(t, "fail", r.Label)
+	assert.NotEqual(t, "pass", r.Label)
+	assert.Contains(t, r.Explanation, "pre-script skipped")
+	assert.NotContains(t, r.Explanation, "span_tree=fail")
+	assert.Equal(t, "cccccccccccccccccccccccccccccccc", r.TraceID)
+}
+
 func TestScoreTrace_AgentMismatchReturnsNil(t *testing.T) {
 	t.Parallel()
 	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
@@ -55,7 +69,61 @@ func TestScoreTrace_AgentMismatchReturnsNil(t *testing.T) {
 	assert.Empty(t, ScoreTrace(traces[0], reg))
 }
 
-func TestScoreTrace_UnknownScorerSkipped(t *testing.T) {
+func TestScoreTrace_EmptyAgentNameRecordsIdentityFail(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "dddddddddddddddddddddddddddddddd",
+		Spans: []Span{
+			{
+				Name:   "run",
+				SpanID: "1111111111111111",
+				Attrs: map[string]any{
+					"fullsend.work_item_id": "acme/demo#1",
+					"exit_code":             int64(0),
+				},
+			},
+			{Name: "sandbox_create"},
+			{Name: "agent", Attrs: map[string]any{"gen_ai.system": "anthropic"}},
+		},
+	}
+	assert.Empty(t, tr.AgentName())
+	reg := Registry{
+		Agent:        "triage",
+		Measurements: []MeasurementSpec{{ID: "em-001", Scorer: ScorerFitness, Version: 1}},
+	}
+	results := ScoreTrace(tr, reg)
+	require.Len(t, results, 1, "empty identity must still write a row — silent drop is survivorship bias")
+	assert.Equal(t, LabelFail, results[0].Label)
+	assert.Contains(t, results[0].Explanation, "identity=fail")
+}
+
+func TestScoreTrace_UnknownAgentSentinelRecordsIdentityFail(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":        UnknownSentinel,
+					"fullsend.work_item_id": "acme/demo#1",
+					"exit_code":             int64(0),
+				},
+			},
+			{Name: "sandbox_create"},
+			{Name: "agent"},
+		},
+	}
+	reg := Registry{
+		Agent:        "review",
+		Measurements: []MeasurementSpec{{ID: "em-001", Scorer: ScorerFitness, Version: 1}},
+	}
+	results := ScoreTrace(tr, reg)
+	require.Len(t, results, 1)
+	assert.Contains(t, results[0].Explanation, "identity=fail")
+}
+
+func TestScoreTrace_UnknownScorerSkipsNotSilent(t *testing.T) {
 	t.Parallel()
 	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
 	require.NoError(t, err)
@@ -67,6 +135,48 @@ func TestScoreTrace_UnknownScorerSkipped(t *testing.T) {
 		},
 	}
 	results := ScoreTrace(traces[0], reg)
-	require.Len(t, results, 1)
-	assert.Equal(t, "trace_fitness", results[0].Name)
+	require.Len(t, results, 2)
+	assert.Equal(t, "future_scorer", results[0].Name)
+	assert.Equal(t, LabelSkip, results[0].Label)
+	assert.Contains(t, results[0].Explanation, "unknown scorer")
+	assert.Equal(t, 0.0, results[0].Value)
+	assert.Equal(t, "trace_fitness", results[1].Name)
+}
+
+func TestScoreFitness_CostToolsTurnsNamesSubcheck(t *testing.T) {
+	t.Parallel()
+	traces, err := ParseTelemetryFile(filepath.Join("testdata", "missing-cost.jsonl"))
+	require.NoError(t, err)
+	r := ScoreFitness(traces[0])
+	assert.Equal(t, LabelFail, r.Label)
+	assert.Contains(t, r.Explanation, "cost_tools_turns=fail[cost]")
+}
+
+func TestScoreFitness_MissingTurnsNamesSubcheck(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "1",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":             "triage",
+					"gen_ai.agent.name":          "triage",
+					"gen_ai.operation.name":      "invoke_agent",
+					"fullsend.work_item_id":      "acme/demo#1",
+					"exit_code":                  int64(0),
+					"gen_ai.request.model":       "claude",
+					"gen_ai.usage.input_tokens":  int64(1),
+					"gen_ai.usage.output_tokens": int64(1),
+					"fullsend.cost_usd":          0.1,
+					"fullsend.tool_calls":        int64(1),
+					"fullsend.iterations":        int64(1),
+				},
+			},
+			{Name: "sandbox_create"},
+			{Name: "agent", Attrs: map[string]any{"gen_ai.system": "anthropic", "gen_ai.agent.name": "triage"}},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Contains(t, r.Explanation, "cost_tools_turns=fail[num_turns]")
 }

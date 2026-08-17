@@ -18,9 +18,16 @@ Telemetry baseline: [Distributed Tracing](./distributed-tracing.md)
 
 ## Architecture (read this first)
 
+Eval measurements are the concept of scoring traces.
+[OTEL primary facts](../../glossary.md#otel-primary-facts) are what happened
+on the run (`run-telemetry.jsonl`).
+[OTEL derived products](../../glossary.md#otel-derived-products) are scores
+computed from that trace (`eval-measurements.jsonl`). The step is
+[fail-open](../../glossary.md#fail-open): it never blocks delivery.
+
 Fullsend does not pick an observability product for scores. The portable
 contract is a local JSONL artifact next to telemetry; remote export reuses
-the same [OTEL](../../glossary.md) (OpenTelemetry) configuration as agent
+the same OpenTelemetry (`OTEL_EXPORTER_OTLP_*`) configuration as agent
 traces when implemented.
 
 OTLP (OpenTelemetry Protocol) is the wire format that carries spans and
@@ -28,12 +35,12 @@ scores to any compatible backend — Phoenix, MLflow, Jaeger, etc.
 
 ```text
 fullsend run
-  └─ always writes  output/**/run-telemetry.jsonl
+  └─ always writes  output/<runDir>/run-telemetry.jsonl
   └─ if OTEL_EXPORTER_OTLP_* set → live OTLP export of agent spans
        (any compatible backend — ADR 0050)
 
 fullsend eval-measure   (same GHA job, fail-open, after run)
-  └─ always writes  output/**/eval-measurements.jsonl
+  └─ always writes  output/<runDir>/eval-measurements.jsonl
        (+ eval-measure-ledger.txt for idempotency)
 ```
 
@@ -43,7 +50,7 @@ fullsend eval-measure   (same GHA job, fail-open, after run)
 | Artifact | When | Purpose |
 |---|---|---|
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
-| `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …) |
+| `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …). On `label: skip`, `value` is unused (serialized as `0`; ignore it). |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
 | Remote scores *(planned)* | OTEL configured | Scores on the OTLP path — any OTLP backend |
 
@@ -139,6 +146,13 @@ success. After [#5944](https://github.com/fullsend-ai/fullsend/pull/5944),
 run/agent **OTLP Status** (and `fullsend.transcript_error`) are the
 success/failure signal for outcome scorers.
 
+Pre-script **skipped** runs set `fullsend.prescript.skipped=true` on the root
+span and never create a sandbox. EM-001 records `label: skip` for those traces
+instead of failing the span-tree / model / usage checks. An unknown `scorer:`
+string (for example a newer `agents@v0` manifest this binary does not implement
+yet) also writes `label: skip`, not `fail`. Trend pass-rate as
+`pass / (pass + fail)` and drop `skip`.
+
 ## Adjacent telemetry work
 
 | Proposal | Relationship to measurements |
@@ -153,35 +167,46 @@ success/failure signal for outcome scorers.
 ```text
 GitHub Actions job
 ├── fullsend run
-├── fullsend eval-measure   # reads run-telemetry.jsonl; never fails the job
+├── fullsend eval-measure   # reads output/<runDir>/run-telemetry.jsonl; never fails the job
 └── upload-artifact         # includes both JSONL files under output/
+
+GitLab CI agent job
+├── fullsend run            # --output-dir /tmp/fullsend-output
+├── fullsend eval-measure   # always (even if run failed); || true
+└── (no artifacts: by default — JSONL stays on the runner filesystem)
 ```
 
 ## Manifest resolution in CI
 
-`action.yml` resolves the measurement manifest for `inputs.agent`:
+`fullsend eval-measure` resolves the measurement manifest for the agent:
 
 1. `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present, else
-2. `https://raw.githubusercontent.com/fullsend-ai/agents/v0/eval/measurements/${AGENT}.yaml`
+2. SHA-pinned `eval/measurements/${AGENT}.yaml` from `fullsend-ai/agents`
+   (same `v0` → commit SHA, allowlist, hash, and fetch audit as harness
+   fallback — not a floating `raw.githubusercontent.com/.../v0/...` curl).
 
-Step 2 is how stock-agent defaults reach every install (same pin style as
-other agents-repo fallbacks). Step 1 is override / BYOA only.
+Step 2 is how stock-agent defaults reach every install. Step 1 is override /
+BYOA only.
 
-Missing manifest → log and exit `0` (skip). The CLI flag remains
-`--registry` for now (path to the YAML); rename is cosmetic follow-up.
+Platform telemetry is `run-telemetry.jsonl` at the top of each run directory.
+Nested `iteration-N/output/run-telemetry.jsonl` copies are ignored.
+
+Missing manifest or telemetry → log and exit `0` (skip). `--registry` and
+`--telemetry` remain for local/debug use.
 
 ## CLI
 
 ```bash
 fullsend eval-measure \
-  --telemetry path/to/run-telemetry.jsonl \
-  --registry path/to/agents/eval/measurements/review.yaml \
-  --out-dir path/to/output
+  --agent review \
+  --fullsend-dir "${FULLSEND_DIR}" \
+  --output-dir path/to/output
 ```
 
-- `--registry` is required (manifests live in `fullsend-ai/agents`, not in
-  the fullsend binary).
+- `--agent` + `--output-dir` is the managed-job form. `--registry` /
+  `--telemetry` remain for pointing at explicit files.
 - Exit `0` when a score is `fail` — scores are data.
+- Exit `0` when telemetry or the manifest is missing (skip).
 
 ## Implementation note
 

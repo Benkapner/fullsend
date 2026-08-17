@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
@@ -102,7 +103,7 @@ func TestResolveWorkItemID(t *testing.T) {
 		},
 		{
 			name: "unknown when nothing is set",
-			want: "unknown",
+			want: evalmeasure.UnknownSentinel,
 		},
 	}
 	for _, tc := range cases {

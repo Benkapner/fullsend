@@ -296,6 +296,9 @@ stages:
 
       # Run the agent — fullsend run resolves the harness file, reads
       # the image field, and creates the sandbox container via Podman.
+      # Capture the run status so eval-measure still runs after a failed
+      # agent (failed runs still write run-telemetry.jsonl).
+      set +e
       fullsend run "${STAGE}" \
         --fullsend-dir .fullsend \
         --target-repo . \
@@ -304,6 +307,19 @@ stages:
         --run-url "${CI_PIPELINE_URL}" \
         --status-repo "${CI_PROJECT_PATH}" \
         --status-number "${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+      RUN_STATUS=$?
+      set -e
+
+      # Eval measurements (fail-open): same CLI as GitHub Actions. Never
+      # fail the agent job. Manifest: local .fullsend override, else
+      # SHA-pinned fetch from public fullsend-ai/agents (GitHub client).
+      fullsend eval-measure \
+        --agent "${STAGE}" \
+        --fullsend-dir .fullsend \
+        --output-dir /tmp/fullsend-output \
+        || true
+
+      exit "${RUN_STATUS}"
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:
     - if: $STAGE

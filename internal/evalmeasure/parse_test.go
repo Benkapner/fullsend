@@ -38,13 +38,32 @@ func TestParseTelemetryFile_MergesLinesSameTrace(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestParseTelemetryFile_InvalidLine(t *testing.T) {
+func TestParseTelemetryFile_InvalidLineSkipped(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.jsonl")
 	require.NoError(t, os.WriteFile(path, []byte("not-json\n"), 0o644))
-	_, err := ParseTelemetryFile(path)
-	require.Error(t, err)
+	traces, err := ParseTelemetryFile(path)
+	require.NoError(t, err, "a truncated/corrupt line must not fail the whole file")
+	assert.Empty(t, traces)
+}
+
+func TestParseTelemetryFile_TruncatedLineDoesNotDiscardFile(t *testing.T) {
+	t.Parallel()
+	good, err := os.ReadFile(filepath.Join("testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.jsonl")
+	body := string(good)
+	if body != "" && body[len(body)-1] != '\n' {
+		body += "\n"
+	}
+	body += "{\"resourceSpans\":[{\"scopeSpans\":[{\"spans\":[{\"traceId\":\"truncated\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+	traces, err := ParseTelemetryFile(path)
+	require.NoError(t, err)
+	require.Len(t, traces, 1)
+	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", traces[0].TraceID)
 }
 
 func TestParseTelemetryFile_MissingFile(t *testing.T) {

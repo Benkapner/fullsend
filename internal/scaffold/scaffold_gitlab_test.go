@@ -155,6 +155,10 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "- agent")
 	// Generic template parameterized by STAGE
 	assert.Contains(t, s, `fullsend run "${STAGE}"`)
+	assert.Contains(t, s, `fullsend eval-measure`)
+	assert.Contains(t, s, "RUN_STATUS=$?")
+	assert.Contains(t, s, `exit "${RUN_STATUS}"`)
+	assert.Contains(t, s, "|| true")
 	assert.Contains(t, s, "--fullsend-dir")
 	assert.Contains(t, s, "--target-repo")
 	assert.Contains(t, s, "--output-dir")

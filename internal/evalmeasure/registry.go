@@ -64,8 +64,14 @@ func (m MeasurementSpec) evalName() string {
 }
 
 // ScoreTrace runs enabled measurements for traces matching the manifest agent.
+// An empty or UnknownSentinel agent name still scores so identity=fail is
+// recorded (EM-001 exists to catch missing identity). A different, known
+// agent name is skipped. Unknown scorer strings write a skip row rather
+// than silent-no-op or a fail that mixes into pass-rate (a newer agents@v0
+// manifest can name a scorer this binary does not implement yet).
 func ScoreTrace(tr Trace, reg Registry) []EvaluationResult {
-	if tr.AgentName() != reg.Agent {
+	name := tr.AgentName()
+	if name != "" && name != UnknownSentinel && name != reg.Agent {
 		return nil
 	}
 	var out []EvaluationResult
@@ -74,7 +80,14 @@ func ScoreTrace(tr Trace, reg Registry) []EvaluationResult {
 		case ScorerFitness:
 			out = append(out, ScoreFitnessNamed(tr, m.evalName(), m.versionString()))
 		default:
-			// Unknown scorers are skipped (forward-compatible).
+			out = append(out, EvaluationResult{
+				Name:        m.evalName(),
+				Label:       LabelSkip,
+				Explanation: "unknown scorer: " + m.Scorer,
+				TraceID:     tr.TraceID,
+				Agent:       name,
+				Version:     m.versionString(),
+			})
 		}
 	}
 	return out

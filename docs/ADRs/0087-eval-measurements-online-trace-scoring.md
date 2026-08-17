@@ -71,6 +71,13 @@ Introduce **eval measurements**: deterministic scorers that read
 scenarios remain ADR 0051 / `eval/<agent>/`; measurements never block
 delivery.
 
+In plain terms: eval measurements are the concept of scoring traces.
+[OTEL primary facts](../glossary.md#otel-primary-facts) are what happened
+on the run (the OTEL trace / `run-telemetry.jsonl`).
+[OTEL derived products](../glossary.md#otel-derived-products) are scores
+computed from that trace (`eval-measurements.jsonl`). Measurements never
+rewrite primary facts, and they are [fail-open](../glossary.md#fail-open).
+
 Scores always land in a tool-agnostic `eval-measurements.jsonl` (plus a
 small idempotency ledger) next to `run-telemetry.jsonl`. Remote score export
 will use the same `OTEL_EXPORTER_OTLP_*` configuration as ADR 0050 — no
@@ -103,7 +110,9 @@ Entirely new signal → new `em-NNN` (and usually a new `scorer` string).
 
 - Every measured run produces a reviewable, backend-agnostic score file beside
   telemetry; missing manifests skip cleanly and measure failure never fails
-  the agent job.
+  the agent job. GitHub Actions is the first-ship managed path (uploads
+  `output/`). GitLab CI calls the same fail-open `eval-measure` CLI, writing
+  under `/tmp/fullsend-output` with no `artifacts:` block by default.
 - Core stays tool-agnostic: no product-specific score env vars in managed
   workflows; remote scores follow OTEL when that path lands.
 - Functional scenarios (gate) and eval measurements (trend) stay separate;
@@ -112,3 +121,6 @@ Entirely new signal → new `em-NNN` (and usually a new `scorer` string).
   it does not replace this same-job path.
 - Per-measurement versioning (`id@version`) lets pass/fail semantics evolve
   without mixing trend eras.
+- Pre-script skipped runs (`fullsend.prescript.skipped=true` on the root span)
+  are excluded from EM-001: the scorer writes `label: skip` instead of failing
+  a run that never created a sandbox.

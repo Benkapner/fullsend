@@ -4,7 +4,16 @@ import (
 	"strings"
 )
 
-const ScorerFitness = "trace_fitness"
+const (
+	ScorerFitness = "trace_fitness"
+	LabelPass     = "pass"
+	LabelFail     = "fail"
+	LabelSkip     = "skip"
+
+	// UnknownSentinel is the CLI fallback for missing work-item / agent
+	// identity (resolveWorkItemID). Scorers must treat it as absent.
+	UnknownSentinel = "unknown"
+)
 
 // ScoreFitness implements EM-001 Trace Fitness against a single trace.
 func ScoreFitness(tr Trace) EvaluationResult {
@@ -21,8 +30,29 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 	}
 
 	run, hasRun := tr.SpanByName("run")
+	if hasRun {
+		if skipped, ok := run.AttrBool("fullsend.prescript.skipped"); ok && skipped {
+			spanID := run.SpanID
+			workItem, _ := run.AttrString("fullsend.work_item_id")
+			reason := "pre-script skipped run; excluded from trace_fitness"
+			if r, ok := run.AttrString("fullsend.prescript.skip_reason"); ok && r != "" {
+				reason = reason + ": " + r
+			}
+			return EvaluationResult{
+				Name:        evalName,
+				Label:       LabelSkip,
+				Explanation: reason,
+				TraceID:     tr.TraceID,
+				SpanID:      spanID,
+				WorkItemID:  workItem,
+				Agent:       tr.AgentName(),
+				Version:     version,
+			}
+		}
+	}
 	agents := tr.SpansByName("agent")
 	_, hasSandbox := tr.SpanByName("sandbox_create")
+	costOK, costMissing := costToolsTurnsDetail(run, agents)
 
 	type check struct {
 		id   string
@@ -31,13 +61,14 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 	checks := []check{
 		{"span_tree", hasRun && hasSandbox && len(agents) >= 1},
 		{"identity", identityOK(run, agents)},
-		// "unknown" is the CLI sentinel when no ISSUE_*/GITHUB_ISSUE_URL is set
-		// (common for review, which wires PR_NUMBER / GITHUB_PR_URL instead).
+		// UnknownSentinel is the CLI fallback when no issue- or PR-shaped env is set.
+		// Review jobs that have PR_NUMBER / GITHUB_PR_URL should not hit this
+		// after #5622; a remaining unknown is a real fitness fail.
 		{"work_item", workItemOK(run)},
 		{"operation", attrNonEmpty(run, "gen_ai.operation.name")},
 		{"model", modelOK(run, agents)},
 		{"usage", usageOK(run, agents)},
-		{"cost_tools_turns", costToolsTurnsOK(run, agents)},
+		{"cost_tools_turns", costOK},
 		{"exit", hasExit(run)},
 	}
 
@@ -50,14 +81,18 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 			details = append(details, c.id+"=pass")
 		} else {
 			failed = append(failed, c.id)
-			details = append(details, c.id+"=fail")
+			if c.id == "cost_tools_turns" && len(costMissing) > 0 {
+				details = append(details, c.id+"=fail["+strings.Join(costMissing, ",")+"]")
+			} else {
+				details = append(details, c.id+"=fail")
+			}
 		}
 	}
 	total := len(checks)
 	value := float64(passed) / float64(total)
-	label := "fail"
+	label := LabelFail
 	if value == 1.0 {
-		label = "pass"
+		label = LabelPass
 	}
 	expl := strings.Join(details, ", ")
 	if len(failed) > 0 {
@@ -87,7 +122,7 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 
 func identityOK(run Span, agents []Span) bool {
 	fa, okFA := run.AttrString("fullsend.agent")
-	if !okFA || fa == "" || fa == "unknown" {
+	if !okFA || fa == "" || fa == UnknownSentinel {
 		return false
 	}
 	if ga, ok := run.AttrString("gen_ai.agent.name"); ok && ga == fa {
@@ -103,7 +138,7 @@ func identityOK(run Span, agents []Span) bool {
 
 func workItemOK(run Span) bool {
 	v, ok := run.AttrString("fullsend.work_item_id")
-	return ok && v != "" && v != "unknown"
+	return ok && v != "" && v != UnknownSentinel
 }
 
 func attrNonEmpty(s Span, key string) bool {
@@ -150,7 +185,7 @@ func usageOK(run Span, agents []Span) bool {
 	return false
 }
 
-func costToolsTurnsOK(run Span, agents []Span) bool {
+func costToolsTurnsDetail(run Span, agents []Span) (bool, []string) {
 	hasCost := false
 	hasTools := false
 	if _, ok := run.AttrFloat("fullsend.cost_usd"); ok {
@@ -171,15 +206,19 @@ func costToolsTurnsOK(run Span, agents []Span) bool {
 			}
 		}
 	}
-	if !hasCost || !hasTools {
-		return false
+	var missing []string
+	if !hasCost {
+		missing = append(missing, "cost")
+	}
+	if !hasTools {
+		missing = append(missing, "tool_calls")
 	}
 	if iters, ok := run.AttrInt("fullsend.iterations"); ok && iters > 0 {
 		if _, ok := run.AttrInt("fullsend.num_turns"); !ok {
-			return false
+			missing = append(missing, "num_turns")
 		}
 	}
-	return true
+	return len(missing) == 0, missing
 }
 
 func hasExit(run Span) bool {

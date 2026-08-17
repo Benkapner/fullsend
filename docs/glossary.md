@@ -88,7 +88,7 @@ See [autonomy-spectrum.md](problems/autonomy-spectrum.md) and [agent-architectur
 
 ### Eval Measurement
 
-A score, judge, or metric applied to agent (or agent-chain) behavior — for example cost per run, whether the code agent later passes review, or whether a review agent recommends merge and a human still intervenes. Measurements are not the inputs under test; they are what you score. Online / trend scoring of wild-run traces is decided in [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md) (`fullsend eval-measure`, `eval-measurements.jsonl`). The same measurement *idea* can also be applied to curated [eval scenarios](#eval-scenario), but those PR-gate fixtures are a separate path ([ADR 0051](ADRs/0051-agent-eval-harness-for-test-infrastructure.md)). Prefer this term (or synonyms *eval score* / *eval judge*) over the bare word "evals," which is ambiguous with [eval scenarios](#eval-scenario).
+The concept of **scoring traces** — a score, judge, or metric applied to agent (or agent-chain) behavior. Example signals: cost per run, whether the code agent later passes review, or whether a review agent recommends merge and a human still intervenes. Measurements are not the inputs under test; they are an [OTEL derived product](#otel-derived-products) computed from [OTEL primary facts](#otel-primary-facts). Online / trend scoring of wild-run traces is decided in [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md) (`fullsend eval-measure`, `eval-measurements.jsonl`) and is [fail-open](#fail-open). The same measurement *idea* can also be applied to curated [eval scenarios](#eval-scenario), but those PR-gate fixtures are a separate path ([ADR 0051](ADRs/0051-agent-eval-harness-for-test-infrastructure.md)). Prefer this term (or synonyms *eval score* / *eval judge*) over the bare word "evals," which is ambiguous with [eval scenarios](#eval-scenario).
 See [Eval Measurements](guides/infrastructure/eval-measurements.md), [testing-agents.md](problems/testing-agents.md), and [Observability](#observability).
 
 ### Eval Scenario
@@ -101,6 +101,11 @@ See [ADR 0051](ADRs/0051-agent-eval-harness-for-test-infrastructure.md) and [tes
 A workflow concept where a repository automatically stays up-to-date with dependency updates (e.g., Renovate PRs) by automerging changes that consist solely of known-safe dependency bumps. Named by analogy with evergreen browsers that silently self-update. Proposed as a stretch-goal supplementary workflow.
 
 ## F
+
+### Fail-Open
+
+When a step's error or a `fail` score must not fail the surrounding job or block delivery. Eval measurements are fail-open: a missing manifest, a scorer `fail`/`skip` label, or a measure-step IO error never fails the agent run. Contrast with fail-closed gates (auth, kill switch) where an error must stop the run. In scripts, fail-open is acceptable for non-critical steps (logging, metrics) and dangerous for gates.
+See [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md), [Eval Measurements](guides/infrastructure/eval-measurements.md), and [Shell scripting](contributing/shell-scripting.md).
 
 ### Flapping
 
@@ -146,6 +151,16 @@ See [security-threat-model.md](problems/security-threat-model.md).
 
 The logging, tracing, and audit layer for agent actions. Every agent action must be attributable, traceable, and reviewable — both for debugging failures and for security auditability. In practice, this includes capturing agent JSONL logs (including "thinking" traces), converting them to human-readable format, and uploading them as artifacts. Observability is a cross-cutting concern that touches every other component.
 See [architecture.md](architecture.md).
+
+### OTEL Derived Products
+
+Values **computed from** a run's OpenTelemetry trace after the fact — scores, fitness checks, later quality signals. They are not a second copy of what happened. First-ship example: `eval-measurements.jsonl` from `fullsend eval-measure` ([eval measurements](#eval-measurement) are the concept of scoring traces). Derived products sit beside telemetry as sibling files; they never replace [OTEL primary facts](#otel-primary-facts).
+See [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md) and [Eval Measurements](guides/infrastructure/eval-measurements.md).
+
+### OTEL Primary Facts
+
+What **actually happened** on an agent run, recorded as OpenTelemetry (OTEL) spans. The local source of truth is `run-telemetry.jsonl`; when `OTEL_EXPORTER_OTLP_*` is set, the same spans also export live over OTLP ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)). Agent identity, work item, tokens, cost, span tree, and `exit_code` belong here. Sibling files (including [eval measurements](#eval-measurement)) must not become a second source of run truth.
+See [Distributed Tracing](guides/infrastructure/distributed-tracing.md) and [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md).
 
 ## P
 

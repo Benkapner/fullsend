@@ -26,15 +26,18 @@ type Trace struct {
 
 // EvaluationResult is a portable measurement score (no vendor types).
 type EvaluationResult struct {
-	Name        string  `json:"name"`
-	Label       string  `json:"label"`
-	Explanation string  `json:"explanation"`
-	TraceID     string  `json:"trace_id"`
-	SpanID      string  `json:"span_id"`
-	WorkItemID  string  `json:"work_item_id,omitempty"`
-	Agent       string  `json:"agent"`
-	Version     string  `json:"version"`
-	Value       float64 `json:"value"`
+	Name        string `json:"name"`
+	Label       string `json:"label"`
+	Explanation string `json:"explanation"`
+	TraceID     string `json:"trace_id"`
+	SpanID      string `json:"span_id"`
+	WorkItemID  string `json:"work_item_id,omitempty"`
+	Agent       string `json:"agent"`
+	Version     string `json:"version"`
+	// Value is the numeric score. Skip rows leave this at 0; consumers
+	// must key off Label, not Value==0. Do not add omitempty: a real
+	// fail can also be 0.0.
+	Value float64 `json:"value"`
 }
 
 // AttrString returns a string attribute.
@@ -48,6 +51,29 @@ func (s Span) AttrString(key string) (string, bool) {
 		return t, true
 	default:
 		return fmt.Sprint(t), true
+	}
+}
+
+// AttrBool returns a bool attribute.
+func (s Span) AttrBool(key string) (bool, bool) {
+	v, ok := s.Attrs[key]
+	if !ok || v == nil {
+		return false, false
+	}
+	switch t := v.(type) {
+	case bool:
+		return t, true
+	case string:
+		switch t {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		default:
+			return false, false
+		}
+	default:
+		return false, false
 	}
 }
 

@@ -178,3 +178,32 @@ func TestAgentName(t *testing.T) {
 		})
 	}
 }
+
+func TestAttrBool(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		attrs  map[string]any
+		key    string
+		want   bool
+		wantOK bool
+	}{
+		{"true", map[string]any{"k": true}, "k", true, true},
+		{"false", map[string]any{"k": false}, "k", false, true},
+		{"string true", map[string]any{"k": "true"}, "k", true, true},
+		{"string false", map[string]any{"k": "false"}, "k", false, true},
+		{"string other", map[string]any{"k": "yes"}, "k", false, false},
+		{"missing key", map[string]any{}, "k", false, false},
+		{"nil value", map[string]any{"k": nil}, "k", false, false},
+		{"int not bool", map[string]any{"k": 1}, "k", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := Span{Attrs: tt.attrs}
+			got, ok := s.AttrBool(tt.key)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

@@ -94,3 +94,41 @@ func TestMeasureAndExport_CancelledContext(t *testing.T) {
 	)
 	require.Error(t, err)
 }
+
+func TestMeasureFile_PrescriptSkippedRecordsSkip(t *testing.T) {
+	out := t.TempDir()
+	results, err := MeasureFile(
+		filepath.Join("testdata", "prescript-skipped.jsonl"),
+		filepath.Join("testdata", "sample-registry.yaml"),
+		out,
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, LabelSkip, results[0].Label)
+	assert.NotEqual(t, LabelFail, results[0].Label)
+
+	b, err := os.ReadFile(filepath.Join(out, MeasurementsFile))
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"label":"skip"`)
+	assert.NotContains(t, string(b), `"label":"fail"`)
+}
+
+func TestMeasureFile_EmptyIdentityPersistsFailRow(t *testing.T) {
+	dir := t.TempDir()
+	telem := filepath.Join(dir, "run-telemetry.jsonl")
+	// Minimal OTLP line: run span with no agent identity.
+	line := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"dddddddddddddddddddddddddddddddd","spanId":"1111111111111111","name":"run","startTimeUnixNano":"1","endTimeUnixNano":"2","attributes":[{"key":"fullsend.work_item_id","value":{"stringValue":"acme/demo#1"}},{"key":"exit_code","value":{"intValue":"0"}}]},{"traceId":"dddddddddddddddddddddddddddddddd","spanId":"2222222222222222","name":"sandbox_create","startTimeUnixNano":"1","endTimeUnixNano":"2"},{"traceId":"dddddddddddddddddddddddddddddddd","spanId":"3333333333333333","name":"agent","startTimeUnixNano":"1","endTimeUnixNano":"2","attributes":[{"key":"gen_ai.system","value":{"stringValue":"anthropic"}}]}]}]}]}` + "\n"
+	require.NoError(t, os.WriteFile(telem, []byte(line), 0o644))
+
+	out := t.TempDir()
+	results, err := MeasureFile(telem, filepath.Join("testdata", "sample-registry.yaml"), out)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, LabelFail, results[0].Label)
+	assert.Contains(t, results[0].Explanation, "identity=fail")
+
+	b, err := os.ReadFile(filepath.Join(out, MeasurementsFile))
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"label":"fail"`)
+	assert.Contains(t, string(b), "identity=fail")
+}

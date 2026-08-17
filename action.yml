@@ -419,41 +419,15 @@ runs:
       env:
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
-        GH_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
-        TELEMETRY=$(find "${GITHUB_WORKSPACE}/output" -name run-telemetry.jsonl -print -quit 2>/dev/null || true)
-        if [[ -z "${TELEMETRY}" ]]; then
-          echo "No run-telemetry.jsonl under output/; skipping eval measurements"
-          exit 0
-        fi
-
-        REGISTRY=""
-        LOCAL_REG="${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml"
-        if [[ -f "${LOCAL_REG}" ]]; then
-          REGISTRY="${LOCAL_REG}"
-        else
-          # Same pin as agents-repo harness fallback (config.DefaultUpstreamRef=v0).
-          URL="https://raw.githubusercontent.com/fullsend-ai/agents/v0/eval/measurements/${AGENT}.yaml"
-          TMP="$(mktemp)"
-          CURL_ARGS=( -fsSL -o "${TMP}" )
-          if [[ -n "${GH_TOKEN:-}" ]]; then
-            CURL_ARGS+=( -H "Authorization: Bearer ${GH_TOKEN}" )
-          fi
-          if curl "${CURL_ARGS[@]}" "${URL}"; then
-            REGISTRY="${TMP}"
-          else
-            printf 'No eval measurement manifest for %q at %s or %s; skipping\n' "${AGENT}" "${LOCAL_REG}" "${URL}"
-            rm -f "${TMP}"
-            exit 0
-          fi
-        fi
-
+        # Binary resolves the SHA-pinned agents manifest (allowlist/hash/audit)
+        # and scores only platform run-telemetry.jsonl at the top of each runDir.
         fullsend eval-measure \
-          --telemetry "${TELEMETRY}" \
-          --registry "${REGISTRY}" \
-          --out-dir "$(dirname "${TELEMETRY}")"
+          --agent "${AGENT}" \
+          --fullsend-dir "${FULLSEND_DIR}" \
+          --output-dir "${GITHUB_WORKSPACE}/output"
 
     - name: Upload fullsend artifacts
       if: always() && inputs.agent != '__install_only__'

@@ -66,7 +66,8 @@ func ParseTelemetryFile(path string) ([]Trace, error) {
 		}
 		var doc otlpTracesData
 		if err := json.Unmarshal(line, &doc); err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNo, err)
+			// Skip one truncated or corrupt JSONL line; keep the rest of the file.
+			continue
 		}
 		for _, rs := range doc.ResourceSpans {
 			for _, ss := range rs.ScopeSpans {
