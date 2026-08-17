@@ -256,7 +256,7 @@ fullsend repos set-default forge.github.mint_url ""   # removes the key
 |-----|------|-------------|
 | `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
 | `forge.github.url` | URL | GitHub instance URL (default: `https://github.com`) |
-| `forge.github.mint_url` | URL | Cloud Run endpoint URL for the token mint (defaults to `https://mint.fullsend.sh` in public mode) |
+| `forge.github.mint_url` | URL | Token mint service URL (defaults to `https://mint.fullsend.sh` in public mode) |
 | `forge.github.mint_mode` | `public` or `private` | Controls the default mint URL: `public` defaults to `https://mint.fullsend.sh`; `private` requires an explicit `mint_url` (default: `public`) |
 | `forge.github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
 | `forge.gitlab.url` | URL | GitLab instance URL |

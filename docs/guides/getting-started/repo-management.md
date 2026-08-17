@@ -19,7 +19,7 @@ fullsend across an organization. Individual repo owners should use
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`, GitHub only) must be completed separately before running `repos install`. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 ## Getting started
 
@@ -139,9 +139,10 @@ Install runs in three phases:
    drift (synced automatically) and scaffold ref drift (upgraded
    automatically).
 
-> **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
-> enrollment) must be provisioned separately before running install.
-> See `fullsend inference provision` and `fullsend mint enroll`.
+> **Prerequisite:** GCP WIF provisioning (`fullsend inference provision`)
+> must be completed before running install. For self-managed mints,
+> also run `fullsend mint enroll`. The hosted community mint needs no
+> enrollment.
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
@@ -448,7 +449,7 @@ infrastructure, coordinate between roles:
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
 | 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` |
+| 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` (self-hosted mints only; not needed for the hosted community mint) |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
 flag: `--yes` for `repos` commands, `--yolo` for `github` and `mint`
