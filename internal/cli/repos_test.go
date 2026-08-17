@@ -1397,6 +1397,93 @@ func TestRunReposInstall_InvalidInferenceProjectNumber(t *testing.T) {
 	assert.Contains(t, err.Error(), "--inference-project-number must be numeric")
 }
 
+func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		// No inferenceProjectNumber — should be auto-derived.
+		// No inferenceRegion — should default to "global".
+		testClient: fc,
+		testProjectNumberFn: func(_ context.Context, projectID string) (string, error) {
+			if projectID != "inf-proj" {
+				t.Errorf("expected project ID inf-proj, got %s", projectID)
+			}
+			return "987654321", nil
+		},
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_ExplicitProjectNumberSkipsLookup(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	lookupCalled := false
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "111222333",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			lookupCalled = true
+			return "999", nil
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, lookupCalled,
+		"project number lookup should be skipped when --inference-project-number is explicit")
+}
+
+func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		// inferenceRegion left empty — should default to "global".
+		testClient: fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			return "123456789", nil
+		},
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:         manifestPath,
+		concurrency:      4,
+		roles:            []string{"triage"},
+		direct:           true,
+		inferenceProject: "inf-proj",
+		testClient:       fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("API unavailable")
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deriving project number")
+	assert.Contains(t, err.Error(), "API unavailable")
+	assert.Contains(t, err.Error(), "--inference-project-number")
+}
+
 func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api", "acme/web")
