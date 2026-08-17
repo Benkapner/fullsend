@@ -9,25 +9,27 @@ import (
 // MeasureFile parses telemetry, scores with the manifest, and writes local
 // eval-measurements.jsonl. Idempotent per ledger.
 func MeasureFile(telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
-	return MeasureAndExport(context.Background(), telemetryPath, registryPath, outDir)
+	r, _, err := MeasureAndExport(context.Background(), telemetryPath, registryPath, outDir)
+	return r, err
 }
 
 // MeasureAndExport is MeasureFile with an explicit context (reserved for
 // future portable OTLP score export on the same OTEL_* path as ADR 0050).
-func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
+func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir string) ([]EvaluationResult, ParseStats, error) {
+	var stats ParseStats
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 	if outDir == "" {
 		outDir = filepath.Dir(telemetryPath)
 	}
 	reg, err := LoadRegistry(registryPath)
 	if err != nil {
-		return nil, fmt.Errorf("load registry: %w", err)
+		return nil, stats, fmt.Errorf("load registry: %w", err)
 	}
-	traces, err := ParseTelemetryFile(telemetryPath)
+	traces, stats, err := ParseTelemetryFile(telemetryPath)
 	if err != nil {
-		return nil, fmt.Errorf("parse telemetry: %w", err)
+		return nil, stats, fmt.Errorf("parse telemetry: %w", err)
 	}
 
 	ledgerPath := filepath.Join(outDir, LedgerFile)
@@ -39,20 +41,20 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 		for _, r := range results {
 			done, err := AlreadyScored(ledgerPath, r.TraceID, r.Name, r.Version)
 			if err != nil {
-				return all, fmt.Errorf("check ledger: %w", err)
+				return all, stats, fmt.Errorf("check ledger: %w", err)
 			}
 			if done {
 				continue
 			}
 			all = append(all, r)
 			if err := AppendMeasurements(measPath, []EvaluationResult{r}); err != nil {
-				return all, fmt.Errorf("append measurements: %w", err)
+				return all, stats, fmt.Errorf("append measurements: %w", err)
 			}
 			if err := RecordScored(ledgerPath, r.TraceID, r.Name, r.Version); err != nil {
-				return all, fmt.Errorf("record scored: %w", err)
+				return all, stats, fmt.Errorf("record scored: %w", err)
 			}
 		}
 	}
 
-	return all, nil
+	return all, stats, nil
 }

@@ -135,6 +135,27 @@ func TestEvalMeasureCmd_SkipWhenNoTelemetry(t *testing.T) {
 	assert.NotContains(t, buf.String(), "Wrote")
 }
 
+func TestEvalMeasureCmd_WarnsOnCorruptTelemetryLine(t *testing.T) {
+	out := t.TempDir()
+	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	telem := filepath.Join(out, "run-telemetry.jsonl")
+	require.NoError(t, os.WriteFile(telem, append(append([]byte{}, good...), []byte("\nnot-json\n")...), 0o644))
+
+	cmd := newRootCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"eval-measure",
+		"--telemetry", telem,
+		"--registry", filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml"),
+		"--out-dir", out,
+	})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, buf.String(), "unreadable telemetry line")
+}
+
 func TestActionYML_EvalMeasureNoFloatingV0Curl(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
@@ -152,6 +173,7 @@ func TestActionYML_EvalMeasureNoFloatingV0Curl(t *testing.T) {
 	assert.Contains(t, step, "--agent")
 	assert.Contains(t, step, "continue-on-error: true")
 	assert.Contains(t, step, "if: always()")
+	assert.Contains(t, step, "GH_TOKEN:")
 	assert.NotContains(t, step, "curl ")
 	assert.NotContains(t, step, "Authorization: Bearer")
 }

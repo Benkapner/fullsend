@@ -10,7 +10,7 @@ import (
 
 func TestScoreFitness_CompletePass(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
 	require.NoError(t, err)
 	r := ScoreFitness(traces[0])
 	assert.Equal(t, ScorerFitness, r.Name)
@@ -26,7 +26,7 @@ func TestScoreFitness_CompletePass(t *testing.T) {
 
 func TestScoreFitness_MissingCostFails(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "missing-cost.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "missing-cost.jsonl"))
 	require.NoError(t, err)
 	r := ScoreFitness(traces[0])
 	assert.Equal(t, "fail", r.Label)
@@ -37,7 +37,7 @@ func TestScoreFitness_MissingCostFails(t *testing.T) {
 
 func TestScoreFitness_ReviewUnknownWorkItemFails(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "review-unknown-workitem.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "review-unknown-workitem.jsonl"))
 	require.NoError(t, err)
 	r := ScoreFitness(traces[0])
 	assert.Equal(t, "review", r.Agent)
@@ -49,7 +49,7 @@ func TestScoreFitness_ReviewUnknownWorkItemFails(t *testing.T) {
 
 func TestScoreFitness_PrescriptSkippedExcluded(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "prescript-skipped.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "prescript-skipped.jsonl"))
 	require.NoError(t, err)
 	r := ScoreFitness(traces[0])
 	assert.Equal(t, "triage", r.Agent)
@@ -63,7 +63,7 @@ func TestScoreFitness_PrescriptSkippedExcluded(t *testing.T) {
 
 func TestScoreTrace_AgentMismatchReturnsNil(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
 	require.NoError(t, err)
 	reg := Registry{Agent: "code", Measurements: []MeasurementSpec{{ID: "em-001", Scorer: ScorerFitness, Version: 1}}}
 	assert.Empty(t, ScoreTrace(traces[0], reg))
@@ -125,7 +125,7 @@ func TestScoreTrace_UnknownAgentSentinelRecordsIdentityFail(t *testing.T) {
 
 func TestScoreTrace_UnknownScorerSkipsNotSilent(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
 	require.NoError(t, err)
 	reg := Registry{
 		Agent: "triage",
@@ -145,7 +145,7 @@ func TestScoreTrace_UnknownScorerSkipsNotSilent(t *testing.T) {
 
 func TestScoreFitness_CostToolsTurnsNamesSubcheck(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "missing-cost.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "missing-cost.jsonl"))
 	require.NoError(t, err)
 	r := ScoreFitness(traces[0])
 	assert.Equal(t, LabelFail, r.Label)
@@ -179,4 +179,34 @@ func TestScoreFitness_MissingTurnsNamesSubcheck(t *testing.T) {
 	}
 	r := ScoreFitness(tr)
 	assert.Contains(t, r.Explanation, "cost_tools_turns=fail[num_turns]")
+}
+
+func TestScoreFitness_EmptyModelStringFails(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "2",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":             "triage",
+					"gen_ai.agent.name":          "triage",
+					"gen_ai.operation.name":      "invoke_agent",
+					"fullsend.work_item_id":      "acme/demo#1",
+					"exit_code":                  int64(0),
+					"gen_ai.request.model":       "",
+					"gen_ai.usage.input_tokens":  int64(1),
+					"gen_ai.usage.output_tokens": int64(1),
+					"fullsend.cost_usd":          0.1,
+					"fullsend.tool_calls":        int64(1),
+					"fullsend.iterations":        int64(0),
+				},
+			},
+			{Name: "sandbox_create"},
+			{Name: "agent", Attrs: map[string]any{"gen_ai.system": "", "gen_ai.agent.name": "triage"}},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelFail, r.Label)
+	assert.Contains(t, r.Explanation, "model=fail")
 }

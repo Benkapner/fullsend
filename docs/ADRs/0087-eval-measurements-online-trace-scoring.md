@@ -47,8 +47,8 @@ Adjacent telemetry proposals (not competing with this score path):
 - **Observer / lessons → fixtures** ([#2423](https://github.com/fullsend-ai/fullsend/pull/2423)):
   narrative analysis and golden-set promotion. This ADR is same-job
   deterministic scoring on traces.
-- **Harness snapshot / forge join keys** ([#5524](https://github.com/fullsend-ai/fullsend/pull/5524)
-  — proposed ADR 0075): sibling artifact for harness fingerprint and
+- **Harness snapshot / forge join keys** ([#5524](https://github.com/fullsend-ai/fullsend/pull/5524)):
+  sibling artifact for harness fingerprint and
   forge/CI pointers beside telemetry. Complementary join/identity layer;
   primary run facts belong on the OTEL trace (Level 1), while measurements
   stay a derived sibling file.
@@ -88,7 +88,9 @@ Stock-agent defaults resolve from `agents@v0` at runtime; local files are for
 override, opt-out, or custom agents only.
 
 The first scorer is `trace_fitness` (catalog id `em-001`) — span-tree and
-attribute fitness so later scorers can trust the trace.
+attribute fitness so later scorers can trust the trace. EM-001 reads
+experimental OpenTelemetry GenAI attribute names (`gen_ai.*` constants in
+`internal/evalmeasure`); an upstream rename is an `em-001` version bump.
 
 ### Versioning (per measurement, not platform “v1”)
 

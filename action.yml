@@ -419,6 +419,8 @@ runs:
       env:
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+        # For GetRef of agents@v0 (SHA pin). Not sent to raw.githubusercontent.com.
+        GH_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"

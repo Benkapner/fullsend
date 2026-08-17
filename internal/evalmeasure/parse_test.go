@@ -11,7 +11,7 @@ import (
 
 func TestParseTelemetryFile_Complete(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
 	require.NoError(t, err)
 	require.Len(t, traces, 1)
 	tr := traces[0]
@@ -30,7 +30,7 @@ func TestParseTelemetryFile_Complete(t *testing.T) {
 
 func TestParseTelemetryFile_MergesLinesSameTrace(t *testing.T) {
 	t.Parallel()
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "split.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "split.jsonl"))
 	require.NoError(t, err)
 	require.Len(t, traces, 1)
 	assert.Len(t, traces[0].Spans, 3)
@@ -43,9 +43,11 @@ func TestParseTelemetryFile_InvalidLineSkipped(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.jsonl")
 	require.NoError(t, os.WriteFile(path, []byte("not-json\n"), 0o644))
-	traces, err := ParseTelemetryFile(path)
+	traces, stats, err := ParseTelemetryFile(path)
 	require.NoError(t, err, "a truncated/corrupt line must not fail the whole file")
 	assert.Empty(t, traces)
+	assert.Equal(t, 1, stats.NonEmptyLines)
+	assert.Equal(t, 1, stats.SkippedLines)
 }
 
 func TestParseTelemetryFile_TruncatedLineDoesNotDiscardFile(t *testing.T) {
@@ -60,14 +62,16 @@ func TestParseTelemetryFile_TruncatedLineDoesNotDiscardFile(t *testing.T) {
 	}
 	body += "{\"resourceSpans\":[{\"scopeSpans\":[{\"spans\":[{\"traceId\":\"truncated\n"
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
-	traces, err := ParseTelemetryFile(path)
+	traces, stats, err := ParseTelemetryFile(path)
 	require.NoError(t, err)
 	require.Len(t, traces, 1)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", traces[0].TraceID)
+	assert.GreaterOrEqual(t, stats.SkippedLines, 1)
+	assert.Greater(t, stats.NonEmptyLines, stats.SkippedLines)
 }
 
 func TestParseTelemetryFile_MissingFile(t *testing.T) {
 	t.Parallel()
-	_, err := ParseTelemetryFile(filepath.Join(t.TempDir(), "missing.jsonl"))
+	_, _, err := ParseTelemetryFile(filepath.Join(t.TempDir(), "missing.jsonl"))
 	require.Error(t, err)
 }

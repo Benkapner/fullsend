@@ -6,6 +6,20 @@ import (
 	"strconv"
 )
 
+// Attribute names used by EM-001. gen_ai.* keys follow experimental
+// OpenTelemetry GenAI semantic conventions; an upstream rename is an
+// em-001 version bump, not a silent fleet fail.
+const (
+	AttrFullsendAgent          = "fullsend.agent"
+	AttrFullsendWorkItemID     = "fullsend.work_item_id"
+	AttrGenAIAgentName         = "gen_ai.agent.name"
+	AttrGenAISystem            = "gen_ai.system"
+	AttrGenAIRequestModel      = "gen_ai.request.model"
+	AttrGenAIUsageInputTokens  = "gen_ai.usage.input_tokens"
+	AttrGenAIUsageOutputTokens = "gen_ai.usage.output_tokens"
+	AttrGenAIOperationName     = "gen_ai.operation.name"
+)
+
 // Span is a portable view of one OTEL span from run-telemetry.jsonl.
 type Span struct {
 	TraceID       string
@@ -157,15 +171,15 @@ func (t Trace) SpansByName(name string) []Span {
 // AgentName returns the agent identity from run or agent spans.
 func (t Trace) AgentName() string {
 	if run, ok := t.SpanByName("run"); ok {
-		if a, ok := run.AttrString("fullsend.agent"); ok && a != "" {
+		if a, ok := run.AttrString(AttrFullsendAgent); ok && a != "" {
 			return a
 		}
-		if a, ok := run.AttrString("gen_ai.agent.name"); ok && a != "" {
+		if a, ok := run.AttrString(AttrGenAIAgentName); ok && a != "" {
 			return a
 		}
 	}
 	for _, a := range t.SpansByName("agent") {
-		if name, ok := a.AttrString("gen_ai.agent.name"); ok && name != "" {
+		if name, ok := a.AttrString(AttrGenAIAgentName); ok && name != "" {
 			return name
 		}
 	}

@@ -17,7 +17,7 @@ func TestLoadRegistryAndScoreTrace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "triage", reg.Agent)
 
-	traces, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
 	require.NoError(t, err)
 	results := ScoreTrace(traces[0], reg)
 	require.Len(t, results, 1)
@@ -86,7 +86,7 @@ func TestMeasureFile_BadTelemetry(t *testing.T) {
 func TestMeasureAndExport_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := MeasureAndExport(
+	_, _, err := MeasureAndExport(
 		ctx,
 		filepath.Join("testdata", "complete.jsonl"),
 		filepath.Join("testdata", "sample-registry.yaml"),

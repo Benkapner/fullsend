@@ -108,7 +108,10 @@ func runEvalMeasure(ctx context.Context, printer *ui.Printer, opts evalMeasureOp
 
 	var all []evalmeasure.EvaluationResult
 	for _, p := range telemPaths {
-		results, err := evalmeasure.MeasureAndExport(ctx, p, registry, opts.outDir)
+		results, stats, err := evalmeasure.MeasureAndExport(ctx, p, registry, opts.outDir)
+		if stats.SkippedLines > 0 {
+			printer.StepWarn(fmt.Sprintf("%s: skipped %d of %d unreadable telemetry line(s)", p, stats.SkippedLines, stats.NonEmptyLines))
+		}
 		if err != nil {
 			return all, false, err
 		}
@@ -122,7 +125,15 @@ func resolveEvalMeasureTelemetry(opts evalMeasureOpts) ([]string, error) {
 		return []string{opts.telemetryPath}, nil
 	}
 	if opts.outputDir != "" {
-		return evalmeasure.FindPlatformTelemetry(opts.outputDir)
+		agent := ""
+		if opts.agent != "" {
+			a, err := sanitizeMeasurementAgentName(opts.agent)
+			if err != nil {
+				return nil, err
+			}
+			agent = a
+		}
+		return evalmeasure.FindPlatformTelemetry(opts.outputDir, agent)
 	}
 	return nil, fmt.Errorf("either --telemetry or --output-dir is required")
 }
@@ -188,7 +199,10 @@ func evalMeasureFetchContext(fullsendDir string, printer *ui.Printer) (harness.C
 			orgAllowlist = orgCfg.AllowedResources()
 		}
 	}
-	token, _ := resolveToken()
+	token, err := resolveToken()
+	if (err != nil || token == "") && printer != nil {
+		printer.StepWarn("No GH_TOKEN/GITHUB_TOKEN; agents@v0 GetRef is unauthenticated. GitLab jobs skip stock manifests unless an operator wires a GitHub token.")
+	}
 	return harness.ComposeOpts{
 		WorkspaceRoot: abs,
 		FetchPolicy:   fetch.DefaultPolicy,

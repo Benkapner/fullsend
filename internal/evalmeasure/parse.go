@@ -40,12 +40,21 @@ type otlpKeyValue struct {
 	Value map[string]any `json:"value"`
 }
 
+// ParseStats counts telemetry JSONL lines so operators can tell "no traces"
+// from "file present but unreadable".
+type ParseStats struct {
+	NonEmptyLines int
+	SkippedLines  int
+}
+
 // ParseTelemetryFile reads OTLP JSON TracesData lines from run-telemetry.jsonl
-// and merges spans by trace id.
-func ParseTelemetryFile(path string) ([]Trace, error) {
+// and merges spans by trace id. Truncated or corrupt lines are skipped
+// (fail-open); SkippedLines is the count of those lines.
+func ParseTelemetryFile(path string) ([]Trace, ParseStats, error) {
+	var stats ParseStats
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 	defer f.Close()
 
@@ -64,9 +73,10 @@ func ParseTelemetryFile(path string) ([]Trace, error) {
 		if len(line) == 0 {
 			continue
 		}
+		stats.NonEmptyLines++
 		var doc otlpTracesData
 		if err := json.Unmarshal(line, &doc); err != nil {
-			// Skip one truncated or corrupt JSONL line; keep the rest of the file.
+			stats.SkippedLines++
 			continue
 		}
 		for _, rs := range doc.ResourceSpans {
@@ -74,7 +84,7 @@ func ParseTelemetryFile(path string) ([]Trace, error) {
 				for _, raw := range ss.Spans {
 					sp, err := convertSpan(raw)
 					if err != nil {
-						return nil, fmt.Errorf("line %d span %s: %w", lineNo, raw.SpanID, err)
+						return nil, stats, fmt.Errorf("line %d span %s: %w", lineNo, raw.SpanID, err)
 					}
 					tr, ok := byID[sp.TraceID]
 					if !ok {
@@ -88,14 +98,14 @@ func ParseTelemetryFile(path string) ([]Trace, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 
 	out := make([]Trace, 0, len(order))
 	for _, id := range order {
 		out = append(out, *byID[id])
 	}
-	return out, nil
+	return out, stats, nil
 }
 
 func convertSpan(raw otlpSpan) (Span, error) {

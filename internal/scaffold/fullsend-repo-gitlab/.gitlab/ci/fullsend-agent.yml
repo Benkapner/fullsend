@@ -292,7 +292,9 @@ stages:
 
       # Eval measurements (fail-open): same CLI as GitHub Actions. Never
       # fail the agent job. Manifest: local .fullsend override, else
-      # SHA-pinned fetch from public fullsend-ai/agents (GitHub client).
+      # SHA-pinned fetch from public fullsend-ai/agents (GitHub GetRef).
+      # This job has no GH_TOKEN; stock-agent manifests skip unless an
+      # operator exports GH_TOKEN or GITHUB_TOKEN. Local override still works.
       fullsend eval-measure \
         --agent "${STAGE}" \
         --fullsend-dir .fullsend \

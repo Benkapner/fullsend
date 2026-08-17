@@ -159,6 +159,7 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "RUN_STATUS=$?")
 	assert.Contains(t, s, `exit "${RUN_STATUS}"`)
 	assert.Contains(t, s, "|| true")
+	assert.Contains(t, s, "stock-agent manifests skip")
 	assert.Contains(t, s, "--fullsend-dir")
 	assert.Contains(t, s, "--target-repo")
 	assert.Contains(t, s, "--output-dir")

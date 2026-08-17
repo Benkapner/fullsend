@@ -33,7 +33,7 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 	if hasRun {
 		if skipped, ok := run.AttrBool("fullsend.prescript.skipped"); ok && skipped {
 			spanID := run.SpanID
-			workItem, _ := run.AttrString("fullsend.work_item_id")
+			workItem, _ := run.AttrString(AttrFullsendWorkItemID)
 			reason := "pre-script skipped run; excluded from trace_fitness"
 			if r, ok := run.AttrString("fullsend.prescript.skip_reason"); ok && r != "" {
 				reason = reason + ": " + r
@@ -65,7 +65,7 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 		// Review jobs that have PR_NUMBER / GITHUB_PR_URL should not hit this
 		// after #5622; a remaining unknown is a real fitness fail.
 		{"work_item", workItemOK(run)},
-		{"operation", attrNonEmpty(run, "gen_ai.operation.name")},
+		{"operation", attrNonEmpty(run, AttrGenAIOperationName)},
 		{"model", modelOK(run, agents)},
 		{"usage", usageOK(run, agents)},
 		{"cost_tools_turns", costOK},
@@ -104,7 +104,7 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 	agent := tr.AgentName()
 	if hasRun {
 		spanID = run.SpanID
-		workItem, _ = run.AttrString("fullsend.work_item_id")
+		workItem, _ = run.AttrString(AttrFullsendWorkItemID)
 	}
 
 	return EvaluationResult{
@@ -121,15 +121,15 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 }
 
 func identityOK(run Span, agents []Span) bool {
-	fa, okFA := run.AttrString("fullsend.agent")
+	fa, okFA := run.AttrString(AttrFullsendAgent)
 	if !okFA || fa == "" || fa == UnknownSentinel {
 		return false
 	}
-	if ga, ok := run.AttrString("gen_ai.agent.name"); ok && ga == fa {
+	if ga, ok := run.AttrString(AttrGenAIAgentName); ok && ga == fa {
 		return true
 	}
 	for _, a := range agents {
-		if ga, ok := a.AttrString("gen_ai.agent.name"); ok && ga == fa {
+		if ga, ok := a.AttrString(AttrGenAIAgentName); ok && ga == fa {
 			return true
 		}
 	}
@@ -137,7 +137,7 @@ func identityOK(run Span, agents []Span) bool {
 }
 
 func workItemOK(run Span) bool {
-	v, ok := run.AttrString("fullsend.work_item_id")
+	v, ok := run.AttrString(AttrFullsendWorkItemID)
 	return ok && v != "" && v != UnknownSentinel
 }
 
@@ -147,13 +147,10 @@ func attrNonEmpty(s Span, key string) bool {
 }
 
 func modelOK(run Span, agents []Span) bool {
-	hasModel := false
-	if _, ok := run.AttrString("gen_ai.request.model"); ok {
-		hasModel = true
-	}
+	hasModel := attrNonEmpty(run, AttrGenAIRequestModel)
 	if !hasModel {
 		for _, a := range agents {
-			if _, ok := a.AttrString("gen_ai.request.model"); ok {
+			if attrNonEmpty(a, AttrGenAIRequestModel) {
 				hasModel = true
 				break
 			}
@@ -161,7 +158,7 @@ func modelOK(run Span, agents []Span) bool {
 	}
 	hasSystem := false
 	for _, a := range agents {
-		if _, ok := a.AttrString("gen_ai.system"); ok {
+		if attrNonEmpty(a, AttrGenAISystem) {
 			hasSystem = true
 			break
 		}
@@ -170,14 +167,14 @@ func modelOK(run Span, agents []Span) bool {
 }
 
 func usageOK(run Span, agents []Span) bool {
-	if _, ok := run.AttrInt("gen_ai.usage.input_tokens"); ok {
-		if _, ok := run.AttrInt("gen_ai.usage.output_tokens"); ok {
+	if _, ok := run.AttrInt(AttrGenAIUsageInputTokens); ok {
+		if _, ok := run.AttrInt(AttrGenAIUsageOutputTokens); ok {
 			return true
 		}
 	}
 	for _, a := range agents {
-		_, inOK := a.AttrInt("gen_ai.usage.input_tokens")
-		_, outOK := a.AttrInt("gen_ai.usage.output_tokens")
+		_, inOK := a.AttrInt(AttrGenAIUsageInputTokens)
+		_, outOK := a.AttrInt(AttrGenAIUsageOutputTokens)
 		if inOK && outOK {
 			return true
 		}
