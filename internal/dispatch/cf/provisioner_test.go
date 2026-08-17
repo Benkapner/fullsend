@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -537,6 +539,92 @@ func TestEnsureWASMArtifacts_ForwardsVersionCommit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2.0.0", capturedVersion, "version should be forwarded to BuildWASMFn")
 	assert.Equal(t, "deadbeef", capturedCommit, "commit should be forwarded to BuildWASMFn")
+}
+
+func TestBuildWASM(t *testing.T) {
+	t.Run("constructs correct command", func(t *testing.T) {
+		origExec := execCombinedOutputFn
+		var capturedCmd *exec.Cmd
+		execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
+			capturedCmd = cmd
+			return nil, nil
+		}
+		t.Cleanup(func() { execCombinedOutputFn = origExec })
+
+		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
+		err := buildWASM(outPath, "1.2.3", "abc123")
+		require.NoError(t, err)
+		require.NotNil(t, capturedCmd)
+
+		// argv includes go, build, -ldflags, output path.
+		args := strings.Join(capturedCmd.Args, " ")
+		assert.Contains(t, args, "go build")
+		assert.Contains(t, args, "-ldflags")
+		assert.Contains(t, args, "-o "+outPath)
+
+		// -ldflags value matches wasmLDFlags.
+		assert.Contains(t, args, wasmLDFlags("1.2.3", "abc123"))
+
+		// cmd.Dir ends with cmd/mint-wasm.
+		assert.True(t, strings.HasSuffix(capturedCmd.Dir, filepath.Join("cmd", "mint-wasm")),
+			"Dir should end with cmd/mint-wasm, got %s", capturedCmd.Dir)
+
+		// cmd.Env includes GOOS=js and GOARCH=wasm.
+		envMap := make(map[string]string)
+		for _, e := range capturedCmd.Env {
+			if k, v, ok := strings.Cut(e, "="); ok {
+				envMap[k] = v
+			}
+		}
+		assert.Equal(t, "js", envMap["GOOS"])
+		assert.Equal(t, "wasm", envMap["GOARCH"])
+	})
+
+	t.Run("wraps exec error", func(t *testing.T) {
+		origExec := execCombinedOutputFn
+		execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
+			return []byte("some build output"), fmt.Errorf("exit status 1")
+		}
+		t.Cleanup(func() { execCombinedOutputFn = origExec })
+
+		err := buildWASM("/tmp/out.wasm", "1.0.0", "def456")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "go build cmd/mint-wasm")
+		assert.Contains(t, err.Error(), "some build output")
+	})
+}
+
+func TestCopyWASMExec(t *testing.T) {
+	t.Run("copies from GOROOT", func(t *testing.T) {
+		fakeGOROOT := t.TempDir()
+		wasmDir := filepath.Join(fakeGOROOT, "lib", "wasm")
+		require.NoError(t, os.MkdirAll(wasmDir, 0o755))
+		content := "// fake wasm_exec.js for testing"
+		require.NoError(t, os.WriteFile(filepath.Join(wasmDir, "wasm_exec.js"), []byte(content), 0o644))
+
+		t.Setenv("GOROOT", fakeGOROOT)
+
+		destPath := filepath.Join(t.TempDir(), "wasm_exec.js")
+		err := copyWASMExec(destPath)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(destPath)
+		require.NoError(t, err)
+		assert.Equal(t, content, string(data))
+	})
+
+	t.Run("returns error for missing wasm_exec.js", func(t *testing.T) {
+		fakeGOROOT := t.TempDir()
+		// Create GOROOT structure but omit wasm_exec.js.
+		require.NoError(t, os.MkdirAll(filepath.Join(fakeGOROOT, "lib", "wasm"), 0o755))
+
+		t.Setenv("GOROOT", fakeGOROOT)
+
+		destPath := filepath.Join(t.TempDir(), "wasm_exec.js")
+		err := copyWASMExec(destPath)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading")
+	})
 }
 
 func TestEnsureWASMArtifacts_AlreadyPresent(t *testing.T) {

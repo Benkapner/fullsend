@@ -478,6 +478,13 @@ var BuildWASMFn = buildWASM
 // Go toolchain into the Worker source directory. Override in tests.
 var CopyWASMExecFn = copyWASMExec
 
+// execCombinedOutputFn runs a prepared *exec.Cmd and returns its
+// combined stdout+stderr. Override in tests to avoid requiring a
+// real cross-compile toolchain.
+var execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
+	return cmd.CombinedOutput()
+}
+
 // ensureWASMArtifacts checks whether mintcore.wasm and wasm_exec.js
 // are present in dir. If either is missing, it auto-builds/copies
 // them so that `mint deploy --platform=cloudflare` is self-contained.
@@ -526,7 +533,7 @@ func buildWASM(outPath, version, commit string) error {
 	cmd := exec.Command("go", "build", "-ldflags", wasmLDFlags(version, commit), "-o", outPath, ".")
 	cmd.Dir = filepath.Join(findRepoRoot(), "cmd", "mint-wasm")
 	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
-	output, err := cmd.CombinedOutput()
+	output, err := execCombinedOutputFn(cmd)
 	if err != nil {
 		return fmt.Errorf("go build cmd/mint-wasm: %s\n%s", err, string(output))
 	}
