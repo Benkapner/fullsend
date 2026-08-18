@@ -27,6 +27,10 @@ type ForgeConfig struct {
 var validForgeKeys = map[string]bool{
 	"github": true,
 	"gitlab": true,
+	// "jira" is a temporary addition to unblock the triage-agent PoC for
+	// JIRA issues. The code agent remains blocked on a longer-term forge
+	// abstraction design (see https://github.com/fullsend-ai/fullsend/pull/6237).
+	"jira": true,
 }
 
 // ValidForgePlatform reports whether platform is a recognized forge key.

@@ -299,7 +299,25 @@ func TestValidate_ForgeUnrecognizedKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized key")
 	assert.Contains(t, err.Error(), "gihub")
-	assert.Contains(t, err.Error(), "valid: github, gitlab")
+	assert.Contains(t, err.Error(), "valid: github, gitlab, jira")
+}
+
+func TestValidateForge_JiraBlock(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"jira": {PreScript: "scripts/jira.sh"},
+		},
+	}
+
+	// validateForge should accept a jira block.
+	require.NoError(t, h.validateForge())
+
+	// ResolveForge should merge it into the harness.
+	require.NoError(t, h.ResolveForge("jira"))
+	assert.Nil(t, h.Forge)
+	assert.Equal(t, "scripts/jira.sh", h.PreScript)
 }
 
 func TestValidate_ForgeScriptURL(t *testing.T) {
