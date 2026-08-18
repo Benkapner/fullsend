@@ -448,9 +448,11 @@ func (c *LiveClient) GetRef(ctx context.Context, owner, repo, refPath string) (s
 // "identical" (same commit), or "diverged" (no linear relationship).
 //
 // GitLab's compare endpoint is not symmetric — it only reports commits
-// reachable from head but not from base. To distinguish "behind" from
-// "diverged", a second reverse comparison (from=head, to=base) is made
-// when the forward comparison shows diffs but no commits.
+// reachable from "to" but not from "from". A single forward call cannot
+// distinguish "ahead" from "diverged" because both cases return non-empty
+// commits. To resolve the ambiguity, a reverse comparison (from=head,
+// to=base) is always made when the forward call returns any diffs or
+// commits. When both directions have commits, the history has diverged.
 func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head string) (string, error) {
 	proj := projectPath(owner, repo)
 
@@ -458,25 +460,36 @@ func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head
 	if err != nil {
 		return "", err
 	}
-	if len(fwd.Commits) > 0 {
-		return "ahead", nil
-	}
-	if len(fwd.Diffs) == 0 {
+
+	// No diffs and no commits → same commit.
+	if len(fwd.Commits) == 0 && len(fwd.Diffs) == 0 {
 		return "identical", nil
 	}
 
-	// Diffs present but no forward commits — head may be behind base or
-	// the commits diverged. A reverse comparison disambiguates.
+	// Forward returned something — need the reverse direction to
+	// distinguish ahead / behind / diverged.
 	rev, err := c.compareOnce(ctx, proj, owner, repo, head, base)
 	if err != nil {
 		// If the reverse call fails, degrade to "diverged" rather than
 		// blocking the caller.
 		return "diverged", nil
 	}
-	if len(rev.Commits) > 0 {
+
+	hasFwd := len(fwd.Commits) > 0
+	hasRev := len(rev.Commits) > 0
+
+	switch {
+	case hasFwd && hasRev:
+		return "diverged", nil
+	case hasFwd:
+		return "ahead", nil
+	case hasRev:
 		return "behind", nil
+	default:
+		// Diffs exist but neither direction has commits — degrade to
+		// diverged.
+		return "diverged", nil
 	}
-	return "diverged", nil
 }
 
 // compareResult holds the subset of GitLab's compare response we need.

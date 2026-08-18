@@ -694,20 +694,32 @@ func TestGetRef(t *testing.T) {
 }
 
 func TestCompareCommits(t *testing.T) {
-	t.Run("ahead when forward commits exist", func(t *testing.T) {
+	t.Run("ahead when only forward commits exist", func(t *testing.T) {
 		client, mux := setupTest(t)
+		callCount := 0
 		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "abc123", r.URL.Query().Get("from"))
-			assert.Equal(t, "def456", r.URL.Query().Get("to"))
-			json.NewEncoder(w).Encode(map[string]any{
-				"commits": []map[string]any{{"id": "def456"}},
-				"diffs":   []map[string]any{{"new_path": "file.go"}},
-			})
+			callCount++
+			from := r.URL.Query().Get("from")
+			to := r.URL.Query().Get("to")
+			if from == "abc123" && to == "def456" {
+				// Forward: commits exist → head has new commits.
+				json.NewEncoder(w).Encode(map[string]any{
+					"commits": []map[string]any{{"id": "def456"}},
+					"diffs":   []map[string]any{{"new_path": "file.go"}},
+				})
+			} else if from == "def456" && to == "abc123" {
+				// Reverse: no commits → head is strictly ahead.
+				json.NewEncoder(w).Encode(map[string]any{
+					"commits": []map[string]any{},
+					"diffs":   []map[string]any{},
+				})
+			}
 		})
 
 		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc123", "def456")
 		require.NoError(t, err)
 		assert.Equal(t, "ahead", status)
+		assert.Equal(t, 2, callCount, "should make both forward and reverse API calls")
 	})
 
 	t.Run("identical when no commits and no diffs", func(t *testing.T) {
@@ -765,6 +777,24 @@ func TestCompareCommits(t *testing.T) {
 		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "def")
 		require.NoError(t, err)
 		assert.Equal(t, "diverged", status)
+	})
+
+	t.Run("diverged when both directions have commits", func(t *testing.T) {
+		client, mux := setupTest(t)
+		callCount := 0
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			// Both forward and reverse return commits — truly diverged.
+			json.NewEncoder(w).Encode(map[string]any{
+				"commits": []map[string]any{{"id": "some-commit"}},
+				"diffs":   []map[string]any{{"new_path": "file.go"}},
+			})
+		})
+
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "def")
+		require.NoError(t, err)
+		assert.Equal(t, "diverged", status)
+		assert.Equal(t, 2, callCount, "should make both forward and reverse API calls")
 	})
 
 	t.Run("returns error on API failure", func(t *testing.T) {

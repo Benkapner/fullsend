@@ -318,8 +318,14 @@ fullsend repos install -f repos.yaml --direct
 Repos that are already SHA-pinned (`@<sha> # <ref>`) preserve their
 pinning style during upgrades — the target ref is resolved to a commit
 SHA and written as `@<sha> # <ref>`. Non-SHA-pinned repos keep their
-string ref format (e.g., `@v2.3.0`). Downgrades are blocked unless
-`--force` is set.
+string ref format (e.g., `@v2.3.0`).
+
+Downgrades are blocked unless `--force` is set. When both the current
+and target refs are semver tags, the guard uses version comparison. When
+either ref is a SHA (or a mix of SHA and tag), the guard resolves both
+to commit SHAs and uses git ancestry checking via the forge API to
+detect downgrades. If the ancestry check fails (e.g., API error), the
+upgrade proceeds rather than blocking — graceful degradation.
 
 ## Troubleshooting
 
