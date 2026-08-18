@@ -23,3 +23,36 @@ func TestExternalMintTeardown_IsNoOp(t *testing.T) {
 	err := d.Teardown(context.Background())
 	require.NoError(t, err)
 }
+
+// --- NewRepoPoolExternalMint factory tests ---
+
+func TestNewRepoPoolExternalMint_MissingMintURL(t *testing.T) {
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	_, err := NewRepoPoolExternalMint("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_MINT_URL is required")
+}
+
+func TestNewRepoPoolExternalMint_HappyPath(t *testing.T) {
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.test")
+	// Clear pool size override so DefaultPoolSize is used.
+	t.Setenv("BEHAVIOUR_POOL_SIZE", "")
+
+	// forge.Client can be nil — newComposedDriver doesn't use it; the
+	// ensurer stores it but the factory does not call EnsureRepo.
+	d, err := NewRepoPoolExternalMint("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, DefaultPoolSize, d.Capacity())
+}
+
+func TestNewRepoPoolExternalMint_CustomPoolSize(t *testing.T) {
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.test")
+	t.Setenv("BEHAVIOUR_POOL_SIZE", "5")
+
+	d, err := NewRepoPoolExternalMint("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, 5, d.Capacity(), "pool size should match BEHAVIOUR_POOL_SIZE")
+}
