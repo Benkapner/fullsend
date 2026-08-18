@@ -22,13 +22,14 @@ func TestInitWiring(t *testing.T) {
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 
-	verifierFactory := func() (mintcore.OIDCVerifier, error) {
-		return mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-			HTTPClient:         httpClient,
-			GCPProjectNum:      "123456",
-			WIFPoolName:        "test-pool",
-			DefaultWIFProvider: "test-provider",
-		})
+	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
+		HTTPClient:         httpClient,
+		GCPProjectNum:      "123456",
+		WIFPoolName:        "test-pool",
+		DefaultWIFProvider: "test-provider",
+	})
+	if err != nil {
+		t.Fatalf("NewSTSVerifier: %v", err)
 	}
 
 	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
@@ -36,7 +37,7 @@ func TestInitWiring(t *testing.T) {
 		"123456",
 	)
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, httpClient)
+	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifier, httpClient)
 	if err != nil {
 		t.Fatalf("NewHandler failed: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestInitWiring(t *testing.T) {
 		t.Setenv("ALLOWED_ORGS", "")
 		t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-repo")
 
-		h, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, httpClient)
+		h, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifier, httpClient)
 		if err != nil {
 			t.Fatalf("NewHandler should succeed without ALLOWED_ORGS: %v", err)
 		}

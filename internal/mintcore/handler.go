@@ -87,13 +87,6 @@ type foreignInflight struct {
 	err       error
 }
 
-// VerifierFactory constructs an OIDCVerifier. The canonical OIDC
-// audience is the compile-time constant mintconsts.OIDCAudience, so
-// verifier implementations read it directly — no env var or parameter
-// needed. This keeps the WASM binary size minimal by avoiding closure
-// capture of getEnv.
-type VerifierFactory func() (OIDCVerifier, error)
-
 // NewHandler creates a Handler with the given dependencies.
 // Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES, ALLOWED_ORGS,
 // ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS)
@@ -104,19 +97,16 @@ type VerifierFactory func() (OIDCVerifier, error)
 // The OIDC audience is the compile-time constant
 // mintconsts.OIDCAudience — it is not read from the environment.
 //
-// The VerifierFactory constructs the appropriate OIDCVerifier
-// (STSVerifier for the Cloud Function, JWKSVerifier for
-// devmint/standalone/Worker). The handler performs authorization
-// (org-allowed, workflow-ref) after the verifier authenticates the
-// token.
-func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, verifierFactory VerifierFactory, httpClient HTTPDoer) (*Handler, error) {
+// Load sites construct the appropriate OIDCVerifier (STSVerifier for
+// the Cloud Function, JWKSVerifier for devmint/standalone/Worker) and
+// pass it in. The handler only performs authorization (org-allowed,
+// workflow-ref) after the verifier authenticates the token.
+func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
 	if getEnv == nil {
 		return nil, errors.New("getEnv must not be nil")
 	}
-
-	oidcVerifier, err := verifierFactory()
-	if err != nil {
-		return nil, fmt.Errorf("creating OIDC verifier: %w", err)
+	if oidcVerifier == nil {
+		return nil, errors.New("oidcVerifier must not be nil")
 	}
 
 	// Register custom role permissions before processing ALLOWED_ROLES

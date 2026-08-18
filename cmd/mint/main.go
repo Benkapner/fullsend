@@ -26,11 +26,12 @@ func buildHandler() (http.Handler, error) {
 	}
 
 	jwksClient := &http.Client{Timeout: 30 * time.Second}
-	verifierFactory := func() (mintcore.OIDCVerifier, error) {
-		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-			IssuerURL:  "https://token.actions.githubusercontent.com",
-			HTTPClient: jwksClient,
-		})
+	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		HTTPClient: jwksClient,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating OIDC verifier: %w", err)
 	}
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
@@ -38,7 +39,7 @@ func buildHandler() (http.Handler, error) {
 		return nil, fmt.Errorf("initializing PEM accessor: %w", err)
 	}
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, &http.Client{Timeout: 30 * time.Second})
+	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifier, &http.Client{Timeout: 30 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("initializing handler: %w", err)
 	}

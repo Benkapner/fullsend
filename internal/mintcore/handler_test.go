@@ -68,8 +68,7 @@ func (f *fakePEMAccessor) AccessPEM(_ context.Context, role string) ([]byte, err
 
 func mustNewHandler(t *testing.T, pemAccessor PEMAccessor, verifier OIDCVerifier) *Handler {
 	t.Helper()
-	factory := func() (OIDCVerifier, error) { return verifier, nil }
-	h, err := NewHandler(os.Getenv, pemAccessor, factory, &http.Client{Timeout: 5 * time.Second})
+	h, err := NewHandler(os.Getenv, pemAccessor, verifier, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -121,12 +120,13 @@ func newTestOIDCEnv(t *testing.T, pemAccessor PEMAccessor) *testOIDCEnv {
 	env.issuerURL = env.server.URL
 
 	issuerURL := env.server.URL
-	factory := func() (OIDCVerifier, error) {
-		return NewJWKSVerifier(JWKSVerifierConfig{
-			IssuerURL: issuerURL,
-		})
+	verifier, err := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL: issuerURL,
+	})
+	if err != nil {
+		t.Fatalf("creating JWKS verifier: %v", err)
 	}
-	h, err := NewHandler(os.Getenv, pemAccessor, factory, &http.Client{Timeout: 5 * time.Second})
+	h, err := NewHandler(os.Getenv, pemAccessor, verifier, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("creating handler: %v", err)
 	}

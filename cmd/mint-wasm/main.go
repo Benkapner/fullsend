@@ -74,14 +74,15 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	verifierFactory := func() (mintcore.OIDCVerifier, error) {
-		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-			IssuerURL:  "https://token.actions.githubusercontent.com",
-			HTTPClient: fetchDoer,
-		})
+	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		HTTPClient: fetchDoer,
+	})
+	if err != nil {
+		return fmt.Sprintf("creating OIDC verifier: %v", err)
 	}
 
-	h, err := mintcore.NewHandler(getEnv, pemAccessor, verifierFactory, fetchDoer)
+	h, err := mintcore.NewHandler(getEnv, pemAccessor, verifier, fetchDoer)
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}
