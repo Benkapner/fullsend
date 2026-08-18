@@ -6,13 +6,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 const defaultGitHubOIDCIssuer = "https://token.actions.githubusercontent.com"
@@ -49,11 +50,11 @@ type STSVerifier struct {
 }
 
 // NewSTSVerifier creates a verifier that validates tokens via GCP STS
-// exchange. Audience must be provided at construction time; an empty value
-// returns an error so misconfiguration is caught at startup.
+// exchange. If opts.Audience is empty, it defaults to
+// mintconsts.OIDCAudience.
 func NewSTSVerifier(opts STSVerifierConfig) (*STSVerifier, error) {
 	if opts.Audience == "" {
-		return nil, errors.New("OIDC_AUDIENCE must be configured")
+		opts.Audience = mintconsts.OIDCAudience
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {

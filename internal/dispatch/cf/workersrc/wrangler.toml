@@ -26,9 +26,10 @@ enabled = true
 # [vars]
 # ROLE_APP_IDS = ""          # JSON map: role → GitHub App ID
 # ALLOWED_ORGS = ""          # Comma-separated org names
-# OIDC_AUDIENCE = ""         # Expected OIDC audience claim
 # ALLOWED_ROLES = ""         # Comma-separated role names
 # ALLOWED_WORKFLOW_FILES = "" # Comma-separated workflow file patterns (unset = fail-closed)
+# Note: OIDC audience is a compile-time constant (mintconsts.OIDCAudience)
+# and is no longer read from the environment.
 
 # Role PEM keys are stored as Worker secrets (encrypted at rest).
 # Secret names follow the convention: <ROLE>_APP_PEM

@@ -74,10 +74,9 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
+	verifierFactory := func() (mintcore.OIDCVerifier, error) {
 		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
 			IssuerURL:  "https://token.actions.githubusercontent.com",
-			Audience:   audience,
 			HTTPClient: fetchDoer,
 		})
 	}

@@ -26,10 +26,9 @@ func buildHandler() (http.Handler, error) {
 	}
 
 	jwksClient := &http.Client{Timeout: 30 * time.Second}
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
+	verifierFactory := func() (mintcore.OIDCVerifier, error) {
 		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
 			IssuerURL:  "https://token.actions.githubusercontent.com",
-			Audience:   audience,
 			HTTPClient: jwksClient,
 		})
 	}

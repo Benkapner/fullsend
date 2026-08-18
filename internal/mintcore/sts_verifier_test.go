@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -152,15 +153,15 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 // NOTE: PerRepoBypassesOrgCheck, NonPerRepoStillRequiresOrg tests moved to
 // handler level — authorization is now the handler's responsibility.
 
-func TestNewSTSVerifier_EmptyAudience(t *testing.T) {
-	_, err := NewSTSVerifier(STSVerifierConfig{
+func TestNewSTSVerifier_EmptyAudience_DefaultsToConst(t *testing.T) {
+	v, err := NewSTSVerifier(STSVerifierConfig{
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "pool",
 		DefaultWIFProvider: "provider",
-		// Audience intentionally omitted → empty.
+		// Audience intentionally omitted → defaults to mintconsts.OIDCAudience.
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
+	require.NoError(t, err)
+	assert.Equal(t, mintconsts.OIDCAudience, v.oidcAudience)
 }
 
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {

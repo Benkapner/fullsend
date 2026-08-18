@@ -53,10 +53,9 @@ func init() {
 	wifPoolName := os.Getenv("WIF_POOL_NAME")
 	defaultWIFProvider := os.Getenv("WIF_PROVIDER_NAME")
 
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
+	verifierFactory := func() (mintcore.OIDCVerifier, error) {
 		return mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
 			HTTPClient:         httpClient,
-			Audience:           audience,
 			GCPProjectNum:      gcpProjectNum,
 			WIFPoolName:        wifPoolName,
 			DefaultWIFProvider: defaultWIFProvider,

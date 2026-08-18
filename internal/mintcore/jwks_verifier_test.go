@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -355,22 +356,22 @@ func TestJWKSVerifier_DiscoveryIssuerMismatch(t *testing.T) {
 // NOTE: OrgNotAllowed, WorkflowNotAllowed, EmptyOrgList tests moved to handler level.
 // Authorization (AuthorizeToken, ValidateWorkflowRef) is now the handler's responsibility.
 
-func TestJWKSVerifier_EmptyAudience_FailsAtConstruction(t *testing.T) {
+func TestJWKSVerifier_EmptyAudience_DefaultsToConst(t *testing.T) {
 	s := newTestOIDCServer(t)
-	_, err := NewJWKSVerifier(JWKSVerifierConfig{
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
 		Audience:  "",
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
+	require.NoError(t, err)
+	assert.Equal(t, mintconsts.OIDCAudience, v.audience)
 }
 
-func TestJWKSVerifier_EmptyAudience_FailsAtConstruction_NoIssuer(t *testing.T) {
-	_, err := NewJWKSVerifier(JWKSVerifierConfig{
+func TestJWKSVerifier_EmptyAudience_DefaultsToConst_NoIssuer(t *testing.T) {
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: "https://example.com",
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
+	require.NoError(t, err)
+	assert.Equal(t, mintconsts.OIDCAudience, v.audience)
 }
 
 func TestJWKSVerifier_MissingIat(t *testing.T) {

@@ -18,16 +18,13 @@ import (
 func TestInitWiring(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"100"}`)
 	t.Setenv("ALLOWED_ORGS", "test-org")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
-
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
+	verifierFactory := func() (mintcore.OIDCVerifier, error) {
 		return mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
 			HTTPClient:         httpClient,
-			Audience:           audience,
 			GCPProjectNum:      "123456",
 			WIFPoolName:        "test-pool",
 			DefaultWIFProvider: "test-provider",

@@ -393,7 +393,6 @@ func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "test-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"FULLSEND_SOURCE_HASH":   srcHash,
@@ -436,7 +435,6 @@ func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "test-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"FULLSEND_SOURCE_HASH":   srcHash,
@@ -526,7 +524,6 @@ func TestProvisioner_Provision_CodeChanged_UpdatesFunction(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "test-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"FULLSEND_SOURCE_HASH":   "old-hash-that-wont-match",
@@ -574,7 +571,6 @@ func TestProvisioner_Provision_SameCodeNewOrg_EnvVarOnlyUpdate(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "existing-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"99999"}`,
 			"FULLSEND_SOURCE_HASH":   srcHash,
@@ -1375,7 +1371,8 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/interfaces.go")
 	assert.Contains(t, names, "mintcore/go.sum")
 	assert.Contains(t, names, "mintcore/version.go")
-	assert.Len(t, names, 18)
+	assert.Contains(t, names, "mintcore/mintconsts/mintconsts.go")
+	assert.Len(t, names, 19)
 }
 
 func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
@@ -3437,7 +3434,6 @@ func TestProvisioner_EnsureOrgInMint_PreservesInfraKeysFromTrafficRevision(t *te
 		"GCP_PROJECT_NUMBER":     "123456789",
 		"WIF_POOL_NAME":          "fullsend-pool",
 		"WIF_PROVIDER_NAME":      "github-oidc",
-		"OIDC_AUDIENCE":          "fullsend-mint",
 		"FULLSEND_SOURCE_HASH":   "abc123",
 		"ALLOWED_ORGS":           "existing-org",
 		"ROLE_APP_IDS":           `{"coder":"99999"}`,
@@ -3458,7 +3454,6 @@ func TestProvisioner_EnsureOrgInMint_PreservesInfraKeysFromTrafficRevision(t *te
 	assert.Equal(t, "123456789", fake.lastUpdateServiceEnvVars["GCP_PROJECT_NUMBER"])
 	assert.Equal(t, "fullsend-pool", fake.lastUpdateServiceEnvVars["WIF_POOL_NAME"])
 	assert.Equal(t, "github-oidc", fake.lastUpdateServiceEnvVars["WIF_PROVIDER_NAME"])
-	assert.Equal(t, "fullsend-mint", fake.lastUpdateServiceEnvVars["OIDC_AUDIENCE"])
 	assert.Equal(t, "abc123", fake.lastUpdateServiceEnvVars["FULLSEND_SOURCE_HASH"])
 
 	// Org-relevant keys should include both existing and new org.
