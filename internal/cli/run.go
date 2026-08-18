@@ -2699,18 +2699,33 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	return result, nil
 }
 
-// lastNonEmptyLine returns the last non-blank line from s, trimmed. Scripts
-// that exit 78 often print a human-readable reason as their last output line
-// (e.g. "No issues need scoring"); this extracts it for use as the skip
-// reason when no reason= key was written to the output file.
+// lastNonEmptyLine returns the last non-blank line from s, trimmed and
+// sanitized. Scripts that exit 78 often print a human-readable reason as
+// their last output line (e.g. "No issues need scoring"); this extracts
+// it for use as the skip reason when no reason= key was written to the
+// output file. Control characters are stripped to match the file-based
+// validation, and the result is capped at 1024 bytes.
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		if l := strings.TrimSpace(lines[i]); l != "" {
+			l = stripControlChars(l)
+			if len(l) > 1024 {
+				l = l[:1024]
+			}
 			return l
 		}
 	}
 	return ""
+}
+
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // childScriptEnv builds the environment for a host-side child script (pre- or

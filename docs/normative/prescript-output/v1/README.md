@@ -58,6 +58,10 @@ echo "No issues need scoring"
 exit 78
 ```
 
+The stdout-derived reason is sanitized before use: control characters
+(`U+0000`–`U+001F`, `U+007F`) are stripped — matching the file-based
+value validation — and the result is capped at 1024 bytes.
+
 ### Reserved keys
 
 | Key | Required | Meaning |

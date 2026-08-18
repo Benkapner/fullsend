@@ -66,7 +66,9 @@ env:
 > without also copying its scripts will fail validation. Reference the
 > agents-repo harness by URL instead, or supply your own scripts.
 >
-> A `pre_script` can also stop the run before the sandbox starts — see the
+> A `pre_script` can also stop the run before the sandbox starts — either
+> by writing `skipped=true` to the output file or by exiting with code 78
+> (a simpler alternative for scripts that just need to skip). See the
 > [pre-script output protocol](../../normative/prescript-output/v1/README.md).
 
 **Optional fields** (all have secure defaults and can be omitted):

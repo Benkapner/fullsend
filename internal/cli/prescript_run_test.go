@@ -312,6 +312,17 @@ func TestRunPreScript_Exit78_UsesLastNonEmptyStdoutLine(t *testing.T) {
 	assert.Equal(t, "All scores are current", res.Reason)
 }
 
+func TestRunPreScript_Exit78_StdoutReasonSanitized(t *testing.T) {
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{PreScript: writePreScript(t,
+		"printf 'Has\\ttab and \\x01control'\nexit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "Hastab and control", res.Reason)
+}
+
 // Exit code 78 from a pre-script must still relay as skipped=true so
 // workflow-level gating works correctly.
 func TestRunAgent_PreScriptExit78_RelaysSkippedTrue(t *testing.T) {
