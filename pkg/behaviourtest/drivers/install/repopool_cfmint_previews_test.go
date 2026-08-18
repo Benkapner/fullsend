@@ -347,28 +347,16 @@ func TestBuildCFMintDriver_InvalidPoolSize(t *testing.T) {
 	assert.Contains(t, err.Error(), "capacity must be positive")
 }
 
-func TestCFMintTeardown_CLIFailure_LogsButDoesNotFail(t *testing.T) {
-	var logged []string
+func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
 	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
 		return "", fmt.Errorf("teardown boom")
 	})
 	d.previewAlias = "bt-abc12345"
-	d.logf = func(format string, args ...any) {
-		logged = append(logged, fmt.Sprintf(format, args...))
-	}
 
 	err := d.Teardown(context.Background())
-	require.NoError(t, err, "teardown failures should be logged, not returned")
-	assert.True(t, len(logged) > 0, "expected log output on teardown failure")
-
-	var foundFailure bool
-	for _, l := range logged {
-		if strings.Contains(l, "teardown failed") {
-			foundFailure = true
-			break
-		}
-	}
-	assert.True(t, foundFailure, "expected a log line about teardown failure")
+	require.Error(t, err, "teardown failures must be returned so Finalize can join them")
+	assert.Contains(t, err.Error(), "preview mint teardown")
+	assert.Contains(t, err.Error(), "teardown boom")
 }
 
 func TestBuildRepoList(t *testing.T) {

@@ -59,6 +59,12 @@ func NewRepoPoolCFMintPreviews(
 		appSet:            envAppSet(),
 	}
 
+	// PEMs are only needed for mint deploy. Clean up as soon as the
+	// factory returns (deploy has completed or failed by that point).
+	if cfg.pemDir != "" {
+		defer os.RemoveAll(cfg.pemDir)
+	}
+
 	md, err := newCFMintDriver(client, token, binary, gcpProjectID, logf, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
@@ -250,8 +256,7 @@ func (d *cfmintMintDriver) Install(_ context.Context, org string) (string, error
 }
 
 func (d *cfmintMintDriver) Teardown(_ context.Context) error {
-	d.teardownPreview()
-	return nil
+	return d.teardownPreview()
 }
 
 // deployCFMint deploys a Cloudflare Worker preview mint and returns the
@@ -275,20 +280,20 @@ func (d *cfmintMintDriver) deployCFMint(alias, org string) (string, error) {
 }
 
 // teardownPreview tears down the CF preview mint if one was deployed.
-func (d *cfmintMintDriver) teardownPreview() {
+// Returns an error on delete failure so Finalize can join it with any
+// lease-leak error.
+func (d *cfmintMintDriver) teardownPreview() error {
 	if d.previewAlias == "" {
-		return
+		return nil
 	}
 	args := CFMintTeardownArgs(d.previewAlias, d.workerName)
 
 	d.logf("[cfmint] tearing down preview mint: fullsend %s", strings.Join(args, " "))
 	if _, err := d.cliRunner(d.binary, d.token, args...); err != nil {
-		// Log but don't fail — the preview is ephemeral and will
-		// expire. A teardown failure should not mask test results.
-		d.logf("[cfmint] preview mint teardown failed: %v", err)
-	} else {
-		d.logf("[cfmint] preview mint torn down (alias=%s)", d.previewAlias)
+		return fmt.Errorf("preview mint teardown (alias=%s): %w", d.previewAlias, err)
 	}
+	d.logf("[cfmint] preview mint torn down (alias=%s)", d.previewAlias)
+	return nil
 }
 
 // --- Env helpers ---
@@ -344,10 +349,8 @@ var cfmintPEMRoleEnvVars = map[string]string{
 
 // setupCFMintPEMDir materializes TEST_*_PEM environment variables into
 // {role}.pem files inside a temporary directory. Returns the directory
-// path, or "" when no PEM env vars are set (e.g. local dev). The
-// directory is NOT cleaned up — it persists for the process lifetime.
-// This is acceptable because the BT process is short-lived (one test
-// suite run).
+// path, or "" when no PEM env vars are set (e.g. local dev). The caller
+// is responsible for removing the directory after deploy has used it.
 func setupCFMintPEMDir() string {
 	var found bool
 	for _, envVar := range cfmintPEMRoleEnvVars {
