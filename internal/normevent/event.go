@@ -119,9 +119,9 @@ type Actor struct {
 
 // State is a snapshot of entity metadata at event time.
 type State struct {
-	Labels         []string            `json:"labels"`
-	ChangeProposal *ChangeProposal     `json:"change_proposal,omitempty"`
-	Conversation   *ConversationState  `json:"conversation,omitempty"`
+	Labels         []string           `json:"labels"`
+	ChangeProposal *ChangeProposal    `json:"change_proposal,omitempty"`
+	Conversation   *ConversationState `json:"conversation,omitempty"`
 }
 
 // ConversationState is conversation-level metadata (ADR 0086).
