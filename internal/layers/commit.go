@@ -524,7 +524,7 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 
 	committed, err := client.CommitFiles(ctx, owner, repo, commitMsg, files)
 	if err != nil && forge.IsNonFastForward(err) {
-		printer.StepWarn("Ref update hit auto_init race — retrying")
+		printer.StepWarn("Concurrent modification race — retrying")
 		committed, err = client.CommitFiles(ctx, owner, repo, commitMsg, files)
 	}
 	if err != nil && forge.IsBranchProtected(err) {
