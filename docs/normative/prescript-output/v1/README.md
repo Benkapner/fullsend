@@ -184,7 +184,12 @@ Breaking changes require `docs/normative/prescript-output/v2/`.
 | Change | v1 impact |
 |--------|-----------|
 | **Breaking** (requires v2): rename or remove a reserved key, change the meaning of a reserved value, tighten the grammar so previously valid files are rejected | Pre-scripts must migrate |
-| **Non-breaking** (allowed in v1): add a reserved key, relax the grammar, clarify documentation | Existing pre-scripts keep working |
+| **Non-breaking** (allowed in v1): add a reserved key, relax the grammar, add exit-code handling that relaxes failure conditions, clarify documentation | Existing pre-scripts keep working |
+
+Exit code semantics are part of the v1 protocol surface. Adding a new
+recognized exit code (like 78) is non-breaking because it turns a
+previously-hard failure into a skip — existing scripts that never exit
+78 see no change.
 
 Adding a reserved key is non-breaking for the CLI but fails open on older CLIs,
 which ignore it. Direct a script that depends on a newly added key at a CLI

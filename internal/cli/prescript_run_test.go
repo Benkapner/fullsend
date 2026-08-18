@@ -252,6 +252,22 @@ func TestRunPreScript_Exit78_NoReasonDefaultsEmpty(t *testing.T) {
 	assert.Empty(t, res.Reason)
 }
 
+func TestRunPreScript_Exit78_DeletedOutputFileStillSkips(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// Script deletes the output file then exits 78. Exit 0 treats a missing
+	// file as a hard error; exit 78 must still skip — the exit code is
+	// authoritative.
+	h := &harness.Harness{PreScript: writePreScript(t,
+		`rm -f "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n"+
+			"echo \"No work today\"\n"+
+			"exit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "No work today", res.Reason)
+}
+
 func TestRunPreScript_Exit78_MalformedOutputFileStillSkips(t *testing.T) {
 	printer := ui.New(io.Discard)
 	// Script writes malformed content to the output file but exits 78.
