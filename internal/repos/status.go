@@ -233,10 +233,10 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 	// branch has moved, the resolved SHA differs from the installed
 	// SHA and drift is correctly reported.
 	//
-	// Short-circuit: when the symbolic refs already match (e.g. both
-	// are "v0"), skip SHA resolution entirely. This avoids false drift
-	// reports where the resolver converts the expected ref to a SHA
-	// while the installed ref stays symbolic.
+	// When the symbolic refs already match (e.g. both are "v0"), skip
+	// SHA resolution entirely. This avoids false drift reports where
+	// the resolver converts the expected ref to a SHA while the
+	// installed ref stays symbolic.
 	if cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
 		expectedSHA := cfg.FullsendRef
 		if resolver != nil {
