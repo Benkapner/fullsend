@@ -364,6 +364,27 @@ func TestBuildRepoList(t *testing.T) {
 	assert.Equal(t, "my-org/test-repo-01,my-org/test-repo-02,my-org/test-repo-03", list)
 }
 
+func TestSetupCFMintPEMDir_NoPEMVars(t *testing.T) {
+	// When no TEST_*_PEM env vars are set, returns ("", nil).
+	dir, err := setupCFMintPEMDir()
+	require.NoError(t, err)
+	assert.Empty(t, dir)
+}
+
+func TestSetupCFMintPEMDir_MaterializesPEMs(t *testing.T) {
+	t.Setenv("TEST_FULLSEND_PEM", "fake-pem-data")
+	defer os.Unsetenv("TEST_FULLSEND_PEM")
+
+	dir, err := setupCFMintPEMDir()
+	require.NoError(t, err)
+	require.NotEmpty(t, dir)
+	defer os.RemoveAll(dir)
+
+	data, readErr := os.ReadFile(filepath.Join(dir, "fullsend.pem"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "fake-pem-data", string(data))
+}
+
 func TestEnvPoolSize_Default(t *testing.T) {
 	// Without BEHAVIOUR_POOL_SIZE set, should return DefaultPoolSize.
 	assert.Equal(t, DefaultPoolSize, envPoolSize())

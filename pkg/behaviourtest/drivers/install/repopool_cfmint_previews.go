@@ -50,19 +50,23 @@ func NewRepoPoolCFMintPreviews(
 ) (Driver, error) {
 	poolSize := envPoolSize()
 
+	pemDir, err := setupCFMintPEMDir()
+	if err != nil {
+		return nil, fmt.Errorf("cfmint factory: materializing PEMs: %w", err)
+	}
+	// PEMs are only needed for mint deploy. Clean up as soon as the
+	// factory returns (deploy has completed or failed by that point).
+	if pemDir != "" {
+		defer os.RemoveAll(pemDir)
+	}
+
 	cfg := cfmintConfig{
-		pemDir:            setupCFMintPEMDir(),
+		pemDir:            pemDir,
 		suiteName:         envSuiteName(),
 		allowedOrgs:       "", // per-repo mode — no org-level allowlist
 		perRepoWIFRepos:   buildRepoList(org, poolSize),
 		workflowHostRepos: buildRepoList(org, poolSize),
 		appSet:            envAppSet(),
-	}
-
-	// PEMs are only needed for mint deploy. Clean up as soon as the
-	// factory returns (deploy has completed or failed by that point).
-	if cfg.pemDir != "" {
-		defer os.RemoveAll(cfg.pemDir)
 	}
 
 	md, err := newCFMintDriver(client, token, binary, gcpProjectID, logf, cfg)
@@ -351,7 +355,10 @@ var cfmintPEMRoleEnvVars = map[string]string{
 // {role}.pem files inside a temporary directory. Returns the directory
 // path, or "" when no PEM env vars are set (e.g. local dev). The caller
 // is responsible for removing the directory after deploy has used it.
-func setupCFMintPEMDir() string {
+//
+// On any failure after creating the temp dir the directory is removed
+// before returning so PEM material is never leaked on disk.
+func setupCFMintPEMDir() (string, error) {
 	var found bool
 	for _, envVar := range cfmintPEMRoleEnvVars {
 		if os.Getenv(envVar) != "" {
@@ -360,12 +367,12 @@ func setupCFMintPEMDir() string {
 		}
 	}
 	if !found {
-		return ""
+		return "", nil
 	}
 
 	dir, err := os.MkdirTemp("", "cfmint-pems-*")
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("creating PEM temp dir: %w", err)
 	}
 	for role, envVar := range cfmintPEMRoleEnvVars {
 		pem := os.Getenv(envVar)
@@ -374,8 +381,9 @@ func setupCFMintPEMDir() string {
 		}
 		path := filepath.Join(dir, role+".pem")
 		if writeErr := os.WriteFile(path, []byte(pem), 0600); writeErr != nil {
-			return ""
+			os.RemoveAll(dir)
+			return "", fmt.Errorf("writing PEM file %s: %w", role+".pem", writeErr)
 		}
 	}
-	return dir
+	return dir, nil
 }
