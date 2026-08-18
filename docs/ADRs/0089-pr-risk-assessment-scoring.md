@@ -1,5 +1,5 @@
 ---
-title: "78. PR-level risk assessment scoring"
+title: "89. PR-level risk assessment scoring"
 status: Accepted
 relates_to:
   - code-review
@@ -11,7 +11,7 @@ topics:
   - scoring
 ---
 
-# 78. PR-level risk assessment scoring
+# 89. PR-level risk assessment scoring
 
 Date: 2026-07-30
 
