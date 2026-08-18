@@ -153,6 +153,7 @@ repo baseline and overrides)
 - Pre-script skip signalling: the harness `pre_script` runs exactly once,
   inside `fullsend run`; a pre-script stops the run before sandbox creation by
   writing `skipped=true` to the CLI-provided `FULLSEND_PRESCRIPT_OUTPUT` file
+  or by exiting with code 78 (neutral skip)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).

@@ -29,7 +29,38 @@ successfully, `fullsend run` parses the file:
 | `true` | Report a `skipped` status (⏭️), relay outputs, exit 0 **before sandbox creation**. |
 | `false`, absent, or empty file | Proceed with the run — today's behavior. |
 
-A non-zero script exit remains a hard failure, unchanged by this protocol.
+### Exit code 78 — neutral skip
+
+Exit code 78 is an alternative way to request a skip ([issue #582](https://github.com/fullsend-ai/fullsend/issues/582)).
+When `fullsend run` sees exit code 78 it treats the run as
+skipped/neutral — identical to `skipped=true` in the output file. The
+code follows the CI convention for "neutral" (used by GitHub Actions and
+others).
+
+| Exit code | Behavior |
+|-----------|----------|
+| 0 | Parse the output file; `skipped=true` requests a skip. |
+| 78 | Skip unconditionally. Output file is parsed best-effort for `reason` and other outputs; a parse error does not block the skip. |
+| Any other non-zero | Hard failure, unchanged by this protocol. |
+
+Exit 78 is complementary to the file-based `skipped=true` mechanism.
+Either one alone is sufficient to request a skip. When a script exits 78,
+the skip proceeds even if the output file says `skipped=false` or is
+malformed — the exit code is authoritative.
+
+**Stdout as fallback reason:** When a script exits 78 and no `reason` key
+is found in the output file, `fullsend run` uses the last non-empty line
+of the script's stdout as the skip reason. This lets simple scripts
+communicate a reason without using the output file at all:
+
+```sh
+echo "No issues need scoring"
+exit 78
+```
+
+The stdout-derived reason is sanitized before use: control characters
+(`U+0000`–`U+001F`, `U+007F`) are stripped — matching the file-based
+value validation — and the result is capped at 1024 bytes.
 
 ### Reserved keys
 
@@ -157,7 +188,12 @@ Breaking changes require `docs/normative/prescript-output/v2/`.
 | Change | v1 impact |
 |--------|-----------|
 | **Breaking** (requires v2): rename or remove a reserved key, change the meaning of a reserved value, tighten the grammar so previously valid files are rejected | Pre-scripts must migrate |
-| **Non-breaking** (allowed in v1): add a reserved key, relax the grammar, clarify documentation | Existing pre-scripts keep working |
+| **Non-breaking** (allowed in v1): add a reserved key, relax the grammar, add exit-code handling that relaxes failure conditions, clarify documentation | Existing pre-scripts keep working |
+
+Exit code semantics are part of the v1 protocol surface. Adding a new
+recognized exit code (like 78) is non-breaking because it turns a
+previously-hard failure into a skip — existing scripts that never exit
+78 see no change.
 
 Adding a reserved key is non-breaking for the CLI but fails open on older CLIs,
 which ignore it. Direct a script that depends on a newly added key at a CLI
