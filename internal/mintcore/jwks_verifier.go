@@ -32,9 +32,8 @@ const (
 // It handles authentication only (token parsing, signature verification);
 // authorization (org-allowed, workflow-ref) is performed by the Handler.
 type JWKSVerifier struct {
-	issuerURL  string
-	audience   string
-	httpClient HTTPDoer
+	issuerURL string
+	audience  string
 
 	mu            sync.RWMutex
 	keys          map[string]*rsa.PublicKey
@@ -46,22 +45,16 @@ type JWKSVerifier struct {
 
 // JWKSVerifierConfig configures a new JWKSVerifier.
 type JWKSVerifierConfig struct {
-	IssuerURL  string
-	HTTPClient HTTPDoer
+	IssuerURL string
 }
 
 // NewJWKSVerifier creates a verifier that validates tokens from issuerURL
 // against the compile-time OIDC audience (mintconsts.OIDCAudience).
-// If httpClient is nil, http.DefaultClient is used.
+// HTTP requests are made via the package-internal mintHTTP function.
 func NewJWKSVerifier(opts JWKSVerifierConfig) (*JWKSVerifier, error) {
-	httpClient := opts.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	return &JWKSVerifier{
-		issuerURL:  opts.IssuerURL,
-		audience:   mintconsts.OIDCAudience,
-		httpClient: httpClient,
+		issuerURL: opts.IssuerURL,
+		audience:  mintconsts.OIDCAudience,
 	}, nil
 }
 
@@ -231,7 +224,7 @@ func (v *JWKSVerifier) refreshKeys(ctx context.Context) error {
 		return fmt.Errorf("creating JWKS request: %w", err)
 	}
 
-	resp, err := v.httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return fmt.Errorf("fetching JWKS: %w", err)
 	}
@@ -280,7 +273,7 @@ func (v *JWKSVerifier) discoverJWKSURI(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("creating discovery request: %w", err)
 	}
 
-	resp, err := v.httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching discovery document: %w", err)
 	}

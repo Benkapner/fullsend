@@ -55,17 +55,11 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	fetchFn := args[1]
 	pemFn := args[2]
 
-	// Build a Go getEnv func backed by the JS callback.
-	getEnv := func(key string) string {
-		result := getEnvFn.Invoke(key)
-		if result.Type() == js.TypeString {
-			return result.String()
-		}
-		return ""
+	if err := mintcore.RegisterEnv(getEnvFn); err != nil {
+		return fmt.Sprintf("invalid env callback: %v", err)
 	}
 
-	fetchDoer, err := mintcore.NewHostFetchDoer(fetchFn)
-	if err != nil {
+	if err := mintcore.RegisterHTTP(fetchFn); err != nil {
 		return fmt.Sprintf("invalid fetch callback: %v", err)
 	}
 
@@ -75,14 +69,13 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	}
 
 	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		HTTPClient: fetchDoer,
+		IssuerURL: "https://token.actions.githubusercontent.com",
 	})
 	if err != nil {
 		return fmt.Sprintf("creating OIDC verifier: %v", err)
 	}
 
-	h, err := mintcore.NewHandler(getEnv, pemAccessor, verifier, fetchDoer)
+	h, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}
