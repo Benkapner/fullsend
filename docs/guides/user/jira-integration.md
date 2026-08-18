@@ -14,7 +14,7 @@ A scheduled GitHub Actions workflow runs `fullsend poll --input-driver jira-poll
 4. Routes through the standard agent routing rules.
 5. Writes dispatch records that trigger agent workflows.
 
-For architectural details on the polling protocol, see [Architecture](../../architecture.md).
+For architectural details on the polling protocol, see [Architecture](../../architecture.md#agent-dispatch-and-coordination-layer).
 
 The same conventions work across forges:
 
@@ -339,7 +339,7 @@ If your project uses Jira's default role names ("Administrators"/"Developers") w
 
 > **Known limitation.** No cross-system identity check is performed between Jira and GitHub. The Jira project is the entire authorization boundary for Jira-sourced events.
 
-The role resolved above feeds directly into the dispatch authorization gate — there is no separate check against the target GitHub repo's actual collaborators. This means anyone holding a Jira project role that maps to `write` (Jira's default "Developers" role, by default) can trigger write-gated slash commands like `/fs-code` against your repo, **even if that person has no GitHub access to it at all**.
+The role resolved above feeds directly into the dispatch authorization gate (see [Architecture](../../architecture.md#agent-dispatch-and-coordination-layer)) — there is no separate check against the target GitHub repo's actual collaborators. This means anyone holding a Jira project role that maps to `write` (Jira's default "Developers" role, by default) can trigger write-gated slash commands like `/fs-code` against your repo, **even if that person has no GitHub access to it at all**.
 
 If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
 

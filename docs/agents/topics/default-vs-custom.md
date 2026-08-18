@@ -50,7 +50,7 @@ configured review agent, not a derived one.
 
 ## The `base` lineage test
 
-The `base` field in a harness YAML (see [Architecture](../../architecture.md)
+The `base` field in a harness YAML (see [Architecture](../../architecture.md#agent-harness)
 for details on harness composition) is the first thing to check. If a
 harness's `base` chain — through one or more levels of inheritance — traces
 back to a default agent harness in `fullsend-ai/fullsend`,
@@ -98,3 +98,5 @@ for a stated purpose, that override does not make the agent derived.
   extending or replacing built-in skills
 - [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) —
   building custom agents and configuring existing ones
+- [Architecture](../../architecture.md#agent-harness) — `base`
+  composition and harness inheritance

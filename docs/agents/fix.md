@@ -189,7 +189,7 @@ providers:
 Keep the shared policy at `.fullsend/policies/base.yaml`. The policy file
 defines non-network sandbox restrictions only — filesystem access, landlock, and
 process identity. Network access is controlled through `providers:` profiles
-listed in the harness (see [Architecture](../architecture.md) for details on
+listed in the harness (see [Architecture](../architecture.md#agent-sandbox) for details on
 provider-backed policy composition) — when
 unifying configuration, keep the `providers:` list the same on both harnesses
 too. The same pattern applies to `pre_script` and `post_script` when you want a

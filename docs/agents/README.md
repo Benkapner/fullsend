@@ -5,7 +5,7 @@ The default agents are defined in the
 [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository
 and resolved at runtime via config entries or agents-repo fallback.
 Custom agents can be registered via the `agents:` field in org or per-repo
-config (see [Architecture](../architecture.md) for details on the registration model).
+config (see [Architecture](../architecture.md#agent-registry) for details on the registration model).
 
 | Agent | Summary |
 |-------|---------|
