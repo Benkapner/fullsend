@@ -24,7 +24,7 @@ type HTTPDoer interface {
 
 // defaultAudience is the canonical OIDC audience for the fullsend
 // token mint, sourced from the shared mintconsts package.
-var defaultAudience = mintconsts.OIDCAudience
+const defaultAudience = mintconsts.OIDCAudience
 
 // MintRequest holds the parameters for minting a token via the fullsend mint service.
 type MintRequest struct {
