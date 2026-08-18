@@ -55,6 +55,24 @@ The following org config fields have no per-repo equivalent and are **not** carr
 
 **Note:** Any automated process that keeps the org-level `config.yaml` up to date (e.g., agent source pinning) needs to be replicated for each migrated repo's `.fullsend/config.yaml`.
 
+### Scaffold ref selection
+
+When generating scaffold workflow files, `repos migrate` resolves the
+fullsend ref for each repo using the following precedence:
+
+1. **Per-repo discovery** — if the repo already has a fullsend workflow,
+   the ref pinned in that workflow is used.
+2. **Existing manifest `fullsend_ref`** — if no per-repo workflow exists
+   and the manifest file already has a `forge.<forge>.fullsend_ref` value
+   (e.g., from a previous `--repo`-filtered migration run), that value is
+   used.
+3. **CLI binary version** — if neither of the above produces a ref, the
+   CLI falls back to its built-in default (the version of the CLI binary).
+
+This means incrementally migrated repos inherit the manifest's pinned ref
+rather than falling back to the CLI default, keeping scaffold versions
+consistent across migration runs.
+
 ```bash
 fullsend repos migrate <org> --project <gcp-project>
 ```

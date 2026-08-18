@@ -48,7 +48,13 @@ The command discovers enrolled repos from the per-org config, provisions
 WIF infrastructure per repo, installs per-repo (scaffold, variables,
 secrets), unenrolls migrated repos from per-org config, and generates
 a `repos.yaml` manifest. If a manifest already exists, newly migrated
-repos are merged into it rather than overwriting it.
+repos are merged into it rather than overwriting it. The existing
+manifest's `forge.<forge>.fullsend_ref` is also used as a fallback when
+generating scaffold workflow files — repos without an existing workflow
+inherit the manifest's pinned ref instead of the CLI default. This keeps
+scaffold versions consistent across incremental migration runs (see
+[Scaffold ref selection](../../cli/repos.md#scaffold-ref-selection) in
+the CLI reference).
 
 ### Creating a manifest from scratch
 
