@@ -48,7 +48,7 @@ func NewRepoPoolCFMintPreviews(
 	token, binary, gcpProjectID string,
 	logf func(string, ...any),
 ) (Driver, error) {
-	poolSize := envPoolSize()
+	poolSize := envPoolSize(logf)
 
 	pemDir, err := setupCFMintPEMDir()
 	if err != nil {
@@ -319,12 +319,15 @@ func envAppSet() string {
 }
 
 // envPoolSize returns the pool size from env or DefaultPoolSize.
-func envPoolSize() int {
+// When BEHAVIOUR_POOL_SIZE is set but cannot be parsed as a positive
+// integer, a warning is logged via logf and the default is used.
+func envPoolSize(logf func(string, ...any)) int {
 	if v := os.Getenv("BEHAVIOUR_POOL_SIZE"); v != "" {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
 			return n
 		}
+		logf("WARNING: BEHAVIOUR_POOL_SIZE=%q is not a valid positive integer, using default %d", v, DefaultPoolSize)
 	}
 	return DefaultPoolSize
 }

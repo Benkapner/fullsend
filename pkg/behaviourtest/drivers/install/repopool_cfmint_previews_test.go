@@ -406,28 +406,40 @@ func TestSetupCFMintPEMDir_MaterializesPEMs(t *testing.T) {
 func TestEnvPoolSize_Default(t *testing.T) {
 	// Without BEHAVIOUR_POOL_SIZE set, should return DefaultPoolSize.
 	t.Setenv("BEHAVIOUR_POOL_SIZE", "")
-	assert.Equal(t, DefaultPoolSize, envPoolSize())
+	assert.Equal(t, DefaultPoolSize, envPoolSize(t.Logf))
 }
 
 func TestEnvPoolSize_Override(t *testing.T) {
 	t.Setenv("BEHAVIOUR_POOL_SIZE", "7")
-	assert.Equal(t, 7, envPoolSize())
+	assert.Equal(t, 7, envPoolSize(t.Logf))
 }
 
 func TestEnvPoolSize_InvalidFallsBackToDefault(t *testing.T) {
 	t.Setenv("BEHAVIOUR_POOL_SIZE", "not-a-number")
-	assert.Equal(t, DefaultPoolSize, envPoolSize())
+	var logged string
+	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
+	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
+	assert.Contains(t, logged, "not-a-number")
+	assert.Contains(t, logged, "WARNING")
 }
 
 func TestEnvPoolSize_ZeroFallsBackToDefault(t *testing.T) {
 	// Zero is not a valid pool size (must be > 0), so fallback.
 	t.Setenv("BEHAVIOUR_POOL_SIZE", "0")
-	assert.Equal(t, DefaultPoolSize, envPoolSize())
+	var logged string
+	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
+	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
+	assert.Contains(t, logged, `"0"`)
+	assert.Contains(t, logged, "WARNING")
 }
 
 func TestEnvPoolSize_NegativeFallsBackToDefault(t *testing.T) {
 	t.Setenv("BEHAVIOUR_POOL_SIZE", "-3")
-	assert.Equal(t, DefaultPoolSize, envPoolSize())
+	var logged string
+	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
+	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
+	assert.Contains(t, logged, "-3")
+	assert.Contains(t, logged, "WARNING")
 }
 
 func TestEnvSuiteName_Default(t *testing.T) {

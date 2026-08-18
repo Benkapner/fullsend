@@ -25,7 +25,7 @@ func NewRepoPoolExternalMint(
 	token, binary, gcpProjectID string,
 	logf func(string, ...any),
 ) (Driver, error) {
-	poolSize := envPoolSize()
+	poolSize := envPoolSize(logf)
 
 	mintURL := os.Getenv("FULLSEND_MINT_URL")
 	if mintURL == "" {
