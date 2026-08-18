@@ -157,6 +157,12 @@ repo baseline and overrides)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
+- CEL-guarded overlays: an `overlays:` list of CEL-guarded config
+  overlays generalizes the `forge:` block, letting harness authors
+  condition scripts, skills, env vars, and other fields on any event
+  property (source system, event type, etc.) rather than only the forge
+  platform. `forge:` is deprecated but remains functional
+  ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 
 **Open questions:**
 
