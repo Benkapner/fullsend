@@ -9,15 +9,14 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 | `scm.Driver` | `pkg/behaviourtest/drivers/scm` | Issues, comments, labels (via GetIssue), file commits |
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
 | `install.Driver` | `pkg/behaviourtest/drivers/install` | Unified surface: repo allocation/deallocation, mint lifecycle, and suite teardown |
-| `install.Factory` | `pkg/behaviourtest/drivers/install` | Constructs a unified `Driver` for a given org; closes over driver-specific config |
-| `install.State` | `pkg/behaviourtest/drivers/install` | Post-install config paths (script commits, workflow polling) |
+| `install.Factory` | `pkg/behaviourtest/drivers/install` | Constructs a unified `Driver` for a given org; the only argument is the org name |
 
 v1 reference implementations:
 
 - `pkg/behaviourtest/drivers/scm/github/`
 - `pkg/behaviourtest/drivers/ci/githubactions/`
-- `pkg/behaviourtest/drivers/install/cfmint.go` (CF mint preview driver)
-- `pkg/behaviourtest/drivers/install/externalmint.go` (external/pre-configured mint driver)
+- `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
+- `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
 
 ## Runner configuration
 
@@ -29,22 +28,22 @@ BEHAVIOUR_CI=githubactions        # future: tekton, gitlabci
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls an `install.Factory` (e.g. `install.NewCFMintFactory`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown. The suite constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls an `install.Factory` (e.g. `install.NewRepoPoolCFMintPreviews(...)`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown. The suite constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
 
 ### Install driver (unified)
 
-The suite uses a single unified `install.Driver` constructed via `install.Factory` (e.g. `install.NewCFMintFactory` or `install.NewExternalMintFactory`). Each concrete driver owns the full lifecycle:
+The suite uses a single unified `install.Driver` constructed via `install.Factory` (e.g. `install.NewRepoPoolCFMintPreviews` or `install.NewRepoPoolExternalMint`). Each concrete driver owns the full lifecycle:
 
-1. Deploys the mint (cfmint: CF Worker preview; external mint: pre-configured URL).
+1. Deploys the mint (RepoPoolCFMintPreviews: CF Worker preview; RepoPoolExternalMint: pre-configured URL).
 2. Manages an internal channel-based pool of repo names (`test-repo-01` … `test-repo-12`).
 3. Lazily creates and installs numbered pool repos on demand via an internal ensurer (concurrent-safe via singleflight).
 4. Exposes `AllocateRepo` / `DeallocateRepo` / `Finalize` / `Capacity`.
 
-The suite and steps do not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory.
+The Factory takes only the allocated org name. Driver-specific inputs (PEMs, allowlists, pool size, mint URL) come from env or are computed inside the driver. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Default concurrency is `driver.Capacity()`; `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
 
 Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-`Finalize` (cfmint) abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The legacy driver's teardown is a no-op.
+`Finalize` (RepoPoolCFMintPreviews) abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolExternalMint driver's teardown is a no-op.
 
 ## Adding an SCM driver
 
@@ -65,7 +64,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 Steps must **not** import forge-specific packages (`internal/forge/github`, `internal/forge/gitlab`) directly — only drivers. This keeps scenarios vendor-agnostic.
 
-Steps use `world.Install` for config repo paths (`ConfigOwner`, `ConfigRepo`, `ConfigPathPrefix`) instead of hardcoding the per-org `.fullsend` config repo.
+Steps use `w.Org` and `w.RepoName` (the allocated repo name) plus per-repo constants from the `install` package (`PerRepoTriageWorkflow`, `PerRepoAgentWorkflow`, `PerRepoAgentArtifact`) for workflow and artifact paths.
 
 ## Testing drivers
 
@@ -75,5 +74,4 @@ Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios aga
 
 - [ ] GitLab SCM driver + `@skip:gitlab` tag removal
 - [ ] Tekton or GitLab CI driver
-- [ ] Per-org install driver (`BEHAVIOUR_INSTALL_MODE=per-org`)
 - [ ] Non-GitHub install backends

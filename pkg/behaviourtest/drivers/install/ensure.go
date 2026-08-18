@@ -39,7 +39,7 @@ type ensurer interface {
 	// provides the initial commit). If fullsend is not installed (per
 	// post-install validation) it runs the per-repo install flow
 	// (inference provision + github setup).
-	EnsureRepo(ctx context.Context, org, repoName string) (State, error)
+	EnsureRepo(ctx context.Context, org, repoName string) error
 }
 
 // SettleFunc is called after a repo is freshly created or installed to
@@ -57,7 +57,7 @@ type repoEnsurer struct {
 	settle SettleFunc    // injectable; defaults to awaitWorkflowReady
 
 	mu       sync.Mutex
-	ensured  map[string]State // keyed by org/repo; only successful results cached
+	ensured  map[string]struct{} // keyed by org/repo; only successful results cached
 	inflight singleflight.Group
 }
 
@@ -78,49 +78,45 @@ func newRepoEnsurer(
 		logf:    logf,
 		runCLI:  e2etest.TryRunCLI,
 		settle:  awaitWorkflowReady,
-		ensured: make(map[string]State),
+		ensured: make(map[string]struct{}),
 	}
 }
 
-func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) (State, error) {
+func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) error {
 	key := org + "/" + repoName
 
 	e.mu.Lock()
-	if st, ok := e.ensured[key]; ok {
+	if _, ok := e.ensured[key]; ok {
 		e.mu.Unlock()
 		e.logf("[ensure] %s already ensured this run, skipping", key)
-		return st, nil
+		return nil
 	}
 	e.mu.Unlock()
 
 	// singleflight deduplicates concurrent callers for the same key so
 	// only one goroutine runs doEnsure; others wait and share the result.
-	v, err, _ := e.inflight.Do(key, func() (any, error) {
+	_, err, _ := e.inflight.Do(key, func() (any, error) {
 		// Re-check the cache inside the flight — a prior flight may
 		// have populated it before this one started.
 		e.mu.Lock()
-		if st, ok := e.ensured[key]; ok {
+		if _, ok := e.ensured[key]; ok {
 			e.mu.Unlock()
-			return st, nil
+			return nil, nil
 		}
 		e.mu.Unlock()
 
-		st, err := e.doEnsure(ctx, org, repoName)
-		if err != nil {
+		if err := e.doEnsure(ctx, org, repoName); err != nil {
 			return nil, err
 		}
 
 		e.mu.Lock()
-		e.ensured[key] = st
+		e.ensured[key] = struct{}{}
 		e.mu.Unlock()
 
-		return st, nil
+		return nil, nil
 	})
-	if err != nil {
-		return nil, err
-	}
 
-	return v.(State), nil
+	return err
 }
 
 // doEnsure performs the actual create-if-missing + install work.
@@ -128,12 +124,12 @@ func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) (Sta
 // binary built from the current checkout. Without this, leased repos
 // that pass post-install validation keep a stale vendored binary from
 // a prior run, silently missing dispatch fixes on the current branch.
-func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State, error) {
+func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error {
 	target := org + "/" + repoName
 
 	// Step 1: create repo if it does not exist.
 	if err := e.ensureRepoExists(ctx, org, repoName, target); err != nil {
-		return nil, err
+		return err
 	}
 
 	// Step 2: check whether fullsend was previously installed. We always
@@ -150,10 +146,10 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 	// Use the mint URL from e2eCfg — the suite sets this from the install
 	// driver's result before creating the ensurer.
 	if err := e.installFullsend(ctx, org, repoName, target); err != nil {
-		return nil, err
+		return err
 	}
 	if err := ValidatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
-		return nil, fmt.Errorf("post-install validation for %s: %w", target, err)
+		return fmt.Errorf("post-install validation for %s: %w", target, err)
 	}
 
 	// Step 4: wait for Actions to recognise the workflow file only on
@@ -161,11 +157,11 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 	// but GitHub Actions already indexed the workflow on the prior install.
 	if !alreadyInstalled && e.settle != nil {
 		if err := e.settle(ctx, e.client, org, repoName, PerRepoTriageWorkflow, e.logf); err != nil {
-			return nil, fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
+			return fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
 		}
 	}
 
-	return NewPerRepoState(org, repoName, e.e2eCfg.MintURL), nil
+	return nil
 }
 
 // ensureRepoExists creates the repo if it does not already exist.

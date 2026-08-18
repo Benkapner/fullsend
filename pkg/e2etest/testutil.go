@@ -364,6 +364,21 @@ func LoadEnvConfig(t *testing.T) EnvConfig {
 	return loadEnvConfig(t).exported()
 }
 
+// LoadEnvConfigLite reads env vars that do not require a testing.T.
+// It returns an EnvConfig with MintURL, GCPProjectID, and CFMintPEMDir
+// populated from the environment. Unlike LoadEnvConfig, it does not
+// call t.Skip or t.Fatal, so it is safe to call from production driver
+// constructors. CFMintPEMDir is materialized to a temp directory if
+// TEST_*_PEM env vars are set; the caller should not clean up this
+// directory — it persists for the process lifetime.
+func LoadEnvConfigLite() EnvConfig {
+	return EnvConfig{
+		MintURL:      resolveMintURL(),
+		GCPProjectID: os.Getenv("E2E_GCP_PROJECT_ID"),
+		CFMintPEMDir: setupCFMintPEMDirLite(),
+	}
+}
+
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
 // credentials are not set (allows running `go test -tags e2e` without
 // credentials to check compilation).
@@ -437,6 +452,40 @@ func setupCFMintPEMDir(t *testing.T) string {
 		path := filepath.Join(dir, role+".pem")
 		if err := os.WriteFile(path, []byte(pem), 0600); err != nil {
 			t.Fatalf("writing PEM file %s: %v", path, err)
+		}
+	}
+	return dir
+}
+
+// setupCFMintPEMDirLite is like setupCFMintPEMDir but does not require
+// testing.T. It creates a temp directory using os.MkdirTemp. The
+// directory is NOT cleaned up — it persists for the process lifetime.
+// This is acceptable because the BT process is short-lived (one test
+// suite run).
+func setupCFMintPEMDirLite() string {
+	var found bool
+	for _, envVar := range pemRoleEnvVars {
+		if os.Getenv(envVar) != "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+
+	dir, err := os.MkdirTemp("", "cfmint-pems-*")
+	if err != nil {
+		return ""
+	}
+	for role, envVar := range pemRoleEnvVars {
+		pem := os.Getenv(envVar)
+		if pem == "" {
+			continue
+		}
+		path := filepath.Join(dir, role+".pem")
+		if writeErr := os.WriteFile(path, []byte(pem), 0600); writeErr != nil {
+			return ""
 		}
 	}
 	return dir

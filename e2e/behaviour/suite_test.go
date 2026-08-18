@@ -4,10 +4,8 @@ package behaviour_test
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -22,28 +20,9 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
-// poolSize is the number of enrolled test-repo-NN repos in the pool org.
-// GODOG_CONCURRENCY should not exceed this — extra workers will block in
-// AllocateRepo with no warning because the pool org only has test-repo-01
-// through test-repo-12 with per-repo mint enrollment.
-const poolSize = 12
-
-// suiteName identifies this test suite. It is used to derive the CF Worker
-// name so that different suites get different workers.
-const suiteName = "bt"
-
 func TestBehaviourSuite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping behaviour tests in short mode")
-	}
-
-	concurrency := poolSize
-	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" {
-		n, err := strconv.Atoi(c)
-		if err != nil || n < 1 {
-			t.Fatalf("GODOG_CONCURRENCY must be a positive integer, got %q", c)
-		}
-		concurrency = n
 	}
 
 	cfg := env.LoadRunnerConfig()
@@ -66,24 +45,16 @@ func TestBehaviourSuite(t *testing.T) {
 
 	binary := e2etest.BuildCLIBinary(t)
 
-	// Construct a cfmint Factory that closes over PEM/pool config.
-	// When called, the factory deploys the preview mint and returns a
-	// unified install.Driver that owns allocation, deallocation, ensure,
-	// and teardown internally.
-	factory := install.NewCFMintFactory(install.CFMintConfig{
-		PEMDir:            e2eCfg.CFMintPEMDir,
-		SuiteName:         suiteName,
-		AllowedOrgs:       "",
-		PerRepoWIFRepos:   buildPerRepoWIFRepos(org),
-		WorkflowHostRepos: buildWorkflowHostRepos(org),
-		AppSet:            "fullsend-test",
-	}, poolSize)
+	// Construct a RepoPoolCFMintPreviews Factory. The factory closes
+	// over runtime dependencies and reads driver-specific config
+	// (PEMs, suite name, pool size) from env internally.
+	factory := install.NewRepoPoolCFMintPreviews(client, token, binary, e2eCfg.GCPProjectID, t.Logf)
 
 	e2etest.CleanupStaleResources(ctx, client, token, org, t)
 
 	// Call the factory to get the unified driver. The factory deploys
 	// the preview mint and constructs all internal pieces (pool, ensurer).
-	driver, err := factory(org, client, token, binary, e2eCfg.GCPProjectID, t.Logf)
+	driver, err := factory(org)
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
 	}
@@ -97,8 +68,16 @@ func TestBehaviourSuite(t *testing.T) {
 		}
 	})
 
-	// Advisory warning when concurrency exceeds capacity. Per #6135,
-	// this must not fail the run — excess workers block in AllocateRepo.
+	// Default concurrency to driver capacity. Honor GODOG_CONCURRENCY
+	// when set; warn (do not fail) if it exceeds capacity.
+	concurrency := driver.Capacity()
+	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" {
+		n, err := strconv.Atoi(c)
+		if err != nil || n < 1 {
+			t.Fatalf("GODOG_CONCURRENCY must be a positive integer, got %q", c)
+		}
+		concurrency = n
+	}
 	if concurrency > driver.Capacity() {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block in AllocateRepo", concurrency, driver.Capacity())
 	}
@@ -129,26 +108,4 @@ func TestBehaviourSuite(t *testing.T) {
 	if st := suiteRunner.Run(); st != 0 {
 		t.Fatalf("behaviour suite failed with status %d", st)
 	}
-}
-
-// buildPerRepoWIFRepos constructs the --per-repo-wif-repos value from
-// the pool org and the standard BT repo naming convention.
-func buildPerRepoWIFRepos(org string) string {
-	repos := make([]string, poolSize)
-	for i := range poolSize {
-		repos[i] = fmt.Sprintf("%s/test-repo-%02d", org, i+1)
-	}
-	return strings.Join(repos, ",")
-}
-
-// buildWorkflowHostRepos constructs the --workflow-host-repos value.
-// These are the repos whose vendored workflows are allowed to mint
-// tokens. Only numbered pool repos (test-repo-01 … test-repo-12)
-// are included — singular test-repo is reserved for admin e2e.
-func buildWorkflowHostRepos(org string) string {
-	repos := make([]string, 0, poolSize)
-	for i := range poolSize {
-		repos = append(repos, fmt.Sprintf("%s/test-repo-%02d", org, i+1))
-	}
-	return strings.Join(repos, ",")
 }

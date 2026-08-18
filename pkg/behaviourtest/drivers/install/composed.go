@@ -12,15 +12,11 @@ import (
 // via newComposedDriver (typically called from a Factory) and threads
 // it through World. Scenarios call AllocateRepo / DeallocateRepo;
 // Finalize tears down suite-scoped resources.
-//
-// This is an internal helper used by Factory implementations. It is
-// transitional until #6170 folds pool/ensurer into concrete driver types.
 type composedDriver struct {
-	org       string
-	mint      mintDriver
-	mintState State
-	ensurer   ensurer
-	logf      func(string, ...any)
+	org     string
+	mint    mintDriver
+	ensurer ensurer
+	logf    func(string, ...any)
 
 	names    chan string // buffered channel of available repo names
 	capacity int
@@ -36,7 +32,6 @@ type composedDriver struct {
 func newComposedDriver(
 	org string,
 	mint mintDriver,
-	mintState State,
 	ensurer ensurer,
 	capacity int,
 	logf func(string, ...any),
@@ -51,7 +46,6 @@ func newComposedDriver(
 	return &composedDriver{
 		org:         org,
 		mint:        mint,
-		mintState:   mintState,
 		ensurer:     ensurer,
 		logf:        logf,
 		names:       names,
@@ -77,7 +71,7 @@ func (d *composedDriver) AllocateRepo(ctx context.Context) (string, error) {
 	d.mu.Unlock()
 
 	// Ensure the repo exists and has fullsend installed.
-	if _, err := d.ensurer.EnsureRepo(ctx, d.org, name); err != nil {
+	if err := d.ensurer.EnsureRepo(ctx, d.org, name); err != nil {
 		// Return the name to the pool on failure so it can be retried.
 		d.mu.Lock()
 		delete(d.outstanding, name)
@@ -129,8 +123,8 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 	d.mu.Unlock()
 
 	var teardownErr error
-	if d.mint != nil && d.mintState != nil {
-		if err := d.mint.Teardown(ctx, d.org, d.mintState); err != nil {
+	if d.mint != nil {
+		if err := d.mint.Teardown(ctx); err != nil {
 			teardownErr = fmt.Errorf("Finalize: mint teardown: %w", err)
 		}
 	}

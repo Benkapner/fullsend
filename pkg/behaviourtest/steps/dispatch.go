@@ -255,7 +255,7 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
-	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
+	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
 		return err
 	}
@@ -306,7 +306,7 @@ func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 		case <-time.After(d):
 		}
 	}
-	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
+	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 }
 
 func ensureHarnessArtifacts(w *world.World, agent string) error {
@@ -321,7 +321,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 	if w.WorkflowRun == nil {
 		return fmt.Errorf("no workflow run recorded")
 	}
-	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.WorkflowRun.ID, "fullsend-"+agent, dest); err != nil {
+	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, w.WorkflowRun.ID, "fullsend-"+agent, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}

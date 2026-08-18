@@ -398,11 +398,11 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 
 ### API changes
 
-**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)`. The `*world.RepoPool` type has been removed — `world.RepoPool` no longer exists. Repo leasing is handled internally by the unified `install.Driver` on `template.Driver`. Callers construct a `Driver` via a `Factory` and set it on the template World:
+**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)`. The `*world.RepoPool` type has been removed. Repo leasing is handled internally by the unified `install.Driver` on `template.Driver`. Callers construct a `Driver` via a `Factory` and set it on the template World:
 
 ```go
-factory := install.NewCFMintFactory(install.CFMintConfig{...}, poolSize)
-driver, err := factory(org, client, token, binary, gcpProjectID, t.Logf)
+factory := install.NewRepoPoolCFMintPreviews(client, token, binary, gcpProjectID, t.Logf)
+driver, err := factory(org)
 if err != nil {
     t.Fatalf("creating driver: %v", err)
 }
@@ -422,7 +422,9 @@ suiteRunner := godog.TestSuite{
 }
 ```
 
-**`cfmint` / `legacy` sub-packages removed:** Concrete driver implementations now live directly in the `install` package. `cfmint.NewFactory` is replaced by `install.NewCFMintFactory` with `install.CFMintConfig`. The `legacy` driver is replaced by `install.NewExternalMintFactory`. The mint lifecycle interfaces (`install.MintDriver`, `install.MintURLProvider`) and composition types (`install.RepoEnsurer`, `install.NewComposedDriver`) are now unexported internal details. External code should only reference `install.Factory`, `install.Driver`, and `install.State`.
+**Concrete drivers renamed:** `cfmint` → `RepoPoolCFMintPreviews`, `legacy` / `externalmint` → `RepoPoolExternalMint`. Drivers are named for the environments they manage. Concrete implementations live in the `install` package. `install.Factory` takes only `org string`; driver-specific config (PEMs, pool size, mint URL) is read from env or computed internally. `install.State`, `install.MintURLProvider`, `install.RepoEnsurer`, and `install.CFMintConfig` are removed from the exported surface. External code should only reference `install.Factory` and `install.Driver`.
+
+**`world.World.Install` removed:** The `Install install.State` field on `World` is removed. Steps use `w.Org` + `w.RepoName` (the allocated repo name) and per-repo constants from the `install` package (`PerRepoTriageWorkflow`, `PerRepoAgentWorkflow`, `PerRepoAgentArtifact`) instead of config indirection through `State`.
 
 **`world.World.Ensurer` replaced with `world.World.Driver`:** The `Ensurer` field on `World` is replaced by `Driver install.Driver` (the unified driver). External code that set `w.Ensurer` must set `w.Driver` instead — the driver handles both pool leasing and ensure internally.
 

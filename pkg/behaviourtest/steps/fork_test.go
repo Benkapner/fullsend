@@ -27,9 +27,8 @@ func TestGivenFork_SetsWorldState(t *testing.T) {
 
 func TestGivenFork_ErrorsWhenNoRepoConfigured(t *testing.T) {
 	w := &world.World{
-		Org:     "auto-org",
-		Install: &fakeInstallState{},
-		SCM:     &fakeForkSCM{forkRepo: "auto-repo-fork"},
+		Org: "auto-org",
+		SCM: &fakeForkSCM{forkRepo: "auto-repo-fork"},
 	}
 	err := givenFork(w, "auto-repo-fork")
 	require.Error(t, err)
@@ -390,18 +389,6 @@ func TestAwaitForkReady_ContextCancelledDuringBranchNamePoll(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context cancelled")
 }
-
-// fakeInstallState implements install.State for fork step unit tests.
-type fakeInstallState struct{}
-
-func (f *fakeInstallState) Mode() string               { return "per-org" }
-func (f *fakeInstallState) ConfigOwner() string        { return "" }
-func (f *fakeInstallState) ConfigRepo() string         { return "" }
-func (f *fakeInstallState) ConfigPathPrefix() string   { return "" }
-func (f *fakeInstallState) TriageWorkflowRepo() string { return "" }
-func (f *fakeInstallState) TriageWorkflowFile() string { return "" }
-func (f *fakeInstallState) AgentWorkflowFile() string  { return "" }
-func (f *fakeInstallState) AgentArtifactName() string  { return "" }
 
 // fakeForkSCM implements scm.Driver for fork step unit tests.
 type fakeForkSCM struct {
