@@ -68,8 +68,9 @@ type World struct {
 	CreatedBranches    []string
 	CreatedPRNumbers   []int
 
-	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
-	// for this scenario's duration. Empty when no pool is configured.
+	// LeasedRepoName is the logical test-repo name acquired via
+	// Driver.AllocateRepo for this scenario's duration. Empty when no
+	// driver is configured.
 	LeasedRepoName string
 
 	// Driver is the unified install driver that owns repo allocation,

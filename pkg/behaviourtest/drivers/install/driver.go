@@ -6,14 +6,14 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// MintDriver provisions and tears down fullsend in an acquired pool org.
-// MintDriver is used only during suite setup (single-threaded) and is not
+// mintDriver provisions and tears down fullsend in an acquired pool org.
+// mintDriver is used only during suite setup (single-threaded) and is not
 // shared across concurrent scenarios.
 //
-// Renamed from Driver to free the Driver name for the unified surface
-// that owns both mint lifecycle and repo allocation (#6169). Transitional
-// until #6170 folds pool/ensurer into concrete driver types.
-type MintDriver interface {
+// This is an unexported interface used internally by concrete driver
+// implementations (cfmintMintDriver, externalMintDriver). The suite
+// does not construct or reference mintDriver directly.
+type mintDriver interface {
 	Install(ctx context.Context, org string) (State, error)
 	Teardown(ctx context.Context, org string, state State) error
 }
@@ -90,10 +90,11 @@ type State interface {
 	AgentArtifactName() string
 }
 
-// MintURLProvider is optionally implemented by State values that carry
-// the effective mint URL. The suite uses this to thread the mint URL
-// from the install driver to the RepoEnsurer.
-type MintURLProvider interface {
+// mintURLProvider is optionally implemented by State values that carry
+// the effective mint URL. Used internally by driver construction code
+// to thread the mint URL from the install driver to the ensurer.
+// The suite does not reference this interface directly.
+type mintURLProvider interface {
 	MintURL() string
 }
 

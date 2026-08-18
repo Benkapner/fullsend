@@ -7,9 +7,9 @@ import (
 	"sync"
 )
 
-// composedDriver wraps a MintDriver, RepoEnsurer, and an internal
+// composedDriver wraps a mintDriver, ensurer, and an internal
 // channel-based pool into a unified Driver. The suite constructs one
-// via NewComposedDriver (typically called from a Factory) and threads
+// via newComposedDriver (typically called from a Factory) and threads
 // it through World. Scenarios call AllocateRepo / DeallocateRepo;
 // Finalize tears down suite-scoped resources.
 //
@@ -17,9 +17,9 @@ import (
 // transitional until #6170 folds pool/ensurer into concrete driver types.
 type composedDriver struct {
 	org       string
-	mint      MintDriver
+	mint      mintDriver
 	mintState State
-	ensurer   RepoEnsurer
+	ensurer   ensurer
 	logf      func(string, ...any)
 
 	names    chan string // buffered channel of available repo names
@@ -29,15 +29,15 @@ type composedDriver struct {
 	outstanding map[string]struct{} // names currently leased
 }
 
-// NewComposedDriver constructs a unified Driver from its constituent
+// newComposedDriver constructs a unified Driver from its constituent
 // parts. It pre-fills the internal pool with repo names in the form
 // "test-repo-01" … "test-repo-NN". The caller (Factory) is responsible
 // for deploying the mint and creating the ensurer before calling this.
-func NewComposedDriver(
+func newComposedDriver(
 	org string,
-	mint MintDriver,
+	mint mintDriver,
 	mintState State,
-	ensurer RepoEnsurer,
+	ensurer ensurer,
 	capacity int,
 	logf func(string, ...any),
 ) (Driver, error) {

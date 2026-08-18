@@ -1,4 +1,4 @@
-package cfmint
+package install
 
 import (
 	"context"
@@ -10,16 +10,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 )
 
-func TestWorkerName(t *testing.T) {
-	assert.Equal(t, "bt-mint", WorkerName("bt"))
-	assert.Equal(t, "e2e-mint", WorkerName("e2e"))
+func TestCFMintWorkerName(t *testing.T) {
+	assert.Equal(t, "bt-mint", CFMintWorkerName("bt"))
+	assert.Equal(t, "e2e-mint", CFMintWorkerName("e2e"))
 }
 
-func TestParseMintURLFromOutput(t *testing.T) {
+func TestParseCFMintURLFromOutput(t *testing.T) {
 	tests := []struct {
 		name   string
 		output string
@@ -48,13 +46,13 @@ func TestParseMintURLFromOutput(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, ParseMintURLFromOutput(tt.output))
+			assert.Equal(t, tt.want, ParseCFMintURLFromOutput(tt.output))
 		})
 	}
 }
 
-func TestGeneratePreviewAlias(t *testing.T) {
-	alias, err := GeneratePreviewAlias()
+func TestGenerateCFMintPreviewAlias(t *testing.T) {
+	alias, err := GenerateCFMintPreviewAlias()
 	require.NoError(t, err)
 
 	// Format: bt-<8-hex-chars>
@@ -62,22 +60,22 @@ func TestGeneratePreviewAlias(t *testing.T) {
 	assert.Len(t, alias, 11, "bt- + 8 hex chars = 11 chars")
 
 	// Must be unique across calls.
-	alias2, err := GeneratePreviewAlias()
+	alias2, err := GenerateCFMintPreviewAlias()
 	require.NoError(t, err)
 	assert.NotEqual(t, alias, alias2, "sequential aliases should differ")
 }
 
-func TestNewDriver_FailsEarly_NoPEMDir(t *testing.T) {
-	_, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
+func TestNewCFMintDriver_FailsEarly_NoPEMDir(t *testing.T) {
+	_, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, CFMintConfig{
 		SuiteName: "bt",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PEMDir is required")
 }
 
-func TestNewDriver_FailsEarly_EmptyPEMDir(t *testing.T) {
+func TestNewCFMintDriver_FailsEarly_EmptyPEMDir(t *testing.T) {
 	dir := t.TempDir()
-	_, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
+	_, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, CFMintConfig{
 		PEMDir:    dir,
 		SuiteName: "bt",
 	})
@@ -85,22 +83,22 @@ func TestNewDriver_FailsEarly_EmptyPEMDir(t *testing.T) {
 	assert.Contains(t, err.Error(), "no .pem files")
 }
 
-func TestNewDriver_FailsEarly_NoSuiteName(t *testing.T) {
+func TestNewCFMintDriver_FailsEarly_NoSuiteName(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
 
-	_, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
+	_, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, CFMintConfig{
 		PEMDir: dir,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SuiteName is required")
 }
 
-func TestNewDriver_OK(t *testing.T) {
+func TestNewCFMintDriver_OK(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
 
-	d, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
+	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, CFMintConfig{
 		PEMDir:            dir,
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
@@ -112,8 +110,8 @@ func TestNewDriver_OK(t *testing.T) {
 	require.NotNil(t, d)
 }
 
-func TestDeployArgs_WithAppSet(t *testing.T) {
-	cfg := Config{
+func TestCFMintDeployArgs_WithAppSet(t *testing.T) {
+	cfg := CFMintConfig{
 		PEMDir:            "/tmp/pems",
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
@@ -122,7 +120,7 @@ func TestDeployArgs_WithAppSet(t *testing.T) {
 		AppSet:            "fullsend-test",
 	}
 
-	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
+	args := CFMintDeployArgs("bt-abc12345", "bt-mint", cfg)
 
 	assert.Contains(t, args, "--app-set")
 	// Find the value after --app-set.
@@ -158,8 +156,8 @@ func TestDeployArgs_WithAppSet(t *testing.T) {
 	}
 }
 
-func TestDeployArgs_WithoutAppSet(t *testing.T) {
-	cfg := Config{
+func TestCFMintDeployArgs_WithoutAppSet(t *testing.T) {
+	cfg := CFMintConfig{
 		PEMDir:            "/tmp/pems",
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
@@ -167,7 +165,7 @@ func TestDeployArgs_WithoutAppSet(t *testing.T) {
 		WorkflowHostRepos: "my-org/test-repo-01",
 	}
 
-	args := DeployArgs("bt-abc12345", "bt-mint", cfg)
+	args := CFMintDeployArgs("bt-abc12345", "bt-mint", cfg)
 
 	// --app-set should not be present when AppSet is empty.
 	assert.NotContains(t, args, "--app-set")
@@ -177,8 +175,8 @@ func TestDeployArgs_WithoutAppSet(t *testing.T) {
 	assert.Contains(t, args, "--workflow-host-repos")
 }
 
-func TestTeardownArgs(t *testing.T) {
-	args := TeardownArgs("bt-abc12345", "bt-mint")
+func TestCFMintTeardownArgs(t *testing.T) {
+	args := CFMintTeardownArgs("bt-abc12345", "bt-mint")
 
 	assert.Contains(t, args, "--platform")
 	assert.Contains(t, args, "--preview")
@@ -204,11 +202,11 @@ func TestTeardownArgs(t *testing.T) {
 	}
 }
 
-func TestDriver_Implements_Install_MintDriver(t *testing.T) {
+func TestCFMintDriver_Implements_MintDriver(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend.pem"), []byte("pem"), 0600))
 
-	d, err := NewDriver(nil, "tok", "/bin/fullsend", "", t.Logf, Config{
+	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, CFMintConfig{
 		PEMDir:            dir,
 		SuiteName:         "bt",
 		AllowedOrgs:       "",
@@ -217,36 +215,33 @@ func TestDriver_Implements_Install_MintDriver(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify it implements install.MintDriver.
-	var _ install.MintDriver = d
+	// Verify it implements mintDriver.
+	var _ mintDriver = d
 }
 
 func TestPerRepoState_MintURL(t *testing.T) {
-	st := install.NewPerRepoState("test-org", "test-repo", "https://bt-test-bt-mint.fullsend-ai.workers.dev")
+	st := NewPerRepoState("test-org", "test-repo", "https://bt-test-bt-mint.fullsend-ai.workers.dev")
 	assert.Equal(t, "https://bt-test-bt-mint.fullsend-ai.workers.dev", st.MintURL())
-
-	// Verify MintURLProvider interface.
-	var provider install.MintURLProvider = st
-	assert.Equal(t, st.MintURL(), provider.MintURL())
 }
 
-// newTestDriver creates a driver with a mock CLI runner for unit testing.
-// It bypasses NewDriver validation (PEM dir, suite name) since those paths
-// are already covered by TestNewDriver_* tests.
-func newTestDriver(cliRunner install.CLIRunnerFunc) *driver {
-	return &driver{
+// newTestCFMintDriver creates a cfmintMintDriver with a mock CLI runner
+// for unit testing. It bypasses newCFMintDriver validation (PEM dir,
+// suite name) since those paths are already covered by
+// TestNewCFMintDriver_* tests.
+func newTestCFMintDriver(cliRunner CLIRunnerFunc) *cfmintMintDriver {
+	return &cfmintMintDriver{
 		token:      "tok",
 		binary:     "/bin/fullsend",
 		logf:       func(string, ...any) {},
-		cfg:        Config{SuiteName: "bt"},
-		workerName: WorkerName("bt"),
+		cfg:        CFMintConfig{SuiteName: "bt"},
+		workerName: CFMintWorkerName("bt"),
 		cliRunner:  cliRunner,
 	}
 }
 
-func TestInstall_Success(t *testing.T) {
+func TestCFMintInstall_Success(t *testing.T) {
 	const wantMintURL = "https://bt-abc12345-bt-mint.fullsend-ai.workers.dev"
-	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
 		return "✓ Worker deployed at " + wantMintURL, nil
 	})
 
@@ -257,19 +252,19 @@ func TestInstall_Success(t *testing.T) {
 	assert.Equal(t, "per-repo", state.Mode())
 	assert.Equal(t, "my-org", state.ConfigOwner())
 	// ConfigRepo is empty — the driver only manages the mint, not a
-	// specific repo. Per-repo state is created by the RepoEnsurer.
+	// specific repo. Per-repo state is created by the ensurer.
 	assert.Equal(t, "", state.ConfigRepo())
 
-	provider, ok := state.(install.MintURLProvider)
+	ps, ok := state.(*PerRepoState)
 	require.True(t, ok)
-	assert.Equal(t, wantMintURL, provider.MintURL())
+	assert.Equal(t, wantMintURL, ps.MintURL())
 
 	// previewAlias should be set for teardown.
 	assert.NotEmpty(t, d.previewAlias)
 }
 
-func TestInstall_DeployFailure(t *testing.T) {
-	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+func TestCFMintInstall_DeployFailure(t *testing.T) {
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
 		return "", fmt.Errorf("deploy exploded")
 	})
 
@@ -279,8 +274,8 @@ func TestInstall_DeployFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "deploying CF preview mint for BT")
 }
 
-func TestInstall_NoMintURLInOutput(t *testing.T) {
-	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+func TestCFMintInstall_NoMintURLInOutput(t *testing.T) {
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
 		return "Deploying...\nDone", nil
 	})
 
@@ -290,9 +285,9 @@ func TestInstall_NoMintURLInOutput(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not parse mint URL")
 }
 
-func TestTeardown_WithPreview(t *testing.T) {
+func TestCFMintTeardown_WithPreview(t *testing.T) {
 	var calledArgs []string
-	d := newTestDriver(func(_, _ string, args ...string) (string, error) {
+	d := newTestCFMintDriver(func(_, _ string, args ...string) (string, error) {
 		calledArgs = args
 		return "", nil
 	})
@@ -304,9 +299,9 @@ func TestTeardown_WithPreview(t *testing.T) {
 	assert.Contains(t, calledArgs, "bt-abc12345")
 }
 
-func TestTeardown_NoPreview(t *testing.T) {
+func TestCFMintTeardown_NoPreview(t *testing.T) {
 	called := false
-	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
 		called = true
 		return "", nil
 	})
@@ -317,27 +312,26 @@ func TestTeardown_NoPreview(t *testing.T) {
 	assert.False(t, called, "CLI should not be called when no preview was deployed")
 }
 
-// --- NewFactory / buildFromMint tests ---
+// --- NewCFMintFactory / buildCFMintFromMint tests ---
 
-// testMintDriver is a fake MintDriver for testing buildFromMint
-// without shelling out. Distinct from composed_test.go's fakeMintDriver
-// because that lives in package install, not package cfmint.
-type testMintDriver struct {
-	installState install.State
+// testCFMintMintDriver is a fake mintDriver for testing buildCFMintFromMint
+// without shelling out.
+type testCFMintMintDriver struct {
+	installState State
 	installErr   error
 	teardownErr  error
 }
 
-func (m *testMintDriver) Install(_ context.Context, _ string) (install.State, error) {
+func (m *testCFMintMintDriver) Install(_ context.Context, _ string) (State, error) {
 	return m.installState, m.installErr
 }
 
-func (m *testMintDriver) Teardown(_ context.Context, _ string, _ install.State) error {
+func (m *testCFMintMintDriver) Teardown(_ context.Context, _ string, _ State) error {
 	return m.teardownErr
 }
 
-// plainState is a minimal install.State that does NOT implement
-// MintURLProvider. Used to test the "no mint URL" branch.
+// plainState is a minimal State that does NOT produce a PerRepoState.
+// Used to test the "no mint URL" branch.
 type plainState struct{}
 
 func (plainState) Mode() string               { return "per-repo" }
@@ -349,68 +343,68 @@ func (plainState) TriageWorkflowFile() string { return "fullsend.yaml" }
 func (plainState) AgentWorkflowFile() string  { return "reusable-triage.yml" }
 func (plainState) AgentArtifactName() string  { return "fullsend-triage" }
 
-func TestNewFactory_ReturnsNonNilFactory(t *testing.T) {
-	f := NewFactory(Config{SuiteName: "bt"}, 3)
+func TestNewCFMintFactory_ReturnsNonNilFactory(t *testing.T) {
+	f := NewCFMintFactory(CFMintConfig{SuiteName: "bt"}, 3)
 	assert.NotNil(t, f)
 }
 
-func TestNewFactory_CreateDriverFails(t *testing.T) {
-	// Invalid config (no PEMDir) → NewDriver returns an error.
-	f := NewFactory(Config{SuiteName: "bt"}, 3)
+func TestNewCFMintFactory_CreateDriverFails(t *testing.T) {
+	// Invalid config (no PEMDir) -> newCFMintDriver returns an error.
+	f := NewCFMintFactory(CFMintConfig{SuiteName: "bt"}, 3)
 
 	_, err := f("org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cfmint factory: creating mint driver")
 }
 
-func TestBuildFromMint_HappyPath(t *testing.T) {
-	mint := &testMintDriver{
-		installState: install.NewPerRepoState("org", "", "https://mint.test"),
+func TestBuildCFMintFromMint_HappyPath(t *testing.T) {
+	mint := &testCFMintMintDriver{
+		installState: NewPerRepoState("org", "", "https://mint.test"),
 	}
 
-	d, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+	d, err := buildCFMintFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, 3, d.Capacity())
 }
 
-func TestBuildFromMint_InstallFails(t *testing.T) {
-	mint := &testMintDriver{
+func TestBuildCFMintFromMint_InstallFails(t *testing.T) {
+	mint := &testCFMintMintDriver{
 		installErr: fmt.Errorf("deploy boom"),
 	}
 
-	_, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+	_, err := buildCFMintFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cfmint factory: deploying mint")
 	assert.Contains(t, err.Error(), "deploy boom")
 }
 
-func TestBuildFromMint_NoMintURLProvider(t *testing.T) {
-	// State that does not implement MintURLProvider — the code should
-	// continue with an empty mint URL.
-	mint := &testMintDriver{
+func TestBuildCFMintFromMint_NoPerRepoState(t *testing.T) {
+	// State that is not *PerRepoState — the code should continue
+	// with an empty mint URL.
+	mint := &testCFMintMintDriver{
 		installState: plainState{},
 	}
 
-	d, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 2, t.Logf)
+	d, err := buildCFMintFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 2, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, 2, d.Capacity())
 }
 
-func TestBuildFromMint_InvalidPoolSize(t *testing.T) {
-	mint := &testMintDriver{
-		installState: install.NewPerRepoState("org", "", "https://mint.test"),
+func TestBuildCFMintFromMint_InvalidPoolSize(t *testing.T) {
+	mint := &testCFMintMintDriver{
+		installState: NewPerRepoState("org", "", "https://mint.test"),
 	}
 
-	_, err := buildFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 0, t.Logf)
+	_, err := buildCFMintFromMint("org", mint, nil, "tok", "/bin/fullsend", "proj", 0, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "capacity must be positive")
 }
 
-func TestTeardown_CLIFailure_LogsButDoesNotFail(t *testing.T) {
+func TestCFMintTeardown_CLIFailure_LogsButDoesNotFail(t *testing.T) {
 	var logged []string
-	d := newTestDriver(func(_, _ string, _ ...string) (string, error) {
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
 		return "", fmt.Errorf("teardown boom")
 	})
 	d.previewAlias = "bt-abc12345"

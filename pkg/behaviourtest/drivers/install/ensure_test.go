@@ -18,7 +18,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
-// fakeEnsurer is a test double for RepoEnsurer that records calls and
+// fakeEnsurer is a test double for ensurer that records calls and
 // returns a fixed PerRepoState. It lets callers verify caching and
 // call-count behaviour without a real forge client or CLI binary.
 type fakeEnsurer struct {
@@ -50,7 +50,7 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) (State
 	return st, nil
 }
 
-var _ RepoEnsurer = (*fakeEnsurer)(nil)
+var _ ensurer = (*fakeEnsurer)(nil)
 
 func TestFakeEnsurer_ReturnsCorrectState(t *testing.T) {
 	e := newFakeEnsurer()
@@ -178,14 +178,14 @@ func (s *stubClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Work
 
 func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 	sc := &stubClient{}
-	e := NewRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
-	require.NotNil(t, e, "NewRepoEnsurer should return a non-nil RepoEnsurer")
+	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NotNil(t, e, "newRepoEnsurer should return a non-nil ensurer")
 
 	// Verify the returned value implements the interface.
-	var _ RepoEnsurer = e
+	var _ ensurer = e
 }
 
-func TestRepoEnsurer_CachesSuccessfulEnsure(t *testing.T) {
+func TestEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
@@ -206,7 +206,7 @@ func TestRepoEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 	assert.Same(t, st1, st2, "second call should return cached State")
 }
 
-func TestRepoEnsurer_CacheKeyIncludesOrg(t *testing.T) {
+func TestEnsurer_CacheKeyIncludesOrg(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
@@ -229,7 +229,7 @@ func TestRepoEnsurer_CacheKeyIncludesOrg(t *testing.T) {
 	assert.Equal(t, "org-b", st2.ConfigOwner())
 }
 
-func TestRepoEnsurer_CreatesRepoWhenMissing(t *testing.T) {
+func TestEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 	sc := &stubClient{
 		getRepoErr: forge.ErrNotFound,
 		installed:  true,
@@ -248,7 +248,7 @@ func TestRepoEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
 }
 
-func TestRepoEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
+func TestEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
@@ -264,7 +264,7 @@ func TestRepoEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
 	assert.Equal(t, int32(0), sc.createRepoCalled.Load(), "should not create existing repo")
 }
 
-func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
+func TestEnsurer_PerRepoStateFields(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
@@ -287,7 +287,7 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 	assert.Equal(t, PerRepoAgentArtifact, st.AgentArtifactName())
 }
 
-func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
+func TestEnsurer_InstallsWhenValidationFails(t *testing.T) {
 	speedUpValidateRetries(t)
 	// Start with installed=false to simulate a repo that exists but
 	// has not yet been set up with fullsend. The mock CLI runner flips
@@ -326,7 +326,7 @@ func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
 	assert.Contains(t, cliCalls[0], "--mint-url")
 }
 
-func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
+func TestEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 	speedUpValidateRetries(t)
 	// Full flow: repo missing → created, validation fails → CLI invoked,
 	// re-validation passes → State cached.
@@ -368,7 +368,7 @@ func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 	assert.Len(t, cliCalls, 1, "cached call should not invoke CLI again")
 }
 
-func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
+func TestEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 	speedUpValidateRetries(t)
 	// When GCPProjectID is set, provisionInference should be called
 	// before github setup.
@@ -414,7 +414,7 @@ func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 	assert.Contains(t, cliCalls[2], "--inference-wif-provider")
 }
 
-func TestRepoEnsurer_DoEnsure_MintURLPopulated(t *testing.T) {
+func TestEnsurer_DoEnsure_MintURLPopulated(t *testing.T) {
 	// Verify that doEnsure sets mintURL on the returned state from
 	// e2eCfg.MintURL (finding 5: consumer-completeness).
 	sc := &stubClient{installed: true}
@@ -430,12 +430,12 @@ func TestRepoEnsurer_DoEnsure_MintURLPopulated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify MintURL is populated from e2eCfg.
-	provider, ok := st.(MintURLProvider)
-	require.True(t, ok, "state should implement MintURLProvider")
+	provider, ok := st.(mintURLProvider)
+	require.True(t, ok, "state should implement mintURLProvider")
 	assert.Equal(t, "https://preview.workers.dev", provider.MintURL())
 }
 
-func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
+func TestEnsurer_InstallCLIError_Propagated(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
@@ -456,7 +456,7 @@ func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "cli exploded")
 }
 
-func TestRepoEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
+func TestEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
@@ -483,7 +483,7 @@ func TestRepoEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "provision boom")
 }
 
-func TestRepoEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
+func TestEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
 	// Verify that concurrent EnsureRepo calls for the same repo only
 	// perform create once (via singleflight deduplication).
 	sc := &stubClient{

@@ -29,5 +29,5 @@ func (s *PerRepoState) MintURL() string { return s.mintURL }
 // Compile-time checks.
 var (
 	_ State           = (*PerRepoState)(nil)
-	_ MintURLProvider = (*PerRepoState)(nil)
+	_ mintURLProvider = (*PerRepoState)(nil)
 )

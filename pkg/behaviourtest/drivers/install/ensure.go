@@ -22,15 +22,18 @@ const (
 	settlePoll = 5 * time.Second
 )
 
-// RepoEnsurer lazily creates and installs repos on demand for behaviour
+// ensurer lazily creates and installs repos on demand for behaviour
 // scenarios. Results are cached by org/repo key so that a second scenario
 // leasing the same name within a suite run skips redundant work.
+//
+// This is an unexported interface used internally by composedDriver.
+// The suite does not construct or reference it directly.
 //
 // Thread safety: EnsureRepo is safe for concurrent callers.
 // A singleflight.Group serializes in-flight ensures per key so that
 // concurrent first-calls for the same repo only perform create+install
 // once; other callers wait and share the result.
-type RepoEnsurer interface {
+type ensurer interface {
 	// EnsureRepo guarantees org/repoName exists and has fullsend installed.
 	// If the repo does not exist it is created (the forge's auto_init
 	// provides the initial commit). If fullsend is not installed (per
@@ -58,15 +61,15 @@ type repoEnsurer struct {
 	inflight singleflight.Group
 }
 
-// NewRepoEnsurer returns a RepoEnsurer backed by the given forge client
+// newRepoEnsurer returns an ensurer backed by the given forge client
 // and CLI binary. The ensurer shares the same credentials and
 // configuration as the per-repo install driver.
-func NewRepoEnsurer(
+func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
 	token, binary string,
 	logf func(string, ...any),
-) RepoEnsurer {
+) ensurer {
 	return &repoEnsurer{
 		e2eCfg:  e2eCfg,
 		client:  client,

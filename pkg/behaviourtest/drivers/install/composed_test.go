@@ -31,14 +31,14 @@ func TestNewComposedDriver_OK(t *testing.T) {
 	mint := &fakeMintDriver{}
 	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 3, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 3, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, 3, d.Capacity())
 }
 
 func TestNewComposedDriver_InvalidCapacity(t *testing.T) {
-	_, err := NewComposedDriver("org", nil, nil, nil, 0, t.Logf)
+	_, err := newComposedDriver("org", nil, nil, nil, 0, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "capacity must be positive")
 }
@@ -48,7 +48,7 @@ func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	mint := &fakeMintDriver{}
 	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 3, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 3, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -73,7 +73,7 @@ func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
 	mint := &fakeMintDriver{}
 	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	err = d.DeallocateRepo(context.Background(), "unknown-repo")
@@ -86,7 +86,7 @@ func TestComposedDriver_DoubleDeallocate(t *testing.T) {
 	mint := &fakeMintDriver{}
 	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -108,7 +108,7 @@ func TestComposedDriver_AllocateBlocksUntilDeallocate(t *testing.T) {
 	mint := &fakeMintDriver{}
 	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 1, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 1, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -142,7 +142,7 @@ func TestComposedDriver_AllocateEnsureError_ReturnsNameToPool(t *testing.T) {
 	mint := &fakeMintDriver{}
 	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, failEnsurer, 1, t.Logf)
+	d, err := newComposedDriver("org", mint, st, failEnsurer, 1, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -171,7 +171,7 @@ func TestComposedDriver_FinalizeNoOutstanding(t *testing.T) {
 	st := NewPerRepoState("org", "", "https://mint.test")
 	e := newFakeEnsurer()
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	err = d.Finalize(context.Background())
@@ -184,7 +184,7 @@ func TestComposedDriver_FinalizeWithOutstanding(t *testing.T) {
 	st := NewPerRepoState("org", "", "https://mint.test")
 	e := newFakeEnsurer()
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -203,7 +203,7 @@ func TestComposedDriver_FinalizeJoinsErrors(t *testing.T) {
 	st := NewPerRepoState("org", "", "https://mint.test")
 	e := newFakeEnsurer()
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -223,7 +223,7 @@ func TestComposedDriver_ConcurrentAllocateDeallocate(t *testing.T) {
 	st := NewPerRepoState("org", "", "https://mint.test")
 
 	const poolSize = 4
-	d, err := NewComposedDriver("org", mint, st, e, poolSize, t.Logf)
+	d, err := newComposedDriver("org", mint, st, e, poolSize, t.Logf)
 	require.NoError(t, err)
 
 	const goroutines = 8

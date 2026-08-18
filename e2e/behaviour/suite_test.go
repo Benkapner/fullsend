@@ -15,7 +15,7 @@ import (
 
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/cfmint"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -67,10 +67,10 @@ func TestBehaviourSuite(t *testing.T) {
 	binary := e2etest.BuildCLIBinary(t)
 
 	// Construct a cfmint Factory that closes over PEM/pool config.
-	// When called, the factory deploys the preview mint, creates a
-	// RepoEnsurer with the deployed mint URL, and returns a unified
-	// install.Driver that owns allocation, deallocation, and teardown.
-	factory := cfmint.NewFactory(cfmint.Config{
+	// When called, the factory deploys the preview mint and returns a
+	// unified install.Driver that owns allocation, deallocation, ensure,
+	// and teardown internally.
+	factory := install.NewCFMintFactory(install.CFMintConfig{
 		PEMDir:            e2eCfg.CFMintPEMDir,
 		SuiteName:         suiteName,
 		AllowedOrgs:       "",

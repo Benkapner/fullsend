@@ -10,15 +10,14 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
 | `install.Driver` | `pkg/behaviourtest/drivers/install` | Unified surface: repo allocation/deallocation, mint lifecycle, and suite teardown |
 | `install.Factory` | `pkg/behaviourtest/drivers/install` | Constructs a unified `Driver` for a given org; closes over driver-specific config |
-| `install.MintDriver` | `pkg/behaviourtest/drivers/install` | Provision and tear down the mint in an acquired pool org (internal to Factory/Driver) |
 | `install.State` | `pkg/behaviourtest/drivers/install` | Post-install config paths (script commits, workflow polling) |
-| `install.RepoEnsurer` | `pkg/behaviourtest/drivers/install` | Lazily create and install numbered pool repos on demand; caches by org/repo key; concurrent-safe via singleflight (internal to composed Driver) |
 
 v1 reference implementations:
 
 - `pkg/behaviourtest/drivers/scm/github/`
 - `pkg/behaviourtest/drivers/ci/githubactions/`
-- `pkg/behaviourtest/drivers/install/perrepo_github.go` (`BEHAVIOUR_INSTALL_MODE=per-repo`)
+- `pkg/behaviourtest/drivers/install/cfmint.go` (CF mint preview driver)
+- `pkg/behaviourtest/drivers/install/externalmint.go` (external/pre-configured mint driver)
 
 ## Runner configuration
 
@@ -30,19 +29,18 @@ BEHAVIOUR_CI=githubactions        # future: tekton, gitlabci
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls an `install.Factory` to get a unified `install.Driver` (which deploys the mint, constructs pool and ensurer internally), constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls an `install.Factory` (e.g. `install.NewCFMintFactory`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown. The suite constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
 
 ### Install driver (unified)
 
-The suite uses a single unified `install.Driver` constructed via `install.Factory`. The factory:
+The suite uses a single unified `install.Driver` constructed via `install.Factory` (e.g. `install.NewCFMintFactory` or `install.NewExternalMintFactory`). Each concrete driver owns the full lifecycle:
 
-1. Deploys the mint (cfmint: CF Worker preview; legacy: pre-configured URL).
-2. Creates a `RepoEnsurer` with the deployed mint URL.
-3. Returns a composed `Driver` that owns pool allocation, ensure, and teardown.
+1. Deploys the mint (cfmint: CF Worker preview; external mint: pre-configured URL).
+2. Manages an internal channel-based pool of repo names (`test-repo-01` … `test-repo-12`).
+3. Lazily creates and installs numbered pool repos on demand via an internal ensurer (concurrent-safe via singleflight).
+4. Exposes `AllocateRepo` / `DeallocateRepo` / `Finalize` / `Capacity`.
 
-The unified Driver exposes `AllocateRepo` / `DeallocateRepo` / `Finalize` / `Capacity`. Internally, it manages a channel-based pool of repo names and a `RepoEnsurer` that lazily creates and installs numbered pool repos (`test-repo-01` … `test-repo-12`) on demand. The suite and steps do not construct or thread `RepoPool`, `RepoEnsurer`, or `MintDriver` directly.
-
-The underlying `MintDriver` (renamed from `Driver` to free the name for the unified surface) only manages the **mint lifecycle**: the cfmint driver deploys a Cloudflare Worker preview mint and tears it down; the legacy driver holds a pre-configured mint URL.
+The suite and steps do not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory.
 
 Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
