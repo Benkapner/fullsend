@@ -2513,6 +2513,7 @@ base: `+baseURL+`
 
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
+		ForgePlatform: "github",
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/"},
 	})
@@ -2678,7 +2679,7 @@ func TestResolveBaseScripts_RejectsAbsoluteForgeScript(t *testing.T) {
 			"github": {PreScript: "/usr/bin/evil"},
 		},
 	}
-	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
 }
@@ -2689,7 +2690,7 @@ func TestResolveBaseScripts_RejectsTraversalInForgeScript(t *testing.T) {
 			"github": {PostScript: "../escape.sh"},
 		},
 	}
-	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not contain path traversal")
 	assert.Contains(t, err.Error(), "forge.github.post_script")
@@ -2703,7 +2704,7 @@ func TestResolveBaseScripts_RejectsAbsoluteForgeValidationLoop(t *testing.T) {
 			},
 		},
 	}
-	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
 }
@@ -2730,7 +2731,7 @@ func TestResolveBaseScripts_RejectsTraversalInForgeValidationLoopSchema(t *testi
 			},
 		},
 	}
-	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not contain path traversal")
 	assert.Contains(t, err.Error(), "forge.github.validation_loop.schema")
@@ -6319,7 +6320,7 @@ func TestResolveBaseResources_ForgeNilEntry(t *testing.T) {
 			"gitlab": nil,
 		},
 	}
-	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6336,7 +6337,7 @@ func TestResolveBaseResources_ForgeSkillSkipsURLAndEmpty(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot, ForgePlatform: "gitlab"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 	assert.Equal(t, "", base.Forge["gitlab"].Skills[0].Source)
@@ -6350,7 +6351,7 @@ func TestResolveBaseHostFiles_ForgeNilEntry(t *testing.T) {
 			"gitlab": nil,
 		},
 	}
-	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6372,7 +6373,7 @@ func TestResolveBaseHostFiles_ForgeSkipsURLEnvVarEmptyAndCache(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot, ForgePlatform: "gitlab"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 	assert.Equal(t, "", base.Forge["gitlab"].HostFiles[0].Src)
@@ -6407,6 +6408,7 @@ func TestResolveBaseHostFiles_ForgeFetchError(t *testing.T) {
 	_, err := resolveBaseHostFiles(context.Background(), base, baseURL, []string{server.URL + "/"}, ComposeOpts{
 		WorkspaceRoot: t.TempDir(),
 		FetchPolicy:   fpolicy,
+		ForgePlatform: "gitlab",
 	})
 	require.Error(t, err)
 }
@@ -6582,7 +6584,7 @@ func TestResolveBaseProfiles_ForgeOnlyProfiles(t *testing.T) {
 			},
 		},
 	}
-	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	_, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not contain path traversal")
 	assert.Contains(t, err.Error(), "forge.github.openshell.profiles[0]")
@@ -6598,7 +6600,7 @@ func TestResolveBaseProfiles_ForgeSkipsURLs(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 	assert.Equal(t, "https://example.com/profiles/net.yaml#sha256=abc", base.Forge["github"].OpenShell.Profiles[0])
@@ -6614,7 +6616,7 @@ func TestResolveBaseProfiles_ForgeSkipsEmpty(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6633,7 +6635,7 @@ func TestResolveBaseProfiles_ForgeSkipsCachePath(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot, ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 	assert.Equal(t, cachePath, base.Forge["github"].OpenShell.Profiles[0])
@@ -6645,7 +6647,7 @@ func TestResolveBaseProfiles_ForgeNilOpenShellSkipped(t *testing.T) {
 			"github": {OpenShell: nil},
 		},
 	}
-	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6656,7 +6658,7 @@ func TestResolveBaseProfiles_ForgeNilConfigSkipped(t *testing.T) {
 			"github": nil,
 		},
 	}
-	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6671,7 +6673,7 @@ func TestResolveBaseProfiles_ForgeInvalidBaseURL(t *testing.T) {
 			},
 		},
 	}
-	_, err := resolveBaseProfiles(context.Background(), base, "", nil, ComposeOpts{})
+	_, err := resolveBaseProfiles(context.Background(), base, "", nil, ComposeOpts{ForgePlatform: "github"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
@@ -6686,7 +6688,7 @@ func TestResolveBaseProviders_ForgeOnlyProviders(t *testing.T) {
 			},
 		},
 	}
-	_, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	_, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not contain path traversal")
 	assert.Contains(t, err.Error(), "forge.github.providers[0]")
@@ -6700,7 +6702,7 @@ func TestResolveBaseProviders_ForgeSkipsURLs(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6713,7 +6715,7 @@ func TestResolveBaseProviders_ForgeSkipsBareNames(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 	assert.Equal(t, "my-provider", base.Forge["github"].Providers[0])
@@ -6727,7 +6729,7 @@ func TestResolveBaseProviders_ForgeSkipsEmpty(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6744,7 +6746,7 @@ func TestResolveBaseProviders_ForgeSkipsCachePath(t *testing.T) {
 			},
 		},
 	}
-	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot, ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 	assert.Equal(t, cachePath, base.Forge["github"].Providers[0])
@@ -6756,7 +6758,7 @@ func TestResolveBaseProviders_ForgeNilConfigSkipped(t *testing.T) {
 			"github": nil,
 		},
 	}
-	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
@@ -6769,9 +6771,110 @@ func TestResolveBaseProviders_ForgeInvalidBaseURL(t *testing.T) {
 			},
 		},
 	}
-	_, err := resolveBaseProviders(context.Background(), base, "", nil, ComposeOpts{})
+	_, err := resolveBaseProviders(context.Background(), base, "", nil, ComposeOpts{ForgePlatform: "github"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+// --- Tests verifying only the active forge platform is fetched ---
+
+func TestResolveBaseResources_SkipsInactiveForgePlatform(t *testing.T) {
+	// Setup: harness with forge.github.skills and forge.gitlab.skills,
+	// ForgePlatform = "gitlab". The github skill should never be fetched.
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Skills: []SkillEntry{{Source: "skills/github-forge"}},
+			},
+			"gitlab": nil,
+		},
+	}
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	// The github forge skills should remain untouched — never fetched.
+	assert.Equal(t, "skills/github-forge", base.Forge["github"].Skills[0].Source)
+}
+
+func TestResolveBaseScripts_SkipsInactiveForgePlatform(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {PreScript: "/absolute/path/should/error/if/reached"},
+			"gitlab": nil,
+		},
+	}
+	// ForgePlatform is gitlab, so the github forge block (which has an
+	// absolute path that would normally error) should be skipped entirely.
+	deps, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseHostFiles_SkipsInactiveForgePlatform(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{{Src: "/absolute/path", Dest: "/sandbox/test"}},
+			},
+			"gitlab": nil,
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProfiles_SkipsInactiveForgePlatform(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				OpenShell: &OpenShellConfig{
+					Profiles: []string{"../../etc/passwd"},
+				},
+			},
+			"gitlab": nil,
+		},
+	}
+	// ForgePlatform is gitlab; the github forge block has a traversal path
+	// that would error if processed, confirming it is skipped.
+	deps, err := resolveBaseProfiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseProviders_SkipsInactiveForgePlatform(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Providers: []string{"../../etc/passwd.yaml"},
+			},
+			"gitlab": nil,
+		},
+	}
+	deps, err := resolveBaseProviders(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{ForgePlatform: "gitlab"})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseResources_EmptyForgePlatformSkipsAllForge(t *testing.T) {
+	// When ForgePlatform is empty, no forge platform is active — all
+	// forge-specific resources should be skipped.
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Skills: []SkillEntry{{Source: "skills/github-forge"}},
+			},
+			"gitlab": {
+				Skills: []SkillEntry{{Source: "skills/gitlab-forge"}},
+			},
+		},
+	}
+	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	// Both forge skill sources should remain untouched.
+	assert.Equal(t, "skills/github-forge", base.Forge["github"].Skills[0].Source)
+	assert.Equal(t, "skills/gitlab-forge", base.Forge["gitlab"].Skills[0].Source)
 }
 
 // --- Integration tests for profiles/providers through LoadWithBase ---
@@ -6910,17 +7013,18 @@ base: `+baseURL+`
 
 	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
+		ForgePlatform: "github",
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/"},
 	})
 	require.NoError(t, err)
 
-	require.NotNil(t, h.Forge["github"])
-	require.NotNil(t, h.Forge["github"].OpenShell)
-	require.Len(t, h.Forge["github"].OpenShell.Profiles, 1)
-	assert.True(t, filepath.IsAbs(h.Forge["github"].OpenShell.Profiles[0]), "forge profile should be resolved to absolute cache path")
+	// After ResolveForge, forge profiles are merged into top-level OpenShell.
+	require.NotNil(t, h.OpenShell)
+	require.Len(t, h.OpenShell.Profiles, 1)
+	assert.True(t, filepath.IsAbs(h.OpenShell.Profiles[0]), "forge profile should be resolved to absolute cache path")
 
-	content, err := os.ReadFile(h.Forge["github"].OpenShell.Profiles[0])
+	content, err := os.ReadFile(h.OpenShell.Profiles[0])
 	require.NoError(t, err)
 	assert.Equal(t, profileContent, content)
 
@@ -6964,17 +7068,18 @@ base: `+baseURL+`
 
 	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
+		ForgePlatform: "github",
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/"},
 	})
 	require.NoError(t, err)
 
-	require.NotNil(t, h.Forge["github"])
-	require.Len(t, h.Forge["github"].Providers, 2)
-	assert.True(t, filepath.IsAbs(h.Forge["github"].Providers[0]), "forge provider path should be resolved to absolute cache path")
-	assert.Equal(t, "bare-name", h.Forge["github"].Providers[1], "bare provider name should be unchanged")
+	// After ResolveForge, forge providers are merged into top-level Providers.
+	require.Len(t, h.Providers, 2)
+	assert.True(t, filepath.IsAbs(h.Providers[0]), "forge provider path should be resolved to absolute cache path")
+	assert.Equal(t, "bare-name", h.Providers[1], "bare provider name should be unchanged")
 
-	content, err := os.ReadFile(h.Forge["github"].Providers[0])
+	content, err := os.ReadFile(h.Providers[0])
 	require.NoError(t, err)
 	assert.Equal(t, providerContent, content)
 
@@ -7017,20 +7122,19 @@ base: `+baseURL+`
 
 	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
+		ForgePlatform: "github",
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/"},
 	})
 	require.NoError(t, err)
 
-	require.NotNil(t, h.Forge["github"])
-	require.Len(t, h.Forge["github"].Providers, 1)
-	assert.True(t, filepath.IsAbs(h.Forge["github"].Providers[0]))
+	// After ResolveForge, forge providers are merged into top-level Providers.
+	require.Len(t, h.Providers, 1)
+	assert.True(t, filepath.IsAbs(h.Providers[0]))
 
-	content, err := os.ReadFile(h.Forge["github"].Providers[0])
+	content, err := os.ReadFile(h.Providers[0])
 	require.NoError(t, err)
 	assert.Equal(t, providerContent, content)
-
-	assert.Empty(t, h.Providers, "top-level providers should remain empty when only forge-level exist")
 
 	forgeDeps := []Dependency{}
 	for _, d := range deps {

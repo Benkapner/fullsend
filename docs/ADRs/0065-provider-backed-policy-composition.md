@@ -170,3 +170,12 @@ automatically by `fullsend run`.
 - Provider and profile definitions are currently resolved from local
   directories only. Portability for URL-referenced base harnesses
   requires harness-level declaration and URL-based resolution ([#2672](https://github.com/fullsend-ai/fullsend/issues/2672)).
+
+## Notes
+
+- The Context quote above reflects the `policies/fix.yaml` header when
+  this ADR was written. Upstream revised that comment in
+  [fullsend-ai/agents#766](https://github.com/fullsend-ai/agents/pull/766)
+  to describe overlapping sandbox needs with the code agent while
+  allowing intentional divergence; see also
+  [fullsend-ai/agents#532](https://github.com/fullsend-ai/agents/issues/532).

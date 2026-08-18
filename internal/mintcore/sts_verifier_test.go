@@ -57,13 +57,15 @@ func newTestSTSServer(t *testing.T) *httptest.Server {
 
 func newTestSTSVerifier(t *testing.T, stsURL string) *STSVerifier {
 	t.Helper()
-	return NewSTSVerifier(STSVerifierConfig{
+	v, err := NewSTSVerifier(STSVerifierConfig{
 		STSURL:             stsURL,
+		Audience:           "fullsend-mint",
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "fullsend-provider",
-		OIDCAudience:       "fullsend-mint",
 	})
+	require.NoError(t, err)
+	return v
 }
 
 func TestSTSVerifier_ValidToken(t *testing.T) {
@@ -150,11 +152,24 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 // NOTE: PerRepoBypassesOrgCheck, NonPerRepoStillRequiresOrg tests moved to
 // handler level — authorization is now the handler's responsibility.
 
+func TestNewSTSVerifier_EmptyAudience(t *testing.T) {
+	_, err := NewSTSVerifier(STSVerifierConfig{
+		GCPProjectNum:      "123456",
+		WIFPoolName:        "pool",
+		DefaultWIFProvider: "provider",
+		// Audience intentionally omitted → empty.
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
+}
+
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
-	v := NewSTSVerifier(STSVerifierConfig{
+	v, err := NewSTSVerifier(STSVerifierConfig{
+		Audience:           "fullsend-mint",
 		DefaultWIFProvider: "default-provider",
 		PerRepoWIFRepos:    map[string]bool{"myorg/special-repo": true},
 	})
+	require.NoError(t, err)
 
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/.fullsend"))
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/regular-repo"))

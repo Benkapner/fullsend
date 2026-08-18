@@ -257,10 +257,12 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 		return result, nil
 	}
 
-	// Inference flags are all-or-nothing: if any one of
-	// --inference-project, --inference-project-number, or
-	// --inference-region is set, all three are required. Fail fast
-	// before per-repo validation.
+	// Inference flags validation: all three must be present when any
+	// is set. The CLI layer defaults --inference-region to "global"
+	// and auto-derives --inference-project-number from the project
+	// ID, so users only need to pass --inference-project. This
+	// validation acts as a safety net for callers that bypass the
+	// CLI (e.g. tests calling BatchInstall directly).
 	inferenceFlags := []struct{ name, val string }{
 		{"--inference-project", cfg.InferenceProject},
 		{"--inference-project-number", cfg.InferenceProjectNumber},
