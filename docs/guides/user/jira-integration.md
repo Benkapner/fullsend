@@ -55,6 +55,15 @@ This means the person who commented `/fs-triage` on a Jira issue will not see th
 | `JIRA_USER_EMAIL` | Email associated with the token |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
 
+### Sandbox credentials and network access
+
+The fullsend scaffold includes an OpenShell credential provider (`providers/jira.yaml`) and network profile (`profiles/fullsend-atlassian-cloud.yaml`) that grant sandboxed agents access to Jira Cloud. When the scaffold is applied to your repo, these files are installed automatically:
+
+- **Provider** (`jira`) — declares the `jira` credential provider using the `fullsend-atlassian-cloud` profile type.
+- **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to `*.atlassian.net:443` with read-write access and endpoint enforcement. Permitted binaries are `curl` and `node`.
+
+The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tenant. Per-tenant scoping is not yet supported by OpenShell; this is an accepted risk for now.
+
 ## Repo configuration
 
 No special harness or config changes are needed to *receive* Jira-sourced dispatches: the Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing and triggers work unchanged. However, built-in agent output is currently written to GitHub only — the CLI primitive for posting to Jira exists (`fullsend issues post-comment --tracker jira`), but the agent pipeline does not use it yet. See [Event semantics — input only](#event-semantics--input-only) for details. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
