@@ -6,6 +6,17 @@ import (
 	"path/filepath"
 )
 
+type persistHookKey struct{}
+
+// WithPersistHook runs fn after each successful RecordScored. Tests use it
+// to fail a later persist; production callers pass a plain context.
+func WithPersistHook(ctx context.Context, fn func()) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, persistHookKey{}, fn)
+}
+
 // MeasureFile parses telemetry, scores with the manifest, and writes local
 // eval-measurements.jsonl. Idempotent per ledger.
 func MeasureFile(telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
@@ -35,6 +46,7 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 	ledgerPath := filepath.Join(outDir, LedgerFile)
 	measPath := filepath.Join(outDir, MeasurementsFile)
 	var all []EvaluationResult
+	hook, _ := ctx.Value(persistHookKey{}).(func())
 
 	for _, tr := range traces {
 		results := ScoreTrace(tr, reg)
@@ -52,6 +64,9 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 			}
 			if err := RecordScored(ledgerPath, r.TraceID, r.Name, r.Version); err != nil {
 				return all, stats, fmt.Errorf("record scored: %w", err)
+			}
+			if hook != nil {
+				hook()
 			}
 		}
 	}

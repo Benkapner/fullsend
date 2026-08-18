@@ -113,7 +113,7 @@ func runEvalMeasure(ctx context.Context, printer *ui.Printer, opts evalMeasureOp
 			printer.StepWarn(fmt.Sprintf("%s: skipped %d of %d unreadable telemetry line(s)", p, stats.SkippedLines, stats.NonEmptyLines))
 		}
 		if err != nil {
-			return all, false, err
+			return append(all, results...), false, err
 		}
 		all = append(all, results...)
 	}

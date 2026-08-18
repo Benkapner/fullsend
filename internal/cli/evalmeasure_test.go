@@ -101,6 +101,68 @@ func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry(t *testing.T) {
 	assert.NotContains(t, string(b), "ffffffffffffffffffffffffffffffff")
 }
 
+func writeTwoTraceTelemetry(t *testing.T) string {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	src = bytes.TrimSpace(src)
+	second := bytes.ReplaceAll(src, []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+	p := filepath.Join(t.TempDir(), "run-telemetry.jsonl")
+	require.NoError(t, os.WriteFile(p, append(append(src, '\n'), second...), 0o644))
+	return p
+}
+
+func TestRunEvalMeasure_ErrorIncludesPartialResults(t *testing.T) {
+	out := t.TempDir()
+	telem := writeTwoTraceTelemetry(t)
+	registry := filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml")
+	ctx := evalmeasure.WithPersistHook(context.Background(), func() {
+		meas := filepath.Join(out, evalmeasure.MeasurementsFile)
+		require.NoError(t, os.Remove(meas))
+		require.NoError(t, os.Mkdir(meas, 0o755))
+	})
+	var buf bytes.Buffer
+	results, skipped, err := runEvalMeasure(ctx, ui.New(&buf), evalMeasureOpts{
+		telemetryPath: telem,
+		registryPath:  registry,
+		outDir:        out,
+	})
+	require.Error(t, err)
+	assert.False(t, skipped)
+	require.GreaterOrEqual(t, len(results), 1)
+	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", results[0].TraceID)
+
+	printMeasurementResults(ui.New(&buf), results, false)
+	assert.Contains(t, buf.String(), "trace_fitness")
+	assert.NotContains(t, buf.String(), "Wrote")
+}
+
+func TestEvalMeasureCmd_ErrorPrintsPartialFromFailingFile(t *testing.T) {
+	out := t.TempDir()
+	telem := writeTwoTraceTelemetry(t)
+	ctx := evalmeasure.WithPersistHook(context.Background(), func() {
+		meas := filepath.Join(out, evalmeasure.MeasurementsFile)
+		require.NoError(t, os.Remove(meas))
+		require.NoError(t, os.Mkdir(meas, 0o755))
+	})
+
+	cmd := newRootCmd()
+	cmd.SetContext(ctx)
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"eval-measure",
+		"--telemetry", telem,
+		"--registry", filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml"),
+		"--out-dir", out,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "trace_fitness")
+	assert.NotContains(t, buf.String(), "Wrote")
+}
+
 func TestEvalMeasureCmd_ErrorDoesNotPrintWrote(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "not-a-dir")
 	require.NoError(t, os.WriteFile(out, []byte("x"), 0o644))

@@ -95,6 +95,39 @@ func TestMeasureAndExport_CancelledContext(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWithPersistHook_NilContext(t *testing.T) {
+	ctx := WithPersistHook(nil, func() {})
+	require.NotNil(t, ctx)
+	_, ok := ctx.Value(persistHookKey{}).(func())
+	assert.True(t, ok)
+}
+
+func writeTwoTraceTelemetry(t *testing.T, completePath string) string {
+	t.Helper()
+	src, err := os.ReadFile(completePath)
+	require.NoError(t, err)
+	src = bytes.TrimSpace(src)
+	second := bytes.ReplaceAll(src, []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+	p := filepath.Join(t.TempDir(), "run-telemetry.jsonl")
+	require.NoError(t, os.WriteFile(p, append(append(src, '\n'), second...), 0o644))
+	return p
+}
+
+func TestMeasureAndExport_KeepsFirstWhenSecondPersistFails(t *testing.T) {
+	out := t.TempDir()
+	telem := writeTwoTraceTelemetry(t, filepath.Join("testdata", "complete.jsonl"))
+	ctx := WithPersistHook(context.Background(), func() {
+		meas := filepath.Join(out, MeasurementsFile)
+		require.NoError(t, os.Remove(meas))
+		require.NoError(t, os.Mkdir(meas, 0o755))
+	})
+	results, _, err := MeasureAndExport(ctx, telem, filepath.Join("testdata", "sample-registry.yaml"), out)
+	require.Error(t, err)
+	require.GreaterOrEqual(t, len(results), 1)
+	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", results[0].TraceID)
+	assert.Contains(t, err.Error(), "append measurements")
+}
+
 func TestMeasureFile_PrescriptSkippedRecordsSkip(t *testing.T) {
 	out := t.TempDir()
 	results, err := MeasureFile(
