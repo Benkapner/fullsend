@@ -200,6 +200,11 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 		})
 	}
 
+	// Read the existing manifest's fullsend_ref (if any) so the
+	// scaffold generation can use it as an intermediate fallback
+	// between per-repo discovery and the CLI binary version.
+	manifestRef := loadExistingManifestRef(cfg.ManifestPath, ForgeGitHub)
+
 	initCfg := manifestConfig{
 		Forge:      ForgeGitHub,
 		CLIVersion: cfg.CLIVersion,
@@ -247,7 +252,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 				}
 				defer func() { <-sem }()
 
-				rr := migrateRepo(ctx, cfg, dr, fc, provisioner, orgCfg, commitScaffold, progress)
+				rr := migrateRepo(ctx, cfg, dr, fc, provisioner, orgCfg, manifestRef, commitScaffold, progress)
 
 				mu.Lock()
 				defer mu.Unlock()
@@ -317,7 +322,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 // concurrent phase to avoid read-modify-write races.
 func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	fc ForgeConfig, provisioner InferenceProvisioner,
-	orgCfg config.OrgConfigReader,
+	orgCfg config.OrgConfigReader, manifestRef string,
 	commitScaffold ScaffoldCommitFunc, progress ProgressFunc) MigrateRepoResult {
 
 	fullName := dr.Owner + "/" + dr.Repo
@@ -352,7 +357,11 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	// Step B: Install per-repo.
 	progress(fullName, "install", "installing per-repo")
 
+	// Resolve ref: per-repo discovery → existing manifest → CLI binary version.
 	ref := dr.FullsendRef
+	if ref == "" && manifestRef != "" {
+		ref = manifestRef
+	}
 	if ref == "" && cfg.UpstreamRef != "" {
 		ref = cfg.UpstreamRef
 	}
@@ -468,6 +477,31 @@ func mergeWithExistingManifest(path string, newManifest *Manifest) *Manifest {
 	}
 
 	return &existing
+}
+
+// loadExistingManifestRef reads the existing manifest file at path and
+// returns the fullsend_ref value for the given forge. Returns "" if the
+// file does not exist, cannot be parsed, or has no fullsend_ref set.
+func loadExistingManifestRef(path, forgeName string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var m Manifest
+	if err := parseManifestBytes(data, &m); err != nil {
+		return ""
+	}
+	switch forgeName {
+	case ForgeGitHub:
+		return m.Forge.GitHub.FullsendRef
+	case ForgeGitLab:
+		return m.Forge.GitLab.FullsendRef
+	default:
+		return ""
+	}
 }
 
 // warnNonPortableFields emits progress warnings for org config fields
