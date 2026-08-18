@@ -156,7 +156,7 @@ Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_re
 
 ## Configuration with `base:` Composition
 
-Fullsend uses `base:` harness composition ([ADR 0045](../../ADRs/0045-forge-portable-harness-schema.md)) as the primary mechanism for customizing agents. Register agents in `config.yaml` with a `base:` URL pointing to the upstream harness, and override only the fields that differ.
+Fullsend uses `base:` harness composition as the primary mechanism for customizing agents. Register agents in `config.yaml` with a `base:` URL pointing to the upstream harness, and override only the fields that differ.
 
 See [Bring Your Own Agent](bring-your-own-agent.md) for the full composition model and config-driven registration.
 
