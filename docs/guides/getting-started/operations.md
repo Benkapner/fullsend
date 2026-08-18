@@ -108,7 +108,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, sync variables, upgrade refs |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
-| Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a forge-level default in the manifest |
+| Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in the manifest |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |

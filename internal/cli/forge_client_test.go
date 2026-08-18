@@ -104,7 +104,7 @@ func TestNewForgeClient_Unsupported(t *testing.T) {
 
 func TestNewForgeClientFactory_GitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("", repos.ForgeSection{})
+	factory := newForgeClientFactory("", nil)
 	cfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
@@ -112,14 +112,14 @@ func TestNewForgeClientFactory_GitHub(t *testing.T) {
 
 func TestNewForgeClientFactory_EmptyForgeDefaultsToGitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("", repos.ForgeSection{})
+	factory := newForgeClientFactory("", nil)
 	cfg, err := factory.ConfigFor("")
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
 }
 
 func TestNewForgeClientFactory_GitLab(t *testing.T) {
-	factory := newForgeClientFactory("glpat-direct", repos.ForgeSection{})
+	factory := newForgeClientFactory("glpat-direct", nil)
 	cfg, err := factory.ConfigFor(repos.ForgeGitLab)
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
@@ -127,11 +127,12 @@ func TestNewForgeClientFactory_GitLab(t *testing.T) {
 
 func TestNewForgeClientFactory_WithManifestURLs(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	forgeSection := repos.ForgeSection{
-		GitHub: repos.GitHubForgeInfra{URL: "https://github.com"},
-		GitLab: repos.GitLabForgeInfra{URL: "https://gitlab.self-hosted.example.com"},
+	m := &repos.Manifest{
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{URL: "https://github.com"},
+		GitLab:  &repos.PlatformConfig{URL: "https://gitlab.self-hosted.example.com"},
 	}
-	factory := newForgeClientFactory("glpat-test", forgeSection)
+	factory := newForgeClientFactory("glpat-test", m)
 
 	ghCfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
@@ -167,7 +168,7 @@ func TestGetGitLabToken_Empty(t *testing.T) {
 
 func TestNewForgeClientFactory_Caching(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("", repos.ForgeSection{})
+	factory := newForgeClientFactory("", nil)
 
 	cfg1, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
@@ -180,7 +181,7 @@ func TestNewForgeClientFactory_Caching(t *testing.T) {
 
 func TestNewForgeClientFactory_MixedForge(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("glpat-test-token", repos.ForgeSection{})
+	factory := newForgeClientFactory("glpat-test-token", nil)
 
 	ghCfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)

@@ -437,9 +437,10 @@ repos:
 	require.NoError(t, err)
 	require.NotNil(t, result.Manifest)
 	assert.Equal(t, 1, result.Manifest.Version)
-	assert.Equal(t, "https://mint.example.com", result.Manifest.Forge.GitHub.MintURL)
-	require.Len(t, result.Manifest.Repos, 1)
-	assert.Equal(t, "acme/api", result.Manifest.Repos[0].Repo)
+	require.NotNil(t, result.Manifest.GitHub)
+	assert.Equal(t, "https://mint.example.com", result.Manifest.GitHub.MintURL)
+	require.Len(t, result.Manifest.GitHub.Repos, 1)
+	assert.Equal(t, "acme/api", result.Manifest.GitHub.Repos[0].Name)
 }
 
 // --- filterEnrolledRepos tests ---
@@ -1101,8 +1102,9 @@ repos:
 
 	require.NoError(t, err)
 	require.NotNil(t, result1.Manifest)
-	require.Len(t, result1.Manifest.Repos, 1)
-	assert.Equal(t, "acme/experiments", result1.Manifest.Repos[0].Repo)
+	require.NotNil(t, result1.Manifest.GitHub)
+	require.Len(t, result1.Manifest.GitHub.Repos, 1)
+	assert.Equal(t, "acme/experiments", result1.Manifest.GitHub.Repos[0].Name)
 
 	// Write first manifest to disk (simulates CLI write).
 	data, err := MarshalWithHeader(result1.Manifest)
@@ -1120,12 +1122,13 @@ repos:
 
 	require.NoError(t, err)
 	require.NotNil(t, result2.Manifest)
-	require.Len(t, result2.Manifest.Repos, 2,
+	require.NotNil(t, result2.Manifest.GitHub)
+	require.Len(t, result2.Manifest.GitHub.Repos, 2,
 		"manifest should contain both experiments and metrics")
 
 	repoNames := make(map[string]bool)
-	for _, r := range result2.Manifest.Repos {
-		repoNames[r.Repo] = true
+	for _, r := range result2.Manifest.GitHub.Repos {
+		repoNames[r.Name] = true
 	}
 	assert.True(t, repoNames["acme/experiments"],
 		"experiments from first run should be preserved")
@@ -1191,15 +1194,16 @@ repos:
 
 	require.NoError(t, err)
 	require.NotNil(t, result2.Manifest)
-	assert.Len(t, result2.Manifest.Repos, 1,
+	require.NotNil(t, result2.Manifest.GitHub)
+	assert.Len(t, result2.Manifest.GitHub.Repos, 1,
 		"re-running migrate for the same repo should not create duplicates")
-	assert.Equal(t, "acme/api", result2.Manifest.Repos[0].Repo)
+	assert.Equal(t, "acme/api", result2.Manifest.GitHub.Repos[0].Name)
 }
 
 func TestMergeWithExistingManifest_NoExistingFile(t *testing.T) {
 	newManifest := &Manifest{
 		Version: 1,
-		Repos:   []RepoEntry{{Repo: "acme/api"}},
+		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/api"}}},
 	}
 
 	result := mergeWithExistingManifest(
@@ -1213,7 +1217,7 @@ func TestMergeWithExistingManifest_NoExistingFile(t *testing.T) {
 func TestMergeWithExistingManifest_EmptyPath(t *testing.T) {
 	newManifest := &Manifest{
 		Version: 1,
-		Repos:   []RepoEntry{{Repo: "acme/api"}},
+		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/api"}}},
 	}
 
 	result := mergeWithExistingManifest("", newManifest)
@@ -1228,7 +1232,7 @@ func TestMergeWithExistingManifest_MalformedYAML(t *testing.T) {
 
 	newManifest := &Manifest{
 		Version: 1,
-		Repos:   []RepoEntry{{Repo: "acme/api"}},
+		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/api"}}},
 	}
 
 	result := mergeWithExistingManifest(path, newManifest)
@@ -1237,323 +1241,108 @@ func TestMergeWithExistingManifest_MalformedYAML(t *testing.T) {
 }
 
 func TestMergeWithExistingManifest_ForgeFieldCarryOver(t *testing.T) {
-	// Write an existing manifest with empty forge fields.
+	// Write an existing manifest with empty platform fields.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "repos.yaml")
 	existingManifest := &Manifest{
 		Version: 1,
-		Repos:   []RepoEntry{{Repo: "acme/existing"}},
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/existing"}},
+		},
 	}
 	data, err := MarshalWithHeader(existingManifest)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	// New manifest carries forge-level defaults.
+	// New manifest carries platform-level defaults.
 	newManifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{
-			GitHub: GitHubForgeInfra{
-				URL:         "https://github.example.com",
-				MintURL:     "https://mint.example.com",
-				MintMode:    "oidc",
-				FullsendRef: "v2.1.0",
-			},
-			GitLab: GitLabForgeInfra{
-				URL:         "https://gitlab.example.com",
-				RunnerTags:  []string{"docker", "linux"},
-				FullsendRef: "v2.1.0",
-			},
+		GitHub: &PlatformConfig{
+			URL:         "https://github.example.com",
+			MintURL:     "https://mint.example.com",
+			MintMode:    "oidc",
+			FullsendRef: "v2.1.0",
+			Repos:       []RepoEntry{{Name: "acme/newrepo"}},
 		},
-		Repos: []RepoEntry{{Repo: "acme/newrepo"}},
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			RunnerTags:  []string{"docker", "linux"},
+			FullsendRef: "v2.1.0",
+		},
 	}
 
 	result := mergeWithExistingManifest(path, newManifest)
 
 	// Existing repo preserved, new repo appended.
-	require.Len(t, result.Repos, 2)
-	assert.Equal(t, "acme/existing", result.Repos[0].Repo)
-	assert.Equal(t, "acme/newrepo", result.Repos[1].Repo)
+	allRepos := result.AllRepos()
+	require.Len(t, allRepos, 2)
+	assert.Equal(t, "acme/existing", allRepos[0].Name)
+	assert.Equal(t, "acme/newrepo", allRepos[1].Name)
 
-	// All forge fields carried over from new manifest.
-	assert.Equal(t, "https://github.example.com", result.Forge.GitHub.URL)
-	assert.Equal(t, "https://mint.example.com", result.Forge.GitHub.MintURL)
-	assert.Equal(t, "oidc", result.Forge.GitHub.MintMode)
-	assert.Equal(t, "v2.1.0", result.Forge.GitHub.FullsendRef)
-	assert.Equal(t, "https://gitlab.example.com", result.Forge.GitLab.URL)
-	assert.Equal(t, []string{"docker", "linux"}, result.Forge.GitLab.RunnerTags)
-	assert.Equal(t, "v2.1.0", result.Forge.GitLab.FullsendRef)
-}
-
-// --- Migrate: existing manifest fullsend_ref ---
-
-func TestMigrate_UsesExistingManifestRef(t *testing.T) {
-	fc := forge.NewFakeClient()
-	setOrgConfig(fc, "acme", `
-version: "1"
-dispatch:
-  platform: github-actions
-  mode: oidc-mint
-  mint_url: https://mint.example.com
-repos:
-  newrepo:
-    enabled: true
-`)
-	// newrepo has no existing workflow — dr.FullsendRef will be empty.
-
-	prov := newFakeProvisioner()
-	prov.provisionResults["acme/newrepo"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
-
-	// Write an existing manifest with fullsend_ref: main.
-	manifestDir := t.TempDir()
-	manifestPath := filepath.Join(manifestDir, "repos.yaml")
-	existingManifest := []byte(`version: 1
-forge:
-  github:
-    url: https://github.com
-    mint_url: https://mint.fullsend.sh
-    fullsend_ref: main
-repos:
-  - repo: acme/oldrepo
-`)
-	require.NoError(t, os.WriteFile(manifestPath, existingManifest, 0o644))
-
-	captured := make(map[string][]forge.TreeFile)
-	result, err := Migrate(context.Background(), MigrateConfig{
-		Org:          "acme",
-		Project:      "my-project",
-		ManifestPath: manifestPath,
-		CLIVersion:   "dev",
-	}, newTestClientFactory(fc), prov, capturingScaffoldCommit(&captured), nopProgress)
-
-	require.NoError(t, err)
-	require.Len(t, result.Migrated, 1)
-	assert.Equal(t, "newrepo", result.Migrated[0].Repo)
-
-	// The scaffold should use "main" from the existing manifest,
-	// not "v0" (the default for dev builds).
-	files := captured["acme/newrepo"]
-	require.NotEmpty(t, files, "should have captured scaffold files")
-	var foundRef bool
-	for _, f := range files {
-		content := string(f.Content)
-		if strings.Contains(content, "@main") {
-			foundRef = true
-		}
-		assert.NotContains(t, content, "@v0",
-			"scaffold should use manifest ref (main), not default ref (v0)")
-	}
-	assert.True(t, foundRef, "at least one scaffold file should reference @main")
-}
-
-func TestMigrate_FallsBackToDefaultWhenNoManifest(t *testing.T) {
-	fc := forge.NewFakeClient()
-	setOrgConfig(fc, "acme", `
-version: "1"
-dispatch:
-  platform: github-actions
-  mode: oidc-mint
-  mint_url: https://mint.example.com
-repos:
-  api:
-    enabled: true
-`)
-	// No existing workflow — dr.FullsendRef will be empty.
-
-	prov := newFakeProvisioner()
-	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
-
-	// No existing manifest file — manifestRef will be "".
-	manifestPath := filepath.Join(t.TempDir(), "nonexistent.yaml")
-
-	captured := make(map[string][]forge.TreeFile)
-	result, err := Migrate(context.Background(), MigrateConfig{
-		Org:          "acme",
-		Project:      "my-project",
-		ManifestPath: manifestPath,
-		CLIVersion:   "dev",
-	}, newTestClientFactory(fc), prov, capturingScaffoldCommit(&captured), nopProgress)
-
-	require.NoError(t, err)
-	require.Len(t, result.Migrated, 1)
-
-	// Without a manifest, the scaffold should fall back to DefaultUpstreamRef (v0).
-	files := captured["acme/api"]
-	require.NotEmpty(t, files, "should have captured scaffold files")
-	var foundDefaultRef bool
-	for _, f := range files {
-		content := string(f.Content)
-		if strings.Contains(content, "@v0") {
-			foundDefaultRef = true
-		}
-	}
-	assert.True(t, foundDefaultRef,
-		"scaffold should use default ref (v0) when no manifest and dev build")
-}
-
-func TestMigrate_DiscoveredRefTakesPrecedenceOverManifestRef(t *testing.T) {
-	fc := forge.NewFakeClient()
-	setOrgConfig(fc, "acme", `
-version: "1"
-dispatch:
-  platform: github-actions
-  mode: oidc-mint
-  mint_url: https://mint.example.com
-repos:
-  api:
-    enabled: true
-`)
-	// api has an existing workflow pinned to v2.1.0.
-	setWorkflowFile(fc, "acme", "api",
-		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
-
-	prov := newFakeProvisioner()
-	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
-
-	// Write an existing manifest with fullsend_ref: main.
-	manifestDir := t.TempDir()
-	manifestPath := filepath.Join(manifestDir, "repos.yaml")
-	existingManifest := []byte(`version: 1
-forge:
-  github:
-    fullsend_ref: main
-repos: []
-`)
-	require.NoError(t, os.WriteFile(manifestPath, existingManifest, 0o644))
-
-	captured := make(map[string][]forge.TreeFile)
-	result, err := Migrate(context.Background(), MigrateConfig{
-		Org:          "acme",
-		Project:      "my-project",
-		ManifestPath: manifestPath,
-		CLIVersion:   "dev",
-	}, newTestClientFactory(fc), prov, capturingScaffoldCommit(&captured), nopProgress)
-
-	require.NoError(t, err)
-	require.Len(t, result.Migrated, 1)
-
-	// The discovered ref (v2.1.0) should take precedence over the manifest ref (main).
-	files := captured["acme/api"]
-	require.NotEmpty(t, files, "should have captured scaffold files")
-	var foundDiscoveredRef bool
-	for _, f := range files {
-		content := string(f.Content)
-		if strings.Contains(content, "@v2.1.0") {
-			foundDiscoveredRef = true
-		}
-	}
-	assert.True(t, foundDiscoveredRef,
-		"discovered ref (v2.1.0) should take precedence over manifest ref (main)")
-}
-
-// --- loadExistingManifestRef ---
-
-func TestLoadExistingManifestRef_EmptyPath(t *testing.T) {
-	assert.Equal(t, "", loadExistingManifestRef("", ForgeGitHub))
-}
-
-func TestLoadExistingManifestRef_FileNotFound(t *testing.T) {
-	assert.Equal(t, "", loadExistingManifestRef(filepath.Join(t.TempDir(), "missing.yaml"), ForgeGitHub))
-}
-
-func TestLoadExistingManifestRef_MalformedYAML(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "repos.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("not: [valid: yaml"), 0o644))
-	assert.Equal(t, "", loadExistingManifestRef(path, ForgeGitHub))
-}
-
-func TestLoadExistingManifestRef_ReturnsRef(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "repos.yaml")
-	manifest := []byte(`version: 1
-forge:
-  github:
-    fullsend_ref: main
-repos: []
-`)
-	require.NoError(t, os.WriteFile(path, manifest, 0o644))
-	assert.Equal(t, "main", loadExistingManifestRef(path, ForgeGitHub))
-}
-
-func TestLoadExistingManifestRef_NoRefSet(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "repos.yaml")
-	manifest := []byte(`version: 1
-forge:
-  github:
-    url: https://github.com
-repos: []
-`)
-	require.NoError(t, os.WriteFile(path, manifest, 0o644))
-	assert.Equal(t, "", loadExistingManifestRef(path, ForgeGitHub))
-}
-
-func TestLoadExistingManifestRef_ReturnsGitLabRef(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "repos.yaml")
-	manifest := []byte(`version: 1
-forge:
-  gitlab:
-    fullsend_ref: v2.0.0
-repos: []
-`)
-	require.NoError(t, os.WriteFile(path, manifest, 0o644))
-	assert.Equal(t, "v2.0.0", loadExistingManifestRef(path, ForgeGitLab))
-	assert.Equal(t, "", loadExistingManifestRef(path, ForgeGitHub))
+	// All platform fields carried over from new manifest.
+	require.NotNil(t, result.GitHub)
+	assert.Equal(t, "https://github.example.com", result.GitHub.URL)
+	assert.Equal(t, "https://mint.example.com", result.GitHub.MintURL)
+	assert.Equal(t, "oidc", result.GitHub.MintMode)
+	assert.Equal(t, "v2.1.0", result.GitHub.FullsendRef)
+	require.NotNil(t, result.GitLab)
+	assert.Equal(t, "https://gitlab.example.com", result.GitLab.URL)
+	assert.Equal(t, []string{"docker", "linux"}, result.GitLab.RunnerTags)
+	assert.Equal(t, "v2.1.0", result.GitLab.FullsendRef)
 }
 
 func TestMergeWithExistingManifest_ExistingForgeFieldsPreserved(t *testing.T) {
-	// Write an existing manifest that already has forge fields populated.
+	// Write an existing manifest that already has platform fields populated.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "repos.yaml")
 
 	existing := []byte(`version: 1
-forge:
-  github:
-    url: https://github.existing.com
-    mint_url: https://mint.existing.com
-    mint_mode: hosted
-    fullsend_ref: v1.0.0
-  gitlab:
-    url: https://gitlab.existing.com
-    runner_tags:
-      - self-hosted
-    fullsend_ref: v1.0.0
-repos:
-  - repo: acme/old
+github:
+  url: https://github.existing.com
+  mint_url: https://mint.existing.com
+  mint_mode: hosted
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/old
+gitlab:
+  url: https://gitlab.existing.com
+  runner_tags:
+    - self-hosted
+  fullsend_ref: v1.0.0
+  repos: []
 `)
 	require.NoError(t, os.WriteFile(path, existing, 0o644))
 
-	// New manifest has different forge values — existing should win.
+	// New manifest has different platform values — existing should win.
 	newManifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{
-			GitHub: GitHubForgeInfra{
-				URL:         "https://github.new.com",
-				MintURL:     "https://mint.new.com",
-				MintMode:    "oidc",
-				FullsendRef: "v3.0.0",
-			},
-			GitLab: GitLabForgeInfra{
-				URL:         "https://gitlab.new.com",
-				RunnerTags:  []string{"docker"},
-				FullsendRef: "v3.0.0",
-			},
+		GitHub: &PlatformConfig{
+			URL:         "https://github.new.com",
+			MintURL:     "https://mint.new.com",
+			MintMode:    "oidc",
+			FullsendRef: "v3.0.0",
+			Repos:       []RepoEntry{{Name: "acme/new"}},
 		},
-		Repos: []RepoEntry{{Repo: "acme/new"}},
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.new.com",
+			RunnerTags:  []string{"docker"},
+			FullsendRef: "v3.0.0",
+		},
 	}
 
 	result := mergeWithExistingManifest(path, newManifest)
 
-	// Existing forge values should be preserved (not overwritten).
-	assert.Equal(t, "https://github.existing.com", result.Forge.GitHub.URL)
-	assert.Equal(t, "https://mint.existing.com", result.Forge.GitHub.MintURL)
-	assert.Equal(t, "hosted", result.Forge.GitHub.MintMode)
-	assert.Equal(t, "v1.0.0", result.Forge.GitHub.FullsendRef)
-	assert.Equal(t, "https://gitlab.existing.com", result.Forge.GitLab.URL)
-	assert.Equal(t, []string{"self-hosted"}, result.Forge.GitLab.RunnerTags)
-	assert.Equal(t, "v1.0.0", result.Forge.GitLab.FullsendRef)
+	// Existing platform values should be preserved (not overwritten).
+	require.NotNil(t, result.GitHub)
+	assert.Equal(t, "https://github.existing.com", result.GitHub.URL)
+	assert.Equal(t, "https://mint.existing.com", result.GitHub.MintURL)
+	assert.Equal(t, "hosted", result.GitHub.MintMode)
+	assert.Equal(t, "v1.0.0", result.GitHub.FullsendRef)
+	require.NotNil(t, result.GitLab)
+	assert.Equal(t, "https://gitlab.existing.com", result.GitLab.URL)
+	assert.Equal(t, []string{"self-hosted"}, result.GitLab.RunnerTags)
+	assert.Equal(t, "v1.0.0", result.GitLab.FullsendRef)
 
 	// Both repos present.
-	require.Len(t, result.Repos, 2)
+	require.Len(t, result.AllRepos(), 2)
 }

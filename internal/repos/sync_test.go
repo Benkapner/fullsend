@@ -181,10 +181,10 @@ func TestDiff_APIError_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
+			Repos:   []RepoEntry{{Name: "org/repo"}},
+		},
 	}
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("rate limit exceeded")
@@ -262,13 +262,10 @@ func TestDiff_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:   []RepoEntry{{Name: "acme-corp/*"}},
 		},
-		Repos: []RepoEntry{{Repo: "acme-corp/*"}},
 	}
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
@@ -294,9 +291,9 @@ func TestDiff_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
+		},
 	}
 
 	result, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -313,11 +310,9 @@ func TestDiff_DefaultMintURL_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge:   ForgeSection{GitHub: GitHubForgeInfra{}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "org/repo"}},
 		},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
@@ -339,13 +334,10 @@ func TestDiff_EmptyDesiredRegion_Skips(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: DefaultPublicMintURL,
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:   []RepoEntry{{Name: "org/repo"}},
 		},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
@@ -394,13 +386,10 @@ func TestDiff_SecretCheckError_NoLongerManaged(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:   []RepoEntry{{Name: "org/repo"}},
 		},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
@@ -621,15 +610,10 @@ func TestSync_GlobWithPerEntryOverride(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:   []RepoEntry{{Name: "acme/*"}},
 		},
-		Repos: []RepoEntry{{
-			Repo: "acme/*",
-		}},
 	}
 
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0",
@@ -755,10 +739,10 @@ func TestDiff_GlobExpandError(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "bad-org/*"}},
+			Repos:   []RepoEntry{{Name: "bad-org/*"}},
+		},
 	}
 
 	_, err := Diff(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -771,14 +755,11 @@ func TestDiff_PerRepoOverride(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
-		},
-		Repos: []RepoEntry{
-			{Repo: "org/repo"},
+			Repos: []RepoEntry{
+				{Name: "org/repo"},
+			},
 		},
 	}
 
@@ -822,10 +803,10 @@ func TestDiff_GuardVarFalse_Warning(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
+			Repos:   []RepoEntry{{Name: "org/repo"}},
+		},
 	}
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "false"
@@ -858,13 +839,10 @@ func TestSync_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:   []RepoEntry{{Name: "acme/*"}},
 		},
-		Repos: []RepoEntry{{Repo: "acme/*"}},
 	}
 
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0",
@@ -890,15 +868,12 @@ func TestDiff_MultiOrg(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
-		},
-		Repos: []RepoEntry{
-			{Repo: "org-a/repo1"},
-			{Repo: "org-b/repo2"},
+			Repos: []RepoEntry{
+				{Name: "org-a/repo1"},
+				{Name: "org-b/repo2"},
+			},
 		},
 	}
 

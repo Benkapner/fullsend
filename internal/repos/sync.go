@@ -120,7 +120,7 @@ func Diff(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, m
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
+			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 			fc, fcErr := clients.ConfigFor(cfg.Forge)
 			if fcErr != nil {
 				results[idx] = repoResult{warnings: []string{fmt.Sprintf("%s/%s: forge client error: %v", rr.Owner, rr.Repo, fcErr)}}
@@ -270,7 +270,7 @@ func Sync(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, m
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
+			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 			repoFullName := rr.Owner + "/" + rr.Repo
 
 			fc, fcErr := clients.ConfigFor(cfg.Forge)

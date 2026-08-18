@@ -11,16 +11,13 @@ import (
 func newTestManifest() *Manifest {
 	return &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
-		},
-		Repos: []RepoEntry{
-			{Repo: "acme-corp/api-server"},
-			{Repo: "acme-corp/web-frontend"},
+			Repos: []RepoEntry{
+				{Name: "acme-corp/api-server"},
+				{Name: "acme-corp/web-frontend"},
+			},
 		},
 	}
 }
@@ -299,14 +296,11 @@ func TestStatus_WorkflowMissing_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       []RepoEntry{{Name: "acme-corp/api-server"}},
 		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	// Guard variable not set → not installed, workflow not checked.
@@ -324,14 +318,11 @@ func TestStatus_WorkflowYAMLExtension(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       []RepoEntry{{Name: "acme-corp/api-server"}},
 		},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
 	}
 
 	fc.VariableValues["acme-corp/api-server/FULLSEND_PER_REPO_INSTALL"] = "true"
@@ -396,10 +387,10 @@ func TestStatus_APIError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+			Repos:   []RepoEntry{{Name: "acme-corp/api-server"}},
+		},
 	}
 
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
@@ -431,14 +422,11 @@ func TestStatus_GlobExpansion(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       []RepoEntry{{Name: "acme-corp/*"}},
 		},
-		Repos: []RepoEntry{{Repo: "acme-corp/*"}},
 	}
 
 	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
@@ -464,16 +452,13 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
-		},
-		Repos: []RepoEntry{
-			{Repo: "acme-corp/api-server"},
-			{Repo: "acme-corp/legacy"},
+			Repos: []RepoEntry{
+				{Name: "acme-corp/api-server"},
+				{Name: "acme-corp/legacy"},
+			},
 		},
 	}
 
@@ -496,10 +481,10 @@ func TestStatus_DefaultConcurrency(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
+			Repos:   []RepoEntry{{Name: "org/repo"}},
+		},
 	}
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 0, nil)
@@ -515,9 +500,9 @@ func TestStatus_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
+		},
 	}
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -533,14 +518,11 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
 		},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
@@ -568,14 +550,11 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
 		},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
@@ -657,9 +636,9 @@ func TestExtractWorkflowRef(t *testing.T) {
 
 func TestFilterRepos(t *testing.T) {
 	repos := []ResolvedRepo{
-		{Owner: "acme-corp", Repo: "api-server", Entry: RepoEntry{Repo: "acme-corp/api-server"}},
-		{Owner: "acme-corp", Repo: "web-app", Entry: RepoEntry{Repo: "acme-corp/web-app"}},
-		{Owner: "other-org", Repo: "tool", Entry: RepoEntry{Repo: "other-org/tool"}},
+		{Owner: "acme-corp", Repo: "api-server", Forge: ForgeGitHub, Entry: RepoEntry{Name: "acme-corp/api-server"}},
+		{Owner: "acme-corp", Repo: "web-app", Forge: ForgeGitHub, Entry: RepoEntry{Name: "acme-corp/web-app"}},
+		{Owner: "other-org", Repo: "tool", Forge: ForgeGitHub, Entry: RepoEntry{Name: "other-org/tool"}},
 	}
 
 	t.Run("single filter", func(t *testing.T) {
@@ -808,10 +787,10 @@ func TestStatus_GuardVarFalse(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
+			Repos:   []RepoEntry{{Name: "org/repo"}},
+		},
 	}
 
 	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "false"
@@ -830,16 +809,13 @@ func TestStatus_MultiOrg(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
-		},
-		Repos: []RepoEntry{
-			{Repo: "org-a/repo1"},
-			{Repo: "org-b/repo2"},
+			Repos: []RepoEntry{
+				{Name: "org-a/repo1"},
+				{Name: "org-b/repo2"},
+			},
 		},
 	}
 
@@ -865,10 +841,10 @@ func TestStatus_GlobExpandError(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "bad-org/*"}},
+			Repos:   []RepoEntry{{Name: "bad-org/*"}},
+		},
 	}
 
 	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -881,13 +857,10 @@ func TestStatus_DefaultMintURL_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
 		},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0", DefaultPublicMintURL, "us-central1")
@@ -906,10 +879,10 @@ func TestStatus_EmptyExpectedRef_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{{Repo: "org/repo"}},
+			Repos:   []RepoEntry{{Name: "org/repo"}},
+		},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://mint.example.com", "us-central1")
@@ -934,12 +907,12 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 
 		m := &Manifest{
 			Version: 1,
-			Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			GitHub: &PlatformConfig{
 				MintURL:     "https://mint.example.com",
 				FullsendRef: "v0.35.0",
-			}},
-			Defaults: DefaultsConfig{Forge: "github"},
-			Repos:    []RepoEntry{{Repo: "org/repo"}},
+
+				Repos: []RepoEntry{{Name: "org/repo"}},
+			},
 		}
 
 		populateInstalledRepo(fc, "org", "repo", sha, "https://mint.example.com", "us-central1")
@@ -961,12 +934,12 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 
 		m := &Manifest{
 			Version: 1,
-			Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			GitHub: &PlatformConfig{
 				MintURL:     "https://mint.example.com",
 				FullsendRef: "v0.36.0",
-			}},
-			Defaults: DefaultsConfig{Forge: "github"},
-			Repos:    []RepoEntry{{Repo: "org/repo"}},
+
+				Repos: []RepoEntry{{Name: "org/repo"}},
+			},
 		}
 
 		populateInstalledRepo(fc, "org", "repo", "oldsha000000000000000000000000000000000",
@@ -987,12 +960,12 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 
 		m := &Manifest{
 			Version: 1,
-			Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			GitHub: &PlatformConfig{
 				MintURL:     "https://mint.example.com",
 				FullsendRef: "main",
-			}},
-			Defaults: DefaultsConfig{Forge: "github"},
-			Repos:    []RepoEntry{{Repo: "org/repo"}},
+
+				Repos: []RepoEntry{{Name: "org/repo"}},
+			},
 		}
 
 		populateInstalledRepo(fc, "org", "repo", "stalesha000000000000000000000000000000",
@@ -1018,12 +991,11 @@ func TestStatus_SymbolicRefMatch_NoDrift(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v0",
-		}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    []RepoEntry{{Repo: "org/repo"}},
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
@@ -1048,12 +1020,11 @@ func TestStatus_DifferentSymbolicRefs_Drift(t *testing.T) {
 
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1",
-		}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    []RepoEntry{{Repo: "org/repo"}},
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
 	}
 
 	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
@@ -1080,18 +1051,15 @@ func TestStatus_Concurrency(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
 		},
 	}
 
 	for i := 0; i < 20; i++ {
 		repo := fmt.Sprintf("repo-%d", i)
-		m.Repos = append(m.Repos, RepoEntry{Repo: "org/" + repo})
+		m.GitHub.Repos = append(m.GitHub.Repos, RepoEntry{Name: "org/" + repo})
 		populateInstalledRepo(fc, "org", repo, "v2.3.0", "https://mint.example.com", "us-central1")
 	}
 

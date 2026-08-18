@@ -146,7 +146,7 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			resolvedCfg := cfg.Manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
+			resolvedCfg := cfg.Manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 			fc, err := clients.ConfigFor(resolvedCfg.Forge)
 			if err != nil {
 				results[idx] = UpgradeResult{Owner: rr.Owner, Repo: rr.Repo, Error: err}

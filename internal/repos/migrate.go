@@ -200,11 +200,6 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 		})
 	}
 
-	// Read the existing manifest's fullsend_ref (if any) so the
-	// scaffold generation can use it as an intermediate fallback
-	// between per-repo discovery and the CLI binary version.
-	manifestRef := loadExistingManifestRef(cfg.ManifestPath, ForgeGitHub)
-
 	initCfg := manifestConfig{
 		Forge:      ForgeGitHub,
 		CLIVersion: cfg.CLIVersion,
@@ -252,7 +247,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 				}
 				defer func() { <-sem }()
 
-				rr := migrateRepo(ctx, cfg, dr, fc, provisioner, orgCfg, manifestRef, commitScaffold, progress)
+				rr := migrateRepo(ctx, cfg, dr, fc, provisioner, orgCfg, commitScaffold, progress)
 
 				mu.Lock()
 				defer mu.Unlock()
@@ -322,7 +317,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 // concurrent phase to avoid read-modify-write races.
 func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	fc ForgeConfig, provisioner InferenceProvisioner,
-	orgCfg config.OrgConfigReader, manifestRef string,
+	orgCfg config.OrgConfigReader,
 	commitScaffold ScaffoldCommitFunc, progress ProgressFunc) MigrateRepoResult {
 
 	fullName := dr.Owner + "/" + dr.Repo
@@ -357,11 +352,7 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	// Step B: Install per-repo.
 	progress(fullName, "install", "installing per-repo")
 
-	// Resolve ref: per-repo discovery → existing manifest → CLI binary version.
 	ref := dr.FullsendRef
-	if ref == "" && manifestRef != "" {
-		ref = manifestRef
-	}
 	if ref == "" && cfg.UpstreamRef != "" {
 		ref = cfg.UpstreamRef
 	}
@@ -437,71 +428,63 @@ func mergeWithExistingManifest(path string, newManifest *Manifest) *Manifest {
 	}
 
 	// Build a set of existing repo names for dedup.
-	seen := make(map[string]bool, len(existing.Repos))
-	for _, e := range existing.Repos {
-		seen[strings.ToLower(e.Repo)] = true
+	allExisting := existing.AllRepos()
+	seen := make(map[string]bool, len(allExisting))
+	for _, e := range allExisting {
+		seen[strings.ToLower(e.Name)] = true
 	}
 
-	// Append new repos that are not already present.
-	for _, r := range newManifest.Repos {
-		if seen[strings.ToLower(r.Repo)] {
-			continue
+	// Append new repos that are not already present in the correct
+	// platform section.
+	mergePlatformRepos := func(existingPlatform **PlatformConfig, newPlatform *PlatformConfig) {
+		if newPlatform == nil {
+			return
 		}
-		existing.Repos = append(existing.Repos, r)
-		seen[strings.ToLower(r.Repo)] = true
+		for _, r := range newPlatform.Repos {
+			if seen[strings.ToLower(r.Name)] {
+				continue
+			}
+			if *existingPlatform == nil {
+				*existingPlatform = &PlatformConfig{}
+			}
+			(*existingPlatform).Repos = append((*existingPlatform).Repos, r)
+			seen[strings.ToLower(r.Name)] = true
+		}
 	}
+	mergePlatformRepos(&existing.GitHub, newManifest.GitHub)
+	mergePlatformRepos(&existing.GitLab, newManifest.GitLab)
 
-	// Carry over forge-level defaults from the new manifest when the
+	// Carry over platform-level defaults from the new manifest when the
 	// existing manifest has empty values, so the first migrate run
 	// populates them and subsequent runs do not clear them.
-	if existing.Forge.GitHub.URL == "" && newManifest.Forge.GitHub.URL != "" {
-		existing.Forge.GitHub.URL = newManifest.Forge.GitHub.URL
+	mergePlatformDefaults := func(existingPlatform **PlatformConfig, newPlatform *PlatformConfig) {
+		if newPlatform == nil {
+			return
+		}
+		if *existingPlatform == nil {
+			*existingPlatform = &PlatformConfig{}
+		}
+		ep := *existingPlatform
+		if ep.URL == "" && newPlatform.URL != "" {
+			ep.URL = newPlatform.URL
+		}
+		if ep.MintURL == "" && newPlatform.MintURL != "" {
+			ep.MintURL = newPlatform.MintURL
+		}
+		if ep.MintMode == "" && newPlatform.MintMode != "" {
+			ep.MintMode = newPlatform.MintMode
+		}
+		if ep.FullsendRef == "" && newPlatform.FullsendRef != "" {
+			ep.FullsendRef = newPlatform.FullsendRef
+		}
+		if len(ep.RunnerTags) == 0 && len(newPlatform.RunnerTags) > 0 {
+			ep.RunnerTags = newPlatform.RunnerTags
+		}
 	}
-	if existing.Forge.GitHub.MintURL == "" && newManifest.Forge.GitHub.MintURL != "" {
-		existing.Forge.GitHub.MintURL = newManifest.Forge.GitHub.MintURL
-	}
-	if existing.Forge.GitHub.MintMode == "" && newManifest.Forge.GitHub.MintMode != "" {
-		existing.Forge.GitHub.MintMode = newManifest.Forge.GitHub.MintMode
-	}
-	if existing.Forge.GitHub.FullsendRef == "" && newManifest.Forge.GitHub.FullsendRef != "" {
-		existing.Forge.GitHub.FullsendRef = newManifest.Forge.GitHub.FullsendRef
-	}
-	if existing.Forge.GitLab.URL == "" && newManifest.Forge.GitLab.URL != "" {
-		existing.Forge.GitLab.URL = newManifest.Forge.GitLab.URL
-	}
-	if len(existing.Forge.GitLab.RunnerTags) == 0 && len(newManifest.Forge.GitLab.RunnerTags) > 0 {
-		existing.Forge.GitLab.RunnerTags = newManifest.Forge.GitLab.RunnerTags
-	}
-	if existing.Forge.GitLab.FullsendRef == "" && newManifest.Forge.GitLab.FullsendRef != "" {
-		existing.Forge.GitLab.FullsendRef = newManifest.Forge.GitLab.FullsendRef
-	}
+	mergePlatformDefaults(&existing.GitHub, newManifest.GitHub)
+	mergePlatformDefaults(&existing.GitLab, newManifest.GitLab)
 
 	return &existing
-}
-
-// loadExistingManifestRef reads the existing manifest file at path and
-// returns the fullsend_ref value for the given forge. Returns "" if the
-// file does not exist, cannot be parsed, or has no fullsend_ref set.
-func loadExistingManifestRef(path, forgeName string) string {
-	if path == "" {
-		return ""
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	var m Manifest
-	if err := parseManifestBytes(data, &m); err != nil {
-		return ""
-	}
-	switch forgeName {
-	case ForgeGitHub:
-		return m.Forge.GitHub.FullsendRef
-	case ForgeGitLab:
-		return m.Forge.GitLab.FullsendRef
-	default:
-		return ""
-	}
 }
 
 // warnNonPortableFields emits progress warnings for org config fields

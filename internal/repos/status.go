@@ -137,7 +137,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
+			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 			fc, fcErr := clients.ConfigFor(cfg.Forge)
 			if fcErr != nil {
 				results[idx] = RepoStatus{

@@ -115,7 +115,7 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 	if cfg.testClient != nil {
 		clients = newSingleClientFactory(cfg.testClient)
 	} else {
-		clients = newForgeClientFactory("", repos.ForgeSection{})
+		clients = newForgeClientFactory("", nil)
 	}
 
 	var provisioner repos.InferenceProvisioner
@@ -225,8 +225,8 @@ func newReposSetDefaultCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "set-default <key> <value>",
-		Short: "Set a forge-level default in the manifest",
-		Long: fmt.Sprintf(`Set or remove a forge-level default in repos.yaml.
+		Short: "Set a platform-level default in the manifest",
+		Long: fmt.Sprintf(`Set or remove a platform-level default in repos.yaml.
 
 An empty value removes the key. Creates the manifest with version: 1 if it does not exist.
 
@@ -279,7 +279,7 @@ func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, re
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	clients := newForgeClientFactory(getGitLabToken(cmd), m.Forge)
+	clients := newForgeClientFactory(getGitLabToken(cmd), m)
 
 	result, err := repos.Status(ctx, m, clients, concurrency, repoFilter)
 	if err != nil {
@@ -546,14 +546,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		if err := manifest.Validate(); err != nil {
 			return fmt.Errorf("manifest validation failed: %w", err)
 		}
-		printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
+		printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
 	}
 
 	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
 	} else {
-		clients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
+		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
 	// Phase 0: add repos not yet in the manifest.
@@ -575,36 +575,41 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		if len(notInManifest) > 0 {
 			forgeName := opts.forge
 			if forgeName == "" {
-				forgeName = manifest.Defaults.Forge
+				// Infer forge from platform sections that contain repos,
+				// falling back to section existence for empty manifests
+				// bootstrapped via set-default.
+				ghHasRepos := manifest.GitHub != nil && len(manifest.GitHub.Repos) > 0
+				glHasRepos := manifest.GitLab != nil && len(manifest.GitLab.Repos) > 0
+				if ghHasRepos && !glHasRepos {
+					forgeName = repos.ForgeGitHub
+				} else if glHasRepos && !ghHasRepos {
+					forgeName = repos.ForgeGitLab
+				} else if !ghHasRepos && !glHasRepos {
+					if manifest.GitHub != nil && manifest.GitLab == nil {
+						forgeName = repos.ForgeGitHub
+					} else if manifest.GitLab != nil && manifest.GitHub == nil {
+						forgeName = repos.ForgeGitLab
+					}
+				}
 			}
 			if forgeName == "" {
 				return fmt.Errorf("--forge is required when adding repos not yet in the manifest")
 			}
 
-			if forgeName != repos.ForgeGitHub {
-				for _, pair := range []struct{ flag, val string }{
-					{"inference-region", opts.inferenceRegion},
-					{"fullsend-ref", opts.fullsendRef},
-					{"mint-url", opts.mintURL},
-				} {
-					if pair.val != "" {
-						printer.StepWarn(fmt.Sprintf("--%s is only used with GitHub repos; ignored for %s", pair.flag, forgeName))
-					}
-				}
+			if forgeName != repos.ForgeGitHub && opts.mintURL != "" {
+				printer.StepWarn(fmt.Sprintf("--mint-url is only used with GitHub repos; ignored for %s", forgeName))
 			}
 
 			entries := make([]repos.RepoEntry, len(notInManifest))
 			for i, r := range notInManifest {
-				entry := repos.RepoEntry{Repo: r}
-				if forgeName != manifest.Defaults.Forge {
-					entry.Forge = repos.NullableString{Set: true, Value: forgeName}
+				entry := repos.RepoEntry{Name: r}
+				platform := manifest.PlatformFor(forgeName)
+				if opts.fullsendRef != "" && (platform == nil || opts.fullsendRef != platform.FullsendRef) {
+					entry.FullsendRef = opts.fullsendRef
 				}
 				if forgeName == repos.ForgeGitHub {
-					if opts.fullsendRef != "" && opts.fullsendRef != manifest.Forge.GitHub.FullsendRef {
-						entry.FullsendRef = repos.NullableString{Set: true, Value: opts.fullsendRef}
-					}
-					if opts.mintURL != "" && opts.mintURL != manifest.Forge.GitHub.MintURL {
-						entry.MintURL = repos.NullableString{Set: true, Value: opts.mintURL}
+					if opts.mintURL != "" && (manifest.GitHub == nil || opts.mintURL != manifest.GitHub.MintURL) {
+						entry.MintURL = opts.mintURL
 					}
 				}
 				if len(opts.allowedRemoteResources) > 0 {
@@ -625,7 +630,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				Manifest:     manifest,
 				ManifestPath: opts.manifest,
 				DryRun:       opts.dryRun,
-			}, entries, clients, addProgress)
+			}, forgeName, entries, clients, addProgress)
 			if addErr != nil {
 				return addErr
 			}
@@ -717,7 +722,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return err
 	}
 
-	// Writeback: when forge-level fullsend_ref was empty and repos
+	// Writeback: when platform-level fullsend_ref was empty and repos
 	// were installed, write the binary's version back to repos.yaml
 	// so future installs and status checks have a baseline.
 	// Exception to ADR-0057 manual-maintenance: authorized by #6190.
@@ -727,8 +732,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			writebackRef = upstreamRef
 		}
 		if writebackRef != "" {
-			ghEmpty := manifest.Forge.GitHub.FullsendRef == ""
-			glEmpty := manifest.Forge.GitLab.FullsendRef == ""
+			ghEmpty := manifest.GitHub == nil || manifest.GitHub.FullsendRef == ""
+			glEmpty := manifest.GitLab == nil || manifest.GitLab.FullsendRef == ""
 			if ghEmpty || glEmpty {
 				var hasGH, hasGL bool
 				for _, r := range result.Installed {
@@ -743,16 +748,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					}
 				}
 				if hasGH && ghEmpty {
-					if wbErr := repos.SetDefault(opts.manifest, "forge.github.fullsend_ref", writebackRef); wbErr == nil {
-						manifest.Forge.GitHub.FullsendRef = writebackRef
+					if wbErr := repos.SetDefault(opts.manifest, "github.fullsend_ref", writebackRef); wbErr == nil {
+						manifest.EnsurePlatform(repos.ForgeGitHub).FullsendRef = writebackRef
 						printer.StepDone(fmt.Sprintf("Wrote fullsend_ref=%s to manifest (GitHub)", writebackRef))
 					} else {
 						printer.StepWarn(fmt.Sprintf("failed to write fullsend_ref to manifest (GitHub): %v", wbErr))
 					}
 				}
 				if hasGL && glEmpty {
-					if wbErr := repos.SetDefault(opts.manifest, "forge.gitlab.fullsend_ref", writebackRef); wbErr == nil {
-						manifest.Forge.GitLab.FullsendRef = writebackRef
+					if wbErr := repos.SetDefault(opts.manifest, "gitlab.fullsend_ref", writebackRef); wbErr == nil {
+						manifest.EnsurePlatform(repos.ForgeGitLab).FullsendRef = writebackRef
 						printer.StepDone(fmt.Sprintf("Wrote fullsend_ref=%s to manifest (GitLab)", writebackRef))
 					} else {
 						printer.StepWarn(fmt.Sprintf("failed to write fullsend_ref to manifest (GitLab): %v", wbErr))
@@ -1022,7 +1027,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if err := manifest.Validate(); err != nil {
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
 
 	matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
 	if matchErr != nil {
@@ -1062,7 +1067,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
 	} else {
-		clients = newForgeClientFactory(opts.gitlabToken, manifest.Forge)
+		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
 	progressFn := func(repo, phase, msg string) {
