@@ -1008,6 +1008,74 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 	})
 }
 
+func TestStatus_SymbolicRefMatch_NoDrift(t *testing.T) {
+	// When both the manifest and the installed workflow use the same
+	// symbolic ref (e.g. "v0"), status should NOT report drift even
+	// when the resolver would convert that ref to a different SHA.
+	fc := forge.NewFakeClient()
+	sha := "abc123def456789000000000000000000000000"
+	fc.Refs["fullsend-ai/fullsend/tags/v0"] = sha
+
+	m := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v0",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "org/repo"}},
+	}
+
+	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "fullsend_ref" {
+			t.Errorf("should not report ref drift when symbolic refs match: %+v", d)
+		}
+	}
+}
+
+func TestStatus_DifferentSymbolicRefs_Drift(t *testing.T) {
+	// When the manifest and installed workflow use different symbolic
+	// refs (e.g. "v1" vs "v0"), drift should be reported even when a
+	// resolver is present.
+	fc := forge.NewFakeClient()
+	fc.Refs["fullsend-ai/fullsend/tags/v1"] = "newsha000000000000000000000000000000000"
+
+	m := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v1",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "org/repo"}},
+	}
+
+	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Summary.Drifted != 1 {
+		t.Fatalf("drifted = %d, want 1", result.Summary.Drifted)
+	}
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "fullsend_ref" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected fullsend_ref drift when symbolic refs differ")
+	}
+}
+
 func TestStatus_Concurrency(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
