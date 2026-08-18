@@ -3,6 +3,7 @@ package evalmeasure
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -12,14 +13,20 @@ import (
 // iteration-N/output/ are agent-writable and must not be scored.
 const PlatformTelemetryFile = "run-telemetry.jsonl"
 
+// hostRunDirPattern matches agent-<name>-<pid>-<unix> from fullsend run.
+// name is lowercased when the sandbox is created; charset matches run
+// (ToLower only), so pid/unix must be the trailing numeric pair.
+var hostRunDirPattern = regexp.MustCompile(`^agent-(.+)-([0-9]+)-([0-9]+)$`)
+
 // FindPlatformTelemetry returns run-telemetry.jsonl files that sit at the
 // top of outputDir itself (when outputDir is a runDir) or at the top of
 // a host-created child runDir (when outputDir is the CI output base).
 //
 // Host runDirs are named agent-<name>-<pid>-<unix> (see fullsend run).
-// When agent is non-empty, only children with that prefix are considered.
-// If several match, only the newest platform file is scored — leftover
-// sibling directories from a previous job are ignored.
+// When agent is non-empty, only children matching that exact shape for
+// the lowercased agent name are considered (so agent-code does not match
+// agent-code-review-…). If several match, only the newest platform file
+// is scored — leftover sibling directories from a previous job are ignored.
 // It never walks deeper, so an agent-planted
 // iteration-N/output/run-telemetry.jsonl is ignored.
 func FindPlatformTelemetry(outputDir, agent string) ([]string, error) {
@@ -36,10 +43,7 @@ func FindPlatformTelemetry(outputDir, agent string) ([]string, error) {
 		}
 		return nil, err
 	}
-	prefix := ""
-	if agent != "" {
-		prefix = "agent-" + strings.ToLower(agent) + "-"
-	}
+	wantAgent := strings.ToLower(agent)
 	var bestPath string
 	var bestMod time.Time
 	found := false
@@ -47,7 +51,11 @@ func FindPlatformTelemetry(outputDir, agent string) ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if prefix != "" && !strings.HasPrefix(e.Name(), prefix) {
+		m := hostRunDirPattern.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		if wantAgent != "" && m[1] != wantAgent {
 			continue
 		}
 		p := filepath.Join(outputDir, e.Name(), PlatformTelemetryFile)

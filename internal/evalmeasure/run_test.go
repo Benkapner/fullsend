@@ -123,9 +123,40 @@ func TestMeasureAndExport_KeepsFirstWhenSecondPersistFails(t *testing.T) {
 	})
 	results, _, err := MeasureAndExport(ctx, telem, filepath.Join("testdata", "sample-registry.yaml"), out)
 	require.Error(t, err)
-	require.GreaterOrEqual(t, len(results), 1)
+	require.Len(t, results, 1)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", results[0].TraceID)
 	assert.Contains(t, err.Error(), "append measurements")
+}
+
+func TestMeasureAndExport_ScoresPartialFileDespiteParseError(t *testing.T) {
+	// Oversized line after a good line: ParseTelemetryFile keeps the good
+	// trace and returns sc.Err(); MeasureAndExport still scores it and
+	// treats the partial parse as success (scores are data).
+	good, err := os.ReadFile(filepath.Join("testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	telem := filepath.Join(dir, "run-telemetry.jsonl")
+	f, err := os.Create(telem)
+	require.NoError(t, err)
+	_, err = f.Write(append(bytes.TrimSpace(good), '\n'))
+	require.NoError(t, err)
+	huge := make([]byte, 11*1024*1024)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	_, err = f.Write(huge)
+	require.NoError(t, err)
+	_, err = f.Write([]byte("\n"))
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	out := t.TempDir()
+	results, stats, err := MeasureAndExport(context.Background(), telem, filepath.Join("testdata", "sample-registry.yaml"), out)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, LabelPass, results[0].Label)
+	assert.Greater(t, stats.NonEmptyLines, 0)
+	assert.NotEmpty(t, stats.Incomplete, "oversized-line parse must set Incomplete for CLI warn")
 }
 
 func TestMeasureFile_PrescriptSkippedRecordsSkip(t *testing.T) {

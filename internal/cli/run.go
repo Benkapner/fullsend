@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -897,7 +898,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	workItemID := resolveWorkItemID()
 
 	// 3. Create run directory and initialise tracer.
-	sandboxName := fmt.Sprintf("agent-%s-%d-%d", agentName, os.Getpid(), time.Now().Unix())
+	// Lowercase the agent segment so eval-measure --agent (also lowercased)
+	// matches the host runDir even when the CLI arg was mixed-case.
+	sandboxName := fmt.Sprintf("agent-%s-%d-%d", strings.ToLower(agentName), os.Getpid(), time.Now().Unix())
 	if outputBase == "" {
 		outputBase = filepath.Join(os.TempDir(), "fullsend")
 	}
@@ -2405,6 +2408,14 @@ func resolveWorkItemID() string {
 	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
 		return prNum
 	}
+	// GitHub retro: reusable-retro.yml sets ORIGINATING_URL (PR/issue HTML URL).
+	// GitLab agent jobs export GITLAB_ISSUE_URL (issue or MR) when IID is known.
+	if v := strings.TrimSpace(os.Getenv("ORIGINATING_URL")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("GITLAB_ISSUE_URL")); v != "" {
+		return v
+	}
 	return evalmeasure.UnknownSentinel
 }
 
@@ -2647,12 +2658,40 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	defer cleanup()
 	preCmd := exec.Command(h.PreScript)
 	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
-	preCmd.Stdout = os.Stdout
+
+	// Tee stdout so we can use it as a fallback skip reason when the
+	// script exits 78 without writing a reason to the output file.
+	var stdoutBuf bytes.Buffer
+	preCmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
 	preCmd.Stderr = os.Stderr
-	if err := preCmd.Run(); err != nil {
-		printer.StepFail("Pre-script failed")
-		return prescript.Result{}, fmt.Errorf("running pre-script: %w", err)
+
+	runErr := preCmd.Run()
+	if runErr != nil {
+		// Check for exit code 78 (neutral/skip).
+		var exitErr *exec.ExitError
+		if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != prescript.ExitCodeNeutral {
+			printer.StepFail("Pre-script failed")
+			return prescript.Result{}, fmt.Errorf("running pre-script: %w", runErr)
+		}
+
+		// Exit 78: parse the output file best-effort for reason and other
+		// outputs. If parsing fails the exit code is still authoritative.
+		result, parseErr := prescript.ParseFile(outPath)
+		if parseErr != nil {
+			result = prescript.Result{Outputs: map[string]string{}}
+		}
+		result.Skipped = true
+		result.Outputs["skipped"] = "true"
+		if result.Reason == "" {
+			result.Reason = lastNonEmptyLine(stdoutBuf.String())
+		}
+		if result.Reason != "" {
+			result.Outputs["reason"] = result.Reason
+		}
+		printer.StepDone(fmt.Sprintf("Pre-script exited 78 (neutral skip) (%.1fs)", time.Since(preStart).Seconds()))
+		return result, nil
 	}
+
 	result, err := prescript.ParseFile(outPath)
 	if err != nil {
 		printer.StepFail("Pre-script output invalid")
@@ -2660,6 +2699,36 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	}
 	printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
 	return result, nil
+}
+
+// lastNonEmptyLine returns the last non-blank line from s, trimmed and
+// sanitized. Scripts that exit 78 often print a human-readable reason to
+// stdout without writing the output file; this captures that text for
+// status reporting.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			l = stripControlChars(l)
+			if len(l) > 1024 {
+				l = l[:1024]
+				for len(l) > 0 && !utf8.Valid([]byte(l)) {
+					l = l[:len(l)-1]
+				}
+			}
+			return l
+		}
+	}
+	return ""
+}
+
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // childScriptEnv builds the environment for a host-side child script (pre- or

@@ -6,14 +6,17 @@ import (
 	"strconv"
 )
 
-// Attribute names used by EM-001. gen_ai.* keys follow experimental
-// OpenTelemetry GenAI semantic conventions; an upstream rename is an
-// em-001 version bump, not a silent fleet fail.
+// Attribute names used by EM-001. Most gen_ai.* keys follow OpenTelemetry
+// GenAI semantic conventions. gen_ai.system was renamed to
+// gen_ai.provider.name in semconv v1.37.0; modelOK accepts either so
+// em-001@1 stays green across the emitter migration. Other upstream
+// renames remain an em-001 version bump.
 const (
 	AttrFullsendAgent          = "fullsend.agent"
 	AttrFullsendWorkItemID     = "fullsend.work_item_id"
 	AttrGenAIAgentName         = "gen_ai.agent.name"
-	AttrGenAISystem            = "gen_ai.system"
+	AttrGenAISystem            = "gen_ai.system" // deprecated; prefer AttrGenAIProviderName
+	AttrGenAIProviderName      = "gen_ai.provider.name"
 	AttrGenAIRequestModel      = "gen_ai.request.model"
 	AttrGenAIUsageInputTokens  = "gen_ai.usage.input_tokens"
 	AttrGenAIUsageOutputTokens = "gen_ai.usage.output_tokens"

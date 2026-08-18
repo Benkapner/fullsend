@@ -38,9 +38,14 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 	if err != nil {
 		return nil, stats, fmt.Errorf("load registry: %w", err)
 	}
-	traces, stats, err := ParseTelemetryFile(telemetryPath)
-	if err != nil {
-		return nil, stats, fmt.Errorf("parse telemetry: %w", err)
+	traces, stats, parseErr := ParseTelemetryFile(telemetryPath)
+	if parseErr != nil && len(traces) == 0 {
+		return nil, stats, fmt.Errorf("parse telemetry: %w", parseErr)
+	}
+	if parseErr != nil {
+		// Oversized/corrupt tail after good lines: score what we have and
+		// surface the damage via stats (CLI warns; still exit 0).
+		stats.Incomplete = parseErr.Error()
 	}
 
 	ledgerPath := filepath.Join(outDir, LedgerFile)
@@ -58,10 +63,12 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 			if done {
 				continue
 			}
-			all = append(all, r)
 			if err := AppendMeasurements(measPath, []EvaluationResult{r}); err != nil {
 				return all, stats, fmt.Errorf("append measurements: %w", err)
 			}
+			// Only count rows that landed in eval-measurements.jsonl so
+			// CLI stdout matches disk on a later ledger/write error.
+			all = append(all, r)
 			if err := RecordScored(ledgerPath, r.TraceID, r.Name, r.Version); err != nil {
 				return all, stats, fmt.Errorf("record scored: %w", err)
 			}
@@ -70,6 +77,7 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 			}
 		}
 	}
-
+	// Partial parse with traces already scored is success: scores are data.
+	// stats.Incomplete (if set) lets the CLI warn without failing the job.
 	return all, stats, nil
 }

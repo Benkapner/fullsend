@@ -40,8 +40,8 @@ fullsend run
        (any compatible backend — ADR 0050)
 
 fullsend eval-measure   (same GHA job, fail-open, after run)
-  └─ always writes  output/<runDir>/eval-measurements.jsonl
-       (+ eval-measure-ledger.txt for idempotency)
+  └─ writes  output/<runDir>/eval-measurements.jsonl when at least one
+       new score is produced (+ eval-measure-ledger.txt for idempotency)
 ```
 
 > **Planned:** portable remote score export via the same `OTEL_EXPORTER_OTLP_*`
@@ -148,10 +148,12 @@ success/failure signal for outcome scorers.
 
 Pre-script **skipped** runs set `fullsend.prescript.skipped=true` on the root
 span and never create a sandbox. EM-001 records `label: skip` for those traces
-instead of failing the span-tree / model / usage checks. An unknown `scorer:`
-string (for example a newer `agents@v0` manifest this binary does not implement
-yet) also writes `label: skip`, not `fail`. Trend pass-rate as
-`pass / (pass + fail)` and drop `skip`.
+instead of failing the span-tree / model / usage checks. Runs with no `agent`
+span (never reached an iteration — e.g. sandbox/provider failure) are also
+`label: skip`, so pass/(pass+fail) measures the telemetry contract rather than
+runner health. An unknown `scorer:` string (for example a newer `agents@v0`
+manifest this binary does not implement yet) also writes `label: skip`, not
+`fail`. Trend pass-rate as `pass / (pass + fail)` and drop `skip`.
 
 ## Adjacent telemetry work
 
@@ -171,22 +173,27 @@ GitHub Actions job
 └── upload-artifact         # includes both JSONL files under output/
 
 GitLab CI agent job
-├── fullsend run            # --output-dir /tmp/fullsend-output
+├── fullsend run            # --output-dir $CI_PROJECT_DIR/output
 ├── fullsend eval-measure   # always (even if run failed); || true
-└── (no artifacts: by default — JSONL stays on the runner filesystem)
+└── artifacts: output/      # when: always (parity with GHA upload of output/)
 ```
+
+Add `output/` to the consuming repo's `.gitignore` so local GitLab-checkout
+runs do not stage telemetry accidentally.
 
 ## Manifest resolution in CI
 
 `fullsend eval-measure` resolves the measurement manifest for the agent:
 
 1. `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present, else
-2. SHA-pinned `eval/measurements/${AGENT}.yaml` from `fullsend-ai/agents`
+2. SHA-pinned `eval/measurements/${AGENT}.yaml` from public `fullsend-ai/agents`
    (same `v0` → commit SHA, allowlist, hash, and fetch audit as harness
    fallback — not a floating `raw.githubusercontent.com/.../v0/...` curl).
    GitHub Actions injects `GH_TOKEN` for that `GetRef`. GitLab CI has no
-   GitHub token by default, so step 2 skips unless an operator exports
-   `GH_TOKEN` / `GITHUB_TOKEN`; a local FULLSEND_DIR override still works.
+   GitHub token by default; because `agents` is public, `GetRef` still runs
+   unauthenticated (~60 req/hr per IP). On busy shared runners, export
+   `GH_TOKEN` / `GITHUB_TOKEN` to avoid rate-limit skips. A local
+   FULLSEND_DIR override skips the remote fetch entirely.
 
 Step 2 is how stock-agent defaults reach every install. Step 1 is override /
 BYOA only.
@@ -210,12 +217,17 @@ fullsend eval-measure \
 
 - `--agent` + `--output-dir` is the managed-job form. `--registry` /
   `--telemetry` remain for pointing at explicit files.
+- `--offline` rejects the remote `agents@v0` fetch (local FULLSEND_DIR
+  manifest only), matching `fullsend run --offline`.
 - Exit `0` when a score is `fail` — scores are data.
 - Exit `0` when telemetry or the manifest is missing (skip).
 
 ## Implementation note
 
-Today the measure CLI always writes local `eval-measurements.jsonl`.
+Today the measure CLI writes local `eval-measurements.jsonl` whenever at
+least one new measurement row is appended (including `label: skip`). No
+file is written when telemetry/manifest is missing, no traces match, or
+every candidate row is already in the ledger.
 
 > **Planned:** portable OTLP score export (same `OTEL_*` as traces) is the
 > ADR 0087 remote contract and is not wired yet. Until it lands, consume the

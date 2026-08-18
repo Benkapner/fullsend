@@ -51,6 +51,27 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 		}
 	}
 	agents := tr.SpansByName("agent")
+	// No agent span: run never reached an iteration (sandbox/provider/image
+	// failure). Exclude from pass/(pass+fail) so EM-001 trends measure the
+	// telemetry contract, not runner health.
+	if len(agents) == 0 {
+		spanID := ""
+		workItem := ""
+		if hasRun {
+			spanID = run.SpanID
+			workItem, _ = run.AttrString(AttrFullsendWorkItemID)
+		}
+		return EvaluationResult{
+			Name:        evalName,
+			Label:       LabelSkip,
+			Explanation: "no agent span; run never reached an iteration; excluded from trace_fitness",
+			TraceID:     tr.TraceID,
+			SpanID:      spanID,
+			WorkItemID:  workItem,
+			Agent:       tr.AgentName(),
+			Version:     version,
+		}
+	}
 	_, hasSandbox := tr.SpanByName("sandbox_create")
 	costOK, costMissing := costToolsTurnsDetail(run, agents)
 
@@ -59,7 +80,8 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 		pass bool
 	}
 	checks := []check{
-		{"span_tree", hasRun && hasSandbox && len(agents) >= 1},
+		// len(agents) >= 1 is guaranteed by the early-return guard above.
+		{"span_tree", hasRun && hasSandbox},
 		{"identity", identityOK(run, agents)},
 		// UnknownSentinel is the CLI fallback when no issue- or PR-shaped env is set.
 		// Review jobs that have PR_NUMBER / GITHUB_PR_URL should not hit this
@@ -158,7 +180,7 @@ func modelOK(run Span, agents []Span) bool {
 	}
 	hasSystem := false
 	for _, a := range agents {
-		if attrNonEmpty(a, AttrGenAISystem) {
+		if attrNonEmpty(a, AttrGenAIProviderName) || attrNonEmpty(a, AttrGenAISystem) {
 			hasSystem = true
 			break
 		}

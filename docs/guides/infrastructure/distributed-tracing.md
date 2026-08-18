@@ -108,7 +108,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 |-----------|---------|------------|
 | `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`) |
 | `gen_ai.agent.name` | `triage` | `run`, `agent` |
-| `gen_ai.system` | `anthropic` | `agent` (the model vendor, from the runtime) |
+| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` | `agent` (model vendor; `system` deprecated in OTel GenAI semconv v1.37 — EM-001 accepts either) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `run` (aggregated), `agent` (resolved model) |
 | `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `run` (aggregated), `agent` |
 
@@ -247,8 +247,9 @@ authentication mechanism.
 ## Eval measurements
 
 After each managed agent run, `fullsend eval-measure` scores
-`run-telemetry.jsonl` in the same job (fail-open). Scores always land in
-`eval-measurements.jsonl` beside telemetry (tool-agnostic artifact). Portable
+`run-telemetry.jsonl` in the same job (fail-open). Scores land in
+`eval-measurements.jsonl` beside telemetry when at least one new score is
+produced (tool-agnostic artifact). Portable
 remote export will reuse the same `OTEL_EXPORTER_OTLP_*` configuration as
 agent traces when implemented. Measurements read the Level 1/2 metadata
 contract of `run-telemetry.jsonl` (not Level 3 content). See

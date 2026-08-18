@@ -40,16 +40,24 @@ type otlpKeyValue struct {
 	Value map[string]any `json:"value"`
 }
 
-// ParseStats counts telemetry JSONL lines so operators can tell "no traces"
-// from "file present but unreadable".
+// ParseStats counts telemetry JSONL lines and unusable spans so operators
+// can tell "no traces" from "file present but partially unreadable".
 type ParseStats struct {
 	NonEmptyLines int
-	SkippedLines  int
+	SkippedLines  int // whole JSONL lines that failed to unmarshal
+	SkippedSpans  int // spans inside a valid line that failed convertSpan
+	// Incomplete is set when the scanner stopped early (e.g. bufio.ErrTooLong)
+	// but some traces were still recovered. Callers should warn; MeasureAndExport
+	// still scores those traces and returns a nil error.
+	Incomplete string
 }
 
 // ParseTelemetryFile reads OTLP JSON TracesData lines from run-telemetry.jsonl
-// and merges spans by trace id. Truncated or corrupt lines are skipped
-// (fail-open); SkippedLines is the count of those lines.
+// and merges spans by trace id. Truncated or corrupt lines, and spans that
+// fail conversion, are skipped (fail-open). SkippedLines counts whole-line
+// failures; SkippedSpans counts per-span convert failures. An oversized-line
+// scanner error returns traces gathered so far alongside the error so the
+// caller can still score them.
 func ParseTelemetryFile(path string) ([]Trace, ParseStats, error) {
 	var stats ParseStats
 	f, err := os.Open(path)
@@ -66,9 +74,7 @@ func ParseTelemetryFile(path string) ([]Trace, ParseStats, error) {
 	buf := make([]byte, 0, 64*1024)
 	sc.Buffer(buf, 10*1024*1024)
 
-	lineNo := 0
 	for sc.Scan() {
-		lineNo++
 		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
@@ -84,7 +90,8 @@ func ParseTelemetryFile(path string) ([]Trace, ParseStats, error) {
 				for _, raw := range ss.Spans {
 					sp, err := convertSpan(raw)
 					if err != nil {
-						return nil, stats, fmt.Errorf("line %d span %s: %w", lineNo, raw.SpanID, err)
+						stats.SkippedSpans++
+						continue
 					}
 					tr, ok := byID[sp.TraceID]
 					if !ok {
@@ -98,7 +105,13 @@ func ParseTelemetryFile(path string) ([]Trace, ParseStats, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, stats, err
+		// Oversized line (bufio.ErrTooLong) or other scanner error: keep
+		// traces already parsed and surface the error to the caller.
+		out := make([]Trace, 0, len(order))
+		for _, id := range order {
+			out = append(out, *byID[id])
+		}
+		return out, stats, err
 	}
 
 	out := make([]Trace, 0, len(order))

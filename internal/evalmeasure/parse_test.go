@@ -48,6 +48,7 @@ func TestParseTelemetryFile_InvalidLineSkipped(t *testing.T) {
 	assert.Empty(t, traces)
 	assert.Equal(t, 1, stats.NonEmptyLines)
 	assert.Equal(t, 1, stats.SkippedLines)
+	assert.Equal(t, 0, stats.SkippedSpans)
 }
 
 func TestParseTelemetryFile_TruncatedLineDoesNotDiscardFile(t *testing.T) {
@@ -74,4 +75,21 @@ func TestParseTelemetryFile_MissingFile(t *testing.T) {
 	t.Parallel()
 	_, _, err := ParseTelemetryFile(filepath.Join(t.TempDir(), "missing.jsonl"))
 	require.Error(t, err)
+}
+
+func TestParseTelemetryFile_BadSpanSkippedKeepsGood(t *testing.T) {
+	t.Parallel()
+	good, err := os.ReadFile(filepath.Join("testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.jsonl")
+	// Valid JSON with a non-numeric startTimeUnixNano on one span.
+	bad := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"cccccccccccccccccccccccccccccccc","spanId":"9999999999999999","name":"run","startTimeUnixNano":"not-a-number","endTimeUnixNano":"2","attributes":[]}]}]}]}` + "\n"
+	require.NoError(t, os.WriteFile(path, append(append([]byte{}, good...), []byte(bad)...), 0o644))
+	traces, stats, err := ParseTelemetryFile(path)
+	require.NoError(t, err)
+	require.Len(t, traces, 1)
+	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", traces[0].TraceID)
+	assert.Equal(t, 0, stats.SkippedLines)
+	assert.GreaterOrEqual(t, stats.SkippedSpans, 1)
 }

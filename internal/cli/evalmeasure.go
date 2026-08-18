@@ -26,6 +26,7 @@ func newEvalMeasureCmd() *cobra.Command {
 		outputDir     string
 		agent         string
 		fullsendDir   string
+		offline       bool
 	)
 
 	cmd := &cobra.Command{
@@ -56,6 +57,7 @@ on hard IO/parse errors. Missing telemetry or manifest is a skip (exit 0).`,
 				outputDir:     outputDir,
 				agent:         agent,
 				fullsendDir:   fullsendDir,
+				offline:       offline,
 			})
 			if err != nil {
 				printMeasurementResults(printer, results, false)
@@ -75,6 +77,7 @@ on hard IO/parse errors. Missing telemetry or manifest is a skip (exit 0).`,
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "CI output base or runDir; scores only top-of-runDir telemetry")
 	cmd.Flags().StringVar(&agent, "agent", "", "agent name for manifest resolution")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend directory (local manifest override + fetch cache)")
+	cmd.Flags().BoolVar(&offline, "offline", false, "reject network fetches; only use a local FULLSEND_DIR measurement manifest")
 	return cmd
 }
 
@@ -85,6 +88,7 @@ type evalMeasureOpts struct {
 	outputDir     string
 	agent         string
 	fullsendDir   string
+	offline       bool
 }
 
 func runEvalMeasure(ctx context.Context, printer *ui.Printer, opts evalMeasureOpts) ([]evalmeasure.EvaluationResult, bool, error) {
@@ -109,8 +113,14 @@ func runEvalMeasure(ctx context.Context, printer *ui.Printer, opts evalMeasureOp
 	var all []evalmeasure.EvaluationResult
 	for _, p := range telemPaths {
 		results, stats, err := evalmeasure.MeasureAndExport(ctx, p, registry, opts.outDir)
+		if stats.Incomplete != "" {
+			printer.StepWarn(fmt.Sprintf("%s: telemetry parse incomplete (%s); scored available traces", p, stats.Incomplete))
+		}
 		if stats.SkippedLines > 0 {
-			printer.StepWarn(fmt.Sprintf("%s: skipped %d of %d unreadable telemetry line(s)", p, stats.SkippedLines, stats.NonEmptyLines))
+			printer.StepWarn(fmt.Sprintf("%s: skipped %d unreadable of %d telemetry line(s)", p, stats.SkippedLines, stats.NonEmptyLines))
+		}
+		if stats.SkippedSpans > 0 {
+			printer.StepWarn(fmt.Sprintf("%s: skipped %d unreadable span(s) inside otherwise-valid telemetry line(s)", p, stats.SkippedSpans))
 		}
 		if err != nil {
 			return append(all, results...), false, err
@@ -159,7 +169,7 @@ func resolveEvalMeasureRegistry(ctx context.Context, printer *ui.Printer, opts e
 			return local, nil
 		}
 	}
-	composeOpts, client := evalMeasureFetchContext(opts.fullsendDir, printer)
+	composeOpts, client := evalMeasureFetchContext(opts.fullsendDir, opts.offline, printer)
 	path, ok := tryAgentsRepoMeasurementManifest(ctx, agent, client, composeOpts, printer)
 	if !ok {
 		return "", nil
@@ -184,7 +194,7 @@ func localMeasurementManifest(fullsendDir, agent string) (string, error) {
 	return resolved, nil
 }
 
-func evalMeasureFetchContext(fullsendDir string, printer *ui.Printer) (harness.ComposeOpts, forge.Client) {
+func evalMeasureFetchContext(fullsendDir string, offline bool, printer *ui.Printer) (harness.ComposeOpts, forge.Client) {
 	workspace := fullsendDir
 	if workspace == "" {
 		workspace = os.TempDir()
@@ -200,12 +210,16 @@ func evalMeasureFetchContext(fullsendDir string, printer *ui.Printer) (harness.C
 		}
 	}
 	token, err := resolveToken()
-	if (err != nil || token == "") && printer != nil {
-		printer.StepWarn("No GH_TOKEN/GITHUB_TOKEN; agents@v0 GetRef is unauthenticated. GitLab jobs skip stock manifests unless an operator wires a GitHub token.")
+	if (err != nil || token == "") && printer != nil && !offline {
+		printer.StepWarn("No GH_TOKEN/GITHUB_TOKEN; agents@v0 GetRef runs unauthenticated (public repo, ~60 req/hr per IP). Prefer a token on shared runners; local FULLSEND_DIR override skips the fetch.")
+	}
+	policy := fetch.DefaultPolicy
+	if offline {
+		policy.Offline = true
 	}
 	return harness.ComposeOpts{
 		WorkspaceRoot: abs,
-		FetchPolicy:   fetch.DefaultPolicy,
+		FetchPolicy:   policy,
 		AuditLogPath:  filepath.Join(abs, ".fullsend-cache", "fetch-audit.jsonl"),
 		OrgAllowlist:  orgAllowlist,
 		GitToken:      token,

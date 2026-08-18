@@ -93,3 +93,33 @@ func TestFindPlatformTelemetry_IgnoresSiblingLeftoverRunDir(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, gotAllNewest, 1)
 }
+
+func TestFindPlatformTelemetry_DoesNotMatchLongerAgentPrefix(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	codeReview := filepath.Join(outputDir, "agent-code-review-1-1")
+	require.NoError(t, os.MkdirAll(codeReview, 0o755))
+	f := filepath.Join(codeReview, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(f, []byte("x\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "code")
+	require.NoError(t, err)
+	assert.Empty(t, got, "agent-code must not match agent-code-review-*")
+
+	gotReview, err := FindPlatformTelemetry(outputDir, "code-review")
+	require.NoError(t, err)
+	require.Equal(t, []string{f}, gotReview)
+}
+
+func TestFindPlatformTelemetry_MatchesUnderscorePrefixedAgent(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	runDir := filepath.Join(outputDir, "agent-_helper-7-9")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+	f := filepath.Join(runDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(f, []byte("x\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "_helper")
+	require.NoError(t, err)
+	require.Equal(t, []string{f}, got)
+}

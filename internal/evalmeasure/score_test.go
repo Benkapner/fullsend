@@ -210,3 +210,51 @@ func TestScoreFitness_EmptyModelStringFails(t *testing.T) {
 	assert.Equal(t, LabelFail, r.Label)
 	assert.Contains(t, r.Explanation, "model=fail")
 }
+
+func TestScoreTrace_AgentNameEqualFold(t *testing.T) {
+	t.Parallel()
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	reg := Registry{Agent: "Triage", Measurements: []MeasurementSpec{{ID: "em-001", Scorer: ScorerFitness, Version: 1}}}
+	results := ScoreTrace(traces[0], reg)
+	require.Len(t, results, 1)
+	assert.Equal(t, LabelPass, results[0].Label)
+}
+
+func TestScoreFitness_NoAgentSpanSkipped(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":        "triage",
+					"fullsend.work_item_id": "acme/demo#1",
+					"exit_code":             int64(1),
+					"gen_ai.operation.name": "invoke_agent",
+				},
+			},
+			{Name: "sandbox_create"},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelSkip, r.Label)
+	assert.Contains(t, r.Explanation, "no agent span")
+}
+
+func TestScoreFitness_ProviderNameAccepted(t *testing.T) {
+	t.Parallel()
+	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	tr := traces[0]
+	for i := range tr.Spans {
+		if tr.Spans[i].Name != "agent" {
+			continue
+		}
+		delete(tr.Spans[i].Attrs, "gen_ai.system")
+		tr.Spans[i].Attrs["gen_ai.provider.name"] = "anthropic"
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelPass, r.Label)
+}

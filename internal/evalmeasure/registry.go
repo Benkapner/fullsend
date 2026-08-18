@@ -71,7 +71,7 @@ func (m MeasurementSpec) evalName() string {
 // manifest can name a scorer this binary does not implement yet).
 func ScoreTrace(tr Trace, reg Registry) []EvaluationResult {
 	name := tr.AgentName()
-	if name != "" && name != UnknownSentinel && name != reg.Agent {
+	if name != "" && name != UnknownSentinel && !strings.EqualFold(name, reg.Agent) {
 		return nil
 	}
 	var out []EvaluationResult

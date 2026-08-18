@@ -157,8 +157,8 @@ span export via the OTel SDK's batch processor. The core decision (three-level
 opt-in, OTel-native, W3C propagation) is unchanged.
 
 **2026-08-10 — Eval measurements ([ADR 0087](0087-eval-measurements-online-trace-scoring.md)):**
-online scoring of wild-run traces always writes `eval-measurements.jsonl`
-beside telemetry (tool-agnostic). Distinct from functional eval fixtures
+online scoring of wild-run traces writes `eval-measurements.jsonl`
+beside telemetry when at least one new score is produced (tool-agnostic). Distinct from functional eval fixtures
 ([ADR 0051](0051-agent-eval-harness-for-test-infrastructure.md)).
 
 > **Planned:** portable remote score export follows the same OTLP

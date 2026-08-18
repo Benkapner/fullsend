@@ -40,14 +40,16 @@ func TestSecurityTraceID_ShellSafe(t *testing.T) {
 
 func TestResolveWorkItemID(t *testing.T) {
 	cases := []struct {
-		name        string
-		issueKey    string
-		repoFull    string
-		issueNumber string
-		issueURL    string
-		prURL       string
-		prNumber    string
-		want        string
+		name           string
+		issueKey       string
+		repoFull       string
+		issueNumber    string
+		issueURL       string
+		prURL          string
+		prNumber       string
+		originatingURL string
+		gitlabIssueURL string
+		want           string
 	}{
 		{
 			name:        "ISSUE_KEY wins over everything",
@@ -105,6 +107,22 @@ func TestResolveWorkItemID(t *testing.T) {
 			name: "unknown when nothing is set",
 			want: evalmeasure.UnknownSentinel,
 		},
+		{
+			name:           "ORIGINATING_URL for retro",
+			originatingURL: "https://github.com/octo/repo/issues/99",
+			want:           "https://github.com/octo/repo/issues/99",
+		},
+		{
+			name:           "GITLAB_ISSUE_URL for GitLab agent jobs",
+			gitlabIssueURL: "https://gitlab.example/group/proj/-/issues/12",
+			want:           "https://gitlab.example/group/proj/-/issues/12",
+		},
+		{
+			name:           "ORIGINATING_URL beats GITLAB_ISSUE_URL when both set",
+			originatingURL: "https://github.com/octo/repo/issues/99",
+			gitlabIssueURL: "https://gitlab.example/group/proj/-/issues/12",
+			want:           "https://github.com/octo/repo/issues/99",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,6 +132,8 @@ func TestResolveWorkItemID(t *testing.T) {
 			t.Setenv("GITHUB_ISSUE_URL", tc.issueURL)
 			t.Setenv("GITHUB_PR_URL", tc.prURL)
 			t.Setenv("PR_NUMBER", tc.prNumber)
+			t.Setenv("ORIGINATING_URL", tc.originatingURL)
+			t.Setenv("GITLAB_ISSUE_URL", tc.gitlabIssueURL)
 			assert.Equal(t, tc.want, resolveWorkItemID())
 		})
 	}

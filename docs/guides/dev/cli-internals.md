@@ -133,6 +133,7 @@ fullsend
 │   ├── --registry <path>                    #   Agents measurement manifest YAML (or --agent)
 │   ├── --agent <name>                       #   Agent name for manifest resolution (managed-job form)
 │   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
+│   ├── --offline                            #   Reject network fetches (local manifest only)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format

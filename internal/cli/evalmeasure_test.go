@@ -41,6 +41,13 @@ func TestEvalMeasureCmd_ScoresFixture(t *testing.T) {
 	assert.Contains(t, buf.String(), "Wrote 1 measurement(s)")
 }
 
+func TestEvalMeasureCmd_HasOfflineFlag(t *testing.T) {
+	cmd := newEvalMeasureCmd()
+	f := cmd.Flags().Lookup("offline")
+	require.NotNil(t, f)
+	assert.Equal(t, "false", f.DefValue)
+}
+
 func TestRootCommand_HasEvalMeasureSubcommand(t *testing.T) {
 	cmd := newRootCmd()
 	found := false
@@ -66,7 +73,7 @@ func TestEvalMeasureCmd_MissingRequiredFlags(t *testing.T) {
 func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry(t *testing.T) {
 	fsDir := t.TempDir()
 	outBase := t.TempDir()
-	runDir := filepath.Join(outBase, "agent-triage-1")
+	runDir := filepath.Join(outBase, "agent-triage-1-1")
 	nested := filepath.Join(runDir, "iteration-1", "output")
 	require.NoError(t, os.MkdirAll(nested, 0o755))
 
@@ -129,7 +136,7 @@ func TestRunEvalMeasure_ErrorIncludesPartialResults(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.False(t, skipped)
-	require.GreaterOrEqual(t, len(results), 1)
+	require.Len(t, results, 1)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", results[0].TraceID)
 
 	printMeasurementResults(ui.New(&buf), results, false)
@@ -215,7 +222,42 @@ func TestEvalMeasureCmd_WarnsOnCorruptTelemetryLine(t *testing.T) {
 		"--out-dir", out,
 	})
 	require.NoError(t, cmd.Execute())
-	assert.Contains(t, buf.String(), "unreadable telemetry line")
+	assert.Contains(t, buf.String(), "skipped 1 unreadable of 2 telemetry line")
+}
+
+func TestEvalMeasureCmd_WarnsOnIncompleteParse(t *testing.T) {
+	out := t.TempDir()
+	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	telem := filepath.Join(out, "run-telemetry.jsonl")
+	f, err := os.Create(telem)
+	require.NoError(t, err)
+	_, err = f.Write(append(bytes.TrimSpace(good), '\n'))
+	require.NoError(t, err)
+	huge := make([]byte, 11*1024*1024)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	_, err = f.Write(huge)
+	require.NoError(t, err)
+	_, err = f.Write([]byte("\n"))
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	cmd := newRootCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"eval-measure",
+		"--telemetry", telem,
+		"--registry", filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml"),
+		"--out-dir", out,
+	})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, buf.String(), "telemetry parse incomplete")
+	assert.Contains(t, buf.String(), "scored available traces")
+	assert.Contains(t, buf.String(), "Wrote")
 }
 
 func TestActionYML_EvalMeasureNoFloatingV0Curl(t *testing.T) {
@@ -246,17 +288,19 @@ func TestPlatformTelemetryFileMatchesRecorder(t *testing.T) {
 
 func TestEvalMeasureFetchContext(t *testing.T) {
 	printer := ui.New(io.Discard)
-	opts, client := evalMeasureFetchContext("", printer)
+	opts, client := evalMeasureFetchContext("", false, printer)
 	require.NotNil(t, client)
 	assert.NotEmpty(t, opts.OrgAllowlist)
 	assert.NotEmpty(t, opts.WorkspaceRoot)
+	assert.False(t, opts.FetchPolicy.Offline)
 
 	dir := t.TempDir()
-	opts2, _ := evalMeasureFetchContext(dir, printer)
+	opts2, _ := evalMeasureFetchContext(dir, true, printer)
 	assert.Contains(t, opts2.AuditLogPath, ".fullsend-cache")
 	abs, err := filepath.Abs(dir)
 	require.NoError(t, err)
 	assert.Equal(t, abs, opts2.WorkspaceRoot)
+	assert.True(t, opts2.FetchPolicy.Offline)
 }
 
 func TestResolveEvalMeasureRegistry_LocalOverride(t *testing.T) {

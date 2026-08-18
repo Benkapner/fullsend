@@ -411,7 +411,8 @@ runs:
 
     # Eval measurements (fail-open): score run-telemetry.jsonl with the agents
     # measurement manifest. Same job as fullsend run; never fails the agent.
-    # Scores always land in eval-measurements.jsonl (tool-agnostic artifact).
+    # Writes eval-measurements.jsonl when at least one new score row is produced
+    # (tool-agnostic artifact); missing telemetry/manifest skips with no file.
     - name: Eval measurements
       if: always() && inputs.agent != '__install_only__'
       continue-on-error: true

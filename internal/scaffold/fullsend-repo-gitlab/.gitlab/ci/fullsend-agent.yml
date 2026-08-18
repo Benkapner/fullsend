@@ -265,12 +265,21 @@ stages:
       # Construct the entity URL for the harness. EVENT_TYPE values from
       # the poller use prefixed forms: issue_note, issue_label (→ issue
       # URL) and mr_note, mr_event (→ merge request URL).
+      # Only export a work-item URL when the IID is real. Defaulting to 0
+      # invents …/issues/0 (or …/merge_requests/0), which passes EM-001's
+      # work_item check and greenwashes missing identity.
       case "${EVENT_TYPE:-}" in
         issue_*)
-          export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/issues/${STATUS_IID:-0}"
+          if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
+            export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/issues/${STATUS_IID}"
+          fi
           ;;
         *)
-          export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+          _fs_mr_iid="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-}}"
+          if [[ -n "${_fs_mr_iid}" && "${_fs_mr_iid}" != "0" ]]; then
+            export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${_fs_mr_iid}"
+          fi
+          unset _fs_mr_iid
           ;;
       esac
 
@@ -278,11 +287,19 @@ stages:
       # the image field, and creates the sandbox container via Podman.
       # Capture the run status so eval-measure still runs after a failed
       # agent (failed runs still write run-telemetry.jsonl).
+      # Eval measurements (fail-open): same CLI as GitHub Actions. Never
+      # fail the agent job. Manifest: local .fullsend override, else
+      # SHA-pinned fetch from public fullsend-ai/agents (GitHub GetRef).
+      # agents is public, so GetRef works without GH_TOKEN, but unauthenticated
+      # calls share GitHub's ~60 req/hr per-IP limit — export GH_TOKEN /
+      # GITHUB_TOKEN on busy shared runners. Local override skips the fetch.
+      # Write under $CI_PROJECT_DIR so GitLab can retain artifacts (not /tmp).
+      mkdir -p "${CI_PROJECT_DIR}/output"
       set +e
       fullsend run "${STAGE}" \
         --fullsend-dir .fullsend \
         --target-repo . \
-        --output-dir /tmp/fullsend-output \
+        --output-dir "${CI_PROJECT_DIR}/output" \
         --forge gitlab \
         --run-url "${CI_PIPELINE_URL}" \
         --status-repo "${CI_PROJECT_PATH}" \
@@ -290,18 +307,18 @@ stages:
       RUN_STATUS=$?
       set -e
 
-      # Eval measurements (fail-open): same CLI as GitHub Actions. Never
-      # fail the agent job. Manifest: local .fullsend override, else
-      # SHA-pinned fetch from public fullsend-ai/agents (GitHub GetRef).
-      # This job has no GH_TOKEN; stock-agent manifests skip unless an
-      # operator exports GH_TOKEN or GITHUB_TOKEN. Local override still works.
       fullsend eval-measure \
         --agent "${STAGE}" \
         --fullsend-dir .fullsend \
-        --output-dir /tmp/fullsend-output \
+        --output-dir "${CI_PROJECT_DIR}/output" \
         || true
 
       exit "${RUN_STATUS}"
+  artifacts:
+    when: always
+    paths:
+      - output/
+    expire_in: 1 week
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:
     - if: $STAGE

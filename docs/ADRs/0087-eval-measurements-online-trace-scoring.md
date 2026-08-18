@@ -78,8 +78,9 @@ on the run (the OTEL trace / `run-telemetry.jsonl`).
 computed from that trace (`eval-measurements.jsonl`). Measurements never
 rewrite primary facts, and they are [fail-open](../glossary.md#fail-open).
 
-Scores always land in a tool-agnostic `eval-measurements.jsonl` (plus a
-small idempotency ledger) next to `run-telemetry.jsonl`. Remote score export
+Scores land in a tool-agnostic `eval-measurements.jsonl` (plus a
+small idempotency ledger) next to `run-telemetry.jsonl` whenever at least
+one new measurement row is produced (including `label: skip`). Remote score export
 will use the same `OTEL_EXPORTER_OTLP_*` configuration as ADR 0050 — no
 vendor-specific score adapters in core. `fullsend` owns the parser, scorers,
 CLI, and GHA step; `fullsend-ai/agents` owns per-agent measurement manifests
@@ -89,8 +90,12 @@ override, opt-out, or custom agents only.
 
 The first scorer is `trace_fitness` (catalog id `em-001`) — span-tree and
 attribute fitness so later scorers can trust the trace. EM-001 reads
-experimental OpenTelemetry GenAI attribute names (`gen_ai.*` constants in
-`internal/evalmeasure`); an upstream rename is an `em-001` version bump.
+OpenTelemetry GenAI attribute names (`gen_ai.*` constants in
+`internal/evalmeasure`). `gen_ai.system` was renamed to `gen_ai.provider.name`
+in semconv v1.37.0; `modelOK` accepts either so `em-001@1` survives the
+emitter migration. Other upstream renames remain an `em-001` version bump.
+Pre-script-skipped runs and runs with no `agent` span (never reached an
+iteration) record `label: skip` and are excluded from pass/(pass+fail).
 
 ### Versioning (per measurement, not platform “v1”)
 
@@ -113,8 +118,10 @@ Entirely new signal → new `em-NNN` (and usually a new `scorer` string).
 - Every measured run produces a reviewable, backend-agnostic score file beside
   telemetry; missing manifests skip cleanly and measure failure never fails
   the agent job. GitHub Actions is the first-ship managed path (uploads
-  `output/`). GitLab CI calls the same fail-open `eval-measure` CLI, writing
-  under `/tmp/fullsend-output` with no `artifacts:` block by default.
+  `output/`). GitLab CI calls the same fail-open `eval-measure` CLI under
+  `$CI_PROJECT_DIR/output` with `artifacts: when: always`. Stock manifests
+  fetch from public `agents@v0` even without `GH_TOKEN` (rate-limited); a
+  token is recommended on shared runners.
 - Core stays tool-agnostic: no product-specific score env vars in managed
   workflows; remote scores follow OTEL when that path lands.
 - Functional scenarios (gate) and eval measurements (trend) stay separate;
@@ -124,5 +131,6 @@ Entirely new signal → new `em-NNN` (and usually a new `scorer` string).
 - Per-measurement versioning (`id@version`) lets pass/fail semantics evolve
   without mixing trend eras.
 - Pre-script skipped runs (`fullsend.prescript.skipped=true` on the root span)
-  are excluded from EM-001: the scorer writes `label: skip` instead of failing
-  a run that never created a sandbox.
+  and runs with no `agent` span (never reached an iteration) are excluded from
+  EM-001: the scorer writes `label: skip` instead of failing a run that never
+  produced a full telemetry contract.
