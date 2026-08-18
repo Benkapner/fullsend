@@ -31,7 +31,7 @@ For roles without a local PEM, the optional fallback proxy forwards the request 
 
 - **Go 1.26+** to build the binary (or use a pre-built release)
 - **A GitHub organization** where you will install your custom GitHub Apps
-- **The hosted mint URL** (optional, for fallback proxy): `https://fullsend-mint-gljhbkcloq-uc.a.run.app`
+- **The hosted mint URL** (optional, for fallback proxy): `https://mint.fullsend.sh`
 - **Your organization enrolled in the hosted mint** (optional, for fallback proxy) — see [Mint service administration](mint-administration.md)
 
 ## Step 1: Create a GitHub App
@@ -113,7 +113,7 @@ The standalone mint is configured entirely through environment variables:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `ALLOWED_WORKFLOW_FILES` | Comma-separated workflow file allowlist; `*` for all | `*` |
-| `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://fullsend-mint-gljhbkcloq-uc.a.run.app` |
+| `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://mint.fullsend.sh` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `PER_REPO_WIF_REPOS` | Comma-separated repos with per-repo WIF treatment. Use `*` for public mint mode (all repos get per-repo treatment). Per-repo callers can only mint to their own repo scope. Callers not in this list fall through to per-org (`ALLOWED_ORGS`) and get org-mode repos shapes. | `myorg/private-repo` |
 | `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Per-org callers are not affected (they hard-wire to `{org}/.fullsend` and upstream). Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
@@ -138,7 +138,7 @@ export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
-export FALLBACK_MINT_URL="https://fullsend-mint-gljhbkcloq-uc.a.run.app"
+export FALLBACK_MINT_URL="https://mint.fullsend.sh"
 export CUSTOM_ROLE_PERMISSIONS='{"scanner":{"contents":"read","security_events":"write","metadata":"read"}}'
 
 ./fullsend-mint
@@ -148,7 +148,7 @@ On startup, the mint logs the configuration:
 
 ```
 2026/06/18 12:00:00 custom role permissions registered: [scanner]
-2026/06/18 12:00:00 fallback mint configured: https://fullsend-mint-gljhbkcloq-uc.a.run.app (local roles: [scanner triage])
+2026/06/18 12:00:00 fallback mint configured: https://mint.fullsend.sh (local roles: [scanner triage])
 2026/06/18 12:00:00 fullsend-mint starting on :8080 (standalone mode)
 ```
 
@@ -227,7 +227,7 @@ Permission names and levels match the [GitHub App permissions API](https://docs.
 
 The following role names are reserved and cannot be used in `CUSTOM_ROLE_PERMISSIONS`:
 
-- `triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `fullsend`, `e2e`
+- `triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `fullsend`, `e2e`, `scribe`
 
 Attempting to define a custom role with a built-in name will cause the mint to fail at startup:
 
@@ -336,7 +336,7 @@ export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
-export FALLBACK_MINT_URL="https://fullsend-mint-gljhbkcloq-uc.a.run.app"
+export FALLBACK_MINT_URL="https://mint.fullsend.sh"
 export CUSTOM_ROLE_PERMISSIONS='{"scanner":{"contents":"read","security_events":"write","metadata":"read"}}'
 
 ./fullsend-mint

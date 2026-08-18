@@ -19,7 +19,7 @@ fullsend across an organization. Individual repo owners should use
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`) must be completed separately before running `repos install`. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`, GitHub only) must be completed separately before running `repos install`. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 ## Getting started
 
@@ -77,6 +77,7 @@ forge:
     fullsend_ref: v2.5.0
   gitlab:
     url: https://gitlab.example.com
+    fullsend_ref: v2.5.0
 defaults:
   forge: github
 repos:
@@ -86,6 +87,12 @@ repos:
     forge: gitlab
 ```
 
+GitHub repos use a token mint for authentication. The
+`forge.github.mint_mode` field controls the default mint URL:
+`public` (default) uses `https://mint.fullsend.sh` when no explicit
+`mint_url` is set; `private` requires an explicit `mint_url`. Both
+`mint_mode` and `mint_url` can be overridden per-repo.
+
 All repos under the same owner must use the same forge. A GitHub org
 and a GitLab group with the same name are different entities, and
 mixing forges under one owner would route API calls incorrectly.
@@ -94,8 +101,6 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 `--gitlab-token` to `fullsend repos` subcommands. The `GITLAB_API_URL`
 environment variable is kept as a fallback for callers without a
 manifest.
-
-See the [CLI reference](../../cli/repos.md) for all flags.
 
 ### Manifest paths and URLs
 
@@ -134,11 +139,8 @@ Install runs in three phases:
    drift (synced automatically) and scaffold ref drift (upgraded
    automatically).
 
-> **Prerequisite:** For GitHub repos and GitLab repos using WIF mode
-> (`--inference-project`), GCP infrastructure (WIF pools/providers,
-> mint enrollment) must be provisioned separately before running
-> install. GitLab repos can be installed without GCP infrastructure
-> when `--inference-project` is omitted (variable mode).
+> **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
+> enrollment) must be provisioned separately before running install.
 > See `fullsend inference provision` and `fullsend mint enroll`.
 
 > **Note:** When your token does not have direct push access to a target
@@ -288,7 +290,8 @@ fullsend repos uninstall acme/old-api --uninstall-only
 
 To upgrade the scaffold workflow ref across all manifest repos:
 
-1. Update `forge.github.fullsend_ref` in `repos.yaml` to the new version.
+1. Update `forge.github.fullsend_ref` (or `forge.gitlab.fullsend_ref` for
+   GitLab repos) in `repos.yaml` to the new version.
 
 2. Run install to converge:
 
@@ -310,14 +313,38 @@ Push the upgrade directly to the default branch instead of creating a PR:
 fullsend repos install -f repos.yaml --direct
 ```
 
-Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are
-blocked unless `--force` is set.
+Repos that are already SHA-pinned (`@<sha> # <ref>`) preserve their
+pinning style during upgrades — the target ref is resolved to a commit
+SHA and written as `@<sha> # <ref>`. Non-SHA-pinned repos keep their
+string ref format (e.g., `@v2.3.0`). Downgrades are blocked unless
+`--force` is set.
 
 ## Troubleshooting
 
+### Unknown field errors in repos.yaml
+
+The manifest parser strictly validates field names in all sections
+(`defaults`, `forge`, `forge.github`, `forge.gitlab`, and top-level).
+Unrecognized fields are rejected with an error naming the offending key:
+
+```
+parsing manifest YAML: line 8: field fullsend_ref not found in type repos.Defaults
+```
+
+Common causes:
+
+- **Typos** — e.g., `mint_ulr` instead of `mint_url`.
+- **Deprecated or unsupported fields** — fields that were never part of the
+  manifest schema (such as the legacy `mint:` key) are rejected.
+- **Wrong nesting level** — e.g., placing `fullsend_ref` under `defaults`
+  instead of under `forge.github` or `forge.gitlab`.
+
+To fix, correct the field name or remove the unrecognized entry and re-run
+the command.
+
 ### Partial secret state
 
-When only one of the two required repo secrets (`FULLSEND_GCP_PROJECT_ID`
+When only one of the two required inference secrets (`FULLSEND_GCP_PROJECT_ID`
 or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo but not both, `repos
 install` reports an error:
 
@@ -345,8 +372,8 @@ fullsend repos migrate <org> --project <gcp-project>
 
 This discovers enrolled repos from the per-org config, provisions WIF
 infrastructure, installs per-repo (scaffold, variables, secrets) with
-config carried over from the org config, registers per-repo WIF in the
-mint, unenrolls migrated repos, and writes `repos.yaml`.
+config carried over from the org config, unenrolls migrated repos,
+and writes `repos.yaml`.
 
 Preview first with `--dry-run`:
 

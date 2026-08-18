@@ -30,19 +30,28 @@ gh release view <tag>
 Check that the title, changelog, and binary assets look correct.
 Verify the release is not marked as a draft.
 
-## B2. Verify agents repo release
+## B2. Verify agents validation and tag
 
-The release workflow pushes the same tag to `fullsend-ai/agents`,
-which triggers agents' own `release.yml` to create a GitHub Release
-and move the `v0` floating tag.
+The release workflow gates the agents tag on functional test
+validation. After GoReleaser completes, `validate-agents` runs
+agents' functional tests against the release tag. Only if those
+tests pass does `tag-agents` push the tag to agents. If either
+job fails, a Slack notification is sent automatically.
 
-Verify the agents release workflow succeeded:
+First, verify the `validate-agents` and `tag-agents` jobs succeeded
+in the release workflow run:
 
 ```
-gh run list --repo fullsend-ai/agents --workflow=release.yml --limit=1
+gh run view <run-id> --repo fullsend-ai/fullsend --json jobs \
+  --jq '.jobs[] | select(.name | test("validate-agents|tag-agents")) | {name, conclusion}'
 ```
 
-Verify the tag and release exist:
+If `validate-agents` failed, the agents functional tests did not
+pass against the new binary — investigate before proceeding. The
+fullsend release shipped, but agents was not tagged. A Slack
+notification should have been sent.
+
+If both jobs succeeded, verify the tag and release exist on agents:
 
 ```
 gh release view <tag> --repo fullsend-ai/agents

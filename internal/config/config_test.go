@@ -22,6 +22,8 @@ func TestValidRoles(t *testing.T) {
 	assert.Contains(t, roles, "retro")
 	assert.Contains(t, roles, "prioritize")
 	assert.Contains(t, roles, "e2e")
+	assert.NotContains(t, roles, "scribe",
+		"scribe is mint-only until scaffold/workflow wiring lands; must not pass roles: config validation")
 }
 
 func TestValidRoles_RecognizedByMintcore(t *testing.T) {
@@ -29,6 +31,27 @@ func TestValidRoles_RecognizedByMintcore(t *testing.T) {
 		assert.True(t, mintcore.HasRole(role),
 			"ValidRoles() contains %q but mintcore.HasRole is false — role lists may have drifted (see issue tracking consolidation)", role)
 	}
+}
+
+func TestPerRepoConfigValidate_RejectsMintOnlyScribeRole(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version: "1",
+		Roles:   []string{"triage", "scribe"},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid role "scribe"`)
+}
+
+func TestOrgConfigValidate_RejectsMintOnlyScribeRole(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"triage", "scribe"}},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid role "scribe"`)
 }
 
 func TestPerRepoDefaultRoles(t *testing.T) {
@@ -384,6 +407,7 @@ func TestValidRuntimes(t *testing.T) {
 	runtimes := ValidRuntimes()
 	assert.Contains(t, runtimes, "claude")
 	assert.Contains(t, runtimes, "dummy")
+	assert.NotContains(t, runtimes, "opencode", "opencode is resolved via runtime.Resolve() but not user-selectable until implemented")
 }
 
 func TestOrgConfigValidateRuntime(t *testing.T) {
@@ -396,6 +420,11 @@ func TestOrgConfigValidateRuntime(t *testing.T) {
 		},
 	}
 	require.NoError(t, cfg.Validate())
+
+	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
+	// so config validation must reject it until the runtime is implemented.
+	cfg.Defaults.Runtime = "opencode"
+	require.Error(t, cfg.Validate())
 
 	cfg.Defaults.Runtime = "invalid"
 	require.Error(t, cfg.Validate())
@@ -646,8 +675,15 @@ func TestPerRepoConfigValidate_Runtime(t *testing.T) {
 	}
 	assert.NoError(t, cfg.Validate())
 
-	cfg.Runtime = "invalid"
+	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
+	// so config validation must reject it until the runtime is implemented.
+	cfg.Runtime = "opencode"
 	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid runtime")
+
+	cfg.Runtime = "invalid"
+	err = cfg.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid runtime")
 }
@@ -874,6 +910,61 @@ func TestOrgConfigValidate_InvalidCommentCompletion(t *testing.T) {
 	err := cfg.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "status_notifications.comment.completion")
+}
+
+func TestOrgConfigValidate_OnFailureCompletion(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Completion: "on_failure"},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate(), "on_failure should be valid for comment.completion")
+}
+
+func TestOrgConfigValidate_OnFailureStart_Rejected(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Start: "on_failure"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err, "on_failure should be rejected for comment.start")
+	assert.Contains(t, err.Error(), "status_notifications.comment.start")
+}
+
+func TestParseOrgConfig_OnFailureCompletion(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  status_notifications:
+    comment:
+      start: disabled
+      completion: on_failure
+agents: []
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "disabled", cfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "on_failure", cfg.StatusNotifications().Comment.Completion)
 }
 
 func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {

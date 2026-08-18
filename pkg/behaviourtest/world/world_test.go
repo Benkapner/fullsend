@@ -18,7 +18,6 @@ type fakeInstallState struct {
 }
 
 func (f *fakeInstallState) Mode() string               { return "" }
-func (f *fakeInstallState) TestRepo() string           { return "" }
 func (f *fakeInstallState) ConfigOwner() string        { return "" }
 func (f *fakeInstallState) ConfigRepo() string         { return "" }
 func (f *fakeInstallState) ConfigPathPrefix() string   { return f.prefix }
@@ -155,20 +154,10 @@ func TestClone_ConcurrentFieldIndependence(t *testing.T) {
 	}
 }
 
-func TestBehaviourScriptPath_NilInstall(t *testing.T) {
+func TestBehaviourScriptPath(t *testing.T) {
+	// BT is per-repo only — BehaviourScriptPath always prefixes with
+	// .fullsend regardless of Install state.
 	w := &World{}
-	got := w.BehaviourScriptPath()
-	assert.Equal(t, BehaviourScriptRepoPath, got)
-}
-
-func TestBehaviourScriptPath_EmptyPrefix(t *testing.T) {
-	w := &World{Install: &fakeInstallState{prefix: ""}}
-	got := w.BehaviourScriptPath()
-	assert.Equal(t, BehaviourScriptRepoPath, got)
-}
-
-func TestBehaviourScriptPath_WithPrefix(t *testing.T) {
-	w := &World{Install: &fakeInstallState{prefix: ".fullsend"}}
 	got := w.BehaviourScriptPath()
 	assert.Equal(t, ".fullsend/behaviour/current-scenario.yaml", got)
 }

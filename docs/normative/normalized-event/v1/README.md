@@ -36,8 +36,8 @@ input, and **Jira poll** input:
   those drivers land.
 - Conversations carry **`state.conversation.category`** (exactly one; 1:M
   category→conversation) separately from **`state.labels`** (M:M tags on the
-  conversation). Messages have neither; `comment_added` events still snapshot
-  the parent conversation's category and labels.
+  conversation). Messages carry neither category nor labels; `comment_added`
+  events still snapshot the parent conversation's category and labels.
 
 ## Versioning
 

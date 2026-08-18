@@ -547,6 +547,9 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.Model == "" {
 		child.Model = base.Model
 	}
+	if child.Effort == "" {
+		child.Effort = base.Effort
+	}
 	if child.PreScript == "" {
 		child.PreScript = base.PreScript
 	}
@@ -746,10 +749,8 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		deps = append(deps, dep)
 	}
 
-	for platform, fc := range base.Forge {
-		if fc == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
 		forgeScripts := []struct {
 			name string
 			ptr  *string
@@ -863,42 +864,72 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 	}
 
 	for i, skill := range base.Skills {
-		if skill == "" || IsURL(skill) || isFullsendCachePath(skill, opts.WorkspaceRoot) {
-			continue
+		if skill.Source != "" && !IsURL(skill.Source) && !isFullsendCachePath(skill.Source, opts.WorkspaceRoot) {
+			fieldName := fmt.Sprintf("skills[%d]", i)
+			if err := validateBaseRelPath(fieldName, skill.Source); err != nil {
+				return nil, err
+			}
+			dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill.Source, allowlist, opts)
+			if err != nil {
+				return nil, err
+			}
+			base.Skills[i].Source = localDir
+			deps = append(deps, dep)
 		}
-		fieldName := fmt.Sprintf("skills[%d]", i)
-		if err := validateBaseRelPath(fieldName, skill); err != nil {
-			return nil, err
+
+		for key, val := range skill.Overrides {
+			if val == nil || *val == "" || IsURL(*val) || isFullsendCachePath(*val, opts.WorkspaceRoot) {
+				continue
+			}
+			overrideField := fmt.Sprintf("skills[%d].overrides[%s]", i, key)
+			if err := validateBaseRelPath(overrideField, *val); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, overrideField, baseURLDir, *val, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			resolved := cachePath
+			base.Skills[i].Overrides[key] = &resolved
+			deps = append(deps, dep)
 		}
-		dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill, allowlist, opts)
-		if err != nil {
-			return nil, err
-		}
-		base.Skills[i] = localDir
-		deps = append(deps, dep)
 	}
 
 	// Forge-specific skills: same fetch treatment as top-level skills.
 	// resolveBaseScripts already handles forge scripts and forge policy;
 	// skills are directories (fetched via fetchBaseSkill) and belong here.
-	for platform, fc := range base.Forge {
-		if fc == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
 		for i, skill := range fc.Skills {
-			if skill == "" || IsURL(skill) || isFullsendCachePath(skill, opts.WorkspaceRoot) {
-				continue
+			if skill.Source != "" && !IsURL(skill.Source) && !isFullsendCachePath(skill.Source, opts.WorkspaceRoot) {
+				fieldName := fmt.Sprintf("forge.%s.skills[%d]", platform, i)
+				if err := validateBaseRelPath(fieldName, skill.Source); err != nil {
+					return nil, err
+				}
+				dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill.Source, allowlist, opts)
+				if err != nil {
+					return nil, err
+				}
+				fc.Skills[i].Source = localDir
+				deps = append(deps, dep)
 			}
-			fieldName := fmt.Sprintf("forge.%s.skills[%d]", platform, i)
-			if err := validateBaseRelPath(fieldName, skill); err != nil {
-				return nil, err
+
+			for key, val := range skill.Overrides {
+				if val == nil || *val == "" || IsURL(*val) || isFullsendCachePath(*val, opts.WorkspaceRoot) {
+					continue
+				}
+				overrideField := fmt.Sprintf("forge.%s.skills[%d].overrides[%s]", platform, i, key)
+				if err := validateBaseRelPath(overrideField, *val); err != nil {
+					return nil, err
+				}
+				dep, cachePath, err := fetchBaseFile(ctx, overrideField, baseURLDir, *val, allowlist, opts, "resource", false)
+				if err != nil {
+					return nil, err
+				}
+				resolved := cachePath
+				fc.Skills[i].Overrides[key] = &resolved
+				deps = append(deps, dep)
 			}
-			dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill, allowlist, opts)
-			if err != nil {
-				return nil, err
-			}
-			fc.Skills[i] = localDir
-			deps = append(deps, dep)
 		}
 	}
 
@@ -943,10 +974,8 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 	// Forge-specific host_files: same fetch treatment as top-level
 	// host_files. Entries with ${VAR} expansion are left unchanged
 	// (resolved at bootstrap time on the host).
-	for platform, fc := range base.Forge {
-		if fc == nil {
-			continue
-		}
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
 		for i := range fc.HostFiles {
 			src := fc.HostFiles[i].Src
 			if src == "" || strings.Contains(src, "${") || IsURL(src) || isFullsendCachePath(src, opts.WorkspaceRoot) {
@@ -974,7 +1003,12 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 // fetched from the base URL's directory, cached content-addressed, and the
 // entry is rewritten to the local cache path.
 func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
-	if base.OpenShell == nil || len(base.OpenShell.Profiles) == 0 {
+	hasTopLevel := base.OpenShell != nil && len(base.OpenShell.Profiles) > 0
+	hasForge := false
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil && fc.OpenShell != nil && len(fc.OpenShell.Profiles) > 0 {
+		hasForge = true
+	}
+	if !hasTopLevel && !hasForge {
 		return nil, nil
 	}
 
@@ -985,20 +1019,42 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 
 	var deps []Dependency
 
-	for i, p := range base.OpenShell.Profiles {
-		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
-			continue
+	if base.OpenShell != nil {
+		for i, p := range base.OpenShell.Profiles {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("openshell.profiles[%d]", i)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			base.OpenShell.Profiles[i] = cachePath
+			deps = append(deps, dep)
 		}
-		fieldName := fmt.Sprintf("openshell.profiles[%d]", i)
-		if err := validateBaseRelPath(fieldName, p); err != nil {
-			return nil, err
+	}
+
+	// Forge-specific profiles: same fetch treatment as top-level profiles.
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil && fc.OpenShell != nil {
+		platform := opts.ForgePlatform
+		for i, p := range fc.OpenShell.Profiles {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.openshell.profiles[%d]", platform, i)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.OpenShell.Profiles[i] = cachePath
+			deps = append(deps, dep)
 		}
-		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
-		if err != nil {
-			return nil, err
-		}
-		base.OpenShell.Profiles[i] = cachePath
-		deps = append(deps, dep)
 	}
 
 	return deps, nil
@@ -1010,7 +1066,12 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 // the file is fetched from the base URL's directory, cached
 // content-addressed, and the entry is rewritten to the local cache path.
 func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
-	if len(base.Providers) == 0 {
+	hasTopLevel := len(base.Providers) > 0
+	hasForge := false
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil && len(fc.Providers) > 0 {
+		hasForge = true
+	}
+	if !hasTopLevel && !hasForge {
 		return nil, nil
 	}
 
@@ -1038,6 +1099,29 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 		}
 		base.Providers[i] = cachePath
 		deps = append(deps, dep)
+	}
+
+	// Forge-specific providers: same fetch treatment as top-level providers.
+	if fc := base.Forge[opts.ForgePlatform]; fc != nil {
+		platform := opts.ForgePlatform
+		for i, p := range fc.Providers {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			if !IsProviderPath(p) {
+				continue
+			}
+			fieldName := fmt.Sprintf("forge.%s.providers[%d]", platform, i)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.Providers[i] = cachePath
+			deps = append(deps, dep)
+		}
 	}
 
 	return deps, nil
@@ -1761,33 +1845,40 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 	return os.WriteFile(idxPath, out, 0o600)
 }
 
-// mergeSkills concatenates base and child skill paths, with child entries
+// mergeSkills concatenates base and child skill entries, with child entries
 // overriding base entries that resolve to the same sandbox directory name
-// (filepath.Base). This mirrors mergeHostFiles' override-by-dest behavior
-// and allows a child harness to replace a built-in skill by declaring a
-// same-named skill via base: composition (see #5408).
+// (filepath.Base). When both base and child define the same basename, the
+// child's source replaces the base's, and their Overrides maps are merged
+// (child keys win). This mirrors mergeHostFiles' override-by-dest behavior
+// and allows a child harness to replace a built-in skill via base:
+// composition (see #5408).
 //
 // Known limitation: if the base slice itself contains two entries with the
 // same basename (e.g., /cache/a/skill-x and /cache/b/skill-x), the second
 // entry silently overwrites the first in baseIndex. In practice this is
 // benign because duplicateDestinationNameError at bootstrap time catches
 // duplicate basenames within a single harness.
-func mergeSkills(base, child []string) []string {
+func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	baseIndex := make(map[string]int, len(base))
-	result := make([]string, 0, len(base)+len(child))
+	result := make([]SkillEntry, 0, len(base)+len(child))
 
 	// Add base entries
 	for _, s := range base {
-		name := filepath.Base(s)
+		name := filepath.Base(s.Source)
 		baseIndex[name] = len(result)
 		result = append(result, s)
 	}
 
 	// Add/override with child entries
 	for _, s := range child {
-		name := filepath.Base(s)
+		name := filepath.Base(s.Source)
 		if idx, exists := baseIndex[name]; exists {
-			result[idx] = s // child overrides base
+			// Merge overrides: child values win per key
+			merged := SkillEntry{
+				Source:    s.Source,
+				Overrides: mergeOverrides(result[idx].Overrides, s.Overrides),
+			}
+			result[idx] = merged
 		} else {
 			baseIndex[name] = len(result)
 			result = append(result, s)
@@ -1866,6 +1957,25 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 	// Skills: base + child with child-overrides-base-by-basename
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
+	}
+
+	// Providers: base + child (concatenated)
+	if base.Providers != nil {
+		merged := make([]string, 0, len(base.Providers)+len(child.Providers))
+		merged = append(merged, base.Providers...)
+		merged = append(merged, child.Providers...)
+		child.Providers = merged
+	}
+
+	// OpenShell.Profiles: base + child (concatenated)
+	if base.OpenShell != nil && len(base.OpenShell.Profiles) > 0 {
+		if child.OpenShell == nil {
+			child.OpenShell = &OpenShellConfig{}
+		}
+		merged := make([]string, 0, len(base.OpenShell.Profiles)+len(child.OpenShell.Profiles))
+		merged = append(merged, base.OpenShell.Profiles...)
+		merged = append(merged, child.OpenShell.Profiles...)
+		child.OpenShell.Profiles = merged
 	}
 
 	// HostFiles: concatenated with last-writer-wins dedup by Dest

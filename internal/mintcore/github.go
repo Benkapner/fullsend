@@ -13,10 +13,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -69,6 +71,7 @@ type GrantedScope struct {
 // RolePermissions() to get a copy.
 var canonicalRolePermissions = map[string]map[string]string{
 	"triage":     {"contents": "read", "issues": "write", "metadata": "read"},
+	"scribe":     {"contents": "read", "issues": "write", "metadata": "read"},
 	"coder":      {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
 	"review":     {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
 	"fix":        {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
@@ -190,6 +193,17 @@ func HasRole(role string) bool {
 	return false
 }
 
+// BuiltInRoles returns the sorted names of canonical mint roles
+// (excludes standalone-mint custom roles registered at runtime).
+func BuiltInRoles() []string {
+	roles := make([]string, 0, len(canonicalRolePermissions))
+	for role := range canonicalRolePermissions {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return roles
+}
+
 // GenerateAppJWT creates a signed RS256 JWT for GitHub App authentication.
 func GenerateAppJWT(appID string, pemData []byte) (string, error) {
 	block, _ := pem.Decode(pemData)
@@ -244,6 +258,11 @@ func GenerateAppJWT(appID string, pemData []byte) (string, error) {
 	return signingInput + "." + signatureB64, nil
 }
 
+// ErrInstallationNotFound is returned by FindInstallation when the GitHub
+// API responds with 404 — meaning the repo is not covered by the GitHub
+// App's installation.
+var ErrInstallationNotFound = errors.New("installation not found")
+
 // FindInstallation looks up a GitHub App's installation ID for a repo.
 // The returned installation's account is verified against the expected org to
 // prevent cross-org token leakage.
@@ -265,6 +284,9 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusNotFound {
+			return 0, fmt.Errorf("getting installation for %s/%s: %w", org, repo, ErrInstallationNotFound)
+		}
 		return 0, fmt.Errorf("getting installation for %s/%s returned status %d", org, repo, resp.StatusCode)
 	}
 

@@ -74,3 +74,21 @@ func TestToMap_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "work_item", m["entity"].(map[string]any)["kind"])
 }
+
+func TestParseJSON_ConversationExample(t *testing.T) {
+	dir := examplesDir(t)
+	data, err := os.ReadFile(filepath.Join(dir, "discussion-fs-vouch-comment.json"))
+	require.NoError(t, err)
+	ev, err := ParseJSON(data)
+	require.NoError(t, err)
+	require.Equal(t, EntityConversation, ev.Entity.Kind)
+	require.NotNil(t, ev.State.Conversation)
+	assert.Equal(t, "Vouch Request", ev.State.Conversation.Category.Name)
+	assert.Equal(t, "vouch-request", ev.State.Conversation.Category.Slug)
+
+	m, err := ev.ToMap()
+	require.NoError(t, err)
+	conv := m["state"].(map[string]any)["conversation"].(map[string]any)
+	cat := conv["category"].(map[string]any)
+	assert.Equal(t, "vouch-request", cat["slug"])
+}

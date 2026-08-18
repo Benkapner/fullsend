@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -51,8 +52,13 @@ type JWKSVerifierConfig struct {
 }
 
 // NewJWKSVerifier creates a verifier that validates tokens from issuerURL
-// against the given audience. If httpClient is nil, http.DefaultClient is used.
-func NewJWKSVerifier(opts JWKSVerifierConfig) *JWKSVerifier {
+// against the given OIDC audience. Returns an error if the audience is
+// empty — misconfiguration is caught at construction time, not on first
+// Verify(). If httpClient is nil, http.DefaultClient is used.
+func NewJWKSVerifier(opts JWKSVerifierConfig) (*JWKSVerifier, error) {
+	if opts.Audience == "" {
+		return nil, errors.New("OIDC_AUDIENCE must be configured")
+	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -61,7 +67,7 @@ func NewJWKSVerifier(opts JWKSVerifierConfig) *JWKSVerifier {
 		issuerURL:  opts.IssuerURL,
 		audience:   opts.Audience,
 		httpClient: httpClient,
-	}
+	}, nil
 }
 
 // jwtHeader represents the JOSE header of a JWT.

@@ -22,14 +22,17 @@ Date: 2026-08-11
 
 Accepted
 
-Builds on [ADR 0005](0005-forge-abstraction-layer.md),
-[ADR 0017](0017-credential-isolation-for-sandboxed-agents.md) /
-[ADR 0046](0046-host-side-api-server-design.md),
-[ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md),
-[ADR 0058](0058-agent-registration.md),
-[ADR 0061](0061-harness-cel-dispatch.md),
-[ADR 0063](0063-polling-based-work-discovery.md), and
-[ADR 0076](0076-slash-command-entity-context-separation.md).
+Builds on:
+
+- Forge abstraction: [ADR 0005](0005-forge-abstraction-layer.md)
+- Credential isolation / host API: [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md),
+  [ADR 0046](0046-host-side-api-server-design.md)
+- Authorization / registration / dispatch: [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md),
+  [ADR 0058](0058-agent-registration.md),
+  [ADR 0061](0061-harness-cel-dispatch.md),
+  [ADR 0063](0063-polling-based-work-discovery.md)
+- Entity-context separation: [ADR 0076](0076-slash-command-entity-context-separation.md)
+
 Aligns with the `tracker.Client` split
 ([#5988](https://github.com/fullsend-ai/fullsend/issues/5988)): domain
 interfaces stay narrow; `forge.Client` remains git-hosting only.

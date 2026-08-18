@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -19,10 +20,19 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// newTestClient creates a LiveClient pointed at the given httptest server.
+// noWaitAfter returns a channel that is immediately ready, eliminating
+// real sleeps in retry loops during tests.
+func noWaitAfter(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
+
+// newTestClient creates a LiveClient pointed at the given httptest server
+// with retry delays disabled for fast tests.
 func newTestClient(t *testing.T, srv *httptest.Server) *LiveClient {
 	t.Helper()
-	return New("test-token").WithBaseURL(srv.URL)
+	return New("test-token").WithBaseURL(srv.URL).WithAfterFunc(noWaitAfter)
 }
 
 func TestListOrgRepos(t *testing.T) {
@@ -2004,9 +2014,10 @@ func TestSecondaryRateLimit_RetriedWithoutRetryAfterHeader(t *testing.T) {
 	defer srv.Close()
 
 	client := &LiveClient{
-		token:   "test-token",
-		baseURL: srv.URL,
-		http:    srv.Client(),
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
 	}
 
 	// Override the backoff for testing — we don't want to wait 60s.
@@ -2749,6 +2760,114 @@ func TestIsRetryable_ServerErrors(t *testing.T) {
 		}
 		retryable, _ := isRetryable(resp)
 		assert.True(t, retryable, "expected %d to be retryable", code)
+	}
+}
+
+func TestClientTimeoutIs60s(t *testing.T) {
+	c := New("test-token")
+	assert.Equal(t, 60*time.Second, c.http.Timeout)
+}
+
+func TestDoRetriesOnTimeout(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n <= 2 {
+			// Sleep longer than the client timeout to trigger a timeout error.
+			time.Sleep(200 * time.Millisecond)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	client.http.Timeout = 50 * time.Millisecond
+
+	resp, err := client.do(context.Background(), http.MethodGet, "/test", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, int32(3), attempts.Load(), "expected 3 attempts (2 timeouts + 1 success)")
+}
+
+func TestDoRetriesOnTimeout_Exhausted(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		// Always sleep longer than the client timeout.
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	client.http.Timeout = 50 * time.Millisecond
+
+	_, err := client.do(context.Background(), http.MethodGet, "/test", nil)
+	require.Error(t, err)
+	assert.Equal(t, int32(maxRetries), attempts.Load(), "expected all retry attempts to be used")
+	assert.Contains(t, err.Error(), "after 5 attempts")
+}
+
+func TestDoDoesNotRetryOnCallerContextCancel(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		// Sleep longer than the client timeout.
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	client.http.Timeout = 50 * time.Millisecond
+
+	// Use a context that will be cancelled before the client timeout fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	_, err := client.do(ctx, http.MethodGet, "/test", nil)
+	require.Error(t, err)
+	// Should not retry — the caller's context was cancelled.
+	assert.Equal(t, int32(1), attempts.Load(), "should not retry when caller context is cancelled")
+}
+
+func TestIsTimeoutError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "generic error",
+			err:  fmt.Errorf("connection refused"),
+			want: false,
+		},
+		{
+			name: "context.DeadlineExceeded",
+			err:  context.DeadlineExceeded,
+			want: true,
+		},
+		{
+			name: "wrapped context.DeadlineExceeded",
+			err:  fmt.Errorf("request failed: %w", context.DeadlineExceeded),
+			want: true,
+		},
+		{
+			name: "context.Canceled is not a timeout",
+			err:  context.Canceled,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isTimeoutError(tt.err))
+		})
 	}
 }
 

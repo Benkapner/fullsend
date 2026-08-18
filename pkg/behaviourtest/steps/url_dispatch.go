@@ -105,6 +105,9 @@ func resolveHostRepoName(w *world.World, logicalName string) string {
 // enrolled test repository. The URL points to the file via
 // raw.githubusercontent.com on the default branch of the hosting repo.
 func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarnessOpts) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before URL-harness operations")
+	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
 	if name == "" || doc == "" {
@@ -189,8 +192,8 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 
 	// Update config.yaml on the enrolled test repo: register agent with URL
 	// source and update allowlist.
-	cfgOwner := w.Install.ConfigOwner()
-	cfgRepo := w.Install.ConfigRepo()
+	cfgOwner := w.Org
+	cfgRepo := w.RepoName
 	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(ctx, cfgOwner, cfgRepo, cfgPath)
 	if err != nil {

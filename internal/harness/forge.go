@@ -15,7 +15,9 @@ type ForgeConfig struct {
 	PreScript      string            `yaml:"pre_script,omitempty"`
 	PostScript     string            `yaml:"post_script,omitempty"`
 	Policy         string            `yaml:"policy,omitempty"`
-	Skills         []string          `yaml:"skills,omitempty"`
+	Skills         []SkillEntry      `yaml:"skills,omitempty"` // SkillEntry (not string) to support file-level overrides
+	Providers      []string          `yaml:"providers,omitempty"`
+	OpenShell      *OpenShellConfig  `yaml:"openshell,omitempty"`
 	HostFiles      []HostFile        `yaml:"host_files,omitempty"`
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
@@ -64,9 +66,28 @@ func (h *Harness) validateForge() error {
 			return fmt.Errorf("forge.%s.post_script must be a local path, not a URL", key)
 		}
 		for i, s := range fc.Skills {
-			if IsURL(s) {
-				if _, _, hasHash := ParseIntegrityHash(s); !hasHash {
+			if IsURL(s.Source) {
+				if _, _, hasHash := ParseIntegrityHash(s.Source); !hasHash {
 					return fmt.Errorf("forge.%s.skills[%d] URL must include #sha256=... integrity hash", key, i)
+				}
+			}
+		}
+		if err := ValidateSkillOverrides(fc.Skills); err != nil {
+			return fmt.Errorf("forge.%s: %w", key, err)
+		}
+		for i, p := range fc.Providers {
+			if IsURL(p) {
+				if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+					return fmt.Errorf("forge.%s.providers[%d] URL must include #sha256=... integrity hash", key, i)
+				}
+			}
+		}
+		if fc.OpenShell != nil {
+			for i, p := range fc.OpenShell.Profiles {
+				if IsURL(p) {
+					if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+						return fmt.Errorf("forge.%s.openshell.profiles[%d] URL must include #sha256=... integrity hash", key, i)
+					}
 				}
 			}
 		}
@@ -129,6 +150,8 @@ func (h *Harness) ResolveForge(platform string) error {
 // Merge rules per ADR-0045:
 //   - Scalars: forge overrides if non-empty
 //   - Skills: top-level + forge (concatenated)
+//   - Providers: top-level + forge (concatenated)
+//   - OpenShell.Profiles: top-level + forge (concatenated)
 //   - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
 //   - RunnerEnv: top-level merged with forge; forge keys win
 //   - ValidationLoop: forge replaces entirely if non-nil
@@ -145,6 +168,23 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 
 	if fc.Skills != nil {
 		h.Skills = mergeSkills(h.Skills, fc.Skills)
+	}
+
+	if fc.Providers != nil {
+		merged := make([]string, 0, len(h.Providers)+len(fc.Providers))
+		merged = append(merged, h.Providers...)
+		merged = append(merged, fc.Providers...)
+		h.Providers = merged
+	}
+
+	if fc.OpenShell != nil && len(fc.OpenShell.Profiles) > 0 {
+		if h.OpenShell == nil {
+			h.OpenShell = &OpenShellConfig{}
+		}
+		merged := make([]string, 0, len(h.OpenShell.Profiles)+len(fc.OpenShell.Profiles))
+		merged = append(merged, h.OpenShell.Profiles...)
+		merged = append(merged, fc.OpenShell.Profiles...)
+		h.OpenShell.Profiles = merged
 	}
 
 	if fc.HostFiles != nil {

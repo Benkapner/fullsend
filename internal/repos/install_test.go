@@ -396,11 +396,13 @@ func TestInstall_ScaffoldCommitFailure(t *testing.T) {
 			result.WIFProvider, fakeWIFProvider)
 	}
 
-	if len(fc.Variables) != 0 {
-		t.Error("expected no variable writes after scaffold commit failure")
+	// Variables and secrets are written before scaffold commit (#6122),
+	// so they should be present even when the commit fails.
+	if len(fc.Variables) == 0 {
+		t.Error("expected variables to be written before scaffold commit")
 	}
-	if len(fc.CreatedSecrets) != 0 {
-		t.Error("expected no secret writes after scaffold commit failure")
+	if len(fc.CreatedSecrets) == 0 {
+		t.Error("expected secrets to be written before scaffold commit")
 	}
 }
 
@@ -419,7 +421,10 @@ func TestInstall_ProgressCallbackPhases(t *testing.T) {
 		t.Fatalf("Install() returned error: %v", err)
 	}
 
-	wantPhases := []string{"scaffold", "scaffold", "scaffold", "vars", "vars", "secrets", "secrets", "done"}
+	// Variables and secrets are written before the scaffold commit (#6122)
+	// to eliminate the race window where the workflow is live but secrets
+	// don't exist yet.
+	wantPhases := []string{"scaffold", "vars", "vars", "secrets", "secrets", "scaffold", "scaffold", "done"}
 	if len(phases) != len(wantPhases) {
 		t.Fatalf("got %d phases %v, want %d phases %v", len(phases), phases, len(wantPhases), wantPhases)
 	}
@@ -495,8 +500,73 @@ func TestInstall_VariableWriteFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from variable write failure")
 	}
-	if !sc.called {
-		t.Error("scaffold commit should have been called before variable write")
+	if sc.called {
+		t.Error("scaffold commit should NOT have been called — variables are written first (#6122)")
+	}
+}
+
+func TestInstall_VarsAndSecretsBeforeCommit(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+
+	// Track call order via a scaffold commit wrapper and the progress
+	// callback to verify that variables and secrets are written before
+	// the scaffold is committed (#6122).
+	var callOrder []string
+	sc := &fakeScaffoldCommit{}
+	origFn := sc.fn()
+	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
+		callOrder = append(callOrder, "commit")
+		return origFn(ctx, owner, repo, files, direct)
+	}
+	progress := func(_, phase, msg string) {
+		if phase == "vars" && msg == "Configuring repository variables" {
+			callOrder = append(callOrder, "vars")
+		}
+		if phase == "secrets" && msg == "Configuring repository secrets" {
+			callOrder = append(callOrder, "secrets")
+		}
+	}
+
+	_, err := Install(context.Background(), cfg, fc, commitFn, progress)
+	if err != nil {
+		t.Fatalf("Install() returned error: %v", err)
+	}
+
+	// Verify that vars and secrets entries are present — without this,
+	// a progress message text change could make the test pass vacuously.
+	hasVars, hasSecrets := false, false
+	for _, entry := range callOrder {
+		if entry == "vars" {
+			hasVars = true
+		}
+		if entry == "secrets" {
+			hasSecrets = true
+		}
+	}
+	if !hasVars {
+		t.Fatalf("vars entry not found in call order: %v", callOrder)
+	}
+	if !hasSecrets {
+		t.Fatalf("secrets entry not found in call order: %v", callOrder)
+	}
+
+	// The commit must appear after both vars and secrets writes.
+	commitIdx := -1
+	for i, entry := range callOrder {
+		if entry == "commit" {
+			commitIdx = i
+			break
+		}
+	}
+	if commitIdx == -1 {
+		t.Fatal("commit not found in call order")
+	}
+	for i, entry := range callOrder {
+		if i >= commitIdx && (entry == "vars" || entry == "secrets") {
+			t.Errorf("expected %q before commit, but it appeared at index %d (commit at %d); order: %v",
+				entry, i, commitIdx, callOrder)
+		}
 	}
 }
 
@@ -645,10 +715,9 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 	}
 }
 
-func TestCheckInstallComponents_GitLabWIF_MissingSecrets(t *testing.T) {
+func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_CREDENTIAL_MODE"] = "wif"
 	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
 
 	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
@@ -656,14 +725,13 @@ func TestCheckInstallComponents_GitLabWIF_MissingSecrets(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if installed {
-		t.Error("expected installed=false when WIF secrets are missing")
+		t.Error("expected installed=false when secrets are missing")
 	}
 }
 
-func TestCheckInstallComponents_GitLabWIF_FullyInstalled(t *testing.T) {
+func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_CREDENTIAL_MODE"] = "wif"
 	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
@@ -673,22 +741,37 @@ func TestCheckInstallComponents_GitLabWIF_FullyInstalled(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !installed {
-		t.Error("expected installed=true when all WIF components are present")
+		t.Error("expected installed=true when all components are present")
 	}
 }
 
-func TestCheckInstallComponents_GitLabVariable_NoSecretsNeeded(t *testing.T) {
+func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_CREDENTIAL_MODE"] = "variable"
-	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if installed {
+		t.Error("expected installed=false when secrets are missing")
+	}
+}
+
+func TestCheckInstallComponents_GitHub_WithSecrets(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !installed {
-		t.Error("expected installed=true for variable mode without secrets")
+		t.Error("expected installed=true when all components are present")
 	}
 }
 
@@ -696,12 +779,11 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 	cfg := InstallConfig{
 		Forge: ForgeGitLab,
 	}
-	vars, err := installVarsForForge(cfg, "", "")
+	vars, err := installVarsForForge(cfg, "")
 	if err != nil {
 		t.Fatalf("installVarsForForge(GitLab) error = %v", err)
 	}
 	requiredKeys := []string{
-		"FULLSEND_CREDENTIAL_MODE",
 		"FULLSEND_FORGE",
 		"FULLSEND_LAST_POLL_AT_FAST",
 		"FULLSEND_LAST_POLL_AT_FULL",
@@ -712,9 +794,6 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 		if _, ok := vars[k]; !ok {
 			t.Errorf("missing required GitLab variable %q", k)
 		}
-	}
-	if vars["FULLSEND_CREDENTIAL_MODE"] != "variable" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", vars["FULLSEND_CREDENTIAL_MODE"], "variable")
 	}
 	if vars["FULLSEND_FORGE"] != "gitlab" {
 		t.Errorf("FULLSEND_FORGE = %q, want %q", vars["FULLSEND_FORGE"], "gitlab")
@@ -731,7 +810,7 @@ func TestInstallVarsForForge_GitHub_OmitsEmptyRegion(t *testing.T) {
 	cfg := InstallConfig{
 		Forge: ForgeGitHub,
 	}
-	vars, err := installVarsForForge(cfg, "https://mint.example.com", "")
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
 	if err != nil {
 		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
 	}
@@ -745,7 +824,7 @@ func TestInstallVarsForForge_GitHub_IncludesRegion(t *testing.T) {
 		Forge:           ForgeGitHub,
 		InferenceRegion: "us-central1",
 	}
-	vars, err := installVarsForForge(cfg, "https://mint.example.com", "")
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
 	if err != nil {
 		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
 	}
@@ -756,7 +835,7 @@ func TestInstallVarsForForge_GitHub_IncludesRegion(t *testing.T) {
 
 func TestInstallVarsForForge_UnsupportedForge(t *testing.T) {
 	cfg := InstallConfig{Forge: "bitbucket"}
-	_, err := installVarsForForge(cfg, "", "")
+	_, err := installVarsForForge(cfg, "")
 	if err == nil {
 		t.Fatal("expected error for unsupported forge")
 	}
@@ -805,17 +884,9 @@ func TestRequiredVarsForForge(t *testing.T) {
 }
 
 func TestRequiredSecretsForForge(t *testing.T) {
-	ghSecrets := requiredSecretsForForge(ForgeGitHub, "")
-	if len(ghSecrets) == 0 {
-		t.Fatal("expected non-empty required secrets for GitHub")
-	}
-	glSecretsVar := requiredSecretsForForge(ForgeGitLab, "variable")
-	if glSecretsVar != nil {
-		t.Errorf("expected nil required secrets for GitLab variable mode, got %v", glSecretsVar)
-	}
-	glSecretsWIF := requiredSecretsForForge(ForgeGitLab, "wif")
-	if len(glSecretsWIF) == 0 {
-		t.Fatal("expected non-empty required secrets for GitLab WIF mode")
+	secrets := requiredSecretsForForge()
+	if len(secrets) == 0 {
+		t.Fatal("expected non-empty required secrets")
 	}
 }
 
@@ -889,9 +960,6 @@ func TestInstall_FreshInstall_GitLab(t *testing.T) {
 	for _, v := range fc.Variables {
 		varMap[v.Name] = v.Value
 	}
-	if varMap["FULLSEND_CREDENTIAL_MODE"] != "variable" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", varMap["FULLSEND_CREDENTIAL_MODE"], "variable")
-	}
 	if varMap["FULLSEND_FORGE"] != "gitlab" {
 		t.Errorf("FULLSEND_FORGE = %q, want %q", varMap["FULLSEND_FORGE"], "gitlab")
 	}
@@ -928,9 +996,10 @@ func TestInstall_GitLab_AlreadyInstalled(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	fullName := "acme/widgets"
 	fc.VariableValues[fullName+"/"+forge.PerRepoGuardVar] = "true"
-	fc.VariableValues[fullName+"/FULLSEND_CREDENTIAL_MODE"] = "variable"
 	fc.VariableValues[fullName+"/FULLSEND_FORGE"] = "gitlab"
 	fc.FileContents[fullName+"/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.Secrets[fullName+"/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets[fullName+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 
 	cfg := InstallConfig{
 		Owner:          "acme",
@@ -984,45 +1053,18 @@ func TestInstallVarsForForge_GitLab_WithInference(t *testing.T) {
 		InferenceRegion:  "us-central1",
 		WIFProvider:      fakeWIFProvider,
 	}
-	vars, err := installVarsForForge(cfg, "", "")
+	vars, err := installVarsForForge(cfg, "")
 	if err != nil {
 		t.Fatalf("installVarsForForge(GitLab, inference) error = %v", err)
-	}
-	if vars["FULLSEND_CREDENTIAL_MODE"] != "wif" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", vars["FULLSEND_CREDENTIAL_MODE"], "wif")
 	}
 	if vars["FULLSEND_GCP_REGION"] != "us-central1" {
 		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", vars["FULLSEND_GCP_REGION"], "us-central1")
 	}
 	if _, ok := vars["FULLSEND_SA"]; ok {
-		t.Error("FULLSEND_SA should not be in regular vars (it is a protected variable)")
+		t.Error("FULLSEND_SA should not be in regular vars")
 	}
 	if _, ok := vars["FULLSEND_WIF_PROVIDER"]; ok {
-		t.Error("FULLSEND_WIF_PROVIDER should not be in regular vars (it is a protected variable)")
-	}
-	protVars := installProtectedVarsForForge(cfg)
-	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
-	if protVars["FULLSEND_SA"] != expectedSA {
-		t.Errorf("protected FULLSEND_SA = %q, want %q", protVars["FULLSEND_SA"], expectedSA)
-	}
-	if protVars["FULLSEND_WIF_PROVIDER"] != fakeWIFProvider {
-		t.Errorf("protected FULLSEND_WIF_PROVIDER = %q, want %q", protVars["FULLSEND_WIF_PROVIDER"], fakeWIFProvider)
-	}
-}
-
-func TestInstallProtectedVarsForForge_GitLab_EmptyWIFProvider(t *testing.T) {
-	cfg := InstallConfig{
-		Forge:            ForgeGitLab,
-		InferenceProject: "my-gcp-project",
-		WIFProvider:      "",
-	}
-	protVars := installProtectedVarsForForge(cfg)
-	if _, ok := protVars["FULLSEND_WIF_PROVIDER"]; ok {
-		t.Error("FULLSEND_WIF_PROVIDER should not be set when WIFProvider is empty")
-	}
-	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
-	if protVars["FULLSEND_SA"] != expectedSA {
-		t.Errorf("protected FULLSEND_SA = %q, want %q", protVars["FULLSEND_SA"], expectedSA)
+		t.Error("FULLSEND_WIF_PROVIDER should not be in regular vars")
 	}
 }
 
@@ -1030,61 +1072,15 @@ func TestInstallVarsForForge_GitLab_WithoutInference(t *testing.T) {
 	cfg := InstallConfig{
 		Forge: ForgeGitLab,
 	}
-	vars, err := installVarsForForge(cfg, "", "")
+	vars, err := installVarsForForge(cfg, "")
 	if err != nil {
 		t.Fatalf("installVarsForForge(GitLab, no inference) error = %v", err)
-	}
-	if vars["FULLSEND_CREDENTIAL_MODE"] != "variable" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", vars["FULLSEND_CREDENTIAL_MODE"], "variable")
 	}
 	if _, ok := vars["FULLSEND_GCP_REGION"]; ok {
 		t.Error("FULLSEND_GCP_REGION should not be set without inference")
 	}
 	if _, ok := vars["FULLSEND_SA"]; ok {
 		t.Error("FULLSEND_SA should not be set without inference")
-	}
-}
-
-func TestInstallVarsForForge_GitLab_DiscoveredCredMode_PreservesWIF(t *testing.T) {
-	cfg := InstallConfig{
-		Forge:              ForgeGitLab,
-		DiscoveredCredMode: "wif",
-	}
-	vars, err := installVarsForForge(cfg, "", "")
-	if err != nil {
-		t.Fatalf("installVarsForForge(GitLab, DiscoveredCredMode) error = %v", err)
-	}
-	if vars["FULLSEND_CREDENTIAL_MODE"] != "wif" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", vars["FULLSEND_CREDENTIAL_MODE"], "wif")
-	}
-}
-
-func TestInstallVarsForForge_GitLab_DiscoveredCredMode_InvalidFallsBackToVariable(t *testing.T) {
-	cfg := InstallConfig{
-		Forge:              ForgeGitLab,
-		DiscoveredCredMode: "corrupted-value",
-	}
-	vars, err := installVarsForForge(cfg, "", "")
-	if err != nil {
-		t.Fatalf("installVarsForForge(GitLab, invalid DiscoveredCredMode) error = %v", err)
-	}
-	if vars["FULLSEND_CREDENTIAL_MODE"] != "variable" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q (invalid discovered mode should fall back to variable)", vars["FULLSEND_CREDENTIAL_MODE"], "variable")
-	}
-}
-
-func TestInstallVarsForForge_GitLab_InferenceProjectOverridesDiscovered(t *testing.T) {
-	cfg := InstallConfig{
-		Forge:              ForgeGitLab,
-		InferenceProject:   "my-project",
-		DiscoveredCredMode: "variable",
-	}
-	vars, err := installVarsForForge(cfg, "", "")
-	if err != nil {
-		t.Fatalf("installVarsForForge(GitLab, InferenceProject+DiscoveredCredMode) error = %v", err)
-	}
-	if vars["FULLSEND_CREDENTIAL_MODE"] != "wif" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q (InferenceProject should take precedence)", vars["FULLSEND_CREDENTIAL_MODE"], "wif")
 	}
 }
 
@@ -1139,28 +1135,11 @@ func TestInstall_GitLab_WithInference(t *testing.T) {
 	for _, v := range fc.Variables {
 		varMap[v.Name] = v.Value
 	}
-	if varMap["FULLSEND_CREDENTIAL_MODE"] != "wif" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q", varMap["FULLSEND_CREDENTIAL_MODE"], "wif")
-	}
 	if varMap["FULLSEND_GCP_REGION"] != "us-central1" {
 		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", varMap["FULLSEND_GCP_REGION"], "us-central1")
 	}
-	if _, ok := varMap["FULLSEND_SA"]; ok {
-		t.Error("FULLSEND_SA should not be in regular vars (it is a protected variable)")
-	}
-	if _, ok := varMap["FULLSEND_WIF_PROVIDER"]; ok {
-		t.Error("FULLSEND_WIF_PROVIDER should not be in regular vars (it is a protected variable)")
-	}
-	expectedSA := "fullsend-mint@my-gcp-project.iam.gserviceaccount.com"
-	protVarMap := make(map[string]string)
-	for _, v := range fc.CreatedProtectedVars {
-		protVarMap[v.Name] = v.Value
-	}
-	if protVarMap["FULLSEND_SA"] != expectedSA {
-		t.Errorf("protected FULLSEND_SA = %q, want %q", protVarMap["FULLSEND_SA"], expectedSA)
-	}
-	if protVarMap["FULLSEND_WIF_PROVIDER"] != fakeWIFProvider {
-		t.Errorf("protected FULLSEND_WIF_PROVIDER = %q, want %q", protVarMap["FULLSEND_WIF_PROVIDER"], fakeWIFProvider)
+	if len(fc.CreatedProtectedVars) != 0 {
+		t.Errorf("expected no protected vars, got %d", len(fc.CreatedProtectedVars))
 	}
 
 	// Verify secrets were written for GitLab with inference.
@@ -1224,5 +1203,47 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		if !paths[expected] {
 			t.Errorf("missing expected scaffold file %q", expected)
 		}
+	}
+}
+
+func TestInstall_GitHub_NoInferenceProject_SkipsSecrets(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	cfg.WIFProvider = ""
+	cfg.InferenceProject = ""
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install(GitHub, no inference) returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if !sc.called {
+		t.Error("expected scaffold commit to be called")
+	}
+
+	// Verify no secrets were written when InferenceProject is empty.
+	if len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected 0 secrets without InferenceProject, got %d", len(fc.CreatedSecrets))
+	}
+
+	varMap := make(map[string]string)
+	for _, v := range fc.Variables {
+		varMap[v.Name] = v.Value
+	}
+	if varMap["FULLSEND_MINT_URL"] != "https://mint.example.com" {
+		t.Errorf("FULLSEND_MINT_URL = %q, want %q", varMap["FULLSEND_MINT_URL"], "https://mint.example.com")
+	}
+}
+
+func TestInstallSecretsForForge_GitHub_NoInferenceProject_NoSecrets(t *testing.T) {
+	cfg := InstallConfig{
+		Forge: ForgeGitHub,
+	}
+	secrets := installSecretsForForge(cfg, "")
+	if secrets != nil {
+		t.Errorf("expected nil secrets for GitHub without InferenceProject, got %v", secrets)
 	}
 }

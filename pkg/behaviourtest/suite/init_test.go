@@ -2,6 +2,8 @@ package suite
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,11 +14,12 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 // panickingSCM is a fake scm.Driver whose CloseIssue panics.
-// Used to verify that afterScenario's deferred pool.Release runs
+// Used to verify that afterScenario's deferred driver.DeallocateRepo runs
 // even when steps.CleanupScenario panics during issue cleanup.
 type panickingSCM struct{}
 
@@ -76,6 +79,56 @@ func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string,
 func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+
+// fakeDriver is a minimal install.Driver for unit testing suite hooks.
+type fakeDriver struct {
+	mu          sync.Mutex
+	allocated   int
+	deallocated int
+	outstanding map[string]struct{}
+	names       chan string
+}
+
+func newFakeDriver(capacity int) *fakeDriver {
+	names := make(chan string, capacity)
+	for i := 1; i <= capacity; i++ {
+		names <- fmt.Sprintf("test-repo-%02d", i)
+	}
+	return &fakeDriver{
+		names:       names,
+		outstanding: make(map[string]struct{}),
+	}
+}
+
+func (f *fakeDriver) AllocateRepo(ctx context.Context) (string, error) {
+	select {
+	case name := <-f.names:
+		f.mu.Lock()
+		f.allocated++
+		f.outstanding[name] = struct{}{}
+		f.mu.Unlock()
+		return name, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (f *fakeDriver) DeallocateRepo(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.outstanding[name]; !ok {
+		return fmt.Errorf("not an outstanding lease: %s", name)
+	}
+	delete(f.outstanding, name)
+	f.deallocated++
+	f.names <- name
+	return nil
+}
+
+func (f *fakeDriver) Finalize(_ context.Context) error { return nil }
+func (f *fakeDriver) Capacity() int                    { return cap(f.names) }
+
+var _ install.Driver = (*fakeDriver)(nil)
 
 func TestTagNames(t *testing.T) {
 	names := tagNames([]*messages.PickleTag{{Name: "@foo"}, {Name: "@bar"}})
@@ -164,7 +217,7 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 		IssueNumber: 42, // scenario field — should be zeroed by reset
 	}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, nil)
+	ctx, err := beforeScenario(context.Background(), nil, template)
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -176,47 +229,30 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 	assert.False(t, w.ScenarioStart.IsZero(), "ScenarioStart should be set")
 }
 
-func TestBeforeScenario_AcquiresPoolLease(t *testing.T) {
-	template := &world.World{Org: "test-org"}
-	pool, err := world.NewRepoPool(3)
-	require.NoError(t, err)
+func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
+	driver := newFakeDriver(3)
+	template := &world.World{Org: "test-org", Driver: driver}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, pool)
-	require.NoError(t, err)
-
-	w := world.FromContext(ctx)
-	require.NotNil(t, w)
-	assert.NotEmpty(t, w.LeasedRepoName)
-	assert.Contains(t, w.LeasedRepoName, "test-repo-")
-}
-
-func TestBeforeScenario_PoolAcquireFailure(t *testing.T) {
-	template := &world.World{Org: "test-org"}
-	pool, err := world.NewRepoPool(1)
-	require.NoError(t, err)
-
-	// Exhaust the pool.
-	_, err = pool.Acquire(context.Background())
-	require.NoError(t, err)
-
-	// Acquire with a cancelled context should fail.
-	cancelledCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-
-	_, err = beforeScenario(cancelledCtx, nil, template, pool)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "acquiring pool repo name")
-}
-
-func TestBeforeScenario_NilPool(t *testing.T) {
-	template := &world.World{Org: "test-org"}
-
-	ctx, err := beforeScenario(context.Background(), nil, template, nil)
+	ctx, err := beforeScenario(context.Background(), nil, template)
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
 	require.NotNil(t, w)
-	assert.Empty(t, w.LeasedRepoName, "no pool → no leased name")
+	// Before hook no longer acquires a pool lease — that is done by
+	// AllocateRepo in the step.
+	assert.Empty(t, w.LeasedRepoName, "Before hook should not acquire a lease")
+	assert.Equal(t, 0, driver.allocated, "driver should not be called in Before")
+}
+
+func TestBeforeScenario_NilDriver(t *testing.T) {
+	template := &world.World{Org: "test-org"}
+
+	ctx, err := beforeScenario(context.Background(), nil, template)
+	require.NoError(t, err)
+
+	w := world.FromContext(ctx)
+	require.NotNil(t, w)
+	assert.Empty(t, w.LeasedRepoName, "no driver → no leased name")
 }
 
 func TestAfterScenario_NilWorld(t *testing.T) {
@@ -229,66 +265,63 @@ func TestAfterScenario_NilWorld(t *testing.T) {
 	assert.Equal(t, origErr, err, "original error should be preserved")
 }
 
-func TestAfterScenario_ReleasesPoolLease(t *testing.T) {
-	pool, err := world.NewRepoPool(1)
-	require.NoError(t, err)
+func TestAfterScenario_DeallocatesRepo(t *testing.T) {
+	driver := newFakeDriver(1)
 
-	name, err := pool.Acquire(context.Background())
+	name, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 
 	w := &world.World{LeasedRepoName: name}
 	ctx := world.WithWorld(context.Background(), w)
 
-	_, err = afterScenario(ctx, pool, nil)
+	_, err = afterScenario(ctx, driver, nil)
 	require.NoError(t, err)
+	assert.Equal(t, 1, driver.deallocated)
 
-	// The released name should be available for re-acquisition.
-	got, err := pool.Acquire(context.Background())
+	// The deallocated name should be available for re-allocation.
+	got, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, name, got)
 }
 
-func TestAfterScenario_DoubleReleaseSurfacesError(t *testing.T) {
-	pool, err := world.NewRepoPool(2)
+func TestAfterScenario_DoubleDeallocateSurfacesError(t *testing.T) {
+	driver := newFakeDriver(2)
+
+	name, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 
-	name, err := pool.Acquire(context.Background())
-	require.NoError(t, err)
-
-	// Release the name before After — simulates a double-release.
-	require.NoError(t, pool.Release(name))
+	// Deallocate before After — simulates a double-release.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
 
 	w := &world.World{LeasedRepoName: name}
 	ctx := world.WithWorld(context.Background(), w)
 
-	// After should surface the release error, not panic.
-	_, err = afterScenario(ctx, pool, nil)
+	// After should surface the deallocation error, not panic.
+	_, err = afterScenario(ctx, driver, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "releasing pool repo name")
+	assert.Contains(t, err.Error(), "deallocating repo")
 }
 
 func TestAfterScenario_PreservesOriginalError(t *testing.T) {
-	pool, err := world.NewRepoPool(2)
-	require.NoError(t, err)
+	driver := newFakeDriver(2)
 
-	name, err := pool.Acquire(context.Background())
+	name, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 
 	w := &world.World{LeasedRepoName: name}
 	ctx := world.WithWorld(context.Background(), w)
 
 	origErr := assert.AnError
-	_, err = afterScenario(ctx, pool, origErr)
-	// Original error is preserved; release error is logged but not
-	// returned when there is already an error from the scenario.
+	_, err = afterScenario(ctx, driver, origErr)
+	// Original error is preserved; deallocation error (if any) is logged
+	// but not returned when there is already an error from the scenario.
 	assert.Equal(t, origErr, err)
 }
 
-func TestAfterScenario_ReleasesLeaseOnCleanupPanic(t *testing.T) {
-	pool, err := world.NewRepoPool(1)
-	require.NoError(t, err)
+func TestAfterScenario_DeallocatesOnCleanupPanic(t *testing.T) {
+	driver := newFakeDriver(1)
 
-	name, err := pool.Acquire(context.Background())
+	name, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 
 	// Build a World whose cleanup will panic: panickingSCM.CloseIssue
@@ -302,14 +335,51 @@ func TestAfterScenario_ReleasesLeaseOnCleanupPanic(t *testing.T) {
 	ctx := world.WithWorld(context.Background(), w)
 
 	// afterScenario should panic (from CleanupScenario), but the
-	// deferred pool.Release must still run during stack unwinding.
+	// deferred DeallocateRepo must still run during stack unwinding.
 	assert.Panics(t, func() {
-		afterScenario(ctx, pool, nil) //nolint:errcheck // panic prevents return
+		afterScenario(ctx, driver, nil) //nolint:errcheck // panic prevents return
 	})
 
-	// The deferred Release ran: the leased name is back in the pool
-	// and can be re-acquired.
-	got, err := pool.Acquire(context.Background())
+	// The deferred DeallocateRepo ran: the leased name is back in the
+	// driver and can be re-allocated.
+	got, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, name, got, "deferred Release should have returned the name to the pool")
+	assert.Equal(t, name, got, "deferred DeallocateRepo should have returned the name")
+}
+
+func TestAfterScenario_NoLeaseNoDeallocation(t *testing.T) {
+	driver := newFakeDriver(2)
+
+	// Scenario that never allocated a repo.
+	w := &world.World{}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, driver.deallocated, "should not deallocate when no lease exists")
+}
+
+func TestAfterScenario_AllocateBlocksUntilDeallocate(t *testing.T) {
+	driver := newFakeDriver(1)
+
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+
+	// Allocate with a short-timeout context should fail (pool exhausted).
+	shortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	_, err = driver.AllocateRepo(shortCtx)
+	require.Error(t, err)
+
+	// After deallocates the first name.
+	w := &world.World{LeasedRepoName: name}
+	ctx := world.WithWorld(context.Background(), w)
+	_, err = afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+
+	// Now a second allocation should succeed.
+	name2, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	assert.NotEmpty(t, name2)
 }

@@ -208,4 +208,58 @@ func TestRendererTokensEvent(t *testing.T) {
 	if !strings.Contains(output, "in=4000") {
 		t.Errorf("expected input token count, got: %s", output)
 	}
+	if strings.Contains(output, "reasoning=") {
+		t.Errorf("reasoning should not appear when zero, got: %s", output)
+	}
+}
+
+func TestRendererTokensEventWithReasoning(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(TokensEvent{InputTokens: 200, OutputTokens: 100, ReasoningTokens: 50, CacheRead: 80, CacheWrite: 20})
+
+	output := buf.String()
+	if !strings.Contains(output, "reasoning=50") {
+		t.Errorf("expected reasoning=50 in output, got: %s", output)
+	}
+}
+
+func TestRendererResultEventWithReasoning(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ResultEvent{
+		NumTurns:                 3,
+		TotalCostUSD:             0.20,
+		InputTokens:              1000,
+		OutputTokens:             500,
+		ReasoningTokens:          200,
+		CacheCreationInputTokens: 300,
+		CacheReadInputTokens:     400,
+	})
+
+	output := buf.String()
+	if !strings.Contains(output, "reasoning=200") {
+		t.Errorf("expected reasoning=200 in result tokens, got: %s", output)
+	}
+}
+
+func TestRendererResultEventWithoutReasoning(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ResultEvent{
+		NumTurns:                 3,
+		TotalCostUSD:             0.20,
+		InputTokens:              1000,
+		OutputTokens:             500,
+		CacheCreationInputTokens: 300,
+		CacheReadInputTokens:     400,
+	})
+
+	output := buf.String()
+	if strings.Contains(output, "reasoning=") {
+		t.Errorf("reasoning should not appear when zero, got: %s", output)
+	}
 }

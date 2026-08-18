@@ -11,7 +11,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,14 +55,13 @@ var _ dispatch.Dispatcher = (*Provisioner)(nil)
 // auto-builds at deploy time when missing. For local development,
 // `make wasm-stage` can pre-stage them into workersrc/.
 //
-//go:embed workersrc/src/index.ts workersrc/src/version.ts workersrc/wrangler.toml workersrc/package.json workersrc/tsconfig.json workersrc/wasm.d.ts workersrc/wasm_exec.d.ts
+//go:embed workersrc/src/index.ts workersrc/wrangler.toml workersrc/package.json workersrc/tsconfig.json workersrc/wasm.d.ts workersrc/wasm_exec.d.ts
 var embeddedWorkerSource embed.FS
 
 // embeddedWorkerFiles lists the embedded files for extraction.
 // Maps embedded path (under workersrc/) to extraction path.
 var embeddedWorkerFiles = []string{
 	"workersrc/src/index.ts",
-	"workersrc/src/version.ts",
 	"workersrc/wrangler.toml",
 	"workersrc/package.json",
 	"workersrc/tsconfig.json",
@@ -92,8 +93,9 @@ type Config struct {
 	// PreviewAlias is the Wrangler preview alias for preview deploys.
 	// When set (and DeployMode is DeployPreview), the provisioner uses
 	// `wrangler versions upload --preview-alias=<alias>` instead of
-	// `wrangler deploy`. The preview mint URL is deterministic:
-	// https://<alias>-<worker-name>.workers.dev
+	// `wrangler deploy`. The preview mint URL includes the account's
+	// workers.dev subdomain:
+	// https://<alias>-<worker-name>.<subdomain>.workers.dev
 	PreviewAlias string
 
 	// EnvVars are non-secret environment variables to set on the Worker
@@ -112,6 +114,18 @@ type Config struct {
 
 	// Commit is the git SHA stamped on the deployed Worker.
 	Commit string
+
+	// ZoneID is the Cloudflare zone ID for the custom domain.
+	// Required when CustomDomain is set. The zone must already exist
+	// in the Cloudflare account.
+	ZoneID string
+
+	// CustomDomain is the hostname to attach to the Worker as a
+	// Cloudflare Workers Custom Domain (e.g. "mint.fullsend.sh").
+	// When set for a durable deploy, the provisioner attaches the
+	// domain via the Cloudflare API. Ignored for preview deploys
+	// (which use bare workers.dev hostnames).
+	CustomDomain string
 }
 
 // WranglerRunner abstracts wrangler CLI operations for testing.
@@ -146,6 +160,7 @@ type WranglerRunner interface {
 type Provisioner struct {
 	cfg      Config
 	wrangler WranglerRunner
+	cfAPI    CloudflareAPIClient
 }
 
 // NewProvisioner creates a new CF Provisioner with defaults applied.
@@ -160,6 +175,23 @@ func NewProvisioner(cfg Config, wrangler WranglerRunner) *Provisioner {
 		cfg.EnvVars["OIDC_AUDIENCE"] = defaultOIDCAudience
 	}
 	return &Provisioner{cfg: cfg, wrangler: wrangler}
+}
+
+// SetCloudflareAPI sets the Cloudflare API client used for custom
+// domain attachment. When nil (the default), a LiveCloudflareAPIClient
+// is created lazily if CustomDomain is configured.
+func (p *Provisioner) SetCloudflareAPI(client CloudflareAPIClient) {
+	p.cfAPI = client
+}
+
+// ensureCFAPI returns the Cloudflare API client, creating a live
+// client if none was set.
+func (p *Provisioner) ensureCFAPI() CloudflareAPIClient {
+	if p.cfAPI != nil {
+		return p.cfAPI
+	}
+	p.cfAPI = NewLiveCloudflareAPIClient()
+	return p.cfAPI
 }
 
 // Name returns the dispatcher identifier.
@@ -198,18 +230,14 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	// (no manual `make wasm-stage` required). When both files are
 	// already present (e.g. from a prior `make wasm-stage`), this
 	// is a no-op.
-	if err := ensureWASMArtifacts(sourceDir); err != nil {
+	if err := ensureWASMArtifacts(sourceDir, p.cfg.Version, p.cfg.Commit); err != nil {
 		return nil, fmt.Errorf("staging WASM artifacts: %w", err)
 	}
 
-	// Stamp version metadata into the Worker source at deploy time so
-	// the WASM module can report them via /health and /status. This
-	// mirrors the GCF approach (writeVersionGoToZip) — version data is
-	// compiled into the deployed bundle and cannot diverge via admin
-	// action on environment variables.
-	if err := writeVersionTS(sourceDir, p.cfg.Version, p.cfg.Commit); err != nil {
-		return nil, fmt.Errorf("writing version.ts: %w", err)
-	}
+	// Version metadata is stamped into the WASM binary via -ldflags
+	// during go build (see buildWASM). No runtime injection needed —
+	// the version is compiled into mintcore.Version / mintcore.Commit,
+	// matching how writeVersionGoToZip works for GCF deploys.
 
 	// For preview deploys, check whether the Worker script exists. If it
 	// does not, perform a one-time minimal durable deploy so that the
@@ -239,6 +267,31 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	url, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, p.cfg.PreviewAlias, p.cfg.EnvVars, p.cfg.Secrets)
 	if err != nil {
 		return nil, fmt.Errorf("deploying worker: %w", err)
+	}
+
+	// Attach custom domain for durable deploys. Preview deploys use
+	// bare workers.dev hostnames where custom domains do not apply.
+	if p.cfg.CustomDomain != "" && p.cfg.DeployMode == DeployDurable {
+		cfAPI := p.ensureCFAPI()
+
+		// Resolve zone ID from custom domain if not explicitly provided.
+		zoneID := p.cfg.ZoneID
+		if zoneID == "" {
+			var lookupErr error
+			zoneID, lookupErr = cfAPI.LookupZoneID(ctx, p.cfg.CustomDomain)
+			if lookupErr != nil {
+				return nil, fmt.Errorf("looking up zone ID for custom domain %s: %w", p.cfg.CustomDomain, lookupErr)
+			}
+			p.cfg.ZoneID = zoneID
+		}
+
+		if err := cfAPI.AttachCustomDomain(ctx, p.cfg.AccountID, p.cfg.WorkerName, zoneID, p.cfg.CustomDomain); err != nil {
+			return nil, fmt.Errorf("attaching custom domain: %w", err)
+		}
+
+		// When a custom domain is configured, use it as the mint URL
+		// instead of the workers.dev URL.
+		url = "https://" + p.cfg.CustomDomain
 	}
 
 	return map[string]string{
@@ -284,6 +337,14 @@ func (p *Provisioner) Teardown(ctx context.Context) error {
 		// durable Worker script, which is shared with production.
 		return nil
 	case DeployDurable:
+		// Remove custom domain before deleting the Worker.
+		if p.cfg.CustomDomain != "" {
+			cfAPI := p.ensureCFAPI()
+
+			if err := cfAPI.RemoveCustomDomain(ctx, p.cfg.AccountID, p.cfg.CustomDomain); err != nil {
+				return fmt.Errorf("removing custom domain: %w", err)
+			}
+		}
 		return p.wrangler.Delete(ctx, p.cfg.WorkerName)
 	default:
 		return fmt.Errorf("unknown deploy mode for teardown")
@@ -320,6 +381,22 @@ func (p *Provisioner) validate() error {
 	if p.cfg.DeployMode == DeployDurable && len(p.cfg.Secrets) > 0 {
 		return fmt.Errorf("Config.Secrets must be empty for durable deploys; use StoreAgentPEM after deploy instead")
 	}
+	// Guard against preview deploy with custom domain. Custom domains
+	// are zone-scoped and apply only to durable Workers — preview
+	// deploys use bare workers.dev hostnames.
+	if p.cfg.CustomDomain != "" && p.cfg.DeployMode == DeployPreview {
+		return fmt.Errorf("CustomDomain is not supported for preview deploys (use durable deploy mode)")
+	}
+	// Guard against ZoneID without CustomDomain. ZoneID is only
+	// meaningful when a CustomDomain is configured — setting it
+	// alone has no effect and likely indicates a config error.
+	if p.cfg.ZoneID != "" && p.cfg.CustomDomain == "" {
+		return fmt.Errorf("CustomDomain is required when ZoneID is set")
+	}
+	// Validate custom domain hostname syntax when provided.
+	if p.cfg.CustomDomain != "" && !ValidateHostname(p.cfg.CustomDomain) {
+		return fmt.Errorf("invalid CustomDomain %q: must be a valid DNS hostname (e.g. mint.fullsend.sh)", p.cfg.CustomDomain)
+	}
 	return nil
 }
 
@@ -329,13 +406,13 @@ func (p *Provisioner) validate() error {
 //
 // When SourceDir points to a checkout directory, the source is copied
 // to a temp directory so that auto-staged WASM artifacts and generated
-// version.ts do not pollute the checkout.
+// WASM artifacts do not pollute the checkout.
 func (p *Provisioner) resolveSourceDir() (string, func(), error) {
 	if p.cfg.SourceDir != "" {
 		if err := validateSourceDir(p.cfg.SourceDir); err != nil {
 			return "", nil, err
 		}
-		// Copy to temp dir so WASM staging and version.ts generation
+		// Copy to temp dir so WASM staging
 		// do not modify the original source directory.
 		tmpDir, err := os.MkdirTemp("", "fullsend-cf-worker-*")
 		if err != nil {
@@ -392,19 +469,28 @@ var wasmArtifacts = []string{"mintcore.wasm", "wasm_exec.js"}
 
 // BuildWASMFn is the function used to compile mintcore.wasm from
 // cmd/mint-wasm. Override in tests to avoid requiring a full Go
-// toolchain and the mint-wasm source tree.
+// toolchain and the mint-wasm source tree. The version and commit
+// parameters are stamped into the binary via -ldflags, mirroring
+// how writeVersionGoToZip works for GCF deploys.
 var BuildWASMFn = buildWASM
 
 // CopyWASMExecFn is the function used to copy wasm_exec.js from the
 // Go toolchain into the Worker source directory. Override in tests.
 var CopyWASMExecFn = copyWASMExec
 
+// execCombinedOutputFn runs a prepared *exec.Cmd and returns its
+// combined stdout+stderr. Override in tests to avoid requiring a
+// real cross-compile toolchain.
+var execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
+	return cmd.CombinedOutput()
+}
+
 // ensureWASMArtifacts checks whether mintcore.wasm and wasm_exec.js
 // are present in dir. If either is missing, it auto-builds/copies
 // them so that `mint deploy --platform=cloudflare` is self-contained.
 // When both are already present (e.g. from `make wasm-stage`), this
 // is a no-op.
-func ensureWASMArtifacts(dir string) error {
+func ensureWASMArtifacts(dir, version, commit string) error {
 	wasmPath := filepath.Join(dir, "mintcore.wasm")
 	execPath := filepath.Join(dir, "wasm_exec.js")
 
@@ -415,7 +501,7 @@ func ensureWASMArtifacts(dir string) error {
 	}
 
 	if !wasmOK {
-		if err := BuildWASMFn(wasmPath); err != nil {
+		if err := BuildWASMFn(wasmPath, version, commit); err != nil {
 			return fmt.Errorf("auto-building mintcore.wasm: %w", err)
 		}
 	}
@@ -427,13 +513,27 @@ func ensureWASMArtifacts(dir string) error {
 	return nil
 }
 
+// wasmLDFlags returns the -ldflags value for compiling the mintcore WASM
+// binary. Includes -s -w to strip debug info (reduces gzip size by ~30%)
+// and -X flags to stamp version metadata into the binary.
+func wasmLDFlags(version, commit string) string {
+	return fmt.Sprintf(
+		"-s -w "+
+			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Version=%s "+
+			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Commit=%s",
+		version, commit)
+}
+
 // buildWASM compiles the mintcore WASM binary from cmd/mint-wasm.
-// The binary is written to outPath. Requires Go toolchain.
-func buildWASM(outPath string) error {
-	cmd := exec.Command("go", "build", "-o", outPath, ".")
+// The binary is written to outPath. Version and commit are stamped
+// into the binary via -ldflags (mintcore.Version and mintcore.Commit),
+// matching the GCF approach of compiling version data into the source.
+// Debug info is stripped (-s -w) to reduce the gzip size.
+func buildWASM(outPath, version, commit string) error {
+	cmd := exec.Command("go", "build", "-ldflags", wasmLDFlags(version, commit), "-o", outPath, ".")
 	cmd.Dir = filepath.Join(findRepoRoot(), "cmd", "mint-wasm")
 	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
-	output, err := cmd.CombinedOutput()
+	output, err := execCombinedOutputFn(cmd)
 	if err != nil {
 		return fmt.Errorf("go build cmd/mint-wasm: %s\n%s", err, string(output))
 	}
@@ -516,24 +616,6 @@ func copyDir(src, dst string) error {
 		}
 		return os.WriteFile(destPath, data, 0o644)
 	})
-}
-
-// writeVersionTS writes a generated version.ts into the Worker source
-// directory with the provided version and commit values. This stamps
-// the version identity directly into the deployed source code —
-// mirroring how writeVersionGoToZip works for GCF deploys — so it
-// cannot drift from the running code via admin changes to env vars.
-func writeVersionTS(dir, version, commit string) error {
-	src := fmt.Sprintf(
-		"// Generated at deploy time by the CF provisioner. Do not edit.\n"+
-			"export const FULLSEND_VERSION = %q;\n"+
-			"export const FULLSEND_COMMIT = %q;\n",
-		version, commit)
-	destPath := filepath.Join(dir, "src", "version.ts")
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("creating directory for version.ts: %w", err)
-	}
-	return os.WriteFile(destPath, []byte(src), 0o644)
 }
 
 // validateSourceDir checks that a source directory contains the
@@ -728,8 +810,9 @@ func NewLiveWranglerRunner(accountID string) *LiveWranglerRunner {
 // Deploy deploys a Worker from sourceDir using wrangler.
 //
 // When previewAlias is non-empty, uses `wrangler versions upload` with
-// `--preview-alias=<alias>` for a preview deploy. The preview URL is
-// deterministic: https://<alias>-<workerName>.workers.dev
+// `--preview-alias=<alias>` for a preview deploy. The preview URL
+// includes the account's workers.dev subdomain:
+// https://<alias>-<workerName>.<subdomain>.workers.dev
 //
 // When previewAlias is empty, uses `wrangler deploy` for a durable
 // production deploy.
@@ -773,12 +856,21 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 		return "", fmt.Errorf("wrangler deploy failed: %s\n%s", err, string(output))
 	}
 
-	// Parse the Worker URL from wrangler output.
+	// Parse the Worker URL from wrangler output. Wrangler prints the
+	// full URL including the account's workers.dev subdomain (e.g.
+	// https://<worker>.<subdomain>.workers.dev).
 	url := parseWorkerURL(string(output), workerName)
-	if url == "" {
-		url = fmt.Sprintf("https://%s.workers.dev", workerName)
+	if url != "" {
+		return url, nil
 	}
-	return url, nil
+
+	// Fallback: resolve the account's workers.dev subdomain via the
+	// Cloudflare API and construct the URL.
+	subdomain, subErr := ResolveWorkersSubdomainFn(ctx, r.AccountID)
+	if subErr != nil {
+		return "", fmt.Errorf("wrangler output did not contain Worker URL and subdomain lookup failed: %w", subErr)
+	}
+	return fmt.Sprintf("https://%s.%s.workers.dev", workerName, subdomain), nil
 }
 
 // deployPreview performs a preview deploy via `wrangler versions upload`.
@@ -826,12 +918,24 @@ func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, worke
 		return "", fmt.Errorf("wrangler versions upload failed: %s\n%s", err, string(output))
 	}
 
-	// Preview URL is deterministic from the alias and worker name.
-	// We don't use parseWorkerURL here because wrangler output may
-	// contain the production Worker URL, which parseWorkerURL would
-	// match as a false positive. The deterministic pattern is reliable.
-	url := fmt.Sprintf("https://%s-%s.workers.dev", previewAlias, workerName)
-	return url, nil
+	// Parse the preview URL from wrangler output. The preview URL
+	// includes the account's workers.dev subdomain (e.g.
+	// https://<alias>-<worker>.<subdomain>.workers.dev), which we
+	// cannot construct without knowing the subdomain. Parsing from
+	// wrangler output is auth-transparent: it works for both API-token
+	// and Wrangler-login auth modes.
+	if url := parsePreviewURL(string(output), previewAlias); url != "" {
+		return url, nil
+	}
+
+	// Wrangler output didn't contain a parseable preview URL. Fall
+	// back to resolving the account's workers.dev subdomain via the
+	// Cloudflare API and constructing the URL.
+	subdomain, subErr := ResolveWorkersSubdomainFn(ctx, r.AccountID)
+	if subErr != nil {
+		return "", fmt.Errorf("wrangler output did not contain preview URL and subdomain lookup failed: %w", subErr)
+	}
+	return fmt.Sprintf("https://%s-%s.%s.workers.dev", previewAlias, workerName, subdomain), nil
 }
 
 // PutSecret stores a secret value on the durable Worker via wrangler
@@ -956,6 +1060,121 @@ func parseWorkerURL(output, _ string) string {
 				url = strings.TrimRight(url, " \t\n\r.,;")
 				return url
 			}
+		}
+	}
+	return ""
+}
+
+// parsePreviewURL extracts a preview Worker URL from wrangler output by
+// looking for a URL that contains the preview alias. This avoids false
+// positives from the production Worker URL that wrangler may also print.
+func parsePreviewURL(output, previewAlias string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "https://") || !strings.Contains(line, "workers.dev") {
+			continue
+		}
+		start := strings.Index(line, "https://")
+		if start < 0 {
+			continue
+		}
+		url := strings.TrimRight(line[start:], " \t\n\r.,;")
+		// Match only URLs that start with the preview alias to
+		// distinguish from the production Worker URL.
+		host := strings.TrimPrefix(url, "https://")
+		if strings.HasPrefix(host, previewAlias+"-") {
+			return url
+		}
+	}
+	return ""
+}
+
+// ResolveWorkersSubdomainFn is the function used to resolve the workers.dev
+// subdomain for a Cloudflare account. Override in tests to avoid real API
+// calls.
+var ResolveWorkersSubdomainFn = resolveWorkersSubdomain
+
+// resolveWorkersSubdomain calls the Cloudflare API to get the account's
+// workers.dev subdomain. Supports API-token auth via CLOUDFLARE_API_TOKEN
+// env var; when absent, attempts to use Wrangler's authenticated path
+// by running `npx wrangler subdomain` (which reads the Wrangler OAuth
+// session).
+func resolveWorkersSubdomain(ctx context.Context, accountID string) (string, error) {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	if token != "" {
+		return resolveSubdomainViaAPI(ctx, accountID, token)
+	}
+
+	// No API token — try wrangler's authenticated path.
+	return resolveSubdomainViaWrangler(ctx)
+}
+
+// resolveSubdomainViaAPI calls GET /accounts/{account_id}/workers/subdomain
+// using the Cloudflare API token.
+func resolveSubdomainViaAPI(ctx context.Context, accountID, token string) (string, error) {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/subdomain", accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("calling Cloudflare subdomain API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Cloudflare subdomain API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Result struct {
+			Subdomain string `json:"subdomain"`
+		} `json:"result"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parsing subdomain response: %w", err)
+	}
+	if !result.Success || result.Result.Subdomain == "" {
+		return "", fmt.Errorf("Cloudflare subdomain API returned empty subdomain: %s", string(body))
+	}
+	return result.Result.Subdomain, nil
+}
+
+// resolveSubdomainViaWrangler runs `npx wrangler subdomain` and parses
+// the subdomain from its output. This works when Wrangler is
+// authenticated via `wrangler login` (OAuth session) without requiring
+// CLOUDFLARE_API_TOKEN.
+func resolveSubdomainViaWrangler(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "subdomain")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("wrangler subdomain failed: %w\n%s", err, string(out))
+	}
+	subdomain := parseWranglerSubdomainOutput(string(out))
+	if subdomain == "" {
+		return "", fmt.Errorf("could not parse subdomain from wrangler output: %s", string(out))
+	}
+	return subdomain, nil
+}
+
+// parseWranglerSubdomainOutput extracts the subdomain from `wrangler
+// subdomain` output. The command typically prints a line like:
+//
+//	<subdomain>.workers.dev
+func parseWranglerSubdomainOutput(output string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasSuffix(line, ".workers.dev") {
+			return strings.TrimSuffix(line, ".workers.dev")
 		}
 	}
 	return ""

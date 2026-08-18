@@ -32,7 +32,7 @@ See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ### Base Composition
 
-The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; `skills` merges with deduplication by basename (child overrides); `plugins`, `providers`, and `api_servers` concatenate (base + child, no dedup at composition time); `env.runner` and `env.sandbox` merge as independent maps (child keys win); `runner_env` is deprecated in favor of `env.runner`. Replaced the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field.
+The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; `skills` merges with deduplication by basename (child overrides); `plugins`, `providers`, `openshell.profiles`, and `api_servers` concatenate (base + child, no dedup at composition time); `env.runner` and `env.sandbox` merge as independent maps (child keys win); `runner_env` is deprecated in favor of `env.runner`. Replaced the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field.
 See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [ADR 0055](ADRs/0055-unified-env-var-delivery.md), [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md), and [Configuring Agent Behavior](guides/user/customizing-agents.md).
 
 ### Blast Radius

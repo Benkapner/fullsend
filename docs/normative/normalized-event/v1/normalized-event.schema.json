@@ -101,6 +101,13 @@
           }
         },
         "required": ["state"]
+      },
+      "else": {
+        "properties": {
+          "state": {
+            "properties": { "conversation": false }
+          }
+        }
       }
     }
   ],
@@ -317,7 +324,7 @@
             "minLength": 1,
             "maxLength": 255
           },
-          "description": "Snapshot of label names on the entity at event time. For entity.kind conversation, these are labels on the conversation (not on individual messages). Category is not a label — see state.conversation.category (ADR 0086)."
+          "description": "Snapshot of label names on the entity at event time. See state.conversation for conversation-specific label semantics."
         },
         "conversation": {
           "type": "object",
@@ -345,7 +352,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 255,
-                  "description": "URL-safe or backend slug when available (e.g. GitHub category slug)."
+                  "description": "Backend slug when available. On GitHub, present in webhook REST payloads (discussion.category.slug) but not on GraphQL DiscussionCategory; GITHUB_EVENT_PATH adapters can populate it, GraphQL-only enrichment cannot. Treat as untrusted input even after schema validation — no structural pattern is enforced so Slack/Discord/Matrix adapters can pass through backend identifiers."
                 },
                 "format": {
                   "type": "string",
@@ -359,10 +366,10 @@
                   "description": "Optional portable category format for routing. Not a permission authority (ADR 0054). GitHub GraphQL DiscussionCategory exposes isAnswerable but no announcement/poll/discussion format field: adapters MUST set question_answer when isAnswerable is true, and SHOULD omit format otherwise unless they document an explicit heuristic (e.g. name/slug matching). UI-only GitHub create restrictions (e.g. announcement maintain/admin) are not queryable via the public API and MUST NOT be inferred solely from this field."
                 }
               },
-              "description": "Exclusive category of the conversation (1:M category→conversation). Distinct from state.labels (M:M tags)."
+              "description": "Exclusive category of the conversation (1:M category→conversation). Distinct from state.labels (M:M tags on the conversation, not on messages)."
             }
           },
-          "description": "Required when entity.kind is conversation (ADR 0086). Snapshot of conversation-level metadata at event time, including when the transition is comment_added on a message."
+          "description": "Required when entity.kind is conversation and forbidden otherwise (ADR 0086). Snapshot of conversation-level metadata at event time, including when the transition is comment_added on a message. state.labels on conversation events are labels on the conversation; category is not a label."
         },
         "change_proposal": {
           "type": "object",

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -23,6 +24,20 @@ var (
 	validSlugName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 	envVarRef     = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
+
+// validEffortLevels are the reasoning effort levels accepted by the claude
+// CLI's --effort flag, verified against @anthropic-ai/claude-code 2.1.226
+// (the version pinned in images/sandbox/Containerfile). The CLI also accepts
+// the undocumented "ultracode" keyword, which is deliberately excluded here:
+// it opts sessions into multi-agent workflow orchestration rather than
+// selecting a reasoning effort level.
+var validEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
+// validEffortLevel reports whether level is a recognized reasoning effort level
+// for the claude CLI's --effort flag.
+func validEffortLevel(level string) bool {
+	return slices.Contains(validEffortLevels, level)
+}
 
 // ValidPluginBasename reports whether name matches the allowed plugin name pattern.
 func ValidPluginBasename(name string) bool {
@@ -296,13 +311,14 @@ type Harness struct {
 	Base                   string                  `yaml:"base,omitempty"`
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
-	Skills                 []string                `yaml:"skills,omitempty"`
+	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
 	Plugins                []string                `yaml:"plugins,omitempty"`
 	Providers              []string                `yaml:"providers,omitempty"`
 	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
 	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
 	Model                  string                  `yaml:"model,omitempty"`
+	Effort                 string                  `yaml:"effort,omitempty"`
 	PreScript              string                  `yaml:"pre_script,omitempty"`
 	PostScript             string                  `yaml:"post_script,omitempty"`
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
@@ -415,6 +431,9 @@ func (h *Harness) Validate() error {
 	}
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
+	}
+	if h.Effort != "" && !validEffortLevel(h.Effort) {
+		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
 	}
 	if h.Role == "" {
 		return fmt.Errorf("role field is required")
@@ -569,8 +588,20 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 	}
 
 	for i := range h.Skills {
-		if h.Skills[i], err = resolve(fmt.Sprintf("skills[%d]", i), h.Skills[i]); err != nil {
-			return err
+		resolved, resolveErr := resolve(fmt.Sprintf("skills[%d]", i), h.Skills[i].Source)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		h.Skills[i].Source = resolved
+		for key, val := range h.Skills[i].Overrides {
+			if val == nil {
+				continue // null = removal, nothing to resolve
+			}
+			resolved, resolveErr := resolve(fmt.Sprintf("skills[%d].overrides[%s]", i, key), *val)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			*h.Skills[i].Overrides[key] = resolved
 		}
 	}
 	for i := range h.Plugins {
@@ -709,8 +740,15 @@ func (h *Harness) ValidateFilesExist() error {
 		return err
 	}
 	for i, s := range h.Skills {
-		if err := check(fmt.Sprintf("skills[%d]", i), s); err != nil {
+		if err := check(fmt.Sprintf("skills[%d]", i), s.Source); err != nil {
 			return err
+		}
+		for key, val := range s.Overrides {
+			if val != nil {
+				if err := check(fmt.Sprintf("skills[%d].overrides[%s]", i, key), *val); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	for i, p := range h.Plugins {
@@ -869,8 +907,8 @@ func (h *Harness) ValidateResourceTypes() error {
 		}
 	}
 	for i, s := range h.Skills {
-		if IsURL(s) {
-			cleanURL, _, hasHash := ParseIntegrityHash(s)
+		if IsURL(s.Source) {
+			cleanURL, _, hasHash := ParseIntegrityHash(s.Source)
 			if !hasHash {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
@@ -888,6 +926,18 @@ func (h *Harness) ValidateResourceTypes() error {
 				return fmt.Errorf("skills[%d] URL must point to a directory inside the repo, not the repo root", i)
 			}
 		}
+	}
+	for i, s := range h.Skills {
+		for key, val := range s.Overrides {
+			if val != nil && IsURL(*val) {
+				if _, _, hasHash := ParseIntegrityHash(*val); !hasHash {
+					return fmt.Errorf("skills[%d].overrides[%s] URL must include #sha256=... integrity hash", i, key)
+				}
+			}
+		}
+	}
+	if err := ValidateSkillOverrides(h.Skills); err != nil {
+		return err
 	}
 	for i, p := range h.Plugins {
 		if IsURL(p) {
@@ -951,7 +1001,7 @@ func (h *Harness) EffectiveMaxRuntimeFetches() int {
 // URL. Used to determine whether a forge client is needed for resolution.
 func (h *Harness) HasURLDirResources() bool {
 	for _, s := range h.Skills {
-		if IsURL(s) {
+		if IsURL(s.Source) {
 			return true
 		}
 	}
@@ -971,8 +1021,13 @@ func (h *Harness) HasURLReferences() bool {
 		return true
 	}
 	for _, s := range h.Skills {
-		if IsURL(s) {
+		if IsURL(s.Source) {
 			return true
+		}
+		for _, val := range s.Overrides {
+			if val != nil && IsURL(*val) {
+				return true
+			}
 		}
 	}
 	for _, p := range h.Plugins {

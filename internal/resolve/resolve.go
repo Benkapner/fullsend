@@ -308,16 +308,29 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	}
 
 	for i, s := range h.Skills {
-		if harness.IsURL(s) {
-			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("skills[%d]", i), s, h, opts, state, recurse, 0)
+		if harness.IsURL(s.Source) {
+			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("skills[%d]", i), s.Source, h, opts, state, recurse, 0)
 			if err != nil {
 				return ResolveResult{}, fmt.Errorf("resolving skills[%d]: %w", i, err)
 			}
 			if !state.inDeps[dep.URL] {
-				h.Skills[i] = localPath
+				h.Skills[i].Source = localPath
 			} else {
-				h.Skills[i] = ""
+				h.Skills[i].Source = ""
 			}
+			state.appendDependency(dep)
+		}
+		for key, val := range s.Overrides {
+			if val == nil || !harness.IsURL(*val) {
+				continue
+			}
+			field := fmt.Sprintf("skills[%d].overrides[%s]", i, key)
+			dep, localPath, err := resolveFileURL(ctx, field, *val, h, opts, state)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("resolving %s: %w", field, err)
+			}
+			resolved := localPath
+			h.Skills[i].Overrides[key] = &resolved
 			state.appendDependency(dep)
 		}
 	}
@@ -325,7 +338,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	// Remove entries that were already appended transitively.
 	filtered := h.Skills[:0]
 	for _, s := range h.Skills {
-		if s != "" {
+		if s.Source != "" {
 			filtered = append(filtered, s)
 		}
 	}
@@ -792,7 +805,7 @@ func resolveSkillTransitiveDeps(ctx context.Context, parentURL, skillDirPath str
 		}
 
 		if !state.inDeps[dep.URL] {
-			h.Skills = append(h.Skills, localPath)
+			h.Skills = append(h.Skills, harness.SkillEntry{Source: localPath})
 		}
 		state.appendDependency(dep)
 	}

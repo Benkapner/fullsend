@@ -289,6 +289,62 @@ func TestAddToManifest_DiscoverProbeError(t *testing.T) {
 	}
 }
 
+func TestAddToManifest_DiscoverGitLabFullsendRef(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"# fullsend-ref: v3.2.0\ninclude:\n  - project: fullsend-ai/fullsend\n    ref: v3.2.0\n    file: .gitlab/ci/dispatch.yml\n")
+
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitLab: GitLabForgeInfra{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v3.0.0",
+		}},
+		Defaults: DefaultsConfig{Forge: ForgeGitLab},
+	}
+
+	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
+		Manifest: manifest,
+	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+
+	if err != nil {
+		t.Fatalf("AddToManifest() error = %v", err)
+	}
+	entry := updated.Repos[len(updated.Repos)-1]
+	if !entry.FullsendRef.Set || entry.FullsendRef.Value != "v3.2.0" {
+		t.Errorf("FullsendRef = %+v, want {Set:true, Value:v3.2.0}", entry.FullsendRef)
+	}
+}
+
+func TestAddToManifest_DiscoverGitLabFullsendRefMatchesDefault(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+		"# fullsend-ref: v3.0.0\ninclude:\n  - project: fullsend-ai/fullsend\n    ref: v3.0.0\n    file: .gitlab/ci/dispatch.yml\n")
+
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitLab: GitLabForgeInfra{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v3.0.0",
+		}},
+		Defaults: DefaultsConfig{Forge: ForgeGitLab},
+	}
+
+	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
+		Manifest: manifest,
+	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+
+	if err != nil {
+		t.Fatalf("AddToManifest() error = %v", err)
+	}
+	entry := updated.Repos[len(updated.Repos)-1]
+	if entry.FullsendRef.Set {
+		t.Errorf("FullsendRef.Set = true, want false (matches forge default)")
+	}
+}
+
 func TestRemoveFromManifest_Basic(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
@@ -569,7 +625,9 @@ func TestSetDefault_AllKeys(t *testing.T) {
 	}{
 		{"forge.github.url", "https://ghes.example.com", "url: https://ghes.example.com"},
 		{"forge.github.fullsend_ref", "v3.0.0", "fullsend_ref: v3.0.0"},
+		{"forge.github.mint_mode", "private", "mint_mode: private"},
 		{"forge.gitlab.url", "https://gitlab.example.com", "url: https://gitlab.example.com"},
+		{"forge.gitlab.fullsend_ref", "v4.1.0", "fullsend_ref: v4.1.0"},
 	}
 	for _, tt := range tests {
 		err := SetDefault(manifestPath, tt.key, tt.value)
@@ -664,6 +722,19 @@ func TestSetDefault_InvalidRef(t *testing.T) {
 	}
 }
 
+func TestSetDefault_InvalidRef_GitLab(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "forge.gitlab.fullsend_ref", "v1.0.0; rm -rf /")
+	if err == nil {
+		t.Fatal("expected error for invalid ref characters")
+	}
+	if !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected invalid characters error, got: %v", err)
+	}
+}
+
 func TestSetDefault_RunnerTags(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
@@ -719,6 +790,19 @@ func TestSetDefault_RunnerTags_RejectsEmpty(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "must not be empty") {
 		t.Errorf("expected 'must not be empty' error, got: %v", err)
+	}
+}
+
+func TestSetDefault_MintModeInvalid(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "forge.github.mint_mode", "hybrid")
+	if err == nil {
+		t.Fatal("expected error for invalid mint_mode")
+	}
+	if !strings.Contains(err.Error(), "must be") {
+		t.Errorf("expected validation error, got: %v", err)
 	}
 }
 

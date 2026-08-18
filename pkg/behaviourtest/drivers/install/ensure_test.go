@@ -19,7 +19,7 @@ import (
 )
 
 // fakeEnsurer is a test double for RepoEnsurer that records calls and
-// returns a fixed perRepoState. It lets callers verify caching and
+// returns a fixed PerRepoState. It lets callers verify caching and
 // call-count behaviour without a real forge client or CLI binary.
 type fakeEnsurer struct {
 	calls atomic.Int32
@@ -41,7 +41,7 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) (State
 	f.mu.Unlock()
 
 	f.calls.Add(1)
-	st := &perRepoState{org: org, repo: repoName}
+	st := NewPerRepoState(org, repoName, "")
 
 	f.mu.Lock()
 	f.cache[key] = st
@@ -56,7 +56,7 @@ func TestFakeEnsurer_ReturnsCorrectState(t *testing.T) {
 	e := newFakeEnsurer()
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-01")
 	require.NoError(t, err)
-	assert.Equal(t, "test-repo-01", st.TestRepo())
+	assert.Equal(t, "test-repo-01", st.ConfigRepo())
 	assert.Equal(t, "org", st.ConfigOwner())
 	assert.Equal(t, "per-repo", st.Mode())
 }
@@ -89,8 +89,8 @@ func TestFakeEnsurer_IndependentRepos(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotSame(t, st1, st2)
-	assert.Equal(t, "test-repo-01", st1.TestRepo())
-	assert.Equal(t, "test-repo-02", st2.TestRepo())
+	assert.Equal(t, "test-repo-01", st1.ConfigRepo())
+	assert.Equal(t, "test-repo-02", st2.ConfigRepo())
 	assert.Equal(t, int32(2), e.calls.Load())
 }
 
@@ -244,7 +244,7 @@ func TestRepoEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-05")
 	require.NoError(t, err)
-	assert.Equal(t, "test-repo-05", st.TestRepo())
+	assert.Equal(t, "test-repo-05", st.ConfigRepo())
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
 }
 
@@ -260,7 +260,7 @@ func TestRepoEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
 
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-03")
 	require.NoError(t, err)
-	assert.Equal(t, "test-repo-03", st.TestRepo())
+	assert.Equal(t, "test-repo-03", st.ConfigRepo())
 	assert.Equal(t, int32(0), sc.createRepoCalled.Load(), "should not create existing repo")
 }
 
@@ -278,17 +278,17 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "per-repo", st.Mode())
-	assert.Equal(t, "test-repo-07", st.TestRepo())
 	assert.Equal(t, "test-org", st.ConfigOwner())
 	assert.Equal(t, "test-repo-07", st.ConfigRepo())
 	assert.Equal(t, ".fullsend", st.ConfigPathPrefix())
 	assert.Equal(t, "test-repo-07", st.TriageWorkflowRepo())
-	assert.Equal(t, perRepoTriageWorkflow, st.TriageWorkflowFile())
-	assert.Equal(t, perRepoAgentWorkflow, st.AgentWorkflowFile())
-	assert.Equal(t, perRepoAgentArtifact, st.AgentArtifactName())
+	assert.Equal(t, PerRepoTriageWorkflow, st.TriageWorkflowFile())
+	assert.Equal(t, PerRepoAgentWorkflow, st.AgentWorkflowFile())
+	assert.Equal(t, PerRepoAgentArtifact, st.AgentArtifactName())
 }
 
 func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Start with installed=false to simulate a repo that exists but
 	// has not yet been set up with fullsend. The mock CLI runner flips
 	// sc.installed to true when "github setup" is invoked, simulating
@@ -316,7 +316,7 @@ func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-10")
 	require.NoError(t, err)
 	require.NotNil(t, st)
-	assert.Equal(t, "test-repo-10", st.TestRepo())
+	assert.Equal(t, "test-repo-10", st.ConfigRepo())
 	assert.Equal(t, "org", st.ConfigOwner())
 
 	// CLI should have been called for "github setup".
@@ -327,6 +327,7 @@ func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
 }
 
 func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Full flow: repo missing → created, validation fails → CLI invoked,
 	// re-validation passes → State cached.
 	sc := &stubClient{
@@ -355,7 +356,7 @@ func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 	st, err := e.EnsureRepo(ctx, "org", "test-repo-new")
 	require.NoError(t, err)
 	require.NotNil(t, st)
-	assert.Equal(t, "test-repo-new", st.TestRepo())
+	assert.Equal(t, "test-repo-new", st.ConfigRepo())
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load(), "repo should be created")
 	require.Len(t, cliCalls, 1)
 	assert.Equal(t, "github", cliCalls[0][0])
@@ -368,6 +369,7 @@ func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 }
 
 func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
+	speedUpValidateRetries(t)
 	// When GCPProjectID is set, provisionInference should be called
 	// before github setup.
 	sc := &stubClient{installed: false}
@@ -412,7 +414,29 @@ func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 	assert.Contains(t, cliCalls[2], "--inference-wif-provider")
 }
 
+func TestRepoEnsurer_DoEnsure_MintURLPopulated(t *testing.T) {
+	// Verify that doEnsure sets mintURL on the returned state from
+	// e2eCfg.MintURL (finding 5: consumer-completeness).
+	sc := &stubClient{installed: true}
+	e := &repoEnsurer{
+		e2eCfg:  e2etest.EnvConfig{MintURL: "https://preview.workers.dev"},
+		client:  sc,
+		runCLI:  noopCLI,
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-mint")
+	require.NoError(t, err)
+
+	// Verify MintURL is populated from e2eCfg.
+	provider, ok := st.(MintURLProvider)
+	require.True(t, ok, "state should implement MintURLProvider")
+	assert.Equal(t, "https://preview.workers.dev", provider.MintURL())
+}
+
 func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
@@ -433,6 +457,7 @@ func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
 }
 
 func TestRepoEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -542,6 +567,7 @@ func TestEnsureRepoExists_CreateRepoError(t *testing.T) {
 }
 
 func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Simulates: repo exists, validation fails, CLI install runs
 	// successfully, but re-validation still fails (installed stays false).
 	sc := &stubClient{installed: false}
@@ -565,6 +591,7 @@ func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
 }
 
 func TestProvisionInference_StatusCLIError(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -591,6 +618,7 @@ func TestProvisionInference_StatusCLIError(t *testing.T) {
 }
 
 func TestProvisionInference_ParseWIFProviderError(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -655,7 +683,7 @@ func TestDoEnsure_AlreadyInstalledReVendors(t *testing.T) {
 	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-revendor")
 	require.NoError(t, err)
 	require.NotNil(t, st)
-	assert.Equal(t, "test-repo-revendor", st.TestRepo())
+	assert.Equal(t, "test-repo-revendor", st.ConfigRepo())
 	assert.True(t, cliCalled, "CLI should be called to re-vendor even when validation passes")
 }
 
@@ -746,6 +774,7 @@ func TestAwaitWorkflowReady_Timeout(t *testing.T) {
 }
 
 func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {
+	speedUpValidateRetries(t)
 	// Verify that the settle function is called when install was needed.
 	sc := &stubClient{installed: false}
 	settleCalled := false
@@ -800,6 +829,7 @@ func TestDoEnsure_SettleNotCalledWhenAlreadyInstalled(t *testing.T) {
 }
 
 func TestDoEnsure_SettleError_Propagated(t *testing.T) {
+	speedUpValidateRetries(t)
 	// If the settle function fails, doEnsure should propagate the error.
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{

@@ -26,6 +26,7 @@ type LiveClient struct {
 	token      string
 	baseURL    string
 	noteTarget string // "issues" (default) or "merge_requests"
+	afterFunc  func(time.Duration) <-chan time.Time
 }
 
 // Compile-time interface check.
@@ -52,6 +53,14 @@ func WithNoteTarget(target string) Option {
 func WithBaseURL(rawURL string) Option {
 	return func(c *LiveClient) {
 		c.baseURL = strings.TrimRight(rawURL, "/")
+	}
+}
+
+// WithAfterFunc replaces the default time.After used for retry delays.
+// Tests can inject an immediate-return function to avoid real sleeps.
+func WithAfterFunc(f func(time.Duration) <-chan time.Time) Option {
+	return func(c *LiveClient) {
+		c.afterFunc = f
 	}
 }
 
@@ -99,6 +108,7 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 		token:      token,
 		baseURL:    "https://gitlab.com",
 		noteTarget: "issues",
+		afterFunc:  time.After,
 	}
 	for _, o := range opts {
 		o(c)
@@ -180,7 +190,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 			if isTransientError(err) && isIdempotent(method) && attempt < maxRetries-1 {
 				delay := retryDelay(nil, attempt)
 				select {
-				case <-time.After(delay):
+				case <-c.afterFunc(delay):
 				case <-ctx.Done():
 					return nil, ctx.Err()
 				}
@@ -199,7 +209,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 				}
 			}
 			select {
-			case <-time.After(delay):
+			case <-c.afterFunc(delay):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}

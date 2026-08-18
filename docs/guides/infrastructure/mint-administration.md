@@ -27,7 +27,7 @@ The fullsend team operates a public hosted mint service. If your organization is
 **Mint URL:**
 
 ```
-https://fullsend-mint-gljhbkcloq-uc.a.run.app
+https://mint.fullsend.sh
 ```
 
 Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `FULLSEND_MINT_URL` repository/org variable in GitHub. If you are using the hosted mint, the rest of this guide (deploying, enrolling, troubleshooting) is handled by the fullsend team — you do not need to manage mint infrastructure yourself.
@@ -76,7 +76,7 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by `RepoEnsurer` — see [behaviour-testing.md](../dev/behaviour-testing.md#lazy-createinstall-repoensurer)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; `RepoEnsurer` creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -632,6 +632,51 @@ gcloud run revisions list \
 gcloud functions logs read fullsend-mint \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --gen2 --limit=50
 ```
+
+## Cloudflare Worker custom domain
+
+Durable Cloudflare Worker deployments can be attached to a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) using the `--custom-domain` flag. The zone ID is resolved automatically from the domain name via the Cloudflare API.
+
+### Deploying with a custom domain
+
+```bash
+fullsend mint deploy \
+  --platform cloudflare \
+  --custom-domain "mint.fullsend.sh" \
+  --pem-dir "/path/to/pems"
+```
+
+The `FULLSEND_MINT_URL` output uses the custom domain hostname (`https://mint.fullsend.sh`) instead of the default `workers.dev` URL.
+
+### Tearing down with a custom domain
+
+Pass `--custom-domain` to `mint delete` so the CLI removes the custom domain binding before deleting the Worker:
+
+```bash
+fullsend mint delete \
+  --platform cloudflare \
+  --custom-domain "mint.fullsend.sh"
+```
+
+### Requirements
+
+- Cloudflare authentication is required (either `CLOUDFLARE_API_TOKEN` env var or `wrangler login` session)
+- The zone must already exist in the Cloudflare account — the CLI fails early with a clear error if the zone cannot be found
+- Custom domains are only supported for durable deploys — preview deploys use bare `workers.dev` hostnames
+
+## Cloudflare Worker rate limiting
+
+The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
+
+| Setting | Value |
+|---------|-------|
+| Binding name | `MINT_TOKEN_RATE_LIMITER` |
+| Limit | 60 requests per minute per key |
+| Key format | `{hostname}:/v1/token:{client-IP}` |
+
+The rate limit key incorporates the request hostname, so preview deployments (which produce distinct hostnames like `<alias>-<worker>.<subdomain>.workers.dev`) get isolated counters. Durable deploys use a stable hostname. When the rate limit is exceeded, the Worker returns HTTP 429 with `{"error":"rate_limited"}`.
+
+If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs a warning and continues without rate limiting (fail-open).
 
 ## See Also
 

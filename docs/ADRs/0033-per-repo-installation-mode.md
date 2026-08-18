@@ -283,9 +283,9 @@ All other flags are shared between per-org and per-repo modes — per-repo can c
 4. If a mint already exists: validates PEMs, registers the org, and sets up per-repo WIF.
 5. Auto-provisions inference WIF pool/provider if `--inference-wif-provider` is omitted.
 6. Generates scaffold files (`.github/workflows/fullsend.yaml`, `.fullsend/config.yaml`, `.fullsend/customized/` directories).
-7. Commits all scaffold files to the target repo via the GitHub API.
-8. Sets repository variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`).
-9. Sets repository secrets (`FULLSEND_GCP_PROJECT_ID`, WIF credentials).
+7. Sets repository variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`).
+8. Sets repository secrets (`FULLSEND_GCP_PROJECT_ID`, WIF credentials).
+9. Commits all scaffold files to the target repo via the GitHub API. Variables and secrets are written before the commit so the workflow's required credentials exist by the time an event triggers a run (#6122).
 
 Per-repo install requires only `repo` and `workflow` OAuth scopes when reusing existing infrastructure. When creating apps, scope escalation to `admin:org` is required (same as per-org).
 

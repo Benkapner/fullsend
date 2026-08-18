@@ -44,6 +44,17 @@ enabled = true
 # src/index.ts (not via [wasm_modules], which is incompatible with ES
 # module format). The binary is compiled from cmd/mint-wasm with
 # GOOS=js GOARCH=wasm and staged into this directory by `make wasm-stage`.
+# Native rate limits (Wrangler ≥ 4.36). namespace_id must be a string of a
+# positive integer (Cloudflare docs). Limits are per key per Cloudflare
+# location. Keys are hostname + path + IP, so preview aliases (which produce
+# distinct hostnames) get isolated counters without extra namespace patching.
+[[ratelimits]]
+name = "MINT_TOKEN_RATE_LIMITER"
+namespace_id = "582401"
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
 [[rules]]
 type = "CompiledWasm"
 globs = ["**/*.wasm"]

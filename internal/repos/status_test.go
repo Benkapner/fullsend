@@ -38,6 +38,12 @@ func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, regi
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_MINT_URL"] = mintURL
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_GCP_REGION"] = region
 
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_WIF_PROVIDER"] = true
+
 	workflow := fmt.Sprintf(`name: fullsend
 on:
   workflow_dispatch:
@@ -871,12 +877,11 @@ func TestStatus_GlobExpandError(t *testing.T) {
 	}
 }
 
-func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
+func TestStatus_DefaultMintURL_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
 		Forge: ForgeSection{GitHub: GitHubForgeInfra{
-			MintURL:     "",
 			FullsendRef: "v2.3.0",
 		}},
 		Defaults: DefaultsConfig{
@@ -885,7 +890,7 @@ func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
 		Repos: []RepoEntry{{Repo: "org/repo"}},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://some-mint.example.com", "us-central1")
+	populateInstalledRepo(fc, "org", "repo", "v2.3.0", DefaultPublicMintURL, "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -893,7 +898,7 @@ func TestStatus_EmptyMintURL_NoDrift(t *testing.T) {
 	}
 
 	if len(result.Repos[0].Drifts) != 0 {
-		t.Errorf("expected no drift when manifest mint URL is empty, got %v", result.Repos[0].Drifts)
+		t.Errorf("expected no drift when using default public mint URL, got %v", result.Repos[0].Drifts)
 	}
 }
 
@@ -919,6 +924,88 @@ func TestStatus_EmptyExpectedRef_NoDrift(t *testing.T) {
 			t.Error("should not report ref drift when expected ref is empty")
 		}
 	}
+}
+
+func TestStatus_SHADriftDetection(t *testing.T) {
+	t.Run("no drift when resolved SHA matches installed", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		sha := "deadbeef1234567890abcdef1234567890abcdef"
+		fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = sha
+
+		m := &Manifest{
+			Version: 1,
+			Forge: ForgeSection{GitHub: GitHubForgeInfra{
+				MintURL:     "https://mint.example.com",
+				FullsendRef: "v0.35.0",
+			}},
+			Defaults: DefaultsConfig{Forge: "github"},
+			Repos:    []RepoEntry{{Repo: "org/repo"}},
+		}
+
+		populateInstalledRepo(fc, "org", "repo", sha, "https://mint.example.com", "us-central1")
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, d := range result.Repos[0].Drifts {
+			if d.Field == "fullsend_ref" {
+				t.Errorf("should not report ref drift when resolved SHA matches installed SHA: %+v", d)
+			}
+		}
+	})
+
+	t.Run("drift when resolved SHA differs from installed", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.Refs["fullsend-ai/fullsend/tags/v0.36.0"] = "newsha000000000000000000000000000000000"
+
+		m := &Manifest{
+			Version: 1,
+			Forge: ForgeSection{GitHub: GitHubForgeInfra{
+				MintURL:     "https://mint.example.com",
+				FullsendRef: "v0.36.0",
+			}},
+			Defaults: DefaultsConfig{Forge: "github"},
+			Repos:    []RepoEntry{{Repo: "org/repo"}},
+		}
+
+		populateInstalledRepo(fc, "org", "repo", "oldsha000000000000000000000000000000000",
+			"https://mint.example.com", "us-central1")
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Summary.Drifted != 1 {
+			t.Fatalf("drifted = %d, want 1", result.Summary.Drifted)
+		}
+	})
+
+	t.Run("floating ref drift detected via SHA", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.Refs["fullsend-ai/fullsend/heads/main"] = "latestsha00000000000000000000000000000"
+
+		m := &Manifest{
+			Version: 1,
+			Forge: ForgeSection{GitHub: GitHubForgeInfra{
+				MintURL:     "https://mint.example.com",
+				FullsendRef: "main",
+			}},
+			Defaults: DefaultsConfig{Forge: "github"},
+			Repos:    []RepoEntry{{Repo: "org/repo"}},
+		}
+
+		populateInstalledRepo(fc, "org", "repo", "stalesha000000000000000000000000000000",
+			"https://mint.example.com", "us-central1")
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Summary.Drifted != 1 {
+			t.Fatalf("drifted = %d, want 1 (floating ref moved)", result.Summary.Drifted)
+		}
+	})
 }
 
 func TestStatus_Concurrency(t *testing.T) {

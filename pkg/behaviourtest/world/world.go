@@ -72,10 +72,11 @@ type World struct {
 	// for this scenario's duration. Empty when no pool is configured.
 	LeasedRepoName string
 
-	// Ensurer lazily creates and installs repos on demand. Shared across
-	// scenarios (like other driver fields) and safe for concurrent use.
-	// Nil when lazy ensure is not configured.
-	Ensurer install.RepoEnsurer
+	// Driver is the unified install driver that owns repo allocation,
+	// deallocation, and suite-scoped teardown. Shared across scenarios
+	// (like other driver fields) and safe for concurrent use.
+	// Nil when no driver is configured.
+	Driver install.Driver
 
 	// KillSwitchActivated records whether this scenario activated the
 	// repo-level kill switch. CleanupScenario uses this to deactivate
@@ -93,7 +94,7 @@ type World struct {
 // because the production implementations are immutable wrappers:
 //   - scm/github.Driver holds only a forge.Client (concurrent-safe).
 //   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
-//   - install.perRepoState holds only immutable string fields.
+//   - install.PerRepoState holds only immutable string fields.
 //
 // Race tests in each driver package (TestConcurrentAccess,
 // TestConcurrentStateAccess) verify the real types under -race with
@@ -110,12 +111,7 @@ func (w *World) Clone() *World {
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"
 
 // BehaviourScriptPath returns the repo-relative path for the dummy agent script.
+// BT is per-repo only; config always lives under .fullsend/.
 func (w *World) BehaviourScriptPath() string {
-	if w.Install == nil {
-		return BehaviourScriptRepoPath
-	}
-	if prefix := w.Install.ConfigPathPrefix(); prefix != "" {
-		return filepath.Join(prefix, BehaviourScriptRepoPath)
-	}
-	return BehaviourScriptRepoPath
+	return filepath.Join(".fullsend", BehaviourScriptRepoPath)
 }

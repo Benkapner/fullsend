@@ -262,9 +262,16 @@ func TestUpgrade_DryRun(t *testing.T) {
 	}
 }
 
-func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
+func TestUpgrade_FloatingTargetRefNonPinnedKeepsStringRef(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	fc.Refs["fullsend-ai/fullsend/tags/latest"] = "abc123def456789012345678901234567890abcd"
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
 
 	m := &Manifest{
 		Version:  1,
@@ -274,17 +281,26 @@ func TestUpgrade_FloatingTargetRefSkipped(t *testing.T) {
 	}
 
 	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
-	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "latest" (not eligible for upgrade)` {
-		t.Errorf("expected floating tag skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected non-pinned repo to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
+	}
+
+	content := string(committedFiles[0].Content)
+	if !strings.Contains(content, "@latest") {
+		t.Errorf("non-SHA-pinned repo should write string ref @latest, got:\n%s", content)
+	}
+	if strings.Contains(content, "abc123def") {
+		t.Errorf("non-SHA-pinned repo should not contain resolved SHA, got:\n%s", content)
 	}
 }
 
-func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
+func TestUpgrade_FloatingCurrentRefUpgraded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v0")
 
@@ -301,14 +317,17 @@ func TestUpgrade_FloatingCurrentRefSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "v0" (not eligible for upgrade)` {
-		t.Errorf("expected floating current ref skip, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected floating current ref to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
 	}
 }
 
-func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
+func TestUpgrade_PartialVersionTargetUpgraded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// RefResolver resolves "v2.3" as a tag.
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3"] = "abc123def456789012345678901234567890abcd"
 
 	m := &Manifest{
 		Version:  1,
@@ -323,12 +342,13 @@ func TestUpgrade_PartialVersionTargetSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "v2.3" (not eligible for upgrade)` {
-		t.Errorf("expected floating tag skip for partial version, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected partial version target to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
 	}
 }
 
-func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
+func TestUpgrade_PartialVersionCurrentRefUpgraded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v1.2")
 
@@ -345,8 +365,264 @@ func TestUpgrade_PartialVersionCurrentRefSkipped(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !results[0].Skipped || results[0].SkipReason != `floating ref "v1.2" (not eligible for upgrade)` {
-		t.Errorf("expected floating tag skip for partial version current ref, got Skipped=%v, reason=%q", results[0].Skipped, results[0].SkipReason)
+	if !results[0].Upgraded {
+		t.Errorf("expected partial version current ref to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
+	}
+}
+
+func TestUpgrade_FloatingRefBranchNonPinnedKeepsStringRef(t *testing.T) {
+	// When the current ref is not SHA-pinned (e.g., @v2.1.0), upgrading
+	// to a floating ref (e.g., "main") writes @main directly — no SHA
+	// resolution. Only SHA-pinned repos get SHA-resolved output.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// "main" resolves as a branch — but should not be used for non-pinned repos.
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected Upgraded=true for floating ref, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	// Non-SHA-pinned repo should write the string ref directly.
+	content := string(committedFiles[0].Content)
+	if !strings.Contains(content, "@main") {
+		t.Errorf("expected @main in committed content, got:\n%s", content)
+	}
+	// Should NOT contain SHA or annotation.
+	if strings.Contains(content, "bbb222") {
+		t.Errorf("non-SHA-pinned repo should not contain resolved SHA, got:\n%s", content)
+	}
+	if strings.Contains(content, "# main") {
+		t.Errorf("non-SHA-pinned repo should not contain annotation, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_FloatingRefSameSHASkipped(t *testing.T) {
+	// When the workflow is already SHA-pinned with the correct SHA for
+	// the target floating ref, the upgrade should be skipped (no drift).
+	sha := "aaa111bbb222ccc33344455566677788899900aa"
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true when floating ref SHAs match, got Upgraded=%v", r.Upgraded)
+	}
+}
+
+func TestUpgrade_DryRunFloatingRefSameSHASkipped(t *testing.T) {
+	// When the workflow is already SHA-pinned at the correct SHA for
+	// the target floating ref, dry-run should skip (no content change).
+	sha := "aaa111bbb222ccc33344455566677788899900aa"
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true in dry-run when already SHA-pinned at target, got Upgraded=%v", r.Upgraded)
+	}
+}
+
+func TestUpgrade_DryRunSameFloatingRefSkipped(t *testing.T) {
+	// When the workflow uses @main (floating, non-SHA-pinned) and the
+	// target is also "main", DryRun skips API calls because the repo is
+	// not SHA-pinned. Writing @main over @main produces no content
+	// change, so the upgrade is skipped.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "bbb222ccc333444555666777888999000aaabbbcc"
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true in dry-run when non-SHA-pinned repo has same floating ref, got Upgraded=%v", r.Upgraded)
+	}
+}
+
+func TestUpgrade_NonDryRunSameFloatingRefSkipped(t *testing.T) {
+	// Non-dry-run counterpart: workflow already SHA-pinned at the
+	// correct SHA for the target floating ref → skip.
+	sha := "bbb222ccc33344455566677788899900aaabbbcc"
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "main")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
+
+	var commitCalled bool
+	recordingCommitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
+		commitCalled = true
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Errorf("expected Skipped=true when currentRef==targetRef and SHAs match, got Upgraded=%v", r.Upgraded)
+	}
+	if commitCalled {
+		t.Error("expected commitFn NOT to be called when skipping")
+	}
+}
+
+func TestUpgrade_FloatingRefResolutionFailure(t *testing.T) {
+	// When a floating ref cannot be resolved (no tags/ or heads/ entry),
+	// the upgrade should return an error, not silently skip.
+	fc := forge.NewFakeClient()
+	// SHA-pinned workflow — triggers the resolution path that can error.
+	oldSHA := "abc123def456789012345678901234567890abcd"
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// Do NOT set any refs — resolution will fail.
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Error == nil {
+		t.Fatal("expected error when floating ref resolution fails for SHA-pinned repo")
+	}
+	if r.Upgraded {
+		t.Error("should not be marked upgraded when resolution fails")
+	}
+}
+
+func TestUpgrade_SHAPinnedBranchRefResolved(t *testing.T) {
+	// SHA-pinned repo with a branch target ref ("main"). The RefResolver
+	// resolves "main" via heads/ and the SHA replaces the old pinned SHA.
+	oldSHA := "abc123def456789012345678901234567890abcd"
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// "main" resolves as a branch, not a tag.
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = newSHA
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected one upgraded result, got %+v", results)
+	}
+
+	content := string(committedFiles[0].Content)
+	// Should contain the new SHA (resolved from "main" branch).
+	if !strings.Contains(content, "@"+newSHA) {
+		t.Errorf("expected @%s in content, got:\n%s", newSHA, content)
+	}
+	// Should contain "main" as a trailing comment.
+	if !strings.Contains(content, "# main") {
+		t.Errorf("expected '# main' comment in content, got:\n%s", content)
+	}
+	// Should NOT contain the old SHA.
+	if strings.Contains(content, oldSHA) {
+		t.Errorf("content should not contain old SHA %s, got:\n%s", oldSHA, content)
 	}
 }
 
@@ -700,7 +976,7 @@ func TestReplaceShimRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag, GitHubForgeConfig())
+			result, changed := replaceShimRef([]byte(tt.input), tt.newRef, tt.newTag, GitHubForgeConfig(), ForgeGitHub)
 			if changed != tt.wantDiff {
 				t.Errorf("changed = %v, want %v", changed, tt.wantDiff)
 			}
@@ -767,32 +1043,6 @@ func TestIsSemver(t *testing.T) {
 	}
 }
 
-func TestIsFloatingRef(t *testing.T) {
-	tests := []struct {
-		ref  string
-		want bool
-	}{
-		{"latest", true},
-		{"main", true},
-		{"master", true},
-		{"v0", true},
-		{"v1", true},
-		{"v2", true},
-		{"v2.3.0", false},
-		{"abc123", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.ref, func(t *testing.T) {
-			got := isFloatingRef(tt.ref)
-			if got != tt.want {
-				t.Errorf("isFloatingRef(%q) = %v, want %v", tt.ref, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestUpgrade_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -807,36 +1057,9 @@ func TestUpgrade_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestUpgrade_PartialVersionTag(t *testing.T) {
-	tests := []struct {
-		ref  string
-		want bool
-	}{
-		{"v0", true},
-		{"v1", true},
-		{"v99", true},
-		{"v1.0", true},
-		{"v1.2", true},
-		{"v10.20", true},
-		{"v1.0.0", false},
-		{"v1.2.3", false},
-		{"main", false},
-		{"latest", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.ref, func(t *testing.T) {
-			got := isPartialVersionTag(tt.ref)
-			if got != tt.want {
-				t.Errorf("isPartialVersionTag(%q) = %v, want %v", tt.ref, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0", GitHubForgeConfig())
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "v2.3.0", GitHubForgeConfig(), ForgeGitHub)
 	if !changed {
 		t.Error("expected change")
 	}
@@ -848,7 +1071,7 @@ func TestReplaceShimRef_TagMatchesRef(t *testing.T) {
 
 func TestReplaceShimRef_EmptyTag(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig(), ForgeGitHub)
 	if !changed {
 		t.Error("expected change")
 	}
@@ -860,7 +1083,7 @@ func TestReplaceShimRef_EmptyTag(t *testing.T) {
 
 func TestReplaceShimRef_MultiWordComment(t *testing.T) {
 	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0 # version 2.1.0\n"
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig(), ForgeGitHub)
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -904,12 +1127,6 @@ func TestCompareSemver_NonSemver(t *testing.T) {
 				t.Errorf("compareSemver(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestIsFloatingRef_Empty(t *testing.T) {
-	if isFloatingRef("") {
-		t.Error("empty string should not be floating")
 	}
 }
 
@@ -1157,7 +1374,7 @@ func TestReplaceShimRef_StandaloneCommentPreserved(t *testing.T) {
     # This is a standalone comment on the next line
     with:
 `
-	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig())
+	result, changed := replaceShimRef([]byte(input), "v2.3.0", "", GitHubForgeConfig(), ForgeGitHub)
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1263,11 +1480,12 @@ func TestUpgrade_SHAPinnedRepoPreservesPin(t *testing.T) {
 	}
 }
 
-func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
+func TestUpgrade_TagOnlyRepoKeepsStringRef(t *testing.T) {
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
-	// Pre-populate ref — should NOT be consulted for tag-only repos.
-	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = "def456abc789012345678901234567890abcd1234"
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = newSHA
 
 	var committedFiles []forge.TreeFile
 	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
@@ -1293,12 +1511,17 @@ func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
 	}
 
 	content := string(committedFiles[0].Content)
-	// Should contain the tag directly — no SHA, no trailing comment.
+	// Non-SHA-pinned repo should write the tag string directly,
+	// not resolve to a SHA.
 	if !strings.Contains(content, "@v2.3.0") {
 		t.Errorf("expected @v2.3.0 in content, got:\n%s", content)
 	}
+	// Should NOT contain SHA or annotation.
+	if strings.Contains(content, "@"+newSHA) {
+		t.Errorf("non-SHA-pinned repo should not contain resolved SHA @%s, got:\n%s", newSHA, content)
+	}
 	if strings.Contains(content, "# v2.3.0") {
-		t.Errorf("tag-only repo should not have trailing comment, got:\n%s", content)
+		t.Errorf("non-SHA-pinned repo should not contain annotation, got:\n%s", content)
 	}
 }
 
@@ -1325,8 +1548,8 @@ func TestUpgrade_SHAPinnedTagResolutionError(t *testing.T) {
 	if results[0].Error == nil {
 		t.Fatal("expected error when tag resolution fails for SHA-pinned repo")
 	}
-	if !strings.Contains(results[0].Error.Error(), "resolving tag") {
-		t.Errorf("error should mention 'resolving tag', got: %v", results[0].Error)
+	if !strings.Contains(results[0].Error.Error(), "resolving ref") {
+		t.Errorf("error should mention 'resolving ref', got: %v", results[0].Error)
 	}
 	if results[0].Upgraded {
 		t.Error("should not be marked upgraded when tag resolution fails")
@@ -1386,13 +1609,13 @@ func TestUpgrade_MixedPinningStyles(t *testing.T) {
 		t.Errorf("SHA-pinned repo should contain '# v2.3.0', got:\n%s", shaContent)
 	}
 
-	// Tag-only repo should have @v2.3.0 without SHA
+	// Tag-only (non-SHA-pinned) repo should keep its string ref format.
 	tagContent := committedContent["acme-corp/tag-only"]
 	if !strings.Contains(tagContent, "@v2.3.0") {
 		t.Errorf("tag-only repo should contain @v2.3.0, got:\n%s", tagContent)
 	}
-	if strings.Contains(tagContent, newSHA) {
-		t.Errorf("tag-only repo should not contain SHA, got:\n%s", tagContent)
+	if strings.Contains(tagContent, "@"+newSHA) {
+		t.Errorf("tag-only repo should NOT contain resolved SHA @%s, got:\n%s", newSHA, tagContent)
 	}
 }
 
@@ -1455,24 +1678,6 @@ func TestUpgrade_SkipReasonMessages(t *testing.T) {
 			targetRef:  "v0.32.0",
 			currentRef: "v0.32.0",
 			wantReason: "already at v0.32.0",
-		},
-		{
-			name:       "floating target ref",
-			targetRef:  "main",
-			currentRef: "v2.1.0",
-			wantReason: `floating ref "main" (not eligible for upgrade)`,
-		},
-		{
-			name:       "floating current ref",
-			targetRef:  "v2.3.0",
-			currentRef: "latest",
-			wantReason: `floating ref "latest" (not eligible for upgrade)`,
-		},
-		{
-			name:       "partial version target",
-			targetRef:  "v2",
-			currentRef: "v2.1.0",
-			wantReason: `floating ref "v2" (not eligible for upgrade)`,
 		},
 	}
 
@@ -1580,7 +1785,7 @@ func TestSkipReasonForNoChange(t *testing.T) {
 
 func TestReplaceShimRef_DollarSignInRef(t *testing.T) {
 	content := []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n")
-	result, changed := replaceShimRef(content, "v2.0.0$test", "", GitHubForgeConfig())
+	result, changed := replaceShimRef(content, "v2.0.0$test", "", GitHubForgeConfig(), ForgeGitHub)
 	if !changed {
 		t.Fatal("expected content to change")
 	}
@@ -1588,4 +1793,328 @@ func TestReplaceShimRef_DollarSignInRef(t *testing.T) {
 	if string(result) != want {
 		t.Errorf("got %q, want %q", string(result), want)
 	}
+}
+
+func makeGitLabDispatch(ref string) []byte {
+	return []byte(fmt.Sprintf("---\n# fullsend-ref: %s\n# fullsend-stage: dispatch\n\ndispatch:\n  stage: dispatch\n", ref))
+}
+
+func TestUpgrade_GitLabNonPinnedKeepsStringRef(t *testing.T) {
+	// GitLab repos that are not SHA-pinned keep their string ref format
+	// during upgrade, same as GitHub repos.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.gitlab/ci/fullsend-dispatch.yml"] = makeGitLabDispatch("v0.32.0")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = "aaa111bbb222ccc333ddd444eee555fff666777aa"
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com", FullsendRef: "v0.33.0"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected GitLab non-pinned ref to be upgraded, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	content := string(committedFiles[0].Content)
+	// Non-SHA-pinned: write string ref directly.
+	if !strings.Contains(content, "v0.33.0") {
+		t.Errorf("expected v0.33.0 in content, got:\n%s", content)
+	}
+	// Should NOT contain SHA.
+	if strings.Contains(content, "aaa111") {
+		t.Errorf("non-SHA-pinned GitLab repo should not contain resolved SHA, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_TagCurrentRefFloatingTargetKeepsStringRef(t *testing.T) {
+	// When the current ref is a tag (non-SHA-pinned) and the target is a
+	// floating ref like "main", the upgrade writes @main directly — no
+	// SHA resolution for non-pinned repos.
+	resolvedSHA := "ccc333ddd444eee555fff666777888999000aaabb"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v0.32.0")
+	fc.Refs["fullsend-ai/fullsend/heads/main"] = resolvedSHA
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "main"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected tag→floating upgrade, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	content := string(committedFiles[0].Content)
+	// Non-SHA-pinned: write string ref directly.
+	if !strings.Contains(content, "@main") {
+		t.Errorf("expected @main in content, got:\n%s", content)
+	}
+	// Should NOT contain SHA or annotation.
+	if strings.Contains(content, "@"+resolvedSHA) {
+		t.Errorf("non-SHA-pinned repo should not contain resolved SHA, got:\n%s", content)
+	}
+	// Old tag should be gone.
+	if strings.Contains(content, "@v0.32.0") {
+		t.Errorf("content should not contain old tag @v0.32.0, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_GitLabSHAPinnedWarnsOnResolutionFailure(t *testing.T) {
+	// SHA-pinned repo on a non-GitHub forge where the resolver cannot
+	// resolve the target ref. The upgrade should log a warning and
+	// fall back to writing the tag ref directly.
+	oldSHA := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.gitlab/ci/fullsend-dispatch.yml"] = makeGitLabDispatchSHAPinned(oldSHA, "v2.1.0")
+	// Do NOT set refs — resolution will fail.
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	var progressMsgs []string
+	progressFn := func(_, phase, msg string) {
+		progressMsgs = append(progressMsgs, phase+": "+msg)
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, progressFn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected Upgraded=true, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	// Should have logged a warning about inability to preserve SHA pinning.
+	hasWarn := false
+	for _, msg := range progressMsgs {
+		if strings.Contains(msg, "warning:") && strings.Contains(msg, "Cannot preserve SHA pinning") {
+			hasWarn = true
+		}
+	}
+	if !hasWarn {
+		t.Errorf("expected warning about SHA pinning, got progress: %v", progressMsgs)
+	}
+
+	// Content should contain the tag ref directly (not SHA-pinned).
+	content := string(committedFiles[0].Content)
+	if !strings.Contains(content, "v2.3.0") {
+		t.Errorf("expected v2.3.0 in content, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_DryRunNonPinnedSkipsAPICall(t *testing.T) {
+	// DryRun for a non-SHA-pinned repo should not attempt API calls
+	// for SHA resolution. The repo's string ref format is preserved.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// Refs exist but should NOT be used for non-SHA-pinned repos.
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = "def456abc789012345678901234567890abcd1234"
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected Upgraded=true in dry-run, got Skipped=%v, reason=%q",
+			r.Skipped, r.SkipReason)
+	}
+}
+
+func TestUpgrade_SHATargetRefWrittenDirectly(t *testing.T) {
+	// When the target ref is already a SHA, it should be written directly
+	// without resolution, regardless of the current ref format.
+	targetSHA := "def456abc789012345678901234567890abcd123"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: targetSHA}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected one upgraded result, got %+v", results)
+	}
+
+	content := string(committedFiles[0].Content)
+	if !strings.Contains(content, "@"+targetSHA) {
+		t.Errorf("expected @%s in content, got:\n%s", targetSHA, content)
+	}
+	if strings.Contains(content, "# ") {
+		t.Errorf("SHA target ref should not have annotation, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_DryRunGitLabSHAPinnedShowsWarning(t *testing.T) {
+	// DryRun for a SHA-pinned repo on a non-GitHub forge should show the
+	// same "Cannot preserve SHA pinning" warning as the actual upgrade path
+	// when resolution fails.
+	oldSHA := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.gitlab/ci/fullsend-dispatch.yml"] = makeGitLabDispatchSHAPinned(oldSHA, "v2.1.0")
+
+	var progressMsgs []string
+	progressFn := func(_, phase, msg string) {
+		progressMsgs = append(progressMsgs, phase+": "+msg)
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com", FullsendRef: "v2.3.0"}},
+		Defaults: DefaultsConfig{Forge: "gitlab"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, progressFn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected Upgraded=true in dry-run, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	hasWarn := false
+	for _, msg := range progressMsgs {
+		if strings.Contains(msg, "warning:") && strings.Contains(msg, "Cannot preserve SHA pinning") {
+			hasWarn = true
+		}
+	}
+	if !hasWarn {
+		t.Errorf("expected dry-run warning about SHA pinning on non-GitHub forge, got progress: %v", progressMsgs)
+	}
+}
+
+func TestUpgrade_DryRunBothSHANoMisleadingMessage(t *testing.T) {
+	// When both targetRef and currentRef are SHAs, the DryRun path should
+	// not emit "SHA will be resolved" or "Cannot preserve SHA pinning"
+	// messages — the non-DryRun path writes the target SHA directly.
+	oldSHA := "abc123def456789012345678901234567890abcd"
+	newSHA := "def456abc789012345678901234567890abcd123"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+
+	var progressMsgs []string
+	progressFn := func(_, phase, msg string) {
+		progressMsgs = append(progressMsgs, phase+": "+msg)
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: newSHA}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, progressFn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Upgraded {
+		t.Fatalf("expected Upgraded=true, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+
+	for _, msg := range progressMsgs {
+		if strings.Contains(msg, "SHA will be resolved") {
+			t.Errorf("should not emit 'SHA will be resolved' when target is already a SHA, got: %s", msg)
+		}
+		if strings.Contains(msg, "Cannot preserve SHA pinning") {
+			t.Errorf("should not emit 'Cannot preserve SHA pinning' when target is already a SHA, got: %s", msg)
+		}
+	}
+}
+
+func makeGitLabDispatchSHAPinned(sha, tag string) []byte {
+	return []byte(fmt.Sprintf("---\n# fullsend-ref: %s (%s)\n# fullsend-stage: dispatch\n\ndispatch:\n  stage: dispatch\n", sha, tag))
 }

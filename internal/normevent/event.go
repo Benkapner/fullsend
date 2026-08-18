@@ -18,15 +18,16 @@ type Event struct {
 	Source     Source     `json:"source"`
 }
 
-// EntityKind identifies work items vs change proposals.
+// EntityKind identifies work items, change proposals, or conversations.
 type EntityKind string
 
 const (
 	EntityWorkItem       EntityKind = "work_item"
 	EntityChangeProposal EntityKind = "change_proposal"
+	EntityConversation   EntityKind = "conversation"
 )
 
-// Entity is the target work item or change proposal.
+// Entity is the target work item, change proposal, or conversation.
 type Entity struct {
 	Kind                 EntityKind            `json:"kind"`
 	ID                   int                   `json:"id"`
@@ -118,8 +119,22 @@ type Actor struct {
 
 // State is a snapshot of entity metadata at event time.
 type State struct {
-	Labels         []string        `json:"labels"`
-	ChangeProposal *ChangeProposal `json:"change_proposal,omitempty"`
+	Labels         []string            `json:"labels"`
+	ChangeProposal *ChangeProposal     `json:"change_proposal,omitempty"`
+	Conversation   *ConversationState  `json:"conversation,omitempty"`
+}
+
+// ConversationState is conversation-level metadata (ADR 0086).
+type ConversationState struct {
+	Category ConversationCategory `json:"category"`
+}
+
+// ConversationCategory is the exclusive category of a conversation.
+type ConversationCategory struct {
+	ID     string `json:"id,omitempty"`
+	Name   string `json:"name"`
+	Slug   string `json:"slug,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 // ChangeProposal carries branch/repo context for PR/MR workloads.
@@ -222,6 +237,17 @@ func (e *Event) Validate() error {
 
 	if e.Entity.Kind == EntityChangeProposal && e.Entity.LinkedChangeProposal != nil {
 		return fmt.Errorf("normalized event: linked_change_proposal forbidden when entity.kind is change_proposal")
+	}
+
+	if e.Entity.Kind == EntityConversation {
+		if e.State.Conversation == nil {
+			return fmt.Errorf("normalized event: state.conversation required when entity.kind is conversation")
+		}
+		if strings.TrimSpace(e.State.Conversation.Category.Name) == "" {
+			return fmt.Errorf("normalized event: state.conversation.category.name is required")
+		}
+	} else if e.State.Conversation != nil {
+		return fmt.Errorf("normalized event: state.conversation forbidden when entity.kind is %s", e.Entity.Kind)
 	}
 
 	if e.State.ChangeProposal != nil && e.Entity.Kind == EntityWorkItem && e.Entity.LinkedChangeProposal == nil {

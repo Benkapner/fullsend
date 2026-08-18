@@ -12,6 +12,9 @@ set -euo pipefail
 APP_SET="fullsend-ai"
 ROLES=(fullsend triage coder review retro prioritize e2e)
 BOT_USER="botsend"
+TEST_WRITE_USER="fstest-write"
+TEST_TRIAGE_USER="fstest-triage"
+TEST_OUTSIDER_USER="fstest-outsider"
 
 # open_browser tries to open a URL in the default browser.
 open_browser() {
@@ -138,6 +141,118 @@ else
     -F private=false \
     --silent
   echo "    OK: created test-repo"
+fi
+echo
+
+# --- 3b. test actor org membership ---
+echo "==> Checking test actor org membership..."
+
+for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}:TEST_ACTOR_TRIAGE_PAT"; do
+  actor="${actor_info%%:*}"
+  pat_var="${actor_info##*:}"
+
+  membership_state=$(gh api "/orgs/${ORG}/memberships/${actor}" --jq '.state' 2>/dev/null || echo "none")
+
+  if [[ "${membership_state}" == "active" ]]; then
+    echo "    OK: ${actor} is an active org member"
+    continue
+  fi
+
+  # Send or refresh the membership invitation.
+  if [[ "${membership_state}" != "pending" ]]; then
+    echo "    Inviting ${actor} as org member..."
+    gh api "/orgs/${ORG}/memberships/${actor}" \
+      -X PUT \
+      -f role="member" \
+      --silent 2>/dev/null || true
+  fi
+
+  # Accept the invitation using the actor's PAT if available.
+  if [[ -n "${!pat_var:-}" ]]; then
+    echo "    Accepting invitation for ${actor} using ${pat_var}..."
+    GH_TOKEN="${!pat_var}" gh api "/user/memberships/orgs/${ORG}" \
+      -X PATCH \
+      -f state="active" \
+      --silent 2>/dev/null || true
+
+    membership_state=$(gh api "/orgs/${ORG}/memberships/${actor}" --jq '.state' 2>/dev/null || echo "none")
+    if [[ "${membership_state}" == "active" ]]; then
+      echo "    OK: ${actor} is now an active org member"
+      continue
+    fi
+  fi
+
+  echo "    PENDING: ${actor} invitation sent but not yet accepted."
+  if [[ -z "${!pat_var:-}" ]]; then
+    echo "    Set ${pat_var} env var to auto-accept, or accept manually."
+  fi
+  wait_for_user "Press Enter after ${actor} has accepted the invitation..."
+
+  membership_state=$(gh api "/orgs/${ORG}/memberships/${actor}" --jq '.state' 2>/dev/null || echo "none")
+  if [[ "${membership_state}" != "active" ]]; then
+    echo "    ERROR: ${actor} is still not an active member (state: ${membership_state})."
+    exit 1
+  fi
+  echo "    OK: ${actor} is now an active org member"
+done
+
+# Verify outsider has no org membership.
+outsider_state=$(gh api "/orgs/${ORG}/memberships/${TEST_OUTSIDER_USER}" --jq '.state' 2>/dev/null || echo "none")
+if [[ "${outsider_state}" == "none" ]]; then
+  echo "    OK: ${TEST_OUTSIDER_USER} has no org membership"
+else
+  echo "    WARNING: ${TEST_OUTSIDER_USER} has org membership (state: ${outsider_state})."
+  echo "    Remove from ${ORG} to preserve the outsider test model."
+fi
+echo
+
+# --- 3c. test actor repo permissions ---
+echo "==> Granting test actor collaborator permissions on base repos..."
+if ! base_repos=$(gh api --paginate "/orgs/${ORG}/repos" \
+  --jq '.[] | select(.fork == false) | select(.name | startswith("test-repo")) | .name' \
+  2>&1); then
+  echo "    WARNING: could not list repos for ${ORG}: ${base_repos}"
+  echo "    Check authentication and permissions, then re-run."
+  base_repos=""
+fi
+
+if [[ -z "${base_repos}" ]]; then
+  echo "    No base test-repo* repos found. Skipping collaborator grants."
+  echo "    Re-run after test repos are created to apply permissions."
+else
+  ok_count=0
+  fail_count=0
+  while IFS= read -r repo; do
+    # fstest-write → push
+    if gh api "/repos/${ORG}/${repo}/collaborators/${TEST_WRITE_USER}" \
+        -X PUT -f permission="push" --silent 2>/dev/null; then
+      ok_count=$((ok_count + 1))
+    else
+      echo "    WARNING: ${TEST_WRITE_USER} → push on ${repo}"
+      fail_count=$((fail_count + 1))
+    fi
+
+    # fstest-triage → triage
+    if gh api "/repos/${ORG}/${repo}/collaborators/${TEST_TRIAGE_USER}" \
+        -X PUT -f permission="triage" --silent 2>/dev/null; then
+      ok_count=$((ok_count + 1))
+    else
+      echo "    WARNING: ${TEST_TRIAGE_USER} → triage on ${repo}"
+      fail_count=$((fail_count + 1))
+    fi
+  done <<< "${base_repos}"
+
+  echo "    Collaborator grants: OK=${ok_count} WARNING=${fail_count}"
+
+  # Verify outsider has no collaborator access on the first base repo.
+  first_repo=$(echo "${base_repos}" | head -1)
+  if gh api "/repos/${ORG}/${first_repo}/collaborators/${TEST_OUTSIDER_USER}" \
+      --silent 2>/dev/null; then
+    echo "    WARNING: ${TEST_OUTSIDER_USER} is a collaborator on ${first_repo}."
+    echo "    Remove to preserve the outsider test model."
+  else
+    echo "    OK: ${TEST_OUTSIDER_USER} is not a collaborator on ${first_repo}"
+  fi
 fi
 echo
 

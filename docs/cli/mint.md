@@ -60,11 +60,25 @@ fullsend mint deploy \
   --platform cloudflare
 ```
 
-Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown via `mint delete --platform=cloudflare --preview=<alias>` abandons the alias without deleting the Worker script.
+Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL includes the account's workers.dev subdomain: `https://<alias>-<worker-name>.<subdomain>.workers.dev` (e.g., `https://bt-abc123-bt-mint.fullsend-ai.workers.dev`). The subdomain is resolved at deploy time from the Wrangler output or the Cloudflare API. Preview teardown via `mint delete --platform=cloudflare --preview=<alias>` abandons the alias without deleting the Worker script.
 
 If the target Worker script does not yet exist (first-time preview on a new `--worker-name`), the CLI automatically creates it with a one-time durable deploy before proceeding with the preview upload. Subsequent preview deploys skip this bootstrap step. When `--pem-dir` is set, the bootstrap deploy includes PEM secrets so the Worker is immediately usable.
 
 Use `--worker-name` to target a specific Worker script name.
+
+#### Custom domain
+
+Use `--custom-domain` to attach a [Workers Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (e.g. `mint.fullsend.sh`) to the durable Worker. The zone ID is resolved automatically from the domain name via the Cloudflare API. Custom domains are only supported for durable deploys — preview deploys use bare `workers.dev` hostnames.
+
+```bash
+fullsend mint deploy \
+  --platform cloudflare \
+  --custom-domain "mint.fullsend.sh"
+```
+
+When a custom domain is configured, the mint URL (`FULLSEND_MINT_URL`) uses the custom domain hostname instead of the `workers.dev` URL.
+
+To tear down a durable Worker with a custom domain, pass `--custom-domain` to `mint delete` so the CLI removes the domain binding before deleting the Worker.
 
 Authentication (one of):
 - `CLOUDFLARE_API_TOKEN` env var (+ `CLOUDFLARE_ACCOUNT_ID`) — API token with Workers write permission
@@ -102,6 +116,7 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--per-repo-wif-repos` | | Comma-separated per-repo WIF repos (Cloudflare only, sets `PER_REPO_WIF_REPOS`). Mutually exclusive with `--public` |
 | `--workflow-host-repos` | | Comma-separated workflow host repos (Cloudflare only, sets `WORKFLOW_HOST_REPOS`). Omit to preserve existing; set to `""` to clear |
 | `--allowed-workflow-files` | | Comma-separated workflow file basenames (Cloudflare only, sets `ALLOWED_WORKFLOW_FILES`). Durable: omit to preserve existing binding; set to `""` to clear. Preview: defaults to `*` when omitted (all basenames allowed) |
+| `--custom-domain` | | Hostname to attach as a Workers Custom Domain (Cloudflare only, durable deploys only). Zone ID is resolved automatically. Example: `--custom-domain=mint.fullsend.sh` |
 
 ### Required IAM roles (GCP)
 
@@ -143,10 +158,14 @@ fullsend mint delete \
 
 ### Cloudflare durable mode (`--platform=cloudflare`)
 
-Deletes the durable Worker script and all associated bindings/secrets via `wrangler delete`.
+Deletes the durable Worker script and all associated bindings/secrets via `wrangler delete`. When the Worker was deployed with a custom domain, pass `--custom-domain` to also remove the custom domain binding before deleting the Worker.
 
 ```bash
 fullsend mint delete --platform cloudflare
+
+# With custom domain teardown:
+fullsend mint delete --platform cloudflare \
+  --custom-domain "mint.fullsend.sh"
 ```
 
 ### Cloudflare preview mode (`--platform=cloudflare --preview=<alias>`)
@@ -166,6 +185,7 @@ fullsend mint delete --platform cloudflare --preview bt-run-42
 | `--region` | `us-central1` | GCP region for the Cloud Function (GCP only) |
 | `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
 | `--preview` | | Tear down a preview mint identified by this alias (Cloudflare only) |
+| `--custom-domain` | | Custom domain hostname to remove during teardown (Cloudflare only, zone ID resolved automatically) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip confirmation prompt |
 

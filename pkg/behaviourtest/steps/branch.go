@@ -67,16 +67,17 @@ func resetBranchIfExists(w *world.World, branch string) error {
 	return nil
 }
 
-func ensureScenarioRepo(w *world.World) {
+func ensureScenarioRepo(w *world.World) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
-		w.RepoFull = w.Org + "/" + w.RepoName
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before branch operations")
 	}
+	return nil
 }
 
 func givenSeededRemoteBranch(w *world.World, branch string) error {
-	ensureScenarioRepo(w)
+	if err := ensureScenarioRepo(w); err != nil {
+		return err
+	}
 	branch, err := expandIssuePlaceholder(w, branch)
 	if err != nil {
 		return err
@@ -97,7 +98,9 @@ func givenSeededRemoteBranch(w *world.World, branch string) error {
 }
 
 func givenOpenPullRequestOnBranch(w *world.World, branch string) error {
-	ensureScenarioRepo(w)
+	if err := ensureScenarioRepo(w); err != nil {
+		return err
+	}
 	branch, err := expandIssuePlaceholder(w, branch)
 	if err != nil {
 		return err
@@ -125,7 +128,9 @@ func givenOpenPullRequestOnBranch(w *world.World, branch string) error {
 }
 
 func givenBranchTipRecorded(w *world.World, branch string) error {
-	ensureScenarioRepo(w)
+	if err := ensureScenarioRepo(w); err != nil {
+		return err
+	}
 	branch, err := expandIssuePlaceholder(w, branch)
 	if err != nil {
 		return err
@@ -142,7 +147,9 @@ func givenBranchTipRecorded(w *world.World, branch string) error {
 }
 
 func thenBranchUnchanged(w *world.World, branch string) error {
-	ensureScenarioRepo(w)
+	if err := ensureScenarioRepo(w); err != nil {
+		return err
+	}
 	branch, err := expandIssuePlaceholder(w, branch)
 	if err != nil {
 		return err

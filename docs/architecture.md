@@ -42,7 +42,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 **Decided:**
 
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
-- Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client`. Conversations have exactly one category (1:M) and optional M:M labels; messages inherit that context and are not labeled ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
+- Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). Conversations have exactly one category (1:M) and optional M:M labels; messages inherit that context and are not labeled independently.
 - Installation model: ordered layer stack (install forward, uninstall reverse, analyze for status reporting) with idempotent operations. Current stack: config-repo → workflows → vendor-binary → secrets → inference → dispatch → enrollment ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Cross-repo dispatch: enrolled repos call `.fullsend` via `workflow_call`; a dispatch workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
@@ -53,7 +53,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — install, convergence (provision, sync, upgrade), status, and uninstall across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md), [ADR 0074](ADRs/0074-repos-command-consolidation.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
 - Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
-- GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT via OIDC/WIF from Secret Manager or protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT stored as a protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
@@ -106,8 +106,8 @@ repo baseline and overrides)
   ([ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md)).
 - Forge-portable harness schema: `role` and `slug` move into the harness
   YAML (eliminating the config.yaml `agents:` block dependency), and a
-  `forge:` section separates platform-specific config (scripts, skills,
-  runner_env) from platform-neutral fields. Forge blocks inherit from
+  `forge:` section separates platform-specific config from platform-neutral
+  fields (see ADR-0045 for the full list of forge-overridable fields). Forge blocks inherit from
   top-level defaults and override only deltas
   ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
 - Unified env var delivery: a single `env:` key with `runner` and `sandbox`
@@ -154,6 +154,7 @@ repo baseline and overrides)
 - Pre-script skip signalling: the harness `pre_script` runs exactly once,
   inside `fullsend run`; a pre-script stops the run before sandbox creation by
   writing `skipped=true` to the CLI-provided `FULLSEND_PRESCRIPT_OUTPUT` file
+  or by exiting with code 78 (neutral skip)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
@@ -210,7 +211,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - ~~What identity model fits best — separate bot accounts per agent role, a single bot account with role metadata, GitHub App installations, or something else?~~ Decided in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
-- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a bot PAT credential model (via OIDC/WIF or protected CI/CD variable) — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md).
+- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a bot PAT stored as a protected CI/CD variable — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md).
 - Which agent roles need Discussions (or other chat) write scopes, and how do those scopes map onto named mint privilege levels? Conversation participation requires least-privilege identity deltas per [ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md).
 
 ## Agent Dispatch and Coordination Layer
@@ -392,6 +393,12 @@ ADR 0002: [Building block 10](ADRs/0002-initial-fullsend-design.md#10-check-fail
 
 Runs N parallel **review agent** invocations and produces structured review verdicts/comments.
 ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#11-review-agent-runtime).
+
+**Decided:**
+
+- PR-level risk assessment scoring: pre-pass sub-agent computes a composite 1–5
+  risk score from metadata, git history, and linked-issue signals
+  ([ADR 0089](ADRs/0089-pr-risk-assessment-scoring.md)).
 
 ### 12. Coordinator merge algorithm
 

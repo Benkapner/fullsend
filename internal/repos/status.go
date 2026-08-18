@@ -113,6 +113,14 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 		maxConcurrency = 8
 	}
 
+	// Create a ref resolver for SHA-based drift detection. The resolver
+	// caches results so all repos sharing the same fullsend_ref only
+	// trigger one API call.
+	var refResolver *RefResolver
+	if ghFC, ghErr := clients.ConfigFor(ForgeGitHub); ghErr == nil {
+		refResolver = NewRefResolver(ghFC.Client)
+	}
+
 	results := make([]RepoStatus, len(resolved))
 	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
@@ -140,7 +148,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 				return
 			}
 			cfg.ForgeConfig = fc
-			status := checkRepoStatus(ctx, cfg)
+			status := checkRepoStatus(ctx, cfg, refResolver)
 			results[idx] = status
 		}(i, rr)
 	}
@@ -164,7 +172,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 	return &StatusResult{Repos: results, Summary: summary, Warnings: warnings}, nil
 }
 
-func checkRepoStatus(ctx context.Context, cfg ResolvedConfig) RepoStatus {
+func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResolver) RepoStatus {
 	owner := cfg.Owner
 	repo := cfg.Repo
 	client := cfg.ForgeConfig.Client
@@ -202,15 +210,40 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig) RepoStatus {
 		})
 	}
 
-	// InferenceRegion is now install-time-only (not in the manifest),
-	// so we no longer check for region drift here.
+	// Inference secrets are always required.
+	for _, secretName := range requiredSecretsForForge() {
+		exists, secretErr := client.RepoSecretExists(ctx, owner, repo, secretName)
+		if secretErr != nil {
+			if status.Error == "" {
+				status.Error = fmt.Sprintf("checking secret %s: %v", secretName, secretErr)
+			}
+			break
+		}
+		if !exists {
+			status.Drifts = append(status.Drifts, Drift{
+				Field:    secretName,
+				Expected: "present",
+				Actual:   "missing",
+			})
+		}
+	}
 
-	if cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
-		status.Drifts = append(status.Drifts, Drift{
-			Field:    "fullsend_ref",
-			Expected: cfg.FullsendRef,
-			Actual:   status.CurrentRef,
-		})
+	// Resolve the manifest's fullsend_ref to a commit SHA for
+	// comparison. This handles floating refs like "main" — if the
+	// branch has moved, the resolved SHA differs from the installed
+	// SHA and drift is correctly reported.
+	if cfg.FullsendRef != "" {
+		expectedSHA := cfg.FullsendRef
+		if resolver != nil {
+			expectedSHA = resolver.Resolve(ctx, cfg.FullsendRef)
+		}
+		if status.CurrentRef != expectedSHA {
+			status.Drifts = append(status.Drifts, Drift{
+				Field:    "fullsend_ref",
+				Expected: cfg.FullsendRef,
+				Actual:   status.CurrentRef,
+			})
+		}
 	}
 
 	return status

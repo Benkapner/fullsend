@@ -13,6 +13,7 @@ A minimal harness configuration (based on actual fullsend agent harnesses):
 ```yaml
 agent: agents/code.md
 model: opus
+effort: high                     # optional: low, medium, high, xhigh, max (claude runtime only)
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/base.yaml
 providers:
@@ -65,7 +66,9 @@ env:
 > without also copying its scripts will fail validation. Reference the
 > agents-repo harness by URL instead, or supply your own scripts.
 >
-> A `pre_script` can also stop the run before the sandbox starts — see the
+> A `pre_script` can also stop the run before the sandbox starts — either
+> by writing `skipped=true` to the output file or by exiting with code 78
+> (a simpler alternative for scripts that just need to skip). See the
 > [pre-script output protocol](../../normative/prescript-output/v1/README.md).
 
 **Optional fields** (all have secure defaults and can be omitted):
@@ -269,6 +272,12 @@ Each agent role has its own identity, permissions, and purpose:
 
 > **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
 
+> **Note:** Mint-only dogfood roles such as `scribe` can be registered with
+> `fullsend mint add-role` (and used via remote harness registration) but are
+> **not** valid values for the `.fullsend` `roles:` field until scaffold /
+> workflow wiring lands. Adding them under `roles:` fails config validation
+> rather than silently no-oping.
+
 ## Configuration Examples
 
 ### Extending the sandbox image
@@ -390,6 +399,43 @@ agents:
 
 See [Bring Your Own Agent](bring-your-own-agent.md) for the full
 composition model and config-driven registration.
+
+## Status Notifications
+
+Agent workflows post status comments on issues and PRs when they start and complete. Control this with `status_notifications` in `config.yaml`.
+
+For per-org installs, nest it under `defaults`:
+
+```yaml
+defaults:
+  status_notifications:
+    comment:
+      start: enabled      # "enabled" (default) | "disabled"
+      completion: enabled  # "enabled" (default) | "on_failure" | "disabled"
+```
+
+For per-repo installs, set it at the top level of `.fullsend/config.yaml`:
+
+```yaml
+status_notifications:
+  comment:
+    start: enabled
+    completion: enabled
+```
+
+When `status_notifications` is omitted entirely, both start and completion comments default to enabled.
+
+### Completion modes
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always post a completion comment (default) |
+| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
+| `disabled` | Never post a completion comment; silently remove the start comment |
+
+`on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
+
+In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
 
 ## Disabling Agents
 

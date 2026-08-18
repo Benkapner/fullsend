@@ -205,9 +205,10 @@ func validateMintURL(raw string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.HasSuffix(parsed.Host, ".run.app") &&
-		!strings.HasSuffix(parsed.Host, ".cloudfunctions.net") {
-		return fmt.Errorf("--mint-url must be a Cloud Run URL (.run.app or .cloudfunctions.net), got host %q", parsed.Host)
+	host := parsed.Hostname()
+	if !strings.HasSuffix(host, ".run.app") &&
+		!strings.HasSuffix(host, ".cloudfunctions.net") {
+		return fmt.Errorf("--mint-url must be a Cloud Run URL (.run.app or .cloudfunctions.net), got host %q", host)
 	}
 	return nil
 }
@@ -1130,7 +1131,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			"FULLSEND_GCP_PROJECT_ID":   inferenceProject,
 			"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
 		}
-		if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, vendorFiles, repoVars, repoSecrets, c.Direct); err != nil {
+		if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, vendorFiles, repoVars, repoSecrets, scaffoldOptions{direct: c.Direct}); err != nil {
 			return err
 		}
 	}
@@ -1210,11 +1211,18 @@ func (a *gcfProvisionerAdapter) DeleteWIFProvider(ctx context.Context, repo stri
 	return a.provisioner.DeleteWIFProvider(ctx, providerID)
 }
 
+// scaffoldOptions holds optional behavioral modifiers for applyPerRepoScaffold,
+// keeping the function signature stable as new options are added.
+type scaffoldOptions struct {
+	direct         bool   // push directly to the default branch instead of creating a PR
+	signOffTrailer string // e.g. "Signed-off-by: Name <email>"; appended to the commit message when non-empty
+}
+
 // applyPerRepoScaffold commits scaffold files to the repo's default branch
 // and configures the repository variables and secrets needed for fullsend.
 func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo string, files []forge.TreeFile,
-	repoVars, repoSecrets map[string]string, direct bool) error {
+	repoVars, repoSecrets map[string]string, opts scaffoldOptions) error {
 
 	targetRepo, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
@@ -1227,7 +1235,10 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	// BuildScaffoldPRMetadata will use the guard variable to distinguish
 	// fresh installs from upgrades without version information.
 	meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, "")
-	if direct {
+	if opts.signOffTrailer != "" {
+		meta.CommitMsg += "\n\n" + opts.signOffTrailer
+	}
+	if opts.direct {
 		printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 			owner, repo, targetRepo.DefaultBranch))
 	} else {
@@ -1236,7 +1247,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	}
 	if _, err := layers.CommitScaffoldFiles(ctx, client, printer,
 		owner, repo, targetRepo.DefaultBranch,
-		meta, files, direct, os.Stdin); err != nil {
+		meta, files, opts.direct, os.Stdin); err != nil {
 		return err
 	}
 

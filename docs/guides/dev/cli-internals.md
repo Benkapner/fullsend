@@ -55,7 +55,7 @@ fullsend
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
-│   │   ├── --inference-project-number <num> #   Numeric GCP project number for WIF (install-time only)
+│   │   ├── --inference-project-number <num> #   Numeric GCP project number for WIF (auto-derived; install-time only)
 │   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
 │   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
@@ -107,8 +107,26 @@ fullsend
 │   ├── output                               # Scan agent output for leaked secrets
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
-├── post-review                              # Post PR review comments to GitHub
-├── post-comment                             # Post issue/PR comments to GitHub
+├── issues                                   # Read and write issue content across trackers
+│   ├── get                                  #   Read issue content (title, body, comments, labels)
+│   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│   │   └── --number <int>                   #     Issue number
+│   └── post-comment                         #   Post or update a sticky comment on an issue
+│       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│       ├── --number <int>                   #     Issue number
+│       └── --marker <string>                #     Hidden HTML marker for idempotent updates
+├── post-review                              # Post PR/MR review comments to GitHub or GitLab
+│   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
+│   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
+│   ├── --repo <owner/repo>                  #   Repository in owner/repo format
+│   ├── --pr <int>                           #   Pull request / merge request number
+│   ├── --result <path>                      #   Path to review result file, or '-' for stdin
+│   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN or $GITLAB_TOKEN)
+│   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
+│   └── --dry-run                            #   Print what would be posted without API calls
+├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format
     ├── --number <int>                       #   Issue/PR number
@@ -118,7 +136,10 @@ fullsend
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
     ├── --role <string>                      #   Agent role for minting (required with --mint-url)
-    └── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+    ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection)
+    ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
+    └── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
 ```
 
 ### Command Decomposition
@@ -206,10 +227,6 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │                    → store PEMs in Secret Manager          │ │
 │  │                                                            │ │
 │  │  Both modes use gcf.NewProvisioner with same Config{}      │ │
-│  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-repo adds: RegisterPerRepoWIF()      │              │ │
-│  │  │ (adds repo to PER_REPO_WIF_REPOS env)    │              │ │
-│  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
@@ -261,6 +278,10 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  │                                          │              │ │
 │  │  │ Per-repo: secrets → target repo          │              │ │
 │  │  │           + FULLSEND_PER_REPO_GUARD=true │              │ │
+│  │  │                                          │              │ │
+│  │  │ NOTE: Per-repo runs Phase 6 before       │              │ │
+│  │  │ Phase 5 (vars/secrets before scaffold    │              │ │
+│  │  │ commit) to prevent a race window (#6122) │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
@@ -282,10 +303,10 @@ Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `Provis
 |-------|-------------|-------------------|-------------------|
 | **1. Discover** | `DiscoverMint()`, resolve app IDs | Discovers all org repos | Single repo validation |
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
-| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | + `RegisterPerRepoWIF()` |
+| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | — (use `mint enroll` separately) |
 | **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
-| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
-| **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` |
+| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo (committed after secrets in per-repo, see #6122) |
+| **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` (written before scaffold commit in per-repo, see #6122) |
 | **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
 
 ### Per-Org Layer Stack
@@ -358,7 +379,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
 │  │ Pre-script        │ Run harness.pre_script (host-side).      │
-│  │                   │ skipped=true exits 0 here (#4718)        │
+│  │                   │ skipped=true or exit 78 skips (#4718,582)│
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -406,6 +427,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  claude --print --verbose                │                   │
 │  │    --output-format stream-json           │                   │
 │  │    --model {model}                       │                   │
+│  │    --effort {effort}                     │                   │
 │  │    --agent {agent}                       │                   │
 │  │    --dangerously-skip-permissions        │                   │
 │  │    'Run the agent task'                  │                   │
@@ -625,7 +647,7 @@ var executableFiles = map[string]struct{}{
 │     ▼                                                           │
 │  11. Repeat steps 4-6 with role=review                          │
 │      ├── Review agent examines diff                             │
-│      └── Posts review comments via GitHub App bot               │
+│      └── Posts review comments via forge API (GitHub App or GitLab token) │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -643,6 +665,8 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/mint.go` | ~1022 | Mint deploy/enroll/unenroll/status |
 | `internal/cli/inference.go` | ~408 | Inference WIF provision/status |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
+| `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
+| `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
 | `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |

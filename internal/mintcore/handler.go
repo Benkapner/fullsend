@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -88,23 +87,62 @@ type foreignInflight struct {
 	err       error
 }
 
+// VerifierFactory constructs an OIDCVerifier given the resolved OIDC
+// audience string. NewHandler calls this factory after reading
+// OIDC_AUDIENCE from getEnv, so verifier implementations never depend
+// on getEnv themselves — keeping WASM binary size minimal.
+type VerifierFactory func(audience string) (OIDCVerifier, error)
+
 // NewHandler creates a Handler with the given dependencies.
-// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES,
-// ALLOWED_ORGS, ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS) are read once at
-// construction time. The OIDCVerifier is injected by the caller so different
-// verification strategies can be used (STSVerifier for the Cloud Function,
-// JWKSVerifier for devmint). The handler performs authorization (org-allowed,
-// workflow-ref) after the verifier authenticates the token.
-func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+// Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES, ALLOWED_ORGS,
+// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS,
+// OIDC_AUDIENCE) are read once at construction time via the injected
+// getEnv function. Native entrypoints (GCF, standalone) pass os.Getenv;
+// the CF Worker WASM host passes a callback that looks up Worker
+// bindings by name.
+//
+// The VerifierFactory is called with the resolved OIDC audience so
+// different verification strategies can be used (STSVerifier for the
+// Cloud Function, JWKSVerifier for devmint/standalone/Worker). The
+// handler performs authorization (org-allowed, workflow-ref) after the
+// verifier authenticates the token.
+func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, verifierFactory VerifierFactory, httpClient HTTPDoer) (*Handler, error) {
+	if getEnv == nil {
+		return nil, errors.New("getEnv must not be nil")
+	}
+
+	// Resolve OIDC audience centrally so verifiers receive the string
+	// directly and never depend on getEnv — critical for WASM binary
+	// size (passing getEnv into verifiers pulls in closure dependencies).
+	audience := getEnv("OIDC_AUDIENCE")
+	if audience == "" {
+		return nil, errors.New("OIDC_AUDIENCE must be configured")
+	}
+
+	oidcVerifier, err := verifierFactory(audience)
+	if err != nil {
+		return nil, fmt.Errorf("creating OIDC verifier: %w", err)
+	}
+
+	// Register custom role permissions before processing ALLOWED_ROLES
+	// so that HasRole sees them during validation.
+	if raw := getEnv("CUSTOM_ROLE_PERMISSIONS"); raw != "" {
+		var perms map[string]map[string]string
+		if err := json.Unmarshal([]byte(raw), &perms); err != nil {
+			return nil, fmt.Errorf("failed to parse CUSTOM_ROLE_PERMISSIONS: %w", err)
+		}
+		if err := RegisterCustomRolePermissions(perms); err != nil {
+			return nil, fmt.Errorf("registering custom role permissions: %w", err)
+		}
+	}
 
 	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
+	for _, entry := range SplitCSV(getEnv("PER_REPO_WIF_REPOS")) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
 	workflowHostRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(os.Getenv("WORKFLOW_HOST_REPOS")) {
+	for _, entry := range SplitCSV(getEnv("WORKFLOW_HOST_REPOS")) {
 		workflowHostRepos[strings.ToLower(entry)] = true
 	}
 	if len(workflowHostRepos) == 0 {
@@ -120,12 +158,12 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
 		perRepoWIFRepos:      perRepoWIFRepos,
-		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
-		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
+		allowedOrgs:          ParseAllowedOrgs(getEnv("ALLOWED_ORGS")),
+		allowedWorkflowFiles: SplitCSV(getEnv("ALLOWED_WORKFLOW_FILES")),
 		workflowHostRepos:    workflowHostRepos,
 	}
 
-	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
+	if raw := getEnv("ROLE_APP_IDS"); raw != "" {
 		var ids map[string]string
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
 			return nil, fmt.Errorf("failed to parse ROLE_APP_IDS: %w", err)
@@ -139,7 +177,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		roleSet[role] = true
 	}
 
-	if raw := os.Getenv("ALLOWED_ROLES"); raw != "" {
+	if raw := getEnv("ALLOWED_ROLES"); raw != "" {
 		for _, entry := range strings.Split(raw, ",") {
 			if trimmed := strings.TrimSpace(entry); trimmed != "" {
 				if !RolePattern.MatchString(trimmed) {
@@ -373,7 +411,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to mint token: org=%s target_org=%s role=%s err=%v", callerOrg, targetOrg, req.Role, err)
 		var me *mintError
 		if errors.As(err, &me) {
-			writeError(w, me.status, "mint failed")
+			msg := "mint failed"
+			// Surface the user-facing message when the error explicitly
+			// provides one. Only errors that set userMsg opt into this;
+			// all others keep the generic message to avoid leaking
+			// internal details.
+			if me.userMsg != "" {
+				msg = me.userMsg
+			}
+			writeError(w, me.status, msg)
 		} else {
 			writeError(w, http.StatusInternalServerError, "internal error")
 		}
@@ -496,7 +542,53 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
+		// A 404 from FindInstallation means the repo is not covered by
+		// the GitHub App installation. Surface a clear 422 so callers
+		// can diagnose misconfigured installations. Transient errors
+		// (500, 503, 429, network) propagate as 502.
+		if len(repos) > 0 && errors.Is(err, ErrInstallationNotFound) {
+			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
+			return "", "", nil, &mintError{
+				status:  http.StatusUnprocessableEntity,
+				msg:     umsg,
+				userMsg: umsg,
+			}
+		}
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+	}
+
+	// Verify all requested repos are covered by the same installation.
+	// If the GitHub App uses selected-repository installation mode,
+	// repos not in the selection return 404 from the installation
+	// lookup. Detecting this upfront produces a clear error instead
+	// of a confusing 422 from CreateInstallationToken.
+	//
+	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
+	// Transient failures (500, 503, 429, network errors) are propagated
+	// as 502, matching the repos[0] error path above.
+	if len(repos) > 1 {
+		for _, repo := range repos[1:] {
+			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
+			if otherErr != nil {
+				if errors.Is(otherErr, ErrInstallationNotFound) {
+					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
+					return "", "", nil, &mintError{
+						status:  http.StatusUnprocessableEntity,
+						msg:     umsg,
+						userMsg: umsg,
+					}
+				}
+				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
+			}
+			if otherID != installationID {
+				umsg := fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0])
+				return "", "", nil, &mintError{
+					status:  http.StatusUnprocessableEntity,
+					msg:     umsg,
+					userMsg: umsg,
+				}
+			}
+		}
 	}
 
 	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
@@ -784,9 +876,14 @@ func (h *Handler) lookupRoleAppID(role string) (string, error) {
 }
 
 // mintError is an HTTP-aware error carrying a status code for the response.
+// userMsg, when non-empty, is a client-safe message that the response
+// boundary surfaces instead of the generic "mint failed". Errors that
+// do not set userMsg keep the generic message, preventing accidental
+// disclosure of internal details.
 type mintError struct {
-	status int
-	msg    string
+	status  int
+	msg     string
+	userMsg string
 }
 
 func (e *mintError) Error() string { return e.msg }

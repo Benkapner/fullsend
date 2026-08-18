@@ -52,11 +52,33 @@ jobs:
             git push origin v0
           fi
 
-      # Sync the version tag to fullsend-ai/agents. Runs for all tags
-      # including pre-releases — agents' own release.yml handles
-      # pre-release semantics. Intentionally coupled to the v0 step:
-      # if the v0 move fails, the release state is suspect and agents
-      # should not be tagged until the issue is investigated.
+  validate-agents:
+    needs: release
+    permissions:
+      contents: read
+      id-token: write
+    uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@a8566cd5305fe094b96588690118022967ad0061 # main
+    with:
+      fullsend_ref: ${{ github.ref_name }}
+    secrets:
+      E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+      E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+      E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
+      # Fine-grained PAT scoped to the eval org — used by functional
+      # tests to read eval repos and record eval run results.
+      EVAL_GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
+
+  tag-agents:
+    # Sync the version tag to fullsend-ai/agents. Runs for all tags
+    # including pre-releases — agents' own release.yml handles
+    # pre-release semantics. Only runs after agents functional tests
+    # pass against the release tag.
+    needs: [release, validate-agents]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
       - name: Generate agents repo token
         id: agents-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -87,3 +109,22 @@ jobs:
             -f ref="refs/tags/${TAG}" \
             -f sha="${AGENTS_SHA}"
           echo "Created tag ${TAG} on fullsend-ai/agents at ${AGENTS_SHA}"
+
+  notify-agents-sync-failure:
+    needs: [release, validate-agents, tag-agents]
+    if: >-
+      always()
+      && needs.release.result == 'success'
+      && (needs.validate-agents.result == 'failure' || needs.tag-agents.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          PAYLOAD=$(jq -n --arg tag "${GITHUB_REF_NAME}" --arg url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{text: ":warning: Agents tag sync failed for `\($tag)`. The fullsend release shipped but the agents tag was not created. <\($url)|View run>"}')
+          curl -fsS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK"

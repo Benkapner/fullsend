@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -34,19 +37,21 @@ var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
 func newPostReviewCmd() *cobra.Command {
 	var (
-		repo    string
-		pr      int
-		result  string
-		token   string
-		headSHA string
-		dryRun  bool
+		repo      string
+		pr        int
+		result    string
+		token     string
+		headSHA   string
+		dryRun    bool
+		forgeName string
+		baseURL   string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "post-review",
-		Short: "Post or update a sticky review comment on a PR",
-		Long: `Posts review findings as a sticky issue comment on a pull request,
-then submits a formal GitHub PR review with the disposition.
+		Short: "Post or update a sticky review comment on a PR/MR",
+		Long: `Posts review findings as a sticky issue comment on a pull request
+or merge request, then submits a formal review with the disposition.
 
 On first run, creates a new comment with a hidden HTML marker.
 On re-runs, finds the existing comment, collapses old content into
@@ -60,16 +65,14 @@ review.
 
 When --head-sha is provided (or head_sha is in the JSON), the CLI
 verifies that the PR HEAD still matches before posting. If the HEAD
-has moved, a stale-head failure is posted instead.`,
+has moved, a stale-head failure is posted instead.
+
+Use --forge to select the forge backend (default: github). For GitLab,
+pass --forge gitlab (defaults to gitlab.com). For self-hosted instances,
+add --base-url https://gitlab.example.com. Token resolution uses
+GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
-
-			if token == "" {
-				token = os.Getenv("GITHUB_TOKEN")
-			}
-			if token == "" {
-				return fmt.Errorf("--token or GITHUB_TOKEN required")
-			}
 
 			if pr <= 0 {
 				return fmt.Errorf("--pr must be a positive integer, got %d", pr)
@@ -106,7 +109,10 @@ has moved, a stale-head failure is posted instead.`,
 
 			printer.Header("Post Review")
 
-			client := gh.New(token)
+			client, err := resolvePostReviewClient(forgeName, token, baseURL)
+			if err != nil {
+				return err
+			}
 			cfg := sticky.Config{
 				Marker: reviewMarker,
 				DryRun: dryRun,
@@ -146,9 +152,11 @@ has moved, a stale-head failure is posted instead.`,
 	cmd.Flags().StringVar(&repo, "repo", "", "repository in owner/repo format (required)")
 	cmd.Flags().IntVar(&pr, "pr", 0, "pull request number (required)")
 	cmd.Flags().StringVar(&result, "result", "-", "path to review result file, or '-' for stdin")
-	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&token, "token", "", "forge token (default: $GH_TOKEN / $GITHUB_TOKEN for GitHub, $GITLAB_TOKEN for GitLab)")
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "expected PR HEAD SHA (skips review if HEAD has moved)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
+	cmd.Flags().StringVar(&forgeName, "forge", "", "forge backend: github (default) or gitlab")
+	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL (e.g. https://gitlab.example.com)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("pr")
 
@@ -461,6 +469,9 @@ func formatFindingComment(f ReviewFinding) string {
 
 // is422Error reports whether err wraps a GitHub 422 Unprocessable Entity
 // API error. Used to detect inline comment validation failures.
+// NOTE: only matches *gh.APIError — GitLab errors won't trigger the
+// 422 fallback. This is acceptable because GitLab posts inline findings
+// as plain note text, not positioned diff comments.
 func is422Error(err error) bool {
 	var apiErr *gh.APIError
 	if errors.As(err, &apiErr) {
@@ -562,6 +573,51 @@ func lineInHunks(line int, hunks [][2]int) bool {
 	return false
 }
 
+// resolvePostReviewClient creates a forge.Client for the post-review
+// command. It resolves the token and base URL based on the forge name,
+// reusing the existing newForgeClient factory that already supports
+// both GitHub and GitLab.
+//
+// When an explicit token is provided (via --token), GitHub short-circuits
+// to newGitHubLiveClient to skip redundant token resolution, while
+// GitLab always delegates to newForgeClient. Without an explicit token
+// the standard resolution chain runs:
+// GitHub → GH_TOKEN / GITHUB_TOKEN / gh auth token;
+// GitLab → GITLAB_TOKEN.
+func resolvePostReviewClient(forgeName, token, baseURL string) (forge.Client, error) {
+	if baseURL != "" {
+		u, err := url.Parse(baseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("invalid --base-url %q: must be a valid https URL", baseURL)
+		}
+		if u.Scheme != "https" {
+			return nil, fmt.Errorf("--base-url must use https, got %q", baseURL)
+		}
+	}
+	switch forgeName {
+	case repos.ForgeGitLab:
+		client, err := newForgeClient(repos.ForgeGitLab, token, baseURL, gl.WithNoteTarget("merge_requests"))
+		if err != nil {
+			if errors.Is(err, errGitLabTokenMissing) {
+				return nil, fmt.Errorf("no GitLab token found: set GITLAB_TOKEN or pass --token")
+			}
+			return nil, err
+		}
+		return client, nil
+	case repos.ForgeGitHub, "":
+		if token != "" {
+			return newGitHubLiveClient(token, baseURL), nil
+		}
+		client, err := newForgeClient(repos.ForgeGitHub, "", baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, or pass --token")
+		}
+		return client, nil
+	default:
+		return nil, fmt.Errorf("unsupported forge %q: use %q or %q", forgeName, "github", "gitlab")
+	}
+}
+
 // postApprovedFollowUpIssues is disabled pending #1137. Follow-up issues
 // should only be created after the PR merges, not while it is still open.
 func postApprovedFollowUpIssues(_ context.Context, _, _ string, _ int, parsed ReviewResult, printer *ui.Printer) error {
@@ -612,6 +668,10 @@ func minimizeStaleReviews(ctx context.Context, client forge.Client, user string,
 	printer.StepStart(fmt.Sprintf("Minimizing %d stale review(s)", len(stale)))
 	for _, r := range stale {
 		if err := client.MinimizeComment(ctx, r.NodeID, "OUTDATED"); err != nil {
+			if forge.IsNotSupported(err) {
+				printer.StepInfo("Minimize not supported on this forge, skipping")
+				return
+			}
 			printer.StepInfo(fmt.Sprintf("Warning: could not minimize review %s: %v", r.NodeID, err))
 		}
 	}

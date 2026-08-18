@@ -148,13 +148,48 @@ scripts, or external data sources that only one agent needs.
 Use **[AGENTS.md](customizing-with-agents-md.md)** for broad instructions that
 apply to all agents and human contributors alike.
 
+## Authoring skills that augment defaults
+
+Adding a skill is easy; writing one that **works beside** shipped defaults is
+harder. Defaults often use specific language and own concrete output fields.
+A soft "prefer concise" skill will lose that contest.
+
+When you are tuning a built-in agent (triage, retro, review, …):
+
+1. Discover what the agent already loads (harness `skills:`, agent markdown,
+   result schema, post-script human surfaces).
+2. Choose the right artifact: unique-named **augmentation skill**,
+   **sub-agent** under an orchestrator, or whole-skill override — not a
+   same-named drop-in that gets shadowed.
+3. Prefer hard limits and field ownership over soft preferences.
+4. Re-check current docs for the lightest shipping path (repo skill, harness
+   pin, file-level override when available, or upstream contribution).
+
+For the full procedure, use the contributor skill
+[`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
+(local checkout of this repo, or any environment that loads
+`skills/author-fullsend-augmentations/`).
+
+Bring Your Own Agent covers the same decision frame in
+[Tuning agents with augmentation skills](bring-your-own-agent.md#tuning-agents-with-augmentation-skills).
+
+> **Planned:** Per-file overrides inside skill directories
+> ([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)) will make
+> single sub-agent customization lighter than forking a whole skill tree.
+
 ## What not to do
 
 - **Don't duplicate AGENTS.md content in skills.** If an instruction applies
   to all agents, put it in `AGENTS.md`. Skills are for agent-specific behavior.
+- **Don't reuse a built-in skill directory name** unless you intend a
+  supported whole-skill override path — same-named project skills are
+  shadowed by built-ins (see [Skill precedence](#skill-precedence)).
 
 ## See also
 
-- [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents
+- [Bring Your Own Agent](bring-your-own-agent.md) — building, registering, and
+  [tuning existing agents](bring-your-own-agent.md#tuning-agents-with-augmentation-skills)
+- [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
+  — discovery-driven authoring procedure for augmentations and sub-agents
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
   — adding skills keeps you in "configured default agent" territory

@@ -155,6 +155,8 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/scripts/install-openshell.sh",
 	".github/scripts/install-podman.sh",
 	".github/scripts/openshell-version.sh",
+	".github/scripts/redact-behaviour-artifacts-test.sh",
+	".github/scripts/redact-behaviour-artifacts.sh",
 }
 
 // enumerateVendoredPaths returns embed-derived paths for a current --vendor install layout.

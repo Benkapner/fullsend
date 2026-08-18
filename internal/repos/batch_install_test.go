@@ -256,118 +256,90 @@ func TestBatchInstall_InvalidManifest(t *testing.T) {
 	}
 }
 
-func TestBatchInstall_MissingInferenceProject(t *testing.T) {
-	repos := []string{"acme/api", "acme/web"}
-	fc := newFakeClientForBatch(repos...)
-	manifest := newBatchManifest(repos...)
-
-	sc := &fakeScaffoldCommit{}
-
-	// Omit InferenceProject from CLI flags — validation should fail.
-	cfg := batchCfgWithDefaults(manifest)
-	cfg.MaxConcurrency = 2
-	cfg.InferenceProject = ""
-
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
-	}
-	if len(result.Failed) != 2 {
-		t.Errorf("expected 2 failed repos, got %d", len(result.Failed))
-	}
-	for _, r := range result.Failed {
-		if !strings.Contains(r.Error.Error(), "--inference-project is required") {
-			t.Errorf("expected --inference-project error, got: %v", r.Error)
-		}
-	}
-	if len(result.Installed) != 0 {
-		t.Errorf("expected 0 installed, got %d", len(result.Installed))
-	}
-	if sc.called {
-		t.Error("expected no scaffold calls when inference_project is empty")
-	}
-}
-
-func TestBatchInstall_MissingInferenceRegion(t *testing.T) {
+func TestBatchInstall_PartialInferenceFlags_MissingProject(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := batchCfgWithDefaults(manifest)
-	cfg.MaxConcurrency = 2
-	cfg.InferenceRegion = "" // CLI flag missing
+	cfg := BatchInstallConfig{
+		Manifest:               manifest,
+		MaxConcurrency:         2,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceRegion:        "us-central1",
+		InferenceProjectNumber: "123456789",
+	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error for partial inference flags")
 	}
-	if len(result.Failed) != 1 {
-		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	if !strings.Contains(err.Error(), "incomplete inference flags") {
+		t.Errorf("expected incomplete inference flags error, got: %v", err)
 	}
-	if result.Failed[0].Error == nil || !strings.Contains(result.Failed[0].Error.Error(), "--inference-region is required") {
-		t.Errorf("expected --inference-region error, got: %v", result.Failed[0].Error)
+	if !strings.Contains(err.Error(), "--inference-project") {
+		t.Errorf("expected missing flag name in error, got: %v", err)
 	}
 	if sc.called {
-		t.Error("expected no scaffold calls when inference_region is empty")
+		t.Error("expected no scaffold calls with partial inference flags")
 	}
 }
 
-func TestBatchInstall_MissingInferenceProjectNumber(t *testing.T) {
+func TestBatchInstall_PartialInferenceFlags_MissingRegion(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
 	sc := &fakeScaffoldCommit{}
 
-	// Omit InferenceProjectNumber from CLI flags — validation should fail.
-	cfg := batchCfgWithDefaults(manifest)
-	cfg.MaxConcurrency = 2
-	cfg.InferenceProjectNumber = ""
+	cfg := BatchInstallConfig{
+		Manifest:               manifest,
+		MaxConcurrency:         2,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error for partial inference flags")
 	}
-	if len(result.Failed) != 1 {
-		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	if !strings.Contains(err.Error(), "incomplete inference flags") {
+		t.Errorf("expected incomplete inference flags error, got: %v", err)
 	}
-	for _, r := range result.Failed {
-		if !strings.Contains(r.Error.Error(), "--inference-project-number is required") {
-			t.Errorf("expected --inference-project-number error, got: %v", r.Error)
-		}
-	}
-	if sc.called {
-		t.Error("expected no scaffold calls when inference_project_number is empty")
+	if !strings.Contains(err.Error(), "--inference-region") {
+		t.Errorf("expected missing flag name in error, got: %v", err)
 	}
 }
 
-func TestBatchInstall_NonNumericInferenceProjectNumber(t *testing.T) {
+func TestBatchInstall_PartialInferenceFlags_MissingProjectNumber(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newBatchManifest(repos...)
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := batchCfgWithDefaults(manifest)
-	cfg.MaxConcurrency = 2
-	cfg.InferenceProjectNumber = "not-a-number"
+	cfg := BatchInstallConfig{
+		Manifest:         manifest,
+		MaxConcurrency:   2,
+		Roles:            []string{"triage"},
+		Direct:           true,
+		InferenceProject: "test-inference",
+		InferenceRegion:  "us-central1",
+	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error for partial inference flags")
 	}
-	if len(result.Failed) != 1 {
-		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
+	if !strings.Contains(err.Error(), "incomplete inference flags") {
+		t.Errorf("expected incomplete inference flags error, got: %v", err)
 	}
-	for _, r := range result.Failed {
-		if !strings.Contains(r.Error.Error(), "must be numeric") {
-			t.Errorf("expected numeric validation error, got: %v", r.Error)
-		}
-	}
-	if sc.called {
-		t.Error("expected no scaffold calls when inference_project_number is non-numeric")
+	if !strings.Contains(err.Error(), "--inference-project-number") {
+		t.Errorf("expected missing flag name in error, got: %v", err)
 	}
 }
 
@@ -378,24 +350,54 @@ func TestBatchInstall_InvalidInferenceProjectID(t *testing.T) {
 
 	sc := &fakeScaffoldCommit{}
 
-	cfg := batchCfgWithDefaults(manifest)
-	cfg.MaxConcurrency = 2
-	cfg.InferenceProject = "BAD"
+	cfg := BatchInstallConfig{
+		Manifest:               manifest,
+		MaxConcurrency:         2,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "BAD",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
 
-	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("BatchInstall() error: %v", err)
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error for invalid inference project ID")
 	}
-	if len(result.Failed) != 1 {
-		t.Errorf("expected 1 failed repo, got %d", len(result.Failed))
-	}
-	for _, r := range result.Failed {
-		if !strings.Contains(r.Error.Error(), "not a valid GCP project ID") {
-			t.Errorf("expected GCP project ID validation error, got: %v", r.Error)
-		}
+	if !strings.Contains(err.Error(), "not a valid GCP project ID") {
+		t.Errorf("expected GCP project ID validation error, got: %v", err)
 	}
 	if sc.called {
 		t.Error("expected no scaffold calls when inference_project is invalid")
+	}
+}
+
+func TestBatchInstall_NonNumericInferenceProjectNumber(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	manifest := newBatchManifest(repos...)
+
+	sc := &fakeScaffoldCommit{}
+
+	cfg := BatchInstallConfig{
+		Manifest:               manifest,
+		MaxConcurrency:         2,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "not-a-number",
+		InferenceRegion:        "us-central1",
+	}
+
+	_, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error for non-numeric inference project number")
+	}
+	if !strings.Contains(err.Error(), "must be numeric") {
+		t.Errorf("expected numeric validation error, got: %v", err)
+	}
+	if sc.called {
+		t.Error("expected no scaffold calls when inference_project_number is non-numeric")
 	}
 }
 
@@ -770,13 +772,11 @@ func TestBatchInstall_SecretReuse_SkipsValidationAndSecretWrites(t *testing.T) {
 	}
 }
 
-func TestBatchInstall_SecretReuse_MissingRegionVariable(t *testing.T) {
+func TestBatchInstall_WithoutInferenceFlags_RequiresExistingSecrets(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
-	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
-	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+	// No pre-existing secrets on the repo.
 	manifest := newBatchManifest(repos...)
-
 	sc := &fakeScaffoldCommit{}
 
 	cfg := BatchInstallConfig{
@@ -784,6 +784,7 @@ func TestBatchInstall_SecretReuse_MissingRegionVariable(t *testing.T) {
 		MaxConcurrency: 2,
 		Roles:          []string{"triage"},
 		Direct:         true,
+		// No inference flags — repos without existing secrets must fail.
 	}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -793,8 +794,8 @@ func TestBatchInstall_SecretReuse_MissingRegionVariable(t *testing.T) {
 	if len(result.Failed) != 1 {
 		t.Fatalf("expected 1 failed, got %d", len(result.Failed))
 	}
-	if !strings.Contains(result.Failed[0].Error.Error(), "FULLSEND_GCP_REGION variable is missing") {
-		t.Errorf("expected region variable missing error, got: %v", result.Failed[0].Error)
+	if !strings.Contains(result.Failed[0].Error.Error(), "--inference-project is required") {
+		t.Errorf("expected inference project required error, got: %v", result.Failed[0].Error)
 	}
 }
 
@@ -851,7 +852,7 @@ func TestBatchInstall_GitLab_WithInference(t *testing.T) {
 	}
 }
 
-func TestBatchInstall_GitLab_WithoutInference(t *testing.T) {
+func TestBatchInstall_GitLab_WithoutInference_FailsWithoutSecrets(t *testing.T) {
 	repos := []string{"group/project"}
 	fc := newFakeClientForBatch(repos...)
 	manifest := newGitLabBatchManifest(repos...)
@@ -863,22 +864,19 @@ func TestBatchInstall_GitLab_WithoutInference(t *testing.T) {
 		MaxConcurrency: 2,
 		Roles:          []string{"triage"},
 		Direct:         true,
-		// No inference flags — GitLab installs without inference.
+		// No inference flags and no pre-existing secrets — should fail
+		// because inference secrets are always required.
 	}
 
 	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("BatchInstall(GitLab, no inference) error: %v", err)
 	}
-	if len(result.Failed) != 0 {
-		t.Errorf("expected 0 failed, got %d: %v", len(result.Failed), result.Failed[0].Error)
+	if len(result.Failed) != 1 {
+		t.Fatalf("expected 1 failed, got %d", len(result.Failed))
 	}
-	if len(result.Installed) != 1 {
-		t.Fatalf("expected 1 installed, got %d", len(result.Installed))
-	}
-	// Without inference, no WIF provider should be set.
-	if result.Installed[0].WIFProvider != "" {
-		t.Errorf("WIFProvider should be empty without inference, got %q", result.Installed[0].WIFProvider)
+	if len(result.Installed) != 0 {
+		t.Errorf("expected 0 installed, got %d", len(result.Installed))
 	}
 }
 
@@ -889,7 +887,6 @@ func TestBatchInstall_GitLab_SecretReuse(t *testing.T) {
 	fc.Secrets["group/project/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["group/project/FULLSEND_GCP_WIF_PROVIDER"] = true
 	fc.VariableValues["group/project/FULLSEND_GCP_REGION"] = "us-central1"
-	fc.VariableValues["group/project/FULLSEND_CREDENTIAL_MODE"] = "wif"
 	manifest := newGitLabBatchManifest(repos...)
 
 	sc := &fakeScaffoldCommit{}
@@ -916,16 +913,351 @@ func TestBatchInstall_GitLab_SecretReuse(t *testing.T) {
 	if len(fc.CreatedSecrets) != 0 {
 		t.Errorf("expected no secret writes with ReuseSecrets, got %d", len(fc.CreatedSecrets))
 	}
-	// Verify discovered credential mode is preserved as "wif".
-	var credMode string
-	for _, v := range fc.Variables {
-		if v.Name == "FULLSEND_CREDENTIAL_MODE" {
-			credMode = v.Value
+}
+
+func TestBatchInstall_FullsendRefPrecedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		manifestRef string
+		upstreamRef string
+		wantRef     string
+	}{
+		{
+			name:        "manifest ref wins over binary",
+			manifestRef: "abc123",
+			upstreamRef: "def456",
+			wantRef:     "abc123",
+		},
+		{
+			name:        "binary fallback when manifest empty",
+			manifestRef: "",
+			upstreamRef: "def456",
+			wantRef:     "def456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repos := []string{"acme/api"}
+			fc := newFakeClientForBatch(repos...)
+			entries := []RepoEntry{{Repo: "acme/api"}}
+			manifest := &Manifest{
+				Version: 1,
+				Forge: ForgeSection{GitHub: GitHubForgeInfra{
+					MintURL:     "https://mint.example.com",
+					FullsendRef: tt.manifestRef,
+				}},
+				Defaults: DefaultsConfig{
+					Forge: "github",
+				},
+				Repos: entries,
+			}
+
+			var capturedFiles []forge.TreeFile
+			sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+				capturedFiles = files
+				return nil
+			}
+
+			cfg := batchCfgWithDefaults(manifest)
+			cfg.UpstreamRef = tt.upstreamRef
+
+			result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+			if err != nil {
+				t.Fatalf("BatchInstall() error: %v", err)
+			}
+			if len(result.Installed) != 1 {
+				t.Fatalf("expected 1 installed, got %d installed, %d failed",
+					len(result.Installed), len(result.Failed))
+			}
+			if len(capturedFiles) == 0 {
+				t.Fatal("expected scaffold files to be captured")
+			}
+			// The scaffold workflow should contain the expected ref,
+			// either from the manifest or the binary fallback.
+			content := string(capturedFiles[0].Content)
+			if !strings.Contains(content, tt.wantRef) {
+				t.Errorf("scaffold file should contain ref %q but does not:\n%s",
+					tt.wantRef, content)
+			}
+		})
+	}
+}
+
+func TestBatchInstall_SHAResolution(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	// Register a tag ref so the resolver can resolve "v0.35.0" to a SHA
+	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v0.35.0",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	// Raw callback (not fakeScaffoldCommit) to capture file content for verification.
+	var capturedFiles []forge.TreeFile
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.UpstreamRef = "binarysha0000000000000000000000000000000"
+	cfg.UpstreamTag = "v0.34.0"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d installed, %d failed",
+			len(result.Installed), len(result.Failed))
+	}
+
+	// The scaffold should contain the resolved SHA, not the tag or binary ref
+	content := string(capturedFiles[0].Content)
+	if !strings.Contains(content, "deadbeef1234567890abcdef1234567890abcdef") {
+		t.Errorf("scaffold should contain resolved SHA but does not:\n%s", content)
+	}
+	// The annotation should contain the original tag
+	if !strings.Contains(content, "v0.35.0") {
+		t.Errorf("scaffold should contain tag annotation v0.35.0 but does not:\n%s", content)
+	}
+	// Binary ref should NOT appear
+	if strings.Contains(content, "binarysha") {
+		t.Error("scaffold should not contain the binary ref")
+	}
+}
+
+func TestBatchInstall_SHAResolution_BothRefsEmpty(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	var capturedFiles []forge.TreeFile
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+	}
+	if len(capturedFiles) == 0 {
+		t.Fatal("expected scaffold files to be committed")
+	}
+}
+
+func TestBatchInstall_RemoteScaffoldFetch(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
+	// Register remote shim template content at the pinned ref
+	fc.FileContentsRef["fullsend-ai/fullsend/"+scaffoldGitHubShimPath+"@v0.35.0"] = []byte(`---
+name: fullsend-remote
+on:
+  pull_request_target:
+    types: [opened]
+permissions: {}
+jobs:
+  dispatch:
+    uses: __REUSABLE_DISPATCH__
+`)
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v0.35.0",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	var capturedFiles []forge.TreeFile
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.UpstreamRef = "binarysha0000000000000000000000000000000"
+	cfg.UpstreamTag = "v0.34.0"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d installed, %d failed",
+			len(result.Installed), len(result.Failed))
+	}
+
+	// The scaffold should use the remote template (has "fullsend-remote")
+	var foundRemoteContent bool
+	for _, f := range capturedFiles {
+		if strings.Contains(string(f.Content), "fullsend-remote") {
+			foundRemoteContent = true
 			break
 		}
 	}
-	if credMode != "wif" {
-		t.Errorf("FULLSEND_CREDENTIAL_MODE = %q, want %q (discovered mode should be preserved)", credMode, "wif")
+	if !foundRemoteContent {
+		t.Error("expected scaffold to use remote template content")
+	}
+}
+
+func TestBatchInstall_RemoteScaffoldFetchFallback(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
+	// Do NOT register remote template content — fetch will fail.
+
+	entries := []RepoEntry{{Repo: "acme/api"}}
+	manifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v0.35.0",
+		}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    entries,
+	}
+
+	var capturedFiles []forge.TreeFile
+	// Raw callback to inspect committed scaffold content.
+	sc := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		capturedFiles = files
+		return nil
+	}
+
+	cfg := batchCfgWithDefaults(manifest)
+	cfg.UpstreamRef = "binarysha0000000000000000000000000000000"
+	cfg.UpstreamTag = "v0.34.0"
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc, noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+	if len(result.Installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d installed, %d failed",
+			len(result.Installed), len(result.Failed))
+	}
+	if len(capturedFiles) == 0 {
+		t.Fatal("expected scaffold files even on remote fetch fallback")
+	}
+}
+
+func TestRefResolver(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	t.Run("resolves tag to SHA", func(t *testing.T) {
+		fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "abc123def0000000000000000000000000000000"
+		r := NewRefResolver(fc)
+		got := r.Resolve(context.Background(), "v0.35.0")
+		if got != "abc123def0000000000000000000000000000000" {
+			t.Errorf("Resolve(v0.35.0) = %q, want SHA", got)
+		}
+	})
+
+	t.Run("resolves branch when tag not found", func(t *testing.T) {
+		fc.Refs["fullsend-ai/fullsend/heads/main"] = "mainsha00000000000000000000000000000000"
+		r := NewRefResolver(fc)
+		got := r.Resolve(context.Background(), "main")
+		if got != "mainsha00000000000000000000000000000000" {
+			t.Errorf("Resolve(main) = %q, want SHA", got)
+		}
+	})
+
+	t.Run("returns SHA unchanged", func(t *testing.T) {
+		r := NewRefResolver(fc)
+		sha := "abc123def0000000000000000000000000000000"
+		got := r.Resolve(context.Background(), sha)
+		if got != sha {
+			t.Errorf("Resolve(SHA) = %q, want unchanged", got)
+		}
+	})
+
+	t.Run("returns ref on error", func(t *testing.T) {
+		r := NewRefResolver(fc)
+		got := r.Resolve(context.Background(), "nonexistent-tag")
+		if got != "nonexistent-tag" {
+			t.Errorf("Resolve(nonexistent) = %q, want original", got)
+		}
+	})
+
+	t.Run("caches result", func(t *testing.T) {
+		fc2 := forge.NewFakeClient()
+		fc2.Refs["fullsend-ai/fullsend/tags/v1.0.0"] = "cached000000000000000000000000000000000"
+		r := NewRefResolver(fc2)
+		got1 := r.Resolve(context.Background(), "v1.0.0")
+		delete(fc2.Refs, "fullsend-ai/fullsend/tags/v1.0.0")
+		got2 := r.Resolve(context.Background(), "v1.0.0")
+		if got1 != got2 {
+			t.Errorf("second resolve should return cached result: got1=%q got2=%q", got1, got2)
+		}
+	})
+}
+
+func TestFetchRemoteScaffold_GitLab(t *testing.T) {
+	fc := forge.NewFakeClient()
+	ref := "v0.35.0"
+	sha := "deadbeef1234567890abcdef1234567890abcdef"
+
+	for _, sp := range scaffoldGitLabPaths {
+		content := "---\n__RUNNER_TAGS__\n"
+		if sp.outPath == ".gitlab/ci/fullsend-dispatch.yml" {
+			content = "---\n# fullsend-stage: dispatch\ntags: __RUNNER_TAGS__\n"
+		}
+		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+sp.repoPath+"@"+ref] = []byte(content)
+	}
+
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitLab, []string{"docker"})
+	if err != nil {
+		t.Fatalf("FetchRemoteScaffold() error: %v", err)
+	}
+	if len(files) != len(scaffoldGitLabPaths) {
+		t.Fatalf("expected %d files, got %d", len(scaffoldGitLabPaths), len(files))
+	}
+
+	for _, f := range files {
+		s := string(f.Content)
+		if strings.Contains(s, "__RUNNER_TAGS__") {
+			t.Errorf("%s: __RUNNER_TAGS__ was not substituted", f.Path)
+		}
+		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+			if !strings.Contains(s, "# fullsend-ref: "+sha) {
+				t.Errorf("dispatch file should contain version marker with SHA")
+			}
+		}
+	}
+}
+
+func TestFetchRemoteScaffold_UnsupportedForge(t *testing.T) {
+	fc := forge.NewFakeClient()
+	_, err := FetchRemoteScaffold(context.Background(), fc, "v1.0.0", "sha", "unsupported", nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported forge")
 	}
 }
 
