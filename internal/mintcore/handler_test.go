@@ -21,8 +21,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 func generateTestRSAKey() ([]byte, error) {
@@ -2164,7 +2162,6 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 
 	verifier, vErr := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
-		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
@@ -2257,7 +2254,6 @@ func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 
 	verifier2, vErr2 := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
-		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
@@ -2458,7 +2454,6 @@ func TestHandler_RestrictedWorkflowFiles(t *testing.T) {
 
 	verifier, vErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if vErr != nil {
 		t.Fatalf("NewJWKSVerifier: %v", vErr)
@@ -2527,7 +2522,6 @@ func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2609,7 +2603,6 @@ func TestHandler_UpstreamWorkflowRef(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2673,7 +2666,6 @@ func TestHandler_PublicMintMode(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2729,7 +2721,6 @@ func TestHandler_PublicMintRejectsLegacyFullsendRef(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2762,7 +2753,6 @@ func TestHandler_PublicMintRejectsPerRepoSelfWorkflow(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2794,7 +2784,6 @@ func TestHandler_PerRepoCrossRepoRef(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2827,7 +2816,6 @@ func TestHandler_NonWorkflowPath(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2859,7 +2847,6 @@ func TestHandler_PerRepoUnregistered(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2900,7 +2887,6 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  mintconsts.OIDCAudience,
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2973,7 +2959,6 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 
 	verifier3, vErr3 := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
-		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",

@@ -60,7 +60,6 @@ func newTestSTSVerifier(t *testing.T, stsURL string) *STSVerifier {
 	t.Helper()
 	v, err := NewSTSVerifier(STSVerifierConfig{
 		STSURL:             stsURL,
-		Audience:           "fullsend-mint",
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "fullsend-provider",
@@ -153,12 +152,11 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 // NOTE: PerRepoBypassesOrgCheck, NonPerRepoStillRequiresOrg tests moved to
 // handler level — authorization is now the handler's responsibility.
 
-func TestNewSTSVerifier_EmptyAudience_DefaultsToConst(t *testing.T) {
+func TestNewSTSVerifier_AudienceIsConst(t *testing.T) {
 	v, err := NewSTSVerifier(STSVerifierConfig{
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "pool",
 		DefaultWIFProvider: "provider",
-		// Audience intentionally omitted → defaults to mintconsts.OIDCAudience.
 	})
 	require.NoError(t, err)
 	assert.Equal(t, mintconsts.OIDCAudience, v.oidcAudience)
@@ -166,7 +164,6 @@ func TestNewSTSVerifier_EmptyAudience_DefaultsToConst(t *testing.T) {
 
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
 	v, err := NewSTSVerifier(STSVerifierConfig{
-		Audience:           "fullsend-mint",
 		DefaultWIFProvider: "default-provider",
 		PerRepoWIFRepos:    map[string]bool{"myorg/special-repo": true},
 	})

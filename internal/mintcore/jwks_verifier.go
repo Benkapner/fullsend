@@ -47,24 +47,20 @@ type JWKSVerifier struct {
 // JWKSVerifierConfig configures a new JWKSVerifier.
 type JWKSVerifierConfig struct {
 	IssuerURL  string
-	Audience   string
 	HTTPClient HTTPDoer
 }
 
 // NewJWKSVerifier creates a verifier that validates tokens from issuerURL
-// against the OIDC audience. If opts.Audience is empty, it defaults to
-// mintconsts.OIDCAudience. If httpClient is nil, http.DefaultClient is used.
+// against the compile-time OIDC audience (mintconsts.OIDCAudience).
+// If httpClient is nil, http.DefaultClient is used.
 func NewJWKSVerifier(opts JWKSVerifierConfig) (*JWKSVerifier, error) {
-	if opts.Audience == "" {
-		opts.Audience = mintconsts.OIDCAudience
-	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	return &JWKSVerifier{
 		issuerURL:  opts.IssuerURL,
-		audience:   opts.Audience,
+		audience:   mintconsts.OIDCAudience,
 		httpClient: httpClient,
 	}, nil
 }
