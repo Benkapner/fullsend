@@ -92,3 +92,55 @@ func TestParseJSON_ConversationExample(t *testing.T) {
 	cat := conv["category"].(map[string]any)
 	assert.Equal(t, "vouch-request", cat["slug"])
 }
+
+func TestValidate_ConversationRules(t *testing.T) {
+	base := Event{
+		Repo: "fullsend-ai/fullsend",
+		Entity: Entity{
+			Kind: EntityConversation,
+			ID:   1,
+			URL:  "https://github.com/fullsend-ai/fullsend/discussions/1",
+		},
+		Transition: Transition{Kind: TransitionOpened},
+		Actor: Actor{
+			ID:   "user",
+			Kind: ActorHuman,
+			Role: RoleWrite,
+		},
+		State: State{
+			Labels: []string{},
+			Conversation: &ConversationState{
+				Category: ConversationCategory{Name: "General"},
+			},
+		},
+		Source: Source{System: SystemGitHub, RawType: "discussion"},
+	}
+
+	t.Run("missing_conversation", func(t *testing.T) {
+		ev := base
+		ev.State.Conversation = nil
+		err := ev.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "state.conversation required")
+	})
+
+	t.Run("empty_category_name", func(t *testing.T) {
+		ev := base
+		ev.State.Conversation = &ConversationState{
+			Category: ConversationCategory{Name: "  "},
+		}
+		err := ev.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "category.name")
+	})
+
+	t.Run("conversation_forbidden_on_work_item", func(t *testing.T) {
+		ev := base
+		ev.Entity.Kind = EntityWorkItem
+		ev.Entity.URL = "https://github.com/fullsend-ai/fullsend/issues/1"
+		ev.Source.RawType = "issues"
+		err := ev.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "state.conversation forbidden")
+	})
+}
