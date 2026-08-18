@@ -10,6 +10,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 var mintTokenPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -85,7 +86,7 @@ Prints the token to stdout for capture in shell scripts.`,
 	cmd.Flags().StringVar(&role, "role", "", "agent role name (e.g. triage, coder, review)")
 	cmd.Flags().StringVar(&repos, "repos", "", "comma-separated repo names to scope the token to")
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL (default: $FULLSEND_MINT_URL)")
-	cmd.Flags().StringVar(&audience, "audience", "fullsend-mint", "OIDC audience claim")
+	cmd.Flags().StringVar(&audience, "audience", mintconsts.OIDCAudience, "OIDC audience claim")
 	_ = cmd.MarkFlagRequired("role")
 	_ = cmd.MarkFlagRequired("repos")
 

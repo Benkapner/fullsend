@@ -68,8 +68,7 @@ func (f *fakePEMAccessor) AccessPEM(_ context.Context, role string) ([]byte, err
 
 func mustNewHandler(t *testing.T, pemAccessor PEMAccessor, verifier OIDCVerifier) *Handler {
 	t.Helper()
-	factory := func(_ string) (OIDCVerifier, error) { return verifier, nil }
-	h, err := NewHandler(os.Getenv, pemAccessor, factory, &http.Client{Timeout: 5 * time.Second})
+	h, err := NewHandler(os.Getenv, pemAccessor, verifier, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -121,13 +120,13 @@ func newTestOIDCEnv(t *testing.T, pemAccessor PEMAccessor) *testOIDCEnv {
 	env.issuerURL = env.server.URL
 
 	issuerURL := env.server.URL
-	factory := func(audience string) (OIDCVerifier, error) {
-		return NewJWKSVerifier(JWKSVerifierConfig{
-			IssuerURL: issuerURL,
-			Audience:  audience,
-		})
+	verifier, err := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL: issuerURL,
+	})
+	if err != nil {
+		t.Fatalf("creating JWKS verifier: %v", err)
 	}
-	h, err := NewHandler(os.Getenv, pemAccessor, factory, &http.Client{Timeout: 5 * time.Second})
+	h, err := NewHandler(os.Getenv, pemAccessor, verifier, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("creating handler: %v", err)
 	}
@@ -2015,7 +2014,6 @@ func TestWriteError(t *testing.T) {
 func TestHandler_MultiOrg_FullFlow(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org,other-org")
 	t.Setenv("GCP_PROJECT_NUMBER", "123456")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200","review":"300","fix":"400","fullsend":"500"}`)
 
 	pemData, err := generateTestRSAKey()
@@ -2080,7 +2078,6 @@ func TestHandler_MultiOrg_FullFlow(t *testing.T) {
 func TestHandler_CrossOrgInstallationMismatch(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "org-a,org-b")
 	t.Setenv("GCP_PROJECT_NUMBER", "123456")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"retro":"999"}`)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
@@ -2138,7 +2135,6 @@ func TestHandler_CrossOrgInstallationMismatch(t *testing.T) {
 
 func TestHandler_STSVerifier_Integration(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
 	pemData, err := generateTestRSAKey()
@@ -2166,7 +2162,6 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 
 	verifier, vErr := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
-		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
@@ -2237,7 +2232,6 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 
 func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
 	pemData, err := generateTestRSAKey()
@@ -2260,7 +2254,6 @@ func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 
 	verifier2, vErr2 := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
-		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
@@ -2341,7 +2334,6 @@ func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 func TestHandler_CrossOrgInstallation_SameOrgPasses(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "org-a,org-b")
 	t.Setenv("GCP_PROJECT_NUMBER", "123456")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"retro":"999"}`)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
@@ -2462,7 +2454,6 @@ func TestHandler_RestrictedWorkflowFiles(t *testing.T) {
 
 	verifier, vErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if vErr != nil {
 		t.Fatalf("NewJWKSVerifier: %v", vErr)
@@ -2531,7 +2522,6 @@ func TestHandler_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2613,7 +2603,6 @@ func TestHandler_UpstreamWorkflowRef(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2677,7 +2666,6 @@ func TestHandler_PublicMintMode(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2733,7 +2721,6 @@ func TestHandler_PublicMintRejectsLegacyFullsendRef(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2766,7 +2753,6 @@ func TestHandler_PublicMintRejectsPerRepoSelfWorkflow(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2798,7 +2784,6 @@ func TestHandler_PerRepoCrossRepoRef(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2831,7 +2816,6 @@ func TestHandler_NonWorkflowPath(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2863,7 +2847,6 @@ func TestHandler_PerRepoUnregistered(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2904,7 +2887,6 @@ func TestHandler_PerRepoMixedCase(t *testing.T) {
 
 	freshVerifier, fvErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: env.issuerURL,
-		Audience:  os.Getenv("OIDC_AUDIENCE"),
 	})
 	if fvErr != nil {
 		t.Fatalf("creating JWKS verifier: %v", fvErr)
@@ -2955,7 +2937,6 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	// Clear ALLOWED_ORGS to prevent dual-enrollment upgrading to per-org mode.
 	t.Setenv("ALLOWED_ORGS", "")
 	t.Setenv("ALLOWED_ROLES", "coder")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
 	pemData, err := generateTestRSAKey()
@@ -2978,7 +2959,6 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 
 	verifier3, vErr3 := NewSTSVerifier(STSVerifierConfig{
 		HTTPClient:         stsServer.Client(),
-		Audience:           "fullsend-mint",
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",

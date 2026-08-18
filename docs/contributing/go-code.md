@@ -38,7 +38,7 @@ The `make wasm-build` target enforces these limits automatically — run it afte
 
 - **Do not pass closures or function values** (`func(string) string`, `func() error`, etc.) into structs that are compiled into the WASM binary. Closure capture pulls the entire dependency graph of the captured variables into the binary. Prefer passing resolved values (strings, ints, config structs with only data fields) instead.
 - **Avoid importing heavy packages** in `internal/mintcore/` files that are WASM-compiled. Packages like `net/http`, `crypto/x509`, or cloud SDKs carry large dependency trees. Use build tags (`//go:build js` / `//go:build !js`) to isolate platform-specific implementations.
-- **Use the `VerifierFactory` pattern** (see `internal/mintcore/`) when WASM-compiled code needs behavior that depends on runtime configuration. The factory constructs verifiers from plain data rather than captured closures, keeping the dependency graph bounded.
+- **Construct concrete verifiers at the load site** (see `cmd/mint/main.go`, `internal/mint/main.go`, `cmd/mint-wasm/main.go`). Each load site creates the appropriate `OIDCVerifier` — `NewJWKSVerifier` for standalone/Worker/devmint, `NewSTSVerifier` for the Cloud Function — and passes it directly into `NewHandler`. Runtime constants such as the OIDC audience live in `mintconsts.OIDCAudience` and are applied inside the verifier constructors, so load sites do not need to thread configuration through closures or factories.
 
 When making changes to Go code under `cmd/` or `internal/`:
 

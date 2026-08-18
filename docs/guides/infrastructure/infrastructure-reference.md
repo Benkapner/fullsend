@@ -327,7 +327,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  │                   │   WIF_POOL_NAME                          │
 │  │                   │   WIF_PROVIDER_NAME                      │
 │  │                   │   ROLE_APP_IDS                           │
-│  │                   │   OIDC_AUDIENCE                          │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │

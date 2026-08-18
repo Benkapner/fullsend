@@ -105,7 +105,6 @@ The standalone mint is configured entirely through environment variables:
 |----------|-------------|---------|
 | `ALLOWED_ORGS` | Comma-separated GitHub orgs allowed to request tokens, or `*` for public mint mode (any org; upstream-only workflow provenance) | `myorg,myorg-sandbox` or `*` |
 | `ROLE_APP_IDS` | JSON map of role name to GitHub App ID (use plain role names, not org-prefixed) | `{"triage":"4087047","scanner":"5555555"}` |
-| `OIDC_AUDIENCE` | OIDC audience claim (must match what workflows send) | `fullsend-mint` |
 | `PEM_DIR` | Path to directory containing `{role}.pem` files | `./pems` |
 
 ### Optional variables
@@ -135,7 +134,6 @@ This configuration serves `triage` and `scanner` locally while proxying all othe
 ```bash
 export ALLOWED_ORGS="myorg"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
-export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
 export FALLBACK_MINT_URL="https://mint.fullsend.sh"
@@ -159,7 +157,6 @@ If you do not need the hosted mint at all, omit `FALLBACK_MINT_URL`. Requests fo
 ```bash
 export ALLOWED_ORGS="myorg"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
-export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
 export CUSTOM_ROLE_PERMISSIONS='{"scanner":{"contents":"read","security_events":"write","metadata":"read"}}'
@@ -333,7 +330,6 @@ cd cmd/mint && go build -o fullsend-mint .
 # 4. Run
 export ALLOWED_ORGS="myorg"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
-export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
 export FALLBACK_MINT_URL="https://mint.fullsend.sh"
