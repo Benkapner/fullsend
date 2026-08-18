@@ -22,12 +22,18 @@
       "enabled": false
     },
     {
-      "description": "Group OpenShell base image and version pin into one PR",
+      "description": "Group OpenShell base image and version pin into one PR. After a version bump, fetch and update OPENSHELL_SHA from the matching release tag (the github-releases datasource can't resolve a digest here because extractVersionTemplate strips the 'v' prefix that GitHub's tag lookup needs).",
       "matchPackageNames": [
         "ghcr.io/nvidia/openshell-community/sandboxes/base",
         "NVIDIA/OpenShell"
       ],
-      "groupName": "openshell"
+      "groupName": "openshell",
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-openshell-sha.sh"],
+        "fileFilters": [".github/scripts/openshell-version.sh"],
+        "executionMode": "branch"
+      }
     },
     {
       "description": "Group Cloudflare Worker packages to prevent broken lockfile-only PRs from peer dependency conflicts",
@@ -67,10 +73,10 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Track OpenShell version pin in openshell-version.sh",
+      "description": "Track the OpenShell version pin in openshell-version.sh. OPENSHELL_SHA is updated automatically by postUpgradeTasks (scripts/renovate/update-openshell-sha.sh) since the github-releases datasource can't resolve a digest for the version-only (no 'v' prefix) value produced by extractVersionTemplate.",
       "managerFilePatterns": ["/^\\.github/scripts/openshell-version\\.sh$/"],
       "matchStrings": [
-        "OPENSHELL_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\nOPENSHELL_SHA=(?<currentDigest>[0-9a-f]{40})"
+        "OPENSHELL_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "depNameTemplate": "NVIDIA/OpenShell",
       "datasourceTemplate": "github-releases",
