@@ -105,9 +105,10 @@ and a GitLab group with the same name are different entities, and
 mixing forges under one owner would route API calls incorrectly.
 
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. The `GITLAB_API_URL`
-environment variable is kept as a fallback for callers without a
-manifest.
+`--gitlab-token` to `fullsend repos` subcommands. When no manifest URL
+is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
+`GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
+none are set.
 
 ### Manifest paths and URLs
 

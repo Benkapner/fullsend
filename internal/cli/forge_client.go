@@ -46,10 +46,15 @@ func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option)
 				return nil, err
 			}
 		}
+		// Base URL precedence: explicit arg > FULLSEND_GITLAB_URL > GITLAB_API_URL > CI_SERVER_URL
 		var opts []gl.Option
 		if baseURL != "" {
 			opts = append(opts, gl.WithBaseURL(baseURL))
+		} else if envURL := strings.TrimSpace(os.Getenv("FULLSEND_GITLAB_URL")); envURL != "" {
+			opts = append(opts, gl.WithBaseURL(envURL))
 		} else if envURL := strings.TrimSpace(os.Getenv("GITLAB_API_URL")); envURL != "" {
+			opts = append(opts, gl.WithBaseURL(envURL))
+		} else if envURL := strings.TrimSpace(os.Getenv("CI_SERVER_URL")); envURL != "" {
 			opts = append(opts, gl.WithBaseURL(envURL))
 		}
 		opts = append(opts, glOpts...)

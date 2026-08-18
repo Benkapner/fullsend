@@ -271,8 +271,97 @@ stages:
           ;;
         *)
           export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+          export FULLSEND_NOTE_TARGET="merge_requests"
           ;;
       esac
+
+      # Pre-fetch prior review for the review agent — equivalent to
+      # pre-fetch-prior-review.sh in the GitHub scaffold. Queries the
+      # GitLab Notes API for the last bot review comment, validates
+      # authorship via author.id, extracts PRIOR_REVIEW_SHA from the
+      # **Head SHA:** marker, and writes the body to a temp file.
+      #
+      # Provenance: GitLab's author.id check ("bot-verified") is weaker
+      # than GitHub's performed_via_github_app.client_id ("app-verified").
+      # A compromised bot PAT could both create a note and pass the
+      # author check. This is an inherent GitLab API limitation — the
+      # Notes API has no app-level provenance metadata.
+      if [ "${STAGE}" = "review" ]; then
+        MR_IID="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+        PRIOR_REVIEW_FILE=$(mktemp)
+        PRIOR_REVIEW_SHA=""
+        PRIOR_REVIEW_PROVENANCE="none"
+
+        # Reuse BOT_USER_ID from bot identity verification if available
+        # (api-triggered pipelines); otherwise resolve from the forge token.
+        BOT_ID="${BOT_USER_ID:-}"
+        if [ -z "${BOT_ID}" ]; then
+          if BOT_RESP=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+            "${CI_API_V4_URL}/user" \
+            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+            BOT_ID=$(printf '%s' "${BOT_RESP}" | jq -r '.id // empty')
+          fi
+        fi
+
+        if [ -n "${BOT_ID}" ] && [ "${MR_IID}" != "0" ]; then
+          # Paginate through MR notes (newest first) to find the review marker.
+          REVIEW_NOTE=""
+          PAGE=1
+          while [ "${PAGE}" -le 20 ] && [ -z "${REVIEW_NOTE}" ]; do
+            NOTES_PAGE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+              "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}/notes?sort=desc&per_page=100&page=${PAGE}" \
+              -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+              2>/dev/null || echo "[]")
+
+            REVIEW_NOTE=$(printf '%s' "${NOTES_PAGE}" \
+              | jq --arg bid "${BOT_ID}" '[.[] | select(.author.id == ($bid | tonumber) and (.body | contains("<!-- fullsend:review-agent -->")))] | first // empty' \
+              2>/dev/null || echo "")
+
+            if [ -n "${REVIEW_NOTE}" ] && [ "${REVIEW_NOTE}" != "null" ]; then
+              break
+            fi
+            REVIEW_NOTE=""
+
+            NOTE_COUNT=$(printf '%s' "${NOTES_PAGE}" | jq 'length' 2>/dev/null || echo "0")
+            if [ "${NOTE_COUNT}" -lt 100 ]; then
+              break
+            fi
+
+            PAGE=$((PAGE + 1))
+          done
+
+          if [ -n "${REVIEW_NOTE}" ] && [ "${REVIEW_NOTE}" != "null" ]; then
+            # Defense-in-depth: re-verify author.id even though the jq
+            # filter above already selects by it. Mirrors the GitHub
+            # scaffold's post-filter provenance check pattern.
+            NOTE_AUTHOR_ID=$(printf '%s' "${REVIEW_NOTE}" | jq -r '.author.id // empty')
+            if [ "${NOTE_AUTHOR_ID}" = "${BOT_ID}" ]; then
+              PRIOR_REVIEW_PROVENANCE="bot-verified"
+              printf '%s' "${REVIEW_NOTE}" | jq -r '.body // ""' > "${PRIOR_REVIEW_FILE}"
+
+              BYTE_COUNT=$(wc -c < "${PRIOR_REVIEW_FILE}")
+              if [ "${BYTE_COUNT}" -gt 1048576 ]; then
+                echo "WARNING: Prior review body too large (${BYTE_COUNT} bytes), skipping anchoring"
+                : > "${PRIOR_REVIEW_FILE}"
+              elif [ "${BYTE_COUNT}" -gt 1 ]; then
+                CURRENT_SECTION=$(awk '/<!-- sticky:history-start -->/{exit} {print}' "${PRIOR_REVIEW_FILE}")
+                PRIOR_REVIEW_SHA=$(printf '%s' "${CURRENT_SECTION}" \
+                  | grep -oP '(?<=\*\*Head SHA:\*\* )[0-9a-f]{7,64}' | head -1 || true)
+              fi
+            else
+              PRIOR_REVIEW_PROVENANCE="unverifiable-wrong-user"
+            fi
+          else
+            echo "No prior review found (first review)"
+          fi
+        else
+          echo "No prior review found (no bot identity or no MR IID)"
+        fi
+
+        export PRIOR_REVIEW_FILE
+        export PRIOR_REVIEW_SHA
+        export PRIOR_REVIEW_PROVENANCE
+      fi
 
       # Run the agent — fullsend run resolves the harness file, reads
       # the image field, and creates the sandbox container via Podman.
