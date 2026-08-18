@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -215,6 +216,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 			progress(fullName, "dry-run", "would migrate")
 		}
 		manifest, _ := buildManifest(discovered.repos, initCfg)
+		manifest = mergeWithExistingManifest(cfg.ManifestPath, manifest)
 		result.Manifest = manifest
 		return result, nil
 	}
@@ -300,8 +302,11 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 		}
 	}
 
-	// Step 5: Generate manifest from all discovered state.
+	// Step 5: Generate manifest from all discovered state, merging with
+	// any existing manifest so incremental migrations preserve earlier
+	// entries.
 	manifest, _ := buildManifest(discovered.repos, initCfg)
+	manifest = mergeWithExistingManifest(cfg.ManifestPath, manifest)
 	result.Manifest = manifest
 
 	return result, nil
@@ -401,6 +406,68 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	rr.Status = "migrated"
 	progress(fullName, "done", "migrated successfully")
 	return rr
+}
+
+// mergeWithExistingManifest loads the manifest file at path (if it
+// exists) and merges repos from newManifest into it, skipping
+// duplicates. This ensures incremental migrations (e.g. --repo
+// filtering) preserve entries from previous runs instead of
+// overwriting the file. If the file does not exist or cannot be
+// parsed, newManifest is returned unchanged.
+func mergeWithExistingManifest(path string, newManifest *Manifest) *Manifest {
+	if path == "" {
+		return newManifest
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return newManifest
+	}
+	var existing Manifest
+	if err := parseManifestBytes(data, &existing); err != nil {
+		return newManifest
+	}
+
+	// Build a set of existing repo names for dedup.
+	seen := make(map[string]bool, len(existing.Repos))
+	for _, e := range existing.Repos {
+		seen[strings.ToLower(e.Repo)] = true
+	}
+
+	// Append new repos that are not already present.
+	for _, r := range newManifest.Repos {
+		if seen[strings.ToLower(r.Repo)] {
+			continue
+		}
+		existing.Repos = append(existing.Repos, r)
+		seen[strings.ToLower(r.Repo)] = true
+	}
+
+	// Carry over forge-level defaults from the new manifest when the
+	// existing manifest has empty values, so the first migrate run
+	// populates them and subsequent runs do not clear them.
+	if existing.Forge.GitHub.URL == "" && newManifest.Forge.GitHub.URL != "" {
+		existing.Forge.GitHub.URL = newManifest.Forge.GitHub.URL
+	}
+	if existing.Forge.GitHub.MintURL == "" && newManifest.Forge.GitHub.MintURL != "" {
+		existing.Forge.GitHub.MintURL = newManifest.Forge.GitHub.MintURL
+	}
+	if existing.Forge.GitHub.MintMode == "" && newManifest.Forge.GitHub.MintMode != "" {
+		existing.Forge.GitHub.MintMode = newManifest.Forge.GitHub.MintMode
+	}
+	if existing.Forge.GitHub.FullsendRef == "" && newManifest.Forge.GitHub.FullsendRef != "" {
+		existing.Forge.GitHub.FullsendRef = newManifest.Forge.GitHub.FullsendRef
+	}
+	if existing.Forge.GitLab.URL == "" && newManifest.Forge.GitLab.URL != "" {
+		existing.Forge.GitLab.URL = newManifest.Forge.GitLab.URL
+	}
+	if len(existing.Forge.GitLab.RunnerTags) == 0 && len(newManifest.Forge.GitLab.RunnerTags) > 0 {
+		existing.Forge.GitLab.RunnerTags = newManifest.Forge.GitLab.RunnerTags
+	}
+	if existing.Forge.GitLab.FullsendRef == "" && newManifest.Forge.GitLab.FullsendRef != "" {
+		existing.Forge.GitLab.FullsendRef = newManifest.Forge.GitLab.FullsendRef
+	}
+
+	return &existing
 }
 
 // warnNonPortableFields emits progress warnings for org config fields

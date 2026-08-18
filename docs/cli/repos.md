@@ -32,7 +32,7 @@ One-command migration from per-org to per-repo fullsend installation. For each r
 2. Install per-repo (scaffold workflows, variables, secrets) with config carried over from the org config
 3. Unenroll from per-org config
 
-Generates a `repos.yaml` manifest reflecting the migrated state. Re-running after a partial migration picks up where it left off.
+Generates a `repos.yaml` manifest reflecting the migrated state. When a `repos.yaml` already exists (e.g. from a previous `--repo`-filtered run), newly migrated repos are merged into it instead of overwriting it. Re-running after a partial migration picks up where it left off.
 
 ### Config carry-over
 

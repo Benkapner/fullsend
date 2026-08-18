@@ -3,6 +3,8 @@ package repos
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1057,4 +1059,283 @@ repos:
 
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
+}
+
+// --- Migrate: preserves existing manifest entries ---
+
+func TestMigrate_PreservesExistingManifestEntries(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  experiments:
+    enabled: true
+  metrics:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "experiments",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	setWorkflowFile(fc, "acme", "metrics",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	for _, repo := range []string{"acme/experiments", "acme/metrics"} {
+		prov.provisionResults[repo] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+	}
+
+	manifestDir := t.TempDir()
+	manifestPath := filepath.Join(manifestDir, "repos.yaml")
+
+	// Step 1: Migrate experiments only.
+	result1, err := Migrate(context.Background(), MigrateConfig{
+		Org:          "acme",
+		Project:      "my-project",
+		RepoFilter:   []string{"experiments"},
+		ManifestPath: manifestPath,
+		CLIVersion:   "2.0.0",
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	require.NotNil(t, result1.Manifest)
+	require.Len(t, result1.Manifest.Repos, 1)
+	assert.Equal(t, "acme/experiments", result1.Manifest.Repos[0].Repo)
+
+	// Write first manifest to disk (simulates CLI write).
+	data, err := MarshalWithHeader(result1.Manifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(manifestPath, data, 0o644))
+
+	// Step 2: Migrate metrics. The existing manifest should be preserved.
+	result2, err := Migrate(context.Background(), MigrateConfig{
+		Org:          "acme",
+		Project:      "my-project",
+		RepoFilter:   []string{"metrics"},
+		ManifestPath: manifestPath,
+		CLIVersion:   "2.0.0",
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	require.NotNil(t, result2.Manifest)
+	require.Len(t, result2.Manifest.Repos, 2,
+		"manifest should contain both experiments and metrics")
+
+	repoNames := make(map[string]bool)
+	for _, r := range result2.Manifest.Repos {
+		repoNames[r.Repo] = true
+	}
+	assert.True(t, repoNames["acme/experiments"],
+		"experiments from first run should be preserved")
+	assert.True(t, repoNames["acme/metrics"],
+		"metrics from second run should be present")
+}
+
+func TestMigrate_IdempotentRerun_NoDuplicateEntries(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	manifestDir := t.TempDir()
+	manifestPath := filepath.Join(manifestDir, "repos.yaml")
+
+	// First run.
+	result1, err := Migrate(context.Background(), MigrateConfig{
+		Org:          "acme",
+		Project:      "my-project",
+		ManifestPath: manifestPath,
+		CLIVersion:   "2.0.0",
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	require.NotNil(t, result1.Manifest)
+
+	data, err := MarshalWithHeader(result1.Manifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(manifestPath, data, 0o644))
+
+	// Re-read org config (api still enabled for second run).
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+`)
+
+	// Second run with same repo — should not duplicate.
+	result2, err := Migrate(context.Background(), MigrateConfig{
+		Org:          "acme",
+		Project:      "my-project",
+		ManifestPath: manifestPath,
+		CLIVersion:   "2.0.0",
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	require.NotNil(t, result2.Manifest)
+	assert.Len(t, result2.Manifest.Repos, 1,
+		"re-running migrate for the same repo should not create duplicates")
+	assert.Equal(t, "acme/api", result2.Manifest.Repos[0].Repo)
+}
+
+func TestMergeWithExistingManifest_NoExistingFile(t *testing.T) {
+	newManifest := &Manifest{
+		Version: 1,
+		Repos:   []RepoEntry{{Repo: "acme/api"}},
+	}
+
+	result := mergeWithExistingManifest(
+		filepath.Join(t.TempDir(), "nonexistent.yaml"),
+		newManifest,
+	)
+	assert.Equal(t, newManifest, result,
+		"should return new manifest when file does not exist")
+}
+
+func TestMergeWithExistingManifest_EmptyPath(t *testing.T) {
+	newManifest := &Manifest{
+		Version: 1,
+		Repos:   []RepoEntry{{Repo: "acme/api"}},
+	}
+
+	result := mergeWithExistingManifest("", newManifest)
+	assert.Equal(t, newManifest, result,
+		"should return new manifest when path is empty")
+}
+
+func TestMergeWithExistingManifest_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("not: [valid: yaml"), 0o644))
+
+	newManifest := &Manifest{
+		Version: 1,
+		Repos:   []RepoEntry{{Repo: "acme/api"}},
+	}
+
+	result := mergeWithExistingManifest(path, newManifest)
+	assert.Equal(t, newManifest, result,
+		"should return new manifest when existing file is malformed")
+}
+
+func TestMergeWithExistingManifest_ForgeFieldCarryOver(t *testing.T) {
+	// Write an existing manifest with empty forge fields.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	existingManifest := &Manifest{
+		Version: 1,
+		Repos:   []RepoEntry{{Repo: "acme/existing"}},
+	}
+	data, err := MarshalWithHeader(existingManifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	// New manifest carries forge-level defaults.
+	newManifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				URL:         "https://github.example.com",
+				MintURL:     "https://mint.example.com",
+				MintMode:    "oidc",
+				FullsendRef: "v2.1.0",
+			},
+			GitLab: GitLabForgeInfra{
+				URL:         "https://gitlab.example.com",
+				RunnerTags:  []string{"docker", "linux"},
+				FullsendRef: "v2.1.0",
+			},
+		},
+		Repos: []RepoEntry{{Repo: "acme/newrepo"}},
+	}
+
+	result := mergeWithExistingManifest(path, newManifest)
+
+	// Existing repo preserved, new repo appended.
+	require.Len(t, result.Repos, 2)
+	assert.Equal(t, "acme/existing", result.Repos[0].Repo)
+	assert.Equal(t, "acme/newrepo", result.Repos[1].Repo)
+
+	// All forge fields carried over from new manifest.
+	assert.Equal(t, "https://github.example.com", result.Forge.GitHub.URL)
+	assert.Equal(t, "https://mint.example.com", result.Forge.GitHub.MintURL)
+	assert.Equal(t, "oidc", result.Forge.GitHub.MintMode)
+	assert.Equal(t, "v2.1.0", result.Forge.GitHub.FullsendRef)
+	assert.Equal(t, "https://gitlab.example.com", result.Forge.GitLab.URL)
+	assert.Equal(t, []string{"docker", "linux"}, result.Forge.GitLab.RunnerTags)
+	assert.Equal(t, "v2.1.0", result.Forge.GitLab.FullsendRef)
+}
+
+func TestMergeWithExistingManifest_ExistingForgeFieldsPreserved(t *testing.T) {
+	// Write an existing manifest that already has forge fields populated.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+
+	existing := []byte(`version: 1
+forge:
+  github:
+    url: https://github.existing.com
+    mint_url: https://mint.existing.com
+    mint_mode: hosted
+    fullsend_ref: v1.0.0
+  gitlab:
+    url: https://gitlab.existing.com
+    runner_tags:
+      - self-hosted
+    fullsend_ref: v1.0.0
+repos:
+  - repo: acme/old
+`)
+	require.NoError(t, os.WriteFile(path, existing, 0o644))
+
+	// New manifest has different forge values — existing should win.
+	newManifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				URL:         "https://github.new.com",
+				MintURL:     "https://mint.new.com",
+				MintMode:    "oidc",
+				FullsendRef: "v3.0.0",
+			},
+			GitLab: GitLabForgeInfra{
+				URL:         "https://gitlab.new.com",
+				RunnerTags:  []string{"docker"},
+				FullsendRef: "v3.0.0",
+			},
+		},
+		Repos: []RepoEntry{{Repo: "acme/new"}},
+	}
+
+	result := mergeWithExistingManifest(path, newManifest)
+
+	// Existing forge values should be preserved (not overwritten).
+	assert.Equal(t, "https://github.existing.com", result.Forge.GitHub.URL)
+	assert.Equal(t, "https://mint.existing.com", result.Forge.GitHub.MintURL)
+	assert.Equal(t, "hosted", result.Forge.GitHub.MintMode)
+	assert.Equal(t, "v1.0.0", result.Forge.GitHub.FullsendRef)
+	assert.Equal(t, "https://gitlab.existing.com", result.Forge.GitLab.URL)
+	assert.Equal(t, []string{"self-hosted"}, result.Forge.GitLab.RunnerTags)
+	assert.Equal(t, "v1.0.0", result.Forge.GitLab.FullsendRef)
+
+	// Both repos present.
+	require.Len(t, result.Repos, 2)
 }
