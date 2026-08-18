@@ -1220,3 +1220,122 @@ func TestMergeWithExistingManifest_EmptyPath(t *testing.T) {
 	assert.Equal(t, newManifest, result,
 		"should return new manifest when path is empty")
 }
+
+func TestMergeWithExistingManifest_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("not: [valid: yaml"), 0o644))
+
+	newManifest := &Manifest{
+		Version: 1,
+		Repos:   []RepoEntry{{Repo: "acme/api"}},
+	}
+
+	result := mergeWithExistingManifest(path, newManifest)
+	assert.Equal(t, newManifest, result,
+		"should return new manifest when existing file is malformed")
+}
+
+func TestMergeWithExistingManifest_ForgeFieldCarryOver(t *testing.T) {
+	// Write an existing manifest with empty forge fields.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	existingManifest := &Manifest{
+		Version: 1,
+		Repos:   []RepoEntry{{Repo: "acme/existing"}},
+	}
+	data, err := MarshalWithHeader(existingManifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	// New manifest carries forge-level defaults.
+	newManifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				URL:         "https://github.example.com",
+				MintURL:     "https://mint.example.com",
+				MintMode:    "oidc",
+				FullsendRef: "v2.1.0",
+			},
+			GitLab: GitLabForgeInfra{
+				URL:         "https://gitlab.example.com",
+				RunnerTags:  []string{"docker", "linux"},
+				FullsendRef: "v2.1.0",
+			},
+		},
+		Repos: []RepoEntry{{Repo: "acme/newrepo"}},
+	}
+
+	result := mergeWithExistingManifest(path, newManifest)
+
+	// Existing repo preserved, new repo appended.
+	require.Len(t, result.Repos, 2)
+	assert.Equal(t, "acme/existing", result.Repos[0].Repo)
+	assert.Equal(t, "acme/newrepo", result.Repos[1].Repo)
+
+	// All forge fields carried over from new manifest.
+	assert.Equal(t, "https://github.example.com", result.Forge.GitHub.URL)
+	assert.Equal(t, "https://mint.example.com", result.Forge.GitHub.MintURL)
+	assert.Equal(t, "oidc", result.Forge.GitHub.MintMode)
+	assert.Equal(t, "v2.1.0", result.Forge.GitHub.FullsendRef)
+	assert.Equal(t, "https://gitlab.example.com", result.Forge.GitLab.URL)
+	assert.Equal(t, []string{"docker", "linux"}, result.Forge.GitLab.RunnerTags)
+	assert.Equal(t, "v2.1.0", result.Forge.GitLab.FullsendRef)
+}
+
+func TestMergeWithExistingManifest_ExistingForgeFieldsPreserved(t *testing.T) {
+	// Write an existing manifest that already has forge fields populated.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+
+	existing := []byte(`version: 1
+forge:
+  github:
+    url: https://github.existing.com
+    mint_url: https://mint.existing.com
+    mint_mode: hosted
+    fullsend_ref: v1.0.0
+  gitlab:
+    url: https://gitlab.existing.com
+    runner_tags:
+      - self-hosted
+    fullsend_ref: v1.0.0
+repos:
+  - repo: acme/old
+`)
+	require.NoError(t, os.WriteFile(path, existing, 0o644))
+
+	// New manifest has different forge values — existing should win.
+	newManifest := &Manifest{
+		Version: 1,
+		Forge: ForgeSection{
+			GitHub: GitHubForgeInfra{
+				URL:         "https://github.new.com",
+				MintURL:     "https://mint.new.com",
+				MintMode:    "oidc",
+				FullsendRef: "v3.0.0",
+			},
+			GitLab: GitLabForgeInfra{
+				URL:         "https://gitlab.new.com",
+				RunnerTags:  []string{"docker"},
+				FullsendRef: "v3.0.0",
+			},
+		},
+		Repos: []RepoEntry{{Repo: "acme/new"}},
+	}
+
+	result := mergeWithExistingManifest(path, newManifest)
+
+	// Existing forge values should be preserved (not overwritten).
+	assert.Equal(t, "https://github.existing.com", result.Forge.GitHub.URL)
+	assert.Equal(t, "https://mint.existing.com", result.Forge.GitHub.MintURL)
+	assert.Equal(t, "hosted", result.Forge.GitHub.MintMode)
+	assert.Equal(t, "v1.0.0", result.Forge.GitHub.FullsendRef)
+	assert.Equal(t, "https://gitlab.existing.com", result.Forge.GitLab.URL)
+	assert.Equal(t, []string{"self-hosted"}, result.Forge.GitLab.RunnerTags)
+	assert.Equal(t, "v1.0.0", result.Forge.GitLab.FullsendRef)
+
+	// Both repos present.
+	require.Len(t, result.Repos, 2)
+}
