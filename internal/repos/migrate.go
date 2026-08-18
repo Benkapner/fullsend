@@ -203,7 +203,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 	// Read the existing manifest's fullsend_ref (if any) so the
 	// scaffold generation can use it as an intermediate fallback
 	// between per-repo discovery and the CLI binary version.
-	manifestRef := loadExistingManifestRef(cfg.ManifestPath)
+	manifestRef := loadExistingManifestRef(cfg.ManifestPath, ForgeGitHub)
 
 	initCfg := manifestConfig{
 		Forge:      ForgeGitHub,
@@ -480,9 +480,9 @@ func mergeWithExistingManifest(path string, newManifest *Manifest) *Manifest {
 }
 
 // loadExistingManifestRef reads the existing manifest file at path and
-// returns the forge.github.fullsend_ref value. Returns "" if the file
-// does not exist, cannot be parsed, or has no fullsend_ref set.
-func loadExistingManifestRef(path string) string {
+// returns the fullsend_ref value for the given forge. Returns "" if the
+// file does not exist, cannot be parsed, or has no fullsend_ref set.
+func loadExistingManifestRef(path, forgeName string) string {
 	if path == "" {
 		return ""
 	}
@@ -494,7 +494,14 @@ func loadExistingManifestRef(path string) string {
 	if err := parseManifestBytes(data, &m); err != nil {
 		return ""
 	}
-	return m.Forge.GitHub.FullsendRef
+	switch forgeName {
+	case ForgeGitHub:
+		return m.Forge.GitHub.FullsendRef
+	case ForgeGitLab:
+		return m.Forge.GitLab.FullsendRef
+	default:
+		return ""
+	}
 }
 
 // warnNonPortableFields emits progress warnings for org config fields

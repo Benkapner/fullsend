@@ -1448,18 +1448,18 @@ repos: []
 // --- loadExistingManifestRef ---
 
 func TestLoadExistingManifestRef_EmptyPath(t *testing.T) {
-	assert.Equal(t, "", loadExistingManifestRef(""))
+	assert.Equal(t, "", loadExistingManifestRef("", ForgeGitHub))
 }
 
 func TestLoadExistingManifestRef_FileNotFound(t *testing.T) {
-	assert.Equal(t, "", loadExistingManifestRef(filepath.Join(t.TempDir(), "missing.yaml")))
+	assert.Equal(t, "", loadExistingManifestRef(filepath.Join(t.TempDir(), "missing.yaml"), ForgeGitHub))
 }
 
 func TestLoadExistingManifestRef_MalformedYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "repos.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("not: [valid: yaml"), 0o644))
-	assert.Equal(t, "", loadExistingManifestRef(path))
+	assert.Equal(t, "", loadExistingManifestRef(path, ForgeGitHub))
 }
 
 func TestLoadExistingManifestRef_ReturnsRef(t *testing.T) {
@@ -1472,7 +1472,7 @@ forge:
 repos: []
 `)
 	require.NoError(t, os.WriteFile(path, manifest, 0o644))
-	assert.Equal(t, "main", loadExistingManifestRef(path))
+	assert.Equal(t, "main", loadExistingManifestRef(path, ForgeGitHub))
 }
 
 func TestLoadExistingManifestRef_NoRefSet(t *testing.T) {
@@ -1485,7 +1485,21 @@ forge:
 repos: []
 `)
 	require.NoError(t, os.WriteFile(path, manifest, 0o644))
-	assert.Equal(t, "", loadExistingManifestRef(path))
+	assert.Equal(t, "", loadExistingManifestRef(path, ForgeGitHub))
+}
+
+func TestLoadExistingManifestRef_ReturnsGitLabRef(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	manifest := []byte(`version: 1
+forge:
+  gitlab:
+    fullsend_ref: v2.0.0
+repos: []
+`)
+	require.NoError(t, os.WriteFile(path, manifest, 0o644))
+	assert.Equal(t, "v2.0.0", loadExistingManifestRef(path, ForgeGitLab))
+	assert.Equal(t, "", loadExistingManifestRef(path, ForgeGitHub))
 }
 
 func TestMergeWithExistingManifest_ExistingForgeFieldsPreserved(t *testing.T) {
