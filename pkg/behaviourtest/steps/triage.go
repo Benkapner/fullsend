@@ -58,11 +58,6 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 	w.RepoName = repoName
 	w.RepoFull = w.Org + "/" + repoName
 
-	// Construct per-scenario install state for steps that read
-	// TriageWorkflowRepo / TriageWorkflowFile / etc. The mint URL
-	// is internal to the driver and not exposed to steps.
-	w.Install = install.NewPerRepoState(w.Org, repoName, "")
-
 	return nil
 }
 
@@ -122,8 +117,8 @@ const issueOpenDrainSkewBuffer = 30 * time.Second
 // and GitHub), it retries once with a relaxed trigger timestamp.
 func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	ctx := context.Background()
-	repo := w.Install.TriageWorkflowRepo()
-	file := w.Install.TriageWorkflowFile()
+	repo := w.RepoName
+	file := install.PerRepoTriageWorkflow
 
 	_, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
 	if err == nil {

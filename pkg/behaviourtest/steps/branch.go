@@ -244,7 +244,7 @@ func thenHarnessWorkflowFailsReporting(ctx context.Context, w *world.World, agen
 	if w.PRNumber == 0 {
 		return fmt.Errorf("no pull request opened")
 	}
-	run, err := w.CI.WaitForFailedHarnessAgent(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
+	run, err := w.CI.WaitForFailedHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
 		return err
 	}

@@ -12,20 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// fakeInstallState implements install.State for unit tests.
-type fakeInstallState struct {
-	prefix string
-}
-
-func (f *fakeInstallState) Mode() string               { return "" }
-func (f *fakeInstallState) ConfigOwner() string        { return "" }
-func (f *fakeInstallState) ConfigRepo() string         { return "" }
-func (f *fakeInstallState) ConfigPathPrefix() string   { return f.prefix }
-func (f *fakeInstallState) TriageWorkflowRepo() string { return "" }
-func (f *fakeInstallState) TriageWorkflowFile() string { return "" }
-func (f *fakeInstallState) AgentWorkflowFile() string  { return "" }
-func (f *fakeInstallState) AgentArtifactName() string  { return "" }
-
 func TestClone_CopiesAllFields(t *testing.T) {
 	original := &World{
 		Org:            "test-org",
@@ -34,7 +20,6 @@ func TestClone_CopiesAllFields(t *testing.T) {
 		RepoName:       "test-repo",
 		Token:          "tok",
 		FixturesRoot:   "e2e/behaviour",
-		Install:        &fakeInstallState{prefix: ".fullsend"},
 		IssueNumber:    42,
 		PRNumber:       7,
 		DispatchAgent:  "triage",
@@ -54,7 +39,6 @@ func TestClone_CopiesAllFields(t *testing.T) {
 	assert.Equal(t, original.RepoName, clone.RepoName)
 	assert.Equal(t, original.Token, clone.Token)
 	assert.Equal(t, original.FixturesRoot, clone.FixturesRoot)
-	assert.Same(t, original.Install, clone.Install)
 
 	// Scenario fields are also copied (value copy). The caller is
 	// responsible for zeroing them via resetScenarioWorld.
@@ -78,33 +62,24 @@ func TestClone_SharesDriversByReference(t *testing.T) {
 	fc := forge.NewFakeClient()
 	scmDriver := scmgithub.New(fc)
 	ciDriver := githubactions.New(fc, "tok")
-	inst := &fakeInstallState{prefix: ".fullsend"}
-	original := &World{SCM: scmDriver, CI: ciDriver, Install: inst}
+	original := &World{SCM: scmDriver, CI: ciDriver}
 	clone := original.Clone()
 
 	// Drivers are shared by reference — the production implementations
 	// are immutable wrappers around forge.Client and are safe for
-	// concurrent use. Race tests in each driver package verify this
-	// under -race (see #5441).
+	// concurrent use.
 	assert.Same(t, original.SCM, clone.SCM)
 	assert.Same(t, original.CI, clone.CI)
-	assert.Same(t, original.Install, clone.Install)
 }
 
 // TestClone_ConcurrentFieldIndependence verifies that scenario-specific
 // value fields on cloned Worlds can be mutated independently from
-// concurrent goroutines without racing. This mirrors the
-// GODOG_CONCURRENCY>1 pattern where each scenario gets its own clone.
-//
-// Note: concurrency safety of the shared driver pointers (SCM, CI,
-// Install) is verified by race tests in the respective driver packages
-// (scm/github, ci/githubactions, install), not here.
+// concurrent goroutines without racing.
 func TestClone_ConcurrentFieldIndependence(t *testing.T) {
 	t.Parallel()
 
 	template := &World{
 		Config:       env.RunnerConfig{SCM: "github", CI: "githubactions", InstallMode: "per-repo"},
-		Install:      &fakeInstallState{prefix: ".fullsend"},
 		Org:          "test-org",
 		RepoFull:     "test-org/test-repo",
 		RepoOwner:    "test-org",
@@ -147,16 +122,11 @@ func TestClone_ConcurrentFieldIndependence(t *testing.T) {
 		assert.Equal(t, i+1, w.IssueNumber, "clone %d IssueNumber", i)
 		assert.Equal(t, i+100, w.PRNumber, "clone %d PRNumber", i)
 	}
-
-	// Shared Install is still the same instance.
-	for i, w := range clones {
-		assert.Same(t, template.Install, w.Install, "clone %d Install", i)
-	}
 }
 
 func TestBehaviourScriptPath(t *testing.T) {
 	// BT is per-repo only — BehaviourScriptPath always prefixes with
-	// .fullsend regardless of Install state.
+	// .fullsend regardless of state.
 	w := &World{}
 	got := w.BehaviourScriptPath()
 	assert.Equal(t, ".fullsend/behaviour/current-scenario.yaml", got)
