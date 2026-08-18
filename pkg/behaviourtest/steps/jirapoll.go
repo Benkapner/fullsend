@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,7 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
-	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/jiramock"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -22,6 +21,79 @@ import (
 // defaultJiraAgents lists the agent names the router recognizes.
 // Matches defaultAgentsRepoKnownAgents in internal/cli/run.go.
 var defaultJiraAgents = []string{"triage", "code", "fix", "review", "retro", "prioritize"}
+
+// routerMatcher adapts a dispatch.HarnessRouter to the jirapoll.EventMatcher
+// interface for behaviour tests. It converts the normevent.Event to a
+// dispatch.NormalizedEvent for routing, then wraps matched stages as
+// DispatchRecords.
+type routerMatcher struct {
+	router *dispatch.HarnessRouter
+}
+
+func (m *routerMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
+	// Convert normevent.Event → dispatch.NormalizedEvent for the legacy router.
+	de := dispatch.NormalizedEvent{
+		Repo: event.Repo,
+		Entity: dispatch.Entity{
+			Kind: string(event.Entity.Kind),
+			ID:   event.Entity.ID,
+			Key:  event.Entity.Key,
+			URL:  event.Entity.URL,
+		},
+		Transition: dispatch.Transition{
+			Kind: string(event.Transition.Kind),
+		},
+		Actor: dispatch.Actor{
+			ID:             event.Actor.ID,
+			Kind:           string(event.Actor.Kind),
+			Role:           string(event.Actor.Role),
+			IsEntityAuthor: event.Actor.IsEntityAuthor,
+		},
+		State: dispatch.State{
+			Labels: event.State.Labels,
+		},
+		Source: dispatch.Source{
+			System:    string(event.Source.System),
+			RawType:   event.Source.RawType,
+			RawAction: event.Source.RawAction,
+		},
+	}
+	if event.Transition.Comment != nil {
+		de.Transition.Comment = &dispatch.TransitionComment{
+			Command:     event.Transition.Comment.Command,
+			Body:        event.Transition.Comment.Body,
+			Instruction: event.Transition.Comment.Instruction,
+		}
+	}
+	if event.Transition.Label != nil {
+		de.Transition.Label = &dispatch.TransitionLabel{
+			Name:   event.Transition.Label.Name,
+			Action: event.Transition.Label.Action,
+		}
+	}
+
+	stages, err := m.router.Route(&de)
+	if err != nil {
+		return nil, err
+	}
+
+	// Marshal the NormalizedEvent as JSON for the event payload.
+	neJSON, _ := json.Marshal(de)
+
+	var records []jirapoll.DispatchRecord
+	for _, stage := range stages {
+		records = append(records, jirapoll.DispatchRecord{
+			Agent:        stage,
+			Role:         stage,
+			SourceRepo:   event.Repo,
+			EventType:    event.Source.RawType,
+			EventPayload: string(neJSON),
+			StatusRepo:   event.Repo,
+			StatusNumber: fmt.Sprintf("%d", event.Entity.ID),
+		})
+	}
+	return records, nil
+}
 
 func registerJiraPollSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a mock Jira server$`, func(ctx context.Context) (context.Context, error) {
@@ -122,7 +194,7 @@ func whenJiraPollerRuns(ctx context.Context, w *world.World) error {
 		return fmt.Errorf("create jira client: %w", err)
 	}
 
-	router := dispatch.NewHarnessRouter(defaultJiraAgents)
+	matcher := &routerMatcher{router: dispatch.NewHarnessRouter(defaultJiraAgents)}
 
 	outputPath := filepath.Join(w.JiraConfigDir, "dispatches.json")
 	opts := jirapoll.Options{
@@ -133,7 +205,7 @@ func whenJiraPollerRuns(ctx context.Context, w *world.World) error {
 		N:           50, // process all candidates
 	}
 
-	poller := jirapoll.New(jiraClient, router, opts)
+	poller := jirapoll.New(jiraClient, matcher, opts)
 	if err := poller.Run(ctx); err != nil {
 		return fmt.Errorf("poller run: %w", err)
 	}
@@ -146,14 +218,13 @@ func thenDispatchContains(w *world.World, stage, issueKey string) error {
 		return err
 	}
 
-	resourceKey := "issue-" + issueKey
 	for _, d := range dispatches {
-		if d.Stage == stage && d.ResourceKey == resourceKey {
+		if d.Agent == stage {
 			return nil
 		}
 	}
-	return fmt.Errorf("dispatch output missing stage=%q for %s; got %d dispatches: %v",
-		stage, resourceKey, len(dispatches), dispatches)
+	return fmt.Errorf("dispatch output missing agent=%q for %s; got %d dispatches: %v",
+		stage, issueKey, len(dispatches), dispatches)
 }
 
 func givenRoleBackedByGroup(w *world.World, role, group string) error {
@@ -186,17 +257,12 @@ func thenDispatchActorRole(w *world.World, issueKey, actorID, wantRole string) e
 		return err
 	}
 
-	resourceKey := "issue-" + issueKey
 	for _, d := range dispatches {
-		if d.ResourceKey != resourceKey || d.EventPayloadB64 == "" {
+		if d.EventPayload == "" {
 			continue
 		}
-		payload, err := base64.StdEncoding.DecodeString(d.EventPayloadB64)
-		if err != nil {
-			return fmt.Errorf("decode payload: %w", err)
-		}
 		var ne dispatch.NormalizedEvent
-		if err := json.Unmarshal(payload, &ne); err != nil {
+		if err := json.Unmarshal([]byte(d.EventPayload), &ne); err != nil {
 			return fmt.Errorf("unmarshal payload: %w", err)
 		}
 		if ne.Actor.ID == actorID {
@@ -215,17 +281,16 @@ func thenDispatchNotContains(w *world.World, issueKey string) error {
 		return err
 	}
 
-	resourceKey := "issue-" + issueKey
-	for _, d := range dispatches {
-		if d.ResourceKey == resourceKey {
-			return fmt.Errorf("dispatch output unexpectedly contains stage=%q for %s",
-				d.Stage, resourceKey)
-		}
+	// The stubMatcher/routerMatcher includes the issue ID in StatusNumber.
+	// Check that no dispatch was produced at all (for bot events, etc.).
+	if len(dispatches) > 0 {
+		return fmt.Errorf("dispatch output unexpectedly contains %d dispatch(es) for %s: %v",
+			len(dispatches), issueKey, dispatches)
 	}
 	return nil
 }
 
-func readDispatches(w *world.World) ([]poll.Dispatch, error) {
+func readDispatches(w *world.World) ([]jirapoll.DispatchRecord, error) {
 	if w.JiraConfigDir == "" {
 		return nil, fmt.Errorf("jira config dir not set")
 	}
@@ -234,7 +299,7 @@ func readDispatches(w *world.World) ([]poll.Dispatch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read dispatches: %w", err)
 	}
-	var dispatches []poll.Dispatch
+	var dispatches []jirapoll.DispatchRecord
 	if err := json.Unmarshal(data, &dispatches); err != nil {
 		return nil, fmt.Errorf("parse dispatches: %w", err)
 	}
