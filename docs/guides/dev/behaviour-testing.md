@@ -401,8 +401,7 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 **`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)`. The `*world.RepoPool` type has been removed. Repo leasing is handled internally by the unified `install.Driver` on `template.Driver`. Callers construct a `Driver` via a `Factory` and set it on the template World:
 
 ```go
-factory := install.NewRepoPoolCFMintPreviews(client, token, binary, gcpProjectID, t.Logf)
-driver, err := factory(org)
+driver, err := install.NewRepoPoolCFMintPreviews(org, client, token, binary, gcpProjectID, t.Logf)
 if err != nil {
     t.Fatalf("creating driver: %v", err)
 }
@@ -422,7 +421,7 @@ suiteRunner := godog.TestSuite{
 }
 ```
 
-**Concrete drivers renamed:** `cfmint` → `RepoPoolCFMintPreviews`, `legacy` / `externalmint` → `RepoPoolExternalMint`. Drivers are named for the environments they manage. Concrete implementations live in the `install` package. `install.Factory` takes only `org string`; driver-specific config (PEMs, pool size, mint URL) is read from env or computed internally. `install.State`, `install.MintURLProvider`, `install.RepoEnsurer`, and `install.CFMintConfig` are removed from the exported surface. External code should only reference `install.Factory` and `install.Driver`.
+**Concrete drivers renamed:** `cfmint` → `RepoPoolCFMintPreviews`, `legacy` / `externalmint` → `RepoPoolExternalMint`. Drivers are named for the environments they manage. Concrete implementations live in the `install` package. `install.Factory` takes `(org string, client forge.Client, token, binary, gcpProjectID string, logf func(string, ...any))`; driver-specific config (PEMs, pool size, mint URL) is read from env or computed internally. `install.State`, `install.MintURLProvider`, `install.RepoEnsurer`, and `install.CFMintConfig` are removed from the exported surface. External code should only reference `install.Factory` and `install.Driver`.
 
 **`world.World.Install` removed:** The `Install install.State` field on `World` is removed. Steps use `w.Org` + `w.RepoName` (the allocated repo name) and per-repo constants from the `install` package (`PerRepoTriageWorkflow`, `PerRepoAgentWorkflow`, `PerRepoAgentArtifact`) instead of config indirection through `State`.
 

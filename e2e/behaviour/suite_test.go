@@ -45,16 +45,13 @@ func TestBehaviourSuite(t *testing.T) {
 
 	binary := e2etest.BuildCLIBinary(t)
 
-	// Construct a RepoPoolCFMintPreviews Factory. The factory closes
-	// over runtime dependencies and reads driver-specific config
-	// (PEMs, suite name, pool size) from env internally.
-	factory := install.NewRepoPoolCFMintPreviews(client, token, binary, e2eCfg.GCPProjectID, t.Logf)
-
 	e2etest.CleanupStaleResources(ctx, client, token, org, t)
 
-	// Call the factory to get the unified driver. The factory deploys
+	// Call the Factory to get the unified driver. The factory deploys
 	// the preview mint and constructs all internal pieces (pool, ensurer).
-	driver, err := factory(org)
+	// Driver-specific config (PEMs, suite name, pool size) is read from
+	// env internally.
+	driver, err := install.NewRepoPoolCFMintPreviews(org, client, token, binary, e2eCfg.GCPProjectID, t.Logf)
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
 	}

@@ -9,7 +9,7 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 | `scm.Driver` | `pkg/behaviourtest/drivers/scm` | Issues, comments, labels (via GetIssue), file commits |
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
 | `install.Driver` | `pkg/behaviourtest/drivers/install` | Unified surface: repo allocation/deallocation, mint lifecycle, and suite teardown |
-| `install.Factory` | `pkg/behaviourtest/drivers/install` | Constructs a unified `Driver` for a given org; the only argument is the org name |
+| `install.Factory` | `pkg/behaviourtest/drivers/install` | Constructs a unified `Driver` for a given org; takes runtime dependencies (forge client, token, binary, GCP project, logger) as parameters |
 
 v1 reference implementations:
 
@@ -39,7 +39,7 @@ The suite uses a single unified `install.Driver` constructed via `install.Factor
 3. Lazily creates and installs numbered pool repos on demand via an internal ensurer (concurrent-safe via singleflight).
 4. Exposes `AllocateRepo` / `DeallocateRepo` / `Finalize` / `Capacity`.
 
-The Factory takes only the allocated org name. Driver-specific inputs (PEMs, allowlists, pool size, mint URL) come from env or are computed inside the driver. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Default concurrency is `driver.Capacity()`; `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
+The Factory takes the allocated org name plus runtime dependencies (forge client, token, CLI binary, GCP project, logger). Driver-specific inputs (PEMs, allowlists, pool size, mint URL) come from env or are computed inside the driver. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Default concurrency is `driver.Capacity()`; `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
 
 Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 

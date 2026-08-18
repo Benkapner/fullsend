@@ -2,6 +2,8 @@ package install
 
 import (
 	"context"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // mintDriver provisions and tears down fullsend in an acquired pool org.
@@ -24,9 +26,15 @@ type mintDriver interface {
 // setup failures fail the suite before scenarios run.
 //
 // All driver-specific inputs (PEMs, allowlists, mint URL, pool size)
-// are closed over by the factory function or read from env. The only
-// argument is the allocated test org name.
-type Factory func(org string) (Driver, error)
+// are read from env or computed from the org inside the factory.
+// Runtime dependencies (forge client, token, CLI binary, GCP project,
+// logger) are passed as parameters.
+type Factory func(
+	org string,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	logf func(string, ...any),
+) (Driver, error)
 
 // Driver owns mint/environment lifecycle and test-repo allocation for
 // behaviour tests. The suite constructs exactly one Driver via a Factory

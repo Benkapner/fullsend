@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -31,46 +32,43 @@ type cfmintConfig struct {
 	appSet            string
 }
 
-// NewRepoPoolCFMintPreviews returns a Factory that, given an org name,
-// deploys a CF preview mint and returns a unified Driver owning
-// allocation, deallocation, ensure, and teardown.
+// NewRepoPoolCFMintPreviews is a Factory that deploys a CF preview
+// mint and returns a unified Driver owning allocation, deallocation,
+// ensure, and teardown.
 //
-// The factory reads driver-specific config from env: PEM dir from
-// TEST_*_PEM env vars (materialized via e2etest), suite name from
+// Driver-specific config is read from env: PEM dir from TEST_*_PEM
+// env vars (materialized internally), suite name from
 // BEHAVIOUR_SUITE_NAME (default "bt"), and app set from
 // BEHAVIOUR_APP_SET (default "fullsend-test"). Pool size defaults to
 // DefaultPoolSize. WIF and workflow-host repo lists are computed from
 // the org and pool size.
-//
-// Runtime dependencies (forge client, token, CLI binary path, GCP
-// project, logger) are closed over — they do not appear on the
-// Factory signature.
 func NewRepoPoolCFMintPreviews(
+	org string,
 	client forge.Client,
 	token, binary, gcpProjectID string,
 	logf func(string, ...any),
-) Factory {
-	return func(org string) (Driver, error) {
-		e2eCfg := e2etest.LoadEnvConfigLite()
-		poolSize := envPoolSize()
+) (Driver, error) {
+	poolSize := envPoolSize()
 
-		cfg := cfmintConfig{
-			pemDir:            e2eCfg.CFMintPEMDir,
-			suiteName:         envSuiteName(),
-			allowedOrgs:       "", // per-repo mode — no org-level allowlist
-			perRepoWIFRepos:   buildRepoList(org, poolSize),
-			workflowHostRepos: buildRepoList(org, poolSize),
-			appSet:            envAppSet(),
-		}
-
-		md, err := newCFMintDriver(client, token, binary, gcpProjectID, logf, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
-		}
-
-		return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, poolSize, logf)
+	cfg := cfmintConfig{
+		pemDir:            setupCFMintPEMDir(),
+		suiteName:         envSuiteName(),
+		allowedOrgs:       "", // per-repo mode — no org-level allowlist
+		perRepoWIFRepos:   buildRepoList(org, poolSize),
+		workflowHostRepos: buildRepoList(org, poolSize),
+		appSet:            envAppSet(),
 	}
+
+	md, err := newCFMintDriver(client, token, binary, gcpProjectID, logf, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
+	}
+
+	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, poolSize, logf)
 }
+
+// Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
+var _ Factory = NewRepoPoolCFMintPreviews
 
 // buildCFMintDriver deploys the mint and constructs the composed driver.
 // Extracted from NewRepoPoolCFMintPreviews so the deploy → compose path
@@ -329,4 +327,52 @@ func buildRepoList(org string, poolSize int) string {
 		repos[i] = fmt.Sprintf("%s/test-repo-%02d", org, i+1)
 	}
 	return strings.Join(repos, ",")
+}
+
+// --- PEM materialization (cfmint-specific) ---
+
+// cfmintPEMRoleEnvVars maps PEM role names to the environment variables
+// the CI workflow provides (TEST_*_PEM secrets wired in e2e.yml).
+var cfmintPEMRoleEnvVars = map[string]string{
+	"fullsend":   "TEST_FULLSEND_PEM",
+	"triage":     "TEST_TRIAGE_PEM",
+	"coder":      "TEST_CODER_PEM",
+	"review":     "TEST_REVIEW_PEM",
+	"retro":      "TEST_RETRO_PEM",
+	"prioritize": "TEST_PRIORITIZE_PEM",
+}
+
+// setupCFMintPEMDir materializes TEST_*_PEM environment variables into
+// {role}.pem files inside a temporary directory. Returns the directory
+// path, or "" when no PEM env vars are set (e.g. local dev). The
+// directory is NOT cleaned up — it persists for the process lifetime.
+// This is acceptable because the BT process is short-lived (one test
+// suite run).
+func setupCFMintPEMDir() string {
+	var found bool
+	for _, envVar := range cfmintPEMRoleEnvVars {
+		if os.Getenv(envVar) != "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+
+	dir, err := os.MkdirTemp("", "cfmint-pems-*")
+	if err != nil {
+		return ""
+	}
+	for role, envVar := range cfmintPEMRoleEnvVars {
+		pem := os.Getenv(envVar)
+		if pem == "" {
+			continue
+		}
+		path := filepath.Join(dir, role+".pem")
+		if writeErr := os.WriteFile(path, []byte(pem), 0600); writeErr != nil {
+			return ""
+		}
+	}
+	return dir
 }

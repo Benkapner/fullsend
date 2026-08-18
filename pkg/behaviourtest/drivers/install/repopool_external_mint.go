@@ -7,51 +7,48 @@ package install
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
-// NewRepoPoolExternalMint returns a Factory that, given an org name,
-// returns a unified Driver backed by a pre-configured mint URL. The
-// driver uses the existing mint without deploying anything; teardown
-// is a no-op.
+// NewRepoPoolExternalMint is a Factory that returns a unified Driver
+// backed by a pre-configured mint URL. The driver uses the existing
+// mint without deploying anything; teardown is a no-op.
 //
-// The mint URL is read from e2etest env config. Pool size defaults to
+// The mint URL is read from FULLSEND_MINT_URL. Pool size defaults to
 // DefaultPoolSize (overridable via BEHAVIOUR_POOL_SIZE).
-//
-// Runtime dependencies (forge client, token, CLI binary path, GCP
-// project, logger) are closed over — they do not appear on the
-// Factory signature.
 func NewRepoPoolExternalMint(
+	org string,
 	client forge.Client,
 	token, binary, gcpProjectID string,
 	logf func(string, ...any),
-) Factory {
-	return func(org string) (Driver, error) {
-		e2eCfg := e2etest.LoadEnvConfigLite()
-		poolSize := envPoolSize()
+) (Driver, error) {
+	poolSize := envPoolSize()
 
-		mintURL := e2eCfg.MintURL
-		if mintURL == "" {
-			return nil, fmt.Errorf("external mint: mintURL is required (set E2E_MINT_URL)")
-		}
-
-		md := &externalMintDriver{mintURL: mintURL}
-		// Install is a no-op for external mint — just validates presence.
-		_, err := md.Install(context.Background(), org)
-		if err != nil {
-			return nil, fmt.Errorf("external mint factory: %w", err)
-		}
-
-		ensCfg := e2etest.EnvConfig{
-			MintURL:      mintURL,
-			GCPProjectID: gcpProjectID,
-		}
-		ens := newRepoEnsurer(ensCfg, client, token, binary, logf)
-		return newComposedDriver(org, md, ens, poolSize, logf)
+	mintURL := os.Getenv("FULLSEND_MINT_URL")
+	if mintURL == "" {
+		return nil, fmt.Errorf("external mint: FULLSEND_MINT_URL is required")
 	}
+
+	md := &externalMintDriver{mintURL: mintURL}
+	// Install is a no-op for external mint — just validates presence.
+	_, err := md.Install(context.Background(), org)
+	if err != nil {
+		return nil, fmt.Errorf("external mint factory: %w", err)
+	}
+
+	ensCfg := e2etest.EnvConfig{
+		MintURL:      mintURL,
+		GCPProjectID: gcpProjectID,
+	}
+	ens := newRepoEnsurer(ensCfg, client, token, binary, logf)
+	return newComposedDriver(org, md, ens, poolSize, logf)
 }
+
+// Compile-time check: NewRepoPoolExternalMint satisfies Factory.
+var _ Factory = NewRepoPoolExternalMint
 
 // externalMintDriver uses a pre-configured mint URL.
 type externalMintDriver struct {

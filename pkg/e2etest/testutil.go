@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -314,12 +313,6 @@ type envConfig struct {
 	gcpProjectID string
 	wifProvider  string
 	lockTimeout  time.Duration
-
-	// cfMintPEMDir is a temp directory containing {role}.pem files
-	// materialized from the TEST_*_PEM environment variables provided by
-	// the CI workflow. When non-empty, the BT install driver deploys a
-	// temporary CF preview mint using these PEMs.
-	cfMintPEMDir string
 }
 
 // EnvConfig is the exported view of envConfig for behaviour tests.
@@ -329,12 +322,6 @@ type EnvConfig struct {
 	GCPProjectID string
 	WIFProvider  string
 	LockTimeout  time.Duration
-
-	// CFMintPEMDir is a temp directory with {role}.pem files written from
-	// the TEST_*_PEM env vars the CI workflow provides. When non-empty,
-	// the BT install driver deploys a CF preview mint and uses the
-	// derived preview URL as the mint endpoint.
-	CFMintPEMDir string
 }
 
 func (c envConfig) exported() EnvConfig {
@@ -344,7 +331,6 @@ func (c envConfig) exported() EnvConfig {
 		GCPProjectID: c.gcpProjectID,
 		WIFProvider:  c.wifProvider,
 		LockTimeout:  c.lockTimeout,
-		CFMintPEMDir: c.cfMintPEMDir,
 	}
 }
 
@@ -355,28 +341,12 @@ func (c EnvConfig) internal() envConfig {
 		gcpProjectID: c.GCPProjectID,
 		wifProvider:  c.WIFProvider,
 		lockTimeout:  c.LockTimeout,
-		cfMintPEMDir: c.CFMintPEMDir,
 	}
 }
 
 // LoadEnvConfig reads and validates required env vars for e2e and behaviour tests.
 func LoadEnvConfig(t *testing.T) EnvConfig {
 	return loadEnvConfig(t).exported()
-}
-
-// LoadEnvConfigLite reads env vars that do not require a testing.T.
-// It returns an EnvConfig with MintURL, GCPProjectID, and CFMintPEMDir
-// populated from the environment. Unlike LoadEnvConfig, it does not
-// call t.Skip or t.Fatal, so it is safe to call from production driver
-// constructors. CFMintPEMDir is materialized to a temp directory if
-// TEST_*_PEM env vars are set; the caller should not clean up this
-// directory — it persists for the process lifetime.
-func LoadEnvConfigLite() EnvConfig {
-	return EnvConfig{
-		MintURL:      resolveMintURL(),
-		GCPProjectID: os.Getenv("E2E_GCP_PROJECT_ID"),
-		CFMintPEMDir: setupCFMintPEMDirLite(),
-	}
 }
 
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
@@ -411,84 +381,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 		gcpProjectID: gcpProjectID,
 		wifProvider:  wifProvider,
 		lockTimeout:  lockTimeout,
-		cfMintPEMDir: setupCFMintPEMDir(t),
 	}
-}
-
-// pemRoleEnvVars maps PEM role names to the environment variables the CI
-// workflow already provides (TEST_*_PEM secrets wired in e2e.yml).
-var pemRoleEnvVars = map[string]string{
-	"fullsend":   "TEST_FULLSEND_PEM",
-	"triage":     "TEST_TRIAGE_PEM",
-	"coder":      "TEST_CODER_PEM",
-	"review":     "TEST_REVIEW_PEM",
-	"retro":      "TEST_RETRO_PEM",
-	"prioritize": "TEST_PRIORITIZE_PEM",
-}
-
-// setupCFMintPEMDir materializes TEST_*_PEM environment variables into
-// {role}.pem files inside a temporary directory. Returns the directory
-// path, or "" when no PEM env vars are set (e.g. local dev).
-func setupCFMintPEMDir(t *testing.T) string {
-	t.Helper()
-
-	var found bool
-	for _, envVar := range pemRoleEnvVars {
-		if os.Getenv(envVar) != "" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return ""
-	}
-
-	dir := t.TempDir()
-	for role, envVar := range pemRoleEnvVars {
-		pem := os.Getenv(envVar)
-		if pem == "" {
-			continue
-		}
-		path := filepath.Join(dir, role+".pem")
-		if err := os.WriteFile(path, []byte(pem), 0600); err != nil {
-			t.Fatalf("writing PEM file %s: %v", path, err)
-		}
-	}
-	return dir
-}
-
-// setupCFMintPEMDirLite is like setupCFMintPEMDir but does not require
-// testing.T. It creates a temp directory using os.MkdirTemp. The
-// directory is NOT cleaned up — it persists for the process lifetime.
-// This is acceptable because the BT process is short-lived (one test
-// suite run).
-func setupCFMintPEMDirLite() string {
-	var found bool
-	for _, envVar := range pemRoleEnvVars {
-		if os.Getenv(envVar) != "" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return ""
-	}
-
-	dir, err := os.MkdirTemp("", "cfmint-pems-*")
-	if err != nil {
-		return ""
-	}
-	for role, envVar := range pemRoleEnvVars {
-		pem := os.Getenv(envVar)
-		if pem == "" {
-			continue
-		}
-		path := filepath.Join(dir, role+".pem")
-		if writeErr := os.WriteFile(path, []byte(pem), 0600); writeErr != nil {
-			return ""
-		}
-	}
-	return dir
 }
 
 // newLiveClient creates a GitHub API client from the token.
