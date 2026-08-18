@@ -2161,7 +2161,6 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 	defer stsServer.Close()
 
 	verifier, vErr := NewSTSVerifier(STSVerifierConfig{
-		HTTPClient:         stsServer.Client(),
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
@@ -2253,7 +2252,6 @@ func TestHandler_STSVerifier_RestrictedWorkflows(t *testing.T) {
 	defer stsServer.Close()
 
 	verifier2, vErr2 := NewSTSVerifier(STSVerifierConfig{
-		HTTPClient:         stsServer.Client(),
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
@@ -2958,7 +2956,6 @@ func TestHandler_STSVerifier_PerRepoWIF_RestrictedWorkflows(t *testing.T) {
 	defer stsServer.Close()
 
 	verifier3, vErr3 := NewSTSVerifier(STSVerifierConfig{
-		HTTPClient:         stsServer.Client(),
 		STSURL:             stsServer.URL,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",

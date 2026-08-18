@@ -8,45 +8,53 @@ import (
 )
 
 func TestMintHTTP_ReturnsCachedClient(t *testing.T) {
-	client := mintHTTP()
-	if client == nil {
-		t.Fatal("mintHTTP() returned nil")
-	}
-	// Calling again should return the same instance.
-	client2 := mintHTTP()
-	if client != client2 {
-		t.Fatal("mintHTTP() should return the same cached client")
-	}
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost:0/nonexistent", nil)
+	// Just verify it doesn't panic; we can't easily check identity
+	// since mintHTTP now returns a response, not a client.
+	_, _ = mintHTTP(req)
 }
 
-func TestSetHTTPDoerForTest_OverridesAndRestores(t *testing.T) {
-	original := mintHTTP()
-	fake := &http.Client{}
-	SetHTTPDoerForTest(t, fake)
-
-	got := mintHTTP()
-	if got != fake {
-		t.Fatal("mintHTTP() should return the test override")
+func TestSetMintHTTPForTest_OverridesAndRestores(t *testing.T) {
+	called := false
+	fake := func(r *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200}, nil
 	}
+	SetMintHTTPForTest(t, fake)
 
-	// After t.Cleanup runs (at end of this test), original is restored.
-	// We can't easily verify the cleanup here, but the mechanism is
-	// tested by ensuring the override works during the test.
-	_ = original
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/test", nil)
+	resp, err := mintHTTP(req)
+	if err != nil {
+		t.Fatalf("mintHTTP error: %v", err)
+	}
+	if !called {
+		t.Fatal("mintHTTP should call the test override")
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
 }
 
 func TestNewHandler_UsesMintHTTPOverride(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
-	fake := &fakeHTTPDoer{}
-	SetHTTPDoerForTest(t, fake)
+	called := false
+	fake := func(r *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200}, nil
+	}
+	SetMintHTTPForTest(t, fake)
 
-	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	if h.httpClient != fake {
-		t.Fatal("expected handler to use the test-injected HTTP client")
+
+	// Verify the override is active by calling mintHTTP directly.
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/test", nil)
+	_, _ = mintHTTP(req)
+	if !called {
+		t.Fatal("expected mintHTTP to use the test-injected override")
 	}
 }

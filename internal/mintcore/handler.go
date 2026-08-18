@@ -50,7 +50,6 @@ type statusResponse struct {
 
 // Handler holds dependencies for the token mint HTTP server.
 type Handler struct {
-	httpClient   HTTPDoer
 	pemAccessor  PEMAccessor
 	oidcVerifier OIDCVerifier
 
@@ -110,8 +109,6 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		return nil, errors.New("oidcVerifier must not be nil")
 	}
 
-	httpClient := mintHTTP()
-
 	// Register custom role permissions before processing ALLOWED_ROLES
 	// so that HasRole sees them during validation.
 	if raw := mintEnv("CUSTOM_ROLE_PERMISSIONS"); raw != "" {
@@ -138,7 +135,6 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	}
 
 	h := &Handler{
-		httpClient:           httpClient,
 		pemAccessor:          pemAccessor,
 		oidcVerifier:         oidcVerifier,
 		githubBaseURL:        "https://api.github.com",
@@ -525,9 +521,9 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 
 	var installationID int64
 	if len(repos) == 0 {
-		installationID, err = FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org)
+		installationID, err = FindOrgInstallation(ctx, h.githubBaseURL, jwt, org)
 	} else {
-		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
+		installationID, err = FindInstallation(ctx, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
 		// A 404 from FindInstallation means the repo is not covered by
@@ -556,7 +552,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 	// as 502, matching the repos[0] error path above.
 	if len(repos) > 1 {
 		for _, repo := range repos[1:] {
-			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
+			otherID, otherErr := FindInstallation(ctx, h.githubBaseURL, jwt, org, repo)
 			if otherErr != nil {
 				if errors.Is(otherErr, ErrInstallationNotFound) {
 					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
@@ -579,7 +575,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		}
 	}
 
-	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
+	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.githubBaseURL, jwt, installationID, role, repos)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
@@ -682,12 +678,12 @@ func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role str
 		return nil, fmt.Errorf("generating app JWT: %v", err)
 	}
 
-	installationID, err := FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, targetOrg)
+	installationID, err := FindOrgInstallation(ctx, h.githubBaseURL, jwt, targetOrg)
 	if err != nil {
 		return nil, fmt.Errorf("finding org installation on %s: %v", targetOrg, err)
 	}
 
-	allowlist, err := ReadForeignAllowlist(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, role)
+	allowlist, err := ReadForeignAllowlist(ctx, h.githubBaseURL, jwt, installationID, targetOrg, role)
 	if err != nil {
 		return nil, err
 	}
@@ -786,12 +782,12 @@ func (h *Handler) fetchRepoForeignAllowlist(ctx context.Context, targetOrg, targ
 		return nil, fmt.Errorf("generating app JWT: %v", err)
 	}
 
-	installationID, err := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, targetOrg, targetRepo)
+	installationID, err := FindInstallation(ctx, h.githubBaseURL, jwt, targetOrg, targetRepo)
 	if err != nil {
 		return nil, fmt.Errorf("finding repo installation on %s/%s: %v", targetOrg, targetRepo, err)
 	}
 
-	allowlist, err := ReadForeignAllowlistFromRepo(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, targetRepo, role)
+	allowlist, err := ReadForeignAllowlistFromRepo(ctx, h.githubBaseURL, jwt, installationID, targetOrg, targetRepo, role)
 	if err != nil {
 		return nil, err
 	}

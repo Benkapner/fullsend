@@ -25,10 +25,8 @@ func buildHandler() (http.Handler, error) {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
 
-	jwksClient := &http.Client{Timeout: 30 * time.Second}
 	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		HTTPClient: jwksClient,
+		IssuerURL: "https://token.actions.githubusercontent.com",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating OIDC verifier: %w", err)

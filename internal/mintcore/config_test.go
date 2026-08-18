@@ -138,30 +138,34 @@ func TestNewHandler_UsesMintHTTP(t *testing.T) {
 		"ROLE_APP_IDS":           `{"coder":"200"}`,
 		"ALLOWED_WORKFLOW_FILES": "*",
 	})
-	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	// The handler should have obtained its HTTP client from mintHTTP().
-	if h.httpClient == nil {
-		t.Fatal("expected non-nil HTTP client from mintHTTP()")
-	}
+	// After construction, mintHTTP should be callable without panic.
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost:0/test", nil)
+	_, _ = mintHTTP(req)
 }
 
-func TestNewHandler_SetHTTPDoerForTest(t *testing.T) {
+func TestNewHandler_SetMintHTTPForTest(t *testing.T) {
 	setBindings(t, map[string]string{
 		"ROLE_APP_IDS":           `{"coder":"200"}`,
 		"ALLOWED_WORKFLOW_FILES": "*",
 	})
-	fake := &fakeHTTPDoer{}
-	SetHTTPDoerForTest(t, fake)
+	called := false
+	SetMintHTTPForTest(t, func(r *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200}, nil
+	})
 
-	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	_, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	if h.httpClient != fake {
-		t.Fatal("expected handler to use the test-injected HTTP client")
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/test", nil)
+	_, _ = mintHTTP(req)
+	if !called {
+		t.Fatal("expected mintHTTP to use the test-injected override")
 	}
 }
 
@@ -308,8 +312,6 @@ func TestNewHandler_FullMintFlow(t *testing.T) {
 		}
 	}))
 	defer github.Close()
-
-	SetHTTPDoerForTest(t, github.Client())
 
 	h, err := NewHandler(pemAccessor, verifier)
 	if err != nil {
@@ -461,18 +463,6 @@ func TestNewHandler_MintEnv(t *testing.T) {
 	if !h.checkAllowedRole("coder") {
 		t.Fatal("coder should be allowed via mintEnv")
 	}
-}
-
-// fakeHTTPDoer implements HTTPDoer for testing.
-type fakeHTTPDoer struct {
-	err error
-}
-
-func (f *fakeHTTPDoer) Do(_ *http.Request) (*http.Response, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return &http.Response{StatusCode: 200}, nil
 }
 
 // fakeContextPEMAccessor records the context passed to AccessPEM.

@@ -544,8 +544,7 @@ func TestStandaloneWiring(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
 	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		IssuerURL: "https://token.actions.githubusercontent.com",
 	})
 	if err != nil {
 		t.Fatalf("NewJWKSVerifier: %v", err)

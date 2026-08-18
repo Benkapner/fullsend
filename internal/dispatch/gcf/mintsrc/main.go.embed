@@ -8,10 +8,8 @@ package function
 
 import (
 	"log"
-	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -49,12 +47,10 @@ func init() {
 	}
 
 	gcpProjectNum := os.Getenv("GCP_PROJECT_NUMBER")
-	httpClient := &http.Client{Timeout: 30 * time.Second}
 	wifPoolName := os.Getenv("WIF_POOL_NAME")
 	defaultWIFProvider := os.Getenv("WIF_PROVIDER_NAME")
 
 	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-		HTTPClient:         httpClient,
 		GCPProjectNum:      gcpProjectNum,
 		WIFPoolName:        wifPoolName,
 		DefaultWIFProvider: defaultWIFProvider,
@@ -64,10 +60,7 @@ func init() {
 		log.Fatalf("creating OIDC verifier: %v", err)
 	}
 
-	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
-		&http.Client{Timeout: 10 * time.Second},
-		gcpProjectNum,
-	)
+	pemAccessor := mintcore.NewGCPSecretPEMAccessor(gcpProjectNum)
 
 	handler, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {

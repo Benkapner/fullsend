@@ -69,8 +69,7 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	}
 
 	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		HTTPClient: mintcore.MintHTTPForInit(),
+		IssuerURL: "https://token.actions.githubusercontent.com",
 	})
 	if err != nil {
 		return fmt.Sprintf("creating OIDC verifier: %v", err)

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
@@ -19,10 +18,7 @@ func TestInitWiring(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-
 	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-		HTTPClient:         httpClient,
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "test-pool",
 		DefaultWIFProvider: "test-provider",
@@ -31,10 +27,7 @@ func TestInitWiring(t *testing.T) {
 		t.Fatalf("NewSTSVerifier: %v", err)
 	}
 
-	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
-		&http.Client{Timeout: 5 * time.Second},
-		"123456",
-	)
+	pemAccessor := mintcore.NewGCPSecretPEMAccessor("123456")
 
 	handler, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {

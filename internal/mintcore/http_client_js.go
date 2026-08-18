@@ -3,15 +3,22 @@
 package mintcore
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"syscall/js"
 )
 
-var registeredHTTPDoer HTTPDoer
+var registeredFetchFn js.Value
 
 // RegisterHTTP stores a JS fetch callback as the package-level HTTP
-// client. The callback is wrapped in a HostFetchDoer. It must be
-// called once from mintcoreInitMint before NewHandler is constructed.
+// implementation. The callback signature is:
+//
+//	callback(method, url, headersJSON, body) => Promise<{status, headers, body}>
+//
+// It must be called once from initMint before NewHandler is constructed.
 func RegisterHTTP(fetchFn js.Value) error {
 	if fetchFn.IsUndefined() || fetchFn.IsNull() {
 		return fmt.Errorf("fetch callback must not be null or undefined")
@@ -19,22 +26,70 @@ func RegisterHTTP(fetchFn js.Value) error {
 	if fetchFn.Type() != js.TypeFunction {
 		return fmt.Errorf("fetch callback must be a function, got %s", fetchFn.Type())
 	}
-	doer, err := NewHostFetchDoer(fetchFn)
-	if err != nil {
-		return fmt.Errorf("wrapping fetch callback: %w", err)
-	}
-	registeredHTTPDoer = doer
+	registeredFetchFn = fetchFn
 	return nil
 }
 
-// mintHTTP returns the registered HTTP client. On WASM this is the
-// HostFetchDoer created by RegisterHTTP.
-func mintHTTP() HTTPDoer {
-	return registeredHTTPDoer
-}
+// mintHTTP executes an HTTP request by calling the host JS fetch
+// callback registered via RegisterHTTP.
+func mintHTTP(req *http.Request) (*http.Response, error) {
+	if registeredFetchFn.IsUndefined() || registeredFetchFn.IsNull() {
+		return nil, fmt.Errorf("HTTP not registered; call RegisterHTTP first")
+	}
 
-// MintHTTPForInit returns the registered HTTP client for use by the
-// WASM entrypoint when constructing verifiers. Call RegisterHTTP first.
-func MintHTTPForInit() HTTPDoer {
-	return registeredHTTPDoer
+	// Serialize headers to JSON.
+	headerMap := make(map[string]string, len(req.Header))
+	for k, v := range req.Header {
+		headerMap[k] = strings.Join(v, ", ")
+	}
+
+	headersJSON, err := json.Marshal(headerMap)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling request headers: %w", err)
+	}
+
+	var bodyStr string
+	if req.Body != nil {
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("reading request body: %w", err)
+		}
+		bodyStr = string(bodyBytes)
+	}
+
+	// Call the JS fetch callback synchronously via Await.
+	// The callback returns a Promise; we block until it resolves.
+	result, err := awaitPromise(registeredFetchFn.Invoke(
+		req.Method,
+		req.URL.String(),
+		string(headersJSON),
+		bodyStr,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("host fetch failed: %w", err)
+	}
+
+	status := result.Get("status").Int()
+	respHeadersJSON := result.Get("headers").String()
+	respBody := result.Get("body").String()
+
+	resp := &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(respBody)),
+	}
+
+	// Parse response headers.
+	if respHeadersJSON != "" && respHeadersJSON != "{}" {
+		var parsed map[string]string
+		if err := json.Unmarshal([]byte(respHeadersJSON), &parsed); err != nil {
+			return nil, fmt.Errorf("parsing response headers: %w", err)
+		}
+		for k, v := range parsed {
+			resp.Header.Set(k, v)
+		}
+	}
+
+	return resp, nil
 }

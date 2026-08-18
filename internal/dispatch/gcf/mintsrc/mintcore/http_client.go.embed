@@ -10,28 +10,28 @@ import (
 )
 
 var (
-	defaultHTTPClient HTTPDoer
+	defaultHTTPClient *http.Client
 	httpOnce          sync.Once
-	httpOverride      HTTPDoer
+	httpOverride      func(*http.Request) (*http.Response, error)
 )
 
-// mintHTTP returns the package-level HTTP client. On native platforms
-// this is a cached *http.Client with a 30-second timeout, matching the
-// existing entrypoint behavior. Tests can override it via
-// SetHTTPDoerForTest.
-func mintHTTP() HTTPDoer {
-	if o := httpOverride; o != nil {
-		return o
+// mintHTTP executes an HTTP request using the package-level HTTP client.
+// On native platforms this is a cached *http.Client with a 30-second
+// timeout, matching the existing entrypoint behavior. Tests can
+// override the behaviour via SetMintHTTPForTest.
+func mintHTTP(req *http.Request) (*http.Response, error) {
+	if f := httpOverride; f != nil {
+		return f(req)
 	}
 	httpOnce.Do(func() {
 		defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 	})
-	return defaultHTTPClient
+	return defaultHTTPClient.Do(req)
 }
 
-// SetHTTPDoerForTest replaces the HTTP client for the duration of the
-// test and restores it when the test completes.
-func SetHTTPDoerForTest(t *testing.T, fake HTTPDoer) {
+// SetMintHTTPForTest replaces the HTTP function for the duration of the
+// test and restores the previous value when the test completes.
+func SetMintHTTPForTest(t *testing.T, fake func(*http.Request) (*http.Response, error)) {
 	t.Helper()
 	prev := httpOverride
 	httpOverride = fake
