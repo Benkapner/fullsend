@@ -52,7 +52,7 @@ func TestToNormalizedEvent_MatchesFixture(t *testing.T) {
 		},
 	}
 
-	got := p.toNormEvent(event)
+	got := p.toNormalizedEvent(event)
 
 	if got.Repo != want.Repo {
 		t.Errorf("repo = %q, want %q", got.Repo, want.Repo)
@@ -133,7 +133,7 @@ func TestToNormalizedEvent_CommentWithSlashCommand(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 
 	if ne.Transition.Comment == nil {
 		t.Fatal("expected comment in transition")
@@ -167,13 +167,13 @@ func TestToNormalizedEvent_EditedCommentRawAction(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 	if ne.Source.RawAction != "updated" {
 		t.Errorf("source.raw_action = %q, want %q for an edit-detected comment", ne.Source.RawAction, "updated")
 	}
 
 	event.CommentEdited = false
-	ne = p.toNormEvent(event)
+	ne = p.toNormalizedEvent(event)
 	if ne.Source.RawAction != "created" {
 		t.Errorf("source.raw_action = %q, want %q for a new comment", ne.Source.RawAction, "created")
 	}
@@ -202,7 +202,7 @@ func TestToNormalizedEvent_CommentWithoutSlashCommand(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 
 	if ne.Transition.Comment == nil {
 		t.Fatal("expected comment in transition")
@@ -243,7 +243,7 @@ func TestToNormalizedEvent_LabelAdded(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 
 	if ne.Transition.Kind != "label_changed" {
 		t.Errorf("transition.kind = %q, want %q", ne.Transition.Kind, "label_changed")
@@ -285,7 +285,7 @@ func TestToNormalizedEvent_BotActor(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 
 	if ne.Actor.Kind != "bot" {
 		t.Errorf("actor.kind = %q, want %q", ne.Actor.Kind, "bot")
@@ -379,7 +379,7 @@ func TestToNormalizedEvent_IsEntityAuthor(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 
 	if !ne.Actor.IsEntityAuthor {
 		t.Error("expected actor.is_entity_author = true when comment author == reporter")
@@ -613,7 +613,7 @@ func TestToNormalizedEvent_JSONRoundTrip(t *testing.T) {
 		},
 	}
 
-	got := p.toNormEvent(event)
+	got := p.toNormalizedEvent(event)
 
 	gotJSON, err := json.Marshal(got)
 	if err != nil {
@@ -683,7 +683,7 @@ func TestResolveRole_ExternalActor(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 	if ne.Actor.Role != "external" {
 		t.Errorf("actor.role = %q, want %q", ne.Actor.Role, "external")
 	}
@@ -709,7 +709,7 @@ func TestResolveRole_EmptyActorID(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 	if ne.Actor.Role != "external" {
 		t.Errorf("actor.role = %q, want %q", ne.Actor.Role, "external")
 	}
@@ -740,7 +740,7 @@ func TestResolveRole_CrossProjectFailsClosed(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 	if ne.Actor.Role != "external" {
 		t.Errorf("actor.role = %q, want %q for an issue outside the configured Jira project", ne.Actor.Role, "external")
 	}
@@ -768,7 +768,7 @@ func TestResolveRole_SameProjectSucceeds(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 	if ne.Actor.Role != "write" {
 		t.Errorf("actor.role = %q, want %q for an issue in the configured Jira project", ne.Actor.Role, "write")
 	}
@@ -795,7 +795,7 @@ func TestResolveRole_AdminActor(t *testing.T) {
 		},
 	}
 
-	ne := p.toNormEvent(event)
+	ne := p.toNormalizedEvent(event)
 	if ne.Actor.Role != "admin" {
 		t.Errorf("actor.role = %q, want %q", ne.Actor.Role, "admin")
 	}

@@ -299,7 +299,7 @@ func (m *celMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapol
 	for _, h := range matched {
 		ref, err := harnessdispatch.ProjectExecutionRef(h.Name, h.Harness.Role, event)
 		if err != nil {
-			return nil, fmt.Errorf("projecting %s: %w", h.Name, err)
+			return nil, fmt.Errorf("build execution ref for %s: %w", h.Name, err)
 		}
 		records = append(records, jirapoll.DispatchRecord{
 			Agent:         ref.Agent,

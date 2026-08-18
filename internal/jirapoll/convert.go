@@ -10,9 +10,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
-// toNormEvent converts a JiraEvent to a normevent.Event for CEL trigger
+// toNormalizedEvent converts a JiraEvent to a normevent.Event for CEL trigger
 // evaluation, per the jira-poll-adapter.md spec.
-func (p *Poller) toNormEvent(event JiraEvent) normevent.Event {
+func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 	ne := normevent.Event{
 		Repo: p.opts.TargetRepo,
 		Source: normevent.Source{

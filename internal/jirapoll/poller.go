@@ -485,7 +485,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// all inspected entries regardless, which prevents the poller from
 	// stalling when a routing error persists across cycles.
 	for _, event := range events {
-		ne := p.toNormEvent(event)
+		ne := p.toNormalizedEvent(event)
 
 		if p.matcher != nil {
 			records, matchErr := p.matcher.Match(ctx, &ne)

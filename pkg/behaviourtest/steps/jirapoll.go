@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/jiramock"
@@ -31,6 +32,9 @@ type routerMatcher struct {
 }
 
 func (m *routerMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
+	if !harnessdispatch.IsAuthorized(event) {
+		return nil, nil
+	}
 	// Convert normevent.Event → dispatch.NormalizedEvent for the legacy router.
 	de := dispatch.NormalizedEvent{
 		Repo: event.Repo,
@@ -219,7 +223,7 @@ func thenDispatchContains(w *world.World, stage, issueKey string) error {
 	}
 
 	for _, d := range dispatches {
-		if d.Agent == stage {
+		if d.Agent == stage && dispatchMatchesIssue(d, issueKey) {
 			return nil
 		}
 	}
@@ -281,13 +285,30 @@ func thenDispatchNotContains(w *world.World, issueKey string) error {
 		return err
 	}
 
-	// The stubMatcher/routerMatcher includes the issue ID in StatusNumber.
-	// Check that no dispatch was produced at all (for bot events, etc.).
-	if len(dispatches) > 0 {
-		return fmt.Errorf("dispatch output unexpectedly contains %d dispatch(es) for %s: %v",
-			len(dispatches), issueKey, dispatches)
+	for _, d := range dispatches {
+		if dispatchMatchesIssue(d, issueKey) {
+			return fmt.Errorf("dispatch output unexpectedly contains agent=%q for %s",
+				d.Agent, issueKey)
+		}
 	}
 	return nil
+}
+
+// dispatchMatchesIssue checks whether a DispatchRecord belongs to the given
+// Jira issue key by inspecting the entity.key field inside EventPayload.
+func dispatchMatchesIssue(d jirapoll.DispatchRecord, issueKey string) bool {
+	if d.EventPayload == "" {
+		return false
+	}
+	var payload struct {
+		Entity struct {
+			Key string `json:"key"`
+		} `json:"entity"`
+	}
+	if err := json.Unmarshal([]byte(d.EventPayload), &payload); err != nil {
+		return false
+	}
+	return payload.Entity.Key == issueKey
 }
 
 func readDispatches(w *world.World) ([]jirapoll.DispatchRecord, error) {
