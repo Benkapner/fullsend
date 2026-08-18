@@ -1417,11 +1417,13 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/handler.go")
 	assert.Contains(t, names, "mintcore/foreign.go")
 	assert.Contains(t, names, "mintcore/repos_scope.go")
+	assert.Contains(t, names, "mintcore/env.go")
+	assert.Contains(t, names, "mintcore/http_client.go")
 	assert.Contains(t, names, "mintcore/interfaces.go")
 	assert.Contains(t, names, "mintcore/go.sum")
 	assert.Contains(t, names, "mintcore/version.go")
 	assert.Contains(t, names, "mintcore/mintconsts/mintconsts.go")
-	assert.Len(t, names, 19)
+	assert.Len(t, names, 21)
 }
 
 func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
@@ -1579,7 +1581,7 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 
 	// Check mintcore files too.
 	// file_pem.go is standalone-mint-only and excluded from the GCF bundle.
-	gcfSkip := map[string]bool{"fetch_js.go": true, "file_pem.go": true, "pem_js.go": true}
+	gcfSkip := map[string]bool{"env_js.go": true, "fetch_js.go": true, "file_pem.go": true, "http_client_js.go": true, "pem_js.go": true}
 	mintcoreEntries, err := os.ReadDir(mintcoreDir)
 	if err == nil {
 		for _, entry := range mintcoreEntries {

@@ -69,7 +69,7 @@ func init() {
 		gcpProjectNum,
 	)
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifier, httpClient)
+	handler, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {
 		log.Fatalf("initializing handler: %v", err)
 	}

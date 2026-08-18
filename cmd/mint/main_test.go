@@ -556,7 +556,7 @@ func TestStandaloneWiring(t *testing.T) {
 		t.Fatalf("NewFilesystemPEMAccessor: %v", err)
 	}
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifier, &http.Client{Timeout: 5 * time.Second})
+	handler, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}

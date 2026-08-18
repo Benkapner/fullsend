@@ -90,9 +90,13 @@ type foreignInflight struct {
 // NewHandler creates a Handler with the given dependencies.
 // Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES, ALLOWED_ORGS,
 // ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS)
-// are read once at construction time via the injected getEnv function.
-// Native entrypoints (GCF, standalone) pass os.Getenv; the CF Worker
-// WASM host passes a callback that looks up Worker bindings by name.
+// are read once at construction time via the package-internal mintEnv
+// accessor. On native platforms mintEnv delegates to os.Getenv; on WASM
+// the CF Worker calls RegisterEnv before constructing the handler.
+//
+// The HTTP client for GitHub API calls is obtained from the
+// package-internal mintHTTP accessor. On native platforms this is a
+// cached *http.Client; on WASM the Worker calls RegisterHTTP first.
 //
 // The OIDC audience is the compile-time constant
 // mintconsts.OIDCAudience — it is not read from the environment.
@@ -101,17 +105,16 @@ type foreignInflight struct {
 // the Cloud Function, JWKSVerifier for devmint/standalone/Worker) and
 // pass it in. The handler only performs authorization (org-allowed,
 // workflow-ref) after the verifier authenticates the token.
-func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
-	if getEnv == nil {
-		return nil, errors.New("getEnv must not be nil")
-	}
+func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
 	if oidcVerifier == nil {
 		return nil, errors.New("oidcVerifier must not be nil")
 	}
 
+	httpClient := mintHTTP()
+
 	// Register custom role permissions before processing ALLOWED_ROLES
 	// so that HasRole sees them during validation.
-	if raw := getEnv("CUSTOM_ROLE_PERMISSIONS"); raw != "" {
+	if raw := mintEnv("CUSTOM_ROLE_PERMISSIONS"); raw != "" {
 		var perms map[string]map[string]string
 		if err := json.Unmarshal([]byte(raw), &perms); err != nil {
 			return nil, fmt.Errorf("failed to parse CUSTOM_ROLE_PERMISSIONS: %w", err)
@@ -122,12 +125,12 @@ func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifie
 	}
 
 	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(getEnv("PER_REPO_WIF_REPOS")) {
+	for _, entry := range SplitCSV(mintEnv("PER_REPO_WIF_REPOS")) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
 	workflowHostRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(getEnv("WORKFLOW_HOST_REPOS")) {
+	for _, entry := range SplitCSV(mintEnv("WORKFLOW_HOST_REPOS")) {
 		workflowHostRepos[strings.ToLower(entry)] = true
 	}
 	if len(workflowHostRepos) == 0 {
@@ -143,12 +146,12 @@ func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifie
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
 		perRepoWIFRepos:      perRepoWIFRepos,
-		allowedOrgs:          ParseAllowedOrgs(getEnv("ALLOWED_ORGS")),
-		allowedWorkflowFiles: SplitCSV(getEnv("ALLOWED_WORKFLOW_FILES")),
+		allowedOrgs:          ParseAllowedOrgs(mintEnv("ALLOWED_ORGS")),
+		allowedWorkflowFiles: SplitCSV(mintEnv("ALLOWED_WORKFLOW_FILES")),
 		workflowHostRepos:    workflowHostRepos,
 	}
 
-	if raw := getEnv("ROLE_APP_IDS"); raw != "" {
+	if raw := mintEnv("ROLE_APP_IDS"); raw != "" {
 		var ids map[string]string
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
 			return nil, fmt.Errorf("failed to parse ROLE_APP_IDS: %w", err)
@@ -162,7 +165,7 @@ func NewHandler(getEnv func(string) string, pemAccessor PEMAccessor, oidcVerifie
 		roleSet[role] = true
 	}
 
-	if raw := getEnv("ALLOWED_ROLES"); raw != "" {
+	if raw := mintEnv("ALLOWED_ROLES"); raw != "" {
 		for _, entry := range strings.Split(raw, ",") {
 			if trimmed := strings.TrimSpace(entry); trimmed != "" {
 				if !RolePattern.MatchString(trimmed) {
