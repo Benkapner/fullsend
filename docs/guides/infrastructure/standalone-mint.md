@@ -32,7 +32,7 @@ For roles without a local PEM, the optional fallback proxy forwards the request 
 - **Go 1.26+** to build the binary (or use a pre-built release)
 - **A GitHub organization** where you will install your custom GitHub Apps
 - **The hosted mint URL** (optional, for fallback proxy): `https://mint.fullsend.sh`
-- **Your organization enrolled in the hosted mint** (optional, for fallback proxy) — see [Mint service administration](mint-administration.md)
+- **Shared public GitHub Apps installed** (optional, for fallback proxy) — see [Getting Started](../getting-started/)
 
 ## Step 1: Create a GitHub App
 
@@ -264,7 +264,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `GET /health` | Always handled locally |
 | `GET /v1/status` | Always handled locally |
 
-The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — your organization must be enrolled on the upstream mint for proxied requests to succeed.
+The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — the shared public GitHub Apps must be installed in your organization for proxied requests to succeed.
 
 When `FALLBACK_MINT_URL` is not set, requests for roles without local PEMs are rejected with a `403 Forbidden` response.
 

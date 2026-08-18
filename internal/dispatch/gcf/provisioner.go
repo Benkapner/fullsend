@@ -664,10 +664,15 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 	}
 
 	parsedURL, err := url.Parse(p.cfg.MintURL)
-	if err != nil || parsedURL.Scheme != "https" ||
-		(!strings.HasSuffix(parsedURL.Host, ".run.app") &&
-			!strings.HasSuffix(parsedURL.Host, ".cloudfunctions.net")) {
-		return nil, fmt.Errorf("MintURL %q must be a valid Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
+	if err != nil {
+		return nil, fmt.Errorf("MintURL %q must be mint.fullsend.sh or a Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
+	}
+	host := parsedURL.Hostname()
+	if parsedURL.Scheme != "https" ||
+		(!strings.EqualFold(host, "mint.fullsend.sh") &&
+			!strings.HasSuffix(host, ".run.app") &&
+			!strings.HasSuffix(host, ".cloudfunctions.net")) {
+		return nil, fmt.Errorf("MintURL %q must be mint.fullsend.sh or a Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
 	}
 
 	// Store new PEMs once per role (shared across orgs on the mint).
@@ -1003,9 +1008,14 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	}
 
 	parsedURL, err := url.Parse(mintURL)
-	if err != nil || parsedURL.Scheme != "https" ||
-		(!strings.HasSuffix(parsedURL.Host, ".run.app") &&
-			!strings.HasSuffix(parsedURL.Host, ".cloudfunctions.net")) {
+	if err != nil {
+		return nil, fmt.Errorf("function URL %q is not a valid Cloud Run URL", mintURL)
+	}
+	host := parsedURL.Hostname()
+	if parsedURL.Scheme != "https" ||
+		(!strings.EqualFold(host, "mint.fullsend.sh") &&
+			!strings.HasSuffix(host, ".run.app") &&
+			!strings.HasSuffix(host, ".cloudfunctions.net")) {
 		return nil, fmt.Errorf("function URL %q is not a valid Cloud Run URL", mintURL)
 	}
 

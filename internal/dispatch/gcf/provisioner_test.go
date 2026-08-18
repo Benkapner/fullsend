@@ -693,6 +693,54 @@ func TestProvisioner_Provision_BundledMode(t *testing.T) {
 	assert.Contains(t, fake.calls, "AddSecretVersion")
 }
 
+func TestProvisioner_Provision_BundledMode_HostedMintURL(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/shared-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://mint.fullsend.sh",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "shared-project",
+		GitHubOrgs: []string{"test-org"},
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://mint.fullsend.sh",
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://mint.fullsend.sh", vars["FULLSEND_MINT_URL"])
+}
+
+func TestProvisioner_Provision_BundledMode_CloudFunctionsURL(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/shared-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://us-central1-shared-project.cloudfunctions.net",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "shared-project",
+		GitHubOrgs: []string{"test-org"},
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://us-central1-shared-project.cloudfunctions.net",
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://us-central1-shared-project.cloudfunctions.net", vars["FULLSEND_MINT_URL"])
+}
+
 func TestProvisioner_Provision_BundledMode_PublicMintSkipsPerRepoWIF(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
@@ -739,6 +787,7 @@ func TestProvisioner_Provision_BundledMode_InvalidMintURL(t *testing.T) {
 		{"HTTP not HTTPS", "http://mint.example.com"},
 		{"no scheme", "mint.example.com"},
 		{"empty host", "https://"},
+		{"other fullsend subdomain", "https://evil.fullsend.sh"},
 	}
 
 	for _, tc := range tests {
@@ -752,7 +801,7 @@ func TestProvisioner_Provision_BundledMode_InvalidMintURL(t *testing.T) {
 
 			_, err := p.Provision(context.Background())
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "must be a valid Cloud Run URL")
+			assert.Contains(t, err.Error(), "must be mint.fullsend.sh or a Cloud Run URL")
 		})
 	}
 }
