@@ -3,6 +3,7 @@ package cli
 import (
 	"testing"
 
+	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -55,6 +56,30 @@ func TestNewForgeClient_GitLab_ManifestURLTakesPrecedence(t *testing.T) {
 	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test", "https://gitlab.self-hosted.example.com")
 	require.NoError(t, err)
 	assert.NotNil(t, client)
+}
+
+func TestNewForgeClient_GitLab_FullsendGitLabURLFallback(t *testing.T) {
+	t.Setenv("FULLSEND_GITLAB_URL", "https://gitlab.self-hosted.example.com")
+	t.Setenv("GITLAB_API_URL", "https://should-not-use.example.com")
+	t.Setenv("CI_SERVER_URL", "https://should-not-use-either.example.com")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test", "")
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	glClient, ok := client.(*gl.LiveClient)
+	require.True(t, ok)
+	assert.Equal(t, "https://gitlab.self-hosted.example.com", glClient.BaseURL())
+}
+
+func TestNewForgeClient_GitLab_CIServerURLFallback(t *testing.T) {
+	t.Setenv("FULLSEND_GITLAB_URL", "")
+	t.Setenv("GITLAB_API_URL", "")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.ci-server.example.com")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test", "")
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	glClient, ok := client.(*gl.LiveClient)
+	require.True(t, ok)
+	assert.Equal(t, "https://gitlab.ci-server.example.com", glClient.BaseURL())
 }
 
 func TestNewForgeClient_GitHub(t *testing.T) {

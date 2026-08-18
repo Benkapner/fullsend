@@ -534,7 +534,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
-	minted, mintCleanup, err := mintAgentToken(ctx, h.Role, mintURL, printer)
+	minted, mintCleanup, err := mintAgentToken(ctx, h.Role, mintURL, forgePlatform, printer)
 	if err != nil {
 		return fmt.Errorf("agent token minting failed: %w", err)
 	}
@@ -3558,7 +3558,9 @@ var roleTokenVars = map[string][]tokenVar{
 // and sets the appropriate env vars so RunnerEnv expansion and host_files
 // expansion pick them up. Returns (minted bool, cleanup func, err).
 // The caller should defer cleanup() to clear tokens from the process env.
-func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Printer) (bool, func(), error) {
+// forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
+// set to "github-app" for GitHub and "pat" for GitLab.
+func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, printer *ui.Printer) (bool, func(), error) {
 	if mintURL == "" || role == "" {
 		return false, func() {}, nil
 	}
@@ -3598,8 +3600,14 @@ func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Print
 		if v, ok := os.LookupEnv(tv.Name); ok {
 			originals[tv.Name] = v
 		}
-		if tv.Value != "" {
-			os.Setenv(tv.Name, tv.Value)
+		val := tv.Value
+		// PUSH_TOKEN_SOURCE is platform-dependent: GitHub uses minted
+		// app installation tokens, GitLab uses pre-provisioned PATs.
+		if tv.Name == "PUSH_TOKEN_SOURCE" && forgePlatform == "gitlab" {
+			val = "pat"
+		}
+		if val != "" {
+			os.Setenv(tv.Name, val)
 		} else {
 			os.Setenv(tv.Name, result.Token)
 		}

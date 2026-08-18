@@ -162,6 +162,24 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "--status-number")
 	// Poll-triggered pipelines use STATUS_IID from child pipeline variables
 	assert.Contains(t, s, "STATUS_IID")
+	// MR events export FULLSEND_NOTE_TARGET so status comments target MRs
+	assert.Contains(t, s, `FULLSEND_NOTE_TARGET="merge_requests"`)
+	// Review stage fetches prior review from MR notes
+	assert.Contains(t, s, "PRIOR_REVIEW_FILE")
+	assert.Contains(t, s, "PRIOR_REVIEW_SHA")
+	assert.Contains(t, s, "PRIOR_REVIEW_PROVENANCE")
+	// Provenance values match the review agent prompt's expected labels
+	assert.Contains(t, s, `bot-verified`)
+	assert.Contains(t, s, `unverifiable-wrong-user`)
+	assert.NotContains(t, s, `author-verified`)
+	assert.NotContains(t, s, `unverifiable-wrong-author`)
+	// Prior review fetching paginates (while loop, not single page)
+	assert.Contains(t, s, `PAGE=1`)
+	assert.Contains(t, s, `-le 20`)
+	// Prior review uses CI_API_V4_URL consistently (not CI_SERVER_URL/api/v4)
+	assert.NotRegexp(t, `CI_SERVER_URL.*/api/v4/projects.*/notes`, s)
+	// Reuses BOT_USER_ID from bot identity verification when available
+	assert.Contains(t, s, `BOT_USER_ID:-`)
 	assert.Contains(t, s, "--run-url")
 	assert.Contains(t, s, "--forge gitlab")
 	// Should NOT use nonexistent flags

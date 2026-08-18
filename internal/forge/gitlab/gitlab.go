@@ -122,6 +122,11 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	return c, nil
 }
 
+// BaseURL returns the configured base URL for the GitLab instance.
+func (c *LiveClient) BaseURL() string {
+	return c.baseURL
+}
+
 // APIError represents an error response from the GitLab API.
 type APIError struct {
 	StatusCode int

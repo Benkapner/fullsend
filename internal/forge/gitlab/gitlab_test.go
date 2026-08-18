@@ -74,6 +74,18 @@ func TestNew_AllowsLocalhostHTTP(t *testing.T) {
 	assert.Equal(t, "http://localhost:8080", c.baseURL)
 }
 
+func TestBaseURL(t *testing.T) {
+	c, err := New("tok", WithBaseURL("https://gitlab.self-hosted.example.com"))
+	require.NoError(t, err)
+	assert.Equal(t, "https://gitlab.self-hosted.example.com", c.BaseURL())
+}
+
+func TestBaseURL_Default(t *testing.T) {
+	c, err := New("tok")
+	require.NoError(t, err)
+	assert.Equal(t, "https://gitlab.com", c.BaseURL())
+}
+
 func TestAPIError_Error(t *testing.T) {
 	e := &APIError{StatusCode: 422, Message: "validation failed"}
 	assert.Equal(t, "gitlab api: 422 validation failed", e.Error())
