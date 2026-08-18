@@ -2712,6 +2712,9 @@ func lastNonEmptyLine(s string) string {
 			l = stripControlChars(l)
 			if len(l) > 1024 {
 				l = l[:1024]
+				for len(l) > 0 && !utf8.Valid([]byte(l)) {
+					l = l[:len(l)-1]
+				}
 			}
 			return l
 		}
