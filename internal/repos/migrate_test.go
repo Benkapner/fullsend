@@ -1284,6 +1284,210 @@ func TestMergeWithExistingManifest_ForgeFieldCarryOver(t *testing.T) {
 	assert.Equal(t, "v2.1.0", result.Forge.GitLab.FullsendRef)
 }
 
+// --- Migrate: existing manifest fullsend_ref ---
+
+func TestMigrate_UsesExistingManifestRef(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  newrepo:
+    enabled: true
+`)
+	// newrepo has no existing workflow — dr.FullsendRef will be empty.
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/newrepo"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	// Write an existing manifest with fullsend_ref: main.
+	manifestDir := t.TempDir()
+	manifestPath := filepath.Join(manifestDir, "repos.yaml")
+	existingManifest := []byte(`version: 1
+forge:
+  github:
+    url: https://github.com
+    mint_url: https://mint.fullsend.sh
+    fullsend_ref: main
+repos:
+  - repo: acme/oldrepo
+`)
+	require.NoError(t, os.WriteFile(manifestPath, existingManifest, 0o644))
+
+	captured := make(map[string][]forge.TreeFile)
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:          "acme",
+		Project:      "my-project",
+		ManifestPath: manifestPath,
+		CLIVersion:   "dev",
+	}, newTestClientFactory(fc), prov, capturingScaffoldCommit(&captured), nopProgress)
+
+	require.NoError(t, err)
+	require.Len(t, result.Migrated, 1)
+	assert.Equal(t, "newrepo", result.Migrated[0].Repo)
+
+	// The scaffold should use "main" from the existing manifest,
+	// not "v0" (the default for dev builds).
+	files := captured["acme/newrepo"]
+	require.NotEmpty(t, files, "should have captured scaffold files")
+	var foundRef bool
+	for _, f := range files {
+		content := string(f.Content)
+		if strings.Contains(content, "@main") {
+			foundRef = true
+		}
+		assert.NotContains(t, content, "@v0",
+			"scaffold should use manifest ref (main), not default ref (v0)")
+	}
+	assert.True(t, foundRef, "at least one scaffold file should reference @main")
+}
+
+func TestMigrate_FallsBackToDefaultWhenNoManifest(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+`)
+	// No existing workflow — dr.FullsendRef will be empty.
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	// No existing manifest file — manifestRef will be "".
+	manifestPath := filepath.Join(t.TempDir(), "nonexistent.yaml")
+
+	captured := make(map[string][]forge.TreeFile)
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:          "acme",
+		Project:      "my-project",
+		ManifestPath: manifestPath,
+		CLIVersion:   "dev",
+	}, newTestClientFactory(fc), prov, capturingScaffoldCommit(&captured), nopProgress)
+
+	require.NoError(t, err)
+	require.Len(t, result.Migrated, 1)
+
+	// Without a manifest, the scaffold should fall back to DefaultUpstreamRef (v0).
+	files := captured["acme/api"]
+	require.NotEmpty(t, files, "should have captured scaffold files")
+	var foundDefaultRef bool
+	for _, f := range files {
+		content := string(f.Content)
+		if strings.Contains(content, "@v0") {
+			foundDefaultRef = true
+		}
+	}
+	assert.True(t, foundDefaultRef,
+		"scaffold should use default ref (v0) when no manifest and dev build")
+}
+
+func TestMigrate_DiscoveredRefTakesPrecedenceOverManifestRef(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+`)
+	// api has an existing workflow pinned to v2.1.0.
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	// Write an existing manifest with fullsend_ref: main.
+	manifestDir := t.TempDir()
+	manifestPath := filepath.Join(manifestDir, "repos.yaml")
+	existingManifest := []byte(`version: 1
+forge:
+  github:
+    fullsend_ref: main
+repos: []
+`)
+	require.NoError(t, os.WriteFile(manifestPath, existingManifest, 0o644))
+
+	captured := make(map[string][]forge.TreeFile)
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:          "acme",
+		Project:      "my-project",
+		ManifestPath: manifestPath,
+		CLIVersion:   "dev",
+	}, newTestClientFactory(fc), prov, capturingScaffoldCommit(&captured), nopProgress)
+
+	require.NoError(t, err)
+	require.Len(t, result.Migrated, 1)
+
+	// The discovered ref (v2.1.0) should take precedence over the manifest ref (main).
+	files := captured["acme/api"]
+	require.NotEmpty(t, files, "should have captured scaffold files")
+	var foundDiscoveredRef bool
+	for _, f := range files {
+		content := string(f.Content)
+		if strings.Contains(content, "@v2.1.0") {
+			foundDiscoveredRef = true
+		}
+	}
+	assert.True(t, foundDiscoveredRef,
+		"discovered ref (v2.1.0) should take precedence over manifest ref (main)")
+}
+
+// --- loadExistingManifestRef ---
+
+func TestLoadExistingManifestRef_EmptyPath(t *testing.T) {
+	assert.Equal(t, "", loadExistingManifestRef(""))
+}
+
+func TestLoadExistingManifestRef_FileNotFound(t *testing.T) {
+	assert.Equal(t, "", loadExistingManifestRef(filepath.Join(t.TempDir(), "missing.yaml")))
+}
+
+func TestLoadExistingManifestRef_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("not: [valid: yaml"), 0o644))
+	assert.Equal(t, "", loadExistingManifestRef(path))
+}
+
+func TestLoadExistingManifestRef_ReturnsRef(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	manifest := []byte(`version: 1
+forge:
+  github:
+    fullsend_ref: main
+repos: []
+`)
+	require.NoError(t, os.WriteFile(path, manifest, 0o644))
+	assert.Equal(t, "main", loadExistingManifestRef(path))
+}
+
+func TestLoadExistingManifestRef_NoRefSet(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	manifest := []byte(`version: 1
+forge:
+  github:
+    url: https://github.com
+repos: []
+`)
+	require.NoError(t, os.WriteFile(path, manifest, 0o644))
+	assert.Equal(t, "", loadExistingManifestRef(path))
+}
+
 func TestMergeWithExistingManifest_ExistingForgeFieldsPreserved(t *testing.T) {
 	// Write an existing manifest that already has forge fields populated.
 	dir := t.TempDir()
