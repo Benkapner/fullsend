@@ -217,6 +217,29 @@ func upgradeRepo(ctx context.Context,
 		}
 	}
 
+	// SHA downgrade check: when the semver guard does not apply (at
+	// least one ref is a SHA), resolve both to SHAs and use git
+	// ancestry to detect downgrades. The ancestry check targets
+	// fullsend-ai/fullsend (always GitHub) via the RefResolver.
+	if !cfg.Force && resolver != nil && (isSHARef(currentRef) || isSHARef(targetRef)) {
+		currentSHA := currentRef
+		targetSHA := targetRef
+		if !isSHARef(currentSHA) {
+			currentSHA = resolver.Resolve(ctx, currentSHA)
+		}
+		if !isSHARef(targetSHA) {
+			targetSHA = resolver.Resolve(ctx, targetSHA)
+		}
+		if isSHARef(currentSHA) && isSHARef(targetSHA) && currentSHA != targetSHA {
+			isAnc, err := resolver.IsAncestor(ctx, targetSHA, currentSHA)
+			if err == nil && isAnc {
+				result.Skipped = true
+				result.SkipReason = fmt.Sprintf("%s → %s is a downgrade (use --force to allow)", currentRef, targetRef)
+				return result
+			}
+		}
+	}
+
 	if cfg.DryRun {
 		dryRef := targetRef
 		dryTag := ""
