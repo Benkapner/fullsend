@@ -7,6 +7,21 @@ import (
 	"testing"
 )
 
+// SetMintHTTPForTest replaces the HTTP function for the duration of the
+// test and restores the previous value when the test completes.
+func SetMintHTTPForTest(t *testing.T, fake func(*http.Request) (*http.Response, error)) {
+	t.Helper()
+	httpMu.Lock()
+	prev := httpOverride
+	httpOverride = fake
+	httpMu.Unlock()
+	t.Cleanup(func() {
+		httpMu.Lock()
+		httpOverride = prev
+		httpMu.Unlock()
+	})
+}
+
 func TestMintHTTP_ReturnsCachedClient(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "http://localhost:0/nonexistent", nil)
 	// Just verify it doesn't panic; we can't easily check identity
