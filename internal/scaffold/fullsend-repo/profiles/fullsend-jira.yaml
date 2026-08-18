@@ -1,0 +1,14 @@
+---
+id: fullsend-jira
+display_name: Fullsend Jira
+description: Jira Cloud API access for fullsend agents
+category: data
+endpoints:
+  - host: "*.atlassian.net"
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - "**/curl"
+  - "**/node"
