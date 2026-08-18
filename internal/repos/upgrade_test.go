@@ -2118,3 +2118,176 @@ func TestUpgrade_DryRunBothSHANoMisleadingMessage(t *testing.T) {
 func makeGitLabDispatchSHAPinned(sha, tag string) []byte {
 	return []byte(fmt.Sprintf("---\n# fullsend-ref: %s (%s)\n# fullsend-stage: dispatch\n\ndispatch:\n  stage: dispatch\n", sha, tag))
 }
+
+func TestUpgrade_SHADowngradeBlocked(t *testing.T) {
+	// When both current and target refs are SHAs and the target is an
+	// ancestor of the current (i.e., a downgrade), the upgrade should be
+	// skipped with a downgrade message — same as for semver refs.
+	currentSHA := "abc123def456789012345678901234567890abcd"
+	targetSHA := "def456abc7890123456789012345678901234567"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(currentSHA, "v2.3.0")
+	// Target is an ancestor of current → "ahead" when comparing target...current.
+	fc.CommitAncestry = map[string]string{
+		"fullsend-ai/fullsend/" + targetSHA + "/" + currentSHA: "ahead",
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: targetSHA}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Skipped {
+		t.Fatalf("expected Skipped=true for SHA downgrade, got Upgraded=%v, err=%v", r.Upgraded, r.Error)
+	}
+	if !strings.Contains(r.SkipReason, "is a downgrade") {
+		t.Errorf("SkipReason = %q, want it to contain 'is a downgrade'", r.SkipReason)
+	}
+}
+
+func TestUpgrade_SHADowngradeForceAllowed(t *testing.T) {
+	// With --force, SHA downgrades proceed normally.
+	currentSHA := "abc123def456789012345678901234567890abcd"
+	targetSHA := "def456abc7890123456789012345678901234567"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(currentSHA, "v2.3.0")
+	fc.CommitAncestry = map[string]string{
+		"fullsend-ai/fullsend/" + targetSHA + "/" + currentSHA: "ahead",
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: targetSHA}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, Force: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Upgraded {
+		t.Errorf("expected Upgraded=true with --force on SHA downgrade, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+}
+
+func TestUpgrade_SHAUpgradeProceeds(t *testing.T) {
+	// When the target SHA is a descendant of the current SHA (upgrade),
+	// the operation should proceed normally.
+	currentSHA := "abc123def456789012345678901234567890abcd"
+	targetSHA := "def456abc7890123456789012345678901234567"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(currentSHA, "v2.1.0")
+	// Current is an ancestor of target → "behind" when comparing target...current
+	// (or equivalently "ahead" when comparing current...target, but we compare
+	// target...current in IsAncestor).
+	fc.CommitAncestry = map[string]string{
+		"fullsend-ai/fullsend/" + targetSHA + "/" + currentSHA: "behind",
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: targetSHA}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Upgraded {
+		t.Errorf("expected Upgraded=true for SHA upgrade, got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+}
+
+func TestUpgrade_SHADowngradeCompareErrorProceeds(t *testing.T) {
+	// When the ancestry check fails (API error), the upgrade should
+	// proceed rather than blocking — graceful degradation.
+	currentSHA := "abc123def456789012345678901234567890abcd"
+	targetSHA := "def456abc7890123456789012345678901234567"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(currentSHA, "v2.1.0")
+	fc.Errors["CompareCommits"] = fmt.Errorf("API rate limit exceeded")
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: targetSHA}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Upgraded {
+		t.Errorf("expected Upgraded=true when ancestry check fails (graceful degradation), got Skipped=%v, reason=%q, err=%v",
+			r.Skipped, r.SkipReason, r.Error)
+	}
+}
+
+func TestUpgrade_SHACurrentTagTargetDowngradeBlocked(t *testing.T) {
+	// When current ref is a SHA and target ref is a semver tag, the
+	// semver guard doesn't apply (currentRef is not semver). The SHA
+	// guard should resolve the tag to SHA and detect the downgrade.
+	currentSHA := "abc123def456789012345678901234567890abcd"
+	targetTagSHA := "def456abc7890123456789012345678901234567"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(currentSHA, "v2.3.0")
+	// Resolver resolves v2.1.0 to targetTagSHA via tags/.
+	fc.Refs["fullsend-ai/fullsend/tags/v2.1.0"] = targetTagSHA
+	// Target tag SHA is an ancestor of current → downgrade.
+	fc.CommitAncestry = map[string]string{
+		"fullsend-ai/fullsend/" + targetTagSHA + "/" + currentSHA: "ahead",
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: "v2.1.0"}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Fatalf("expected Skipped=true for SHA→tag downgrade, got Upgraded=%v, err=%v", r.Upgraded, r.Error)
+	}
+	if !strings.Contains(r.SkipReason, "is a downgrade") {
+		t.Errorf("SkipReason = %q, want it to contain 'is a downgrade'", r.SkipReason)
+	}
+}

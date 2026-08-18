@@ -635,6 +635,13 @@ type Client interface {
 	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
 	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
+
+	// Commit comparison
+	// CompareCommits compares two commits and returns their relationship
+	// status: "ahead" (head is ahead of base), "behind" (head is behind
+	// base), "identical" (same commit), or "diverged" (no linear
+	// relationship). Used for SHA-based downgrade detection in upgrade.
+	CompareCommits(ctx context.Context, owner, repo, base, head string) (status string, err error)
 }
 
 // Pipeline represents a triggered pipeline.

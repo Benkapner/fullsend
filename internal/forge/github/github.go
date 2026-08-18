@@ -1647,6 +1647,22 @@ func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch strin
 	return c.GetRef(ctx, owner, repo, "heads/"+branch)
 }
 
+// CompareCommits compares two commits and returns their relationship status:
+// "ahead" (head is ahead of base), "behind", "identical", or "diverged".
+func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/compare/%s...%s", owner, repo, base, head))
+	if err != nil {
+		return "", fmt.Errorf("compare commits %s/%s %s...%s: %w", owner, repo, base, head, err)
+	}
+	var cmp struct {
+		Status string `json:"status"`
+	}
+	if err := decodeJSON(resp, &cmp); err != nil {
+		return "", fmt.Errorf("decode compare response: %w", err)
+	}
+	return cmp.Status, nil
+}
+
 // CreateBranch creates a new branch from the repository's default branch.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// Step 1: Get the default branch name.
