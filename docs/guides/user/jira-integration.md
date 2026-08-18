@@ -14,6 +14,8 @@ A scheduled GitHub Actions workflow runs `fullsend poll --input-driver jira-poll
 4. Routes through the standard agent routing rules.
 5. Writes dispatch records that trigger agent workflows.
 
+For architectural details on the polling protocol, see [Architecture](../../architecture.md).
+
 The same conventions work across forges:
 
 | Jira action | Agent triggered |
@@ -343,7 +345,7 @@ If your Jira project's membership is broader than your GitHub repo's collaborato
 
 ## Poll coordination
 
-The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following a write-then-verify protocol. Two properties are stored on each processed issue:
+The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following a write-then-verify protocol. Each cycle randomly selects up to N (default 5) issues from the candidate set for processing, spreading load across cycles. Two properties are stored on each processed issue:
 
 - **Lock** (`fullsend.poll.{owner}.{repo}.lock`) — prevents concurrent pollers from *detecting changes on* the same issue simultaneously. The lock covers the change-detection window only: it is released when an issue finishes processing, before the dispatch records are written and consumed by the downstream dispatch step, and it is not renewed while an issue is being processed — a cycle that stalls longer than the stale threshold (15 minutes) can have its lock reclaimed by a concurrent poller, which may produce duplicate dispatches. Lock ownership through dispatch scheduling is part of the same tracked follow-up as dispatch confirmation.
 - **Last check** (`fullsend.poll.{owner}.{repo}.lastCheck`) — tracks the timestamp of the most recent processed change. Only changes newer than this timestamp trigger agent dispatch.

@@ -50,9 +50,10 @@ configured review agent, not a derived one.
 
 ## The `base` lineage test
 
-The `base` field in a harness YAML is the first
-thing to check. If a harness's `base` chain — through one or more levels of
-inheritance — traces back to a default agent harness in `fullsend-ai/fullsend`,
+The `base` field in a harness YAML (see [Architecture](../../architecture.md)
+for details on harness composition) is the first thing to check. If a
+harness's `base` chain — through one or more levels of inheritance — traces
+back to a default agent harness in `fullsend-ai/fullsend`,
 the harness *started from* a default agent. What you override on top of that
 base determines whether the result is still a configured default or has crossed
 into derived territory.
