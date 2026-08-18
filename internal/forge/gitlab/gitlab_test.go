@@ -693,6 +693,114 @@ func TestGetRef(t *testing.T) {
 	})
 }
 
+func TestCompareCommits(t *testing.T) {
+	t.Run("ahead when forward commits exist", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "abc123", r.URL.Query().Get("from"))
+			assert.Equal(t, "def456", r.URL.Query().Get("to"))
+			json.NewEncoder(w).Encode(map[string]any{
+				"commits": []map[string]any{{"id": "def456"}},
+				"diffs":   []map[string]any{{"new_path": "file.go"}},
+			})
+		})
+
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc123", "def456")
+		require.NoError(t, err)
+		assert.Equal(t, "ahead", status)
+	})
+
+	t.Run("identical when no commits and no diffs", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{
+				"commits": []map[string]any{},
+				"diffs":   []map[string]any{},
+			})
+		})
+
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "abc")
+		require.NoError(t, err)
+		assert.Equal(t, "identical", status)
+	})
+
+	t.Run("behind when reverse commits exist", func(t *testing.T) {
+		client, mux := setupTest(t)
+		callCount := 0
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			from := r.URL.Query().Get("from")
+			to := r.URL.Query().Get("to")
+			if from == "abc123" && to == "def456" {
+				// Forward: no commits but has diffs → triggers reverse.
+				json.NewEncoder(w).Encode(map[string]any{
+					"commits": []map[string]any{},
+					"diffs":   []map[string]any{{"new_path": "file.go"}},
+				})
+			} else if from == "def456" && to == "abc123" {
+				// Reverse: commits exist → head is behind base.
+				json.NewEncoder(w).Encode(map[string]any{
+					"commits": []map[string]any{{"id": "abc123"}},
+					"diffs":   []map[string]any{{"new_path": "file.go"}},
+				})
+			}
+		})
+
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc123", "def456")
+		require.NoError(t, err)
+		assert.Equal(t, "behind", status)
+		assert.Equal(t, 2, callCount, "should make both forward and reverse API calls")
+	})
+
+	t.Run("diverged when neither direction has commits", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, r *http.Request) {
+			// Both directions: diffs but no commits.
+			json.NewEncoder(w).Encode(map[string]any{
+				"commits": []map[string]any{},
+				"diffs":   []map[string]any{{"new_path": "file.go"}},
+			})
+		})
+
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "def")
+		require.NoError(t, err)
+		assert.Equal(t, "diverged", status)
+	})
+
+	t.Run("returns error on API failure", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+
+		_, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "def")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "compare commits")
+	})
+
+	t.Run("degrades to diverged on reverse call failure", func(t *testing.T) {
+		client, mux := setupTest(t)
+		callCount := 0
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/compare", func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount == 1 {
+				// Forward: diffs but no commits.
+				json.NewEncoder(w).Encode(map[string]any{
+					"commits": []map[string]any{},
+					"diffs":   []map[string]any{{"new_path": "file.go"}},
+				})
+			} else {
+				// Reverse: API error.
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		})
+
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "def")
+		require.NoError(t, err)
+		assert.Equal(t, "diverged", status, "should degrade gracefully on reverse call failure")
+	})
+}
+
 func TestCreateFile(t *testing.T) {
 	client, mux := setupTest(t)
 

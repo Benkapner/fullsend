@@ -538,6 +538,37 @@ func TestGetBranchRef_DelegatesToGetRef(t *testing.T) {
 	assert.Equal(t, "branch-sha-456", sha)
 }
 
+func TestCompareCommits(t *testing.T) {
+	t.Run("returns status from response", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/repos/owner/repo/compare/abc123...def456", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "ahead",
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc123", "def456")
+		require.NoError(t, err)
+		assert.Equal(t, "ahead", status)
+	})
+
+	t.Run("returns error on API failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintln(w, `{"message":"Not Found"}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "def")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "compare commits")
+	})
+}
+
 func TestCreateBranch(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

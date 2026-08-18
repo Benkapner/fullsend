@@ -443,32 +443,60 @@ func (c *LiveClient) GetRef(ctx context.Context, owner, repo, refPath string) (s
 	return commit.ID, nil
 }
 
-// CompareCommits compares two commits and returns their relationship status.
-// GitLab's Compare API returns the list of commits from base to head.
-// If no commits and no diffs → identical. If commits exist → head is ahead.
-// GitLab's compare endpoint is not symmetric, so we make two calls to
-// determine the full relationship when needed.
+// CompareCommits compares two commits and returns their relationship status:
+// "ahead" (head is ahead of base), "behind" (head is behind base),
+// "identical" (same commit), or "diverged" (no linear relationship).
+//
+// GitLab's compare endpoint is not symmetric — it only reports commits
+// reachable from head but not from base. To distinguish "behind" from
+// "diverged", a second reverse comparison (from=head, to=base) is made
+// when the forward comparison shows diffs but no commits.
 func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head string) (string, error) {
 	proj := projectPath(owner, repo)
-	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/compare?from=%s&to=%s",
-		proj, url.QueryEscape(base), url.QueryEscape(head)))
+
+	fwd, err := c.compareOnce(ctx, proj, owner, repo, base, head)
 	if err != nil {
-		return "", fmt.Errorf("compare commits %s/%s %s...%s: %w", owner, repo, base, head, err)
+		return "", err
 	}
-	var cmp struct {
-		Commits []struct{ ID string }      `json:"commits"`
-		Diffs   []struct{ NewPath string } `json:"diffs"`
-	}
-	if err := decodeJSON(resp, &cmp); err != nil {
-		return "", fmt.Errorf("decode compare response: %w", err)
-	}
-	if len(cmp.Commits) > 0 {
+	if len(fwd.Commits) > 0 {
 		return "ahead", nil
 	}
-	if len(cmp.Diffs) == 0 {
+	if len(fwd.Diffs) == 0 {
 		return "identical", nil
 	}
+
+	// Diffs present but no forward commits — head may be behind base or
+	// the commits diverged. A reverse comparison disambiguates.
+	rev, err := c.compareOnce(ctx, proj, owner, repo, head, base)
+	if err != nil {
+		// If the reverse call fails, degrade to "diverged" rather than
+		// blocking the caller.
+		return "diverged", nil
+	}
+	if len(rev.Commits) > 0 {
+		return "behind", nil
+	}
 	return "diverged", nil
+}
+
+// compareResult holds the subset of GitLab's compare response we need.
+type compareResult struct {
+	Commits []struct{ ID string }      `json:"commits"`
+	Diffs   []struct{ NewPath string } `json:"diffs"`
+}
+
+// compareOnce performs a single GitLab repository compare API call.
+func (c *LiveClient) compareOnce(ctx context.Context, proj, owner, repo, from, to string) (*compareResult, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/compare?from=%s&to=%s",
+		proj, url.QueryEscape(from), url.QueryEscape(to)))
+	if err != nil {
+		return nil, fmt.Errorf("compare commits %s/%s %s...%s: %w", owner, repo, from, to, err)
+	}
+	var cmp compareResult
+	if err := decodeJSON(resp, &cmp); err != nil {
+		return nil, fmt.Errorf("decode compare response: %w", err)
+	}
+	return &cmp, nil
 }
 
 func (c *LiveClient) CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {

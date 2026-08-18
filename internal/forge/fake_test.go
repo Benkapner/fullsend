@@ -679,6 +679,49 @@ func TestFakeClient_CreateThenListVariables(t *testing.T) {
 	assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, vars)
 }
 
+func TestFakeClient_CompareCommits(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns status from CommitAncestry", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitAncestry: map[string]string{
+				"owner/repo/abc123/def456": "ahead",
+			},
+		}
+		status, err := fc.CompareCommits(ctx, "owner", "repo", "abc123", "def456")
+		require.NoError(t, err)
+		assert.Equal(t, "ahead", status)
+	})
+
+	t.Run("returns ErrNotFound for missing entry", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitAncestry: map[string]string{},
+		}
+		_, err := fc.CompareCommits(ctx, "owner", "repo", "abc", "def")
+		require.Error(t, err)
+		assert.True(t, IsNotFound(err))
+	})
+
+	t.Run("returns ErrNotFound with nil map", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.CompareCommits(ctx, "owner", "repo", "abc", "def")
+		require.Error(t, err)
+		assert.True(t, IsNotFound(err))
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{"CompareCommits": errors.New("api down")},
+			CommitAncestry: map[string]string{
+				"owner/repo/abc/def": "ahead",
+			},
+		}
+		_, err := fc.CompareCommits(ctx, "owner", "repo", "abc", "def")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "api down")
+	})
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")

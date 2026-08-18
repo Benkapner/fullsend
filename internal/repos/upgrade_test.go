@@ -2291,3 +2291,42 @@ func TestUpgrade_SHACurrentTagTargetDowngradeBlocked(t *testing.T) {
 		t.Errorf("SkipReason = %q, want it to contain 'is a downgrade'", r.SkipReason)
 	}
 }
+
+func TestUpgrade_TagCurrentSHATargetDowngradeBlocked(t *testing.T) {
+	// When current ref is a semver tag and target ref is a SHA, the
+	// semver guard doesn't apply (targetRef is not semver). The SHA
+	// guard should resolve the tag to SHA and detect the downgrade.
+	currentTag := "v2.3.0"
+	currentTagSHA := "abc123def456789012345678901234567890abcd"
+	targetSHA := "def456abc7890123456789012345678901234567"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow(currentTag)
+	// Resolver resolves v2.3.0 to currentTagSHA via tags/.
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = currentTagSHA
+	// Target SHA is an ancestor of current tag SHA → downgrade.
+	fc.CommitAncestry = map[string]string{
+		"fullsend-ai/fullsend/" + targetSHA + "/" + currentTagSHA: "ahead",
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com", FullsendRef: targetSHA}},
+		Defaults: DefaultsConfig{Forge: "github"},
+		Repos:    []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r := results[0]
+	if !r.Skipped {
+		t.Fatalf("expected Skipped=true for tag→SHA downgrade, got Upgraded=%v, err=%v", r.Upgraded, r.Error)
+	}
+	if !strings.Contains(r.SkipReason, "is a downgrade") {
+		t.Errorf("SkipReason = %q, want it to contain 'is a downgrade'", r.SkipReason)
+	}
+}

@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -67,7 +68,7 @@ func (r *RefResolver) IsAncestor(ctx context.Context, potentialAncestor, descend
 	}
 	status, err := r.client.CompareCommits(ctx, shimOwner, shimRepo, potentialAncestor, descendant)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("ancestor check %s...%s: %w", potentialAncestor, descendant, err)
 	}
 	// "ahead" means descendant is ahead of potentialAncestor, so
 	// potentialAncestor is indeed an ancestor.
