@@ -70,7 +70,13 @@ Mint URL uses the hosted public endpoint by default (same as `fullsend admin --m
 
 ### Behaviour job GitHub Environments
 
-The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. GitHub auto-creates those environments on first use. Restrict `stage` to the `main` branch once they exist (operator step). The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`).
+The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+
+After the environments exist, restrict `stage` to `main`:
+
+1. Open the repository **Settings → Environments → `stage`**.
+2. Under **Deployment branches and tags**, choose **Selected branches and tags**.
+3. Add a branch rule for `main`.
 
 ### Cloudflare Worker mint BT credentials
 

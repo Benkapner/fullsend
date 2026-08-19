@@ -272,7 +272,6 @@ jobs:
           BEHAVIOUR_SCM: github
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
-          ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
