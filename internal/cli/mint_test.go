@@ -3483,7 +3483,8 @@ func TestVerifyEnrollment_PublicMode(t *testing.T) {
 	printer := ui.New(out)
 	verifyEnrollment(context.Background(), printer, &fakeEnrollmentVerifier{
 		envVars: map[string]string{
-			"ALLOWED_ORGS": "*",
+			"ALLOWED_ORGS":       "*",
+			"PER_REPO_WIF_REPOS": "*",
 		},
 	}, "any-org", "my-project")
 	assert.Contains(t, out.String(), "Public mint mode")
