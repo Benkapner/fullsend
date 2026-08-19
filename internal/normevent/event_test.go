@@ -85,12 +85,18 @@ func TestParseJSON_ConversationExample(t *testing.T) {
 	require.NotNil(t, ev.State.Conversation)
 	assert.Equal(t, "Vouch Request", ev.State.Conversation.Category.Name)
 	assert.Equal(t, "vouch-request", ev.State.Conversation.Category.Slug)
+	require.NotNil(t, ev.Transition.Comment)
+	assert.Equal(t, "DC_kwDOExampleComment", ev.Transition.Comment.ID)
+	assert.Equal(t, "DC_kwDOExampleComment", ev.Transition.Comment.ParentID)
 
 	m, err := ev.ToMap()
 	require.NoError(t, err)
 	conv := m["state"].(map[string]any)["conversation"].(map[string]any)
 	cat := conv["category"].(map[string]any)
 	assert.Equal(t, "vouch-request", cat["slug"])
+	comment := m["transition"].(map[string]any)["comment"].(map[string]any)
+	assert.Equal(t, "DC_kwDOExampleComment", comment["id"])
+	assert.Equal(t, "DC_kwDOExampleComment", comment["parent_id"])
 }
 
 func TestValidate_ConversationRules(t *testing.T) {
@@ -142,5 +148,53 @@ func TestValidate_ConversationRules(t *testing.T) {
 		err := ev.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "state.conversation forbidden")
+	})
+
+	t.Run("comment_requires_id", func(t *testing.T) {
+		ev := base
+		ev.Transition = Transition{
+			Kind:    TransitionCommentAdded,
+			Comment: &Comment{Body: "/fs-vouch", ParentID: "DC_kwDO"},
+		}
+		err := ev.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "transition.comment.id required")
+	})
+
+	t.Run("comment_requires_parent_id", func(t *testing.T) {
+		ev := base
+		ev.Transition = Transition{
+			Kind:    TransitionCommentAdded,
+			Comment: &Comment{ID: "DC_kwDOComment", Body: "/fs-vouch"},
+		}
+		err := ev.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "transition.comment.parent_id required")
+	})
+
+	t.Run("comment_with_id_and_parent_ok", func(t *testing.T) {
+		ev := base
+		ev.Transition = Transition{
+			Kind: TransitionCommentAdded,
+			Comment: &Comment{
+				ID:       "DC_kwDOComment",
+				ParentID: "DC_kwDOComment",
+				Body:     "/fs-vouch",
+			},
+		}
+		require.NoError(t, ev.Validate())
+	})
+
+	t.Run("comment_reply_parent_ok", func(t *testing.T) {
+		ev := base
+		ev.Transition = Transition{
+			Kind: TransitionCommentAdded,
+			Comment: &Comment{
+				ID:       "DC_kwDOReply",
+				ParentID: "DC_kwDOParent",
+				Body:     "following up",
+			},
+		}
+		require.NoError(t, ev.Validate())
 	})
 }

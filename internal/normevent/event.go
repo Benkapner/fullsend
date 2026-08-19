@@ -19,6 +19,8 @@ type Event struct {
 }
 
 // EntityKind identifies work items, change proposals, or conversations.
+// Threads are not a separate entity kind; reply association uses
+// transition.comment.parent_id (ADR 0086).
 type EntityKind string
 
 const (
@@ -75,8 +77,14 @@ type LabelChange struct {
 	Action string `json:"action"` // added | removed
 }
 
-// Comment describes a comment_added transition.
+// Comment describes a comment_* transition.
+// ID and ParentID are backend-native message ids (ADR 0086): GitHub comment
+// id/node_id and normalized parent_id; Slack ts and thread_ts.
+// For conversation comment events both are required; ParentID is always the
+// thread-root id (equal to ID when this message is the root).
 type Comment struct {
+	ID          string `json:"id,omitempty"`
+	ParentID    string `json:"parent_id,omitempty"`
 	Command     string `json:"command,omitempty"`
 	Body        string `json:"body"`
 	Instruction string `json:"instruction,omitempty"`
@@ -245,6 +253,15 @@ func (e *Event) Validate() error {
 		}
 		if strings.TrimSpace(e.State.Conversation.Category.Name) == "" {
 			return fmt.Errorf("normalized event: state.conversation.category.name is required")
+		}
+		switch e.Transition.Kind {
+		case TransitionCommentAdded, TransitionCommentEdited, TransitionCommentDeleted:
+			if e.Transition.Comment == nil || strings.TrimSpace(e.Transition.Comment.ID) == "" {
+				return fmt.Errorf("normalized event: transition.comment.id required for comment transitions on conversations")
+			}
+			if strings.TrimSpace(e.Transition.Comment.ParentID) == "" {
+				return fmt.Errorf("normalized event: transition.comment.parent_id required for comment transitions on conversations")
+			}
 		}
 	} else if e.State.Conversation != nil {
 		return fmt.Errorf("normalized event: state.conversation forbidden when entity.kind is %s", e.Entity.Kind)

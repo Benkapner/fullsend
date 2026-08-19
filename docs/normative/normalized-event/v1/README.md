@@ -31,13 +31,17 @@ input, and **Jira poll** input:
   replay.
 - `entity.kind: conversation` covers GitHub Discussions and future chat
   systems ([ADR 0086](../../../ADRs/0086-conversation-surface-for-agent-participation.md)).
-  GitHub Discussion adapters are planned under `gha-event`; additional
-  `source.system` values (e.g. Slack) are non-breaking enum additions when
-  those drivers land.
+  A conversation is the container (Discussion / Slack channel). Threading is
+  expressed on the message via `transition.comment.id` and
+  `transition.comment.parent_id` (always the thread-root id; equal to `id` for
+  top-level messages). GitHub Discussion adapters are planned under
+  `gha-event`; additional `source.system` values (e.g. Slack) are non-breaking
+  enum additions when those drivers land.
 - Conversations carry **`state.conversation.category`** (exactly one; 1:M
   category→conversation) separately from **`state.labels`** (M:M tags on the
-  conversation). Messages carry neither category nor labels; `comment_added`
-  events still snapshot the parent conversation's category and labels.
+  conversation). Threads and messages carry neither category nor labels;
+  `comment_added` events still snapshot the parent conversation's category and
+  labels and MUST include `transition.comment.id` and `parent_id`.
 
 ## Versioning
 
@@ -67,7 +71,9 @@ Adapters must populate:
 - `state.labels` when routing guards or label-based triggers apply.
 - `state.conversation` (with `category.name` at minimum) whenever
   `entity.kind` is `conversation` — including message/`comment_added` events.
-  Do not encode the category as a synthetic label.
+  Do not encode the category as a synthetic label. On comment transitions,
+  also set `transition.comment.id` and `parent_id` (`parent_id == id` for
+  thread-root messages; otherwise the root id).
 - `state.change_proposal` (including `head_ref`, `base_ref`, and `head_sha` when
   known) whenever a matched harness needs change-proposal execution context.
   Webhook payloads are often incomplete — adapters should fill gaps via GitHub

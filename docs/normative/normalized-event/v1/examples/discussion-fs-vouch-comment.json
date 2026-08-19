@@ -14,6 +14,8 @@
   "transition": {
     "kind": "comment_added",
     "comment": {
+      "id": "DC_kwDOExampleComment",
+      "parent_id": "DC_kwDOExampleComment",
       "command": "/fs-vouch",
       "body": "/fs-vouch please review my request",
       "instruction": "please review my request"

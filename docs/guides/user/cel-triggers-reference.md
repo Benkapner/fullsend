@@ -48,11 +48,11 @@ The `event` variable has the following top-level fields:
 | Field | Type | Description |
 |---|---|---|
 | `event.repo` | string | Repository path (`owner/repo`) |
-| `event.entity.kind` | string | `"work_item"` (issue), `"change_proposal"` (PR), or `"conversation"` (Discussion/chat thread; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
+| `event.entity.kind` | string | `"work_item"` (issue), `"change_proposal"` (PR), or `"conversation"` (Discussion / Slack channel; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
 | `event.entity.id` | int | Issue, PR, or conversation number |
 | `event.transition.kind` | string | What happened — see [transition kinds](#transition-kinds) |
 | `event.transition.label` | object | Present only when `kind == "label_changed"` |
-| `event.transition.comment` | object | Present only when `kind == "comment_added"` |
+| `event.transition.comment` | object | Present only when `kind == "comment_added"` (conversation comments carry `id` and `parent_id`, with `parent_id == id` for thread roots; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
 | `event.transition.review` | object | Present only when `kind == "review_submitted"` |
 | `event.actor.id` | string | Forge login of the user or bot that triggered the event |
 | `event.actor.kind` | string | `"human"` or `"bot"` |
