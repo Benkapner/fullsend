@@ -23,18 +23,6 @@ func (m *mockCIDriver) CountHarnessDispatches(ctx context.Context, owner, repo, 
 	return m.countFn(ctx, owner, repo, agent, after)
 }
 
-// mockInstallState satisfies install.State for test scenarios.
-type mockInstallState struct{}
-
-func (m *mockInstallState) Mode() string               { return "per-repo" }
-func (m *mockInstallState) ConfigOwner() string        { return "test-org" }
-func (m *mockInstallState) ConfigRepo() string         { return "test-repo" }
-func (m *mockInstallState) ConfigPathPrefix() string   { return "" }
-func (m *mockInstallState) TriageWorkflowFile() string { return "triage.yml" }
-func (m *mockInstallState) TriageWorkflowRepo() string { return "test-repo" }
-func (m *mockInstallState) AgentWorkflowFile() string  { return "agent.yml" }
-func (m *mockInstallState) AgentArtifactName() string  { return "fullsend-triage" }
-
 func TestThenHarnessDispatchedExactly_RequiresScenarioStart(t *testing.T) {
 	w := &world.World{}
 	err := thenHarnessDispatchedExactly(w, "agent", 1)
@@ -58,7 +46,7 @@ func TestThenHarnessDispatchedExactly_ZeroDispatches(t *testing.T) {
 	w := &world.World{
 		CI:            mock,
 		Org:           "test-org",
-		Install:       &mockInstallState{},
+		RepoName:      "test-repo",
 		ScenarioStart: time.Now(),
 	}
 	require.NoError(t, thenHarnessDispatchedExactly(w, "triage", 0))
@@ -73,7 +61,7 @@ func TestThenHarnessDispatchedExactly_SingleDispatch(t *testing.T) {
 	w := &world.World{
 		CI:            mock,
 		Org:           "test-org",
-		Install:       &mockInstallState{},
+		RepoName:      "test-repo",
 		ScenarioStart: time.Now(),
 	}
 	require.NoError(t, thenHarnessDispatchedExactly(w, "triage", 1))
@@ -88,7 +76,7 @@ func TestThenHarnessDispatchedExactly_MultipleDispatches(t *testing.T) {
 	w := &world.World{
 		CI:            mock,
 		Org:           "test-org",
-		Install:       &mockInstallState{},
+		RepoName:      "test-repo",
 		ScenarioStart: time.Now(),
 	}
 	require.NoError(t, thenHarnessDispatchedExactly(w, "triage", 3))
@@ -103,7 +91,7 @@ func TestThenHarnessDispatchedExactly_CountMismatch(t *testing.T) {
 	w := &world.World{
 		CI:            mock,
 		Org:           "test-org",
-		Install:       &mockInstallState{},
+		RepoName:      "test-repo",
 		ScenarioStart: time.Now(),
 	}
 	err := thenHarnessDispatchedExactly(w, "triage", 1)
@@ -121,7 +109,7 @@ func TestThenHarnessDispatchedExactly_DriverError(t *testing.T) {
 	w := &world.World{
 		CI:            mock,
 		Org:           "test-org",
-		Install:       &mockInstallState{},
+		RepoName:      "test-repo",
 		ScenarioStart: time.Now(),
 	}
 	err := thenHarnessDispatchedExactly(w, "triage", 1)

@@ -3,6 +3,7 @@ package e2etest
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,6 +40,32 @@ func runningInGitHubActions() bool {
 	return os.Getenv("GITHUB_ACTIONS") == "true"
 }
 
+// DefaultPoolOrgInstallMintURL is written into pool orgs as FULLSEND_MINT_URL by
+// admin e2e install tests. Distinct from resolveMintURL() / cli.DefaultMintURL,
+// which CI uses for cross-org e2e org locking.
+//
+// Admin e2e tests exercise per-org installation; workflows on the installed org
+// mint against FULLSEND_MINT_URL. The community hosted mint (mint.fullsend.sh)
+// runs in public mode and does not support per-org installs, so org-mode admin
+// e2e must keep using the legacy per-org hosted dev mint until that changes.
+const DefaultPoolOrgInstallMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
+
+// poolOrgMintHost is the hostname of DefaultPoolOrgInstallMintURL, parsed
+// once so isPoolOrgMintURL can do a case-insensitive hostname comparison
+// (same approach as cli.IsHostedMintURL) instead of exact string equality.
+var poolOrgMintHost = func() string {
+	u, _ := url.Parse(DefaultPoolOrgInstallMintURL)
+	return u.Hostname()
+}()
+
+func isPoolOrgMintURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Hostname(), poolOrgMintHost)
+}
+
 // resolveMintURL returns the mint endpoint from FULLSEND_MINT_URL or the hosted
 // default (same as fullsend admin --mint-url).
 func resolveMintURL() string {
@@ -63,7 +90,7 @@ func MintEnrollProjectID(cfg EnvConfig) string {
 	if mintURL == "" {
 		mintURL = cli.DefaultMintURL
 	}
-	if mintURL == cli.DefaultMintURL {
+	if isPoolOrgMintURL(mintURL) || cli.IsHostedMintURL(mintURL) {
 		return DefaultHostedMintGCPProject
 	}
 	return strings.TrimSpace(cfg.GCPProjectID)

@@ -128,12 +128,9 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 
 	manifest := &Manifest{
 		Version: 1,
-		Defaults: DefaultsConfig{
-			Forge: forgeName,
-		},
 	}
 
-	// Populate forge section based on the target forge.
+	// Populate platform section based on the target forge.
 	if forgeName == ForgeGitHub {
 		// Compute mint URL: CLI flag > discovery > TODO.
 		mintURL := cfg.MintURL
@@ -143,9 +140,9 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 		}
 		if mintURL == "" {
 			mintURL = "# TODO: set mint URL"
-			todos = append(todos, "forge.github.mint_url: set the Cloud Run endpoint URL")
+			todos = append(todos, "github.mint_url: set the Cloud Run endpoint URL")
 		} else if !mintFromFlag && countDistinct(repos, func(d DiscoveredRepo) string { return d.MintURL }) > 1 {
-			todos = append(todos, "forge.github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
+			todos = append(todos, "github.mint_url: multiple mint URLs discovered; using most common — verify correctness")
 		}
 
 		// Compute fullsend ref: CLI flag > discovery > CLI version > DefaultUpstreamRef.
@@ -161,7 +158,7 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 			}
 		}
 
-		manifest.Forge.GitHub = GitHubForgeInfra{
+		manifest.GitHub = &PlatformConfig{
 			URL:         cfg.ForgeURL,
 			MintURL:     mintURL,
 			FullsendRef: fullsendRef,
@@ -170,7 +167,7 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 	if forgeName == ForgeGitLab {
 		gitlabURL := cfg.ForgeURL
 		if gitlabURL == "" {
-			todos = append(todos, "forge.gitlab.url: set the GitLab instance URL (e.g. https://gitlab.example.com)")
+			todos = append(todos, "gitlab.url: set the GitLab instance URL (e.g. https://gitlab.example.com)")
 		}
 
 		fullsendRef := cfg.FullsendRef
@@ -185,33 +182,34 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 			}
 		}
 
-		manifest.Forge.GitLab = GitLabForgeInfra{
+		manifest.GitLab = &PlatformConfig{
 			URL:         gitlabURL,
 			FullsendRef: fullsendRef,
 		}
 	}
 
 	// Build repo entries with per-repo overrides where discovered
-	// values differ from the forge-level defaults.
-	for _, d := range repos {
-		entry := RepoEntry{Repo: d.Owner + "/" + d.Repo}
+	// values differ from the platform-level defaults.
+	platform := manifest.PlatformFor(forgeName)
+	if platform != nil {
+		for _, d := range repos {
+			entry := RepoEntry{Name: d.Owner + "/" + d.Repo}
 
-		if forgeName == ForgeGitHub {
-			gh := manifest.Forge.GitHub
-			if d.MintURL != "" && d.MintURL != gh.MintURL {
-				entry.MintURL = NullableString{Set: true, Value: d.MintURL}
+			if forgeName == ForgeGitHub {
+				if d.MintURL != "" && d.MintURL != platform.MintURL {
+					entry.MintURL = d.MintURL
+				}
+				if d.FullsendRef != "" && d.FullsendRef != platform.FullsendRef {
+					entry.FullsendRef = d.FullsendRef
+				}
 			}
-			if d.FullsendRef != "" && d.FullsendRef != gh.FullsendRef {
-				entry.FullsendRef = NullableString{Set: true, Value: d.FullsendRef}
+			if forgeName == ForgeGitLab {
+				if d.FullsendRef != "" && d.FullsendRef != platform.FullsendRef {
+					entry.FullsendRef = d.FullsendRef
+				}
 			}
+			platform.Repos = append(platform.Repos, entry)
 		}
-		if forgeName == ForgeGitLab {
-			gl := manifest.Forge.GitLab
-			if d.FullsendRef != "" && d.FullsendRef != gl.FullsendRef {
-				entry.FullsendRef = NullableString{Set: true, Value: d.FullsendRef}
-			}
-		}
-		manifest.Repos = append(manifest.Repos, entry)
 	}
 
 	return manifest, todos

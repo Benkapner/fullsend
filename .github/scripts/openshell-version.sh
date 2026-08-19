@@ -5,10 +5,15 @@
 # current shell. In GitHub Actions it also exports them to GITHUB_ENV
 # for downstream steps.
 #
+# OPENSHELL_VERSION is tracked by Renovate via a customManager in
+# renovate.json (not this file's magic comments — a bare "# renovate:"
+# comment here would be inert since no built-in manager scans .sh files).
+# OPENSHELL_SHA is refreshed automatically after each version bump by
+# scripts/renovate/update-openshell-sha.sh (see renovate.json postUpgradeTasks).
+#
 # Usage:
 #   source .github/scripts/openshell-version.sh
 
-# renovate: datasource=github-releases depName=NVIDIA/OpenShell
 OPENSHELL_VERSION=0.0.83
 OPENSHELL_SHA=e3d26dd3ae0dee247bbc5db368545832757ac493
 

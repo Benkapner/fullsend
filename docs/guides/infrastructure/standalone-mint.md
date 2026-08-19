@@ -32,7 +32,7 @@ For roles without a local PEM, the optional fallback proxy forwards the request 
 - **Go 1.26+** to build the binary (or use a pre-built release)
 - **A GitHub organization** where you will install your custom GitHub Apps
 - **The hosted mint URL** (optional, for fallback proxy): `https://mint.fullsend.sh`
-- **Your organization enrolled in the hosted mint** (optional, for fallback proxy) — see [Mint service administration](mint-administration.md)
+- **Shared public GitHub Apps installed** (optional, for fallback proxy) — see [Getting Started](../getting-started/)
 
 ## Step 1: Create a GitHub App
 
@@ -105,7 +105,6 @@ The standalone mint is configured entirely through environment variables:
 |----------|-------------|---------|
 | `ALLOWED_ORGS` | Comma-separated GitHub orgs allowed to request tokens, or `*` for public mint mode (any org; upstream-only workflow provenance) | `myorg,myorg-sandbox` or `*` |
 | `ROLE_APP_IDS` | JSON map of role name to GitHub App ID (use plain role names, not org-prefixed) | `{"triage":"4087047","scanner":"5555555"}` |
-| `OIDC_AUDIENCE` | OIDC audience claim (must match what workflows send) | `fullsend-mint` |
 | `PEM_DIR` | Path to directory containing `{role}.pem` files | `./pems` |
 
 ### Optional variables
@@ -135,7 +134,6 @@ This configuration serves `triage` and `scanner` locally while proxying all othe
 ```bash
 export ALLOWED_ORGS="myorg"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
-export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
 export FALLBACK_MINT_URL="https://mint.fullsend.sh"
@@ -159,7 +157,6 @@ If you do not need the hosted mint at all, omit `FALLBACK_MINT_URL`. Requests fo
 ```bash
 export ALLOWED_ORGS="myorg"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
-export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
 export CUSTOM_ROLE_PERMISSIONS='{"scanner":{"contents":"read","security_events":"write","metadata":"read"}}'
@@ -264,7 +261,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `GET /health` | Always handled locally |
 | `GET /v1/status` | Always handled locally |
 
-The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — your organization must be enrolled on the upstream mint for proxied requests to succeed.
+The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — the shared public GitHub Apps must be installed in your organization for proxied requests to succeed.
 
 When `FALLBACK_MINT_URL` is not set, requests for roles without local PEMs are rejected with a `403 Forbidden` response.
 
@@ -333,7 +330,6 @@ cd cmd/mint && go build -o fullsend-mint .
 # 4. Run
 export ALLOWED_ORGS="myorg"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
-export OIDC_AUDIENCE="fullsend-mint"
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
 export FALLBACK_MINT_URL="https://mint.fullsend.sh"

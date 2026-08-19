@@ -35,8 +35,7 @@ const (
 )
 
 const (
-	defaultWorkerName   = "fullsend-mint"
-	defaultOIDCAudience = "fullsend-mint"
+	defaultWorkerName = "fullsend-mint"
 )
 
 // workerNamePattern validates Cloudflare Worker names.
@@ -99,7 +98,7 @@ type Config struct {
 	PreviewAlias string
 
 	// EnvVars are non-secret environment variables to set on the Worker
-	// (e.g. ROLE_APP_IDS, ALLOWED_ORGS, OIDC_AUDIENCE).
+	// (e.g. ROLE_APP_IDS, ALLOWED_ORGS).
 	EnvVars map[string]string
 
 	// Secrets are secret values to bind to the Worker during deploy.
@@ -170,9 +169,6 @@ func NewProvisioner(cfg Config, wrangler WranglerRunner) *Provisioner {
 	}
 	if cfg.EnvVars == nil {
 		cfg.EnvVars = make(map[string]string)
-	}
-	if cfg.EnvVars["OIDC_AUDIENCE"] == "" {
-		cfg.EnvVars["OIDC_AUDIENCE"] = defaultOIDCAudience
 	}
 	return &Provisioner{cfg: cfg, wrangler: wrangler}
 }

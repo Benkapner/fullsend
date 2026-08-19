@@ -393,7 +393,6 @@ func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "test-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"FULLSEND_SOURCE_HASH":   srcHash,
@@ -436,7 +435,6 @@ func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "test-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"FULLSEND_SOURCE_HASH":   srcHash,
@@ -526,7 +524,6 @@ func TestProvisioner_Provision_CodeChanged_UpdatesFunction(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "test-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"FULLSEND_SOURCE_HASH":   "old-hash-that-wont-match",
@@ -574,7 +571,6 @@ func TestProvisioner_Provision_SameCodeNewOrg_EnvVarOnlyUpdate(t *testing.T) {
 			"WIF_POOL_NAME":          "fullsend-pool",
 			"WIF_PROVIDER_NAME":      "github-oidc",
 			"ALLOWED_ORGS":           "existing-org",
-			"OIDC_AUDIENCE":          "fullsend-mint",
 			"ALLOWED_ROLES":          "coder",
 			"ROLE_APP_IDS":           `{"coder":"99999"}`,
 			"FULLSEND_SOURCE_HASH":   srcHash,
@@ -693,6 +689,54 @@ func TestProvisioner_Provision_BundledMode(t *testing.T) {
 	assert.Contains(t, fake.calls, "AddSecretVersion")
 }
 
+func TestProvisioner_Provision_BundledMode_HostedMintURL(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/shared-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://mint.fullsend.sh",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "shared-project",
+		GitHubOrgs: []string{"test-org"},
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://mint.fullsend.sh",
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://mint.fullsend.sh", vars["FULLSEND_MINT_URL"])
+}
+
+func TestProvisioner_Provision_BundledMode_CloudFunctionsURL(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/shared-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://us-central1-shared-project.cloudfunctions.net",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "shared-project",
+		GitHubOrgs: []string{"test-org"},
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://us-central1-shared-project.cloudfunctions.net",
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://us-central1-shared-project.cloudfunctions.net", vars["FULLSEND_MINT_URL"])
+}
+
 func TestProvisioner_Provision_BundledMode_PublicMintSkipsPerRepoWIF(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
@@ -739,6 +783,7 @@ func TestProvisioner_Provision_BundledMode_InvalidMintURL(t *testing.T) {
 		{"HTTP not HTTPS", "http://mint.example.com"},
 		{"no scheme", "mint.example.com"},
 		{"empty host", "https://"},
+		{"other fullsend subdomain", "https://evil.fullsend.sh"},
 	}
 
 	for _, tc := range tests {
@@ -752,7 +797,7 @@ func TestProvisioner_Provision_BundledMode_InvalidMintURL(t *testing.T) {
 
 			_, err := p.Provision(context.Background())
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "must be a valid Cloud Run URL")
+			assert.Contains(t, err.Error(), "must be mint.fullsend.sh or a Cloud Run URL")
 		})
 	}
 }
@@ -1372,10 +1417,13 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/handler.go")
 	assert.Contains(t, names, "mintcore/foreign.go")
 	assert.Contains(t, names, "mintcore/repos_scope.go")
+	assert.Contains(t, names, "mintcore/env.go")
+	assert.Contains(t, names, "mintcore/http_client.go")
 	assert.Contains(t, names, "mintcore/interfaces.go")
 	assert.Contains(t, names, "mintcore/go.sum")
 	assert.Contains(t, names, "mintcore/version.go")
-	assert.Len(t, names, 18)
+	assert.Contains(t, names, "mintcore/mintconsts/mintconsts.go")
+	assert.Len(t, names, 21)
 }
 
 func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
@@ -1533,7 +1581,7 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 
 	// Check mintcore files too.
 	// file_pem.go is standalone-mint-only and excluded from the GCF bundle.
-	gcfSkip := map[string]bool{"fetch_js.go": true, "file_pem.go": true, "pem_js.go": true}
+	gcfSkip := map[string]bool{"env_js.go": true, "fetch_js.go": true, "file_pem.go": true, "http_client_js.go": true, "pem_js.go": true}
 	mintcoreEntries, err := os.ReadDir(mintcoreDir)
 	if err == nil {
 		for _, entry := range mintcoreEntries {
@@ -3437,7 +3485,6 @@ func TestProvisioner_EnsureOrgInMint_PreservesInfraKeysFromTrafficRevision(t *te
 		"GCP_PROJECT_NUMBER":     "123456789",
 		"WIF_POOL_NAME":          "fullsend-pool",
 		"WIF_PROVIDER_NAME":      "github-oidc",
-		"OIDC_AUDIENCE":          "fullsend-mint",
 		"FULLSEND_SOURCE_HASH":   "abc123",
 		"ALLOWED_ORGS":           "existing-org",
 		"ROLE_APP_IDS":           `{"coder":"99999"}`,
@@ -3458,7 +3505,6 @@ func TestProvisioner_EnsureOrgInMint_PreservesInfraKeysFromTrafficRevision(t *te
 	assert.Equal(t, "123456789", fake.lastUpdateServiceEnvVars["GCP_PROJECT_NUMBER"])
 	assert.Equal(t, "fullsend-pool", fake.lastUpdateServiceEnvVars["WIF_POOL_NAME"])
 	assert.Equal(t, "github-oidc", fake.lastUpdateServiceEnvVars["WIF_PROVIDER_NAME"])
-	assert.Equal(t, "fullsend-mint", fake.lastUpdateServiceEnvVars["OIDC_AUDIENCE"])
 	assert.Equal(t, "abc123", fake.lastUpdateServiceEnvVars["FULLSEND_SOURCE_HASH"])
 
 	// Org-relevant keys should include both existing and new org.

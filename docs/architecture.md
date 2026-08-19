@@ -153,9 +153,16 @@ repo baseline and overrides)
 - Pre-script skip signalling: the harness `pre_script` runs exactly once,
   inside `fullsend run`; a pre-script stops the run before sandbox creation by
   writing `skipped=true` to the CLI-provided `FULLSEND_PRESCRIPT_OUTPUT` file
+  or by exiting with code 78 (neutral skip)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
+- CEL-guarded overlays: an `overlays:` list of CEL-guarded config
+  overlays generalizes the `forge:` block, letting harness authors
+  condition scripts, skills, env vars, and other fields on any event
+  property (source system, event type, etc.) rather than only the forge
+  platform. `forge:` is deprecated but remains functional
+  ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 
 **Open questions:**
 
@@ -384,6 +391,12 @@ ADR 0002: [Building block 10](ADRs/0002-initial-fullsend-design.md#10-check-fail
 
 Runs N parallel **review agent** invocations and produces structured review verdicts/comments.
 ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#11-review-agent-runtime).
+
+**Decided:**
+
+- PR-level risk assessment scoring: pre-pass sub-agent computes a composite 1–5
+  risk score from metadata, git history, and linked-issue signals
+  ([ADR 0089](ADRs/0089-pr-risk-assessment-scoring.md)).
 
 ### 12. Coordinator merge algorithm
 

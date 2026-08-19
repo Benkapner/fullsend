@@ -600,7 +600,7 @@ func TestCommitScaffoldDirect_NonFastForwardRetrySucceeds(t *testing.T) {
 		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, true, nil)
 	require.NoError(t, err)
 	assert.True(t, committed)
-	assert.Contains(t, buf.String(), "auto_init race")
+	assert.Contains(t, buf.String(), "Concurrent modification race")
 	assert.Len(t, client.CommittedFiles, 1, "retry call should succeed and record")
 }
 

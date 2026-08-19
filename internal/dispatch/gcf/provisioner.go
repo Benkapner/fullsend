@@ -28,6 +28,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 // DeployMode controls Cloud Function deployment behavior.
@@ -43,31 +44,34 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/env.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/http_client.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/mintconsts/mintconsts.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
 // triggering Go's module boundary detection) to their real names for the
 // Cloud Function deployment zip.
 var embeddedMintFiles = map[string]string{
-	"go.mod.embed":                    "go.mod",
-	"go.sum.embed":                    "go.sum",
-	"main.go.embed":                   "main.go",
-	"mintcore/go.mod.embed":           "mintcore/go.mod",
-	"mintcore/go.sum.embed":           "mintcore/go.sum",
-	"mintcore/claims.go.embed":        "mintcore/claims.go",
-	"mintcore/config.go.embed":        "mintcore/config.go",
-	"mintcore/foreign.go.embed":       "mintcore/foreign.go",
-	"mintcore/gcp_pem.go.embed":       "mintcore/gcp_pem.go",
-	"mintcore/github.go.embed":        "mintcore/github.go",
-	"mintcore/handler.go.embed":       "mintcore/handler.go",
-	"mintcore/interfaces.go.embed":    "mintcore/interfaces.go",
-	"mintcore/jwks_verifier.go.embed": "mintcore/jwks_verifier.go",
-	"mintcore/patterns.go.embed":      "mintcore/patterns.go",
-	"mintcore/repos_scope.go.embed":   "mintcore/repos_scope.go",
-	"mintcore/sts_verifier.go.embed":  "mintcore/sts_verifier.go",
-	"mintcore/version.go.embed":       "mintcore/version.go",
-	"mintcore/wif.go.embed":           "mintcore/wif.go",
+	"go.mod.embed":                            "go.mod",
+	"go.sum.embed":                            "go.sum",
+	"main.go.embed":                           "main.go",
+	"mintcore/go.mod.embed":                   "mintcore/go.mod",
+	"mintcore/go.sum.embed":                   "mintcore/go.sum",
+	"mintcore/claims.go.embed":                "mintcore/claims.go",
+	"mintcore/config.go.embed":                "mintcore/config.go",
+	"mintcore/env.go.embed":                   "mintcore/env.go",
+	"mintcore/foreign.go.embed":               "mintcore/foreign.go",
+	"mintcore/gcp_pem.go.embed":               "mintcore/gcp_pem.go",
+	"mintcore/github.go.embed":                "mintcore/github.go",
+	"mintcore/handler.go.embed":               "mintcore/handler.go",
+	"mintcore/http_client.go.embed":           "mintcore/http_client.go",
+	"mintcore/interfaces.go.embed":            "mintcore/interfaces.go",
+	"mintcore/jwks_verifier.go.embed":         "mintcore/jwks_verifier.go",
+	"mintcore/mintconsts/mintconsts.go.embed": "mintcore/mintconsts/mintconsts.go",
+	"mintcore/patterns.go.embed":              "mintcore/patterns.go",
+	"mintcore/repos_scope.go.embed":           "mintcore/repos_scope.go",
+	"mintcore/sts_verifier.go.embed":          "mintcore/sts_verifier.go",
+	"mintcore/version.go.embed":               "mintcore/version.go",
+	"mintcore/wif.go.embed":                   "mintcore/wif.go",
 }
 
 // Compile-time check that Provisioner implements dispatch.Dispatcher.
@@ -94,7 +98,6 @@ const (
 	defaultProvider = "github-oidc"
 	defaultRegion   = "us-central1"
 	oidcIssuer      = "https://token.actions.githubusercontent.com"
-	oidcAudience    = "fullsend-mint"
 	functionName    = "fullsend-mint"
 
 	// DefaultInferencePool is the WIF pool used by inference commands.
@@ -664,10 +667,15 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 	}
 
 	parsedURL, err := url.Parse(p.cfg.MintURL)
-	if err != nil || parsedURL.Scheme != "https" ||
-		(!strings.HasSuffix(parsedURL.Host, ".run.app") &&
-			!strings.HasSuffix(parsedURL.Host, ".cloudfunctions.net")) {
-		return nil, fmt.Errorf("MintURL %q must be a valid Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
+	if err != nil {
+		return nil, fmt.Errorf("MintURL %q must be mint.fullsend.sh or a Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
+	}
+	host := parsedURL.Hostname()
+	if parsedURL.Scheme != "https" ||
+		(!strings.EqualFold(host, "mint.fullsend.sh") &&
+			!strings.HasSuffix(host, ".run.app") &&
+			!strings.HasSuffix(host, ".cloudfunctions.net")) {
+		return nil, fmt.Errorf("MintURL %q must be mint.fullsend.sh or a Cloud Run URL (.run.app or .cloudfunctions.net)", p.cfg.MintURL)
 	}
 
 	// Store new PEMs once per role (shared across orgs on the mint).
@@ -873,7 +881,6 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		"WIF_POOL_NAME":      p.cfg.WIFPoolName,
 		"WIF_PROVIDER_NAME":  p.cfg.WIFProvider,
 		"ALLOWED_ORGS":       strings.Join(allOrgs, ","),
-		"OIDC_AUDIENCE":      oidcAudience,
 		"ROLE_APP_IDS":       roleAppIDsJSON,
 	}
 
@@ -927,7 +934,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		for k, v := range existing.EnvVars {
 			deployEnvVars[k] = v
 		}
-		for _, k := range []string{"GCP_PROJECT_NUMBER", "WIF_POOL_NAME", "WIF_PROVIDER_NAME", "OIDC_AUDIENCE"} {
+		for _, k := range []string{"GCP_PROJECT_NUMBER", "WIF_POOL_NAME", "WIF_PROVIDER_NAME"} {
 			if v, ok := envVars[k]; ok {
 				deployEnvVars[k] = v
 			}
@@ -1003,9 +1010,14 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	}
 
 	parsedURL, err := url.Parse(mintURL)
-	if err != nil || parsedURL.Scheme != "https" ||
-		(!strings.HasSuffix(parsedURL.Host, ".run.app") &&
-			!strings.HasSuffix(parsedURL.Host, ".cloudfunctions.net")) {
+	if err != nil {
+		return nil, fmt.Errorf("function URL %q is not a valid Cloud Run URL", mintURL)
+	}
+	host := parsedURL.Hostname()
+	if parsedURL.Scheme != "https" ||
+		(!strings.EqualFold(host, "mint.fullsend.sh") &&
+			!strings.HasSuffix(host, ".run.app") &&
+			!strings.HasSuffix(host, ".cloudfunctions.net")) {
 		return nil, fmt.Errorf("function URL %q is not a valid Cloud Run URL", mintURL)
 	}
 
@@ -1269,7 +1281,7 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 		sort.Strings(allOrgs)
 		attrCondition = buildAttributeCondition(allOrgs)
 	}
-	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
 	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
 		IssuerURI:          oidcIssuer,
 		AttributeCondition: attrCondition,
@@ -1348,7 +1360,7 @@ func (p *Provisioner) EnsureOrgInWIFCondition(ctx context.Context, org string) e
 		return nil
 	}
 
-	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
 	return p.gcpAPI.UpdateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
 		AttributeCondition: newCondition,
 		AllowedAudiences:   audiences,
@@ -1390,7 +1402,7 @@ func (p *Provisioner) RemoveOrgFromWIFCondition(ctx context.Context, org string)
 	sort.Strings(filtered)
 
 	newCondition := buildAttributeCondition(filtered)
-	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
 	return p.gcpAPI.UpdateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
 		AttributeCondition: newCondition,
 		AllowedAudiences:   audiences,
@@ -1501,7 +1513,7 @@ func (p *Provisioner) provisionRepoWIFProvider(ctx context.Context) (wifProvider
 	}
 	providerID := mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
 	attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
-	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
+	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
 	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
 		IssuerURI:          oidcIssuer,
 		AttributeCondition: attrCondition,

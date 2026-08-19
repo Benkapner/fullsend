@@ -287,6 +287,10 @@ type FakeClient struct {
 	UpdatedVariables       []VariableRecord
 	CreatedProtectedVars   []VariableRecord
 
+	// CommitAncestry maps "owner/repo/base/head" to a comparison status
+	// string ("ahead", "behind", "identical", "diverged") for CompareCommits.
+	CommitAncestry map[string]string
+
 	// internal counters
 	proposalCounter int
 	commentCounter  int
@@ -2059,4 +2063,21 @@ func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, n
 		Protected: true,
 	})
 	return nil
+}
+
+func (f *FakeClient) CompareCommits(_ context.Context, owner, repo, base, head string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CompareCommits"); e != nil {
+		return "", e
+	}
+
+	if f.CommitAncestry != nil {
+		key := owner + "/" + repo + "/" + base + "/" + head
+		if status, ok := f.CommitAncestry[key]; ok {
+			return status, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no comparison data for %s/%s %s...%s", ErrNotFound, owner, repo, base, head)
 }

@@ -4005,14 +4005,14 @@ func useZeroMintTokenBackoff(t *testing.T) {
 
 func TestMintAgentToken_SkipsWhenNoMintURL(t *testing.T) {
 	printer := ui.New(io.Discard)
-	minted, _, err := mintAgentToken(context.Background(), "coder", "", printer)
+	minted, _, err := mintAgentToken(context.Background(), "coder", "", "", printer)
 	require.NoError(t, err)
 	assert.False(t, minted)
 }
 
 func TestMintAgentToken_SkipsWhenNoRole(t *testing.T) {
 	printer := ui.New(io.Discard)
-	minted, _, err := mintAgentToken(context.Background(), "", "https://mint.example.com", printer)
+	minted, _, err := mintAgentToken(context.Background(), "", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	assert.False(t, minted)
 }
@@ -4035,7 +4035,7 @@ func TestMintAgentToken_CoderRole(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	defer cleanup()
 	assert.True(t, minted)
@@ -4069,7 +4069,7 @@ func TestMintAgentToken_ReviewRole(t *testing.T) {
 	t.Setenv("REVIEW_TOKEN", "")
 
 	printer := ui.New(io.Discard)
-	minted, cleanup, err := mintAgentToken(context.Background(), "review", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "review", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	assert.True(t, minted)
 	require.NotNil(t, cleanup)
@@ -4093,7 +4093,7 @@ func TestMintAgentToken_RetroRole_NoExtras(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 
 	printer := ui.New(io.Discard)
-	minted, cleanup, err := mintAgentToken(context.Background(), "retro", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "retro", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	assert.True(t, minted)
 	require.NotNil(t, cleanup)
@@ -4117,7 +4117,7 @@ func TestMintAgentToken_ResolvesAliases(t *testing.T) {
 	t.Setenv("PUSH_TOKEN_SOURCE", "")
 
 	printer := ui.New(io.Discard)
-	minted, cleanup, err := mintAgentToken(context.Background(), "code", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "code", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	assert.True(t, minted)
 	require.NotNil(t, cleanup)
@@ -4140,7 +4140,7 @@ func TestMintAgentToken_TriageRole_NoExtras(t *testing.T) {
 	t.Setenv("PUSH_TOKEN", "should-not-change")
 
 	printer := ui.New(io.Discard)
-	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	assert.True(t, minted)
 	require.NotNil(t, cleanup)
@@ -4163,7 +4163,7 @@ func TestMintAgentToken_MintError(t *testing.T) {
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 
 	printer := ui.New(io.Discard)
-	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "minting agent token for role coder")
 	assert.Equal(t, 1, calls, "a request error should fail immediately — statusMintToken already retries transient failures and fails fast on permanent ones internally")
@@ -4177,7 +4177,7 @@ func TestMintAgentToken_RepoResolutionError(t *testing.T) {
 	t.Setenv("REPO_FULL_NAME", "")
 	t.Setenv("MINT_REPOS", "")
 	printer := ui.New(io.Discard)
-	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving mint repos for role coder")
 }
@@ -4194,7 +4194,7 @@ func TestMintAgentToken_RejectsMalformedToken(t *testing.T) {
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 
 	printer := ui.New(io.Discard)
-	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected characters")
 }
@@ -4218,7 +4218,7 @@ func TestMintAgentToken_RetriesMalformedTokenThenSucceeds(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	defer cleanup()
 	assert.True(t, minted)
@@ -4244,7 +4244,7 @@ func TestMintAgentToken_ExhaustsAllRetriesBeforeFailing(t *testing.T) {
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 
 	printer := ui.New(io.Discard)
-	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.Error(t, err)
 	assert.Equal(t, mintTokenMaxAttempts, calls, "should attempt exactly mintTokenMaxAttempts times before giving up")
 	assert.Contains(t, err.Error(), fmt.Sprintf("failed after %d attempts", mintTokenMaxAttempts), "final error should surface the total attempt count")
@@ -4269,7 +4269,7 @@ func TestMintAgentToken_RetryAbortsOnContextCancellation(t *testing.T) {
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 
 	printer := ui.New(io.Discard)
-	_, _, err := mintAgentToken(ctx, "coder", "https://mint.example.com", printer)
+	_, _, err := mintAgentToken(ctx, "coder", "https://mint.example.com", "", printer)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, calls, "should stop retrying once the context is cancelled during backoff")
@@ -4306,7 +4306,7 @@ func TestMintAgentToken_MasksTokenInGitHubActions(t *testing.T) {
 	os.Stderr = w
 
 	printer := ui.New(io.Discard)
-	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
 
 	w.Close()
 	os.Stderr = oldStderr
@@ -4401,7 +4401,7 @@ func TestMintAgentToken_SanitizesExpiresAt(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	assert.True(t, minted)
 	if cleanup != nil {
@@ -4429,7 +4429,7 @@ func TestMintAgentToken_SanitizesExpiresAt_FractionalSeconds(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	assert.True(t, minted)
 	if cleanup != nil {
@@ -4452,7 +4452,7 @@ func TestMintAgentToken_RejectsInvalidRole(t *testing.T) {
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 
 	printer := ui.New(io.Discard)
-	_, _, err := mintAgentToken(context.Background(), "INVALID--ROLE", "https://mint.example.com", printer)
+	_, _, err := mintAgentToken(context.Background(), "INVALID--ROLE", "https://mint.example.com", "", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid role")
 }
@@ -4498,7 +4498,7 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	t.Setenv("PUSH_TOKEN_SOURCE", "manual")
 
 	printer := ui.New(io.Discard)
-	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
 	defer cleanup()
 	assert.True(t, minted)
@@ -4510,6 +4510,34 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	assert.Equal(t, "ghp_original_pat", os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
 	assert.Equal(t, "ghp_original_push", os.Getenv("PUSH_TOKEN"), "cleanup should restore original PUSH_TOKEN")
 	assert.Equal(t, "manual", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore original PUSH_TOKEN_SOURCE")
+}
+
+func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_gl_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "gitlab", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+
+	assert.Equal(t, "ghs_gl_token", os.Getenv("PUSH_TOKEN"))
+	assert.Equal(t, "pat", os.Getenv("PUSH_TOKEN_SOURCE"), "GitLab forge should set PUSH_TOKEN_SOURCE to pat")
+
+	cleanup()
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE")
 }
 
 func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {

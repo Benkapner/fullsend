@@ -535,7 +535,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
-	minted, mintCleanup, err := mintAgentToken(ctx, h.Role, mintURL, printer)
+	minted, mintCleanup, err := mintAgentToken(ctx, h.Role, mintURL, forgePlatform, printer)
 	if err != nil {
 		return fmt.Errorf("agent token minting failed: %w", err)
 	}
@@ -2645,8 +2645,17 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 // runPreScript executes the harness pre-script with the pre-script output
 // protocol's file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
 // the result. See internal/prescript for the protocol (issue #4718).
-// A non-zero script exit remains a hard failure; a malformed output file
-// is also a hard failure so a mistyped skip cannot silently proceed.
+//
+// Exit code handling:
+//   - Exit 0: parse the output file; skipped=true in the file requests a skip.
+//   - Exit 78 (neutral, issue #582): treat as a skip regardless of the output
+//     file content. The output file is still parsed best-effort for reason and
+//     other outputs; if parsing fails, the skip proceeds with stdout as the
+//     reason. This lets simple scripts just `echo "No work" && exit 78`.
+//   - Any other non-zero exit: hard failure.
+//
+// A malformed output file on exit 0 is a hard failure so a mistyped skip
+// cannot silently proceed.
 func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {
 	preStart := time.Now()
 	printer.StepStart("Running pre-script: " + h.PreScript)
@@ -2702,9 +2711,11 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 }
 
 // lastNonEmptyLine returns the last non-blank line from s, trimmed and
-// sanitized. Scripts that exit 78 often print a human-readable reason to
-// stdout without writing the output file; this captures that text for
-// status reporting.
+// sanitized. Scripts that exit 78 often print a human-readable reason as
+// their last output line (e.g. "No issues need scoring"); this extracts
+// it for use as the skip reason when no reason= key was written to the
+// output file. Control characters are stripped to match the file-based
+// validation, and the result is capped at 1024 bytes.
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -3558,7 +3569,9 @@ var roleTokenVars = map[string][]tokenVar{
 // and sets the appropriate env vars so RunnerEnv expansion and host_files
 // expansion pick them up. Returns (minted bool, cleanup func, err).
 // The caller should defer cleanup() to clear tokens from the process env.
-func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Printer) (bool, func(), error) {
+// forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
+// set to "github-app" for GitHub and "pat" for GitLab.
+func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, printer *ui.Printer) (bool, func(), error) {
 	if mintURL == "" || role == "" {
 		return false, func() {}, nil
 	}
@@ -3598,8 +3611,14 @@ func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Print
 		if v, ok := os.LookupEnv(tv.Name); ok {
 			originals[tv.Name] = v
 		}
-		if tv.Value != "" {
-			os.Setenv(tv.Name, tv.Value)
+		val := tv.Value
+		// PUSH_TOKEN_SOURCE is platform-dependent: GitHub uses minted
+		// app installation tokens, GitLab uses pre-provisioned PATs.
+		if tv.Name == "PUSH_TOKEN_SOURCE" && forgePlatform == "gitlab" {
+			val = "pat"
+		}
+		if val != "" {
+			os.Setenv(tv.Name, val)
 		} else {
 			os.Setenv(tv.Name, result.Token)
 		}

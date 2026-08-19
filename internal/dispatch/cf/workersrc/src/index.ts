@@ -51,8 +51,6 @@ export interface Env {
   ROLE_APP_IDS: string;
   /** Comma-separated list of allowed GitHub orgs (optional for per-repo-only deployments). */
   ALLOWED_ORGS?: string;
-  /** Expected OIDC audience claim value. */
-  OIDC_AUDIENCE: string;
   /** Comma-separated list of allowed roles (derived from ROLE_APP_IDS if unset). */
   ALLOWED_ROLES?: string;
   /** Comma-separated workflow file patterns (empty = reject all; "*" = any). */
@@ -97,8 +95,9 @@ class ConfigError extends Error {
  *
  * The Go side wraps this into a `func(string) string` and passes it to
  * NewHandler. Mintcore decides which keys to read (ROLE_APP_IDS,
- * OIDC_AUDIENCE, ALLOWED_ROLES, etc.) — the JS side simply looks up
- * the key in the Worker env bindings.
+ * ALLOWED_ROLES, etc.) — the JS side simply looks up the key in the
+ * Worker env bindings. OIDC audience is a compile-time constant in the
+ * Go code and is no longer read from the environment.
  *
  * Returns "" for missing or non-string bindings, matching os.Getenv
  * behavior for unset variables.

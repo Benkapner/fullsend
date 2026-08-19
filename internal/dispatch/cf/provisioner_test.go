@@ -212,8 +212,8 @@ func TestProvisioner_Provision_EnvVars(t *testing.T) {
 	require.Len(t, fake.deployCalls, 1)
 	assert.Equal(t, `{"coder":"12345"}`, fake.deployCalls[0].envVars["ROLE_APP_IDS"])
 	assert.Equal(t, "acme", fake.deployCalls[0].envVars["ALLOWED_ORGS"])
-	// OIDC_AUDIENCE should be set by default.
-	assert.Equal(t, "fullsend-mint", fake.deployCalls[0].envVars["OIDC_AUDIENCE"])
+	// OIDC_AUDIENCE is no longer set as an env var — it is a compile-time constant.
+	assert.Empty(t, fake.deployCalls[0].envVars["OIDC_AUDIENCE"])
 }
 
 func TestProvisioner_Provision_StampsVersion(t *testing.T) {

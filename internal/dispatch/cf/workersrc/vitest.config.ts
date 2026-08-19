@@ -23,7 +23,6 @@ export default defineWorkersConfig({
           // closed) when the env var is absent — matching cmd/mint.
           bindings: {
             ROLE_APP_IDS: '{"coder":"12345"}',
-            OIDC_AUDIENCE: "test-aud",
             ALLOWED_WORKFLOW_FILES: "*",
           },
         },

@@ -3,10 +3,15 @@ package cli
 import (
 	"os"
 	"strings"
+	"time"
 
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 )
+
+// testAfterFunc, when non-nil, overrides the afterFunc on clients
+// created by newGitHubLiveClient. Only set from test code.
+var testAfterFunc func(time.Duration) <-chan time.Time
 
 // newGitHubLiveClient builds a GitHub API client. The manifestURL
 // parameter, when non-empty, is the forge instance URL from the
@@ -22,6 +27,9 @@ func newGitHubLiveClient(token, manifestURL string) *gh.LiveClient {
 		client = client.WithBaseURL(apiURL)
 	} else if base := strings.TrimSpace(os.Getenv("GITHUB_API_URL")); base != "" {
 		client = client.WithBaseURL(base)
+	}
+	if testAfterFunc != nil {
+		client = client.WithAfterFunc(testAfterFunc)
 	}
 	return client
 }

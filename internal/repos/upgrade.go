@@ -146,7 +146,7 @@ func Upgrade(ctx context.Context, cfg UpgradeConfig,
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			resolvedCfg := cfg.Manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
+			resolvedCfg := cfg.Manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 			fc, err := clients.ConfigFor(resolvedCfg.Forge)
 			if err != nil {
 				results[idx] = UpgradeResult{Owner: rr.Owner, Repo: rr.Repo, Error: err}
@@ -214,6 +214,29 @@ func upgradeRepo(ctx context.Context,
 			result.Skipped = true
 			result.SkipReason = fmt.Sprintf("%s → %s is a downgrade (use --force to allow)", currentRef, targetRef)
 			return result
+		}
+	}
+
+	// SHA downgrade check: when the semver guard does not apply (at
+	// least one ref is a SHA), resolve both to SHAs and use git
+	// ancestry to detect downgrades. The ancestry check targets
+	// fullsend-ai/fullsend (always GitHub) via the RefResolver.
+	if !cfg.Force && resolver != nil && (isSHARef(currentRef) || isSHARef(targetRef)) {
+		currentSHA := currentRef
+		targetSHA := targetRef
+		if !isSHARef(currentSHA) {
+			currentSHA = resolver.Resolve(ctx, currentSHA)
+		}
+		if !isSHARef(targetSHA) {
+			targetSHA = resolver.Resolve(ctx, targetSHA)
+		}
+		if isSHARef(currentSHA) && isSHARef(targetSHA) && currentSHA != targetSHA {
+			isAnc, err := resolver.IsAncestor(ctx, targetSHA, currentSHA)
+			if err == nil && isAnc {
+				result.Skipped = true
+				result.SkipReason = fmt.Sprintf("%s → %s is a downgrade (use --force to allow)", currentRef, targetRef)
+				return result
+			}
 		}
 	}
 

@@ -387,7 +387,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
 │  │ Pre-script        │ Run harness.pre_script (host-side).      │
-│  │                   │ skipped=true exits 0 here (#4718)        │
+│  │                   │ skipped=true or exit 78 skips (#4718,582)│
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

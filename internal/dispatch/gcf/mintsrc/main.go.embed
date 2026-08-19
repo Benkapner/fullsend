@@ -8,10 +8,8 @@ package function
 
 import (
 	"log"
-	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -49,27 +47,22 @@ func init() {
 	}
 
 	gcpProjectNum := os.Getenv("GCP_PROJECT_NUMBER")
-	httpClient := &http.Client{Timeout: 30 * time.Second}
 	wifPoolName := os.Getenv("WIF_POOL_NAME")
 	defaultWIFProvider := os.Getenv("WIF_PROVIDER_NAME")
 
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
-		return mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-			HTTPClient:         httpClient,
-			Audience:           audience,
-			GCPProjectNum:      gcpProjectNum,
-			WIFPoolName:        wifPoolName,
-			DefaultWIFProvider: defaultWIFProvider,
-			PerRepoWIFRepos:    perRepoWIFRepos,
-		})
+	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
+		GCPProjectNum:      gcpProjectNum,
+		WIFPoolName:        wifPoolName,
+		DefaultWIFProvider: defaultWIFProvider,
+		PerRepoWIFRepos:    perRepoWIFRepos,
+	})
+	if err != nil {
+		log.Fatalf("creating OIDC verifier: %v", err)
 	}
 
-	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
-		&http.Client{Timeout: 10 * time.Second},
-		gcpProjectNum,
-	)
+	pemAccessor := mintcore.NewGCPSecretPEMAccessor(gcpProjectNum)
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, httpClient)
+	handler, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {
 		log.Fatalf("initializing handler: %v", err)
 	}

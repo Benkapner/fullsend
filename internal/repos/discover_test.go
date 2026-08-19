@@ -42,15 +42,12 @@ func TestBuildManifest_SimpleEntries(t *testing.T) {
 		CLIVersion: "2.0.0",
 	})
 
-	require.Len(t, m.Repos, 2)
-	assert.Equal(t, "acme/api", m.Repos[0].Repo)
-	assert.Equal(t, "acme/web", m.Repos[1].Repo)
-	// No per-repo overrides; all settings in forge section.
-	for _, entry := range m.Repos {
-		assert.False(t, entry.Forge.Set)
-	}
+	require.NotNil(t, m.GitHub)
+	require.Len(t, m.GitHub.Repos, 2)
+	assert.Equal(t, "acme/api", m.GitHub.Repos[0].Name)
+	assert.Equal(t, "acme/web", m.GitHub.Repos[1].Name)
 	// Greenfield: no mint URL discovered → TODO generated.
-	assert.Contains(t, todos, "forge.github.mint_url: set the Cloud Run endpoint URL")
+	assert.Contains(t, todos, "github.mint_url: set the Cloud Run endpoint URL")
 }
 
 func TestBuildManifest_MixedDiscovery(t *testing.T) {
@@ -63,13 +60,9 @@ func TestBuildManifest_MixedDiscovery(t *testing.T) {
 		Forge: ForgeGitHub,
 	})
 
-	// Forge-level fields should use the mode (most common) values.
-	assert.Equal(t, "v2.3.0", m.Forge.GitHub.FullsendRef)
-
-	// No per-repo overrides — settings live in forge.github.
-	for _, entry := range m.Repos {
-		assert.False(t, entry.Forge.Set)
-	}
+	// Platform-level fields should use the mode (most common) values.
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, "v2.3.0", m.GitHub.FullsendRef)
 }
 
 func TestBuildManifest_GitLab_FullsendRef(t *testing.T) {
@@ -82,17 +75,18 @@ func TestBuildManifest_GitLab_FullsendRef(t *testing.T) {
 		Forge: ForgeGitLab,
 	})
 
-	assert.Equal(t, "v3.0.0", m.Forge.GitLab.FullsendRef)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "v3.0.0", m.GitLab.FullsendRef)
 
-	// r3 has a different ref from the forge-level default → per-repo override.
+	// r3 has a different ref from the platform-level default → per-repo override.
 	var r3 RepoEntry
-	for _, e := range m.Repos {
-		if e.Repo == "acme/r3" {
+	for _, e := range m.GitLab.Repos {
+		if e.Name == "acme/r3" {
 			r3 = e
 		}
 	}
-	assert.True(t, r3.FullsendRef.Set)
-	assert.Equal(t, "v2.9.0", r3.FullsendRef.Value)
+	assert.NotEmpty(t, r3.FullsendRef)
+	assert.Equal(t, "v2.9.0", r3.FullsendRef)
 }
 
 func TestBuildManifest_GitLab_FullsendRef_CLIFallback(t *testing.T) {
@@ -104,7 +98,8 @@ func TestBuildManifest_GitLab_FullsendRef_CLIFallback(t *testing.T) {
 		CLIVersion: "3.1.0",
 	})
 
-	assert.Equal(t, "v3.1.0", m.Forge.GitLab.FullsendRef)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "v3.1.0", m.GitLab.FullsendRef)
 }
 
 func TestBuildManifest_GitLab_FullsendRef_DefaultFallback(t *testing.T) {
@@ -115,7 +110,8 @@ func TestBuildManifest_GitLab_FullsendRef_DefaultFallback(t *testing.T) {
 		Forge: ForgeGitLab,
 	})
 
-	assert.Equal(t, config.DefaultUpstreamRef, m.Forge.GitLab.FullsendRef)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, config.DefaultUpstreamRef, m.GitLab.FullsendRef)
 }
 
 // --- computeMode tests ---
@@ -197,11 +193,11 @@ func TestCountDistinct(t *testing.T) {
 func TestMarshalWithHeader(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
-		}},
-		Repos: []RepoEntry{
-			{Repo: "acme/api"},
+			Repos: []RepoEntry{
+				{Name: "acme/api"},
+			},
 		},
 	}
 
@@ -235,8 +231,9 @@ func TestBuildManifest_RoundTrip(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &parsed))
 
 	assert.Equal(t, 1, parsed.Version)
-	assert.Equal(t, "https://mint.example.com", parsed.Forge.GitHub.MintURL)
-	assert.Len(t, parsed.Repos, 2)
+	require.NotNil(t, parsed.GitHub)
+	assert.Equal(t, "https://mint.example.com", parsed.GitHub.MintURL)
+	assert.Len(t, parsed.GitHub.Repos, 2)
 }
 
 // --- discoverRepo tests ---
@@ -501,7 +498,8 @@ func TestBuildManifest_CLIVersionFallback(t *testing.T) {
 		Forge:      ForgeGitHub,
 		CLIVersion: "3.0.0",
 	})
-	assert.Equal(t, "v3.0.0", m.Forge.GitHub.FullsendRef)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, "v3.0.0", m.GitHub.FullsendRef)
 }
 
 func TestBuildManifest_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
@@ -509,7 +507,8 @@ func TestBuildManifest_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
 		Forge:      ForgeGitHub,
 		CLIVersion: "v0.32.0-82-gcb2bcd9f",
 	})
-	assert.Equal(t, "v0.32.0-82-gcb2bcd9f", m.Forge.GitHub.FullsendRef)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, "v0.32.0-82-gcb2bcd9f", m.GitHub.FullsendRef)
 }
 
 func TestBuildManifest_CLIVersionDev_FallsBackToDefault(t *testing.T) {
@@ -517,5 +516,6 @@ func TestBuildManifest_CLIVersionDev_FallsBackToDefault(t *testing.T) {
 		Forge:      ForgeGitHub,
 		CLIVersion: "dev",
 	})
-	assert.Equal(t, config.DefaultUpstreamRef, m.Forge.GitHub.FullsendRef)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, config.DefaultUpstreamRef, m.GitHub.FullsendRef)
 }

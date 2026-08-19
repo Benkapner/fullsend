@@ -6,13 +6,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 const defaultGitHubOIDCIssuer = "https://token.actions.githubusercontent.com"
@@ -25,8 +26,6 @@ type stsResponse struct {
 
 // STSVerifierConfig configures a new STSVerifier.
 type STSVerifierConfig struct {
-	HTTPClient         HTTPDoer
-	Audience           string
 	STSURL             string
 	GCPProjectNum      string
 	WIFPoolName        string
@@ -39,7 +38,6 @@ type STSVerifierConfig struct {
 // before the STS exchange. Authorization (org-allowed, workflow-ref) is
 // performed by the Handler after authentication succeeds.
 type STSVerifier struct {
-	httpClient         HTTPDoer
 	stsBaseURL         string
 	gcpProjectNum      string
 	wifPoolName        string
@@ -49,16 +47,10 @@ type STSVerifier struct {
 }
 
 // NewSTSVerifier creates a verifier that validates tokens via GCP STS
-// exchange. Audience must be provided at construction time; an empty value
-// returns an error so misconfiguration is caught at startup.
+// exchange. The OIDC audience is the compile-time constant
+// mintconsts.OIDCAudience. HTTP requests are made via the
+// package-internal mintHTTP function.
 func NewSTSVerifier(opts STSVerifierConfig) (*STSVerifier, error) {
-	if opts.Audience == "" {
-		return nil, errors.New("OIDC_AUDIENCE must be configured")
-	}
-	httpClient := opts.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
 	stsURL := opts.STSURL
 	if stsURL == "" {
 		stsURL = "https://sts.googleapis.com"
@@ -68,13 +60,12 @@ func NewSTSVerifier(opts STSVerifierConfig) (*STSVerifier, error) {
 		perRepo = make(map[string]bool)
 	}
 	return &STSVerifier{
-		httpClient:         httpClient,
 		stsBaseURL:         stsURL,
 		gcpProjectNum:      opts.GCPProjectNum,
 		wifPoolName:        opts.WIFPoolName,
 		defaultWIFProvider: opts.DefaultWIFProvider,
 		perRepoWIFRepos:    perRepo,
-		oidcAudience:       opts.Audience,
+		oidcAudience:       mintconsts.OIDCAudience,
 	}, nil
 }
 
@@ -180,7 +171,7 @@ func (v *STSVerifier) exchangeSTS(ctx context.Context, oidcToken, providerName s
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := v.httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return fmt.Errorf("STS request failed: %w", err)
 	}

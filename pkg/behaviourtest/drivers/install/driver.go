@@ -6,22 +6,29 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// MintDriver provisions and tears down fullsend in an acquired pool org.
-// MintDriver is used only during suite setup (single-threaded) and is not
-// shared across concurrent scenarios.
+// mintDriver provisions and tears down fullsend in an acquired pool org.
+// Used only during suite setup (single-threaded) and not shared across
+// concurrent scenarios.
 //
-// Renamed from Driver to free the Driver name for the unified surface
-// that owns both mint lifecycle and repo allocation (#6169). Transitional
-// until #6170 folds pool/ensurer into concrete driver types.
-type MintDriver interface {
-	Install(ctx context.Context, org string) (State, error)
-	Teardown(ctx context.Context, org string, state State) error
+// This is an unexported interface used internally by concrete driver
+// implementations. The suite does not construct or reference it directly.
+type mintDriver interface {
+	// Install deploys the mint for the given org and returns the mint URL.
+	Install(ctx context.Context, org string) (mintURL string, err error)
+
+	// Teardown tears down suite-scoped mint resources. The driver owns
+	// its own state (e.g. preview alias) — no external state is needed.
+	Teardown(ctx context.Context) error
 }
 
-// Factory constructs a unified Driver for a given org. Driver-specific
-// inputs (PEMs, allowlists, pool size) are closed over by the factory
-// function. Factory performs suite setup (e.g. preview mint deploy)
-// before returning so setup failures fail the suite before scenarios run.
+// Factory constructs a unified Driver for a given org. The factory
+// performs suite setup (e.g. preview mint deploy) before returning so
+// setup failures fail the suite before scenarios run.
+//
+// All driver-specific inputs (PEMs, allowlists, mint URL, pool size)
+// are read from env or computed from the org inside the factory.
+// Runtime dependencies (forge client, token, CLI binary, GCP project,
+// logger) are passed as parameters.
 type Factory func(
 	org string,
 	client forge.Client,
@@ -62,41 +69,6 @@ type Driver interface {
 	Capacity() int
 }
 
-// State describes where behaviour tests find fullsend configuration after install.
-//
-// Concurrency: the PerRepoState implementation is a read-only snapshot
-// whose fields (org, repo, mintURL) are set at construction and never modified.
-// All accessor methods return derived constants. Sharing a single State
-// across goroutines via World.Clone is safe by design for
-// GODOG_CONCURRENCY>1. TestConcurrentStateAccess in this package
-// exercises concurrent reads under -race.
-//
-// If a future implementation adds mutable state, it must synchronize
-// access or be deep-copied per scenario in World.Clone.
-type State interface {
-	Mode() string
-	// ConfigOwner and ConfigRepo locate commits for behaviour scripts and config reads.
-	ConfigOwner() string
-	ConfigRepo() string
-	// ConfigPathPrefix is "" for per-org (.fullsend repo root) or ".fullsend" for per-repo.
-	ConfigPathPrefix() string
-	// TriageWorkflowRepo is the repository polled for triage workflow runs.
-	TriageWorkflowRepo() string
-	// TriageWorkflowFile is the workflow path passed to ListWorkflowRuns.
-	TriageWorkflowFile() string
-	// AgentWorkflowFile is the reusable workflow that runs the agent and uploads artifacts.
-	AgentWorkflowFile() string
-	// AgentArtifactName is the upload-artifact name for triage agent output.
-	AgentArtifactName() string
-}
-
-// MintURLProvider is optionally implemented by State values that carry
-// the effective mint URL. The suite uses this to thread the mint URL
-// from the install driver to the RepoEnsurer.
-type MintURLProvider interface {
-	MintURL() string
-}
-
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
 // The default implementation is e2etest.TryRunCLI. Inject a custom
 // function in tests to avoid shelling out.
@@ -111,4 +83,8 @@ const (
 
 	// PerRepoAgentArtifact is the upload-artifact name for triage output.
 	PerRepoAgentArtifact = "fullsend-triage"
+
+	// DefaultPoolSize is the number of test-repo-NN repos in a pool org.
+	// Drivers use this as the default capacity when no override is set.
+	DefaultPoolSize = 12
 )

@@ -16,10 +16,9 @@ import (
 
 // World holds scenario state and injected drivers.
 type World struct {
-	Config  env.RunnerConfig
-	SCM     scm.Driver
-	CI      ci.Driver
-	Install install.State
+	Config env.RunnerConfig
+	SCM    scm.Driver
+	CI     ci.Driver
 
 	Org       string
 	RepoFull  string
@@ -68,8 +67,9 @@ type World struct {
 	CreatedBranches    []string
 	CreatedPRNumbers   []int
 
-	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
-	// for this scenario's duration. Empty when no pool is configured.
+	// LeasedRepoName is the logical test-repo name acquired via
+	// Driver.AllocateRepo for this scenario's duration. Empty when no
+	// driver is configured.
 	LeasedRepoName string
 
 	// Driver is the unified install driver that owns repo allocation,
@@ -90,16 +90,15 @@ type World struct {
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,
-// CI, Install as install.State) are shared by reference — this is safe
-// because the production implementations are immutable wrappers:
+// CI, Driver) are shared by reference — this is safe because the
+// production implementations are immutable wrappers:
 //   - scm/github.Driver holds only a forge.Client (concurrent-safe).
 //   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
-//   - install.PerRepoState holds only immutable string fields.
+//   - install.Driver is concurrent-safe by contract.
 //
 // Race tests in each driver package (TestConcurrentAccess,
 // TestConcurrentStateAccess) verify the real types under -race with
-// forge.FakeClient. See scm.Driver, ci.Driver, and install.State doc
-// comments for the concurrency contract.
+// forge.FakeClient.
 //
 // Scenario-level fields are copied verbatim; callers should call
 // resetScenarioWorld (in package suite) to zero them for each new scenario.

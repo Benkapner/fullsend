@@ -69,7 +69,7 @@ To remove fullsend from a single repository:
 
 1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
-3. Contact the fullsend team to unenroll the repo from the hosted mint
+3. Remove the `FULLSEND_MINT_URL` repository variable (if set) — no separate unenrollment is needed for the hosted community mint
 
 **GitLab repos:**
 
@@ -78,7 +78,7 @@ To remove fullsend from a single repository:
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
 4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
 
-If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` instead of GitHub step 3. See the [standalone commands](#standalone-commands) table for details.
+If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
 
 ## Standalone commands
 
@@ -108,14 +108,14 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, sync variables, upgrade refs |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
-| Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a forge-level default in the manifest |
+| Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in the manifest |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |
 | Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
 | Developer | `fullsend agent remove <name>` | Unregister an agent from config |
 
-The typical handoff: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`.
+The typical handoff for self-managed mints: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. For the hosted community mint, enrollment is automatic — install the shared Apps and use the CLI defaults.
 
 ### Per-command IAM role breakdown
 
