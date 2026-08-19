@@ -237,6 +237,15 @@ The existing design principle is that [the repo is the coordinator](problems/age
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
 - GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- Dispatch authorization gate: all agent dispatch paths — slash commands
+  and automatic event triggers — require authorization before dispatching.
+  GitHub paths check the acting user's collaborator permission via the
+  repository API (`write` or above for mutation commands; `triage` or above
+  for observation stages). Non-GitHub dispatch paths (e.g., Jira polling)
+  map source-system roles to dispatch authorization roles (`read`, `write`,
+  `admin`) using source-native role resolution; the resolved role feeds the
+  same authorization gate with no cross-system identity verification
+  ([ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
 
 **Open questions:**
 

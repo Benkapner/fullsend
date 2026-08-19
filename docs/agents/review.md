@@ -80,10 +80,9 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 Set this in the harness's `env.sandbox` (the upstream default lives in
 `harness/review.yaml`). To override per repo or org, use `base:`
-composition ([ADR 0045](../ADRs/0045-forge-portable-harness-schema.md))
-rather than the CI workflow `env:` block — workflow `env:` is reserved
-for infrastructure plumbing per
-[ADR 0081](../ADRs/0081-reserve-workflow-env-for-infra-plumbing.md).
+composition rather than the CI workflow `env:` block — workflow `env:`
+is reserved for infrastructure plumbing (see [Architecture](../architecture.md#agent-harness)
+for details on harness composition and workflow-env conventions).
 The post-script reads the value from the runner environment directly —
 no separate configuration is needed.
 
