@@ -1232,17 +1232,6 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 				}
 			}
 
-			// Preserve the original file extension in the cache path so
-			// downstream validators (e.g., Validate for openshell.profiles)
-			// see the expected extension instead of bare "content".
-			if ext := path.Ext(relPath); ext != "" {
-				named, symErr := fetch.CacheNamedSymlink(contentPath, "content"+ext)
-				if symErr != nil {
-					return Dependency{}, "", fmt.Errorf("base %s: creating extension symlink: %w", field, symErr)
-				}
-				contentPath = named
-			}
-
 			if aErr := auditBaseFetch(opts, fileURL, hash, allowedBy, true, entry.FetchTime, depType); aErr != nil {
 				return Dependency{}, "", aErr
 			}
@@ -1283,15 +1272,6 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
 			return Dependency{}, "", fmt.Errorf("base %s: setting executable permission: %w", field, chErr)
 		}
-	}
-
-	// Preserve the original file extension (see cache-hit path above).
-	if ext := path.Ext(relPath); ext != "" {
-		named, symErr := fetch.CacheNamedSymlink(contentPath, "content"+ext)
-		if symErr != nil {
-			return Dependency{}, "", fmt.Errorf("base %s: creating extension symlink: %w", field, symErr)
-		}
-		contentPath = named
 	}
 
 	if iErr := urlIndexPut(opts.WorkspaceRoot, fileURL, hash); iErr != nil {

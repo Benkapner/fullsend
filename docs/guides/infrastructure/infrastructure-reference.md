@@ -130,16 +130,21 @@ A single mint instance can serve multiple orgs:
 
 ### Status Endpoint
 
-`GET /v1/status` returns the configured roles available for the authenticated caller's org.
+`GET /v1/status` returns the configured roles and version information.
 
-- **Authentication:** Bearer OIDC JWT (same as `/v1/token`)
-- **Authorization:** Any valid OIDC token from an allowed org — no role restriction
-- **Response:**
+- **Authentication:** Bearer token. OIDC is always tried first. When optional status validators are compiled in (e.g. GitHub user token via the `github` build tag), they are tried if OIDC fails. First successful auth wins.
+- **Authorization:** Any valid credential from the auth pipeline — no role restriction.
+- **OIDC response:** Scoped to the authenticating workflow's org.
   ```json
   {"org": "my-org", "roles": ["coder", "review", "triage"]}
   ```
-- **Use case:** Workflow diagnostics — discover which roles are available before requesting a token
-- **Security:** Returns only the requesting org and its role names (not app IDs, not other orgs' roles)
+- **Non-OIDC response** (e.g. GitHub user token): Reports all configured allowed orgs.
+  ```json
+  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"]}
+  ```
+- **Use case:** Workflow diagnostics — discover which roles are available before requesting a token. Non-OIDC auth enables status checks from outside GitHub Actions (e.g. `gh` CLI, OAuth login).
+- **Security:** OIDC returns only the requesting org. Non-OIDC returns allowed orgs (not individual role app IDs).
+- **Enabling optional validators:** Pass `--status-auth=github` to `mint deploy` along with `--status-github-group=ORG/TEAM` and `--status-github-client-id=CLIENT_ID`. This compiles the GitHub validator via the `github` build tag. Without these flags, OIDC is the only auth path.
 
 ---
 

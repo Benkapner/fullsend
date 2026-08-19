@@ -40,8 +40,12 @@ type mintResponse struct {
 }
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
+// When authenticated via OIDC, Org is set to the caller's org.
+// When authenticated via an optional validator (e.g. GitHub user
+// token), AllowedOrgs lists all configured orgs instead.
 type statusResponse struct {
-	Org               string   `json:"org"`
+	Org               string   `json:"org,omitempty"`
+	AllowedOrgs       []string `json:"allowed_orgs,omitempty"`
 	Roles             []string `json:"roles"`
 	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
 	Version           string   `json:"version,omitempty"`
@@ -210,44 +214,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- /v1/status auth pipeline ---
+	if r.URL.Path == "/v1/status" {
+		auth, err := h.authenticateStatus(r.Context(), r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
+		h.handleStatusWithAuth(w, auth)
+		return
+	}
+
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
 		return
 	}
 	oidcToken := strings.TrimPrefix(authHeader, "Bearer ")
-
-	if r.URL.Path == "/v1/status" {
-		claims, err := h.oidcVerifier.Verify(r.Context(), oidcToken)
-		if err != nil {
-			log.Printf("OIDC verification failed for /v1/status: %v", err)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
-		}
-		if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
-			log.Printf("token authorization failed for /v1/status: %v", err)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
-		}
-		isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
-		isDualEnrolled := false
-		if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
-			ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
-			isDualEnrolled = true
-			isPerRepo = false
-		}
-		wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
-		if wfErr != nil && isDualEnrolled {
-			wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
-		}
-		if wfErr != nil {
-			log.Printf("workflow ref validation failed for /v1/status: %v", wfErr)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
-		}
-		h.handleStatus(w, claims)
-		return
-	}
 
 	defer r.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
@@ -473,29 +456,11 @@ func (h *Handler) handleHealth(w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// handleStatus is a legacy wrapper for OIDC-only status auth. It
+// delegates to handleStatusWithAuth with an OIDC result. Retained for
+// backward compatibility with tests that call it directly.
 func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
-	org := strings.ToLower(claims.RepositoryOwner)
-	roles := append([]string(nil), h.allowedRoles...)
-
-	// Build sorted workflow host repos list for the status response.
-	var hostRepos []string
-	for repo := range h.workflowHostRepos {
-		hostRepos = append(hostRepos, repo)
-	}
-	sort.Strings(hostRepos)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:               org,
-		Roles:             roles,
-		WorkflowHostRepos: hostRepos,
-		Version:           Version,
-		Commit:            Commit,
-	}); err != nil {
-		log.Printf("encoding status response: %v", err)
-	}
+	h.handleStatusWithAuth(w, &statusAuthResult{oidcClaims: claims})
 }
 
 func (h *Handler) mintToken(ctx context.Context, org, role string, repos []string) (string, string, *GrantedScope, error) {
