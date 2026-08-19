@@ -60,8 +60,8 @@ When adding or modifying a field in the `Harness` or `ForgeConfig`
 structs:
 
 1. **Determine the field type.** Is it a scalar, list, map, or pointer
-   struct? This determines the merge behavior (see ADR-0045 inheritance
-   rules).
+   struct? This determines the merge behavior (see
+   [Harness Field Reference](harness-fields.md) merge rules).
 2. **Update `mergeBaseIntoChild`** if the field participates in `base:`
    composition.
 3. **Update `mergeForgeConfig`** if the field can appear under
@@ -71,6 +71,14 @@ structs:
    blocks.
 5. **Update tests** in `compose_test.go` and `forge_test.go` to cover
    the new field in all affected functions.
+6. **Update the [Harness Field Reference](harness-fields.md)** — If the
+   change adds a new field to `ForgeConfig`, moves a field between
+   classification tiers (top-level-only → forge-overridable or vice
+   versa), or changes merge semantics, update the relevant tables:
+   - Field classification tables ("Fields that can appear at both
+     levels" vs "Fields that stay at top level only")
+   - Merge and inheritance rules table
+   - `ForgeConfig` struct definition
 
 ## When reviewing PRs
 
@@ -83,8 +91,12 @@ matching `_test.go` file.
 
 ## Related
 
+- [Harness Field Reference](harness-fields.md): Living reference for field
+  classifications, merge rules, and `ForgeConfig` struct — updated in step 6
 - [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md): Forge-portable
-  harness schema — defines the merge/inheritance rules
+  harness schema — original architectural decision (Superseded by ADR-0088)
+- [ADR-0088](../ADRs/0088-cel-guarded-overlays.md): CEL-guarded overlays —
+  current overlay mechanism
 - [ADR-0064](../ADRs/0064-deprecate-customized-directory-overlay.md):
   Deprecate customized directory overlay
 - Issue #5579: Harness field integration pipeline (complementary

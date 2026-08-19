@@ -106,9 +106,11 @@ repo baseline and overrides)
 - Forge-portable harness schema: `role` and `slug` move into the harness
   YAML (eliminating the config.yaml `agents:` block dependency), and a
   `forge:` section separates platform-specific config from platform-neutral
-  fields (see ADR-0045 for the full list of forge-overridable fields). Forge blocks inherit from
-  top-level defaults and override only deltas
-  ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
+  fields (see [Harness Field Reference](contributing/harness-fields.md)
+  for the current field classifications and merge rules). Forge blocks
+  inherit from top-level defaults and override only deltas
+  ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md), superseded by
+  [ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 - Unified env var delivery: a single `env:` key with `runner` and `sandbox`
   sub-maps replaces `runner_env` and manual `.env` files. The runner generates
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
