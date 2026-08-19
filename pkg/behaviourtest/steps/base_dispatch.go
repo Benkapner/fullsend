@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -51,7 +50,7 @@ func givenCustomHarnessWithLocalBase(w *world.World, name, baseName, doc string)
 	// the same directory (.fullsend/harness/), so a bare filename suffices.
 	childDoc := fmt.Sprintf("base: %s.yaml\n%s", baseName, doc)
 
-	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
+	harnessPath := path.Join(".fullsend", "harness", name+".yaml")
 	ctx := context.Background()
 	if err := w.SCM.CommitFile(ctx, w.Org, w.RepoName, harnessPath,
 		fmt.Sprintf("behaviour: add base-composed harness %s", name), []byte(childDoc)); err != nil {
@@ -62,38 +61,8 @@ func givenCustomHarnessWithLocalBase(w *world.World, name, baseName, doc string)
 		return err
 	}
 
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(ctx, w.Org, w.RepoName, cfgPath)
-	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
-	if err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-	entry := config.AgentEntry{Name: name, Source: "harness/" + name + ".yaml"}
-	agents := cfgW.AgentEntries()
-	found := false
-	for i, a := range agents {
-		if strings.EqualFold(a.DerivedName(), name) {
-			agents[i] = entry
-			found = true
-			break
-		}
-	}
-	if !found {
-		agents = append(agents, entry)
-	}
-	cfgW.SetAgents(agents)
-	merged, err := cfgW.Marshal()
-	if err != nil {
-		return err
-	}
-	if err := w.SCM.CommitFile(ctx, w.Org, w.RepoName, cfgPath,
-		fmt.Sprintf("behaviour: register base-composed harness %s", name), merged); err != nil {
-		return fmt.Errorf("updating config: %w", err)
-	}
-	return nil
+	return registerLocalAgentConfig(ctx, w, name,
+		fmt.Sprintf("behaviour: register base-composed harness %s", name))
 }
 
 // givenURLSourcedBaseHarness commits a base harness to the hosting repo
@@ -225,7 +194,7 @@ func givenCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) e
 	// Prepend the base: field with the full URL.
 	childDoc := fmt.Sprintf("base: %s\n%s", baseURL, doc)
 
-	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
+	harnessPath := path.Join(".fullsend", "harness", name+".yaml")
 	ctx := context.Background()
 	if err := w.SCM.CommitFile(ctx, w.Org, w.RepoName, harnessPath,
 		fmt.Sprintf("behaviour: add URL-base-composed harness %s", name), []byte(childDoc)); err != nil {
@@ -236,7 +205,18 @@ func givenCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) e
 		return err
 	}
 
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	return registerLocalAgentConfig(ctx, w, name,
+		fmt.Sprintf("behaviour: register URL-base-composed harness %s", name))
+}
+
+// registerLocalAgentConfig registers a local harness as an agent in the
+// repo's config.yaml. It reads the current config, upserts the agent
+// entry with source "harness/<name>.yaml", and commits the updated
+// config with the given commit message. This deduplicates the config
+// update boilerplate shared by givenCustomHarnessWithLocalBase and
+// givenCustomHarnessWithURLBase.
+func registerLocalAgentConfig(ctx context.Context, w *world.World, name, commitMsg string) error {
+	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(ctx, w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
@@ -263,8 +243,7 @@ func givenCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) e
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(ctx, w.Org, w.RepoName, cfgPath,
-		fmt.Sprintf("behaviour: register URL-base-composed harness %s", name), merged); err != nil {
+	if err := w.SCM.CommitFile(ctx, w.Org, w.RepoName, cfgPath, commitMsg, merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
