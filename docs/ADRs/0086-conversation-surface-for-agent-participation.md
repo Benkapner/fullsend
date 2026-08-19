@@ -154,6 +154,9 @@ enforceable from `format` alone.
   `transition.comment.id` / `parent_id`, and `state.labels`.
 - Slack maps channel→conversation, section→category; `parent_id` is always the
   reply target (Slack `thread_ts` / message `ts`; GitHub normalized parent).
+- `entity.id` remains numeric for forge-native conversations (e.g. Discussion
+  number); non-numeric backends (Slack/Discord/Matrix) need a follow-on carrier
+  (e.g. opaque `entity.key` or string id) before those adapters.
 - Domain split: `forge.Client` / `tracker.Client` / `conversation.Client`.
 - Linking a conversation or thread to a work item for `/fs-code` remains a
   follow-on.
