@@ -1,8 +1,10 @@
 package steps
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -348,4 +350,335 @@ func TestGivenURLSourcedCustomHarnessWithURLBase_PrependsBaseURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, cfg.AgentEntries(), 1)
 	assert.Contains(t, cfg.AgentEntries()[0].Source, "https://raw.githubusercontent.com/org/host/")
+}
+
+// --- registerLocalAgentConfig error-path tests ---
+
+func TestRegisterLocalAgentConfig_GetConfigError(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}} // no config file
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := registerLocalAgentConfig(context.Background(), w, "test", "commit msg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestRegisterLocalAgentConfig_InvalidConfigYAML(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("invalid: [yaml: content"),
+	}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := registerLocalAgentConfig(context.Background(), w, "test", "commit msg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config")
+}
+
+func TestRegisterLocalAgentConfig_CommitConfigError(t *testing.T) {
+	scm := &fakeURLSCM{
+		files: map[string][]byte{
+			"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+		},
+		commitFileErr:  fmt.Errorf("commit failed"),
+		commitFileRepo: "repo",
+	}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := registerLocalAgentConfig(context.Background(), w, "test", "commit msg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating config")
+}
+
+func TestRegisterLocalAgentConfig_UpdatesExistingAgent(t *testing.T) {
+	// Config already has an agent named "Test" (different case) with a
+	// different source. registerLocalAgentConfig should replace it via the
+	// case-insensitive DerivedName match, not duplicate.
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents:\n  - name: Test\n    source: old-source.yaml\n"),
+	}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := registerLocalAgentConfig(context.Background(), w, "test", "commit msg")
+	require.NoError(t, err)
+
+	cfgData := scm.files["org/repo/.fullsend/config.yaml"]
+	cfg, parseErr := config.ParsePerRepoConfig(cfgData)
+	require.NoError(t, parseErr)
+
+	// Should have exactly one agent (updated, not duplicated).
+	require.Len(t, cfg.AgentEntries(), 1)
+	assert.Equal(t, "harness/test.yaml", cfg.AgentEntries()[0].Source)
+}
+
+// --- givenCustomHarnessWithLocalBase error-path tests ---
+
+func TestGivenCustomHarnessWithLocalBase_CommitHarnessError(t *testing.T) {
+	scm := &fakeURLSCM{
+		files:          map[string][]byte{},
+		commitFileErr:  fmt.Errorf("commit failed"),
+		commitFileRepo: "repo",
+	}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := givenCustomHarnessWithLocalBase(w, "child", "base", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committing harness")
+}
+
+func TestGivenCustomHarnessWithLocalBase_InvalidResourceYAML(t *testing.T) {
+	// commitLocalHarnessResources fails when parsing an invalid doc YAML.
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := givenCustomHarnessWithLocalBase(w, "child", "base", "invalid: [yaml: content")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing harness YAML")
+}
+
+func TestGivenCustomHarnessWithLocalBase_GetConfigError(t *testing.T) {
+	// CommitFile for the harness succeeds, commitLocalHarnessResources
+	// succeeds (no agent/policy in doc), but registerLocalAgentConfig
+	// fails reading the config.
+	scm := &fakeURLSCM{files: map[string][]byte{}} // no config file
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := givenCustomHarnessWithLocalBase(w, "child", "base", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+// --- givenURLSourcedBaseHarness error-path tests ---
+
+func TestGivenURLSourcedBaseHarness_CommitHarnessError(t *testing.T) {
+	scm := &fakeURLSCM{
+		files:          map[string][]byte{},
+		commitFileErr:  fmt.Errorf("commit failed"),
+		commitFileRepo: "host",
+	}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committing base harness to hosting repo")
+}
+
+func TestGivenURLSourcedBaseHarness_CommitRelativeResourcesError(t *testing.T) {
+	// Use policyFailSCM to fail on the 2nd CommitFile call (agent resource
+	// commit inside commitRelativeResources), allowing the 1st call
+	// (harness YAML commit) to succeed.
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 &policyFailSCM{fakeURLSCM: scm},
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committing base harness resources")
+}
+
+func TestGivenURLSourcedBaseHarness_FileNotAccessibleAfterCommit(t *testing.T) {
+	speedUpRetries(t)
+	scm := &fakeURLSCM{
+		files:                map[string][]byte{},
+		getFileContentAlways: fmt.Errorf("file not found"),
+	}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base harness file not accessible")
+}
+
+func TestGivenURLSourcedBaseHarness_RelativeResourceNotAccessible(t *testing.T) {
+	speedUpRetries(t)
+	calls := 0
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 &selectiveFailSCM{fakeURLSCM: scm, failPath: "agents/triage.md", calls: &calls},
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base harness resource")
+	assert.Contains(t, err.Error(), "not accessible")
+}
+
+func TestGivenURLSourcedBaseHarness_GetDefaultBranchError(t *testing.T) {
+	scm := &fakeURLSCM{
+		files:            map[string][]byte{},
+		defaultBranchErr: fmt.Errorf("API rate limited"),
+	}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting default branch")
+	assert.Contains(t, err.Error(), "API rate limited")
+}
+
+func TestGivenURLSourcedBaseHarness_RawURLNotAccessible(t *testing.T) {
+	stubRawHTTPClientStatus(t, http.StatusNotFound)
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base harness raw URL not accessible")
+}
+
+func TestGivenURLSourcedBaseHarness_GetConfigError(t *testing.T) {
+	stubRawHTTPClient(t)
+	// No config file in the SCM — GetFileContent will fail for the config
+	// path, but CommitFile stores the harness/resource files so
+	// waitForFileAccessible succeeds.
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestGivenURLSourcedBaseHarness_InvalidConfigYAML(t *testing.T) {
+	stubRawHTTPClient(t)
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("invalid: [yaml: content"),
+	}}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config")
+}
+
+func TestGivenURLSourcedBaseHarness_CommitAllowlistError(t *testing.T) {
+	stubRawHTTPClient(t)
+	// commitFileRepo targets "repo" (the enrolled repo), so commits to the
+	// hosting repo ("host") succeed but the allowlist config commit fails.
+	scm := &fakeURLSCM{
+		files: map[string][]byte{
+			"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+		},
+		commitFileErr:  fmt.Errorf("commit failed"),
+		commitFileRepo: "repo",
+	}
+	w := &world.World{
+		Org:                 "org",
+		RepoName:            "repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "host",
+	}
+	err := givenURLSourcedBaseHarness(w, "base", "agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating config")
+}
+
+// --- givenCustomHarnessWithURLBase error-path tests ---
+
+func TestGivenCustomHarnessWithURLBase_CommitHarnessError(t *testing.T) {
+	baseURL := "https://raw.githubusercontent.com/org/host/main/harness/base.yaml#sha256=abc123"
+	scm := &fakeURLSCM{
+		files:          map[string][]byte{},
+		commitFileErr:  fmt.Errorf("commit failed"),
+		commitFileRepo: "repo",
+	}
+	w := &world.World{
+		Org:              "org",
+		RepoName:         "repo",
+		SCM:              scm,
+		URLBaseHarnesses: map[string]string{"base": baseURL},
+	}
+	err := givenCustomHarnessWithURLBase(w, "child", "base", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committing harness")
+}
+
+func TestGivenCustomHarnessWithURLBase_InvalidResourceYAML(t *testing.T) {
+	baseURL := "https://raw.githubusercontent.com/org/host/main/harness/base.yaml#sha256=abc123"
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Org:              "org",
+		RepoName:         "repo",
+		SCM:              scm,
+		URLBaseHarnesses: map[string]string{"base": baseURL},
+	}
+	err := givenCustomHarnessWithURLBase(w, "child", "base", "invalid: [yaml: content")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing harness YAML")
+}
+
+func TestGivenCustomHarnessWithURLBase_GetConfigError(t *testing.T) {
+	baseURL := "https://raw.githubusercontent.com/org/host/main/harness/base.yaml#sha256=abc123"
+	scm := &fakeURLSCM{files: map[string][]byte{}} // no config file
+	w := &world.World{
+		Org:              "org",
+		RepoName:         "repo",
+		SCM:              scm,
+		URLBaseHarnesses: map[string]string{"base": baseURL},
+	}
+	err := givenCustomHarnessWithURLBase(w, "child", "base", "role: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
+// --- givenCustomHarnessWithLocalBase / givenCustomHarnessWithURLBase
+//     additional coverage: whitespace-only inputs pass TrimSpace as empty ---
+
+func TestGivenCustomHarnessWithLocalBase_WhitespaceValidation(t *testing.T) {
+	w := &world.World{Org: "org", RepoName: "repo"}
+	// Leading/trailing whitespace should be trimmed; if the trimmed value
+	// is empty, validation should fail.
+	require.Error(t, givenCustomHarnessWithLocalBase(w, "  ", "base", "doc"))
+	require.Error(t, givenCustomHarnessWithLocalBase(w, "child", "  ", "doc"))
+	require.Error(t, givenCustomHarnessWithLocalBase(w, "child", "base", "  "))
+}
+
+func TestGivenCustomHarnessWithURLBase_WhitespaceValidation(t *testing.T) {
+	w := &world.World{Org: "org", RepoName: "repo"}
+	require.Error(t, givenCustomHarnessWithURLBase(w, "  ", "base", "doc"))
+	require.Error(t, givenCustomHarnessWithURLBase(w, "child", "  ", "doc"))
+	require.Error(t, givenCustomHarnessWithURLBase(w, "child", "base", "  "))
+}
+
+func TestGivenURLSourcedCustomHarnessWithURLBase_WhitespaceValidation(t *testing.T) {
+	w := &world.World{Org: "org", RepoName: "repo"}
+	require.Error(t, givenURLSourcedCustomHarnessWithURLBase(w, "  ", "base", "doc"))
+	require.Error(t, givenURLSourcedCustomHarnessWithURLBase(w, "child", "  ", "doc"))
+	require.Error(t, givenURLSourcedCustomHarnessWithURLBase(w, "child", "base", "  "))
 }

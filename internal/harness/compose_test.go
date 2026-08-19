@@ -2636,6 +2636,14 @@ func TestIsFullsendCachePath(t *testing.T) {
 		// isFullsendCachePath must still recognise them.
 		{"relative cache path with relative workspace root", relCacheContentPath, ".", true},
 		{"relative non-cache path with relative workspace root", "agents/triage.md", ".", false},
+		// Edge case: cache directory itself (rel == ".") — the directory is
+		// considered part of the cache tree, matching the existing guard
+		// (rel != ".." && !HasPrefix(rel, "../")).
+		{"cache directory itself", filepath.Join(workspaceRoot, ".fullsend-cache"), workspaceRoot, true},
+		{"relative cache directory itself", ".fullsend-cache", ".", true},
+		// Exact parent traversal: p is the workspace root itself, so
+		// filepath.Rel returns ".." which the guard rejects.
+		{"workspace root is not a cache path", workspaceRoot, workspaceRoot, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
