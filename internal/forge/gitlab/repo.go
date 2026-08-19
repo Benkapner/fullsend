@@ -443,6 +443,75 @@ func (c *LiveClient) GetRef(ctx context.Context, owner, repo, refPath string) (s
 	return commit.ID, nil
 }
 
+// CompareCommits compares two commits and returns their relationship status:
+// "ahead" (head is ahead of base), "behind" (head is behind base),
+// "identical" (same commit), or "diverged" (no linear relationship).
+//
+// GitLab's compare endpoint is not symmetric — it only reports commits
+// reachable from "to" but not from "from". A single forward call cannot
+// distinguish "ahead" from "diverged" because both cases return non-empty
+// commits. To resolve the ambiguity, a reverse comparison (from=head,
+// to=base) is always made when the forward call returns any diffs or
+// commits. When both directions have commits, the history has diverged.
+func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head string) (string, error) {
+	proj := projectPath(owner, repo)
+
+	fwd, err := c.compareOnce(ctx, proj, owner, repo, base, head)
+	if err != nil {
+		return "", err
+	}
+
+	// No diffs and no commits → same commit.
+	if len(fwd.Commits) == 0 && len(fwd.Diffs) == 0 {
+		return "identical", nil
+	}
+
+	// Forward returned something — need the reverse direction to
+	// distinguish ahead / behind / diverged.
+	rev, err := c.compareOnce(ctx, proj, owner, repo, head, base)
+	if err != nil {
+		// If the reverse call fails, degrade to "diverged" rather than
+		// blocking the caller.
+		return "diverged", nil
+	}
+
+	hasFwd := len(fwd.Commits) > 0
+	hasRev := len(rev.Commits) > 0
+
+	switch {
+	case hasFwd && hasRev:
+		return "diverged", nil
+	case hasFwd:
+		return "ahead", nil
+	case hasRev:
+		return "behind", nil
+	default:
+		// Diffs exist but neither direction has commits — degrade to
+		// diverged.
+		return "diverged", nil
+	}
+}
+
+// compareResult holds the subset of GitLab's compare response we need.
+type compareResult struct {
+	Commits []struct{ ID string }      `json:"commits"`
+	Diffs   []struct{ NewPath string } `json:"diffs"`
+}
+
+// compareOnce performs a single GitLab repository compare API call.
+func (c *LiveClient) compareOnce(ctx context.Context, proj, owner, repo, from, to string) (*compareResult, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/compare?from=%s&to=%s",
+		proj, url.QueryEscape(from), url.QueryEscape(to)))
+	if err != nil {
+		return nil, fmt.Errorf("compare commits %s/%s %s...%s: %w", owner, repo, from, to, err)
+	}
+	var cmp compareResult
+	if err := decodeJSON(resp, &cmp); err != nil {
+		return nil, fmt.Errorf("decode compare response: %w", err)
+	}
+	return &cmp, nil
+}
+
 func (c *LiveClient) CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
 	branch, err := c.getDefaultBranch(ctx, owner, repo)
 	if err != nil {

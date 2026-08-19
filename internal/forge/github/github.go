@@ -1070,6 +1070,14 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
 	if err != nil {
+		// A 422 "Tree SHA does not exist" means the base_tree SHA went
+		// stale between when we read it and now — same class of race as
+		// non-fast-forward on the ref update. Wrap it so
+		// commitFilesWithRetry retries the entire operation from scratch.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+			return false, fmt.Errorf("create tree: %w: %w", forge.ErrNonFastForward, err)
+		}
 		return false, fmt.Errorf("create tree: %w", err)
 	}
 	var newTree struct {
@@ -1087,6 +1095,11 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
 	if err != nil {
+		// Same stale-SHA race as the create-tree step above.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+			return false, fmt.Errorf("create commit: %w: %w", forge.ErrNonFastForward, err)
+		}
 		return false, fmt.Errorf("create commit: %w", err)
 	}
 	var newCommit struct {
@@ -1097,7 +1110,8 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 7. Update branch ref to point to new commit.
-	// A 422 may indicate branch protection or a non-fast-forward (e.g. auto_init race).
+	// A 422 may indicate branch protection or a non-fast-forward
+	// (concurrent modification race).
 	refPayload := map[string]string{
 		"sha": newCommit.SHA,
 	}
@@ -1107,10 +1121,10 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 			// Check order matters: protection messages can contain "fast forward"
 			if isBranchProtectionError(apiErr) {
-				return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+				return false, fmt.Errorf("update ref: %w: %w", forge.ErrBranchProtected, err)
 			}
 			if isNonFastForwardError(apiErr) {
-				return false, fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
+				return false, fmt.Errorf("update ref: %w: %w", forge.ErrNonFastForward, err)
 			}
 		}
 		return false, fmt.Errorf("update ref: %w", err)
@@ -1280,6 +1294,19 @@ func isNonFastForwardError(apiErr *APIError) bool {
 		msg += " " + strings.ToLower(d.Message)
 	}
 	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
+}
+
+// isStaleTreeSHAError checks whether a 422 APIError indicates a stale
+// tree SHA — the base_tree or tree parameter references an object that no
+// longer exists (e.g. due to concurrent branch operations during parallel
+// e2e cleanup). This is the same class of race as a non-fast-forward ref
+// update and should be retried from scratch.
+func isStaleTreeSHAError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "tree sha does not exist")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
@@ -1618,6 +1645,22 @@ func (c *LiveClient) GetRef(ctx context.Context, owner, repo, refPath string) (s
 // GetBranchRef returns the HEAD commit SHA for the named branch.
 func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
 	return c.GetRef(ctx, owner, repo, "heads/"+branch)
+}
+
+// CompareCommits compares two commits and returns their relationship status:
+// "ahead" (head is ahead of base), "behind", "identical", or "diverged".
+func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/compare/%s...%s", owner, repo, base, head))
+	if err != nil {
+		return "", fmt.Errorf("compare commits %s/%s %s...%s: %w", owner, repo, base, head, err)
+	}
+	var cmp struct {
+		Status string `json:"status"`
+	}
+	if err := decodeJSON(resp, &cmp); err != nil {
+		return "", fmt.Errorf("decode compare response: %w", err)
+	}
+	return cmp.Status, nil
 }
 
 // CreateBranch creates a new branch from the repository's default branch.

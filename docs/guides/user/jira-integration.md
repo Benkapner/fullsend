@@ -14,7 +14,7 @@ A scheduled GitHub Actions workflow runs `fullsend poll --input-driver jira-poll
 4. Routes through the standard agent routing rules.
 5. Writes dispatch records that trigger agent workflows.
 
-For the architectural details of the polling protocol, see [ADR 0063 — Polling-based work discovery](../../ADRs/0063-polling-based-work-discovery.md).
+For architectural details on the polling protocol, see [Architecture](../../architecture.md#agent-dispatch-and-coordination-layer).
 
 The same conventions work across forges:
 
@@ -54,6 +54,15 @@ This means the person who commented `/fs-triage` on a Jira issue will not see th
 | `JIRA_TOKEN` | Your Jira API token |
 | `JIRA_USER_EMAIL` | Email associated with the token |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
+
+### Sandbox credentials and network access
+
+The fullsend scaffold includes an OpenShell credential provider (`providers/atlassian-cloud.yaml`) and network profile (`profiles/fullsend-atlassian-cloud.yaml`) that grant sandboxed agents access to Jira Cloud. These are layered content — they are provided at runtime by reusable workflows, not written to the `.fullsend` directory:
+
+- **Provider** (`atlassian-cloud`) — declares the `atlassian-cloud` credential provider using the `fullsend-atlassian-cloud` profile type. Jira Cloud Basic auth requires a base64-encoded `email:api-token` string; because OpenShell does not yet support composite credential injection, provide a single pre-encoded token (generate with `printf 'you@example.com:your-api-token' | base64`).
+- **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to `*.atlassian.net:443` with read-write access and endpoint enforcement. Permitted binaries are `curl` and `node`.
+
+The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tenant. Per-tenant scoping is not yet supported by OpenShell; this is an accepted risk for now.
 
 ## Repo configuration
 
@@ -124,46 +133,31 @@ jobs:
 
           for i in $(seq 0 $((count - 1))); do
             record=$(jq -c ".[$i]" dispatches.json)
-            STAGE=$(echo "$record" | jq -r '.stage')
-            RESOURCE_KEY=$(echo "$record" | jq -r '.resource_key')
+            AGENT=$(echo "$record" | jq -r '.agent')
             EVENT_TYPE=$(echo "$record" | jq -r '.event_type')
-            ISSUE_ID=$(echo "$record" | jq -r '.iid // 0')
+            SOURCE_REPO=$(echo "$record" | jq -r '.source_repo')
+            EVENT_PAYLOAD=$(echo "$record" | jq -r '.event_payload')
+            STATUS_NUMBER=$(echo "$record" | jq -r '.status_number')
 
-            # Extract the Jira issue key from the resource key (e.g. "issue-PROJ-101" → "PROJ-101").
-            ISSUE_KEY="${RESOURCE_KEY#issue-}"
-            ISSUE_URL="${JIRA_BASE_URL}/browse/${ISSUE_KEY}"
-
-            # Build a minimal event payload compatible with the scaffold agent workflows.
-            # The concurrency group uses fromJSON(event_payload).issue.number, so it must
-            # stay a number — per the adapter spec, that's entity.id (here, the record's
-            # own numeric .iid), not the Jira key string. This is a stopgap projection,
-            # not the spec's full FULLSEND_WORK_ITEM_* execution-ref projection (deferred
-            # to the tracked "real output driver" follow-up — see the KNOWN LIMITATION
-            # note in internal/jirapoll/poller.go).
-            EVENT_PAYLOAD=$(jq -nc \
-              --argjson number "$ISSUE_ID" \
-              --arg url "$ISSUE_URL" \
-              '{issue: {number: $number, html_url: $url}}')
-
-            # Find the workflow file for this stage by scanning for the
-            # "# fullsend-stage: <stage>" marker in workflow files.
+            # Find the workflow file for this agent by scanning for the
+            # "# fullsend-stage: <agent>" marker in workflow files.
             WORKFLOW_NAME=""
             for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
               [[ -f "$wf" ]] || continue
-              if grep -qxF "# fullsend-stage: ${STAGE}" "$wf"; then
+              if grep -qxF "# fullsend-stage: ${AGENT}" "$wf"; then
                 WORKFLOW_NAME=$(basename "$wf")
                 break
               fi
             done
             if [[ -z "$WORKFLOW_NAME" ]]; then
-              echo "::warning::No workflow found for stage ${STAGE}, skipping ${RESOURCE_KEY}"
+              echo "::warning::No workflow found for agent ${AGENT}, skipping"
               continue
             fi
 
-            echo "Dispatching ${WORKFLOW_NAME} for ${ISSUE_KEY} (${STAGE})"
+            echo "Dispatching ${WORKFLOW_NAME} (${AGENT}) for status_number=${STATUS_NUMBER}"
             gh workflow run "$WORKFLOW_NAME" \
               -f event_type="$EVENT_TYPE" \
-              -f source_repo="${{ github.repository }}" \
+              -f source_repo="$SOURCE_REPO" \
               -f event_payload="$EVENT_PAYLOAD"
 
             dispatched=$((dispatched + 1))
@@ -241,19 +235,20 @@ jq '.' dispatches.json
 # Count dispatches
 jq 'length' dispatches.json
 
-# Show stage and resource key for each dispatch
-jq '.[] | {stage, resource_key, event_type}' dispatches.json
+# Show agent and event type for each dispatch
+jq '.[] | {agent, event_type, status_number}' dispatches.json
 ```
 
 Key fields in each dispatch record:
 
 | Field | Description |
 |---|---|
-| `stage` | Agent stage to dispatch (e.g., `triage`, `code`) |
+| `agent` | Agent to dispatch (e.g., `triage`, `code`) |
 | `event_type` | What triggered the dispatch (e.g., `comment_added`, `label_changed`) |
-| `resource_key` | Identifies the Jira issue (e.g., `issue-PROJ-101`) |
-| `iid` | Numeric issue ID used for concurrency grouping |
-| `event_payload_b64` | Base64-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — decode with `jq -r '.event_payload_b64' | base64 -d | jq '.'` |
+| `event_payload` | JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — inspect with `jq -r '.event_payload \| fromjson' dispatches.json` |
+| `source_repo` | GitHub repo slug where the agent runs |
+| `status_repo` | GitHub repo slug for status tracking |
+| `status_number` | Entity identifier as a string (Jira numeric issue ID) |
 
 ### Dry-run tip
 
@@ -265,20 +260,22 @@ If you want to avoid advancing Jira checkpoints during testing, poll against a d
 
 > **Implementation detail.** Once Jira support is stabilized, users will not need to know this dispatch format — it will be an internal detail between the poll job and the `fullsend run` workflows. This section is documented now because the integration is pre-alpha and operators may need to debug or inspect dispatch records directly.
 
-The poll step writes an array of dispatch records to `dispatches.json`. Each record has the following fields:
+The poll step writes an array of dispatch records to `dispatches.json`. Each record is an execution ref compatible with the `workflow_call` shim (`reusable-dispatch.yml`). Fields:
 
 | Field | Type | Description |
 |---|---|---|
-| `stage` | string | Agent stage to run (e.g., `"triage"`, `"code"`). Determined by routing rules. |
+| `agent` | string | Agent to run (e.g., `"triage"`, `"code"`). Determined by CEL trigger evaluation. |
+| `role` | string | Harness role for this agent. |
 | `event_type` | string | Jira event type that triggered the dispatch (e.g., `"comment_added"`, `"label_changed"`, `"opened"`, `"reopened"`, `"edited"`, `"closed"`). |
-| `event_payload_b64` | string | Base64-encoded JSON [NormalizedEvent](../../normative/normalized-event/v1/). Decoded example below. |
-| `resource_key` | string | Stable entity key for concurrency control, in the format `issue-{JIRA_KEY}` (e.g., `"issue-PROJ-101"` for Jira key `PROJ-101`). |
-| `is_fork` | boolean | Whether the source is a fork. Always `false` for Jira dispatches (Jira issues are work items, not change proposals). |
-| `iid` | integer | Jira's internal numeric issue ID (not the human-readable key). Used by the downstream dispatch step to set `issue.number` in the compatibility payload. |
+| `event_payload` | string | JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/). Example below. |
+| `source_repo` | string | GitHub repo slug where the agent workflow runs. |
+| `trigger_source` | string | (Optional) Trigger source identifier. |
+| `status_repo` | string | GitHub repo slug for status tracking. |
+| `status_number` | string | Entity identifier as a string (Jira's numeric issue ID). |
 
-### Decoded `event_payload_b64` example
+### `event_payload` example
 
-The `event_payload_b64` field is a base64-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — the same forge-neutral struct that GitHub and GitLab input drivers produce. A decoded example for a `/fs-triage` comment on `PROJ-101`:
+The `event_payload` field is a JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — the same forge-neutral struct that GitHub and GitLab input drivers produce. An example for a `/fs-triage` comment on `PROJ-101`:
 
 ```json
 {
@@ -314,15 +311,15 @@ The `event_payload_b64` field is a base64-encoded [NormalizedEvent](../../normat
 }
 ```
 
-The `entity.key` field is required when `source.system` is `"jira"` — it carries the human-readable Jira key (e.g., `PROJ-101`) that the `resource_key` is derived from. See the [NormalizedEvent spec](../../normative/normalized-event/v1/) for the full schema.
+The `entity.key` field is required when `source.system` is `"jira"` — it carries the human-readable Jira key (e.g., `PROJ-101`). See the [NormalizedEvent spec](../../normative/normalized-event/v1/) for the full schema.
 
 ## Actor role resolution
 
 > **Known limitation.** Roles are resolved by Jira project **role name**, not by actual granted permissions. This is intentional for the MVP — see below.
 
-The poller maps each event actor to an [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md) role (`read`, `write`, `admin`) by looking up their Jira project role membership and matching on the role's **name**:
+The poller maps each event actor to a dispatch authorization role (`read`, `write`, `admin`) by looking up their Jira project role membership and matching on the role's **name**:
 
-| Jira project role name (case-insensitive) | ADR 0054 role |
+| Jira project role name (case-insensitive) | Dispatch role |
 |---|---|
 | `Administrators` | `admin` |
 | `Developers` | `write` |
@@ -339,13 +336,13 @@ If your project uses Jira's default role names ("Administrators"/"Developers") w
 
 > **Known limitation.** No cross-system identity check is performed between Jira and GitHub. The Jira project is the entire authorization boundary for Jira-sourced events.
 
-The role resolved above feeds directly into ADR 0054's dispatch authorization gate — there is no separate check against the target GitHub repo's actual collaborators. This means anyone holding a Jira project role that maps to `write` (Jira's default "Developers" role, by default) can trigger write-gated slash commands like `/fs-code` against your repo, **even if that person has no GitHub access to it at all**.
+The role resolved above feeds directly into the dispatch authorization gate (see [Architecture](../../architecture.md#agent-dispatch-and-coordination-layer)) — there is no separate check against the target GitHub repo's actual collaborators. This means anyone holding a Jira project role that maps to `write` (Jira's default "Developers" role, by default) can trigger write-gated slash commands like `/fs-code` against your repo, **even if that person has no GitHub access to it at all**.
 
 If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
 
 ## Poll coordination
 
-The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following the write-then-verify protocol defined in [ADR 0063](../../ADRs/0063-polling-based-work-discovery.md). Two properties are stored on each processed issue:
+The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following a write-then-verify protocol. Each cycle randomly selects up to N (default 5) issues from the candidate set for processing, spreading load across cycles. Two properties are stored on each processed issue:
 
 - **Lock** (`fullsend.poll.{owner}.{repo}.lock`) — prevents concurrent pollers from *detecting changes on* the same issue simultaneously. The lock covers the change-detection window only: it is released when an issue finishes processing, before the dispatch records are written and consumed by the downstream dispatch step, and it is not renewed while an issue is being processed — a cycle that stalls longer than the stale threshold (15 minutes) can have its lock reclaimed by a concurrent poller, which may produce duplicate dispatches. Lock ownership through dispatch scheduling is part of the same tracked follow-up as dispatch confirmation.
 - **Last check** (`fullsend.poll.{owner}.{repo}.lastCheck`) — tracks the timestamp of the most recent processed change. Only changes newer than this timestamp trigger agent dispatch.
@@ -361,7 +358,7 @@ Two edge cases of checkpoint tracking are worth knowing:
 
 Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: every cycle that selects at least one issue makes one call to load the project's role structure (a role-list call plus one detail call per role), then one additional call for each distinct actor below the highest role priority the first time they're seen that cycle, to check their group memberships (cached per actor for the rest of the cycle, but not across cron runs). Cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role.
 
-Two more scaling limits, following [ADR 0063](../../ADRs/0063-polling-based-work-discovery.md):
+Two more scaling limits:
 
 - **Issues beyond the top M candidates can be starved.** Each cycle's JQL search returns at most M (default 50) candidates, ordered by `updated DESC`. If a project has more than M issues with in-scope activity at once, whichever issues aren't in that top-M window this cycle are simply never selected — there's no rotation across cycles to eventually reach them. This is expected to self-resolve for most projects (an issue with new activity moves toward the front of `updated DESC` on its own), but a project that consistently has more than M simultaneously-active issues will have some starved indefinitely. Narrow the default `--jql` (e.g. scope to a label or a subset of issue types) if this applies to you.
 - **Comments are re-listed in full, oldest-first, every cycle.** The Jira REST API has no way to filter comments server-side by date, so `ListComments` always paginates from the start of an issue's comment history; the poller then filters client-side by timestamp. For issues with very long comment histories, this means re-fetching (and re-decoding) old comments every cycle just to discard them. Listings are capped at 10,000 entries per issue; an issue beyond that cap has its newest activity invisible to the poller (a WARNING is logged when the cap is hit). Each API response is bounded to 10MB, but the accumulated per-issue comment history is bounded only by the page cap — a per-issue byte budget is a tracked follow-up; against real Jira Cloud (which caps individual comments) the realistic worst case is tens of MB per issue.
@@ -405,8 +402,6 @@ However, more pollers against the same Jira project means more API calls per cyc
 - **Narrowing `--jql` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
 - **Monitoring Jira rate limits.** Jira Cloud uses points-based quotas, and multiple pollers multiply the cost. Watch for `429` responses in workflow logs — the poller retries with backoff, but sustained rate limiting slows all repos' cycles.
-
-For the architectural details of the coordination protocol and its parameters (M, N, stale thresholds), see [ADR 0063 — Polling-based work discovery](../../ADRs/0063-polling-based-work-discovery.md).
 
 ## Troubleshooting
 

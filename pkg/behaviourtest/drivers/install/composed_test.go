@@ -11,17 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeMintDriver is a test double for MintDriver.
+// fakeMintDriver is a test double for mintDriver.
 type fakeMintDriver struct {
 	teardownCalled bool
 	teardownErr    error
 }
 
-func (f *fakeMintDriver) Install(_ context.Context, _ string) (State, error) {
-	return NewPerRepoState("org", "", "https://mint.test"), nil
+func (f *fakeMintDriver) Install(_ context.Context, _ string) (string, error) {
+	return "https://mint.test", nil
 }
 
-func (f *fakeMintDriver) Teardown(_ context.Context, _ string, _ State) error {
+func (f *fakeMintDriver) Teardown(_ context.Context) error {
 	f.teardownCalled = true
 	return f.teardownErr
 }
@@ -29,16 +29,15 @@ func (f *fakeMintDriver) Teardown(_ context.Context, _ string, _ State) error {
 func TestNewComposedDriver_OK(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 3, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 3, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, 3, d.Capacity())
 }
 
 func TestNewComposedDriver_InvalidCapacity(t *testing.T) {
-	_, err := NewComposedDriver("org", nil, nil, nil, 0, t.Logf)
+	_, err := newComposedDriver("org", nil, nil, 0, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "capacity must be positive")
 }
@@ -46,9 +45,8 @@ func TestNewComposedDriver_InvalidCapacity(t *testing.T) {
 func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 3, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 3, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -71,9 +69,8 @@ func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	err = d.DeallocateRepo(context.Background(), "unknown-repo")
@@ -84,9 +81,8 @@ func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
 func TestComposedDriver_DoubleDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -106,9 +102,8 @@ func TestComposedDriver_DoubleDeallocate(t *testing.T) {
 func TestComposedDriver_AllocateBlocksUntilDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, e, 1, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 1, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -140,9 +135,8 @@ func TestComposedDriver_AllocateEnsureError_ReturnsNameToPool(t *testing.T) {
 	// on failure.
 	failEnsurer := &failingEnsurer{err: fmt.Errorf("ensure failed")}
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 
-	d, err := NewComposedDriver("org", mint, st, failEnsurer, 1, t.Logf)
+	d, err := newComposedDriver("org", mint, failEnsurer, 1, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -168,10 +162,9 @@ func TestComposedDriver_AllocateEnsureError_ReturnsNameToPool(t *testing.T) {
 
 func TestComposedDriver_FinalizeNoOutstanding(t *testing.T) {
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 	e := newFakeEnsurer()
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	err = d.Finalize(context.Background())
@@ -181,10 +174,9 @@ func TestComposedDriver_FinalizeNoOutstanding(t *testing.T) {
 
 func TestComposedDriver_FinalizeWithOutstanding(t *testing.T) {
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 	e := newFakeEnsurer()
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -200,10 +192,9 @@ func TestComposedDriver_FinalizeWithOutstanding(t *testing.T) {
 
 func TestComposedDriver_FinalizeJoinsErrors(t *testing.T) {
 	mint := &fakeMintDriver{teardownErr: fmt.Errorf("teardown boom")}
-	st := NewPerRepoState("org", "", "https://mint.test")
 	e := newFakeEnsurer()
 
-	d, err := NewComposedDriver("org", mint, st, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -220,10 +211,9 @@ func TestComposedDriver_FinalizeJoinsErrors(t *testing.T) {
 func TestComposedDriver_ConcurrentAllocateDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
-	st := NewPerRepoState("org", "", "https://mint.test")
 
 	const poolSize = 4
-	d, err := NewComposedDriver("org", mint, st, e, poolSize, t.Logf)
+	d, err := newComposedDriver("org", mint, e, poolSize, t.Logf)
 	require.NoError(t, err)
 
 	const goroutines = 8
@@ -261,6 +251,6 @@ type failingEnsurer struct {
 	err error
 }
 
-func (f *failingEnsurer) EnsureRepo(_ context.Context, _, _ string) (State, error) {
-	return nil, f.err
+func (f *failingEnsurer) EnsureRepo(_ context.Context, _, _ string) error {
+	return f.err
 }

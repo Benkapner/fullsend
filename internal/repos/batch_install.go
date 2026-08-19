@@ -128,13 +128,13 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
-				resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
+				resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 				discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: ctx.Err()}
 				return
 			}
 			defer func() { <-sem }()
 
-			resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Entry)
+			resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 			fullName := rr.Owner + "/" + rr.Repo
 			progress(fullName, "discover", "Checking installation status")
 
@@ -423,7 +423,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				UpstreamTag:      tag,
 				SkipGuardCheck:   true,
 				WIFProvider:      wifProvider,
-				RunnerTags:       cfg.Manifest.Forge.GitLab.RunnerTags,
+				RunnerTags:       gitlabRunnerTags(cfg.Manifest),
 				Direct:           cfg.Direct,
 				ReuseSecrets:     dr.secretsExist,
 			}
@@ -435,7 +435,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				scaffoldFiles, fetchErr := FetchRemoteScaffold(
 					ctx, refResolver.client,
 					manifestRef, ref, dr.resolved.Forge,
-					cfg.Manifest.Forge.GitLab.RunnerTags,
+					gitlabRunnerTags(cfg.Manifest),
 				)
 				if fetchErr == nil {
 					installCfg.PrebuiltScaffoldFiles = scaffoldFiles

@@ -191,7 +191,7 @@ func TestInstallCmd_PerRepoRejectsNonCloudRunMintURL(t *testing.T) {
 	cmd.SetArgs([]string{"admin", "install", "acme/widget", "--mint-url", "https://evil.example.com", "--inference-project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--mint-url must be a Cloud Run URL")
+	assert.Contains(t, err.Error(), "--mint-url must be mint.fullsend.sh or a Cloud Run URL")
 }
 
 func TestInstallCmd_PerRepoRejectsPerOrgFlags(t *testing.T) {
@@ -1778,6 +1778,45 @@ func TestValidateSkipMintCheck(t *testing.T) {
 	require.Error(t, validateSkipMintCheck(""))
 	require.Error(t, validateSkipMintCheck("http://example.com"))
 	require.NoError(t, validateSkipMintCheck("https://mint.example.com/v1/token"))
+}
+
+func TestValidateMintURL_AcceptsHostedCommunityMint(t *testing.T) {
+	require.NoError(t, validateMintURL("https://mint.fullsend.sh"))
+}
+
+func TestValidateMintURL_AcceptsCloudRunURL(t *testing.T) {
+	require.NoError(t, validateMintURL("https://fullsend-mint-abc123.run.app"))
+}
+
+func TestValidateMintURL_AcceptsCloudFunctionsURL(t *testing.T) {
+	require.NoError(t, validateMintURL("https://us-central1-my-project.cloudfunctions.net"))
+}
+
+func TestValidateMintURL_RejectsArbitraryHosts(t *testing.T) {
+	err := validateMintURL("https://evil.example.com")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "got host")
+}
+
+func TestValidateMintURL_RejectsOtherFullsendSubdomains(t *testing.T) {
+	err := validateMintURL("https://evil.fullsend.sh")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "got host")
+}
+
+func TestDefaultMintURL_IsHostedCommunity(t *testing.T) {
+	assert.Equal(t, "https://mint.fullsend.sh", DefaultMintURL)
+}
+
+func TestIsHostedMintURL(t *testing.T) {
+	assert.True(t, IsHostedMintURL("https://mint.fullsend.sh"))
+	assert.True(t, IsHostedMintURL("https://mint.fullsend.sh/v1/token"))
+	assert.True(t, IsHostedMintURL("https://mint.fullsend.sh:443"))
+	assert.True(t, IsHostedMintURL("https://Mint.Fullsend.SH"))
+	assert.False(t, IsHostedMintURL("https://evil.example.com"))
+	assert.False(t, IsHostedMintURL("https://fullsend-mint-abc123.run.app"))
+	assert.False(t, IsHostedMintURL(""))
+	assert.False(t, IsHostedMintURL("://"))
 }
 
 func TestValidateWIFProvider_Valid(t *testing.T) {

@@ -27,20 +27,18 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 }
 
 func testManifest(repos ...string) *Manifest {
-	m := &Manifest{
+	entries := make([]RepoEntry, 0, len(repos))
+	for _, r := range repos {
+		entries = append(entries, RepoEntry{Name: r})
+	}
+	return &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       entries,
 		},
 	}
-	for _, r := range repos {
-		m.Repos = append(m.Repos, RepoEntry{Repo: r})
-	}
-	return m
 }
 
 func TestUninstall_InstalledRepo(t *testing.T) {
@@ -96,7 +94,7 @@ func TestResolveConfigWithGlobs_ExactMatch(t *testing.T) {
 
 func TestResolveConfigWithGlobs_GlobMatch(t *testing.T) {
 	m := testManifest()
-	m.Repos = []RepoEntry{{Repo: "acme/*"}}
+	m.GitHub.Repos = []RepoEntry{{Name: "acme/*"}}
 	resolved, ok := m.ResolveConfigWithGlobs("acme", "api")
 	if !ok {
 		t.Fatal("expected ok=true for glob match")
@@ -367,19 +365,17 @@ func newInstalledFakeGitLabClient(repos ...string) *forge.FakeClient {
 }
 
 func testGitLabManifest(repos ...string) *Manifest {
-	m := &Manifest{
-		Version: 1,
-		Forge: ForgeSection{
-			GitLab: GitLabForgeInfra{URL: "https://gitlab.example.com"},
-		},
-		Defaults: DefaultsConfig{
-			Forge: ForgeGitLab,
-		},
-	}
+	entries := make([]RepoEntry, 0, len(repos))
 	for _, r := range repos {
-		m.Repos = append(m.Repos, RepoEntry{Repo: r})
+		entries = append(entries, RepoEntry{Name: r})
 	}
-	return m
+	return &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: entries,
+		},
+	}
 }
 
 func TestUninstall_GitLabRepo(t *testing.T) {

@@ -27,6 +27,13 @@ Accepted
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
 
+**Annotation (2026-08-18):** The manifest format was simplified in
+[#6346](https://github.com/fullsend-ai/fullsend/issues/6346): the
+`forge:` wrapper and `defaults.forge` were replaced with top-level
+`github:` and `gitlab:` platform sections; per-repo entries use `name:`
+instead of `repo:` and always use object form; `NullableString` was
+replaced with a `"none"` sentinel.
+
 Builds on [ADR 0033](0033-per-repo-installation-mode.md) (per-repo
 installation mode) and [ADR 0048](0048-automatic-updates.md) (automatic
 updates). Core commands work independently of ADR 0048;

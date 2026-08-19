@@ -22,7 +22,7 @@ These flags are inherited by all `repos` subcommands:
 | `fullsend repos install [repos...]` | Converge repos to the desired state defined in a manifest |
 | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
 | `fullsend repos status` | Compare manifest against actual repo state |
-| `fullsend repos set-default <key> <value>` | Set or remove a forge-level default in repos.yaml |
+| `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in repos.yaml |
 
 ## `repos migrate`
 
@@ -32,7 +32,7 @@ One-command migration from per-org to per-repo fullsend installation. For each r
 2. Install per-repo (scaffold workflows, variables, secrets) with config carried over from the org config
 3. Unenroll from per-org config
 
-Generates a `repos.yaml` manifest reflecting the migrated state. Re-running after a partial migration picks up where it left off.
+Generates a `repos.yaml` manifest reflecting the migrated state. When a `repos.yaml` already exists (e.g. from a previous `--repo`-filtered run), newly migrated repos are merged into it instead of overwriting it. Re-running after a partial migration picks up where it left off.
 
 ### Config carry-over
 
@@ -87,7 +87,7 @@ required in this case. This enables a greenfield setup without running
 
 Runs in three phases:
 
-1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (requires `--forge`). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`) are written to the manifest entry.
+1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`) are written to the manifest entry.
 2. **Provision** — repos in the manifest that are not yet provisioned are installed (scaffold files, variables, secrets). Repos with a guard variable set but other components missing are repaired automatically.
 3. **Convergence** — repos that are already installed are checked for variable drift (synced automatically) and scaffold ref drift (upgraded automatically).
 
@@ -112,7 +112,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
 | `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret) |
 | `--inference-project-number` | | Numeric GCP project number for WIF provider computation (auto-derived from `--inference-project` when omitted) |
-| `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; falls back to `defaults.forge` if set. |
+| `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; inferred from existing platform sections when unambiguous. |
 | `--force` | `false` | Allow scaffold ref downgrades |
 | `--inference-region` | | Per-repo GCP inference region override (default: global when `--inference-project` is set; install-time only, not stored in the manifest) |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
@@ -242,12 +242,12 @@ fullsend repos uninstall acme/old-api --uninstall-only
 
 ## `repos set-default`
 
-Set or remove a forge-level default in `repos.yaml`. An empty value removes the key. Creates the manifest with `version: 1` if the file does not exist.
+Set or remove a platform-level default in `repos.yaml`. An empty value removes the key. Creates the manifest with `version: 1` if the file does not exist.
 
 ```bash
 fullsend repos set-default <key> <value>
-fullsend repos set-default forge.github.fullsend_ref v2.5.0
-fullsend repos set-default forge.github.mint_url ""   # removes the key
+fullsend repos set-default github.fullsend_ref v2.5.0
+fullsend repos set-default github.mint_url ""   # removes the key
 ```
 
 ### Valid keys
@@ -255,13 +255,13 @@ fullsend repos set-default forge.github.mint_url ""   # removes the key
 | Key | Type | Description |
 |-----|------|-------------|
 | `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
-| `forge.github.url` | URL | GitHub instance URL (default: `https://github.com`) |
-| `forge.github.mint_url` | URL | Cloud Run endpoint URL for the token mint (defaults to `https://mint.fullsend.sh` in public mode) |
-| `forge.github.mint_mode` | `public` or `private` | Controls the default mint URL: `public` defaults to `https://mint.fullsend.sh`; `private` requires an explicit `mint_url` (default: `public`) |
-| `forge.github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
-| `forge.gitlab.url` | URL | GitLab instance URL |
-| `forge.gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold dispatch file |
-| `forge.gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
+| `github.url` | URL | GitHub instance URL (default: `https://github.com`) |
+| `github.mint_url` | URL | Token mint service URL (defaults to `https://mint.fullsend.sh` in public mode) |
+| `github.mint_mode` | `public` or `private` | Controls the default mint URL: `public` defaults to `https://mint.fullsend.sh`; `private` requires an explicit `mint_url` (default: `public`) |
+| `github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
+| `gitlab.url` | URL | GitLab instance URL |
+| `gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold dispatch file |
+| `gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
 
 ### Flags
 
@@ -274,25 +274,25 @@ fullsend repos set-default forge.github.mint_url ""   # removes the key
 Set the GitLab runner tags:
 
 ```bash
-fullsend repos set-default forge.gitlab.runner_tags fullsend-agent
+fullsend repos set-default gitlab.runner_tags fullsend-agent
 ```
 
 Set multiple runner tags:
 
 ```bash
-fullsend repos set-default forge.gitlab.runner_tags "fullsend-agent,gpu-runner"
+fullsend repos set-default gitlab.runner_tags "fullsend-agent,gpu-runner"
 ```
 
 Remove runner tags:
 
 ```bash
-fullsend repos set-default forge.gitlab.runner_tags ""
+fullsend repos set-default gitlab.runner_tags ""
 ```
 
 Set the GitLab instance URL:
 
 ```bash
-fullsend repos set-default forge.gitlab.url https://gitlab.example.com
+fullsend repos set-default gitlab.url https://gitlab.example.com
 ```
 
 ## See also

@@ -158,6 +158,12 @@ repo baseline and overrides)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
+- CEL-guarded overlays: an `overlays:` list of CEL-guarded config
+  overlays generalizes the `forge:` block, letting harness authors
+  condition scripts, skills, env vars, and other fields on any event
+  property (source system, event type, etc.) rather than only the forge
+  platform. `forge:` is deprecated but remains functional
+  ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 
 **Open questions:**
 
@@ -241,6 +247,15 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `conversation.Client` — not a separate always-on chat bot and not an
   extension of `forge.Client`
   ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
+- Dispatch authorization gate: all agent dispatch paths — slash commands
+  and automatic event triggers — require authorization before dispatching.
+  GitHub paths check the acting user's collaborator permission via the
+  repository API (`write` or above for mutation commands; `triage` or above
+  for observation stages). Non-GitHub dispatch paths (e.g., Jira polling)
+  map source-system roles to dispatch authorization roles (`read`, `write`,
+  `admin`) using source-native role resolution; the resolved role feeds the
+  same authorization gate with no cross-system identity verification
+  ([ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
 
 **Open questions:**
 

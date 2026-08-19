@@ -153,6 +153,17 @@ source URL for checksums.  When bumping a version:
 3. The base image digest can be updated by running
    `podman manifest inspect <image>:<tag>` and extracting the index digest.
 
+OpenShell is partially automated: `OPENSHELL_VERSION` is tracked by a
+Renovate customManager, and `OPENSHELL_SHA` (the commit SHA used by
+`.github/scripts/install-openshell.sh` to pin the upstream installer on CI
+host runners) is refreshed automatically by
+`scripts/renovate/update-openshell-sha.sh` via `postUpgradeTasks` after each
+version bump. The runner Containerfile's OpenShell install is independent —
+it downloads the release tarball by version and verifies it with
+`sha256sum -c` against the release checksums file (see the table above).
+See `.github/scripts/openshell-version.sh` for the version/SHA source of
+truth.
+
 ## Local builds
 
 Build for your native architecture:

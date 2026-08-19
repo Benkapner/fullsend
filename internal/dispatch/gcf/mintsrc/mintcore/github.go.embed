@@ -266,7 +266,7 @@ var ErrInstallationNotFound = errors.New("installation not found")
 // FindInstallation looks up a GitHub App's installation ID for a repo.
 // The returned installation's account is verified against the expected org to
 // prevent cross-org token leakage.
-func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt, org, repo string) (int64, error) {
+func FindInstallation(ctx context.Context, githubBaseURL, jwt, org, repo string) (int64, error) {
 	reqURL := fmt.Sprintf("%s/repos/%s/%s/installation", githubBaseURL, org, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -276,7 +276,7 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return 0, fmt.Errorf("getting installation: %w", err)
 	}
@@ -310,7 +310,7 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 }
 
 // FindOrgInstallation looks up a GitHub App's installation ID for an organization.
-func FindOrgInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt, org string) (int64, error) {
+func FindOrgInstallation(ctx context.Context, githubBaseURL, jwt, org string) (int64, error) {
 	reqURL := fmt.Sprintf("%s/orgs/%s/installation", githubBaseURL, org)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -320,7 +320,7 @@ func FindOrgInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return 0, fmt.Errorf("getting org installation: %w", err)
 	}
@@ -356,7 +356,7 @@ type variableResponse struct {
 }
 
 // GetOrgVariable reads an org-level Actions variable using an installation token.
-func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, installationToken, org, name string) (value string, exists bool, err error) {
+func GetOrgVariable(ctx context.Context, githubBaseURL, installationToken, org, name string) (value string, exists bool, err error) {
 	reqURL := fmt.Sprintf("%s/orgs/%s/actions/variables/%s", githubBaseURL, org, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -366,7 +366,7 @@ func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, ins
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return "", false, fmt.Errorf("getting org variable: %w", err)
 	}
@@ -388,7 +388,7 @@ func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, ins
 }
 
 // GetRepoVariable reads a repo-level Actions variable using an installation token.
-func GetRepoVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, installationToken, owner, repo, name string) (value string, exists bool, err error) {
+func GetRepoVariable(ctx context.Context, githubBaseURL, installationToken, owner, repo, name string) (value string, exists bool, err error) {
 	reqURL := fmt.Sprintf("%s/repos/%s/%s/actions/variables/%s", githubBaseURL, owner, repo, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -398,7 +398,7 @@ func GetRepoVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, in
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return "", false, fmt.Errorf("getting repo variable: %w", err)
 	}
@@ -430,7 +430,7 @@ var repoForeignPolicyPermissions = map[string]string{
 }
 
 // createInstallationTokenWithPermissions creates an installation access token with explicit permissions.
-func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (string, error) {
+func createInstallationTokenWithPermissions(ctx context.Context, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (string, error) {
 	tokenReqBody := map[string]interface{}{
 		"permissions": perms,
 	}
@@ -453,7 +453,7 @@ func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTP
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return "", fmt.Errorf("creating installation token: %w", err)
 	}
@@ -475,14 +475,14 @@ func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTP
 }
 
 // ReadForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from the target org.
-func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
-	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
+func ReadForeignAllowlist(ctx context.Context, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
+	policyToken, err := createInstallationTokenWithPermissions(ctx, githubBaseURL, jwt, installationID,
 		foreignPolicyPermissions, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating policy check token: %w", err)
 	}
 
-	value, exists, err := GetOrgVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, ForeignVariableName(role))
+	value, exists, err := GetOrgVariable(ctx, githubBaseURL, policyToken, targetOrg, ForeignVariableName(role))
 	if err != nil {
 		return nil, err
 	}
@@ -495,14 +495,14 @@ func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseUR
 // ReadForeignAllowlistFromRepo reads FULLSEND_FOREIGN_<role>_REPOS from a
 // specific target repository. This is the repo-level counterpart of
 // ReadForeignAllowlist, enabling per-repo foreign authorization grants.
-func ReadForeignAllowlistFromRepo(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, targetRepo, role string) ([]string, error) {
-	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
+func ReadForeignAllowlistFromRepo(ctx context.Context, githubBaseURL, jwt string, installationID int64, targetOrg, targetRepo, role string) ([]string, error) {
+	policyToken, err := createInstallationTokenWithPermissions(ctx, githubBaseURL, jwt, installationID,
 		repoForeignPolicyPermissions, []string{targetRepo})
 	if err != nil {
 		return nil, fmt.Errorf("creating repo policy check token: %w", err)
 	}
 
-	value, exists, err := GetRepoVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, targetRepo, ForeignVariableName(role))
+	value, exists, err := GetRepoVariable(ctx, githubBaseURL, policyToken, targetOrg, targetRepo, ForeignVariableName(role))
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +514,7 @@ func ReadForeignAllowlistFromRepo(ctx context.Context, httpClient HTTPDoer, gith
 
 // CreateInstallationToken exchanges a JWT for an installation access token,
 // scoped to the given repos and role-specific permissions.
-func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
+func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
 	perms := RolePermissionsFor(role)
 	if perms == nil {
 		return "", "", nil, fmt.Errorf("no permissions defined for role %q", role)
@@ -541,7 +541,7 @@ func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBas
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	resp, err := mintHTTP(req)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("creating installation token: %w", err)
 	}

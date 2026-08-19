@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -55,4 +56,21 @@ func (r *RefResolver) Resolve(ctx context.Context, ref string) string {
 	}
 	r.cache[ref] = sha
 	return sha
+}
+
+// IsAncestor reports whether potentialAncestor is an ancestor of (or
+// identical to) descendant in the fullsend-ai/fullsend repository.
+// Both arguments must be commit SHAs. Returns false with a nil error
+// when the relationship cannot be determined (e.g., diverged commits).
+func (r *RefResolver) IsAncestor(ctx context.Context, potentialAncestor, descendant string) (bool, error) {
+	if potentialAncestor == descendant {
+		return true, nil
+	}
+	status, err := r.client.CompareCommits(ctx, shimOwner, shimRepo, potentialAncestor, descendant)
+	if err != nil {
+		return false, fmt.Errorf("ancestor check %s...%s: %w", potentialAncestor, descendant, err)
+	}
+	// "ahead" means descendant is ahead of potentialAncestor, so
+	// potentialAncestor is indeed an ancestor.
+	return status == "ahead", nil
 }

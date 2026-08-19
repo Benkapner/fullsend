@@ -13,18 +13,15 @@ import (
 func newBatchManifest(repos ...string) *Manifest {
 	entries := make([]RepoEntry, len(repos))
 	for i, r := range repos {
-		entries[i] = RepoEntry{Repo: r}
+		entries[i] = RepoEntry{Name: r}
 	}
 	return &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "github",
+			Repos:       entries,
 		},
-		Repos: entries,
 	}
 }
 
@@ -802,17 +799,14 @@ func TestBatchInstall_WithoutInferenceFlags_RequiresExistingSecrets(t *testing.T
 func newGitLabBatchManifest(repos ...string) *Manifest {
 	entries := make([]RepoEntry, len(repos))
 	for i, r := range repos {
-		entries[i] = RepoEntry{Repo: r}
+		entries[i] = RepoEntry{Name: r}
 	}
 	return &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitLab: GitLabForgeInfra{
-			URL: "https://gitlab.example.com",
-		}},
-		Defaults: DefaultsConfig{
-			Forge: "gitlab",
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: entries,
 		},
-		Repos: entries,
 	}
 }
 
@@ -940,17 +934,13 @@ func TestBatchInstall_FullsendRefPrecedence(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repos := []string{"acme/api"}
 			fc := newFakeClientForBatch(repos...)
-			entries := []RepoEntry{{Repo: "acme/api"}}
 			manifest := &Manifest{
 				Version: 1,
-				Forge: ForgeSection{GitHub: GitHubForgeInfra{
+				GitHub: &PlatformConfig{
 					MintURL:     "https://mint.example.com",
 					FullsendRef: tt.manifestRef,
-				}},
-				Defaults: DefaultsConfig{
-					Forge: "github",
+					Repos:       []RepoEntry{{Name: "acme/api"}},
 				},
-				Repos: entries,
 			}
 
 			var capturedFiles []forge.TreeFile
@@ -990,15 +980,13 @@ func TestBatchInstall_SHAResolution(t *testing.T) {
 	// Register a tag ref so the resolver can resolve "v0.35.0" to a SHA
 	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
 
-	entries := []RepoEntry{{Repo: "acme/api"}}
 	manifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v0.35.0",
-		}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    entries,
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
 	}
 
 	// Raw callback (not fakeScaffoldCommit) to capture file content for verification.
@@ -1040,12 +1028,12 @@ func TestBatchInstall_SHAResolution_BothRefsEmpty(t *testing.T) {
 	repos := []string{"acme/api"}
 	fc := newFakeClientForBatch(repos...)
 
-	entries := []RepoEntry{{Repo: "acme/api"}}
 	manifest := &Manifest{
-		Version:  1,
-		Forge:    ForgeSection{GitHub: GitHubForgeInfra{MintURL: "https://mint.example.com"}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    entries,
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/api"}},
+		},
 	}
 
 	var capturedFiles []forge.TreeFile
@@ -1084,15 +1072,13 @@ jobs:
     uses: __REUSABLE_DISPATCH__
 `)
 
-	entries := []RepoEntry{{Repo: "acme/api"}}
 	manifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v0.35.0",
-		}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    entries,
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
 	}
 
 	var capturedFiles []forge.TreeFile
@@ -1133,15 +1119,13 @@ func TestBatchInstall_RemoteScaffoldFetchFallback(t *testing.T) {
 	fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = "deadbeef1234567890abcdef1234567890abcdef"
 	// Do NOT register remote template content — fetch will fail.
 
-	entries := []RepoEntry{{Repo: "acme/api"}}
 	manifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitHub: GitHubForgeInfra{
+		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v0.35.0",
-		}},
-		Defaults: DefaultsConfig{Forge: "github"},
-		Repos:    entries,
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
 	}
 
 	var capturedFiles []forge.TreeFile

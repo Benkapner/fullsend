@@ -46,10 +46,15 @@ func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option)
 				return nil, err
 			}
 		}
+		// Base URL precedence: explicit arg > FULLSEND_GITLAB_URL > GITLAB_API_URL > CI_SERVER_URL
 		var opts []gl.Option
 		if baseURL != "" {
 			opts = append(opts, gl.WithBaseURL(baseURL))
+		} else if envURL := strings.TrimSpace(os.Getenv("FULLSEND_GITLAB_URL")); envURL != "" {
+			opts = append(opts, gl.WithBaseURL(envURL))
 		} else if envURL := strings.TrimSpace(os.Getenv("GITLAB_API_URL")); envURL != "" {
+			opts = append(opts, gl.WithBaseURL(envURL))
+		} else if envURL := strings.TrimSpace(os.Getenv("CI_SERVER_URL")); envURL != "" {
 			opts = append(opts, gl.WithBaseURL(envURL))
 		}
 		opts = append(opts, glOpts...)
@@ -70,24 +75,35 @@ func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option)
 // with the same forge name. The sync.Mutex protects the client cache
 // for concurrent goroutines in per-repo batch loops.
 type forgeClientFactory struct {
-	gitlabToken  string
-	forgeSection repos.ForgeSection
-	mu           sync.Mutex
-	clients      map[string]forge.Client
+	gitlabToken string
+	githubURL   string
+	gitlabURL   string
+	mu          sync.Mutex
+	clients     map[string]forge.Client
 }
 
 // newForgeClientFactory returns a ForgeClientFactory that lazily creates
-// and caches forge clients. The forgeSection carries per-forge URLs
-// from the manifest; when a URL is set it takes precedence over the
-// GITLAB_API_URL / GITHUB_API_URL environment variables.
+// and caches forge clients. The manifest carries per-platform URLs;
+// when a URL is set it takes precedence over the GITLAB_API_URL /
+// GITHUB_API_URL environment variables.
 //
 // A GitLab token is only resolved if the factory is asked for a GitLab
 // client, so single-forge GitHub manifests never require GITLAB_TOKEN.
-func newForgeClientFactory(gitlabToken string, forgeSection repos.ForgeSection) repos.ForgeClientFactory {
+func newForgeClientFactory(gitlabToken string, m *repos.Manifest) repos.ForgeClientFactory {
+	var githubURL, gitlabURL string
+	if m != nil {
+		if m.GitHub != nil {
+			githubURL = m.GitHub.URL
+		}
+		if m.GitLab != nil {
+			gitlabURL = m.GitLab.URL
+		}
+	}
 	return &forgeClientFactory{
-		gitlabToken:  gitlabToken,
-		forgeSection: forgeSection,
-		clients:      make(map[string]forge.Client),
+		gitlabToken: gitlabToken,
+		githubURL:   githubURL,
+		gitlabURL:   gitlabURL,
+		clients:     make(map[string]forge.Client),
 	}
 }
 
@@ -125,9 +141,9 @@ func (f *forgeClientFactory) ConfigFor(forgeName string) (repos.ForgeConfig, err
 func (f *forgeClientFactory) forgeURL(forgeName string) string {
 	switch forgeName {
 	case repos.ForgeGitLab:
-		return f.forgeSection.GitLab.URL
+		return f.gitlabURL
 	case repos.ForgeGitHub:
-		return f.forgeSection.GitHub.URL
+		return f.githubURL
 	default:
 		return ""
 	}

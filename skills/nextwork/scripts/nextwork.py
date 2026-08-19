@@ -42,6 +42,9 @@ REF_BARE_RE = re.compile(r"^#?(\d+)$")
 # readiness; only open structured blockedBy links yield blocked_by.
 ISSUE_CONTROL_LABELS = {
     "needs-info",
+    "needs-breakdown",
+    "needs-design",
+    "workflow-blocked",
     "ready-to-code",
     "triaged",
     "duplicate",
@@ -783,6 +786,30 @@ def classify_issue(
             status="waiting_info_other",
             reason="Needs-info; waiting on the reporter",
             eliminated=True,
+        )
+
+    if "needs-breakdown" in labels:
+        return Classification(
+            status="needs_breakdown",
+            reason="Needs breakdown into smaller issues",
+            eliminated=False,
+            suggested_actions=["Break this issue into smaller sub-issues"],
+        )
+
+    if "needs-design" in labels:
+        return Classification(
+            status="needs_design",
+            reason="Needs design work before code",
+            eliminated=False,
+            suggested_actions=["Add the missing design details"],
+        )
+
+    if "workflow-blocked" in labels:
+        return Classification(
+            status="workflow_blocked",
+            reason="Requires workflow changes the code agent cannot push",
+            eliminated=False,
+            suggested_actions=["Implement locally; the code agent cannot push workflow changes"],
         )
 
     # Non-stale code wait wins over stale completed triage.
@@ -2216,6 +2243,9 @@ DECISION_STATUSES = {
     "fix_conflicts",
     "human_work",
     "close_or_plan",
+    "needs_breakdown",
+    "needs_design",
+    "workflow_blocked",
 }
 
 WAITING_PREFIX = "waiting_"

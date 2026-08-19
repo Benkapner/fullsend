@@ -538,6 +538,37 @@ func TestGetBranchRef_DelegatesToGetRef(t *testing.T) {
 	assert.Equal(t, "branch-sha-456", sha)
 }
 
+func TestCompareCommits(t *testing.T) {
+	t.Run("returns status from response", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/repos/owner/repo/compare/abc123...def456", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "ahead",
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		status, err := client.CompareCommits(context.Background(), "owner", "repo", "abc123", "def456")
+		require.NoError(t, err)
+		assert.Equal(t, "ahead", status)
+	})
+
+	t.Run("returns error on API failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintln(w, `{"message":"Not Found"}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CompareCommits(context.Background(), "owner", "repo", "abc", "def")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "compare commits")
+	})
+}
+
 func TestCreateBranch(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1813,6 +1844,49 @@ func TestIsNonFastForwardError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, isNonFastForwardError(tt.apiErr))
+		})
+	}
+}
+
+func TestIsStaleTreeSHAError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "tree SHA does not exist in top-level message",
+			apiErr: &APIError{StatusCode: 422, Message: "Tree SHA does not exist"},
+			want:   true,
+		},
+		{
+			name: "tree SHA does not exist in error detail",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors:     []APIErrorDetail{{Message: "Tree SHA does not exist"}},
+			},
+			want: true,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+		{
+			name:   "non-fast-forward is not a stale tree SHA",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   false,
+		},
+		{
+			name:   "case insensitive match",
+			apiErr: &APIError{StatusCode: 422, Message: "tree sha does not exist"},
+			want:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isStaleTreeSHAError(tt.apiErr))
 		})
 	}
 }
@@ -3735,6 +3809,103 @@ func TestCommitFiles_NonFastForwardRetry(t *testing.T) {
 	assert.True(t, committed)
 	assert.Equal(t, 2, patchCount)
 }
+
+func TestCommitFiles_StaleTreeSHARetry(t *testing.T) {
+	treePostCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			sha := "abc123"
+			if treePostCount > 0 {
+				sha = "def456"
+			}
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": sha}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			treePostCount++
+			if treePostCount == 1 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(map[string]any{
+					"message": "Validation Failed",
+					"errors":  []map[string]string{{"message": "Tree SHA does not exist"}},
+				})
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, treePostCount)
+}
+
+func TestCommitFiles_StaleTreeSHAOnCommitRetry(t *testing.T) {
+	commitPostCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			sha := "abc123"
+			if commitPostCount > 0 {
+				sha = "def456"
+			}
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": sha}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			commitPostCount++
+			if commitPostCount == 1 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(map[string]any{
+					"message": "Validation Failed",
+					"errors":  []map[string]string{{"message": "Tree SHA does not exist"}},
+				})
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, commitPostCount)
+}
+
 func TestCommitFiles_NonFastForward(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

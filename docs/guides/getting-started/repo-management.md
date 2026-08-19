@@ -19,7 +19,7 @@ fullsend across an organization. Individual repo owners should use
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`, GitHub only) must be completed separately before running `repos install`. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 ## Getting started
 
@@ -47,7 +47,8 @@ fullsend repos migrate <org> --project <gcp-project> --dry-run
 The command discovers enrolled repos from the per-org config, provisions
 WIF infrastructure per repo, installs per-repo (scaffold, variables,
 secrets), unenrolls migrated repos from per-org config, and generates
-a `repos.yaml` manifest.
+a `repos.yaml` manifest. If a manifest already exists, newly migrated
+repos are merged into it rather than overwriting it.
 
 ### Creating a manifest from scratch
 
@@ -65,42 +66,55 @@ This creates `repos.yaml` (or the path given by `-f`) with
 
 ### Multi-forge manifests
 
-Every repo entry in the manifest must declare its forge (`github` or
-`gitlab`). Set `defaults.forge` to avoid repeating the forge on every
-entry. Per-entry forge overrides are supported for mixed-forge manifests:
+Each platform (`github`, `gitlab`) is a top-level key containing its
+infrastructure config and repos list. Repos are grouped under their
+platform — no per-entry forge selector is needed:
 
 ```yaml
 version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-    fullsend_ref: v2.5.0
-  gitlab:
-    url: https://gitlab.example.com
-    fullsend_ref: v2.5.0
-defaults:
-  forge: github
-repos:
-  - acme/api-server            # inherits forge: github from defaults
-  - acme/web-frontend
-  - repo: gitlab-group/project # per-entry override
-    forge: gitlab
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v2.5.0
+  repos:
+    - name: acme/api-server
+    - name: acme/web-frontend
+
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v2.5.0
+  repos:
+    - name: gitlab-group/project
 ```
 
 GitHub repos use a token mint for authentication. The
-`forge.github.mint_mode` field controls the default mint URL:
+`github.mint_mode` field controls the default mint URL:
 `public` (default) uses `https://mint.fullsend.sh` when no explicit
 `mint_url` is set; `private` requires an explicit `mint_url`. Both
 `mint_mode` and `mint_url` can be overridden per-repo.
 
-All repos under the same owner must use the same forge. A GitHub org
-and a GitLab group with the same name are different entities, and
-mixing forges under one owner would route API calls incorrectly.
-
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. The `GITLAB_API_URL`
-environment variable is kept as a fallback for callers without a
-manifest.
+`--gitlab-token` to `fullsend repos` subcommands. When no manifest URL
+is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
+`GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
+none are set.
+
+Per-repo fields inherit from the platform-level default when omitted.
+To explicitly stop a field from inheriting, set it to the literal value
+`none`. For example, `fullsend_ref: none` prevents the repo from
+inheriting the platform-level `fullsend_ref`:
+
+```yaml
+github:
+  fullsend_ref: v2.5.0
+  repos:
+    - name: acme/api
+    - name: acme/legacy
+      fullsend_ref: none  # does not inherit v2.5.0
+```
+
+The `none` sentinel works for string fields (`fullsend_ref`,
+`mint_url`, `mint_mode`). List fields like `allowed_remote_resources`
+are managed at the `defaults` level and cannot be cleared per-repo.
 
 ### Manifest paths and URLs
 
@@ -139,9 +153,10 @@ Install runs in three phases:
    drift (synced automatically) and scaffold ref drift (upgraded
    automatically).
 
-> **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
-> enrollment) must be provisioned separately before running install.
-> See `fullsend inference provision` and `fullsend mint enroll`.
+> **Prerequisite:** GCP WIF provisioning (`fullsend inference provision`)
+> must be completed before running install. For self-managed mints,
+> also run `fullsend mint enroll`. The hosted community mint needs no
+> enrollment.
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
@@ -290,7 +305,7 @@ fullsend repos uninstall acme/old-api --uninstall-only
 
 To upgrade the scaffold workflow ref across all manifest repos:
 
-1. Update `forge.github.fullsend_ref` (or `forge.gitlab.fullsend_ref` for
+1. Update `github.fullsend_ref` (or `gitlab.fullsend_ref` for
    GitLab repos) in `repos.yaml` to the new version.
 
 2. Run install to converge:
@@ -316,15 +331,21 @@ fullsend repos install -f repos.yaml --direct
 Repos that are already SHA-pinned (`@<sha> # <ref>`) preserve their
 pinning style during upgrades — the target ref is resolved to a commit
 SHA and written as `@<sha> # <ref>`. Non-SHA-pinned repos keep their
-string ref format (e.g., `@v2.3.0`). Downgrades are blocked unless
-`--force` is set.
+string ref format (e.g., `@v2.3.0`).
+
+Downgrades are blocked unless `--force` is set. When both the current
+and target refs are semver tags, the guard uses version comparison. When
+either ref is a SHA (or a mix of SHA and tag), the guard resolves both
+to commit SHAs and uses git ancestry checking via the forge API to
+detect downgrades. If the ancestry check fails (e.g., API error), the
+upgrade proceeds rather than blocking — graceful degradation.
 
 ## Troubleshooting
 
 ### Unknown field errors in repos.yaml
 
 The manifest parser strictly validates field names in all sections
-(`defaults`, `forge`, `forge.github`, `forge.gitlab`, and top-level).
+(`defaults`, `github`, `gitlab`, and top-level).
 Unrecognized fields are rejected with an error naming the offending key:
 
 ```
@@ -337,7 +358,7 @@ Common causes:
 - **Deprecated or unsupported fields** — fields that were never part of the
   manifest schema (such as the legacy `mint:` key) are rejected.
 - **Wrong nesting level** — e.g., placing `fullsend_ref` under `defaults`
-  instead of under `forge.github` or `forge.gitlab`.
+  instead of under `github` or `gitlab`.
 
 To fix, correct the field name or remove the unrecognized entry and re-run
 the command.
@@ -373,7 +394,8 @@ fullsend repos migrate <org> --project <gcp-project>
 This discovers enrolled repos from the per-org config, provisions WIF
 infrastructure, installs per-repo (scaffold, variables, secrets) with
 config carried over from the org config, unenrolls migrated repos,
-and writes `repos.yaml`.
+and writes `repos.yaml`. If a manifest already exists, new entries are
+merged in rather than overwriting it.
 
 Preview first with `--dry-run`:
 
@@ -448,7 +470,7 @@ infrastructure, coordinate between roles:
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
 | 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` |
+| 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` (self-hosted mints only; not needed for the hosted community mint) |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
 flag: `--yes` for `repos` commands, `--yolo` for `github` and `mint`

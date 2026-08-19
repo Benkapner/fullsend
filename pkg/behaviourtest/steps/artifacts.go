@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -27,7 +28,7 @@ func ensureTriageWorkflowComplete(w *world.World) error {
 		return fmt.Errorf("no workflow trigger time: create an issue and label it first")
 	}
 	ctx := context.Background()
-	run, err := w.CI.WaitForWorkflow(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.Install.TriageWorkflowFile(), w.ScenarioStart, triageWorkflowEvent(w))
+	run, err := w.CI.WaitForWorkflow(ctx, w.Org, w.RepoName, install.PerRepoTriageWorkflow, w.ScenarioStart, triageWorkflowEvent(w))
 	if err != nil {
 		return err
 	}
@@ -52,7 +53,7 @@ func ensureArtifacts(w *world.World) error {
 	}
 
 	tryDownloadRun := func(runID int) error {
-		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.Install.TriageWorkflowRepo(), runID, w.Install.AgentArtifactName(), dest); err != nil {
+		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, install.PerRepoAgentArtifact, dest); err != nil {
 			return err
 		}
 		if _, findErr := artifacts.FindBehaviourResults(dest); findErr != nil {
@@ -78,7 +79,7 @@ func ensureArtifacts(w *world.World) error {
 	}
 
 	// Reusable triage uploads artifacts on the nested agent workflow run, not the shim.
-	if agentRun, err := w.CI.FindCompletedWorkflowRun(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.Install.AgentWorkflowFile(), w.ScenarioStart); err == nil && agentRun != nil {
+	if agentRun, err := w.CI.FindCompletedWorkflowRun(ctx, w.Org, w.RepoName, install.PerRepoAgentWorkflow, w.ScenarioStart); err == nil && agentRun != nil {
 		if err := tryDownloadRun(agentRun.ID); err == nil {
 			w.ArtifactDir = dest
 			return nil
@@ -88,7 +89,7 @@ func ensureArtifacts(w *world.World) error {
 		}
 	}
 
-	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.Install.AgentArtifactName(), w.ScenarioStart, dest); err != nil {
+	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.RepoName, install.PerRepoAgentArtifact, w.ScenarioStart, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}

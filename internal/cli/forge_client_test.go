@@ -3,6 +3,7 @@ package cli
 import (
 	"testing"
 
+	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -57,6 +58,30 @@ func TestNewForgeClient_GitLab_ManifestURLTakesPrecedence(t *testing.T) {
 	assert.NotNil(t, client)
 }
 
+func TestNewForgeClient_GitLab_FullsendGitLabURLFallback(t *testing.T) {
+	t.Setenv("FULLSEND_GITLAB_URL", "https://gitlab.self-hosted.example.com")
+	t.Setenv("GITLAB_API_URL", "https://should-not-use.example.com")
+	t.Setenv("CI_SERVER_URL", "https://should-not-use-either.example.com")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test", "")
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	glClient, ok := client.(*gl.LiveClient)
+	require.True(t, ok)
+	assert.Equal(t, "https://gitlab.self-hosted.example.com", glClient.BaseURL())
+}
+
+func TestNewForgeClient_GitLab_CIServerURLFallback(t *testing.T) {
+	t.Setenv("FULLSEND_GITLAB_URL", "")
+	t.Setenv("GITLAB_API_URL", "")
+	t.Setenv("CI_SERVER_URL", "https://gitlab.ci-server.example.com")
+	client, err := newForgeClient(repos.ForgeGitLab, "glpat-test", "")
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	glClient, ok := client.(*gl.LiveClient)
+	require.True(t, ok)
+	assert.Equal(t, "https://gitlab.ci-server.example.com", glClient.BaseURL())
+}
+
 func TestNewForgeClient_GitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
 	client, err := newForgeClient(repos.ForgeGitHub, "", "")
@@ -79,7 +104,7 @@ func TestNewForgeClient_Unsupported(t *testing.T) {
 
 func TestNewForgeClientFactory_GitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("", repos.ForgeSection{})
+	factory := newForgeClientFactory("", nil)
 	cfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
@@ -87,14 +112,14 @@ func TestNewForgeClientFactory_GitHub(t *testing.T) {
 
 func TestNewForgeClientFactory_EmptyForgeDefaultsToGitHub(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("", repos.ForgeSection{})
+	factory := newForgeClientFactory("", nil)
 	cfg, err := factory.ConfigFor("")
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
 }
 
 func TestNewForgeClientFactory_GitLab(t *testing.T) {
-	factory := newForgeClientFactory("glpat-direct", repos.ForgeSection{})
+	factory := newForgeClientFactory("glpat-direct", nil)
 	cfg, err := factory.ConfigFor(repos.ForgeGitLab)
 	require.NoError(t, err)
 	assert.NotNil(t, cfg.Client)
@@ -102,11 +127,12 @@ func TestNewForgeClientFactory_GitLab(t *testing.T) {
 
 func TestNewForgeClientFactory_WithManifestURLs(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	forgeSection := repos.ForgeSection{
-		GitHub: repos.GitHubForgeInfra{URL: "https://github.com"},
-		GitLab: repos.GitLabForgeInfra{URL: "https://gitlab.self-hosted.example.com"},
+	m := &repos.Manifest{
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{URL: "https://github.com"},
+		GitLab:  &repos.PlatformConfig{URL: "https://gitlab.self-hosted.example.com"},
 	}
-	factory := newForgeClientFactory("glpat-test", forgeSection)
+	factory := newForgeClientFactory("glpat-test", m)
 
 	ghCfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
@@ -142,7 +168,7 @@ func TestGetGitLabToken_Empty(t *testing.T) {
 
 func TestNewForgeClientFactory_Caching(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("", repos.ForgeSection{})
+	factory := newForgeClientFactory("", nil)
 
 	cfg1, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
@@ -155,7 +181,7 @@ func TestNewForgeClientFactory_Caching(t *testing.T) {
 
 func TestNewForgeClientFactory_MixedForge(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
-	factory := newForgeClientFactory("glpat-test-token", repos.ForgeSection{})
+	factory := newForgeClientFactory("glpat-test-token", nil)
 
 	ghCfg, err := factory.ConfigFor(repos.ForgeGitHub)
 	require.NoError(t, err)
