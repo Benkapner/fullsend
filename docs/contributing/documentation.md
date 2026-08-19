@@ -1,8 +1,8 @@
 ---
-title: Documentation Updates
+title: Documentation
 ---
 
-# Documentation Updates
+# Documentation
 
 When changing CLI command behavior, adding or removing subcommands, or renaming flags, you must update every documentation file that references the affected command. CLI commands are documented across CLI reference pages, user and operator guides, ADRs, and inline Go help text. Missing even one location causes documentation drift that surfaces as review findings on later PRs.
 
@@ -64,7 +64,7 @@ Each row lists the documentation touchpoints for a major CLI command group. The 
 | Category | Files |
 |----------|-------|
 | CLI reference | `docs/cli/mint.md` |
-| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/infrastructure/mint-administration.md`, `docs/guides/infrastructure/standalone-mint.md`, `docs/guides/dev/cli-internals.md` |
+| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/getting-started/org-mode.md`, `docs/guides/infrastructure/mint-administration.md`, `docs/guides/infrastructure/infrastructure-reference.md`, `docs/guides/infrastructure/advanced-setup.md`, `docs/guides/infrastructure/standalone-mint.md`, `docs/guides/dev/cli-internals.md` |
 | ADRs | `docs/ADRs/0059-public-mint-mode-with-wildcard-allowlists.md`, `docs/ADRs/0060-cross-org-mint-authorization-via-org-variables.md`, `docs/ADRs/0073-named-mint-privilege-levels.md`, `docs/ADRs/0077-mint-repos-scope-hardening.md`, `docs/ADRs/0078-simplified-mint-authorization-policy.md`, `docs/ADRs/0082-workflow-host-allow-list.md` |
 | Go source | `internal/cli/mint.go`, `internal/cli/mint_setup.go`, `internal/cli/mint_delete.go` |
 
@@ -73,7 +73,7 @@ Each row lists the documentation touchpoints for a major CLI command group. The 
 | Category | Files |
 |----------|-------|
 | CLI reference | `docs/cli/repos.md` |
-| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/getting-started/repo-management.md`, `docs/guides/dev/cli-internals.md` |
+| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/getting-started/repo-management.md`, `docs/guides/getting-started/getting-inference.md`, `docs/guides/dev/cli-internals.md` |
 | ADRs | `docs/ADRs/0057-repos-management.md`, `docs/ADRs/0074-repos-command-consolidation.md` |
 | Go source | `internal/cli/repos.go`, `internal/cli/repos_gitlab.go` |
 
