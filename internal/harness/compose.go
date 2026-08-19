@@ -652,23 +652,37 @@ func mergeBaseIntoChild(base, child *Harness) {
 	}
 }
 
-// isFullsendCachePath reports whether p is an absolute path already inside
-// fullsend's own content-addressed cache (<workspaceRoot>/.fullsend-cache/...),
-// as opposed to an absolute path written directly into untrusted harness
-// content. Shape alone (filepath.IsAbs) can't tell these apart. Used by
+// isFullsendCachePath reports whether p is a path already inside fullsend's
+// own content-addressed cache (<workspaceRoot>/.fullsend-cache/...), as
+// opposed to a path written directly into untrusted harness content. Used by
 // resolveBaseScripts, resolveBaseResources, and resolveBaseHostFiles to
-// decide which absolute values are safe to skip (already resolved by an
-// earlier step) versus which must still be rejected by validateBaseRelPath:
-// an arbitrary host path in an exec field runs on the host via exec.Command,
-// and one in agent/policy/host_files is read on the host and becomes the
-// literal agent definition, sandbox policy, or an uploaded sandbox file —
-// letting either come from an untrusted absolute path is a code-execution
-// or disclosure risk, not just a resolution bug.
+// decide which values are safe to skip (already resolved by an earlier step)
+// versus which must still be rejected by validateBaseRelPath: an arbitrary
+// host path in an exec field runs on the host via exec.Command, and one in
+// agent/policy/host_files is read on the host and becomes the literal agent
+// definition, sandbox policy, or an uploaded sandbox file — letting either
+// come from an untrusted path is a code-execution or disclosure risk, not
+// just a resolution bug.
+//
+// Both p and workspaceRoot are resolved to absolute paths before comparison
+// so that cache paths are recognized regardless of whether WorkspaceRoot was
+// absolute or relative. When WorkspaceRoot is relative (e.g., "." in dispatch),
+// CachePath returns a relative path like ".fullsend-cache/resources/sha256/
+// <hash>/content"; without absolute resolution the old filepath.IsAbs guard
+// would reject it, causing a spurious re-fetch attempt against the SourceURL.
 func isFullsendCachePath(p, workspaceRoot string) bool {
-	if !filepath.IsAbs(p) || workspaceRoot == "" {
+	if p == "" || workspaceRoot == "" {
 		return false
 	}
-	rel, err := filepath.Rel(filepath.Join(workspaceRoot, ".fullsend-cache"), p)
+	absP, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	absCache, err := filepath.Abs(filepath.Join(workspaceRoot, ".fullsend-cache"))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absCache, absP)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
