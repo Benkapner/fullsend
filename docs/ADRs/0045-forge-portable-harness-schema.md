@@ -1,7 +1,6 @@
 ---
 title: "45. Forge-portable harness schema"
 status: Superseded
-superseded_by: "0088-cel-guarded-overlays"
 relates_to:
   - agent-architecture
   - agent-infrastructure

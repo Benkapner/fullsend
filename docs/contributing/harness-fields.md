@@ -32,6 +32,7 @@ These fields can appear at the harness top level (as defaults) and inside
 | `providers`        | Providers may need forge-specific entries (e.g., different API endpoints per platform); concatenated (top-level + forge) |
 | `openshell`        | OpenShell profiles may need forge-specific configuration; `profiles` concatenated (top-level + forge) |
 | `host_files`       | Host files may need forge-specific entries (e.g., different credential files per platform); deduplicated by `dest` path (child wins) |
+| `env`              | Env config (`runner` and `sandbox` sub-maps) may need forge-specific entries (e.g., different token names per forge); sub-maps merged independently, forge/child keys win (ADR-0055) |
 
 ### Fields that stay at top level only
 
@@ -54,6 +55,12 @@ per-overlay:
 | `role`             | Agent identity is forge-agnostic                   |
 | `slug`             | Kept top-level; per-forge slug differences handled via `base` composition |
 | `base`             | Composition is a structural concern, not forge-specific |
+| `doc`              | Documentation path, no runtime effect              |
+| `effort`           | Effort level is operational, not forge-specific     |
+| `readonly_repo`    | Repo access mode is forge-agnostic                 |
+| `allow_runtime_fetch` | Runtime fetch opt-in is forge-agnostic          |
+| `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
+| `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
 
 ## Merge and inheritance rules
 
@@ -64,7 +71,7 @@ field type follows specific merge semantics. The same rules apply during
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
-| `skills`         | Merged with deduplication by basename (forge/child overrides top-level/base) | Absent (nil) = inherit; `skills: []` = no forge-specific additions (top-level skills still apply) |
+| `skills`         | Merged with deduplication by basename (forge/child overrides top-level/base) | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `validation_loop`| Forge/child value replaces top-level/base value entirely | Absent (nil) = inherit from top level / base; explicit empty struct = intended to mean "no validation" (see ADR-0045 open questions) |
 | `providers`      | Concatenated (top-level/base + forge/child)           | Absent (nil) = inherit; `providers: []` = no forge-specific additions (top-level providers still apply) |
@@ -72,8 +79,9 @@ field type follows specific merge semantics. The same rules apply during
 | `host_files`     | Concatenated (base + child); deduplicated by `dest` path (child wins) | Absent (nil) = inherit |
 | `plugins`        | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
+| `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
 | `security`       | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit |
-| `overlays`       | Concatenated (base + child); first-match-wins at resolution | Absent (nil) = inherit |
+| `overlays` *(planned)* | Concatenated (base + child); first-match-wins at resolution (ADR-0088, not yet implemented) | Absent (nil) = inherit |
 
 ## `ForgeConfig` struct
 
@@ -95,27 +103,40 @@ type ForgeConfig struct {
     HostFiles      []HostFile        `yaml:"host_files,omitempty"`
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
+    Env            *EnvConfig        `yaml:"env,omitempty"`
 }
 ```
 
-## Overlay resolution
+## Current resolution pipeline
 
-`overlays:` is the successor to `forge:` blocks
-([ADR-0088](../ADRs/0088-cel-guarded-overlays.md)). Each overlay entry
-has a `when:` CEL expression and the same override fields as
-`ForgeConfig`. The first entry whose `when` evaluates to true is merged;
-remaining entries are skipped.
+The current forge resolution pipeline is:
 
-### Resolution pipeline
+```
+Unmarshal → validateForge → ResolveForge(platform) → Validate
+```
+
+## Overlay resolution (planned — ADR-0088)
+
+> **Note:** This section describes planned behavior from
+> [ADR-0088](../ADRs/0088-cel-guarded-overlays.md). The overlay feature
+> has not been implemented yet. The current implementation uses `forge:`
+> blocks only.
+
+`overlays:` is the planned successor to `forge:` blocks. Each overlay
+entry will have a `when:` CEL expression and the same override fields as
+`ForgeConfig`. The first entry whose `when` evaluates to true will be
+merged; remaining entries will be skipped.
+
+### Planned resolution pipeline
 
 ```
 Unmarshal → validateForge → validateOverlays →
 ResolveForge(platform) → ResolveOverlays(event, config) → Validate
 ```
 
-### CEL environment
+### Planned CEL environment
 
-Overlay `when` expressions are evaluated with:
+Overlay `when` expressions will be evaluated with:
 
 | Variable | Type | Source |
 |---|---|---|
@@ -126,7 +147,7 @@ Overlay `when` expressions are evaluated with:
 ### Mutual exclusion
 
 `forge:` and `overlays:` must not coexist in the same harness (post-merge).
-`forge:` is deprecated; new harnesses should use `overlays:`.
+`forge:` is deprecated; new harnesses should use `overlays:` once implemented.
 
 ## Related
 
