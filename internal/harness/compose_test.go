@@ -2612,6 +2612,12 @@ func TestIsFullsendCachePath(t *testing.T) {
 	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("a", 64))
 	require.NoError(t, err)
 
+	// Build a relative cache path as dispatch produces when WorkspaceRoot
+	// is "." (filepath.Dir(".fullsend") == ".").
+	relCachePath, err := fetch.CachePath(".", strings.Repeat("b", 64))
+	require.NoError(t, err)
+	relCacheContentPath := filepath.Join(relCachePath, "content")
+
 	tests := []struct {
 		name          string
 		path          string
@@ -2625,6 +2631,11 @@ func TestIsFullsendCachePath(t *testing.T) {
 		{"absolute path outside cache root", filepath.Join(string(filepath.Separator), "etc", "passwd"), workspaceRoot, false},
 		{"absolute path under an unrelated sibling directory", filepath.Join(workspaceRoot, "other", ".fullsend-cache", "x"), workspaceRoot, false},
 		{"absolute path with cache dir name as a prefix, not a parent", filepath.Join(workspaceRoot, ".fullsend-cache-evil", "x"), workspaceRoot, false},
+		// Relative WorkspaceRoot: cache paths from CachePath(".") are
+		// relative, e.g. ".fullsend-cache/resources/sha256/<hash>".
+		// isFullsendCachePath must still recognise them.
+		{"relative cache path with relative workspace root", relCacheContentPath, ".", true},
+		{"relative non-cache path with relative workspace root", "agents/triage.md", ".", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5725,6 +5736,88 @@ role: review
 		"agent should be an absolute cache path from base resolution, got %q", h.Agent)
 	assert.True(t, filepath.IsAbs(h.PreScript),
 		"pre_script should be an absolute cache path from base resolution, got %q", h.PreScript)
+}
+
+func TestLoadWithBase_SourceURL_WithBase_RelativeWorkspaceRoot(t *testing.T) {
+	// Regression: dispatch sets WorkspaceRoot to filepath.Dir(configDir),
+	// which is "." when configDir is ".fullsend". CachePath then returns
+	// relative paths like ".fullsend-cache/resources/sha256/<hash>/content".
+	// The post-merge SourceURL resolution must skip these relative cache
+	// paths instead of trying to fetch them from the SourceURL host (which
+	// produced a 404 in CI for the remote-child variant).
+
+	agentContent := []byte("# base agent (resolved to cache path by base composition)")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	// t.Chdir changes the process's working directory to a temp dir and
+	// restores it when the test finishes. This lets us pass "." as the
+	// relative WorkspaceRoot — the same value dispatch produces.
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	// Track requests to detect spurious fetches of cache paths.
+	var requestedPaths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPaths = append(requestedPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(agentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// URL-sourced child referencing a URL base. The child declares no
+	// agent — it inherits from the base. This matches the remote-child
+	// variant that failed in CI.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+`, baseURL)
+
+	harnessPath := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := server.URL + "/harness/review.yaml"
+	allowlist := []string{server.URL + "/"}
+
+	// Key: pass "." as WorkspaceRoot, simulating dispatch where
+	// WorkspaceRoot = filepath.Dir(".fullsend") = ".". Cache paths will
+	// be relative (e.g. ".fullsend-cache/resources/sha256/<hash>/content")
+	// and isFullsendCachePath must still recognise them.
+	h, _, err := LoadWithBase(context.Background(), harnessPath, ComposeOpts{
+		WorkspaceRoot:      ".",
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	// The agent field should be a cache path (not re-fetched from the SourceURL).
+	assert.Contains(t, h.Agent, ".fullsend-cache",
+		"agent should be a cache path from base resolution, got %q", h.Agent)
+
+	// Verify that no request tried to fetch a .fullsend-cache path from the server.
+	for _, p := range requestedPaths {
+		assert.NotContains(t, p, ".fullsend-cache",
+			"server should not have received a request for a cache path, got %q", p)
+	}
 }
 
 func TestLoadWithBase_SourceURL_WithBase_ResolvesChildScripts(t *testing.T) {
