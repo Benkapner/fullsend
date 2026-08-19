@@ -328,12 +328,9 @@ func TestReposCmd_GitLabTokenFlag(t *testing.T) {
 func TestRunReposStatus_EmptyManifest(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
 	manifestYAML := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-defaults:
-  forge: github
-repos: []
+github:
+  mint_url: https://mint.example.com
+  repos: []
 `
 	manifestPath := writeTestManifest(t, manifestYAML)
 	cmd := newRootCmd()
@@ -345,12 +342,8 @@ repos: []
 func TestRunReposStatus_GitLabRequiresToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 	manifestYAML := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-defaults:
-  forge: gitlab
-repos: []
+gitlab:
+  repos: []
 `
 	// With lazy client creation, status on an empty GitLab manifest
 	// succeeds without a token — no repos means no API calls.
@@ -364,12 +357,8 @@ repos: []
 func TestRunReposStatus_GitLabWithToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
 	manifestYAML := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-defaults:
-  forge: gitlab
-repos: []
+gitlab:
+  repos: []
 `
 	manifestPath := writeTestManifest(t, manifestYAML)
 	cmd := newRootCmd()
@@ -815,14 +804,11 @@ func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 }
 
 const testManifestYAML = `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-    fullsend_ref: v1.0.0
-defaults:
-  forge: github
-repos:
-  - repo: acme/api
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
 `
 
 func TestRunReposInstall_ConcurrencyValidation(t *testing.T) {
@@ -895,14 +881,11 @@ func TestRunReposInstall_InvalidManifestPath(t *testing.T) {
 
 func TestRunReposInstall_FailedReposReturnError(t *testing.T) {
 	yaml := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-    fullsend_ref: v1.0.0
-defaults:
-  forge: github
-repos:
-  - repo: acme/api
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
 `
 	manifestPath := writeTestManifest(t, yaml)
 	fc := newInstallFakeClient("acme/api")
@@ -1038,15 +1021,12 @@ func TestReposInstallCmd_PositionalArgs(t *testing.T) {
 
 func TestRunReposInstall_WithFilter(t *testing.T) {
 	yaml := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-    fullsend_ref: v1.0.0
-defaults:
-  forge: github
-repos:
-  - repo: acme/api
-  - repo: acme/web
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+    - name: acme/web
 `
 	manifestPath := writeTestManifest(t, yaml)
 	fc := newInstallFakeClient("acme/api", "acme/web")
@@ -1098,7 +1078,8 @@ func TestReposUninstallCmd_ManifestShortFlag(t *testing.T) {
 
 func TestConfirmBulkAction_SingleRepo(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}}},
 	}
 	err := confirmBulkAction(nil, "remove", []string{"acme/api"}, manifest, nil)
 	require.NoError(t, err)
@@ -1106,7 +1087,8 @@ func TestConfirmBulkAction_SingleRepo(t *testing.T) {
 
 func TestConfirmBulkAction_GlobNoMatch(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "other/repo"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "other/repo"}}},
 	}
 	printer := ui.New(os.Stdout)
 	err := confirmBulkAction(printer, "remove", []string{"acme/*"}, manifest, nil)
@@ -1115,7 +1097,8 @@ func TestConfirmBulkAction_GlobNoMatch(t *testing.T) {
 
 func TestConfirmBulkAction_GlobMultiMatch(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}, {Repo: "acme/web"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}, {Name: "acme/web"}}},
 	}
 	printer := ui.New(os.Stdout)
 
@@ -1129,7 +1112,8 @@ func TestConfirmBulkAction_GlobMultiMatch(t *testing.T) {
 
 func TestConfirmBulkAction_ExplicitBulkList(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}, {Repo: "acme/web"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}, {Name: "acme/web"}}},
 	}
 	printer := ui.New(os.Stdout)
 
@@ -1143,7 +1127,8 @@ func TestConfirmBulkAction_ExplicitBulkList(t *testing.T) {
 
 func TestConfirmBulkAction_GlobSingleMatch(t *testing.T) {
 	manifest := &repos.Manifest{
-		Repos: []repos.RepoEntry{{Repo: "acme/api"}},
+		Version: 1,
+		GitHub:  &repos.PlatformConfig{Repos: []repos.RepoEntry{{Name: "acme/api"}}},
 	}
 	err := confirmBulkAction(nil, "remove", []string{"acme/*"}, manifest, nil)
 	require.NoError(t, err)
@@ -1184,7 +1169,8 @@ func TestRunReposInstall_AddsNewReposToManifest(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 2, len(m.Repos))
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos))
 }
 
 func TestRunReposInstall_AddsNewRepos_DryRun(t *testing.T) {
@@ -1203,7 +1189,8 @@ func TestRunReposInstall_AddsNewRepos_DryRun(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos), "dry-run should not modify manifest")
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "dry-run should not modify manifest")
 }
 
 func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
@@ -1223,8 +1210,9 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
 	assert.Equal(t, 1, m.Version)
-	assert.Len(t, m.Repos, 1)
-	assert.Equal(t, "acme/repo", m.Repos[0].Repo)
+	require.NotNil(t, m.GitHub)
+	assert.Len(t, m.GitHub.Repos, 1)
+	assert.Equal(t, "acme/repo", m.GitHub.Repos[0].Name)
 }
 
 func TestRunReposInstall_BootstrapRequiresForge(t *testing.T) {
@@ -1274,15 +1262,12 @@ func TestRunReposInstall_NoManifestNoRepos(t *testing.T) {
 }
 
 const twoRepoManifestYAML = `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-    fullsend_ref: v1.0.0
-defaults:
-  forge: github
-repos:
-  - repo: acme/api
-  - repo: acme/web
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+    - name: acme/web
 `
 
 func TestRunReposInstall_ConvergesAlreadyInstalled(t *testing.T) {
@@ -1329,12 +1314,12 @@ func TestRunReposInstall_InvalidForge(t *testing.T) {
 
 func TestRunReposInstall_RequiresForgeForNewRepos(t *testing.T) {
 	noDefaultForgeManifest := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-    fullsend_ref: v1.0.0
-defaults: {}
-repos: []
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos: []
+gitlab:
+  repos: []
 `
 	manifestPath := writeTestManifest(t, noDefaultForgeManifest)
 	err := runReposInstall(context.Background(), &reposInstallConfig{
@@ -1520,13 +1505,12 @@ func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	require.Equal(t, 2, len(m.Repos))
-	newEntry := m.Repos[1]
-	assert.Equal(t, "acme/web", newEntry.Repo)
-	assert.True(t, newEntry.FullsendRef.Set)
-	assert.Equal(t, "v2.0.0", newEntry.FullsendRef.Value)
-	assert.True(t, newEntry.MintURL.Set)
-	assert.Equal(t, "https://custom-mint.example.com", newEntry.MintURL.Value)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	assert.Equal(t, "v2.0.0", newEntry.FullsendRef)
+	assert.Equal(t, "https://custom-mint.example.com", newEntry.MintURL)
 }
 
 func TestRunReposInstall_AllReposAlreadyCurrent(t *testing.T) {
@@ -1543,16 +1527,13 @@ func TestRunReposInstall_AllReposAlreadyCurrent(t *testing.T) {
 
 func TestRunReposInstall_ManifestValidationFailure(t *testing.T) {
 	badManifest := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-defaults:
-  forge: github
-repos:
-  - repo: acme/api
-    forge: github
-  - repo: acme/web
-    forge: gitlab
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/api
+gitlab:
+  repos:
+    - name: acme/api
 `
 	manifestPath := writeTestManifest(t, badManifest)
 	fc := newInstallFakeClient("acme/api")
@@ -1624,15 +1605,13 @@ func TestRunReposInstall_SingleWordFilterSkipped(t *testing.T) {
 
 func TestRunReposInstall_NonGitHubForgeWarnings(t *testing.T) {
 	gitlabManifest := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-    fullsend_ref: v1.0.0
-  gitlab:
-    url: https://gitlab.example.com
-defaults:
-  forge: gitlab
-repos: []
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos: []
+gitlab:
+  url: https://gitlab.example.com
+  repos: []
 `
 	manifestPath := writeTestManifest(t, gitlabManifest)
 	fc := newInstallFakeClient("group/project")
@@ -1672,8 +1651,9 @@ func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	require.Equal(t, 2, len(m.Repos))
-	assert.Equal(t, []string{"https://example.com/harness.yaml"}, m.Repos[1].AllowedRemoteResources)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	assert.Equal(t, []string{"https://example.com/harness.yaml"}, m.GitHub.Repos[1].AllowedRemoteResources)
 }
 
 func TestRunReposInstall_SyncFailureSkipsUpgrade(t *testing.T) {
@@ -1735,8 +1715,9 @@ func TestRunReposUninstall_RemovesFromManifest(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos), "manifest should have 1 repo after removing acme/api")
-	assert.Equal(t, "acme/web", m.Repos[0].Repo)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "manifest should have 1 repo after removing acme/api")
+	assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
 }
 
 func TestRunReposUninstall_ManifestOnly(t *testing.T) {
@@ -1754,7 +1735,8 @@ func TestRunReposUninstall_ManifestOnly(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos), "--manifest-only should remove from manifest")
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "--manifest-only should remove from manifest")
 	assert.Equal(t, "true", fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"],
 		"--manifest-only should not touch forge variables")
 }
@@ -1774,7 +1756,8 @@ func TestRunReposUninstall_UninstallOnly(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 2, len(m.Repos), "--uninstall-only should keep manifest entry")
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos), "--uninstall-only should keep manifest entry")
 }
 
 func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
@@ -1792,7 +1775,8 @@ func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 2, len(m.Repos), "dry-run should not modify manifest")
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos), "dry-run should not modify manifest")
 }
 
 func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
@@ -1813,26 +1797,27 @@ func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
-	assert.Equal(t, 1, len(m.Repos), "only acme/web should be removed from manifest (acme/api failed)")
-	assert.Equal(t, "acme/api", m.Repos[0].Repo, "failed repo should remain in manifest")
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "only acme/web should be removed from manifest (acme/api failed)")
+	assert.Equal(t, "acme/api", m.GitHub.Repos[0].Name, "failed repo should remain in manifest")
 }
 
 // --- forge-aware CLI integration tests ---
 
 var emptyReposManifestYAML = `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-defaults:
-  forge: github
-repos: []
+github:
+  mint_url: https://mint.example.com
+  repos: []
 `
 
 func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
 	// With zero repos, a GitLab-default manifest does not require a token.
 	t.Setenv("GITLAB_TOKEN", "")
-	m := strings.Replace(emptyReposManifestYAML, "forge: github", "forge: gitlab", 1)
-	manifestPath := writeTestManifest(t, m)
+	gitlabEmptyManifest := `version: 1
+gitlab:
+  repos: []
+`
+	manifestPath := writeTestManifest(t, gitlabEmptyManifest)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath})
 	err := cmd.Execute()
@@ -1842,18 +1827,13 @@ func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
 func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
 	// The token error now surfaces per-repo instead of at scope checking.
 	t.Setenv("GITLAB_TOKEN", "")
-	m := `version: 1
-forge:
-  github:
-    mint_url: https://mint.example.com
-  gitlab:
-    url: https://gitlab.example.com
-defaults:
-  forge: gitlab
-repos:
-  - acme/repo
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: acme/repo
 `
-	manifestPath := writeTestManifest(t, m)
+	manifestPath := writeTestManifest(t, gitlabManifest)
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"repos", "uninstall", "--yes", "--manifest", manifestPath, "acme/repo"})
 	err := cmd.Execute()

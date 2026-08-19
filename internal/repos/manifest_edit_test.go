@@ -27,7 +27,7 @@ func TestAddToManifest_Basic(t *testing.T) {
 	result, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest:     manifest,
 		ManifestPath: manifestPath,
-	}, []RepoEntry{{Repo: "acme/new-repo"}}, nil, nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/new-repo"}}, nil, nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -38,8 +38,8 @@ func TestAddToManifest_Basic(t *testing.T) {
 	if len(result.Skipped) != 0 {
 		t.Errorf("Skipped = %v, want []", result.Skipped)
 	}
-	if len(updated.Repos) != 2 {
-		t.Errorf("manifest has %d repos, want 2", len(updated.Repos))
+	if len(updated.AllRepos()) != 2 {
+		t.Errorf("manifest has %d repos, want 2", len(updated.AllRepos()))
 	}
 
 	// Verify file was written.
@@ -47,8 +47,8 @@ func TestAddToManifest_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest() error = %v", err)
 	}
-	if len(reloaded.Repos) != 2 {
-		t.Errorf("reloaded manifest has %d repos, want 2", len(reloaded.Repos))
+	if len(reloaded.AllRepos()) != 2 {
+		t.Errorf("reloaded manifest has %d repos, want 2", len(reloaded.AllRepos()))
 	}
 }
 
@@ -57,7 +57,7 @@ func TestAddToManifest_Duplicate(t *testing.T) {
 
 	result, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, nil, nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/api"}}, nil, nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -92,7 +92,7 @@ func TestAddToManifest_DryRun(t *testing.T) {
 		Manifest:     manifest,
 		ManifestPath: manifestPath,
 		DryRun:       true,
-	}, []RepoEntry{{Repo: "acme/new"}}, nil, progress)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/new"}}, nil, progress)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -106,8 +106,8 @@ func TestAddToManifest_DryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest() error = %v", err)
 	}
-	if len(reloaded.Repos) != 1 {
-		t.Errorf("reloaded manifest has %d repos, want 1 (dry-run)", len(reloaded.Repos))
+	if len(reloaded.AllRepos()) != 1 {
+		t.Errorf("reloaded manifest has %d repos, want 1 (dry-run)", len(reloaded.AllRepos()))
 	}
 
 	hasDryRun := false
@@ -126,10 +126,10 @@ func TestAddToManifest_Multiple(t *testing.T) {
 
 	result, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{
-		{Repo: "acme/new-a"},
-		{Repo: "acme/existing"},
-		{Repo: "acme/new-b"},
+	}, ForgeGitHub, []RepoEntry{
+		{Name: "acme/new-a"},
+		{Name: "acme/existing"},
+		{Name: "acme/new-b"},
 	}, nil, nil)
 
 	if err != nil {
@@ -141,13 +141,13 @@ func TestAddToManifest_Multiple(t *testing.T) {
 	if len(result.Skipped) != 1 {
 		t.Errorf("Skipped = %v, want [acme/existing]", result.Skipped)
 	}
-	if len(updated.Repos) != 3 {
-		t.Errorf("manifest has %d repos, want 3", len(updated.Repos))
+	if len(updated.AllRepos()) != 3 {
+		t.Errorf("manifest has %d repos, want 3", len(updated.AllRepos()))
 	}
 }
 
 func TestAddToManifest_NoManifest(t *testing.T) {
-	_, _, err := AddToManifest(context.Background(), ManifestEditConfig{}, []RepoEntry{{Repo: "acme/api"}}, nil, nil)
+	_, _, err := AddToManifest(context.Background(), ManifestEditConfig{}, ForgeGitHub, []RepoEntry{{Name: "acme/api"}}, nil, nil)
 	if err == nil {
 		t.Fatal("AddToManifest() error = nil, want error for nil manifest")
 	}
@@ -156,7 +156,7 @@ func TestAddToManifest_NoManifest(t *testing.T) {
 func TestAddToManifest_EmptyRepos(t *testing.T) {
 	_, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: testManifest(),
-	}, nil, nil, nil)
+	}, ForgeGitHub, nil, nil, nil)
 	if err == nil {
 		t.Fatal("AddToManifest() error = nil, want error for empty repos")
 	}
@@ -165,7 +165,7 @@ func TestAddToManifest_EmptyRepos(t *testing.T) {
 func TestAddToManifest_InvalidRepoName(t *testing.T) {
 	_, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: testManifest(),
-	}, []RepoEntry{{Repo: "invalid-no-slash"}}, nil, nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "invalid-no-slash"}}, nil, nil)
 	if err == nil {
 		t.Fatal("AddToManifest() error = nil, want error for invalid repo name")
 	}
@@ -178,7 +178,7 @@ func TestAddToManifest_GlobRepoAllowed(t *testing.T) {
 	manifest := testManifest()
 	result, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/*"}}, nil, nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/*"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("AddToManifest() should allow glob entries: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 
 	result, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -207,9 +207,9 @@ func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 	if len(result.Added) != 1 {
 		t.Fatalf("Added = %v, want [acme/api]", result.Added)
 	}
-	entry := updated.Repos[len(updated.Repos)-1]
-	if entry.Repo != "acme/api" {
-		t.Errorf("Repo = %q, want acme/api", entry.Repo)
+	entry := updated.AllRepos()[len(updated.AllRepos())-1]
+	if entry.Name != "acme/api" {
+		t.Errorf("Repo = %q, want acme/api", entry.Name)
 	}
 }
 
@@ -225,14 +225,14 @@ func TestAddToManifest_DiscoverInstalledMatchesDefaults(t *testing.T) {
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
 	}
-	entry := updated.Repos[len(updated.Repos)-1]
-	if entry.Repo != "acme/api" {
-		t.Errorf("Repo = %q, want acme/api", entry.Repo)
+	entry := updated.AllRepos()[len(updated.AllRepos())-1]
+	if entry.Name != "acme/api" {
+		t.Errorf("Repo = %q, want acme/api", entry.Name)
 	}
 }
 
@@ -243,14 +243,14 @@ func TestAddToManifest_DiscoverNotInstalled(t *testing.T) {
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
 	}
-	entry := updated.Repos[len(updated.Repos)-1]
-	if entry.Repo != "acme/api" {
-		t.Errorf("Repo = %q, want acme/api", entry.Repo)
+	entry := updated.AllRepos()[len(updated.AllRepos())-1]
+	if entry.Name != "acme/api" {
+		t.Errorf("Repo = %q, want acme/api", entry.Name)
 	}
 }
 
@@ -260,7 +260,7 @@ func TestAddToManifest_DiscoverGlobSkipped(t *testing.T) {
 	manifest := testManifest()
 	result, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/*"}}, newTestClientFactory(fc), nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/*"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
@@ -275,11 +275,11 @@ func TestAddToManifest_DiscoverProbeError(t *testing.T) {
 	fc.Errors["ListRepoVariables"] = fmt.Errorf("api error")
 
 	manifest := testManifest()
-	manifest.Forge.GitHub.FullsendRef = "v2.3.0"
+	manifest.GitHub.FullsendRef = "v2.3.0"
 
 	result, _, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v, want graceful skip on probe error", err)
@@ -297,23 +297,22 @@ func TestAddToManifest_DiscoverGitLabFullsendRef(t *testing.T) {
 
 	manifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitLab: GitLabForgeInfra{
+		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v3.0.0",
-		}},
-		Defaults: DefaultsConfig{Forge: ForgeGitLab},
+		},
 	}
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+	}, ForgeGitLab, []RepoEntry{{Name: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
 	}
-	entry := updated.Repos[len(updated.Repos)-1]
-	if !entry.FullsendRef.Set || entry.FullsendRef.Value != "v3.2.0" {
-		t.Errorf("FullsendRef = %+v, want {Set:true, Value:v3.2.0}", entry.FullsendRef)
+	entry := updated.AllRepos()[len(updated.AllRepos())-1]
+	if entry.FullsendRef != "v3.2.0" {
+		t.Errorf("FullsendRef = %q, want v3.2.0", entry.FullsendRef)
 	}
 }
 
@@ -325,23 +324,22 @@ func TestAddToManifest_DiscoverGitLabFullsendRefMatchesDefault(t *testing.T) {
 
 	manifest := &Manifest{
 		Version: 1,
-		Forge: ForgeSection{GitLab: GitLabForgeInfra{
+		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v3.0.0",
-		}},
-		Defaults: DefaultsConfig{Forge: ForgeGitLab},
+		},
 	}
 
 	_, updated, err := AddToManifest(context.Background(), ManifestEditConfig{
 		Manifest: manifest,
-	}, []RepoEntry{{Repo: "acme/api"}}, newTestClientFactory(fc), nil)
+	}, ForgeGitLab, []RepoEntry{{Name: "acme/api"}}, newTestClientFactory(fc), nil)
 
 	if err != nil {
 		t.Fatalf("AddToManifest() error = %v", err)
 	}
-	entry := updated.Repos[len(updated.Repos)-1]
-	if entry.FullsendRef.Set {
-		t.Errorf("FullsendRef.Set = true, want false (matches forge default)")
+	entry := updated.AllRepos()[len(updated.AllRepos())-1]
+	if entry.FullsendRef != "" {
+		t.Errorf("FullsendRef = %q, want empty (matches platform default)", entry.FullsendRef)
 	}
 }
 
@@ -372,19 +370,19 @@ func TestRemoveFromManifest_Basic(t *testing.T) {
 	if len(result.Skipped) != 0 {
 		t.Errorf("Skipped = %v, want []", result.Skipped)
 	}
-	if len(updated.Repos) != 1 {
-		t.Errorf("manifest has %d repos, want 1", len(updated.Repos))
+	if len(updated.AllRepos()) != 1 {
+		t.Errorf("manifest has %d repos, want 1", len(updated.AllRepos()))
 	}
-	if updated.Repos[0].Repo != "acme/web" {
-		t.Errorf("remaining repo = %q, want acme/web", updated.Repos[0].Repo)
+	if updated.AllRepos()[0].Name != "acme/web" {
+		t.Errorf("remaining repo = %q, want acme/web", updated.AllRepos()[0].Name)
 	}
 
 	reloaded, err := LoadManifest(context.Background(), manifestPath)
 	if err != nil {
 		t.Fatalf("LoadManifest() error = %v", err)
 	}
-	if len(reloaded.Repos) != 1 {
-		t.Errorf("reloaded manifest has %d repos, want 1", len(reloaded.Repos))
+	if len(reloaded.AllRepos()) != 1 {
+		t.Errorf("reloaded manifest has %d repos, want 1", len(reloaded.AllRepos()))
 	}
 }
 
@@ -401,11 +399,11 @@ func TestRemoveFromManifest_Glob(t *testing.T) {
 	if len(result.Removed) != 2 {
 		t.Errorf("Removed = %v, want [acme/api, acme/web]", result.Removed)
 	}
-	if len(updated.Repos) != 1 {
-		t.Errorf("manifest has %d repos, want 1", len(updated.Repos))
+	if len(updated.AllRepos()) != 1 {
+		t.Errorf("manifest has %d repos, want 1", len(updated.AllRepos()))
 	}
-	if updated.Repos[0].Repo != "other/docs" {
-		t.Errorf("remaining repo = %q, want other/docs", updated.Repos[0].Repo)
+	if updated.AllRepos()[0].Name != "other/docs" {
+		t.Errorf("remaining repo = %q, want other/docs", updated.AllRepos()[0].Name)
 	}
 }
 
@@ -463,8 +461,8 @@ func TestRemoveFromManifest_DryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest() error = %v", err)
 	}
-	if len(reloaded.Repos) != 2 {
-		t.Errorf("reloaded manifest has %d repos, want 2 (dry-run)", len(reloaded.Repos))
+	if len(reloaded.AllRepos()) != 2 {
+		t.Errorf("reloaded manifest has %d repos, want 2 (dry-run)", len(reloaded.AllRepos()))
 	}
 
 	hasDryRun := false
@@ -573,7 +571,7 @@ func TestSetDefault_CreatesManifestIfMissing(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "forge.github.mint_url", "https://mint.example.com")
+	err := SetDefault(manifestPath, "github.mint_url", "https://mint.example.com")
 	if err != nil {
 		t.Fatalf("SetDefault() error: %v", err)
 	}
@@ -595,11 +593,11 @@ func TestSetDefault_ForgeURL_RejectsExtraneousParts(t *testing.T) {
 		key   string
 		value string
 	}{
-		{"forge.github.url", "https://ghes.example.com/prefix"},
-		{"forge.github.url", "https://user@ghes.example.com"},
-		{"forge.github.url", "https://ghes.example.com?q=1"},
-		{"forge.github.url", "https://ghes.example.com#frag"},
-		{"forge.gitlab.url", "https://gitlab.example.com/prefix"},
+		{"github.url", "https://ghes.example.com/prefix"},
+		{"github.url", "https://user@ghes.example.com"},
+		{"github.url", "https://ghes.example.com?q=1"},
+		{"github.url", "https://ghes.example.com#frag"},
+		{"gitlab.url", "https://gitlab.example.com/prefix"},
 	}
 	for _, tt := range tests {
 		err := SetDefault(manifestPath, tt.key, tt.value)
@@ -608,9 +606,9 @@ func TestSetDefault_ForgeURL_RejectsExtraneousParts(t *testing.T) {
 		}
 	}
 
-	err := SetDefault(manifestPath, "forge.github.url", "https://ghes.example.com")
+	err := SetDefault(manifestPath, "github.url", "https://ghes.example.com")
 	if err != nil {
-		t.Errorf("SetDefault(forge.github.url, clean URL) should succeed: %v", err)
+		t.Errorf("SetDefault(github.url, clean URL) should succeed: %v", err)
 	}
 }
 
@@ -623,11 +621,11 @@ func TestSetDefault_AllKeys(t *testing.T) {
 		value string
 		check string
 	}{
-		{"forge.github.url", "https://ghes.example.com", "url: https://ghes.example.com"},
-		{"forge.github.fullsend_ref", "v3.0.0", "fullsend_ref: v3.0.0"},
-		{"forge.github.mint_mode", "private", "mint_mode: private"},
-		{"forge.gitlab.url", "https://gitlab.example.com", "url: https://gitlab.example.com"},
-		{"forge.gitlab.fullsend_ref", "v4.1.0", "fullsend_ref: v4.1.0"},
+		{"github.url", "https://ghes.example.com", "url: https://ghes.example.com"},
+		{"github.fullsend_ref", "v3.0.0", "fullsend_ref: v3.0.0"},
+		{"github.mint_mode", "private", "mint_mode: private"},
+		{"gitlab.url", "https://gitlab.example.com", "url: https://gitlab.example.com"},
+		{"gitlab.fullsend_ref", "v4.1.0", "fullsend_ref: v4.1.0"},
 	}
 	for _, tt := range tests {
 		err := SetDefault(manifestPath, tt.key, tt.value)
@@ -645,12 +643,12 @@ func TestSetDefault_RemoveKey(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "forge.github.mint_url", "https://mint.example.com")
+	err := SetDefault(manifestPath, "github.mint_url", "https://mint.example.com")
 	if err != nil {
 		t.Fatalf("SetDefault() set error: %v", err)
 	}
 
-	err = SetDefault(manifestPath, "forge.github.mint_url", "")
+	err = SetDefault(manifestPath, "github.mint_url", "")
 	if err != nil {
 		t.Fatalf("SetDefault() remove error: %v", err)
 	}
@@ -692,7 +690,7 @@ func TestSetDefault_ExistingManifest(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	err = SetDefault(manifestPath, "forge.github.mint_url", "https://mint.example.com")
+	err = SetDefault(manifestPath, "github.mint_url", "https://mint.example.com")
 	if err != nil {
 		t.Fatalf("SetDefault() error: %v", err)
 	}
@@ -701,11 +699,15 @@ func TestSetDefault_ExistingManifest(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("LoadManifest() error: %v", loadErr)
 	}
-	if reloaded.Forge.GitHub.MintURL != "https://mint.example.com" {
-		t.Errorf("mint_url = %q, want https://mint.example.com", reloaded.Forge.GitHub.MintURL)
+	if reloaded.GitHub == nil || reloaded.GitHub.MintURL != "https://mint.example.com" {
+		mintURL := ""
+		if reloaded.GitHub != nil {
+			mintURL = reloaded.GitHub.MintURL
+		}
+		t.Errorf("mint_url = %q, want https://mint.example.com", mintURL)
 	}
-	if len(reloaded.Repos) != 1 {
-		t.Errorf("repos count = %d, want 1 (existing repos preserved)", len(reloaded.Repos))
+	if len(reloaded.AllRepos()) != 1 {
+		t.Errorf("repos count = %d, want 1 (existing repos preserved)", len(reloaded.AllRepos()))
 	}
 }
 
@@ -713,7 +715,7 @@ func TestSetDefault_InvalidRef(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "forge.github.fullsend_ref", "v1.0.0; rm -rf /")
+	err := SetDefault(manifestPath, "github.fullsend_ref", "v1.0.0; rm -rf /")
 	if err == nil {
 		t.Fatal("expected error for invalid ref characters")
 	}
@@ -726,7 +728,7 @@ func TestSetDefault_InvalidRef_GitLab(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "forge.gitlab.fullsend_ref", "v1.0.0; rm -rf /")
+	err := SetDefault(manifestPath, "gitlab.fullsend_ref", "v1.0.0; rm -rf /")
 	if err == nil {
 		t.Fatal("expected error for invalid ref characters")
 	}
@@ -739,7 +741,7 @@ func TestSetDefault_RunnerTags(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	if err := SetDefault(manifestPath, "forge.gitlab.runner_tags", "fullsend-agent,gpu-runner"); err != nil {
+	if err := SetDefault(manifestPath, "gitlab.runner_tags", "fullsend-agent,gpu-runner"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -763,11 +765,11 @@ func TestSetDefault_RunnerTags_Remove(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	if err := SetDefault(manifestPath, "forge.gitlab.runner_tags", "fullsend-agent"); err != nil {
+	if err := SetDefault(manifestPath, "gitlab.runner_tags", "fullsend-agent"); err != nil {
 		t.Fatalf("unexpected error setting tags: %v", err)
 	}
 
-	if err := SetDefault(manifestPath, "forge.gitlab.runner_tags", ""); err != nil {
+	if err := SetDefault(manifestPath, "gitlab.runner_tags", ""); err != nil {
 		t.Fatalf("unexpected error removing tags: %v", err)
 	}
 
@@ -784,7 +786,7 @@ func TestSetDefault_RunnerTags_RejectsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "forge.gitlab.runner_tags", "tag1,,tag2")
+	err := SetDefault(manifestPath, "gitlab.runner_tags", "tag1,,tag2")
 	if err == nil {
 		t.Fatal("expected error for empty tag segment")
 	}
@@ -797,7 +799,7 @@ func TestSetDefault_MintModeInvalid(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "forge.github.mint_mode", "hybrid")
+	err := SetDefault(manifestPath, "github.mint_mode", "hybrid")
 	if err == nil {
 		t.Fatal("expected error for invalid mint_mode")
 	}
@@ -810,7 +812,7 @@ func TestSetDefault_InvalidKey(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "forge.github.nonexistent", "value")
+	err := SetDefault(manifestPath, "github.nonexistent", "value")
 	if err == nil {
 		t.Fatal("expected error for invalid key")
 	}

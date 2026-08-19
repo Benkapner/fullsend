@@ -25,7 +25,7 @@ import (
 
 const maxManifestBytes = 1 << 20 // 1 MB
 
-// Forge type constants used in the manifest's forge field.
+// Forge type constants used in the manifest's platform sections.
 const (
 	ForgeGitHub = "github"
 	ForgeGitLab = "gitlab"
@@ -39,6 +39,11 @@ const (
 	DefaultPublicMintURL = "https://mint.fullsend.sh"
 )
 
+// NoneSentinel is the YAML value that explicitly clears an inherited
+// field in the override cascade. Use "fullsend_ref: none" in YAML to
+// stop the per-repo → platform-default → built-in-default chain.
+const NoneSentinel = "none"
+
 // validForges is the set of accepted forge values.
 var validForges = map[string]bool{
 	ForgeGitHub: true,
@@ -51,265 +56,61 @@ func IsValidForge(name string) bool {
 }
 
 // Manifest is the top-level structure of a repos.yaml file.
+// Platform sections (github, gitlab) replace the former nested forge
+// section. Each platform section contains infrastructure config AND
+// its repos list.
 type Manifest struct {
-	Version  int            `yaml:"version"`
-	Forge    ForgeSection   `yaml:"forge"`
-	Defaults DefaultsConfig `yaml:"defaults"`
-	Repos    []RepoEntry    `yaml:"repos"`
+	Version  int             `yaml:"version"`
+	Defaults DefaultsConfig  `yaml:"defaults,omitempty"`
+	GitHub   *PlatformConfig `yaml:"github,omitempty"`
+	GitLab   *PlatformConfig `yaml:"gitlab,omitempty"`
 }
 
-// ForgeSection holds per-forge infrastructure configuration.
-// Each key maps a forge name to its infrastructure settings.
-// Only forges actually referenced by repos in the manifest need
-// entries here.
-type ForgeSection struct {
-	GitHub GitHubForgeInfra `yaml:"github,omitempty"`
-	GitLab GitLabForgeInfra `yaml:"gitlab,omitempty"`
+// PlatformConfig holds per-platform infrastructure settings and the
+// list of repos managed under that platform. A single struct serves
+// both GitHub and GitLab; validation rejects platform-specific fields
+// on the wrong platform (e.g. mint_url under gitlab).
+type PlatformConfig struct {
+	URL         string      `yaml:"url,omitempty"`
+	MintURL     string      `yaml:"mint_url,omitempty"`
+	MintMode    string      `yaml:"mint_mode,omitempty"`
+	FullsendRef string      `yaml:"fullsend_ref,omitempty"`
+	RunnerTags  []string    `yaml:"runner_tags,omitempty"`
+	Repos       []RepoEntry `yaml:"repos"`
 }
 
-// GitHubForgeInfra holds GitHub-specific infrastructure settings
-// for the token mint service and inference configuration.
-//
-// GCP project ID and project number are sensitive install-time-only
-// values passed via CLI flags to `repos install`. They are NOT stored
-// in the manifest.
-type GitHubForgeInfra struct {
-	URL         string `yaml:"url,omitempty"`
-	MintURL     string `yaml:"mint_url,omitempty"`
-	MintMode    string `yaml:"mint_mode,omitempty"`
-	FullsendRef string `yaml:"fullsend_ref,omitempty"`
+// RepoEntry represents a single repo or glob pattern in a platform's
+// repos list. Always uses object form with name as the required field.
+// Override fields use plain strings; the sentinel value "none" stops
+// the inheritance chain.
+type RepoEntry struct {
+	Name                   string   `yaml:"name"`
+	FullsendRef            string   `yaml:"fullsend_ref,omitempty"`
+	MintURL                string   `yaml:"mint_url,omitempty"`
+	MintMode               string   `yaml:"mint_mode,omitempty"`
+	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
+}
+
+// DefaultsConfig holds default field values applied to every repo
+// across all platforms.
+type DefaultsConfig struct {
+	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
 }
 
 // DefaultGitHubURL is the default forge URL for GitHub.com.
 const DefaultGitHubURL = "https://github.com"
-
-// ForgeSectionFromURL constructs a ForgeSection with only the URL field
-// populated for the named forge. Used when no full manifest is available
-// (e.g. repos migrate).
-func ForgeSectionFromURL(forgeName, forgeURL string) ForgeSection {
-	var s ForgeSection
-	switch forgeName {
-	case ForgeGitHub:
-		s.GitHub.URL = forgeURL
-	case ForgeGitLab:
-		s.GitLab.URL = forgeURL
-	}
-	return s
-}
-
-// GitLabForgeInfra holds GitLab-specific infrastructure settings.
-type GitLabForgeInfra struct {
-	URL         string   `yaml:"url"`
-	RunnerTags  []string `yaml:"runner_tags,omitempty"`
-	FullsendRef string   `yaml:"fullsend_ref,omitempty"`
-}
-
-// DefaultsConfig holds default field values applied to every repo.
-type DefaultsConfig struct {
-	Forge                  string   `yaml:"forge"`
-	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
-}
-
-// RepoEntry represents a single repo or glob pattern in the manifest.
-// It supports two YAML forms: a plain string ("acme/repo") or an
-// object with optional per-repo overrides.
-type RepoEntry struct {
-	Repo  string         `yaml:"repo"`
-	Forge NullableString `yaml:"forge,omitempty"`
-
-	// Per-repo override fields. These use the NullableString 3-level
-	// fallback chain: per-repo → forge default → built-in default.
-	// Explicit null stops the chain. Omitted fields inherit the
-	// forge-level default.
-	FullsendRef NullableString `yaml:"fullsend_ref,omitempty"`
-	MintURL     NullableString `yaml:"mint_url,omitempty"`
-	MintMode    NullableString `yaml:"mint_mode,omitempty"`
-
-	// AllowedRemoteResources overrides the defaults.allowed_remote_resources
-	// list. A non-nil slice replaces the default; nil (omitted) inherits.
-	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
-}
-
-// UnmarshalYAML handles both string and mapping YAML forms.
-// It manually walks the mapping node to correctly detect !!null
-// values on NullableString fields, since yaml.v3's struct decoder
-// skips calling UnmarshalYAML for null-tagged scalars.
-func (r *RepoEntry) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind == yaml.ScalarNode {
-		*r = RepoEntry{Repo: node.Value}
-		return nil
-	}
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("expected scalar or mapping for repo entry, got kind %d", node.Kind)
-	}
-	*r = RepoEntry{}
-	for i := 0; i < len(node.Content)-1; i += 2 {
-		key := node.Content[i]
-		val := node.Content[i+1]
-		switch key.Value {
-		case "repo":
-			r.Repo = val.Value
-		case "forge":
-			if err := decodeNullable(val, &r.Forge); err != nil {
-				return fmt.Errorf("decoding forge: %w", err)
-			}
-		case "fullsend_ref":
-			if err := decodeNullable(val, &r.FullsendRef); err != nil {
-				return fmt.Errorf("decoding fullsend_ref: %w", err)
-			}
-		case "mint_url":
-			if err := decodeNullable(val, &r.MintURL); err != nil {
-				return fmt.Errorf("decoding mint_url: %w", err)
-			}
-		case "mint_mode":
-			if err := decodeNullable(val, &r.MintMode); err != nil {
-				return fmt.Errorf("decoding mint_mode: %w", err)
-			}
-		case "allowed_remote_resources":
-			if val.Tag == "!!null" {
-				// Explicit null: treat as empty override (no inheritance).
-				r.AllowedRemoteResources = []string{}
-			} else {
-				if err := val.Decode(&r.AllowedRemoteResources); err != nil {
-					return fmt.Errorf("decoding allowed_remote_resources: %w", err)
-				}
-			}
-		default:
-			return fmt.Errorf("unknown field %q in repo entry", key.Value)
-		}
-	}
-	return nil
-}
-
-// MarshalYAML serializes a RepoEntry back to YAML, preserving both the
-// plain-string form (when no overrides are set) and the explicit-null
-// semantics for AllowedRemoteResources.
-func (r RepoEntry) MarshalYAML() (interface{}, error) {
-	hasOverrides := r.Forge.Set || r.FullsendRef.Set ||
-		r.MintURL.Set || r.MintMode.Set || r.AllowedRemoteResources != nil
-	if !hasOverrides {
-		return r.Repo, nil
-	}
-
-	node := &yaml.Node{Kind: yaml.MappingNode}
-
-	node.Content = append(node.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: "repo"},
-		&yaml.Node{Kind: yaml.ScalarNode, Value: r.Repo},
-	)
-
-	appendNullable := func(key string, ns NullableString) {
-		if !ns.Set {
-			return
-		}
-		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-		var valNode *yaml.Node
-		if ns.Null {
-			valNode = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}
-		} else {
-			valNode = &yaml.Node{Kind: yaml.ScalarNode, Value: ns.Value}
-		}
-		node.Content = append(node.Content, keyNode, valNode)
-	}
-
-	appendNullable("forge", r.Forge)
-	appendNullable("fullsend_ref", r.FullsendRef)
-	appendNullable("mint_url", r.MintURL)
-	appendNullable("mint_mode", r.MintMode)
-
-	if r.AllowedRemoteResources != nil {
-		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: "allowed_remote_resources"}
-		if len(r.AllowedRemoteResources) == 0 {
-			node.Content = append(node.Content, keyNode,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"})
-		} else {
-			seq := &yaml.Node{Kind: yaml.SequenceNode}
-			for _, v := range r.AllowedRemoteResources {
-				seq.Content = append(seq.Content,
-					&yaml.Node{Kind: yaml.ScalarNode, Value: v})
-			}
-			node.Content = append(node.Content, keyNode, seq)
-		}
-	}
-
-	return node, nil
-}
-
-// decodeNullable decodes a YAML node into a NullableString, handling
-// null nodes explicitly since yaml.v3 skips custom unmarshalers for
-// !!null-tagged scalars.
-func decodeNullable(node *yaml.Node, ns *NullableString) error {
-	if node.Tag == "!!null" {
-		ns.Set = true
-		ns.Null = true
-		ns.Value = ""
-		return nil
-	}
-	ns.Set = true
-	ns.Null = false
-	ns.Value = ""
-	return node.Decode(&ns.Value)
-}
-
-// NullableString distinguishes three YAML states: omitted (zero value),
-// explicit null (Set=true, Null=true), and an explicit string value
-// (Set=true, Null=false, Value holds the string). This three-state
-// design lets per-repo overrides explicitly clear a default with
-// "field: null" rather than inheriting it.
-//
-// A fourth state — Set=true, Value="" (explicit empty string in YAML)
-// — is treated as unset by resolveField and falls through to defaults.
-// This matches the ADR spec: "Empty-string and zero-value overrides
-// are treated as unset and fall through to defaults."
-type NullableString struct {
-	Value string
-	Set   bool
-	Null  bool
-}
-
-// UnmarshalYAML decodes a YAML scalar into a NullableString, treating
-// the !!null tag as an explicit null.
-func (n *NullableString) UnmarshalYAML(node *yaml.Node) error {
-	if node.Tag == "!!null" {
-		n.Set = true
-		n.Null = true
-		n.Value = ""
-		return nil
-	}
-	n.Set = true
-	n.Null = false
-	n.Value = ""
-	return node.Decode(&n.Value)
-}
-
-// MarshalYAML serializes a NullableString back to YAML, preserving
-// the null vs omitted distinction.
-func (n NullableString) MarshalYAML() (interface{}, error) {
-	if !n.Set {
-		return nil, nil
-	}
-	if n.Null {
-		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}, nil
-	}
-	return n.Value, nil
-}
-
-// IsZero reports whether n was never set, used by the YAML encoder
-// to honor the omitempty tag.
-func (n NullableString) IsZero() bool {
-	return !n.Set
-}
 
 // ResolvedRepo pairs an owner/repo with the manifest entry that
 // matched it (either an explicit entry or a glob-generated one).
 type ResolvedRepo struct {
 	Owner string
 	Repo  string
+	Forge string
 	Entry RepoEntry
 }
 
 // ResolvedConfig is the fully resolved configuration for a single
-// repository after merging manifest defaults and forge-level settings.
+// repository after merging manifest defaults and platform-level settings.
 // The ForgeConfig field carries per-forge patterns and (when populated
 // by ForgeClientFactory.ConfigFor) a live API client.
 type ResolvedConfig struct {
@@ -465,13 +266,59 @@ func fetchManifestURL(ctx context.Context, rawURL string, skipIPCheck bool) ([]b
 	return data, nil
 }
 
+// PlatformFor returns the PlatformConfig for the given forge name, or
+// nil if that platform section is not present in the manifest.
+func (m *Manifest) PlatformFor(forgeName string) *PlatformConfig {
+	switch forgeName {
+	case ForgeGitHub:
+		return m.GitHub
+	case ForgeGitLab:
+		return m.GitLab
+	default:
+		return nil
+	}
+}
+
+// EnsurePlatform returns the PlatformConfig for the given forge name,
+// creating it if it does not exist.
+func (m *Manifest) EnsurePlatform(forgeName string) *PlatformConfig {
+	switch forgeName {
+	case ForgeGitHub:
+		if m.GitHub == nil {
+			m.GitHub = &PlatformConfig{}
+		}
+		return m.GitHub
+	case ForgeGitLab:
+		if m.GitLab == nil {
+			m.GitLab = &PlatformConfig{}
+		}
+		return m.GitLab
+	default:
+		return nil
+	}
+}
+
+// AllRepos returns a flat list of all repo entries across all platform
+// sections. The order is GitHub repos first, then GitLab repos,
+// preserving the order within each section.
+func (m *Manifest) AllRepos() []RepoEntry {
+	var result []RepoEntry
+	if m.GitHub != nil {
+		result = append(result, m.GitHub.Repos...)
+	}
+	if m.GitLab != nil {
+		result = append(result, m.GitLab.Repos...)
+	}
+	return result
+}
+
 // Validate checks the manifest for structural correctness:
 //   - version must be 1
-//   - forge.github.url defaults to https://github.com when unset;
+//   - github.url defaults to https://github.com when unset;
 //     mint_url defaults to DefaultPublicMintURL in public mode,
 //     and is required in private mode
-//   - forge.gitlab.url is required when at least one repo resolves to
-//     forge: gitlab
+//   - gitlab.url is required when a gitlab section is present with repos
+//   - platform-specific fields are rejected on the wrong platform
 //   - each repo entry must have a valid owner/repo or owner/glob format
 //   - glob characters are only allowed in the repo name, not the owner
 //   - no duplicate repo entries (before glob expansion)
@@ -482,169 +329,177 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("unsupported manifest version %d (expected 1)", m.Version)
 	}
 
-	if m.Defaults.Forge != "" && !validForges[m.Defaults.Forge] {
-		return fmt.Errorf("defaults.forge %q is not a supported forge; use %q or %q", m.Defaults.Forge, ForgeGitHub, ForgeGitLab)
+	// Track all repo names across platforms for cross-platform duplicate detection.
+	allSeen := make(map[string]bool)
+
+	// Validate GitHub platform section.
+	if m.GitHub != nil {
+		// Reject GitLab-only fields on GitHub.
+		if len(m.GitHub.RunnerTags) > 0 {
+			return fmt.Errorf("github.runner_tags is not supported; runner_tags is a GitLab-only field")
+		}
+
+		githubURL := m.GitHub.URL
+		if githubURL == "" {
+			githubURL = DefaultGitHubURL
+		}
+		u, err := url.Parse(githubURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("github.url must be a valid HTTPS URL, got %q", githubURL)
+		}
+		if err := rejectExtraneousURLParts(u, "github.url"); err != nil {
+			return err
+		}
+
+		mintMode := m.GitHub.MintMode
+		if mintMode == "" {
+			mintMode = MintModePublic
+		}
+		if mintMode != MintModePublic && mintMode != MintModePrivate {
+			return fmt.Errorf("github.mint_mode must be %q or %q, got %q", MintModePublic, MintModePrivate, mintMode)
+		}
+		mintURL := m.GitHub.MintURL
+		if mintURL == "" && mintMode == MintModePublic {
+			mintURL = DefaultPublicMintURL
+		}
+		if mintURL == "" {
+			return fmt.Errorf("github.mint_url is required when mint_mode is %q", MintModePrivate)
+		}
+		mu, err := url.Parse(mintURL)
+		if err != nil || mu.Scheme != "https" || mu.Host == "" {
+			return fmt.Errorf("github.mint_url must be a valid HTTPS URL, got %q", mintURL)
+		}
+		if m.GitHub.FullsendRef != "" && !IsValidRef(m.GitHub.FullsendRef) {
+			return fmt.Errorf("github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.GitHub.FullsendRef)
+		}
+
+		if err := m.validatePlatformRepos(ForgeGitHub, m.GitHub, allSeen); err != nil {
+			return err
+		}
 	}
 
-	// Validate repo entries.
-	seen := make(map[string]bool, len(m.Repos))
-	for i, entry := range m.Repos {
-		if entry.Repo == "" {
-			return fmt.Errorf("repos[%d]: repo field is required", i)
+	// Validate GitLab platform section.
+	if m.GitLab != nil {
+		// Reject GitHub-only fields on GitLab.
+		if m.GitLab.MintURL != "" {
+			return fmt.Errorf("gitlab.mint_url is not supported; mint_url is a GitHub-only field")
+		}
+		if m.GitLab.MintMode != "" {
+			return fmt.Errorf("gitlab.mint_mode is not supported; mint_mode is a GitHub-only field")
 		}
 
-		// Resolve and validate forge for this entry. No builtin default —
-		// forge is required from day one. This is not a breaking change (no
-		// `!` suffix needed) because no repos.yaml consumers exist yet (#5616).
-		entryForge := resolveField(entry.Forge, m.Defaults.Forge, "")
-		if entryForge == "" {
-			return fmt.Errorf("repos[%d]: forge is required (set per-entry or in defaults.forge)", i)
+		if len(m.GitLab.Repos) > 0 && m.GitLab.URL == "" {
+			return fmt.Errorf("gitlab.url is required when GitLab repos are present")
 		}
-		if !validForges[entryForge] {
-			return fmt.Errorf("repos[%d]: forge %q is not supported; use %q or %q", i, entryForge, ForgeGitHub, ForgeGitLab)
+		if m.GitLab.URL != "" {
+			u, err := url.Parse(m.GitLab.URL)
+			if err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("gitlab.url must be a valid HTTPS URL, got %q", m.GitLab.URL)
+			}
+			if err := rejectExtraneousURLParts(u, "gitlab.url"); err != nil {
+				return err
+			}
+		}
+		if m.GitLab.FullsendRef != "" && !IsValidRef(m.GitLab.FullsendRef) {
+			return fmt.Errorf("gitlab.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.GitLab.FullsendRef)
 		}
 
-		parts := strings.SplitN(entry.Repo, "/", 2)
+		if err := m.validatePlatformRepos(ForgeGitLab, m.GitLab, allSeen); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validatePlatformRepos validates repo entries within a platform section.
+func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformConfig, allSeen map[string]bool) error {
+	seen := make(map[string]bool, len(platform.Repos))
+
+	for i, entry := range platform.Repos {
+		if entry.Name == "" {
+			return fmt.Errorf("%s.repos[%d]: name field is required", forgeName, i)
+		}
+
+		parts := strings.SplitN(entry.Name, "/", 2)
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("repos[%d]: %q must be in owner/repo format", i, entry.Repo)
+			return fmt.Errorf("%s.repos[%d]: %q must be in owner/repo format", forgeName, i, entry.Name)
 		}
 
 		// Glob characters are only allowed in the repo segment, not the owner.
 		if strings.ContainsAny(parts[0], "*?[") {
-			return fmt.Errorf("repos[%d]: glob characters are not allowed in owner segment %q", i, parts[0])
+			return fmt.Errorf("%s.repos[%d]: glob characters are not allowed in owner segment %q", forgeName, i, parts[0])
 		}
 
 		// Validate glob patterns in the repo segment.
 		if strings.ContainsAny(parts[1], "*?[") {
 			if _, err := filepath.Match(parts[1], "test"); err != nil {
-				return fmt.Errorf("repos[%d]: invalid glob pattern %q: %w", i, entry.Repo, err)
+				return fmt.Errorf("%s.repos[%d]: invalid glob pattern %q: %w", forgeName, i, entry.Name, err)
+			}
+		}
+
+		// Reject GitHub-only per-repo fields on GitLab repos before
+		// format validation so users see the platform error first.
+		if forgeName == ForgeGitLab {
+			if entry.MintMode != "" {
+				return fmt.Errorf("%s.repos[%d]: mint_mode is only supported for GitHub repos", forgeName, i)
+			}
+			if entry.MintURL != "" {
+				return fmt.Errorf("%s.repos[%d]: mint_url is only supported for GitHub repos", forgeName, i)
 			}
 		}
 
 		// Validate per-repo mint_url override.
-		if entry.MintURL.Set && !entry.MintURL.Null && entry.MintURL.Value != "" {
-			mu, muErr := url.Parse(entry.MintURL.Value)
+		if entry.MintURL != "" && entry.MintURL != NoneSentinel {
+			mu, muErr := url.Parse(entry.MintURL)
 			if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("repos[%d]: per-repo mint_url must be a valid HTTPS URL, got %q", i, entry.MintURL.Value)
+				return fmt.Errorf("%s.repos[%d]: per-repo mint_url must be a valid HTTPS URL, got %q", forgeName, i, entry.MintURL)
 			}
 		}
 
 		// Validate per-repo mint_mode override.
-		if entry.MintMode.Set && !entry.MintMode.Null && entry.MintMode.Value != "" {
-			if entry.MintMode.Value != MintModePublic && entry.MintMode.Value != MintModePrivate {
-				return fmt.Errorf("repos[%d]: per-repo mint_mode must be %q or %q, got %q", i, MintModePublic, MintModePrivate, entry.MintMode.Value)
+		if entry.MintMode != "" && entry.MintMode != NoneSentinel {
+			if entry.MintMode != MintModePublic && entry.MintMode != MintModePrivate {
+				return fmt.Errorf("%s.repos[%d]: per-repo mint_mode must be %q or %q, got %q", forgeName, i, MintModePublic, MintModePrivate, entry.MintMode)
 			}
-			if entryForge != ForgeGitHub {
-				return fmt.Errorf("repos[%d]: mint_mode is only supported for GitHub repos", i)
-			}
-		}
-
-		// Reject per-repo mint_url on non-GitHub repos.
-		if entry.MintURL.Set && !entry.MintURL.Null && entry.MintURL.Value != "" && entryForge != ForgeGitHub {
-			return fmt.Errorf("repos[%d]: mint_url is only supported for GitHub repos", i)
 		}
 
 		// Cross-field: mint_url must resolve to a non-empty value for
 		// GitHub repos. In private mode there is no builtin default; in
 		// public mode the default is applied only when the field is
-		// omitted — explicit null clears it.
-		if entryForge == ForgeGitHub {
-			resolvedMode := resolveField(entry.MintMode, m.Forge.GitHub.MintMode, MintModePublic)
+		// omitted — the "none" sentinel clears it.
+		if forgeName == ForgeGitHub {
+			resolvedMode := resolveField(entry.MintMode, platform.MintMode, MintModePublic)
 			if resolvedMode == MintModePrivate {
-				resolvedURL := resolveField(entry.MintURL, m.Forge.GitHub.MintURL, "")
+				resolvedURL := resolveField(entry.MintURL, platform.MintURL, "")
 				if resolvedURL == "" {
-					return fmt.Errorf("repos[%d]: mint_url is required when mint_mode is %q", i, MintModePrivate)
+					return fmt.Errorf("%s.repos[%d]: mint_url is required when mint_mode is %q", forgeName, i, MintModePrivate)
 				}
 			} else {
-				resolvedURL := resolveField(entry.MintURL, m.Forge.GitHub.MintURL, DefaultPublicMintURL)
+				resolvedURL := resolveField(entry.MintURL, platform.MintURL, DefaultPublicMintURL)
 				if resolvedURL == "" {
-					return fmt.Errorf("repos[%d]: mint_url must not be null in public mode (omit to use the default %s)", i, DefaultPublicMintURL)
+					return fmt.Errorf("%s.repos[%d]: mint_url must not be cleared in public mode (omit to use the default %s)", forgeName, i, DefaultPublicMintURL)
 				}
 			}
 		}
 
 		// Validate per-repo fullsend_ref override.
-		if entry.FullsendRef.Set && !entry.FullsendRef.Null && entry.FullsendRef.Value != "" {
-			if !IsValidRef(entry.FullsendRef.Value) {
-				return fmt.Errorf("repos[%d]: per-repo fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", i, entry.FullsendRef.Value)
-			}
+		if entry.FullsendRef != "" && entry.FullsendRef != NoneSentinel && !IsValidRef(entry.FullsendRef) {
+			return fmt.Errorf("%s.repos[%d]: per-repo fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", forgeName, i, entry.FullsendRef)
 		}
 
-		// Check for duplicates.
-		if seen[entry.Repo] {
-			return fmt.Errorf("repos[%d]: duplicate repo %q", i, entry.Repo)
+		// Check for duplicates within this platform (case-insensitive).
+		lowerName := strings.ToLower(entry.Name)
+		if seen[lowerName] {
+			return fmt.Errorf("%s.repos[%d]: duplicate repo %q", forgeName, i, entry.Name)
 		}
-		seen[entry.Repo] = true
-	}
+		seen[lowerName] = true
 
-	// Reject manifests where the same owner has entries with different forges.
-	// A GitHub org and a GitLab group named the same thing are different
-	// entities; mixing them under one owner would route API calls incorrectly.
-	ownerForge := make(map[string]string)
-	for i, entry := range m.Repos {
-		parts := strings.SplitN(entry.Repo, "/", 2)
-		owner := parts[0]
-		entryForge := resolveField(entry.Forge, m.Defaults.Forge, "")
-		if prev, ok := ownerForge[owner]; ok && prev != entryForge {
-			return fmt.Errorf("repos[%d]: owner %q has entries with forge %q and %q; "+
-				"all repos under the same owner must use the same forge", i, owner, prev, entryForge)
+		// Check for duplicates across platforms (case-insensitive).
+		if allSeen[lowerName] {
+			return fmt.Errorf("%s.repos[%d]: duplicate repo %q (also present in another platform section)", forgeName, i, entry.Name)
 		}
-		ownerForge[owner] = entryForge
-	}
-
-	// Validate forge-specific infrastructure. GitHub mint fields are
-	// only required when at least one repo resolves to forge: github.
-	usedForges := m.DistinctForges()
-	for _, f := range usedForges {
-		if f == ForgeGitHub {
-			githubURL := m.Forge.GitHub.URL
-			if githubURL == "" {
-				githubURL = DefaultGitHubURL
-			}
-			u, err := url.Parse(githubURL)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
-				return fmt.Errorf("forge.github.url must be a valid HTTPS URL, got %q", githubURL)
-			}
-			if err := rejectExtraneousURLParts(u, "forge.github.url"); err != nil {
-				return err
-			}
-			mintMode := m.Forge.GitHub.MintMode
-			if mintMode == "" {
-				mintMode = MintModePublic
-			}
-			if mintMode != MintModePublic && mintMode != MintModePrivate {
-				return fmt.Errorf("forge.github.mint_mode must be %q or %q, got %q", MintModePublic, MintModePrivate, mintMode)
-			}
-			mintURL := m.Forge.GitHub.MintURL
-			if mintURL == "" && mintMode == MintModePublic {
-				mintURL = DefaultPublicMintURL
-			}
-			if mintURL == "" {
-				return fmt.Errorf("forge.github.mint_url is required when mint_mode is %q", MintModePrivate)
-			}
-			mu, err := url.Parse(mintURL)
-			if err != nil || mu.Scheme != "https" || mu.Host == "" {
-				return fmt.Errorf("forge.github.mint_url must be a valid HTTPS URL, got %q", mintURL)
-			}
-			if m.Forge.GitHub.FullsendRef != "" && !IsValidRef(m.Forge.GitHub.FullsendRef) {
-				return fmt.Errorf("forge.github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Forge.GitHub.FullsendRef)
-			}
-		}
-		if f == ForgeGitLab {
-			if m.Forge.GitLab.URL == "" {
-				return fmt.Errorf("forge.gitlab.url is required when GitLab repos are present")
-			}
-			u, err := url.Parse(m.Forge.GitLab.URL)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
-				return fmt.Errorf("forge.gitlab.url must be a valid HTTPS URL, got %q", m.Forge.GitLab.URL)
-			}
-			if err := rejectExtraneousURLParts(u, "forge.gitlab.url"); err != nil {
-				return err
-			}
-			if m.Forge.GitLab.FullsendRef != "" && !IsValidRef(m.Forge.GitLab.FullsendRef) {
-				return fmt.Errorf("forge.gitlab.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Forge.GitLab.FullsendRef)
-			}
-		}
+		allSeen[lowerName] = true
 	}
 
 	return nil
@@ -678,86 +533,99 @@ func rejectExtraneousURLParts(u *url.URL, field string) error {
 // The clients factory provides per-forge API clients so glob entries
 // targeting different forges resolve against the correct API.
 func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) ([]ResolvedRepo, error) {
-	// First pass: separate explicit entries from glob patterns.
-	explicit := make(map[string]RepoEntry)
-	type globEntry struct {
-		org     string
-		pattern string
-		entry   RepoEntry
-	}
-	var globs []globEntry
-
-	for _, entry := range m.Repos {
-		parts := strings.SplitN(entry.Repo, "/", 2)
-		org := parts[0]
-		name := parts[1]
-
-		if strings.ContainsAny(name, "*?[") {
-			globs = append(globs, globEntry{org: org, pattern: name, entry: entry})
-		} else {
-			explicit[entry.Repo] = entry
-		}
-	}
-
-	// Second pass: expand globs.
 	resolved := make(map[string]ResolvedRepo)
 
-	// Add explicit entries first (they take priority).
-	for fullName, entry := range explicit {
-		parts := strings.SplitN(fullName, "/", 2)
-		resolved[fullName] = ResolvedRepo{
-			Owner: parts[0],
-			Repo:  parts[1],
-			Entry: entry,
-		}
+	platforms := []struct {
+		name string
+		cfg  *PlatformConfig
+	}{
+		{ForgeGitHub, m.GitHub},
+		{ForgeGitLab, m.GitLab},
 	}
 
-	// Expand each glob pattern.
-	orgRepoCache := make(map[string][]forge.Repository)
-	for _, g := range globs {
-		repos, ok := orgRepoCache[g.org]
-		if !ok {
-			// Resolve the forge for this glob entry to get the right client.
-			entryForge := resolveField(g.entry.Forge, m.Defaults.Forge, "")
-			fc, err := clients.ConfigFor(entryForge)
-			if err != nil {
-				return nil, fmt.Errorf("expanding glob %q: creating client for forge %q: %w", g.org+"/"+g.pattern, entryForge, err)
-			}
-			repos, err = fc.Client.ListOrgRepos(ctx, g.org, true)
-			if err != nil {
-				return nil, fmt.Errorf("expanding glob %q: listing repos for org %q: %w", g.org+"/"+g.pattern, g.org, err)
-			}
-			orgRepoCache[g.org] = repos
+	for _, p := range platforms {
+		if p.cfg == nil {
+			continue
 		}
 
-		for _, repo := range repos {
-			matched, err := filepath.Match(g.pattern, repo.Name)
-			if err != nil {
-				return nil, fmt.Errorf("matching glob %q against %q: %w", g.pattern, repo.Name, err)
-			}
-			if !matched {
-				continue
-			}
+		// First pass: separate explicit entries from glob patterns.
+		explicit := make(map[string]RepoEntry)
+		type globEntry struct {
+			org     string
+			pattern string
+			entry   RepoEntry
+		}
+		var globs []globEntry
 
-			fullName := g.org + "/" + repo.Name
-			// Explicit entries win over glob matches.
-			if _, exists := explicit[fullName]; exists {
-				continue
-			}
-			// First glob match wins (if multiple globs match the same repo).
-			if _, exists := resolved[fullName]; exists {
-				continue
-			}
+		for _, entry := range p.cfg.Repos {
+			parts := strings.SplitN(entry.Name, "/", 2)
+			org := parts[0]
+			name := parts[1]
 
-			// Create an entry for the glob-matched repo, inheriting the
-			// glob entry's overrides but replacing the repo field with the
-			// actual repo name.
-			entry := g.entry
-			entry.Repo = fullName
+			if strings.ContainsAny(name, "*?[") {
+				globs = append(globs, globEntry{org: org, pattern: name, entry: entry})
+			} else {
+				explicit[entry.Name] = entry
+			}
+		}
+
+		// Add explicit entries first (they take priority).
+		for fullName, entry := range explicit {
+			parts := strings.SplitN(fullName, "/", 2)
 			resolved[fullName] = ResolvedRepo{
-				Owner: g.org,
-				Repo:  repo.Name,
+				Owner: parts[0],
+				Repo:  parts[1],
+				Forge: p.name,
 				Entry: entry,
+			}
+		}
+
+		// Expand each glob pattern.
+		orgRepoCache := make(map[string][]forge.Repository)
+		for _, g := range globs {
+			repos, ok := orgRepoCache[g.org]
+			if !ok {
+				fc, err := clients.ConfigFor(p.name)
+				if err != nil {
+					return nil, fmt.Errorf("expanding glob %q: creating client for forge %q: %w", g.org+"/"+g.pattern, p.name, err)
+				}
+				repos, err = fc.Client.ListOrgRepos(ctx, g.org, true)
+				if err != nil {
+					return nil, fmt.Errorf("expanding glob %q: listing repos for org %q: %w", g.org+"/"+g.pattern, g.org, err)
+				}
+				orgRepoCache[g.org] = repos
+			}
+
+			for _, repo := range repos {
+				matched, err := filepath.Match(g.pattern, repo.Name)
+				if err != nil {
+					return nil, fmt.Errorf("matching glob %q against %q: %w", g.pattern, repo.Name, err)
+				}
+				if !matched {
+					continue
+				}
+
+				fullName := g.org + "/" + repo.Name
+				// Explicit entries win over glob matches.
+				if _, exists := explicit[fullName]; exists {
+					continue
+				}
+				// First glob match wins (if multiple globs match the same repo).
+				if _, exists := resolved[fullName]; exists {
+					continue
+				}
+
+				// Create an entry for the glob-matched repo, inheriting the
+				// glob entry's overrides but replacing the name field with the
+				// actual repo name.
+				entry := g.entry
+				entry.Name = fullName
+				resolved[fullName] = ResolvedRepo{
+					Owner: g.org,
+					Repo:  repo.Name,
+					Forge: p.name,
+					Entry: entry,
+				}
 			}
 		}
 	}
@@ -775,17 +643,16 @@ func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) 
 }
 
 // ResolveConfig computes the fully merged configuration for the given
-// owner/repo by looking up the entry in the manifest's repo list.
+// owner/repo by looking up the entry in the manifest's platform sections.
 // The resolution order is:
 //
 //  1. Per-repo override (from RepoEntry)
-//  2. Manifest defaults (from DefaultsConfig)
+//  2. Platform-level default (from PlatformConfig)
 //  3. Built-in defaults (empty strings)
 //
-// An explicit null at any level stops the fallback chain, returning "".
+// The sentinel value "none" at any level stops the fallback chain, returning "".
 // The second return value indicates whether the repo was found in the
-// manifest's repo list. When false, the returned config uses only
-// manifest defaults and built-in values.
+// manifest's repo list. When false, the returned config is empty.
 //
 // For repos matched via glob expansion, use ResolveConfigForEntry
 // instead — this method only finds exact matches in the manifest's
@@ -793,14 +660,22 @@ func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) 
 func (m *Manifest) ResolveConfig(owner, repo string) (ResolvedConfig, bool) {
 	fullName := owner + "/" + repo
 
-	// Find the matching entry.
-	for _, e := range m.Repos {
-		if e.Repo == fullName {
-			return m.resolveWithEntry(owner, repo, e), true
+	if m.GitHub != nil {
+		for _, e := range m.GitHub.Repos {
+			if strings.EqualFold(e.Name, fullName) {
+				return m.resolveWithEntry(owner, repo, ForgeGitHub, m.GitHub, e), true
+			}
+		}
+	}
+	if m.GitLab != nil {
+		for _, e := range m.GitLab.Repos {
+			if strings.EqualFold(e.Name, fullName) {
+				return m.resolveWithEntry(owner, repo, ForgeGitLab, m.GitLab, e), true
+			}
 		}
 	}
 
-	return m.resolveWithEntry(owner, repo, RepoEntry{}), false
+	return ResolvedConfig{}, false
 }
 
 // ResolveConfigWithGlobs resolves config for a repo, falling back to
@@ -810,27 +685,42 @@ func (m *Manifest) ResolveConfigWithGlobs(owner, repo string) (ResolvedConfig, b
 		return resolved, true
 	}
 	fullName := owner + "/" + repo
-	for _, e := range m.Repos {
-		if ok, _ := matchesPattern(e.Repo, fullName); ok {
-			return m.ResolveConfigForEntry(owner, repo, e), true
+
+	if m.GitHub != nil {
+		for _, e := range m.GitHub.Repos {
+			if ok, _ := matchesPattern(e.Name, fullName); ok {
+				return m.ResolveConfigForEntry(owner, repo, ForgeGitHub, e), true
+			}
 		}
 	}
+	if m.GitLab != nil {
+		for _, e := range m.GitLab.Repos {
+			if ok, _ := matchesPattern(e.Name, fullName); ok {
+				return m.ResolveConfigForEntry(owner, repo, ForgeGitLab, e), true
+			}
+		}
+	}
+
 	return ResolvedConfig{}, false
 }
 
 // ResolveConfigForEntry computes the fully merged configuration for
-// the given owner/repo using the provided RepoEntry. Use this with
-// entries returned by ExpandGlobs, which carry per-glob overrides
-// that ResolveConfig cannot find by exact match.
-func (m *Manifest) ResolveConfigForEntry(owner, repo string, entry RepoEntry) ResolvedConfig {
-	return m.resolveWithEntry(owner, repo, entry)
+// the given owner/repo using the provided RepoEntry and forge name.
+// Use this with entries returned by ExpandGlobs, which carry per-glob
+// overrides that ResolveConfig cannot find by exact match.
+func (m *Manifest) ResolveConfigForEntry(owner, repo, forgeName string, entry RepoEntry) ResolvedConfig {
+	platform := m.PlatformFor(forgeName)
+	if platform == nil {
+		platform = &PlatformConfig{}
+	}
+	return m.resolveWithEntry(owner, repo, forgeName, platform, entry)
 }
 
-func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) ResolvedConfig {
+func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *PlatformConfig, entry RepoEntry) ResolvedConfig {
 	cfg := ResolvedConfig{
 		Owner: owner,
 		Repo:  repo,
-		Forge: resolveField(entry.Forge, m.Defaults.Forge, ""),
+		Forge: forgeName,
 	}
 
 	// AllowedRemoteResources: per-repo overrides defaults when non-nil.
@@ -840,16 +730,12 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 		cfg.AllowedRemoteResources = m.Defaults.AllowedRemoteResources
 	}
 
-	// Source infrastructure config from the forge-specific section,
-	// with per-repo overrides via the NullableString fallback chain.
+	// Source infrastructure config from the platform-level section,
+	// with per-repo overrides via the string fallback chain.
 	// GitLab repos do not use mint or inference fields.
-	//
-	// InferenceProject, InferenceProjectNumber, and InferenceRegion
-	// are install-time-only values provided via CLI flags — they are
-	// not stored in the manifest and are not populated here.
-	switch cfg.Forge {
+	switch forgeName {
 	case ForgeGitHub:
-		cfg.MintMode = resolveField(entry.MintMode, m.Forge.GitHub.MintMode, MintModePublic)
+		cfg.MintMode = resolveField(entry.MintMode, platform.MintMode, MintModePublic)
 		if cfg.MintMode != MintModePrivate {
 			cfg.MintMode = MintModePublic
 		}
@@ -857,68 +743,81 @@ func (m *Manifest) resolveWithEntry(owner, repo string, entry RepoEntry) Resolve
 		if cfg.MintMode == MintModePublic {
 			mintURLDefault = DefaultPublicMintURL
 		}
-		cfg.MintURL = resolveField(entry.MintURL, m.Forge.GitHub.MintURL, mintURLDefault)
-		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitHub.FullsendRef, "")
+		cfg.MintURL = resolveField(entry.MintURL, platform.MintURL, mintURLDefault)
+		cfg.FullsendRef = resolveField(entry.FullsendRef, platform.FullsendRef, "")
 	case ForgeGitLab:
-		cfg.FullsendRef = resolveField(entry.FullsendRef, m.Forge.GitLab.FullsendRef, "")
+		cfg.FullsendRef = resolveField(entry.FullsendRef, platform.FullsendRef, "")
 	}
 	return cfg
 }
 
-// resolveField implements the three-level fallback chain for a
-// NullableString field. An explicitly set empty string (Set=true,
-// Value="") is treated as unset and falls through to the fallback,
-// matching the ADR spec: "Empty-string and zero-value overrides are
-// treated as unset and fall through to defaults." To explicitly clear
-// a field, use YAML null instead of an empty string.
-func resolveField(override NullableString, fallback string, builtinDefault string) string {
-	if !override.Set {
-		if fallback != "" {
-			return fallback
-		}
-		return builtinDefault
+// resolveField implements the three-level fallback chain for an
+// override field. The sentinel value "none" stops the chain, returning "".
+// An empty string falls through to the next level.
+func resolveField(perRepo, platformDefault, builtinDefault string) string {
+	if perRepo == NoneSentinel {
+		return "" // sentinel stops fallback chain
 	}
-	if override.Null {
-		return "" // explicit null stops fallback chain
+	if perRepo != "" {
+		return perRepo
 	}
-	if override.Value != "" {
-		return override.Value
+	if platformDefault == NoneSentinel {
+		return "" // sentinel stops fallback chain
 	}
-	if fallback != "" {
-		return fallback
+	if platformDefault != "" {
+		return platformDefault
 	}
 	return builtinDefault
 }
 
 // DistinctForges returns the deduplicated set of forge names actually
-// used by entries in the manifest, after resolving per-entry overrides
-// against defaults. Only forges referenced by at least one repo entry
-// are included. The order is deterministic (sorted).
+// used by entries in the manifest. Only forges with a non-nil platform
+// section containing repos are included. The order is deterministic
+// (github before gitlab).
 func (m *Manifest) DistinctForges() []string {
-	seen := make(map[string]bool)
-	for _, entry := range m.Repos {
-		f := resolveField(entry.Forge, m.Defaults.Forge, "")
-		if f != "" {
-			seen[f] = true
-		}
+	var forges []string
+	if m.GitHub != nil && len(m.GitHub.Repos) > 0 {
+		forges = append(forges, ForgeGitHub)
 	}
-	forges := make([]string, 0, len(seen))
-	for f := range seen {
-		forges = append(forges, f)
+	if m.GitLab != nil && len(m.GitLab.Repos) > 0 {
+		forges = append(forges, ForgeGitLab)
 	}
-	sort.Strings(forges)
 	return forges
 }
 
 // HasForge reports whether any repo in the manifest resolves to the
 // given forge name.
 func (m *Manifest) HasForge(name string) bool {
-	for _, f := range m.DistinctForges() {
-		if f == name {
-			return true
-		}
+	switch name {
+	case ForgeGitHub:
+		return m.GitHub != nil && len(m.GitHub.Repos) > 0
+	case ForgeGitLab:
+		return m.GitLab != nil && len(m.GitLab.Repos) > 0
+	default:
+		return false
 	}
-	return false
+}
+
+// TotalRepoCount returns the total number of repo entries across all
+// platform sections.
+func (m *Manifest) TotalRepoCount() int {
+	n := 0
+	if m.GitHub != nil {
+		n += len(m.GitHub.Repos)
+	}
+	if m.GitLab != nil {
+		n += len(m.GitLab.Repos)
+	}
+	return n
+}
+
+// gitlabRunnerTags returns the GitLab runner tags from the manifest,
+// or nil if no GitLab platform section exists.
+func gitlabRunnerTags(m *Manifest) []string {
+	if m.GitLab != nil {
+		return m.GitLab.RunnerTags
+	}
+	return nil
 }
 
 // IsValidGCPProjectID checks that s matches the GCP project ID format:

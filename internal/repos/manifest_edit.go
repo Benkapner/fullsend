@@ -31,72 +31,84 @@ type ManifestRemoveResult struct {
 	Skipped []string
 }
 
-// AddToManifest appends repo entries to the manifest, skipping duplicates.
-// When client is non-nil, each non-glob repo is probed for existing
-// installation state and per-repo overrides are populated where the
-// discovered values differ from manifest defaults.
+// AddToManifest appends repo entries to the appropriate platform section,
+// skipping duplicates. The forgeName parameter determines which platform
+// section receives the entries. When client is non-nil, each non-glob
+// repo is probed for existing installation state and per-repo overrides
+// are populated where the discovered values differ from platform defaults.
 // Returns the result and the modified manifest. The manifest is written to
 // disk only when ManifestPath is set and DryRun is false.
-func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEntry, clients ForgeClientFactory, progress ProgressFunc) (*ManifestAddResult, *Manifest, error) {
+func AddToManifest(ctx context.Context, cfg ManifestEditConfig, forgeName string, entries []RepoEntry, clients ForgeClientFactory, progress ProgressFunc) (*ManifestAddResult, *Manifest, error) {
 	if cfg.Manifest == nil {
 		return nil, nil, fmt.Errorf("manifest is required")
 	}
 	if len(entries) == 0 {
 		return nil, nil, fmt.Errorf("at least one repo is required")
 	}
+	if forgeName == "" {
+		return nil, nil, fmt.Errorf("forge name is required")
+	}
+	if !IsValidForge(forgeName) {
+		return nil, nil, fmt.Errorf("unsupported forge %q", forgeName)
+	}
 	if progress == nil {
 		progress = func(_, _, _ string) {}
 	}
 
-	existing := make(map[string]bool, len(cfg.Manifest.Repos))
-	for _, e := range cfg.Manifest.Repos {
-		existing[strings.ToLower(e.Repo)] = true
+	// Build set of existing repos across all platforms.
+	existing := make(map[string]bool)
+	for _, e := range cfg.Manifest.AllRepos() {
+		existing[strings.ToLower(e.Name)] = true
 	}
 
 	for _, entry := range entries {
-		if !isGlob(entry.Repo) && !repoNamePattern.MatchString(entry.Repo) {
-			return nil, nil, fmt.Errorf("invalid repo name %q: expected owner/repo format", entry.Repo)
+		if !isGlob(entry.Name) && !repoNamePattern.MatchString(entry.Name) {
+			return nil, nil, fmt.Errorf("invalid repo name %q: expected owner/repo format", entry.Name)
 		}
 	}
 
 	if clients != nil {
+		platform := cfg.Manifest.PlatformFor(forgeName)
 		for i := range entries {
-			if isGlob(entries[i].Repo) || existing[strings.ToLower(entries[i].Repo)] {
+			if isGlob(entries[i].Name) || existing[strings.ToLower(entries[i].Name)] {
 				continue
 			}
-			parts := strings.SplitN(entries[i].Repo, "/", 2)
+			parts := strings.SplitN(entries[i].Name, "/", 2)
 			if len(parts) != 2 {
 				continue
 			}
-			entryForge := resolveField(entries[i].Forge, cfg.Manifest.Defaults.Forge, ForgeGitHub)
-			fc, fcErr := clients.ConfigFor(entryForge)
+			fc, fcErr := clients.ConfigFor(forgeName)
 			if fcErr != nil {
-				progress(entries[i].Repo, "discover", fmt.Sprintf("forge client error: %v", fcErr))
+				progress(entries[i].Name, "discover", fmt.Sprintf("forge client error: %v", fcErr))
 				continue
 			}
 			state, err := ProbeRepoState(ctx, fc.Client, parts[0], parts[1], fc)
 			if err != nil && !state.Installed {
-				progress(entries[i].Repo, "discover", fmt.Sprintf("probe failed: %v", err))
+				progress(entries[i].Name, "discover", fmt.Sprintf("probe failed: %v", err))
 				continue
 			}
 			if state.Installed {
-				progress(entries[i].Repo, "discover", "existing installation detected")
+				progress(entries[i].Name, "discover", "existing installation detected")
 
 				// Populate per-repo overrides from discovered state
-				// when values differ from manifest defaults.
-				if entryForge == ForgeGitHub {
-					gh := cfg.Manifest.Forge.GitHub
-					if state.MintURL != "" && state.MintURL != gh.MintURL && !entries[i].MintURL.Set {
-						entries[i].MintURL = NullableString{Set: true, Value: state.MintURL}
+				// when values differ from platform defaults. Use an
+				// empty PlatformConfig when the section doesn't exist
+				// yet (bootstrap) so all discovered values are captured.
+				p := platform
+				if p == nil {
+					p = &PlatformConfig{}
+				}
+				if forgeName == ForgeGitHub {
+					if state.MintURL != "" && state.MintURL != p.MintURL && entries[i].MintURL == "" {
+						entries[i].MintURL = state.MintURL
 					}
-					if state.FullsendRef != "" && state.FullsendRef != gh.FullsendRef && !entries[i].FullsendRef.Set {
-						entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
+					if state.FullsendRef != "" && state.FullsendRef != p.FullsendRef && entries[i].FullsendRef == "" {
+						entries[i].FullsendRef = state.FullsendRef
 					}
 				}
-				if entryForge == ForgeGitLab {
-					gl := cfg.Manifest.Forge.GitLab
-					if state.FullsendRef != "" && state.FullsendRef != gl.FullsendRef && !entries[i].FullsendRef.Set {
-						entries[i].FullsendRef = NullableString{Set: true, Value: state.FullsendRef}
+				if forgeName == ForgeGitLab {
+					if state.FullsendRef != "" && state.FullsendRef != p.FullsendRef && entries[i].FullsendRef == "" {
+						entries[i].FullsendRef = state.FullsendRef
 					}
 				}
 			}
@@ -107,14 +119,14 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 	var toAdd []RepoEntry
 
 	for _, entry := range entries {
-		if existing[strings.ToLower(entry.Repo)] {
-			result.Skipped = append(result.Skipped, entry.Repo)
-			progress(entry.Repo, "manifest", "Already in manifest, skipping")
+		if existing[strings.ToLower(entry.Name)] {
+			result.Skipped = append(result.Skipped, entry.Name)
+			progress(entry.Name, "manifest", "Already in manifest, skipping")
 			continue
 		}
-		result.Added = append(result.Added, entry.Repo)
+		result.Added = append(result.Added, entry.Name)
 		toAdd = append(toAdd, entry)
-		existing[strings.ToLower(entry.Repo)] = true
+		existing[strings.ToLower(entry.Name)] = true
 	}
 
 	if len(toAdd) == 0 {
@@ -123,12 +135,14 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 
 	if cfg.DryRun {
 		for _, entry := range toAdd {
-			progress(entry.Repo, "dry-run", "Would add to manifest")
+			progress(entry.Name, "dry-run", "Would add to manifest")
 		}
 		return result, cfg.Manifest, nil
 	}
 
-	cfg.Manifest.Repos = append(cfg.Manifest.Repos, toAdd...)
+	// Add entries to the appropriate platform section.
+	platform := cfg.Manifest.EnsurePlatform(forgeName)
+	platform.Repos = append(platform.Repos, toAdd...)
 
 	if cfg.ManifestPath != "" {
 		if err := writeManifest(cfg.ManifestPath, cfg.Manifest); err != nil {
@@ -137,15 +151,16 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, entries []RepoEn
 	}
 
 	for _, entry := range toAdd {
-		progress(entry.Repo, "manifest", "Added to manifest")
+		progress(entry.Name, "manifest", "Added to manifest")
 	}
 
 	return result, cfg.Manifest, nil
 }
 
-// RemoveFromManifest removes matching repo entries from the manifest. Patterns
-// containing glob characters (*, ?, [) are matched against manifest entries
-// using filepath.Match. Returns the result and the modified manifest.
+// RemoveFromManifest removes matching repo entries from all platform
+// sections in the manifest. Patterns containing glob characters (*, ?, [)
+// are matched against manifest entries using filepath.Match. Returns the
+// result and the modified manifest.
 func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress ProgressFunc) (*ManifestRemoveResult, *Manifest, error) {
 	if cfg.Manifest == nil {
 		return nil, nil, fmt.Errorf("manifest is required")
@@ -157,20 +172,32 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 		progress = func(_, _, _ string) {}
 	}
 
-	toRemove, err := matchManifestEntries(cfg.Manifest.Repos, repos)
+	allEntries := cfg.Manifest.AllRepos()
+	toRemove, err := matchManifestEntries(allEntries, repos)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	result := &ManifestRemoveResult{}
-	kept := make([]RepoEntry, 0, len(cfg.Manifest.Repos))
-	for _, entry := range cfg.Manifest.Repos {
-		if toRemove[entry.Repo] {
-			result.Removed = append(result.Removed, entry.Repo)
-		} else {
-			kept = append(kept, entry)
+
+	// Remove matching entries from each platform section.
+	removePlatformEntries := func(platform *PlatformConfig) {
+		if platform == nil {
+			return
 		}
+		kept := make([]RepoEntry, 0, len(platform.Repos))
+		for _, entry := range platform.Repos {
+			if toRemove[entry.Name] {
+				result.Removed = append(result.Removed, entry.Name)
+			} else {
+				kept = append(kept, entry)
+			}
+		}
+		platform.Repos = kept
 	}
+
+	removePlatformEntries(cfg.Manifest.GitHub)
+	removePlatformEntries(cfg.Manifest.GitLab)
 
 	for _, pattern := range repos {
 		matched := false
@@ -197,8 +224,6 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 		return result, cfg.Manifest, nil
 	}
 
-	cfg.Manifest.Repos = kept
-
 	if cfg.ManifestPath != "" {
 		if err := writeManifest(cfg.ManifestPath, cfg.Manifest); err != nil {
 			return nil, nil, err
@@ -216,14 +241,15 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 // match any of the given patterns. Used by CLI commands to resolve positional
 // args (which may contain globs) against manifest entries.
 func MatchManifestRepos(manifest *Manifest, patterns []string) ([]string, error) {
-	matched, err := matchManifestEntries(manifest.Repos, patterns)
+	allEntries := manifest.AllRepos()
+	matched, err := matchManifestEntries(allEntries, patterns)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]string, 0, len(matched))
-	for _, entry := range manifest.Repos {
-		if matched[entry.Repo] {
-			result = append(result, entry.Repo)
+	for _, entry := range allEntries {
+		if matched[entry.Name] {
+			result = append(result, entry.Name)
 		}
 	}
 	return result, nil
@@ -235,12 +261,12 @@ func matchManifestEntries(entries []RepoEntry, patterns []string) (map[string]bo
 	matched := make(map[string]bool)
 	for _, entry := range entries {
 		for _, pattern := range patterns {
-			ok, err := matchesPattern(pattern, entry.Repo)
+			ok, err := matchesPattern(pattern, entry.Name)
 			if err != nil {
 				return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
 			}
 			if ok {
-				matched[entry.Repo] = true
+				matched[entry.Name] = true
 				break
 			}
 		}
@@ -277,13 +303,13 @@ func writeManifest(path string, m *Manifest) error {
 // `repos set-default`. Order matches the help text.
 var ValidDefaultKeys = []string{
 	"defaults.allowed_remote_resources",
-	"forge.github.url",
-	"forge.github.mint_url",
-	"forge.github.mint_mode",
-	"forge.github.fullsend_ref",
-	"forge.gitlab.url",
-	"forge.gitlab.fullsend_ref",
-	"forge.gitlab.runner_tags",
+	"github.url",
+	"github.mint_url",
+	"github.mint_mode",
+	"github.fullsend_ref",
+	"gitlab.url",
+	"gitlab.fullsend_ref",
+	"gitlab.runner_tags",
 }
 
 // validDefaultKeySet is the lookup set for ValidDefaultKeys.
@@ -295,7 +321,7 @@ var validDefaultKeySet = func() map[string]bool {
 	return m
 }()
 
-// SetDefault sets or removes a forge-level default in the manifest.
+// SetDefault sets or removes a platform-level default in the manifest.
 // An empty value removes the key. The file is created with version: 1
 // if it does not exist.
 func SetDefault(manifestPath, key, value string) error {
@@ -339,27 +365,53 @@ func SetDefault(manifestPath, key, value string) error {
 			}
 			m.Defaults.AllowedRemoteResources = parts
 		}
-	case "forge.github.url":
-		m.Forge.GitHub.URL = value
-	case "forge.github.mint_url":
-		m.Forge.GitHub.MintURL = value
-	case "forge.github.mint_mode":
-		m.Forge.GitHub.MintMode = value
-	case "forge.github.fullsend_ref":
-		m.Forge.GitHub.FullsendRef = value
-	case "forge.gitlab.url":
-		m.Forge.GitLab.URL = value
-	case "forge.gitlab.fullsend_ref":
-		m.Forge.GitLab.FullsendRef = value
-	case "forge.gitlab.runner_tags":
+	case "github.url":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitHub).URL = value
+		} else if m.GitHub != nil {
+			m.GitHub.URL = ""
+		}
+	case "github.mint_url":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitHub).MintURL = value
+		} else if m.GitHub != nil {
+			m.GitHub.MintURL = ""
+		}
+	case "github.mint_mode":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitHub).MintMode = value
+		} else if m.GitHub != nil {
+			m.GitHub.MintMode = ""
+		}
+	case "github.fullsend_ref":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitHub).FullsendRef = value
+		} else if m.GitHub != nil {
+			m.GitHub.FullsendRef = ""
+		}
+	case "gitlab.url":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitLab).URL = value
+		} else if m.GitLab != nil {
+			m.GitLab.URL = ""
+		}
+	case "gitlab.fullsend_ref":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitLab).FullsendRef = value
+		} else if m.GitLab != nil {
+			m.GitLab.FullsendRef = ""
+		}
+	case "gitlab.runner_tags":
 		if value == "" {
-			m.Forge.GitLab.RunnerTags = nil
+			if m.GitLab != nil {
+				m.GitLab.RunnerTags = nil
+			}
 		} else {
 			parts := strings.Split(value, ",")
 			for i := range parts {
 				parts[i] = strings.TrimSpace(parts[i])
 			}
-			m.Forge.GitLab.RunnerTags = parts
+			m.EnsurePlatform(ForgeGitLab).RunnerTags = parts
 		}
 	}
 
@@ -369,21 +421,21 @@ func SetDefault(manifestPath, key, value string) error {
 // validateDefaultValue checks that value is appropriate for the given key.
 func validateDefaultValue(key, value string) error {
 	switch key {
-	case "forge.github.url", "forge.github.mint_url", "forge.gitlab.url":
+	case "github.url", "github.mint_url", "gitlab.url":
 		u, err := url.Parse(value)
 		if err != nil || u.Scheme != "https" || u.Host == "" {
 			return fmt.Errorf("%s must be a valid HTTPS URL, got %q", key, value)
 		}
-		if key == "forge.github.url" || key == "forge.gitlab.url" {
+		if key == "github.url" || key == "gitlab.url" {
 			if err := rejectExtraneousURLParts(u, key); err != nil {
 				return err
 			}
 		}
-	case "forge.github.mint_mode":
+	case "github.mint_mode":
 		if value != MintModePublic && value != MintModePrivate {
-			return fmt.Errorf("forge.github.mint_mode must be %q or %q, got %q", MintModePublic, MintModePrivate, value)
+			return fmt.Errorf("github.mint_mode must be %q or %q, got %q", MintModePublic, MintModePrivate, value)
 		}
-	case "forge.github.fullsend_ref", "forge.gitlab.fullsend_ref":
+	case "github.fullsend_ref", "gitlab.fullsend_ref":
 		if !IsValidRef(value) {
 			return fmt.Errorf("%s %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", key, value)
 		}
@@ -398,10 +450,10 @@ func validateDefaultValue(key, value string) error {
 				return fmt.Errorf("defaults.allowed_remote_resources: %q must be a valid HTTPS URL", v)
 			}
 		}
-	case "forge.gitlab.runner_tags":
+	case "gitlab.runner_tags":
 		for _, raw := range strings.Split(value, ",") {
 			if strings.TrimSpace(raw) == "" {
-				return fmt.Errorf("forge.gitlab.runner_tags: tags must not be empty")
+				return fmt.Errorf("gitlab.runner_tags: tags must not be empty")
 			}
 		}
 	}
