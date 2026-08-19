@@ -115,6 +115,9 @@ like production dispatch: first whitespace token of the first comment line.
 | `needs_review_decision` | Manual-review labels, human unresolved threads, failed CI (`FAILURE`/`ERROR`), or `mergeStateStatus=BLOCKED` under `ready-for-merge` | Decision |
 | `ready_to_merge` | `ready-for-merge` **and** `mergeStateStatus` is `CLEAN`/`UNSTABLE`, no unresolved threads, checks settled, review not still required, not yet enqueued | Decision (never auto-merged) |
 | `fix_conflicts` | `mergeStateStatus` is `DIRTY` **or** `mergeable` is `CONFLICTING` | Decision |
+| `needs_breakdown` | `needs-breakdown` label → break this issue into smaller sub-issues | Decision |
+| `needs_design` | `needs-design` label → add the missing design details | Decision |
+| `workflow_blocked` | `workflow-blocked` label → implement locally; the code agent cannot push workflow changes | Decision |
 | `human_work` | Assigned/authored, no clear automation signal — implement, un-draft, or investigate | Decision |
 
 **Side-action (orthogonal to primary status):**
