@@ -1029,6 +1029,79 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertEqual(result.status, "promote_code")
         self.assertFalse(result.eliminated)
 
+    def test_needs_breakdown_eliminated(self):
+        """Issue with needs-breakdown label should not be promote_code or needs_triage."""
+        item = make_issue(labels=["needs-breakdown"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_breakdown")
+        self.assertTrue(result.eliminated)
+
+    def test_needs_breakdown_unassigned(self):
+        """Unassigned needs-breakdown issue is still eliminated (not needs_assign)."""
+        item = make_issue(labels=["needs-breakdown"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_breakdown")
+        self.assertTrue(result.eliminated)
+
+    def test_needs_breakdown_with_triaged(self):
+        """needs-breakdown takes priority over triaged (would be promote_code)."""
+        item = make_issue(labels=["needs-breakdown", "triaged"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_breakdown")
+        self.assertTrue(result.eliminated)
+
+    def test_needs_design_eliminated(self):
+        """Issue with needs-design label should not be promote_code or needs_triage."""
+        item = make_issue(labels=["needs-design"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_design")
+        self.assertTrue(result.eliminated)
+
+    def test_needs_design_with_triaged(self):
+        """needs-design takes priority over triaged (would be promote_code)."""
+        item = make_issue(labels=["needs-design", "triaged"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_design")
+        self.assertTrue(result.eliminated)
+
+    def test_workflow_blocked_eliminated(self):
+        """Triaged issue with workflow-blocked should not be promote_code."""
+        item = make_issue(labels=["triaged", "workflow-blocked"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "workflow_blocked")
+        self.assertTrue(result.eliminated)
+
+    def test_workflow_blocked_without_triaged(self):
+        """workflow-blocked alone is still classified as workflow_blocked."""
+        item = make_issue(labels=["workflow-blocked"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "workflow_blocked")
+        self.assertTrue(result.eliminated)
+
+    def test_blockers_win_over_needs_breakdown(self):
+        """Structured blockers take priority over needs-breakdown."""
+        item = make_issue(
+            labels=["needs-breakdown"],
+            blockers=[{"repo": "acme/widget", "number": 7}],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "blocked_by")
+
+    def test_assigned_elsewhere_wins_over_needs_design(self):
+        """assigned_elsewhere takes priority over needs-design."""
+        item = make_issue(labels=["needs-design"], assignees=["bob"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "assigned_elsewhere")
+
+    def test_needs_info_wins_over_needs_breakdown(self):
+        """needs-info takes priority over needs-breakdown."""
+        item = make_issue(
+            labels=["needs-info", "needs-breakdown"],
+            author="alice",
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_info_self")
+
     def test_stale_inflight_triage_retriggers(self):
         item = make_issue(
             labels=["ready-for-triage"],

@@ -42,6 +42,9 @@ REF_BARE_RE = re.compile(r"^#?(\d+)$")
 # readiness; only open structured blockedBy links yield blocked_by.
 ISSUE_CONTROL_LABELS = {
     "needs-info",
+    "needs-breakdown",
+    "needs-design",
+    "workflow-blocked",
     "ready-to-code",
     "triaged",
     "duplicate",
@@ -782,6 +785,27 @@ def classify_issue(
         return Classification(
             status="waiting_info_other",
             reason="Needs-info; waiting on the reporter",
+            eliminated=True,
+        )
+
+    if "needs-breakdown" in labels:
+        return Classification(
+            status="needs_breakdown",
+            reason="Needs breakdown into smaller issues before it can proceed",
+            eliminated=True,
+        )
+
+    if "needs-design" in labels:
+        return Classification(
+            status="needs_design",
+            reason="Needs design work before it can proceed",
+            eliminated=True,
+        )
+
+    if "workflow-blocked" in labels:
+        return Classification(
+            status="workflow_blocked",
+            reason="Requires workflow changes the code agent cannot push",
             eliminated=True,
         )
 
