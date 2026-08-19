@@ -1029,54 +1029,60 @@ class TestClassifyIssue(unittest.TestCase):
         self.assertEqual(result.status, "promote_code")
         self.assertFalse(result.eliminated)
 
-    def test_needs_breakdown_eliminated(self):
-        """Issue with needs-breakdown label should not be promote_code or needs_triage."""
+    def test_needs_breakdown_actionable(self):
+        """Issue with needs-breakdown label is actionable with suggested_actions."""
         item = make_issue(labels=["needs-breakdown"], assignees=["alice"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_breakdown")
-        self.assertTrue(result.eliminated)
+        self.assertFalse(result.eliminated)
+        self.assertEqual(result.suggested_actions, ["Break this issue into smaller sub-issues"])
 
     def test_needs_breakdown_unassigned(self):
-        """Unassigned needs-breakdown issue is still eliminated (not needs_assign)."""
+        """Unassigned needs-breakdown issue is still actionable (not needs_assign)."""
         item = make_issue(labels=["needs-breakdown"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_breakdown")
-        self.assertTrue(result.eliminated)
+        self.assertFalse(result.eliminated)
 
     def test_needs_breakdown_with_triaged(self):
         """needs-breakdown takes priority over triaged (would be promote_code)."""
         item = make_issue(labels=["needs-breakdown", "triaged"], assignees=["alice"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_breakdown")
-        self.assertTrue(result.eliminated)
+        self.assertFalse(result.eliminated)
 
-    def test_needs_design_eliminated(self):
-        """Issue with needs-design label should not be promote_code or needs_triage."""
+    def test_needs_design_actionable(self):
+        """Issue with needs-design label is actionable with suggested_actions."""
         item = make_issue(labels=["needs-design"], assignees=["alice"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_design")
-        self.assertTrue(result.eliminated)
+        self.assertFalse(result.eliminated)
+        self.assertEqual(result.suggested_actions, ["Add the missing design details"])
 
     def test_needs_design_with_triaged(self):
         """needs-design takes priority over triaged (would be promote_code)."""
         item = make_issue(labels=["needs-design", "triaged"], assignees=["alice"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "needs_design")
-        self.assertTrue(result.eliminated)
+        self.assertFalse(result.eliminated)
 
-    def test_workflow_blocked_eliminated(self):
-        """Triaged issue with workflow-blocked should not be promote_code."""
+    def test_workflow_blocked_actionable(self):
+        """Triaged issue with workflow-blocked is actionable with suggested_actions."""
         item = make_issue(labels=["triaged", "workflow-blocked"], assignees=["alice"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "workflow_blocked")
-        self.assertTrue(result.eliminated)
+        self.assertFalse(result.eliminated)
+        self.assertEqual(
+            result.suggested_actions,
+            ["Implement locally; the code agent cannot push workflow changes"],
+        )
 
     def test_workflow_blocked_without_triaged(self):
         """workflow-blocked alone is still classified as workflow_blocked."""
         item = make_issue(labels=["workflow-blocked"], assignees=["alice"])
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "workflow_blocked")
-        self.assertTrue(result.eliminated)
+        self.assertFalse(result.eliminated)
 
     def test_blockers_win_over_needs_breakdown(self):
         """Structured blockers take priority over needs-breakdown."""

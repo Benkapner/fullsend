@@ -97,9 +97,6 @@ like production dispatch: first whitespace token of the first comment line.
 | `waiting_sub_issues` | Issue has one or more open GitHub sub-issues (or `subIssuesSummary` shows incomplete when the first page has no OPEN nodes). `open_sub_issues[]` lists children from the first page (may be cross-repo); BFS enqueues each for classification. Prefer this over promoting an epic while children are unfinished. |
 | `waiting_linked_pr` | Issue has an open linked PR (native closing keywords + `partial-fix #N`) — go look at that PR instead |
 | `waiting_info_other` | `needs-info` label and you're not the author (waiting on the reporter) |
-| `needs_breakdown` | `needs-breakdown` label — issue needs breakdown into smaller issues before it can proceed to the code agent |
-| `needs_design` | `needs-design` label — issue needs design work before it can proceed to the code agent |
-| `workflow_blocked` | `workflow-blocked` label — issue requires workflow/CI file changes that the code agent's token cannot push |
 | `assigned_elsewhere` | Assignees present and you're not among them. `assignees[]` is included so the skill can offer take-over. Never suggested as something to self-assign — that's `--take-over` only. |
 | _(dropped, never shown)_ | Closed/merged, or labeled `duplicate` |
 
@@ -118,6 +115,9 @@ like production dispatch: first whitespace token of the first comment line.
 | `needs_review_decision` | Manual-review labels, human unresolved threads, failed CI (`FAILURE`/`ERROR`), or `mergeStateStatus=BLOCKED` under `ready-for-merge` | Decision |
 | `ready_to_merge` | `ready-for-merge` **and** `mergeStateStatus` is `CLEAN`/`UNSTABLE`, no unresolved threads, checks settled, review not still required, not yet enqueued | Decision (never auto-merged) |
 | `fix_conflicts` | `mergeStateStatus` is `DIRTY` **or** `mergeable` is `CONFLICTING` | Decision |
+| `needs_breakdown` | `needs-breakdown` label → break this issue into smaller sub-issues | Decision |
+| `needs_design` | `needs-design` label → add the missing design details | Decision |
+| `workflow_blocked` | `workflow-blocked` label → implement locally; the code agent cannot push workflow changes | Decision |
 | `human_work` | Assigned/authored, no clear automation signal — implement, un-draft, or investigate | Decision |
 
 **Side-action (orthogonal to primary status):**

@@ -791,22 +791,25 @@ def classify_issue(
     if "needs-breakdown" in labels:
         return Classification(
             status="needs_breakdown",
-            reason="Needs breakdown into smaller issues before it can proceed",
-            eliminated=True,
+            reason="Needs breakdown into smaller issues",
+            eliminated=False,
+            suggested_actions=["Break this issue into smaller sub-issues"],
         )
 
     if "needs-design" in labels:
         return Classification(
             status="needs_design",
-            reason="Needs design work before it can proceed",
-            eliminated=True,
+            reason="Needs design work before code",
+            eliminated=False,
+            suggested_actions=["Add the missing design details"],
         )
 
     if "workflow-blocked" in labels:
         return Classification(
             status="workflow_blocked",
             reason="Requires workflow changes the code agent cannot push",
-            eliminated=True,
+            eliminated=False,
+            suggested_actions=["Implement locally; the code agent cannot push workflow changes"],
         )
 
     # Non-stale code wait wins over stale completed triage.
@@ -2240,6 +2243,9 @@ DECISION_STATUSES = {
     "fix_conflicts",
     "human_work",
     "close_or_plan",
+    "needs_breakdown",
+    "needs_design",
+    "workflow_blocked",
 }
 
 WAITING_PREFIX = "waiting_"
