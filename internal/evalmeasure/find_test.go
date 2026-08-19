@@ -123,3 +123,35 @@ func TestFindPlatformTelemetry_MatchesUnderscorePrefixedAgent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{f}, got)
 }
+
+func TestFindPlatformTelemetry_PrefersRunDirOverPlantedRoot(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	planted := filepath.Join(outputDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(planted, []byte("planted\n"), 0o644))
+
+	runDir := filepath.Join(outputDir, "agent-review-3-4")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+	platform := filepath.Join(runDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(platform, []byte("platform\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "review")
+	require.NoError(t, err)
+	require.Equal(t, []string{platform}, got)
+
+	gotAll, err := FindPlatformTelemetry(outputDir, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{platform}, gotAll)
+}
+
+func TestFindPlatformTelemetry_EmptyMatchingRunDirIgnoresPlantedRoot(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	planted := filepath.Join(outputDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(planted, []byte("planted\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(outputDir, "agent-review-5-6"), 0o755))
+
+	got, err := FindPlatformTelemetry(outputDir, "review")
+	require.NoError(t, err)
+	assert.Empty(t, got, "matching empty runDir must not fall back to planted root")
+}

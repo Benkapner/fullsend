@@ -72,6 +72,20 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 			Version:     version,
 		}
 	}
+	// Agent spans flushed but root run never ended (SIGKILL / OOM / job
+	// timeout). Same exclusion: do not score incomplete telemetry as fail.
+	if !hasRun {
+		return EvaluationResult{
+			Name:        evalName,
+			Label:       LabelSkip,
+			Explanation: "root run span missing; run terminated before flush; excluded from trace_fitness",
+			TraceID:     tr.TraceID,
+			SpanID:      "",
+			WorkItemID:  "",
+			Agent:       tr.AgentName(),
+			Version:     version,
+		}
+	}
 	_, hasSandbox := tr.SpanByName("sandbox_create")
 	costOK, costMissing := costToolsTurnsDetail(run, agents)
 

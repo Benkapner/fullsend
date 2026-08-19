@@ -27,26 +27,45 @@ var hostRunDirPattern = regexp.MustCompile(`^agent-(.+)-([0-9]+)-([0-9]+)$`)
 // the lowercased agent name are considered (so agent-code does not match
 // agent-code-review-…). If several match, only the newest platform file
 // is scored — leftover sibling directories from a previous job are ignored.
-// It never walks deeper, so an agent-planted
-// iteration-N/output/run-telemetry.jsonl is ignored.
+//
+// Matching child runDirs outrank a root-level run-telemetry.jsonl under
+// outputDir so an agent-planted file at the CI output base cannot displace
+// the real host recorder. If any matching child runDir exists (even
+// without a platform file yet), the root file is ignored. Nested
+// iteration-N/output/ copies are never walked.
 func FindPlatformTelemetry(outputDir, agent string) ([]string, error) {
-	direct := filepath.Join(outputDir, PlatformTelemetryFile)
-	if st, err := os.Stat(direct); err == nil && !st.IsDir() {
-		// outputDir is a runDir: score only the platform file at the top.
-		return []string{direct}, nil
+	wantAgent := strings.ToLower(agent)
+	paths, sawMatch, err := findChildPlatformTelemetry(outputDir, wantAgent)
+	if err != nil {
+		return nil, err
+	}
+	if sawMatch {
+		return paths, nil
 	}
 
+	direct := filepath.Join(outputDir, PlatformTelemetryFile)
+	if st, err := os.Stat(direct); err == nil && !st.IsDir() {
+		// outputDir is a runDir (or has only a root-level file and no
+		// matching child): score only the platform file at the top.
+		return []string{direct}, nil
+	}
+	return nil, nil
+}
+
+// findChildPlatformTelemetry looks for agent-<name>-<pid>-<unix> children.
+// sawMatch is true when at least one directory matched the pattern (and
+// agent filter), whether or not PlatformTelemetryFile was present.
+func findChildPlatformTelemetry(outputDir, wantAgent string) (paths []string, sawMatch bool, err error) {
 	entries, err := os.ReadDir(outputDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
-	wantAgent := strings.ToLower(agent)
 	var bestPath string
 	var bestMod time.Time
-	found := false
+	foundFile := false
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -58,19 +77,20 @@ func FindPlatformTelemetry(outputDir, agent string) ([]string, error) {
 		if wantAgent != "" && m[1] != wantAgent {
 			continue
 		}
+		sawMatch = true
 		p := filepath.Join(outputDir, e.Name(), PlatformTelemetryFile)
 		st, err := os.Stat(p)
 		if err != nil || st.IsDir() {
 			continue
 		}
-		if !found || st.ModTime().After(bestMod) {
+		if !foundFile || st.ModTime().After(bestMod) {
 			bestPath = p
 			bestMod = st.ModTime()
-			found = true
+			foundFile = true
 		}
 	}
-	if !found {
-		return nil, nil
+	if !foundFile {
+		return nil, sawMatch, nil
 	}
-	return []string{bestPath}, nil
+	return []string{bestPath}, sawMatch, nil
 }

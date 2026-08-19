@@ -875,7 +875,7 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 // same remotePath overwrite deterministically rather than merging files
 // from both. Do not point two different, unrelated sources at the same
 // remotePath expecting their content to coexist.
-func UploadDir(sandboxName, localPath, remotePath string) error {
+func UploadDir(sandboxName, localPath, remotePath string, excludes ...string) error {
 	tmp, err := os.CreateTemp("", "openshell-upload-*.tar.gz")
 	if err != nil {
 		return fmt.Errorf("creating temp tarball: %w", err)
@@ -884,7 +884,17 @@ func UploadDir(sandboxName, localPath, remotePath string) error {
 	tmp.Close()
 	defer os.Remove(tmpPath)
 
-	tarCmd := exec.Command("tar", "-czf", tmpPath, "-C", localPath, ".")
+	tarArgs := []string{"-czf", tmpPath, "-C", localPath}
+	for _, ex := range excludes {
+		pattern := strings.Trim(ex, "/")
+		if pattern == "" {
+			continue
+		}
+		// Exclude the directory itself and its contents at the archive root.
+		tarArgs = append(tarArgs, "--exclude=./"+pattern, "--exclude=./"+pattern+"/*")
+	}
+	tarArgs = append(tarArgs, ".")
+	tarCmd := exec.Command("tar", tarArgs...)
 	// Suppress macOS AppleDouble (._*) files in the tarball. On macOS,
 	// bsdtar generates ._* companion files for any file with extended
 	// attributes. These corrupt .git after a sandbox round-trip.

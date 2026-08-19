@@ -243,6 +243,31 @@ func TestScoreFitness_NoAgentSpanSkipped(t *testing.T) {
 	assert.Contains(t, r.Explanation, "no agent span")
 }
 
+func TestScoreFitness_AgentSpansWithoutRunSkipped(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "dddddddddddddddddddddddddddddddd",
+		Spans: []Span{
+			{
+				Name: "agent",
+				Attrs: map[string]any{
+					"gen_ai.system":              "anthropic",
+					"gen_ai.agent.name":          "triage",
+					"gen_ai.request.model":       "claude",
+					"gen_ai.usage.input_tokens":  int64(1),
+					"gen_ai.usage.output_tokens": int64(1),
+					"fullsend.cost_usd":          0.01,
+					"fullsend.tool_calls":        int64(0),
+					"fullsend.num_turns":         int64(1),
+				},
+			},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelSkip, r.Label)
+	assert.Contains(t, r.Explanation, "root run span missing")
+}
+
 func TestScoreFitness_ProviderNameAccepted(t *testing.T) {
 	t.Parallel()
 	traces, _, err := ParseTelemetryFile(filepath.Join("testdata", "complete.jsonl"))

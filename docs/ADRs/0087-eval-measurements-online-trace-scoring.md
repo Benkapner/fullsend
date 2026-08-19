@@ -34,24 +34,29 @@ already choose Phoenix, MLflow, Jaeger, or another OTLP collector for traces.
 Baking a single product’s Assessments/Quality API into the core CLI or managed
 workflows would force a tool decision on every install.
 
-Adjacent telemetry proposals (not competing with this score path):
+Adjacent telemetry work (not competing with this score path):
 
-- **Level 3 content capture** ([#5947](https://github.com/fullsend-ai/fullsend/pull/5947)
-  — proposed ADRs 0084/0085): richer span content enables later scorers;
-  first ship reads Level 1/2 metadata in `run-telemetry.jsonl`. Measure CLI is
-  host-side after sandbox exit.
-- **Span status from run outcome** ([#5944](https://github.com/fullsend-ai/fullsend/pull/5944)):
+- **Level 3 content capture** ([ADR 0050](0050-distributed-tracing-instrumentation.md);
+  activation draft closed without merge in
+  [#5947](https://github.com/fullsend-ai/fullsend/pull/5947)): first ship
+  reads Level 1/2 metadata in `run-telemetry.jsonl` (fitness foundation).
+  Content-aware scorers on prompt/completion bodies are the intended next
+  layer once Level 3 is implemented. Measure CLI is host-side after sandbox
+  exit.
+- **Span status from run outcome**
+  ([#5944](https://github.com/fullsend-ai/fullsend/pull/5944), merged):
   OTLP Status (and `fullsend.transcript_error`) become the reliable
   success/failure signal. EM-001 only checks that `exit_code` is **present**
   (fitness). Outcome scorers must key on Status, not `exit_code == 0`.
-- **Observer / lessons → fixtures** ([#2423](https://github.com/fullsend-ai/fullsend/pull/2423)):
-  narrative analysis and golden-set promotion. This ADR is same-job
-  deterministic scoring on traces.
-- **Harness snapshot / forge join keys** ([#5524](https://github.com/fullsend-ai/fullsend/pull/5524)):
-  sibling artifact for harness fingerprint and
-  forge/CI pointers beside telemetry. Complementary join/identity layer;
-  primary run facts belong on the OTEL trace (Level 1), while measurements
-  stay a derived sibling file.
+- **Observer / lessons → fixtures** (draft closed without merge in
+  [#2423](https://github.com/fullsend-ai/fullsend/pull/2423)): narrative
+  analysis and golden-set promotion remain a sibling idea. This ADR is
+  same-job deterministic scoring on traces.
+- **Harness snapshot / forge join keys**
+  ([#5524](https://github.com/fullsend-ai/fullsend/pull/5524), open):
+  sibling artifact for harness fingerprint and forge/CI pointers beside
+  telemetry. Complementary join/identity layer; primary run facts belong on
+  the OTEL trace (Level 1), while measurements stay a derived sibling file.
 
 ## Options
 
@@ -86,7 +91,13 @@ vendor-specific score adapters in core. `fullsend` owns the parser, scorers,
 CLI, and GHA step; `fullsend-ai/agents` owns per-agent measurement manifests
 (`eval/measurements/<agent>.yaml`) that declare which scorers to enable.
 Stock-agent defaults resolve from `agents@v0` at runtime; local files are for
-override, opt-out, or custom agents only.
+override, opt-out, or custom agents only. Activation is **two-step**: merge
+measurement manifests into `fullsend-ai/agents` **and** cut a `v0.x.y` release
+that re-points the floating `v0` tag. Merging alone does not activate managed
+jobs. Tracking: [#6384](https://github.com/fullsend-ai/fullsend/issues/6384).
+Until that release lands, GHA/GitLab `eval-measure` wiring is provisional
+(clean skip when the remote manifest is missing). Local `FULLSEND_DIR`
+manifests are exercised in unit tests today.
 
 The first scorer is `trace_fitness` (catalog id `em-001`) — span-tree and
 attribute fitness so later scorers can trust the trace. EM-001 reads
@@ -94,8 +105,10 @@ OpenTelemetry GenAI attribute names (`gen_ai.*` constants in
 `internal/evalmeasure`). `gen_ai.system` was renamed to `gen_ai.provider.name`
 in semconv v1.37.0; `modelOK` accepts either so `em-001@1` survives the
 emitter migration. Other upstream renames remain an `em-001` version bump.
-Pre-script-skipped runs and runs with no `agent` span (never reached an
-iteration) record `label: skip` and are excluded from pass/(pass+fail).
+Pre-script-skipped runs, runs with no `agent` span (never reached an
+iteration), and runs where agent spans flushed but the root `run` span never
+ended (hard kill / timeout) record `label: skip` and are excluded from
+pass/(pass+fail).
 
 ### Versioning (per measurement, not platform “v1”)
 
@@ -126,11 +139,13 @@ Entirely new signal → new `em-NNN` (and usually a new `scorer` string).
   workflows; remote scores follow OTEL when that path lands.
 - Functional scenarios (gate) and eval measurements (trend) stay separate;
   retro can recommend either a manifest scorer or a scenario fixture.
-- Richer telemetry (Level 3 / Status fixes) expands what scorers *can* assert;
-  it does not replace this same-job path.
+- Level 1/2 metadata scorers (EM-001) are the foundation; Level 3 content
+  capture expands what scorers *can* assert (quality / LLM-judge style) once
+  implemented — it does not replace this same-job path.
 - Per-measurement versioning (`id@version`) lets pass/fail semantics evolve
   without mixing trend eras.
-- Pre-script skipped runs (`fullsend.prescript.skipped=true` on the root span)
-  and runs with no `agent` span (never reached an iteration) are excluded from
-  EM-001: the scorer writes `label: skip` instead of failing a run that never
-  produced a full telemetry contract.
+- Pre-script skipped runs (`fullsend.prescript.skipped=true` on the root span),
+  runs with no `agent` span (never reached an iteration), and runs where agent
+  spans flushed but the root `run` span never ended (hard kill / timeout) are
+  excluded from EM-001: the scorer writes `label: skip` instead of failing a run
+  that never produced a full telemetry contract.

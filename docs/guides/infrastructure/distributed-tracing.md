@@ -251,8 +251,14 @@ After each managed agent run, `fullsend eval-measure` scores
 `eval-measurements.jsonl` beside telemetry when at least one new score is
 produced (tool-agnostic artifact). Portable
 remote export will reuse the same `OTEL_EXPORTER_OTLP_*` configuration as
-agent traces when implemented. Measurements read the Level 1/2 metadata
-contract of `run-telemetry.jsonl` (not Level 3 content). See
+agent traces when implemented.
+
+Today's scorers (starting with EM-001) read the Level 1/2 **metadata**
+contract of `run-telemetry.jsonl` — span tree and attributes, not prompt or
+completion bodies. That foundation is intentional: fitness scores must trust
+the trace before quality scores can. **Planned:** content-aware scorers that
+consume Level 3 prompt/completion capture once Level 3 is implemented —
+that is where the real quality signal lives. See
 [Eval Measurements](./eval-measurements.md) and
 [ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
 

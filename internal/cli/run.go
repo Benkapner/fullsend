@@ -102,12 +102,15 @@ var defaultAgentsRepoKnownAgents = map[string]bool{
 // runtime tokens). Tests that override it affect both paths.
 var statusMintToken = mintclient.MintToken
 
-// agentWorkingDirExcludes lists directory patterns that agents may create
-// during execution but must never commit. These are added to
-// .git/info/exclude before the agent runs so git ignores them entirely.
+// agentWorkingDirExcludes lists directory patterns that must stay out of
+// commits. They are appended to .git/info/exclude before the agent runs.
+// "output/" is the host runDir base on GitLab (under --target-repo); the
+// same pattern is also omitted from the UploadDir tarball (see the
+// UploadDir call site) so flushed telemetry is not handed to the agent.
 var agentWorkingDirExcludes = []string{
 	".agentready/",
 	".fullsend-workspace/",
+	"output/",
 }
 
 // resolveFlags groups CLI flags that control remote resource resolution.
@@ -1257,7 +1260,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 8. Make project code available (copy repo root into a named subdirectory).
 	copyStart := time.Now()
 	printer.StepStart("Copying project code into sandbox")
-	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir); err != nil {
+	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, "output/"); err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("copying project code: %w", err)
 	}

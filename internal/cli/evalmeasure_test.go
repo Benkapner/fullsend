@@ -108,6 +108,43 @@ func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry(t *testing.T) {
 	assert.NotContains(t, string(b), "ffffffffffffffffffffffffffffffff")
 }
 
+// TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL locks the
+// resolved-manifest path used before agents@v0 carries stock YAML: a local
+// FULLSEND_DIR eval/measurements/<agent>.yaml must produce eval-measurements.jsonl.
+func TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL(t *testing.T) {
+	fsDir := t.TempDir()
+	outBase := t.TempDir()
+	runDir := filepath.Join(outBase, "agent-triage-2-2")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+
+	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, telemetry.TelemetryFile), good, 0o644))
+
+	reg, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(fsDir, "eval", "measurements"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fsDir, "eval", "measurements", "triage.yaml"), reg, 0o644))
+
+	cmd := newRootCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"eval-measure",
+		"--agent", "triage",
+		"--fullsend-dir", fsDir,
+		"--output-dir", outBase,
+		"--offline",
+	})
+	require.NoError(t, cmd.Execute())
+
+	b, err := os.ReadFile(filepath.Join(runDir, evalmeasure.MeasurementsFile))
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"name":"trace_fitness"`)
+	assert.Contains(t, buf.String(), "Wrote")
+}
+
 func writeTwoTraceTelemetry(t *testing.T) string {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))

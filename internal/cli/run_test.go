@@ -2198,7 +2198,7 @@ func TestValidateLinuxBinary_AcceptsHostBinary(t *testing.T) {
 
 func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
 	// Verify the exclusion list contains the known agent working directories.
-	expected := []string{".agentready/", ".fullsend-workspace/"}
+	expected := []string{".agentready/", ".fullsend-workspace/", "output/"}
 	for _, pattern := range expected {
 		found := false
 		for _, exclude := range agentWorkingDirExcludes {

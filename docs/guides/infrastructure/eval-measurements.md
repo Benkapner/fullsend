@@ -81,6 +81,14 @@ Managed jobs fetch them from `agents@v0` when no local file exists — users do
 `${FULLSEND_DIR}/eval/measurements/` only to change policy or score a custom
 agent.
 
+**Activation is two-step:** merge manifests (e.g.
+[fullsend-ai/agents#722](https://github.com/fullsend-ai/agents/pull/722))
+**and** cut a `v0.x.y` release that re-points the floating `v0` tag
+([#6384](https://github.com/fullsend-ai/fullsend/issues/6384)). Until that
+release lands, managed GHA/GitLab `eval-measure` steps stay provisional
+(missing remote manifest → clean skip). Local `FULLSEND_DIR` overrides work
+today and are covered by CLI tests.
+
 Scorer *code* stays in fullsend: the measure CLI is the released engine that
 understands `run-telemetry.jsonl`. Agents ships **policy** (manifests), not Go.
 EM-001 (`trace_fitness`) evaluates fullsend’s telemetry contract across agents;
@@ -110,7 +118,9 @@ measurements:
     version: 1
 ```
 
-Illustrative **logic-as-config** (future declarative engine — not wired yet):
+Illustrative **logic-as-config** (future declarative engine — not wired yet;
+attribute names below match what fullsend emits today and are **not** a
+contract for the declarative surface):
 
 ```yaml
 agent: code
@@ -126,8 +136,8 @@ measurements:
     checks:
       - name: turn_token_ratio
         assert: ratio_lte
-        numerator: gen_ai.usage.total_tokens
-        denominator: fullsend.turns
+        numerator: gen_ai.usage.output_tokens
+        denominator: fullsend.num_turns
         max: 8000
 ```
 
@@ -149,20 +159,22 @@ success/failure signal for outcome scorers.
 Pre-script **skipped** runs set `fullsend.prescript.skipped=true` on the root
 span and never create a sandbox. EM-001 records `label: skip` for those traces
 instead of failing the span-tree / model / usage checks. Runs with no `agent`
-span (never reached an iteration — e.g. sandbox/provider failure) are also
-`label: skip`, so pass/(pass+fail) measures the telemetry contract rather than
-runner health. An unknown `scorer:` string (for example a newer `agents@v0`
-manifest this binary does not implement yet) also writes `label: skip`, not
-`fail`. Trend pass-rate as `pass / (pass + fail)` and drop `skip`.
+span (never reached an iteration — e.g. sandbox/provider failure) and runs
+where agent spans flushed but the root `run` span never ended (hard kill /
+timeout) are also `label: skip`, so pass/(pass+fail) measures the telemetry
+contract rather than runner health. An unknown `scorer:` string (for example a
+newer `agents@v0` manifest this binary does not implement yet) also writes
+`label: skip`, not `fail`. Trend pass-rate as `pass / (pass + fail)` and drop
+`skip`.
 
 ## Adjacent telemetry work
 
-| Proposal | Relationship to measurements |
+| Topic | Relationship to measurements |
 |---|---|
-| [#5947](https://github.com/fullsend-ai/fullsend/pull/5947) Level 3 activation + sandbox OTEL denylist | Richer traces fuel later scorers. First ship reads Level 1/2 local JSONL; content-aware scorers need OTLP/backend (or a widened file contract) under the proposed L3 rules. Measure CLI is host-side after the sandbox exits. |
-| [#5944](https://github.com/fullsend-ai/fullsend/pull/5944) Span status from run outcome | Unblocks outcome scorers keyed on Status, not raw exit alone. |
-| [#2423](https://github.com/fullsend-ai/fullsend/pull/2423) Semantic observability / observer / lessons | Observer + lessons → fixtures; measurements are the online score path. |
-| [#5524](https://github.com/fullsend-ai/fullsend/pull/5524) Harness snapshot / forge join keys | Complementary join/identity proposal beside telemetry; measurements are derived scores, not primary run facts. |
+| Level 3 content capture ([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md); activation draft closed without merge in [#5947](https://github.com/fullsend-ai/fullsend/pull/5947)) | First ship scores Level 1/2 metadata fitness. **Planned:** content-aware scorers on Level 3 prompt/completion bodies once L3 is implemented — that is the real quality signal. Measure CLI is host-side after the sandbox exits. |
+| [#5944](https://github.com/fullsend-ai/fullsend/pull/5944) Span status from run outcome *(merged)* | Unblocks outcome scorers keyed on Status, not raw exit alone. |
+| Semantic observability / observer / lessons (draft closed without merge in [#2423](https://github.com/fullsend-ai/fullsend/pull/2423)) | Observer + lessons → fixtures remains a sibling idea; measurements are the online score path. |
+| [#5524](https://github.com/fullsend-ai/fullsend/pull/5524) Harness snapshot / forge join keys *(open)* | Complementary join/identity proposal beside telemetry; measurements are derived scores, not primary run facts. |
 
 ## Same-job timing
 
@@ -179,7 +191,11 @@ GitLab CI agent job
 ```
 
 Add `output/` to the consuming repo's `.gitignore` so local GitLab-checkout
-runs do not stage telemetry accidentally.
+runs do not stage telemetry accidentally. The GitLab per-repo scaffold embeds
+a recommended `.gitignore` fragment (asserted in tests) but does **not**
+install it as a root file — that would overwrite an existing consumer ignore
+list. `fullsend run` excludes `output/` from the sandbox tarball and from
+`.git/info/exclude`.
 
 ## Manifest resolution in CI
 

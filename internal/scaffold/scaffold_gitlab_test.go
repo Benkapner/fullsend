@@ -10,6 +10,7 @@ import (
 
 func TestGitLabPerRepoFilesExist(t *testing.T) {
 	expected := []string{
+		".gitignore",
 		".gitlab-ci.yml",
 		".fullsend/config.yaml",
 		".gitlab/ci/fullsend-dispatch.yml",
@@ -29,6 +30,22 @@ func TestGitLabConfigContent(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "forge: gitlab")
+}
+
+func TestGitLabGitignoreExcludesOutput(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitignore")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "output/")
+}
+
+func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+	for _, f := range files {
+		assert.NotEqual(t, ".gitignore", f.Path,
+			"install must not overwrite consumer .gitignore with the scaffold fragment")
+	}
 }
 
 func TestGitLabPerRepoFileNotFound(t *testing.T) {
@@ -164,9 +181,13 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "when: always")
 	assert.Contains(t, s, `${CI_PROJECT_DIR}/output`)
 	assert.NotContains(t, s, "/tmp/fullsend-output")
-	// work_item URL must not invent …/issues/0 when IID is missing
+	// work_item URL must not invent …/issues/0 when IID is missing, but
+	// GITLAB_ISSUE_URL must still be exported (empty OK) so harness env
+	// validation does not reject a truly unset variable.
 	assert.NotContains(t, s, `/-/issues/${STATUS_IID:-0}`)
 	assert.Contains(t, s, `"${STATUS_IID}" != "0"`)
+	assert.Contains(t, s, `GITLAB_ISSUE_URL=""`)
+	assert.Contains(t, s, "export GITLAB_ISSUE_URL")
 	assert.Contains(t, s, "--fullsend-dir")
 	assert.Contains(t, s, "--target-repo")
 	assert.Contains(t, s, "--output-dir")

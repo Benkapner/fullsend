@@ -265,24 +265,26 @@ stages:
       # Construct the entity URL for the harness. EVENT_TYPE values from
       # the poller use prefixed forms: issue_note, issue_label (→ issue
       # URL) and mr_note, mr_event (→ merge request URL).
-      # Only export a work-item URL when the IID is real. Defaulting to 0
-      # invents …/issues/0 (or …/merge_requests/0), which passes EM-001's
-      # work_item check and greenwashes missing identity.
+      # Always export GITLAB_ISSUE_URL (empty is OK for harness env
+      # validation). Only set a real URL when the IID is non-empty and
+      # not "0" — inventing …/issues/0 passes EM-001's work_item check.
+      GITLAB_ISSUE_URL=""
       case "${EVENT_TYPE:-}" in
         issue_*)
           if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
-            export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/issues/${STATUS_IID}"
+            GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/issues/${STATUS_IID}"
           fi
           ;;
         *)
           _fs_mr_iid="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-}}"
           if [[ -n "${_fs_mr_iid}" && "${_fs_mr_iid}" != "0" ]]; then
-            export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${_fs_mr_iid}"
+            GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${_fs_mr_iid}"
           fi
           unset _fs_mr_iid
           export FULLSEND_NOTE_TARGET="merge_requests"
           ;;
       esac
+      export GITLAB_ISSUE_URL
 
       # Pre-fetch prior review for the review agent — equivalent to
       # pre-fetch-prior-review.sh in the GitHub scaffold. Queries the
