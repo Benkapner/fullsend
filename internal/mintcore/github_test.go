@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -28,6 +29,77 @@ func testPEM(t *testing.T) []byte {
 }
 
 func TestGenerateAppJWT(t *testing.T) {
+	pemData := testPEM(t)
+
+	jwt, err := GenerateAppJWT("12345", pemData)
+	require.NoError(t, err)
+	assert.NotEmpty(t, jwt)
+
+	parts := bytes.Split([]byte(jwt), []byte("."))
+	assert.Len(t, parts, 3, "JWT should have 3 parts")
+}
+
+func TestZeroSlice(t *testing.T) {
+	b := []byte{0x01, 0x02, 0x03, 0x04}
+	zeroSlice(b)
+	for i, v := range b {
+		assert.Equal(t, byte(0), v, "byte %d not zeroed", i)
+	}
+}
+
+func TestZeroSlice_Empty(t *testing.T) {
+	// Must not panic on empty or nil slices.
+	zeroSlice(nil)
+	zeroSlice([]byte{})
+}
+
+func TestZeroBigInt(t *testing.T) {
+	n := new(big.Int).SetInt64(123456789)
+	require.True(t, n.Sign() != 0, "precondition: n is non-zero")
+
+	zeroBigInt(n)
+	assert.True(t, n.Sign() == 0, "big.Int should be zero after zeroBigInt")
+}
+
+func TestZeroBigInt_Nil(t *testing.T) {
+	// Must not panic on nil.
+	zeroBigInt(nil)
+}
+
+func TestZeroRSAKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	key.Precompute()
+
+	// Verify preconditions: private fields are non-zero.
+	require.True(t, key.D.Sign() != 0, "precondition: D is non-zero")
+	require.True(t, len(key.Primes) >= 2, "precondition: at least 2 primes")
+	for _, p := range key.Primes {
+		require.True(t, p.Sign() != 0, "precondition: prime is non-zero")
+	}
+
+	zeroRSAKey(key)
+
+	assert.True(t, key.D.Sign() == 0, "D should be zeroed")
+	for i, p := range key.Primes {
+		assert.True(t, p.Sign() == 0, "prime %d should be zeroed", i)
+	}
+	assert.True(t, key.Precomputed.Dp.Sign() == 0, "Dp should be zeroed")
+	assert.True(t, key.Precomputed.Dq.Sign() == 0, "Dq should be zeroed")
+	assert.True(t, key.Precomputed.Qinv.Sign() == 0, "Qinv should be zeroed")
+}
+
+func TestZeroRSAKey_Nil(t *testing.T) {
+	// Must not panic on nil.
+	zeroRSAKey(nil)
+}
+
+func TestGenerateAppJWT_ZeroesKeyMaterial(t *testing.T) {
+	// Generate a key and PEM-encode it, then call GenerateAppJWT.
+	// After the call, the block.Bytes inside GenerateAppJWT should have
+	// been zeroed. We cannot observe block.Bytes directly, but we can
+	// verify the function still produces a valid JWT (i.e., zeroing
+	// happens via defer after signing, not before).
 	pemData := testPEM(t)
 
 	jwt, err := GenerateAppJWT("12345", pemData)
