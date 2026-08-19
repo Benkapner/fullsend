@@ -37,8 +37,8 @@ func TestStatusAuth_OIDCSuccess_ReturnsOrgScoped(t *testing.T) {
 }
 
 func TestStatusAuth_OIDCFail_NoValidators_Returns401(t *testing.T) {
-	// Without the github build tag, statusValidators() returns nil.
-	// An invalid OIDC token should yield 401.
+	// Without the github build tag, validateStatusGitHub returns
+	// errStatusAuthSkip. An invalid OIDC token should yield 401.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "test-org")
 

@@ -579,6 +579,11 @@ Cloudflare mode (--platform=cloudflare):
 				if statusGitHubClientID == "" {
 					return fmt.Errorf("--status-github-client-id is required when --status-auth includes github")
 				}
+				// Validate ORG/TEAM format before stamping into ldflags.
+				parts := strings.SplitN(statusGitHubGroup, "/", 2)
+				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+					return fmt.Errorf("--status-github-group must be ORG/TEAM format, got %q", statusGitHubGroup)
+				}
 			} else {
 				// Clear GitHub-specific values when github mode is not
 				// active so downstream functions can key off non-empty
@@ -587,9 +592,14 @@ Cloudflare mode (--platform=cloudflare):
 				statusGitHubClientID = ""
 			}
 
+			statusGitHub := gcf.StatusGitHubAuth{
+				Group:    statusGitHubGroup,
+				ClientID: statusGitHubClientID,
+			}
+
 			switch platform {
 			case "gcp":
-				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHubGroup, statusGitHubClientID)
+				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHub)
 			case "cloudflare":
 				// Reject conflicting flags: --public widens auth to all repos,
 				// so combining it with an explicit --per-repo-wif-repos list
@@ -597,7 +607,11 @@ Cloudflare mode (--platform=cloudflare):
 				if public && cmd.Flags().Changed("per-repo-wif-repos") {
 					return fmt.Errorf("--public and --per-repo-wif-repos are mutually exclusive; use one or the other")
 				}
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, statusGitHubGroup, statusGitHubClientID, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
+				cfStatusGitHub := cf.StatusGitHubAuth{
+					Group:    statusGitHubGroup,
+					ClientID: statusGitHubClientID,
+				}
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -685,7 +699,7 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 	}
 }
 
-func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHubGroup, statusGitHubClientID string) error {
+func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHub gcf.StatusGitHubAuth) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -750,15 +764,14 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	}
 
 	cfg := gcf.Config{
-		ProjectID:            project,
-		Region:               region,
-		FunctionSourceDir:    sourceDir,
-		DeployMode:           deployMode,
-		Version:              version,
-		Commit:               deployCommit,
-		PublicMint:           public,
-		StatusGitHubGroup:    statusGitHubGroup,
-		StatusGitHubClientID: statusGitHubClientID,
+		ProjectID:         project,
+		Region:            region,
+		FunctionSourceDir: sourceDir,
+		DeployMode:        deployMode,
+		Version:           version,
+		Commit:            deployCommit,
+		PublicMint:        public,
+		StatusGitHub:      statusGitHub,
 	}
 
 	if pemDir != "" {
@@ -813,7 +826,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain, statusGitHubGroup, statusGitHubClientID string, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, statusGitHub cf.StatusGitHubAuth, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -1027,19 +1040,18 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	}
 
 	cfg := cf.Config{
-		AccountID:            accountID,
-		WorkerName:           workerName,
-		DeployMode:           deployMode,
-		PreviewAlias:         previewAlias,
-		SourceDir:            sourceDir,
-		EnvVars:              cfEnvVars,
-		Secrets:              cfSecrets,
-		Version:              version,
-		Commit:               deployCommit,
-		ZoneID:               resolvedZoneID,
-		CustomDomain:         customDomain,
-		StatusGitHubGroup:    statusGitHubGroup,
-		StatusGitHubClientID: statusGitHubClientID,
+		AccountID:    accountID,
+		WorkerName:   workerName,
+		DeployMode:   deployMode,
+		PreviewAlias: previewAlias,
+		SourceDir:    sourceDir,
+		EnvVars:      cfEnvVars,
+		Secrets:      cfSecrets,
+		Version:      version,
+		Commit:       deployCommit,
+		ZoneID:       resolvedZoneID,
+		CustomDomain: customDomain,
+		StatusGitHub: statusGitHub,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)

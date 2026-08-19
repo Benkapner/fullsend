@@ -221,7 +221,7 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	require.NoError(t, err)
 	oldStdout := os.Stdout
 	os.Stdout = w
-	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, "", "")
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{})
 	require.NoError(t, w.Close())
 	os.Stdout = oldStdout
 	require.NoError(t, deployErr)
@@ -429,6 +429,14 @@ func TestMintDeployCmd_StatusAuthGitHubMissingClientID(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--status-github-client-id is required")
+}
+
+func TestMintDeployCmd_StatusAuthGitHubInvalidGroup(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github", "--status-github-group=no-slash", "--status-github-client-id=cid"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ORG/TEAM format")
 }
 
 func TestMintDeployCmd_StatusAuthOIDCOnly(t *testing.T) {
@@ -649,7 +657,7 @@ func withFakeWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := cf.BuildWASMFn
 	origCopy := cf.CopyWASMExecFn
-	cf.BuildWASMFn = func(outPath, _, _, _, _ string) error {
+	cf.BuildWASMFn = func(outPath, _, _ string, _ cf.StatusGitHubAuth) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	cf.CopyWASMExecFn = func(destPath string) error {

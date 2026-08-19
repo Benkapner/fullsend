@@ -507,21 +507,21 @@ func TestProvisioner_Teardown_DurableDeletesWorker(t *testing.T) {
 
 func TestWasmLDFlags(t *testing.T) {
 	t.Run("includes strip flags and version stamps", func(t *testing.T) {
-		flags := wasmLDFlags("1.2.3", "abc123", "", "")
+		flags := wasmLDFlags("1.2.3", "abc123", StatusGitHubAuth{})
 		assert.Contains(t, flags, "-s -w")
 		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.Version=1.2.3")
 		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.Commit=abc123")
 	})
 
 	t.Run("empty version and commit", func(t *testing.T) {
-		flags := wasmLDFlags("", "", "", "")
+		flags := wasmLDFlags("", "", StatusGitHubAuth{})
 		assert.Contains(t, flags, "-s -w")
 		assert.Contains(t, flags, "Version=")
 		assert.Contains(t, flags, "Commit=")
 	})
 
 	t.Run("non-empty status GitHub group and client ID", func(t *testing.T) {
-		flags := wasmLDFlags("1.0.0", "def456", "my-org/my-team", "client-id-123")
+		flags := wasmLDFlags("1.0.0", "def456", StatusGitHubAuth{Group: "my-org/my-team", ClientID: "client-id-123"})
 		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubGroup=my-org/my-team")
 		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubClientID=client-id-123")
 	})
@@ -534,14 +534,14 @@ func TestEnsureWASMArtifacts_ForwardsVersionCommit(t *testing.T) {
 
 	var capturedVersion, capturedCommit string
 	origBuild := BuildWASMFn
-	BuildWASMFn = func(outPath, version, commit, _, _ string) error {
+	BuildWASMFn = func(outPath, version, commit string, _ StatusGitHubAuth) error {
 		capturedVersion = version
 		capturedCommit = commit
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir, "2.0.0", "deadbeef", "", "")
+	err := ensureWASMArtifacts(dir, "2.0.0", "deadbeef", StatusGitHubAuth{})
 	require.NoError(t, err)
 	assert.Equal(t, "2.0.0", capturedVersion, "version should be forwarded to BuildWASMFn")
 	assert.Equal(t, "deadbeef", capturedCommit, "commit should be forwarded to BuildWASMFn")
@@ -552,19 +552,18 @@ func TestEnsureWASMArtifacts_ForwardsStatusParams(t *testing.T) {
 	// Pre-stage wasm_exec.js so only the build function is exercised.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "wasm_exec.js"), []byte("exec"), 0o644))
 
-	var capturedGroup, capturedClientID string
+	var capturedStatusGitHub StatusGitHubAuth
 	origBuild := BuildWASMFn
-	BuildWASMFn = func(outPath, _, _, statusGitHubGroup, statusGitHubClientID string) error {
-		capturedGroup = statusGitHubGroup
-		capturedClientID = statusGitHubClientID
+	BuildWASMFn = func(outPath, _, _ string, statusGitHub StatusGitHubAuth) error {
+		capturedStatusGitHub = statusGitHub
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir, "", "", "acme/team", "cid-123")
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{Group: "acme/team", ClientID: "cid-123"})
 	require.NoError(t, err)
-	assert.Equal(t, "acme/team", capturedGroup, "statusGitHubGroup should be forwarded to BuildWASMFn")
-	assert.Equal(t, "cid-123", capturedClientID, "statusGitHubClientID should be forwarded to BuildWASMFn")
+	assert.Equal(t, "acme/team", capturedStatusGitHub.Group, "StatusGitHub.Group should be forwarded to BuildWASMFn")
+	assert.Equal(t, "cid-123", capturedStatusGitHub.ClientID, "StatusGitHub.ClientID should be forwarded to BuildWASMFn")
 }
 
 func TestBuildWASM(t *testing.T) {
@@ -578,7 +577,7 @@ func TestBuildWASM(t *testing.T) {
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
 		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
-		err := buildWASM(outPath, "1.2.3", "abc123", "", "")
+		err := buildWASM(outPath, "1.2.3", "abc123", StatusGitHubAuth{})
 		require.NoError(t, err)
 		require.NotNil(t, capturedCmd)
 
@@ -589,7 +588,7 @@ func TestBuildWASM(t *testing.T) {
 		assert.Contains(t, args, "-o "+outPath)
 
 		// -ldflags value matches wasmLDFlags.
-		assert.Contains(t, args, wasmLDFlags("1.2.3", "abc123", "", ""))
+		assert.Contains(t, args, wasmLDFlags("1.2.3", "abc123", StatusGitHubAuth{}))
 
 		// cmd.Dir ends with cmd/mint-wasm.
 		assert.True(t, strings.HasSuffix(capturedCmd.Dir, filepath.Join("cmd", "mint-wasm")),
@@ -616,13 +615,13 @@ func TestBuildWASM(t *testing.T) {
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
 		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
-		err := buildWASM(outPath, "1.0.0", "abc", "acme/team", "cid-123")
+		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/team", ClientID: "cid-123"})
 		require.NoError(t, err)
 		require.NotNil(t, capturedCmd)
 
 		args := strings.Join(capturedCmd.Args, " ")
 		assert.Contains(t, args, "-tags github")
-		assert.Contains(t, args, wasmLDFlags("1.0.0", "abc", "acme/team", "cid-123"))
+		assert.Contains(t, args, wasmLDFlags("1.0.0", "abc", StatusGitHubAuth{Group: "acme/team", ClientID: "cid-123"}))
 	})
 
 	t.Run("omits github build tag when status group is empty", func(t *testing.T) {
@@ -635,7 +634,7 @@ func TestBuildWASM(t *testing.T) {
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
 		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
-		err := buildWASM(outPath, "1.0.0", "abc", "", "")
+		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{})
 		require.NoError(t, err)
 		require.NotNil(t, capturedCmd)
 
@@ -650,7 +649,7 @@ func TestBuildWASM(t *testing.T) {
 		}
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
-		err := buildWASM("/tmp/out.wasm", "1.0.0", "def456", "", "")
+		err := buildWASM("/tmp/out.wasm", "1.0.0", "def456", StatusGitHubAuth{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "go build cmd/mint-wasm")
 		assert.Contains(t, err.Error(), "some build output")
@@ -699,13 +698,13 @@ func TestEnsureWASMArtifacts_AlreadyPresent(t *testing.T) {
 	// Should be a no-op — no build functions called.
 	buildCalled := false
 	origBuild := BuildWASMFn
-	BuildWASMFn = func(outPath, _, _, _, _ string) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
 		buildCalled = true
 		return nil
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir, "", "", "", "")
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
 	require.NoError(t, err)
 	assert.False(t, buildCalled, "should not build when WASM is already present")
 }
@@ -714,7 +713,7 @@ func TestEnsureWASMArtifacts_MissingBoth(t *testing.T) {
 	stubWASMBuild(t)
 	dir := t.TempDir()
 
-	err := ensureWASMArtifacts(dir, "", "", "", "")
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
 	require.NoError(t, err)
 
 	// Both files should now exist.
@@ -730,7 +729,7 @@ func TestEnsureWASMArtifacts_MissingWASMOnly(t *testing.T) {
 	// Pre-stage wasm_exec.js but not mintcore.wasm.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "wasm_exec.js"), []byte("exec"), 0o644))
 
-	err := ensureWASMArtifacts(dir, "", "", "", "")
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
 	require.NoError(t, err)
 	assert.True(t, fileExistsAndNonEmpty(filepath.Join(dir, "mintcore.wasm")))
 }
@@ -738,7 +737,7 @@ func TestEnsureWASMArtifacts_MissingWASMOnly(t *testing.T) {
 func TestEnsureWASMArtifacts_BuildError(t *testing.T) {
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath, _, _, _, _ string) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
 		return fmt.Errorf("go build failed")
 	}
 	CopyWASMExecFn = func(destPath string) error {
@@ -750,7 +749,7 @@ func TestEnsureWASMArtifacts_BuildError(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	err := ensureWASMArtifacts(dir, "", "", "", "")
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auto-building mintcore.wasm")
 }
@@ -1717,7 +1716,7 @@ func TestWriteSecretsFile_NilSecrets(t *testing.T) {
 func TestEnsureWASMArtifacts_CopyExecError(t *testing.T) {
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath, _, _, _, _ string) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
 		return os.WriteFile(outPath, []byte("wasm"), 0o644)
 	}
 	CopyWASMExecFn = func(destPath string) error {
@@ -1729,7 +1728,7 @@ func TestEnsureWASMArtifacts_CopyExecError(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	err := ensureWASMArtifacts(dir, "", "", "", "")
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying wasm_exec.js")
 }
@@ -2280,7 +2279,7 @@ func stubWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath, _, _, _, _ string) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	CopyWASMExecFn = func(destPath string) error {

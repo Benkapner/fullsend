@@ -12,13 +12,6 @@ import (
 	"strings"
 )
 
-// statusValidators returns the optional status auth validators when
-// the github build tag is active. The GitHub user-token validator is
-// the first (and currently only) optional validator.
-func statusValidators() []StatusValidator {
-	return []StatusValidator{validateStatusGitHub}
-}
-
 // validateStatusGitHub authenticates a /v1/status request using a
 // GitHub user token (OAuth2 login or gh / GH_TOKEN). It:
 //

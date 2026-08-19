@@ -143,13 +143,18 @@ type Config struct {
 	// PublicMint bootstraps PER_REPO_WIF_REPOS=* and a permissive WIF provider CEL.
 	PublicMint bool
 
-	// StatusGitHubGroup is the ORG/TEAM slug for the GitHub status
-	// validator. Stamped into the source at bundle time alongside
-	// Version and Commit. Empty when the github build tag is not active.
-	StatusGitHubGroup string
-	// StatusGitHubClientID is the GitHub OAuth App client ID for the
-	// status validator. Stamped at bundle time. Empty when unused.
-	StatusGitHubClientID string
+	// StatusGitHub holds the GitHub status auth config stamped into
+	// the source at bundle time alongside Version and Commit.
+	StatusGitHub StatusGitHubAuth
+}
+
+// StatusGitHubAuth bundles the GitHub status auth configuration
+// passed through provisioner and bundle functions.
+type StatusGitHubAuth struct {
+	// Group is the ORG/TEAM slug for the GitHub status validator.
+	Group string
+	// ClientID is the GitHub OAuth App client ID for the status validator.
+	ClientID string
 }
 
 // Provisioner creates GCP infrastructure for OIDC-based token minting.
@@ -847,7 +852,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			case p.cfg.FunctionSourceDir == "":
 				needsDeploy = false
 			default: // DeployAuto
-				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHubGroup, p.cfg.StatusGitHubClientID)
+				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub)
 				if err != nil {
 					return nil, fmt.Errorf("validating function source: %w", err)
 				}
@@ -866,7 +871,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 
 	// Code deployment path — bundle source.
 	if earlySourceZip == nil {
-		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHubGroup, p.cfg.StatusGitHubClientID)
+		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub)
 		if err != nil {
 			return nil, fmt.Errorf("validating function source: %w", err)
 		}
@@ -1901,15 +1906,15 @@ func sortedByteMapKeys(m map[string][]byte) []string {
 // Version and commit are stamped directly into the source by generating a
 // mintcore/version.go file in the zip, so the deployed code carries its own
 // version identity without relying on environment variables.
-func bundleFunctionSource(dir, version, commit, statusGitHubGroup, statusGitHubClientID string) ([]byte, error) {
+func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHubAuth) ([]byte, error) {
 	if dir == "" {
-		return bundleEmbeddedMintSource(version, commit, statusGitHubGroup, statusGitHubClientID)
+		return bundleEmbeddedMintSource(version, commit, statusGitHub)
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return bundleEmbeddedMintSource(version, commit, statusGitHubGroup, statusGitHubClientID)
+			return bundleEmbeddedMintSource(version, commit, statusGitHub)
 		}
 		return nil, fmt.Errorf("reading function source dir: %w", err)
 	}
@@ -1976,7 +1981,7 @@ func bundleFunctionSource(dir, version, commit, statusGitHubGroup, statusGitHubC
 	}
 
 	// Stamp status auth consts into the source.
-	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHubGroup, statusGitHubClientID); err != nil {
+	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHub.Group, statusGitHub.ClientID); err != nil {
 		return nil, fmt.Errorf("writing status_consts.go: %w", err)
 	}
 
@@ -1987,7 +1992,7 @@ func bundleFunctionSource(dir, version, commit, statusGitHubGroup, statusGitHubC
 	// with its build constraint intact, which is fine for the default
 	// (non-github) case.
 	statusGitHubFile := "status_github_stub.go"
-	if statusGitHubGroup != "" {
+	if statusGitHub.Group != "" {
 		statusGitHubFile = "status_github.go"
 	}
 	statusGitHubData, err := os.ReadFile(filepath.Join(mintcoreDir, statusGitHubFile))
@@ -1995,7 +2000,7 @@ func bundleFunctionSource(dir, version, commit, statusGitHubGroup, statusGitHubC
 		if err := writeStatusGitHubFileToZip(w, statusGitHubData, "mintcore/"+statusGitHubFile); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", statusGitHubFile, err)
 		}
-	} else if statusGitHubGroup != "" {
+	} else if statusGitHub.Group != "" {
 		// Only fail for missing github file when github mode is active —
 		// the stub file is optional (harmless if absent).
 		return nil, fmt.Errorf("reading %s: %w", statusGitHubFile, err)
@@ -2077,7 +2082,7 @@ func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string, skip ma
 // toolchain from treating the directory as a module root, and are renamed
 // to their real names in the zip. The version.go entry is replaced with
 // generated content that stamps the provided version and commit.
-func bundleEmbeddedMintSource(version, commit, statusGitHubGroup, statusGitHubClientID string) ([]byte, error) {
+func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubAuth) ([]byte, error) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 
@@ -2091,7 +2096,7 @@ func bundleEmbeddedMintSource(version, commit, statusGitHubGroup, statusGitHubCl
 	// without custom build tags, so the bundler selects at bundle time.
 	wantGitHubFile := "mintcore/status_github_stub.go"
 	skipGitHubFile := "mintcore/status_github.go"
-	if statusGitHubGroup != "" {
+	if statusGitHub.Group != "" {
 		wantGitHubFile = "mintcore/status_github.go"
 		skipGitHubFile = "mintcore/status_github_stub.go"
 	}
@@ -2127,7 +2132,7 @@ func bundleEmbeddedMintSource(version, commit, statusGitHubGroup, statusGitHubCl
 	}
 
 	// Stamp status auth consts into the source.
-	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHubGroup, statusGitHubClientID); err != nil {
+	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHub.Group, statusGitHub.ClientID); err != nil {
 		return nil, fmt.Errorf("writing status_consts.go: %w", err)
 	}
 

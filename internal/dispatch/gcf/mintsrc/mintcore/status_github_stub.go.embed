@@ -2,9 +2,14 @@
 
 package mintcore
 
-// statusValidators returns the optional status auth validators.
-// Without the github build tag, no optional validators are active.
-// The slice is empty; OIDC is the only auth path.
-func statusValidators() []StatusValidator {
-	return nil
+import (
+	"context"
+	"net/http"
+)
+
+// validateStatusGitHub is the stub for builds without the github tag.
+// It returns errStatusAuthSkip unconditionally — OIDC is the only
+// auth path when the tag is absent.
+func validateStatusGitHub(_ context.Context, _ *http.Request) error {
+	return errStatusAuthSkip
 }

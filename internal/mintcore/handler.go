@@ -230,7 +230,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
 		return
 	}
-	oidcToken := strings.TrimPrefix(authHeader, "Bearer ")
 
 	defer r.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
@@ -285,20 +284,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// --- /v1/token auth: OIDC only (shared helper) ---
+	claims, isPerRepo, oidcErr := h.verifyOIDCRequest(r.Context(), r)
+	if oidcErr != nil {
+		log.Printf("authentication failed: %v", oidcErr)
+		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+
 	ctx := r.Context()
-
-	claims, err := h.oidcVerifier.Verify(ctx, oidcToken)
-	if err != nil {
-		log.Printf("OIDC verification failed: %v", err)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
-	}
-
-	if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
-		log.Printf("token authorization failed: %v", err)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
-	}
 	callerOrg := strings.ToLower(claims.RepositoryOwner)
 	targetOrg := strings.ToLower(strings.TrimSpace(req.TargetOrg))
 	if targetOrg == "" {
@@ -306,35 +300,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
-	isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
-	// Dual enrollment: if the caller is explicitly listed in
-	// PER_REPO_WIF_REPOS (not via wildcard public mint) and their
-	// owner org is also in ALLOWED_ORGS, use per-org scope treatment
-	// — per-org shapes are a superset of per-repo self-only scope.
-	// Workflow ref validation accepts sources from EITHER mode:
-	// per-repo (workflowHostRepos) or per-org ({org}/.fullsend, upstream).
-	// Note: when ALLOWED_ORGS=* with specific PER_REPO_WIF_REPOS
-	// entries, per-repo callers are upgraded to per-org scope; this
-	// is consistent because all non-per-repo callers from any org
-	// already receive per-org treatment in that configuration.
-	isDualEnrolled := false
-	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
-		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
-		isDualEnrolled = true
-		log.Printf("dual-enrollment: %s matches both per-repo and per-org — accepting workflow refs from either mode", claims.Repository)
-		isPerRepo = false
-	}
-	wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
-	if wfErr != nil && isDualEnrolled {
-		// Per-org validation failed; try per-repo validation since
-		// dual-enrolled callers accept workflows from either mode.
-		wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
-	}
-	if wfErr != nil {
-		log.Printf("workflow ref validation failed: %v", wfErr)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
-	}
 	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
 	if scopeErr != nil && !isTargetForeign {
 		// Same-org scope denied. For per-repo callers requesting repos

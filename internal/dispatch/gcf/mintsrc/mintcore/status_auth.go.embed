@@ -4,31 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
 	"strings"
 )
 
-// StatusValidator authenticates a /v1/status request using a non-OIDC
-// credential (e.g. GitHub user token, Cloudflare Access JWT). Each
-// validator is compiled as either the real check or a passthru stub
-// via build tags.
-//
-//   - nil means the validator authenticated the request.
-//   - errStatusAuthSkip means the validator does not handle this request
-//     (stub or credential not present); the dispatcher moves on.
-//   - Any other error means the validator rejected the request.
-type StatusValidator func(ctx context.Context, r *http.Request) error
-
-// errStatusAuthSkip is returned by stub validators and by real
-// validators when the request does not carry credentials they
-// recognise. The dispatcher ignores this error and tries the next
-// validator.
+// errStatusAuthSkip is returned by the stub validateStatusGitHub and
+// by the real validator when the request does not carry credentials it
+// recognises. authenticateStatus treats this as "not applicable" and
+// falls through to 401.
 var errStatusAuthSkip = errors.New("status auth: skip")
 
+// errOIDCNotAuthenticated is returned by verifyOIDCRequest when the
+// request cannot be authenticated via OIDC — either the Bearer header
+// is missing or token verification failed. Distinct from "valid OIDC
+// token that fails authorization", which is a hard policy denial.
+var errOIDCNotAuthenticated = errors.New("OIDC: not authenticated")
+
 // statusAuthResult describes how a /v1/status request was
-// authenticated, so handleStatus can choose the right payload shape.
+// authenticated, so handleStatusWithAuth can choose the right payload shape.
 type statusAuthResult struct {
 	// oidcClaims is set when OIDC authentication succeeded.
 	// When non-nil, the status response is scoped to the
@@ -38,61 +34,86 @@ type statusAuthResult struct {
 	oidcClaims *Claims
 }
 
-// authenticateStatus runs the /v1/status auth pipeline:
+// verifyOIDCRequest extracts the Bearer token, verifies it via OIDC,
+// and runs the full authorization pipeline (AuthorizeToken,
+// dual-enrollment, ValidateWorkflowRef). Used by both the /v1/token
+// path and the /v1/status auth pipeline.
 //
-//  1. OIDC (always first, always compiled in).
-//  2. Optional status validators in a stable order (github, then
-//     access when present). First nil wins.
-//  3. If everything fails → 401.
-func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*statusAuthResult, error) {
+// Returns (claims, isPerRepo, nil) on success. isPerRepo reflects the
+// final per-repo mode after dual-enrollment promotion.
+//
+// Returns errOIDCNotAuthenticated (via errors.Is) when the Bearer
+// header is missing or OIDC verification fails — callers that support
+// fallback auth can check this. Any other error means the token was
+// valid but denied by policy (hard 401, no fallback).
+func (h *Handler) verifyOIDCRequest(ctx context.Context, r *http.Request) (*Claims, bool, error) {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return nil, errors.New("missing or invalid Authorization header")
+		return nil, false, errOIDCNotAuthenticated
 	}
 	oidcToken := strings.TrimPrefix(authHeader, "Bearer ")
 
-	// --- OIDC (always tried first) ---
-	claims, oidcErr := h.oidcVerifier.Verify(ctx, oidcToken)
-	if oidcErr == nil {
-		if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
-			log.Printf("token authorization failed for /v1/status: %v", err)
-			// OIDC token is valid but not authorized — do NOT fall
-			// through to optional validators; this is a policy denial.
-			return nil, errors.New("authentication failed")
-		}
-		isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
-		isDualEnrolled := false
-		if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
-			ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
-			isDualEnrolled = true
-			isPerRepo = false
-		}
-		wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
-		if wfErr != nil && isDualEnrolled {
-			wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
-		}
-		if wfErr != nil {
-			log.Printf("workflow ref validation failed for /v1/status: %v", wfErr)
-			return nil, errors.New("authentication failed")
-		}
-		return &statusAuthResult{oidcClaims: claims}, nil
+	claims, err := h.oidcVerifier.Verify(ctx, oidcToken)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w: %v", errOIDCNotAuthenticated, err)
+	}
+	if claims == nil {
+		return nil, false, errOIDCNotAuthenticated
 	}
 
-	// OIDC failed — try optional validators.
+	if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
+		return nil, false, fmt.Errorf("token authorization failed: %w", err)
+	}
+
+	isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
+	isDualEnrolled := false
+	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
+		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
+		isDualEnrolled = true
+		log.Printf("dual-enrollment: %s matches both per-repo and per-org — accepting workflow refs from either mode", claims.Repository)
+		isPerRepo = false
+	}
+	wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
+	if wfErr != nil && isDualEnrolled {
+		wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
+	}
+	if wfErr != nil {
+		return nil, false, fmt.Errorf("workflow ref validation failed: %w", wfErr)
+	}
+	return claims, isPerRepo, nil
+}
+
+// authenticateStatus runs the /v1/status auth pipeline:
+//
+//  1. OIDC (always first, always compiled in).
+//  2. validateStatusGitHub — compile-time selected via build tags:
+//     real validator (github tag) or stub returning errStatusAuthSkip.
+//  3. If everything fails → error.
+//
+// Non-skip errors from validateStatusGitHub produce an immediate 401
+// with no fall-through — the validator positively rejected the request.
+func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*statusAuthResult, error) {
+	// --- OIDC (always tried first) ---
+	claims, _, oidcErr := h.verifyOIDCRequest(ctx, r)
+	if oidcErr == nil {
+		return &statusAuthResult{oidcClaims: claims}, nil
+	}
+	if !errors.Is(oidcErr, errOIDCNotAuthenticated) {
+		// OIDC token is valid but not authorized — policy denial,
+		// do NOT fall through to other validators.
+		log.Printf("OIDC authorization failed for /v1/status: %v", oidcErr)
+		return nil, errors.New("authentication failed")
+	}
 	log.Printf("OIDC verification failed for /v1/status: %v", oidcErr)
 
-	validators := statusValidators()
-	for _, v := range validators {
-		err := v(ctx, r)
-		if err == nil {
-			// Authenticated by an optional validator.
-			return &statusAuthResult{}, nil
-		}
-		if errors.Is(err, errStatusAuthSkip) {
-			continue
-		}
-		// Real rejection — log and continue to next validator.
-		log.Printf("status validator rejected request: %v", err)
+	// --- GitHub validator (compile-time selected) ---
+	ghErr := validateStatusGitHub(ctx, r)
+	if ghErr == nil {
+		return &statusAuthResult{}, nil
+	}
+	if !errors.Is(ghErr, errStatusAuthSkip) {
+		// Real rejection — 401 immediately, no fall-through.
+		log.Printf("GitHub status validator rejected request: %v", ghErr)
 	}
 
 	return nil, errors.New("authentication failed")
