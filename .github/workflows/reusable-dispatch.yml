@@ -339,6 +339,11 @@ jobs:
           # agent bot via __typename + login so it can re-dispatch even when it
           # already has an open PR (#5974); other bots (e.g. Renovate) still
           # block. See docs/contributing/bot-identities.md for the login format.
+          # NOTE: bot identity is checked in three places — (1) this existing-PR
+          # guard (GraphQL __typename), (2) the fix eligibility script
+          # (.defaults/.github/scripts/check-fix-eligibility.sh — gh pr view
+          # is_bot/login), (3) org-scaffold dispatch.yml:226 (webhook [bot]$
+          # regex). See docs/contributing/bot-identities.md.
           OWNER="${SOURCE_REPO%%/*}"
           REPO_NAME="${SOURCE_REPO##*/}"
           GQL_ERR=$(mktemp)
@@ -1073,27 +1078,7 @@ jobs:
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           SOURCE_REPO: ${{ github.repository }}
-        run: |
-          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
-            PR_INFO=$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
-              --json labels,author --jq '{labels: [.labels[].name], author: .author.login}') \
-              || { echo "::error::Failed to fetch PR info for #${PR_NUM}"; exit 1; }
-
-            HAS_NO_FIX=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-no-fix")')
-            if [[ "${HAS_NO_FIX}" == "true" ]]; then
-              echo "::warning::PR #${PR_NUM} has 'fullsend-no-fix' label — skipping bot-triggered fix"
-              exit 1
-            fi
-
-            PR_AUTHOR=$(echo "${PR_INFO}" | jq -r '.author')
-            if [[ ! "${PR_AUTHOR}" =~ \[bot\]$ ]]; then
-              HAS_FIX_LABEL=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-fix")')
-              if [[ "${HAS_FIX_LABEL}" != "true" ]]; then
-                echo "::warning::Human-authored PR #${PR_NUM} without 'fullsend-fix' label — skipping bot-triggered fix"
-                exit 1
-              fi
-            fi
-          fi
+        run: bash .defaults/.github/scripts/check-fix-eligibility.sh
 
       - name: Checkout target repository at PR HEAD
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
