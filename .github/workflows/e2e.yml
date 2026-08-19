@@ -182,15 +182,27 @@ jobs:
 
   behaviour:
     # Same gate authorization as e2e — checks out untrusted PR head with secrets.
+    # Runs only on authorized PRs, merge_group (required check; treated as
+    # PR-class / dev), and push to main (stage). Skip workflow_dispatch.
+    # Environment uses event_name, not github.ref: pull_request_target sets
+    # github.ref to the base branch (usually main).
     needs: gate
     if: >-
       !cancelled() &&
-      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'merge_group') ||
+        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
+      )
+    # Scalar form keeps default deployment: true so runs list under Environments.
+    environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
+    env:
+      ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     steps:
       - name: Check for behaviour-relevant changes
         id: changes
@@ -260,6 +272,7 @@ jobs:
           BEHAVIOUR_SCM: github
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
+          ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}

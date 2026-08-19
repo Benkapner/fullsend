@@ -68,6 +68,10 @@ Required repository secrets:
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
+### Behaviour job GitHub Environments
+
+The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. GitHub auto-creates those environments on first use. Restrict `stage` to the `main` branch once they exist (operator step). The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`).
+
 ### Cloudflare Worker mint BT credentials
 
 The behaviour job wires `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` env names so CF mint BT (#5109) can upload versions of Worker **`mint-test`**. These secrets must **not** reuse the production site-deploy `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` used by `site-deploy.yml` (Worker `site`).
