@@ -117,7 +117,14 @@ func IsTransient(err error) bool {
 	if errors.As(err, &te) {
 		return te.IsTransient()
 	}
-	// HTTP client timeout (distinct from context cancellation).
+	// Context cancellation / deadline errors are not transient —
+	// they reflect caller intent, not a server-side failure.
+	// context.DeadlineExceeded implements Timeout() bool (returning
+	// true), so this guard must come before the Timeout() check.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	// HTTP client timeout (e.g. net/http.Client.Timeout exceeded).
 	var timeout interface{ Timeout() bool }
 	if errors.As(err, &timeout) && timeout.Timeout() {
 		return true

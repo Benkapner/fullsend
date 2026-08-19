@@ -815,7 +815,6 @@ func TestCleanupScenario_BranchScenarioSweep_RunsWithoutBranchSteps(t *testing.T
 // --- Retry helper tests ---
 
 func TestCleanupRetry_SucceedsImmediately(t *testing.T) {
-	t.Parallel()
 	speedUpCleanupRetries(t)
 
 	calls := 0
@@ -828,7 +827,6 @@ func TestCleanupRetry_SucceedsImmediately(t *testing.T) {
 }
 
 func TestCleanupRetry_TransientThenSuccess(t *testing.T) {
-	t.Parallel()
 	speedUpCleanupRetries(t)
 
 	calls := 0
@@ -845,7 +843,6 @@ func TestCleanupRetry_TransientThenSuccess(t *testing.T) {
 }
 
 func TestCleanupRetry_TransientExhausted(t *testing.T) {
-	t.Parallel()
 	speedUpCleanupRetries(t)
 
 	transientErr := &fakeTransientError{msg: "503 service unavailable"}
@@ -868,7 +865,6 @@ func TestCleanupRetry_TransientExhausted(t *testing.T) {
 }
 
 func TestCleanupRetry_NonTransientNoRetry(t *testing.T) {
-	t.Parallel()
 	speedUpCleanupRetries(t)
 
 	nonTransientErr := fmt.Errorf("401 unauthorized")
@@ -882,7 +878,6 @@ func TestCleanupRetry_NonTransientNoRetry(t *testing.T) {
 }
 
 func TestCleanupScenario_RetriesTransientCloseIssue(t *testing.T) {
-	t.Parallel()
 	speedUpCleanupRetries(t)
 
 	calls := 0
@@ -907,7 +902,6 @@ func TestCleanupScenario_RetriesTransientCloseIssue(t *testing.T) {
 }
 
 func TestCleanupScenario_RetriesTransientCommitFile(t *testing.T) {
-	t.Parallel()
 	speedUpCleanupRetries(t)
 
 	calls := 0

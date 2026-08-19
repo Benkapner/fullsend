@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -68,6 +69,26 @@ func TestIsTransient(t *testing.T) {
 			name: "wrapped transient reporter",
 			err:  fmt.Errorf("api call: %w", &fakeTransientErr{transient: true}),
 			want: true,
+		},
+		{
+			name: "context.DeadlineExceeded is not transient",
+			err:  context.DeadlineExceeded,
+			want: false,
+		},
+		{
+			name: "wrapped context.DeadlineExceeded is not transient",
+			err:  fmt.Errorf("timed out: %w", context.DeadlineExceeded),
+			want: false,
+		},
+		{
+			name: "context.Canceled is not transient",
+			err:  context.Canceled,
+			want: false,
+		},
+		{
+			name: "wrapped context.Canceled is not transient",
+			err:  fmt.Errorf("canceled: %w", context.Canceled),
+			want: false,
 		},
 		{
 			name: "timeout error",
