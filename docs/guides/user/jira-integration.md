@@ -57,9 +57,9 @@ This means the person who commented `/fs-triage` on a Jira issue will not see th
 
 ### Sandbox credentials and network access
 
-The fullsend scaffold includes an OpenShell credential provider (`providers/jira.yaml`) and network profile (`profiles/fullsend-atlassian-cloud.yaml`) that grant sandboxed agents access to Jira Cloud. When the scaffold is applied to your repo, these files are installed automatically:
+The fullsend scaffold includes an OpenShell credential provider (`providers/atlassian-cloud.yaml`) and network profile (`profiles/fullsend-atlassian-cloud.yaml`) that grant sandboxed agents access to Jira Cloud. These are layered content — they are provided at runtime by reusable workflows, not written to the `.fullsend` directory:
 
-- **Provider** (`jira`) — declares the `jira` credential provider using the `fullsend-atlassian-cloud` profile type.
+- **Provider** (`atlassian-cloud`) — declares the `atlassian-cloud` credential provider using the `fullsend-atlassian-cloud` profile type. Jira Cloud Basic auth requires a base64-encoded `email:api-token` string; because OpenShell does not yet support composite credential injection, provide a single pre-encoded token (generate with `printf 'you@example.com:your-api-token' | base64`).
 - **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to `*.atlassian.net:443` with read-write access and endpoint enforcement. Permitted binaries are `curl` and `node`.
 
 The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tenant. Per-tenant scoping is not yet supported by OpenShell; this is an accepted risk for now.
