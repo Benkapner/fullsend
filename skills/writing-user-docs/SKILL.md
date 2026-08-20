@@ -1,10 +1,10 @@
 ---
 name: writing-user-docs
 description: >-
-  Use when writing, editing, or adding user-facing documentation under
-  docs/guides/. Use when creating getting-started or infrastructure guides
-  (install, configure, operate) or user guides (workflows, interactions,
-  interventions) for fullsend.
+  Use when writing, editing, or adding documentation under docs/guides/.
+  Use when creating getting-started or infrastructure guides (install,
+  configure, operate), user guides (workflows, interactions, interventions),
+  or dev guides (developing and testing fullsend itself).
 ---
 
 # Writing User Documentation
