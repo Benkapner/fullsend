@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1047,15 +1048,23 @@ func TestBuildProviderUpdateArgs(t *testing.T) {
 }
 
 func TestImportProfile_OpenshellNotInPath(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: test-profile"), 0o644))
 	t.Setenv("PATH", t.TempDir())
 
-	err := ImportProfile(context.Background(), "test-profile", "/some/profile.yaml")
+	cachePath := profileFileCachePath("test-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "test-profile", profilePath)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
 
 func TestImportProfile_Success(t *testing.T) {
 	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
 
 	script := `#!/bin/sh
 exit 0
@@ -1064,12 +1073,17 @@ exit 0
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
 	assert.NoError(t, err)
 }
 
 func TestImportProfile_UsesFileFlag(t *testing.T) {
 	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
 	argsFile := filepath.Join(dir, "args.log")
 
 	// Fake openshell that logs args on "import" invocations and exits 0.
@@ -1083,17 +1097,22 @@ exit 0
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
 	require.NoError(t, err)
 
 	logged, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
-	assert.Contains(t, string(logged), "--file /some/my-profile.yaml",
+	assert.Contains(t, string(logged), "--file "+profilePath,
 		"ImportProfile must pass --file flag to openshell provider profile import")
 }
 
 func TestImportProfile_AlreadyExists(t *testing.T) {
 	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
 
 	script := `#!/bin/sh
 echo "profile already exists" >&2
@@ -1103,12 +1122,17 @@ exit 1
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
 	assert.NoError(t, err, "idempotent import should not return an error")
 }
 
 func TestImportProfile_OtherError(t *testing.T) {
 	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
 
 	script := `#!/bin/sh
 echo "connection refused" >&2
@@ -1118,10 +1142,165 @@ exit 1
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "my-profile.yaml")
 	assert.Contains(t, err.Error(), "connection refused")
+}
+
+func TestImportProfile_SkipsWhenCacheMatches(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: test-profile\nname: test"), 0o644))
+
+	hash, err := hashProfileFile(profilePath)
+	require.NoError(t, err)
+
+	cachePath := profileFileCachePath("test-profile")
+	require.NoError(t, os.WriteFile(cachePath, []byte(hash), 0o600))
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	// openshell is not in PATH — if ImportProfile tries to run it, it will fail.
+	// A successful return means the cache short-circuited the import.
+	t.Setenv("PATH", "")
+	err = ImportProfile(context.Background(), "test-profile", profilePath)
+	assert.NoError(t, err, "should skip import when cache hash matches")
+}
+
+func TestImportProfile_ReimportsWhenCacheDiffers(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: test-profile\nname: test"), 0o644))
+
+	cachePath := profileFileCachePath("test-profile")
+	require.NoError(t, os.WriteFile(cachePath, []byte("stale-hash"), 0o600))
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	// With openshell missing, reimport will fail — proving the cache miss path runs.
+	t.Setenv("PATH", t.TempDir())
+	err := ImportProfile(context.Background(), "test-profile", profilePath)
+	assert.Error(t, err, "should attempt reimport when cache hash differs")
+}
+
+func TestImportProfile_WritesCacheOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: cached\nname: test"), 0o644))
+
+	script := "#!/bin/sh\nexit 0\n"
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("cached")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "cached", profilePath)
+	require.NoError(t, err)
+
+	// Cache file should now contain the profile hash.
+	cached, readErr := os.ReadFile(cachePath)
+	require.NoError(t, readErr, "cache file should exist after successful import")
+
+	expectedHash, _ := hashProfileFile(profilePath)
+	assert.Equal(t, expectedHash, string(cached))
+}
+
+func TestImportProfile_WritesCacheOnAlreadyExists(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: exists\nname: test"), 0o644))
+
+	script := `#!/bin/sh
+echo "profile already exists" >&2
+exit 1
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("exists")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "exists", profilePath)
+	require.NoError(t, err, "already-exists should not be an error")
+
+	// Cache should be written even on already-exists (parallel import).
+	cached, readErr := os.ReadFile(cachePath)
+	require.NoError(t, readErr, "cache file should exist after already-exists import")
+
+	expectedHash, _ := hashProfileFile(profilePath)
+	assert.Equal(t, expectedHash, string(cached))
+}
+
+func TestImportProfile_ConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "concurrent.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: concurrent\nname: test"), 0o644))
+
+	script := "#!/bin/sh\nexit 0\n"
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("concurrent")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	const goroutines = 12
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = ImportProfile(context.Background(), "concurrent", profilePath)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		assert.NoError(t, err, "goroutine %d should succeed", i)
+	}
+}
+
+func TestHashProfileFile_Deterministic(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "profile.yaml")
+	require.NoError(t, os.WriteFile(f, []byte("id: test\nname: profile"), 0o644))
+
+	h1, err := hashProfileFile(f)
+	require.NoError(t, err)
+	h2, err := hashProfileFile(f)
+	require.NoError(t, err)
+	assert.Equal(t, h1, h2, "hash must be deterministic for same content")
+}
+
+func TestHashProfileFile_ChangesOnContentChange(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "profile.yaml")
+	require.NoError(t, os.WriteFile(f, []byte("id: test"), 0o644))
+
+	h1, err := hashProfileFile(f)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(f, []byte("id: test-modified"), 0o644))
+
+	h2, err := hashProfileFile(f)
+	require.NoError(t, err)
+	assert.NotEqual(t, h1, h2, "hash must change when file content changes")
+}
+
+func TestProfileFileCachePath_DeterministicAndUnique(t *testing.T) {
+	p1 := profileFileCachePath("profile-a")
+	p2 := profileFileCachePath("profile-a")
+	p3 := profileFileCachePath("profile-b")
+
+	assert.Equal(t, p1, p2, "same id must produce same cache path")
+	assert.NotEqual(t, p1, p3, "different ids must produce different cache paths")
+	assert.True(t, strings.HasPrefix(p1, os.TempDir()), "cache path must be in temp dir")
 }
 
 // TestEnsureProvider_AlreadyExists_FallsBackToUpdate uses a fake openshell
