@@ -202,18 +202,27 @@ list. When `--output-dir` sits inside `--target-repo` (GitLab layout),
 
 `fullsend eval-measure` resolves the measurement manifest for the agent:
 
-1. `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present, else
+1. Explicit `--registry <path>` when the managed job materializes a **trusted**
+   local override (GitLab: `git show ${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/…`;
+   GHA: `git show` of `pull_request.base.sha` or `GITHUB_SHA`), else
 2. SHA-pinned `eval/measurements/${AGENT}.yaml` from public `fullsend-ai/agents`
    (same `v0` → commit SHA, allowlist, hash, and fetch audit as harness
    fallback — not a floating `raw.githubusercontent.com/.../v0/...` curl).
    GitHub Actions injects `GH_TOKEN` for that `GetRef`. GitLab CI has no
    GitHub token by default; because `agents` is public, `GetRef` still runs
    unauthenticated (~60 req/hr per IP). On busy shared runners, export
-   `GH_TOKEN` / `GITHUB_TOKEN` to avoid rate-limit skips. A local
-   FULLSEND_DIR override skips the remote fetch entirely.
+   `GH_TOKEN` / `GITHUB_TOKEN` to avoid rate-limit skips.
 
-Step 2 is how stock-agent defaults reach every install. Step 1 is override /
-BYOA only.
+Managed GHA/GitLab scaffolds deliberately **do not** pass `--fullsend-dir` into
+`eval-measure`: that flag would prefer `${FULLSEND_DIR}/eval/measurements/`
+from the checked-out MR/PR working tree and let an author change which
+already-shipped scorers run (or their `id@version`) for that job's trend —
+unlike kill-switch/role config, which already reads the default/base tip.
+Local/dev invocations may still pass `--fullsend-dir` when you intentionally
+want the working-tree override.
+
+Step 2 is how stock-agent defaults reach every install. Step 1 is org override
+on the **default/base branch** only (or an explicit `--registry` path).
 
 Platform telemetry is `run-telemetry.jsonl` at the top of the host run
 directory (`agent-<name>-<pid>-<unix>` under the CI output base). Nested

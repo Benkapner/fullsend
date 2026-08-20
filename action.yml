@@ -413,24 +413,37 @@ runs:
     # measurement manifest. Same job as fullsend run; never fails the agent.
     # Writes eval-measurements.jsonl when at least one new score row is produced
     # (tool-agnostic artifact); missing telemetry/manifest skips with no file.
+    # Manifest trust: prefer a local override from the PR base SHA (same
+    # trusted tip reusable-* workflows check out for kill-switch config).
+    # Never prefer a PR-head .fullsend/eval tree for which scorers run.
+    # When no base override exists, fetch SHA-pinned agents@v0 (no
+    # --fullsend-dir) so a hostile checkout cannot swap measurement policy.
     - name: Eval measurements
       if: always() && inputs.agent != '__install_only__'
       continue-on-error: true
       shell: bash
       env:
         AGENT: ${{ inputs.agent }}
-        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         # For GetRef of agents@v0 (SHA pin). Not sent to raw.githubusercontent.com.
         GH_TOKEN: ${{ inputs.github_token }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       run: |
         set -euo pipefail
-        FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
-        # Binary resolves the SHA-pinned agents manifest (allowlist/hash/audit)
-        # and scores only platform run-telemetry.jsonl at the top of each runDir.
-        fullsend eval-measure \
-          --agent "${AGENT}" \
-          --fullsend-dir "${FULLSEND_DIR}" \
-          --output-dir "${GITHUB_WORKSPACE}/output"
+        MEASURE_ARGS=(--agent "${AGENT}" --output-dir "${GITHUB_WORKSPACE}/output")
+        TRUSTED_REF="${PR_BASE_SHA:-}"
+        if [[ -z "${TRUSTED_REF}" ]]; then
+          TRUSTED_REF="${GITHUB_SHA:-}"
+        fi
+        if [[ -n "${TRUSTED_REF}" ]] && git cat-file -e "${TRUSTED_REF}:.fullsend/eval/measurements/${AGENT}.yaml" 2>/dev/null; then
+          MEASURE_FILE="${GITHUB_WORKSPACE}/output/.fullsend-measure-${AGENT}.yaml"
+          mkdir -p "${GITHUB_WORKSPACE}/output"
+          git show "${TRUSTED_REF}:.fullsend/eval/measurements/${AGENT}.yaml" > "${MEASURE_FILE}"
+          MEASURE_ARGS+=(--registry "${MEASURE_FILE}")
+        fi
+        # Binary resolves SHA-pinned agents@v0 when --registry is unset
+        # (allowlist/hash/audit) and scores only platform run-telemetry.jsonl
+        # at the top of each runDir.
+        fullsend eval-measure "${MEASURE_ARGS[@]}"
 
     - name: Upload fullsend artifacts
       if: always() && inputs.agent != '__install_only__'

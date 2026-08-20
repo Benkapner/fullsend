@@ -181,6 +181,14 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "when: always")
 	assert.Contains(t, s, `${CI_PROJECT_DIR}/output`)
 	assert.NotContains(t, s, "/tmp/fullsend-output")
+	// Measurement override from default branch tip — never MR-tree --fullsend-dir.
+	assert.Contains(t, s, "DEFAULT_BRANCH_SHA")
+	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/${STAGE}.yaml"`)
+	assert.Contains(t, s, `MEASURE_ARGS+=(--registry "${MEASURE_FILE}")`)
+	assert.Contains(t, s, `fullsend eval-measure "${MEASURE_ARGS[@]}"`)
+	assert.NotContains(t, s, `eval-measure \
+        --agent "${STAGE}" \
+        --fullsend-dir .fullsend`)
 	// work_item URL must not invent …/issues/0 when IID is missing, but
 	// GITLAB_ISSUE_URL must still be exported (empty OK) so harness env
 	// validation does not reject a truly unset variable.
@@ -262,6 +270,7 @@ func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
 	assert.Contains(t, s, "kill_switch: false")
 	// Config read from default branch (trusted), not MR source
 	assert.Contains(t, s, "CI_DEFAULT_BRANCH")
+	assert.Contains(t, s, "DEFAULT_BRANCH_SHA")
 	assert.Contains(t, s, "FETCH_HEAD")
 	assert.Contains(t, s, "CONFIG_YAML")
 	// Fetch failure fails the job (not silently permissive)

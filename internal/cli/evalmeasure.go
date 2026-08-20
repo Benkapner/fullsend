@@ -159,6 +159,9 @@ func resolveEvalMeasureRegistry(ctx context.Context, printer *ui.Printer, opts e
 	if err != nil {
 		return "", err
 	}
+	// --fullsend-dir prefers a working-tree override. Managed CI scaffolds
+	// must not pass the MR/PR checkout here (trend-poisoning); they pass
+	// --registry from the default/base tip or omit both and fetch agents@v0.
 	if opts.fullsendDir != "" {
 		local, err := localMeasurementManifest(opts.fullsendDir, agent)
 		if err != nil {

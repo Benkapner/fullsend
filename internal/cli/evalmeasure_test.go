@@ -315,6 +315,9 @@ func TestActionYML_EvalMeasureNoFloatingV0Curl(t *testing.T) {
 	assert.Contains(t, step, "continue-on-error: true")
 	assert.Contains(t, step, "if: always()")
 	assert.Contains(t, step, "GH_TOKEN:")
+	assert.Contains(t, step, "PR_BASE_SHA:")
+	assert.Contains(t, step, "--registry")
+	assert.NotContains(t, step, "--fullsend-dir")
 	assert.NotContains(t, step, "curl ")
 	assert.NotContains(t, step, "Authorization: Bearer")
 }
