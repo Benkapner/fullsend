@@ -792,4 +792,12 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 
 ## Repository layout (design workspace vs. web delivery)
 
-The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source and future bundled UI live under **`web/`** (the landing page is `web/public/index.html` at `/` and the interactive document graph is `web/public/graph.html` at `/graph.html`). Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
+The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source lives under **`web/`** (the landing page is `web/public/index.html` at `/` and the interactive document graph is `web/public/graph.html` at `/graph.html`). The user-facing documentation site is built from **`docs/`** by VitePress (`npm run docs:build`) and served under `/docs/`. Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
+
+The **admin installation SPA** that formerly lived under `web/admin/` was removed on
+2026-08-20, together with the OAuth BFF it required in the site Worker. The site Worker
+(`cloudflare_site/worker/`) is now a static-asset passthrough that needs no vars or secrets.
+Installation is driven entirely by the `fullsend` CLI (`fullsend github setup`,
+`fullsend repos`). This is unrelated to the **public mint** Worker, which is a separate
+deployment provisioned from `internal/dispatch/cf/` and served at `mint.fullsend.sh`
+([ADR 0068](ADRs/0068-public-community-mint-architecture.md)).

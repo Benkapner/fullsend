@@ -138,8 +138,5 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
-      - name: Run Vitest (admin SPA)
+      - name: Run Vitest (docs theme + site Worker)
         run: npm test
-
-      - name: Run svelte-check
-        run: npm run check
