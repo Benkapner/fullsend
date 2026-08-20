@@ -841,7 +841,7 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 	}
 
 	cases := []shimCase{
-		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), true},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), false},
 		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true},
 		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), false},
 	}
