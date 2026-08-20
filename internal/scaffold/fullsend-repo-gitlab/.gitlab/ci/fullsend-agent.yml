@@ -363,7 +363,8 @@ stages:
               printf '%s' "${REVIEW_NOTE}" | jq -r '.body // ""' > "${PRIOR_REVIEW_FILE}"
 
               BYTE_COUNT=$(wc -c < "${PRIOR_REVIEW_FILE}")
-              if [ "${BYTE_COUNT}" -gt 1048576 ]; then
+              MAX_REVIEW_BYTES=1048576  # 1 MB
+              if [ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]; then
                 echo "WARNING: Prior review body too large (${BYTE_COUNT} bytes), skipping anchoring"
                 : > "${PRIOR_REVIEW_FILE}"
               elif [ "${BYTE_COUNT}" -gt 1 ]; then
@@ -384,6 +385,231 @@ stages:
         export PRIOR_REVIEW_FILE
         export PRIOR_REVIEW_SHA
         export PRIOR_REVIEW_PROVENANCE
+      fi
+
+      # Pre-fetch review body for the fix agent — equivalent to the
+      # "Pre-fetch review body" step in reusable-fix.yml. Queries the
+      # GitLab Notes API for the last review bot comment, validates
+      # size and non-empty for bot-triggered runs, and exports
+      # REVIEW_BODY_FILE for the harness.
+      if [ "${STAGE}" = "fix" ]; then
+        MR_IID="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+        REVIEW_BODY_FILE=$(mktemp)
+
+        # Reuse BOT_USER_ID from bot identity verification if available
+        # (api-triggered pipelines); otherwise resolve from the forge token.
+        # Also extract bot username for TRIGGER_SOURCE and GIT_BOT_EMAIL.
+        BOT_ID="${BOT_USER_ID:-}"
+        _FIX_BOT_USERNAME=""
+        if [ -n "${BOT_RESPONSE:-}" ]; then
+          _FIX_BOT_USERNAME=$(printf '%s' "${BOT_RESPONSE}" | jq -r '.username // empty')
+        fi
+        if [ -z "${BOT_ID}" ]; then
+          if BOT_RESP=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+            "${CI_API_V4_URL}/user" \
+            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+            BOT_ID=$(printf '%s' "${BOT_RESP}" | jq -r '.id // empty')
+            if [ -z "${_FIX_BOT_USERNAME}" ]; then
+              _FIX_BOT_USERNAME=$(printf '%s' "${BOT_RESP}" | jq -r '.username // empty')
+            fi
+          fi
+        fi
+
+        if [ -n "${BOT_ID}" ] && [ "${MR_IID}" != "0" ]; then
+          # Paginate through MR notes (newest first) to find the review marker.
+          REVIEW_NOTE=""
+          PAGE=1
+          while [ "${PAGE}" -le 20 ] && [ -z "${REVIEW_NOTE}" ]; do
+            NOTES_PAGE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+              "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}/notes?sort=desc&per_page=100&page=${PAGE}" \
+              -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+              2>/dev/null || echo "[]")
+
+            REVIEW_NOTE=$(printf '%s' "${NOTES_PAGE}" \
+              | jq --arg bid "${BOT_ID}" '[.[] | select(.author.id == ($bid | tonumber) and (.body | contains("<!-- fullsend:review-agent -->")))] | first // empty' \
+              2>/dev/null || echo "")
+
+            if [ -n "${REVIEW_NOTE}" ] && [ "${REVIEW_NOTE}" != "null" ]; then
+              break
+            fi
+            REVIEW_NOTE=""
+
+            NOTE_COUNT=$(printf '%s' "${NOTES_PAGE}" | jq 'length' 2>/dev/null || echo "0")
+            if [ "${NOTE_COUNT}" -lt 100 ]; then
+              break
+            fi
+
+            PAGE=$((PAGE + 1))
+          done
+
+          if [ -n "${REVIEW_NOTE}" ] && [ "${REVIEW_NOTE}" != "null" ]; then
+            # Defense-in-depth: re-verify author.id even though the jq
+            # filter above already selects by it.
+            NOTE_AUTHOR_ID=$(printf '%s' "${REVIEW_NOTE}" | jq -r '.author.id // empty')
+            if [ "${NOTE_AUTHOR_ID}" = "${BOT_ID}" ]; then
+              printf '%s' "${REVIEW_NOTE}" | jq -r '.body // ""' > "${REVIEW_BODY_FILE}"
+            else
+              echo "WARNING: Review note author (${NOTE_AUTHOR_ID}) does not match bot (${BOT_ID}) — review body not extracted"
+            fi
+          else
+            echo "No review note found on MR !${MR_IID}"
+          fi
+        else
+          echo "No review note found (no bot identity or no MR IID)"
+        fi
+
+        BYTE_COUNT=$(wc -c < "${REVIEW_BODY_FILE}")
+        echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
+
+        MAX_REVIEW_BYTES=1048576  # 1 MB
+        if [ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]; then
+          echo "ERROR: Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})"
+          exit 1
+        fi
+
+        # For bot-triggered runs, the review body must not be empty —
+        # there is nothing for the fix agent to act on. Human-triggered
+        # (/fs-fix) runs may have an empty review body.
+        # Check is_bot from the event payload, not PIPELINE_SOURCE —
+        # on GitLab ALL fix dispatches are API-triggered (via poller).
+        _IS_BOT_TRIGGER="false"
+        if [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
+          _IS_BOT_TRIGGER=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d \
+            | jq -r '.is_bot // false' 2>/dev/null || echo "false")
+        fi
+        if [ "${_IS_BOT_TRIGGER}" = "true" ] && [ "${BYTE_COUNT}" -le 1 ]; then
+          echo "ERROR: Bot-triggered run but review body is empty — nothing to fix"
+          exit 1
+        fi
+
+        export REVIEW_BODY_FILE
+
+        # Fix-stage environment variables — equivalent to the env vars
+        # set by reusable-fix.yml's "Extract PR number and context",
+        # "Record pre-agent HEAD", and "Run fix agent" steps. These are
+        # required by the fix harness env.runner and forge.gitlab blocks.
+
+        # Target branch (MR base branch). MR-triggered (parent_pipeline)
+        # runs have CI_MERGE_REQUEST_TARGET_BRANCH_NAME; API-dispatched
+        # runs must query the MR API.
+        if [ -n "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-}" ]; then
+          TARGET_BRANCH="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+        elif [ "${MR_IID}" != "0" ]; then
+          TARGET_BRANCH=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}" \
+            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+            | jq -r '.target_branch // empty' 2>/dev/null || echo "")
+          if [ -z "${TARGET_BRANCH}" ]; then
+            TARGET_BRANCH="${CI_DEFAULT_BRANCH:-main}"
+          fi
+        else
+          TARGET_BRANCH="${CI_DEFAULT_BRANCH:-main}"
+        fi
+        export TARGET_BRANCH
+
+        # Trigger source — the forge username that triggered this fix.
+        # Bot-triggered (changes-requested note via poller): the bot's
+        # username (ends in _bot_*, matching GitLab project access token
+        # convention). Human-triggered (/fs-fix comment): the note
+        # author's username. The agent uses this to determine mode.
+        TRIGGER_SOURCE=""
+        if [ "${PIPELINE_SOURCE}" = "api" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
+          if [ "${_IS_BOT_TRIGGER}" = "true" ]; then
+            # Bot-triggered — use cached bot username.
+            TRIGGER_SOURCE="${_FIX_BOT_USERNAME}"
+            if [ -z "${TRIGGER_SOURCE}" ]; then
+              echo "WARNING: Bot-triggered but could not resolve bot username for TRIGGER_SOURCE"
+            fi
+          else
+            # Human-triggered — resolve note author username from ID.
+            _NOTE_AUTHOR_ID=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d \
+              | jq -r '.note_author_id // empty' 2>/dev/null || echo "")
+            case "${_NOTE_AUTHOR_ID}" in ''|*[!0-9]*) _NOTE_AUTHOR_ID="" ;; esac
+            if [ -n "${_NOTE_AUTHOR_ID}" ]; then
+              TRIGGER_SOURCE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+                "${CI_API_V4_URL}/users/${_NOTE_AUTHOR_ID}" \
+                -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+                | jq -r '.username // empty' 2>/dev/null || echo "")
+            fi
+          fi
+        fi
+        if [ -z "${TRIGGER_SOURCE}" ]; then
+          TRIGGER_SOURCE="unknown"
+        fi
+        export TRIGGER_SOURCE
+
+        # Human instruction — extracted from the /fs-fix note body in
+        # the event payload. Default to "none" so the env var is always
+        # non-empty (the fullsend binary rejects empty runner_env values).
+        # Bot-triggered runs always get "none" (matching reusable-fix.yml).
+        HUMAN_INSTRUCTION="none"
+        if [ "${_IS_BOT_TRIGGER}" != "true" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
+          _NOTE_BODY=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d \
+            | jq -r '.note_body // empty' 2>/dev/null || echo "")
+          case "${_NOTE_BODY}" in
+            /fs-fix*)
+              _INSTRUCTION="${_NOTE_BODY#/fs-fix}"
+              _INSTRUCTION="${_INSTRUCTION#"${_INSTRUCTION%%[![:space:]]*}"}"
+              if [ -n "${_INSTRUCTION}" ]; then
+                HUMAN_INSTRUCTION="${_INSTRUCTION}"
+              fi
+              ;;
+          esac
+        fi
+        export HUMAN_INSTRUCTION
+
+        # Fix iteration — count previous fix-agent commits on the MR to
+        # enforce iteration caps. Mirrors the GitHub workflow's commit
+        # counting via the API (no checkout needed). Falls back to 1 on
+        # API failure so the agent always runs at least once.
+        FIX_COMMITS=0
+        if [ "${MR_IID}" != "0" ]; then
+          _COMMIT_PAGE=1
+          while [ "${_COMMIT_PAGE}" -le 5 ]; do
+            _COMMITS_BATCH=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+              "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}/commits?per_page=100&page=${_COMMIT_PAGE}" \
+              -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" 2>/dev/null || echo "[]")
+            _BATCH_FIX=$(printf '%s' "${_COMMITS_BATCH}" \
+              | jq '[.[] | select(.author_name == "fullsend-fix")] | length' 2>/dev/null || echo "0")
+            FIX_COMMITS=$((FIX_COMMITS + _BATCH_FIX))
+            _BATCH_COUNT=$(printf '%s' "${_COMMITS_BATCH}" | jq 'length' 2>/dev/null || echo "0")
+            if [ "${_BATCH_COUNT}" -lt 100 ]; then
+              break
+            fi
+            _COMMIT_PAGE=$((_COMMIT_PAGE + 1))
+          done
+        fi
+        FIX_ITERATION=$(( FIX_COMMITS + 1 ))
+        echo "Fix iteration: ${FIX_ITERATION} (${FIX_COMMITS} previous fix commits)"
+        export FIX_ITERATION
+
+        # Pre-agent HEAD — record before the agent modifies the tree.
+        # The post-script uses this to detect whether the agent committed.
+        PRE_AGENT_HEAD=$(git rev-parse HEAD)
+        export PRE_AGENT_HEAD
+
+        # Repository identity and MR URL — used by forge.gitlab env
+        # config and by the fix post-script for pushing and commenting.
+        export REPO_FULL_NAME="${CI_PROJECT_PATH}"
+        export MR_NUMBER="${MR_IID}"
+        if [ "${MR_IID}" != "0" ]; then
+          export GITLAB_MR_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${MR_IID}"
+        else
+          export GITLAB_MR_URL=""
+        fi
+
+        # Push token — on GitLab the bot PAT (FULLSEND_FORGE_TOKEN)
+        # serves as both the API token and the push token. The
+        # post-script uses PUSH_TOKEN to push fix commits.
+        export PUSH_TOKEN="${FULLSEND_FORGE_TOKEN}"
+        export PUSH_TOKEN_SOURCE="pat"
+
+        # Bot git identity — construct a noreply-style email from the
+        # cached bot username. GitLab project access tokens don't have
+        # real email addresses. The post-script uses GIT_BOT_EMAIL to
+        # configure git author/committer identity.
+        GIT_BOT_EMAIL="${_FIX_BOT_USERNAME:-fullsend-fix}@noreply.${CI_SERVER_HOST:-gitlab.com}"
+        export GIT_BOT_EMAIL
       fi
 
       # Run the agent — fullsend run resolves the harness file, reads

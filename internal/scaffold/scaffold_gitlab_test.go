@@ -209,6 +209,8 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "PRIOR_REVIEW_FILE")
 	assert.Contains(t, s, "PRIOR_REVIEW_SHA")
 	assert.Contains(t, s, "PRIOR_REVIEW_PROVENANCE")
+	// Fix stage fetches review body from MR notes
+	assert.Contains(t, s, "REVIEW_BODY_FILE")
 	// Provenance values match the review agent prompt's expected labels
 	assert.Contains(t, s, `bot-verified`)
 	assert.Contains(t, s, `unverifiable-wrong-user`)
@@ -259,6 +261,57 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Harness passthrough variables must be declared so os.Expand doesn't
 	// reject unset variables during harness env validation (#6273).
 	assert.Contains(t, s, "CODE_ALLOWED_TARGET_BRANCHES")
+}
+
+func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+	// Fix stage exports REVIEW_BODY_FILE for the fix harness
+	assert.Contains(t, s, "REVIEW_BODY_FILE")
+	assert.Contains(t, s, `"fix"`)
+	// Uses the review-agent marker to find the review note
+	assert.Contains(t, s, "fullsend:review-agent")
+	// Validates size (1 MB limit, matching GitHub reusable-fix.yml)
+	assert.Contains(t, s, "1048576")
+	// Bot-triggered runs require non-empty review body (checks is_bot, not PIPELINE_SOURCE)
+	assert.Contains(t, s, "Bot-triggered run but review body is empty")
+	assert.Contains(t, s, "_IS_BOT_TRIGGER")
+	// Uses BOT_USER_ID (numeric ID) for author verification (#5550)
+	assert.Contains(t, s, "BOT_USER_ID")
+	assert.Contains(t, s, "BOT_ID")
+	// Paginates through MR notes (same pattern as review pre-fetch)
+	assert.Contains(t, s, "notes?sort=desc&per_page=100")
+
+	// Defense-in-depth author mismatch logs a warning (not silent)
+	assert.Contains(t, s, "does not match bot")
+	// Fix-stage environment variables (parallel to reusable-fix.yml)
+	assert.Contains(t, s, "export TARGET_BRANCH")
+	assert.Contains(t, s, "export TRIGGER_SOURCE")
+	assert.Contains(t, s, "export HUMAN_INSTRUCTION")
+	assert.Contains(t, s, "export FIX_ITERATION")
+	assert.Contains(t, s, "export PRE_AGENT_HEAD")
+	// Trigger source resolves from event payload (bot vs human)
+	assert.Contains(t, s, "EVENT_PAYLOAD_B64")
+	assert.Contains(t, s, "is_bot")
+	assert.Contains(t, s, "note_author_id")
+	// Numeric validation on note_author_id before curl URL interpolation
+	assert.Contains(t, s, `*[!0-9]*`)
+	// Human instruction extracted from /fs-fix note body
+	assert.Contains(t, s, "/fs-fix")
+	assert.Contains(t, s, "note_body")
+	// Fix iteration counts prior fix-agent commits
+	assert.Contains(t, s, "fullsend-fix")
+	assert.Contains(t, s, "author_name")
+	// Pre-agent HEAD recorded before agent runs
+	assert.Contains(t, s, "git rev-parse HEAD")
+	// Forge.gitlab env vars for fix post-script
+	assert.Contains(t, s, "export REPO_FULL_NAME")
+	assert.Contains(t, s, "export MR_NUMBER")
+	assert.Contains(t, s, "export GITLAB_MR_URL")
+	assert.Contains(t, s, "export PUSH_TOKEN")
+	assert.Contains(t, s, "export PUSH_TOKEN_SOURCE")
+	assert.Contains(t, s, "export GIT_BOT_EMAIL")
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
