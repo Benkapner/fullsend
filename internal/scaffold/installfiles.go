@@ -68,6 +68,12 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 // CollectGitLabPerRepoInstallFiles gathers CI template files for GitLab
 // per-repo installation. The embedded .fullsend/config.yaml is excluded —
 // callers generate a config with roles and forge field instead.
+// The embedded root .gitignore is also excluded: installing it would
+// overwrite a consumer's existing ignore file with a one-line fragment.
+// The embed still ships for docs/tests; adopters (and the guide) add
+// output/ themselves. When --output-dir sits inside --target-repo
+// (GitLab layout), fullsend run omits that top-level directory from the
+// sandbox tarball and .git/info/exclude via outputDirExcludeRel.
 // runnerTags specifies GitLab runner tags to inject into CI job definitions.
 // upstreamRef and upstreamTag control the version marker embedded in the
 // dispatch file for upgrade/status drift detection.
@@ -76,7 +82,7 @@ func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstream
 	versionMarker := FormatVersionMarker(upstreamRef, upstreamTag)
 	var files InstallFiles
 	err := WalkGitLabPerRepo(func(path string, content []byte) error {
-		if path == ".fullsend/config.yaml" {
+		if path == ".fullsend/config.yaml" || path == ".gitignore" {
 			return nil
 		}
 		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)

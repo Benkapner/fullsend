@@ -885,7 +885,7 @@ func resolvedBasename(path string) string {
 // same remotePath overwrite deterministically rather than merging files
 // from both. Do not point two different, unrelated sources at the same
 // remotePath expecting their content to coexist.
-func UploadDir(sandboxName, localPath, remotePath string) error {
+func UploadDir(sandboxName, localPath, remotePath string, excludes ...string) error {
 	tmp, err := os.CreateTemp("", "openshell-upload-*.tar.gz")
 	if err != nil {
 		return fmt.Errorf("creating temp tarball: %w", err)
@@ -894,7 +894,21 @@ func UploadDir(sandboxName, localPath, remotePath string) error {
 	tmp.Close()
 	defer os.Remove(tmpPath)
 
-	tarCmd := exec.Command("tar", "-czf", tmpPath, "-C", localPath, ".")
+	members, err := tarRootMembers(localPath, excludes...)
+	if err != nil {
+		return fmt.Errorf("listing %q for upload: %w", localPath, err)
+	}
+	tarArgs := []string{"-czf", tmpPath, "-C", localPath}
+	if len(members) == 0 {
+		// Everything at the root was excluded (or the dir is empty). An
+		// empty --files-from list yields an empty archive on GNU tar and
+		// bsdtar alike; do not fall back to "." (that would re-include
+		// excluded names).
+		tarArgs = append(tarArgs, "--files-from", os.DevNull)
+	} else {
+		tarArgs = append(tarArgs, members...)
+	}
+	tarCmd := exec.Command("tar", tarArgs...)
 	// Suppress macOS AppleDouble (._*) files in the tarball. On macOS,
 	// bsdtar generates ._* companion files for any file with extended
 	// attributes. These corrupt .git after a sandbox round-trip.
@@ -929,6 +943,39 @@ func UploadDir(sandboxName, localPath, remotePath string) error {
 		return fmt.Errorf("extracting tarball in sandbox %q: exit %d: %s", sandboxName, exitCode, stderr)
 	}
 	return nil
+}
+
+// tarRootMembers lists top-level archive members under localPath, omitting
+// excludes. Matching is by top-level entry name only (nested path components
+// in an exclude are ignored beyond the first segment), so nested directories
+// like sub/output/ are never dropped — unlike tar --exclude on bsdtar,
+// which matches the basename at any depth.
+func tarRootMembers(localPath string, excludes ...string) ([]string, error) {
+	skip := make(map[string]struct{}, len(excludes))
+	for _, ex := range excludes {
+		name := strings.Trim(ex, `/\`)
+		if name == "" {
+			continue
+		}
+		// Top-level basenames only. Rejecting nested paths avoids silently
+		// truncating "build/output" to "build" and dropping an entire tree.
+		if strings.ContainsAny(name, `/\`) {
+			return nil, fmt.Errorf("upload exclude %q must be a top-level name", ex)
+		}
+		skip[name] = struct{}{}
+	}
+	entries, err := os.ReadDir(localPath)
+	if err != nil {
+		return nil, err
+	}
+	members := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if _, ok := skip[e.Name()]; ok {
+			continue
+		}
+		members = append(members, "./"+e.Name())
+	}
+	return members, nil
 }
 
 // Download copies a file or directory from a sandbox to the local machine.

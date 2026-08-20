@@ -127,6 +127,14 @@ fullsend
 │   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
 │   └── --dry-run                            #   Print what would be posted without API calls
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
+├── eval-measure                             # Score wild-run traces (eval measurements)
+│   ├── --telemetry <path>                   #   Path to run-telemetry.jsonl (or --output-dir)
+│   ├── --output-dir <path>                  #   CI output base or runDir (managed-job form)
+│   ├── --registry <path>                    #   Agents measurement manifest YAML (or --agent)
+│   ├── --agent <name>                       #   Agent name for manifest resolution (managed-job form)
+│   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
+│   ├── --offline                            #   Reject network fetches (local manifest only)
+│   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format
     ├── --number <int>                       #   Issue/PR number

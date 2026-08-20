@@ -27,6 +27,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/envfile"
+	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -101,9 +102,10 @@ var defaultAgentsRepoKnownAgents = map[string]bool{
 // runtime tokens). Tests that override it affect both paths.
 var statusMintToken = mintclient.MintToken
 
-// agentWorkingDirExcludes lists directory patterns that agents may create
-// during execution but must never commit. These are added to
-// .git/info/exclude before the agent runs so git ignores them entirely.
+// agentWorkingDirExcludes lists fullsend-reserved directory patterns that
+// must stay out of commits. They are appended to .git/info/exclude before
+// the agent runs. Host run output (often named output/) is excluded only
+// when it actually sits inside --target-repo — see outputDirExcludeRel.
 var agentWorkingDirExcludes = []string{
 	".agentready/",
 	".fullsend-workspace/",
@@ -897,7 +899,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	workItemID := resolveWorkItemID()
 
 	// 3. Create run directory and initialise tracer.
-	sandboxName := fmt.Sprintf("agent-%s-%d-%d", agentName, os.Getpid(), time.Now().Unix())
+	// Lowercase the agent segment so eval-measure --agent (also lowercased)
+	// matches the host runDir even when the CLI arg was mixed-case.
+	sandboxName := fmt.Sprintf("agent-%s-%d-%d", strings.ToLower(agentName), os.Getpid(), time.Now().Unix())
 	if outputBase == "" {
 		outputBase = filepath.Join(os.TempDir(), "fullsend")
 	}
@@ -1239,9 +1243,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.StepDone(fmt.Sprintf("Sandbox bootstrapped (%.1fs)", time.Since(bootstrapStart).Seconds()))
 
 	// 8. Make project code available (copy repo root into a named subdirectory).
+	// When --output-dir sits inside --target-repo (GitLab CI layout), omit that
+	// top-level directory from the tarball and git exclude so host telemetry
+	// is not uploaded or committed. GHA keeps output as a sibling, so Rel
+	// fails IsLocal and nothing is excluded.
 	copyStart := time.Now()
 	printer.StepStart("Copying project code into sandbox")
-	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir); err != nil {
+	var uploadExcludes []string
+	var gitExtraExcludes []string
+	if rel, ok := outputDirExcludeRel(hostRepositoryDir, outputBase); ok {
+		uploadExcludes = append(uploadExcludes, rel)
+		gitExtraExcludes = append(gitExtraExcludes, rel+"/")
+	}
+	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, uploadExcludes...); err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("copying project code: %w", err)
 	}
@@ -1283,7 +1297,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Agents may create working directories (e.g. .agentready/) during
 	// execution. These must never appear in commits. Adding them to
 	// .git/info/exclude ensures git status/add ignores them entirely.
-	if err := excludeAgentWorkingDirs(sandboxName, remoteRepositoryDir, printer); err != nil {
+	if err := excludeAgentWorkingDirs(sandboxName, remoteRepositoryDir, gitExtraExcludes, printer); err != nil {
 		printer.StepWarn("Could not exclude agent working dirs: " + err.Error())
 	}
 
@@ -2401,7 +2415,15 @@ func resolveWorkItemID() string {
 	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
 		return prNum
 	}
-	return "unknown"
+	// GitHub retro: reusable-retro.yml sets ORIGINATING_URL (PR/issue HTML URL).
+	// GitLab agent jobs export GITLAB_ISSUE_URL (issue or MR) when IID is known.
+	if v := strings.TrimSpace(os.Getenv("ORIGINATING_URL")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("GITLAB_ISSUE_URL")); v != "" {
+		return v
+	}
+	return evalmeasure.UnknownSentinel
 }
 
 // telemetryExitCode maps the run's final state to the exit code recorded on
@@ -3028,13 +3050,43 @@ func relOrAbs(base, path string) string {
 	return rel
 }
 
+// outputDirExcludeRel returns the top-level directory name to omit from the
+// sandbox upload when outputBase is inside hostRepositoryDir. Only single-
+// segment relative paths are returned so nested names like build/output are
+// not handled by dropping an entire parent tree (GitLab uses top-level
+// output/). Returns ok=false when output is a sibling of the checkout
+// (GitHub Actions layout), multi-segment, or otherwise outside the repo.
+func outputDirExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
+	if hostRepositoryDir == "" || outputBase == "" {
+		return "", false
+	}
+	absRepo, err := filepath.Abs(hostRepositoryDir)
+	if err != nil {
+		return "", false
+	}
+	absOut, err := filepath.Abs(outputBase)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(absRepo, absOut)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", false
+	}
+	if strings.ContainsRune(rel, os.PathSeparator) {
+		return "", false
+	}
+	return rel, true
+}
+
 // excludeAgentWorkingDirs adds agent working directory patterns to
 // .git/info/exclude so they are invisible to git status and git add.
-func excludeAgentWorkingDirs(sandboxName, repoDir string, printer *ui.Printer) error {
+// extra holds layout-specific patterns (e.g. host output/ when nested).
+func excludeAgentWorkingDirs(sandboxName, repoDir string, extra []string, printer *ui.Printer) error {
 	var lines []string
 	for _, pattern := range agentWorkingDirExcludes {
 		lines = append(lines, pattern)
 	}
+	lines = append(lines, extra...)
 	if len(lines) == 0 {
 		return nil
 	}
@@ -3813,11 +3865,37 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
 		return "", nil, false
 	}
-	if composeOpts.FetchPolicy.Offline {
+	path, dep, ok := fetchPinnedAgentsRepoFile(ctx, "harness/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "agent "+agentName)
+	if !ok {
 		return "", nil, false
 	}
+	return path, []harness.Dependency{dep}, true
+}
+
+// tryAgentsRepoMeasurementManifest SHA-pins eval/measurements/<agent>.yaml
+// from fullsend-ai/agents (same pin, allowlist, hash, and audit as harness
+// fallback). Missing manifests (HTTP 404) skip; network errors warn.
+func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, bool) {
+	normalizedName := strings.ToLower(agentName)
+	if !defaultAgentsRepoKnownAgents[normalizedName] {
+		return "", false
+	}
+	path, _, ok := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName)
+	return path, ok
+}
+
+// fetchPinnedAgentsRepoFile resolves tags/DefaultUpstreamRef to a commit SHA
+// and fetches relPath from fullsend-ai/agents. All errors are non-fatal.
+func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
+	var none harness.Dependency
+	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
+		return "", none, false
+	}
+	if composeOpts.FetchPolicy.Offline {
+		return "", none, false
+	}
 	if forgeClient == nil {
-		return "", nil, false
+		return "", none, false
 	}
 
 	allowlist := composeOpts.OrgAllowlist
@@ -3826,30 +3904,34 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, err))
-		return "", nil, false
+		return "", none, false
 	}
 	if !commitSHAPattern.MatchString(tagSHA) {
 		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, tagSHA))
-		return "", nil, false
+		return "", none, false
 	}
 
-	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/harness/" + normalizedName + ".yaml"
+	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/" + relPath
 
 	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
-		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", agentName))
-		return "", nil, false
+		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", noun))
+		return "", none, false
 	}
 
 	shortSHA := tagSHA
 	if len(shortSHA) > 12 {
 		shortSHA = shortSHA[:12]
 	}
-	printer.StepStart(fmt.Sprintf("Fetching agent %s from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
+	printer.StepStart(fmt.Sprintf("Fetching %s from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 
 	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
 	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Failed to fetch agent %s from agents repo: %v", agentName, err))
-		return "", nil, false
+		if isFetchHTTPStatus(err, http.StatusNotFound) {
+			printer.StepInfo(fmt.Sprintf("No %s at %s/%s@%s (HTTP 404); skipping", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
+		} else {
+			printer.StepWarn(fmt.Sprintf("Failed to fetch %s from agents repo: %v", noun, err))
+		}
+		return "", none, false
 	}
 
 	// Content is fetched once and used directly — no self-referential hash
@@ -3860,13 +3942,13 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 
 	if err := fetch.CachePut(composeOpts.WorkspaceRoot, rawURL, content); err != nil {
 		printer.StepWarn(fmt.Sprintf("Failed to cache agents repo content: %v", err))
-		return "", nil, false
+		return "", none, false
 	}
 
 	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
 	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for agent %s: %v", agentName, err))
-		return "", nil, false
+		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for %s: %v", noun, err))
+		return "", none, false
 	}
 	localPath := filepath.Join(cachePath, "content")
 
@@ -3893,8 +3975,13 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 		Type:      "file",
 	}
 
-	printer.StepDone(fmt.Sprintf("Agent %s resolved from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
-	return localPath, []harness.Dependency{dep}, true
+	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
+	return localPath, dep, true
+}
+
+func isFetchHTTPStatus(err error, code int) bool {
+	var httpErr fetch.HTTPStatusError
+	return errors.As(err, &httpErr) && httpErr.Status == code
 }
 
 // containedLocalPath resolves a relative source path against baseDir and

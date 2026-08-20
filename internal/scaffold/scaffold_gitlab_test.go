@@ -10,6 +10,7 @@ import (
 
 func TestGitLabPerRepoFilesExist(t *testing.T) {
 	expected := []string{
+		".gitignore",
 		".gitlab-ci.yml",
 		".fullsend/config.yaml",
 		".gitlab/ci/fullsend-dispatch.yml",
@@ -29,6 +30,22 @@ func TestGitLabConfigContent(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "forge: gitlab")
+}
+
+func TestGitLabGitignoreExcludesOutput(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitignore")
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "output/")
+}
+
+func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+	for _, f := range files {
+		assert.NotEqual(t, ".gitignore", f.Path,
+			"install must not overwrite consumer .gitignore with the scaffold fragment")
+	}
 }
 
 func TestGitLabPerRepoFileNotFound(t *testing.T) {
@@ -155,6 +172,30 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "- agent")
 	// Generic template parameterized by STAGE
 	assert.Contains(t, s, `fullsend run "${STAGE}"`)
+	assert.Contains(t, s, `fullsend eval-measure`)
+	assert.Contains(t, s, "RUN_STATUS=$?")
+	assert.Contains(t, s, `exit "${RUN_STATUS}"`)
+	assert.Contains(t, s, "|| true")
+	assert.Contains(t, s, "60 req/hr")
+	assert.Contains(t, s, "artifacts:")
+	assert.Contains(t, s, "when: always")
+	assert.Contains(t, s, `${CI_PROJECT_DIR}/output`)
+	assert.NotContains(t, s, "/tmp/fullsend-output")
+	// Measurement override from default branch tip — never MR-tree --fullsend-dir.
+	assert.Contains(t, s, "DEFAULT_BRANCH_SHA")
+	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/${STAGE}.yaml"`)
+	assert.Contains(t, s, `MEASURE_ARGS+=(--registry "${MEASURE_FILE}")`)
+	assert.Contains(t, s, `fullsend eval-measure "${MEASURE_ARGS[@]}"`)
+	assert.NotContains(t, s, `eval-measure \
+        --agent "${STAGE}" \
+        --fullsend-dir .fullsend`)
+	// work_item URL must not invent …/issues/0 when IID is missing, but
+	// GITLAB_ISSUE_URL must still be exported (empty OK) so harness env
+	// validation does not reject a truly unset variable.
+	assert.NotContains(t, s, `/-/issues/${STATUS_IID:-0}`)
+	assert.Contains(t, s, `"${STATUS_IID}" != "0"`)
+	assert.Contains(t, s, `GITLAB_ISSUE_URL=""`)
+	assert.Contains(t, s, "export GITLAB_ISSUE_URL")
 	assert.Contains(t, s, "--fullsend-dir")
 	assert.Contains(t, s, "--target-repo")
 	assert.Contains(t, s, "--output-dir")
@@ -229,6 +270,7 @@ func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
 	assert.Contains(t, s, "kill_switch: false")
 	// Config read from default branch (trusted), not MR source
 	assert.Contains(t, s, "CI_DEFAULT_BRANCH")
+	assert.Contains(t, s, "DEFAULT_BRANCH_SHA")
 	assert.Contains(t, s, "FETCH_HEAD")
 	assert.Contains(t, s, "CONFIG_YAML")
 	// Fetch failure fails the job (not silently permissive)

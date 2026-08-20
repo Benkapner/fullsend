@@ -108,7 +108,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 |-----------|---------|------------|
 | `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`) |
 | `gen_ai.agent.name` | `triage` | `run`, `agent` |
-| `gen_ai.system` | `anthropic` | `agent` (the model vendor, from the runtime) |
+| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` | `agent` (model vendor; `system` deprecated in OTel GenAI semconv v1.37 — EM-001 accepts either) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
 | `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
 
@@ -244,7 +244,26 @@ Any variable and secret names work here; the values reach the exporter
 as-is. Consult your backend's documentation for the endpoint URL and
 authentication mechanism.
 
+## Eval measurements
+
+After each managed agent run, `fullsend eval-measure` scores
+`run-telemetry.jsonl` in the same job (fail-open). Scores land in
+`eval-measurements.jsonl` beside telemetry when at least one new score is
+produced (tool-agnostic artifact). Portable
+remote export will reuse the same `OTEL_EXPORTER_OTLP_*` configuration as
+agent traces when implemented.
+
+Today's scorers (starting with EM-001) read the Level 1/2 **metadata**
+contract of `run-telemetry.jsonl` — span tree and attributes, not prompt or
+completion bodies. That foundation is intentional: fitness scores must trust
+the trace before quality scores can. **Planned:** content-aware scorers that
+consume Level 3 prompt/completion capture once Level 3 is implemented —
+that is where the real quality signal lives. See
+[Eval Measurements](./eval-measurements.md) and
+[ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
+
 ## See also
 
 - [How To Emit Traces](../user/how-to-emit-traces.md): step-by-step setup guide
 - [Tracing Development Guide](../dev/tracing.md): implementation details for contributors
+- [Eval Measurements](./eval-measurements.md): online scoring of wild-run traces

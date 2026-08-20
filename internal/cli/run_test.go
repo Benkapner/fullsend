@@ -1354,6 +1354,133 @@ func TestTryAgentsRepoFallback_SuccessPath(t *testing.T) {
 	assert.NotEmpty(t, deps[0].SHA256)
 }
 
+func TestTryAgentsRepoMeasurementManifest_Success(t *testing.T) {
+	manifest := []byte("agent: triage\nmeasurements:\n  - id: em-001\n    scorer: trace_fitness\n    version: 1\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/eval/measurements/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(manifest)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	path, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
+	require.True(t, ok)
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, manifest, got)
+	assert.Contains(t, path, "content")
+}
+
+func TestTryAgentsRepoMeasurementManifest_HTTP404(t *testing.T) {
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+	assert.Contains(t, buf.String(), "HTTP 404")
+	assert.NotContains(t, buf.String(), "Failed to fetch")
+}
+
+func TestTryAgentsRepoMeasurementManifest_NetworkFailure(t *testing.T) {
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+	assert.Contains(t, buf.String(), "Failed to fetch")
+	assert.NotContains(t, buf.String(), "HTTP 404")
+}
+
+func TestTryAgentsRepoMeasurementManifest_UnknownAgent(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "custom-agent", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestIsFetchHTTPStatus(t *testing.T) {
+	assert.True(t, isFetchHTTPStatus(fetch.HTTPStatusError{Status: 404}, 404))
+	assert.True(t, isFetchHTTPStatus(fmt.Errorf("wrap: %w", fetch.HTTPStatusError{Status: 404}), 404))
+	assert.False(t, isFetchHTTPStatus(fetch.HTTPStatusError{Status: 500}, 404))
+	assert.False(t, isFetchHTTPStatus(fmt.Errorf("fetch: request failed: connection refused"), 404))
+	assert.False(t, isFetchHTTPStatus(nil, 404))
+}
+
 func TestTryAgentsRepoFallback_AuditLog(t *testing.T) {
 	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
 	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
@@ -2071,6 +2198,7 @@ func TestValidateLinuxBinary_AcceptsHostBinary(t *testing.T) {
 
 func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
 	// Verify the exclusion list contains the known agent working directories.
+	// Host output/ is layout-scoped via outputDirExcludeRel, not this list.
 	expected := []string{".agentready/", ".fullsend-workspace/"}
 	for _, pattern := range expected {
 		found := false
@@ -2082,6 +2210,29 @@ func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
 		}
 		assert.True(t, found, "agentWorkingDirExcludes should contain %q", pattern)
 	}
+	for _, exclude := range agentWorkingDirExcludes {
+		assert.NotEqual(t, "output/", exclude, "output/ must not be hardcoded in agentWorkingDirExcludes")
+	}
+}
+
+func TestOutputDirExcludeRel(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	nested := filepath.Join(repo, "output")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+
+	rel, ok := outputDirExcludeRel(repo, nested)
+	assert.True(t, ok)
+	assert.Equal(t, "output", rel)
+
+	sibling := filepath.Join(filepath.Dir(repo), "output-sibling")
+	_, ok = outputDirExcludeRel(repo, sibling)
+	assert.False(t, ok, "sibling output must not be excluded")
+
+	deep := filepath.Join(repo, "build", "output")
+	require.NoError(t, os.MkdirAll(deep, 0o755))
+	_, ok = outputDirExcludeRel(repo, deep)
+	assert.False(t, ok, "multi-segment Rel must not exclude a whole parent tree")
 }
 
 func TestAgentWorkingDirExcludes_NotEmpty(t *testing.T) {

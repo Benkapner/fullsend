@@ -174,14 +174,18 @@ stages:
       # Read config from default branch (trusted), not MR source branch.
       # GitHub reads config from pull_request.base.sha; this is the GitLab
       # equivalent. git fetch is needed because CI shallow clones only
-      # include the pipeline commit.
+      # include the pipeline commit. Save the SHA so later steps (eval
+      # measurement manifests) can reuse the same trusted tip even if
+      # FETCH_HEAD moves.
       CONFIG_YAML=""
+      DEFAULT_BRANCH_SHA=""
       if [ -n "${CI_DEFAULT_BRANCH:-}" ]; then
         if ! git fetch origin "${CI_DEFAULT_BRANCH}" --depth=1; then
           echo "ERROR: cannot fetch default branch — refusing to run without trusted config"
           exit 1
         fi
-        CONFIG_YAML=$(git show "FETCH_HEAD:.fullsend/config.yaml" 2>/dev/null || echo "")
+        DEFAULT_BRANCH_SHA=$(git rev-parse FETCH_HEAD)
+        CONFIG_YAML=$(git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.yaml" 2>/dev/null || echo "")
       fi
 
       # Kill switch — halt all agent dispatch when active
@@ -265,15 +269,26 @@ stages:
       # Construct the entity URL for the harness. EVENT_TYPE values from
       # the poller use prefixed forms: issue_note, issue_label (→ issue
       # URL) and mr_note, mr_event (→ merge request URL).
+      # Always export GITLAB_ISSUE_URL (empty is OK for harness env
+      # validation). Only set a real URL when the IID is non-empty and
+      # not "0" — inventing …/issues/0 passes EM-001's work_item check.
+      GITLAB_ISSUE_URL=""
       case "${EVENT_TYPE:-}" in
         issue_*)
-          export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/issues/${STATUS_IID:-0}"
+          if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
+            GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/issues/${STATUS_IID}"
+          fi
           ;;
         *)
-          export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+          _fs_mr_iid="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-}}"
+          if [[ -n "${_fs_mr_iid}" && "${_fs_mr_iid}" != "0" ]]; then
+            GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${_fs_mr_iid}"
+          fi
+          unset _fs_mr_iid
           export FULLSEND_NOTE_TARGET="merge_requests"
           ;;
       esac
+      export GITLAB_ISSUE_URL
 
       # Pre-fetch prior review for the review agent — equivalent to
       # pre-fetch-prior-review.sh in the GitHub scaffold. Queries the
@@ -365,14 +380,52 @@ stages:
 
       # Run the agent — fullsend run resolves the harness file, reads
       # the image field, and creates the sandbox container via Podman.
+      # Capture the run status so eval-measure still runs after a failed
+      # agent (failed runs still write run-telemetry.jsonl).
+      # Eval measurements (fail-open): same CLI as GitHub Actions. Never
+      # fail the agent job.
+      # Manifest trust (mirrors kill-switch config): prefer a local override
+      # from the default branch tip (DEFAULT_BRANCH_SHA), else SHA-pinned
+      # fetch from public fullsend-ai/agents (GitHub GetRef). Never read
+      # .fullsend/eval/measurements/ from the MR source tree — that would
+      # let an MR author change which scorers run or their id@version for
+      # the job's trend. Do not pass --fullsend-dir to eval-measure here.
+      # agents is public, so GetRef works without GH_TOKEN, but unauthenticated
+      # calls share GitHub's ~60 req/hr per-IP limit — export GH_TOKEN /
+      # GITHUB_TOKEN on busy shared runners.
+      # Write under $CI_PROJECT_DIR so GitLab can retain artifacts (not an
+      # ephemeral tmp path). BREAKING CHANGE vs older scaffolds: default
+      # --output-dir now lives inside the project dir (artifact retention
+      # + top-level output/ sandbox exclude). Re-sync adopts the new layout.
+      mkdir -p "${CI_PROJECT_DIR}/output"
+      set +e
       fullsend run "${STAGE}" \
         --fullsend-dir .fullsend \
         --target-repo . \
-        --output-dir /tmp/fullsend-output \
+        --output-dir "${CI_PROJECT_DIR}/output" \
         --forge gitlab \
         --run-url "${CI_PIPELINE_URL}" \
         --status-repo "${CI_PROJECT_PATH}" \
         --status-number "${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+      RUN_STATUS=$?
+      set -e
+
+      MEASURE_ARGS=(--agent "${STAGE}" --output-dir "${CI_PROJECT_DIR}/output")
+      if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
+        if MEASURE_YAML=$(git show "${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/${STAGE}.yaml" 2>/dev/null); then
+          MEASURE_FILE="${CI_PROJECT_DIR}/output/.fullsend-measure-${STAGE}.yaml"
+          printf '%s\n' "${MEASURE_YAML}" > "${MEASURE_FILE}"
+          MEASURE_ARGS+=(--registry "${MEASURE_FILE}")
+        fi
+      fi
+      fullsend eval-measure "${MEASURE_ARGS[@]}" || true
+
+      exit "${RUN_STATUS}"
+  artifacts:
+    when: always
+    paths:
+      - output/
+    expire_in: 1 week
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:
     - if: $STAGE
