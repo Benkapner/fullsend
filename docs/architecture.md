@@ -42,6 +42,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 **Decided:**
 
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
+- Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Installation model: ordered layer stack (install forward, uninstall reverse, analyze for status reporting) with idempotent operations. Current stack: config-repo → workflows → vendor-binary → secrets → inference → dispatch → enrollment ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Cross-repo dispatch: enrolled repos call `.fullsend` via `workflow_call`; a dispatch workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
@@ -217,6 +218,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
 - How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a bot PAT stored as a protected CI/CD variable — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md).
+- Which agent roles need Discussions (or other chat) write scopes, and how do those scopes map onto named mint privilege levels? Conversation participation requires least-privilege identity deltas per [ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md).
 
 ## Agent Dispatch and Coordination Layer
 
@@ -237,6 +239,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
 - GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- Conversation participation: GitHub Discussions (and future chat systems) enter
+  dispatch as `NormalizedEvent` entities with `entity.kind: conversation`,
+  express threading on `transition.comment.id` / `parent_id` (`parent_id` always
+  names the thread root), reuse CEL harness triggers and ADR 0054 authorization,
+  and write back through host/post-script or host-side API servers via
+  `conversation.Client` — not a separate always-on chat bot and not an
+  extension of `forge.Client`
+  ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
 - Dispatch authorization gate: all agent dispatch paths — slash commands
   and automatic event triggers — require authorization before dispatching.
   GitHub paths check the acting user's collaborator permission via the
@@ -256,6 +266,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - What happens when work needs to be cancelled, retried, or reassigned?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
+- When should a conversation or thread be linked to a work item (e.g. Discussion
+  → issue) so a conversation-native agent can hand off to `/fs-code` without
+  violating entity-context separation ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md),
+  [ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md))?
+- How should concurrent agent runs that touch the same conversation thread be
+  coordinated ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md))?
 
 ## Policy Store
 
@@ -349,7 +365,7 @@ ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#1-webhook--dis
 
 ### 2. Slash-command parser + ACL
 
-Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each. Commands are restricted to the entity context where their agent's inputs exist — `/fs-code` dispatches only from issues (no associated PR), `/fs-fix` and `/fs-review` only from PRs ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md)).
+Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each. Commands are restricted to the entity context where their agent's inputs exist — `/fs-code` dispatches only from issues (no associated PR), `/fs-fix` and `/fs-review` only from PRs ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md)). Conversation surfaces (GitHub Discussions and future chat systems) are a separate entity context: conversation-native agents may listen on conversations/threads there, but code-mutating slash commands do not ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
 ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#2-slash-command-parser--acl).
 
 ### 3. Label state machine guard
