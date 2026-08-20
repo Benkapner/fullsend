@@ -41,3 +41,4 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Vouch System](docs/contributing/vouch-system.md) | Working with the contributor vouch gate or PR workflows |
 | [Tier Conventions](docs/contributing/tier-conventions.md) | Using the term "tier" in code or docs — covers the three distinct tier contexts |
 | [CI Workflows](docs/contributing/ci-workflows.md) | Adding or modifying GitHub Actions workflows under `.github/workflows/`, or adding secrets to `pull_request_target` jobs |
+| [Documentation](docs/contributing/documentation.md) | Changing CLI command behavior, adding or removing subcommands, or renaming flags — covers cross-reference of CLI command groups to all documentation touchpoints |
