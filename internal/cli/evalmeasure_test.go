@@ -325,11 +325,20 @@ func TestPlatformTelemetryFileMatchesRecorder(t *testing.T) {
 
 func TestEvalMeasureFetchContext(t *testing.T) {
 	printer := ui.New(io.Discard)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
 	opts, client := evalMeasureFetchContext("", false, printer)
 	require.NotNil(t, client)
 	assert.NotEmpty(t, opts.OrgAllowlist)
 	assert.NotEmpty(t, opts.WorkspaceRoot)
 	assert.False(t, opts.FetchPolicy.Offline)
+	assert.NotEqual(t, filepath.Clean(os.TempDir()), filepath.Clean(opts.WorkspaceRoot),
+		"empty --fullsend-dir must not use shared os.TempDir() as WorkspaceRoot")
+	if cache, err := os.UserCacheDir(); err == nil && cache != "" {
+		assert.Equal(t, filepath.Join(cache, "fullsend", "eval-measure"), opts.WorkspaceRoot)
+	}
 
 	dir := t.TempDir()
 	opts2, _ := evalMeasureFetchContext(dir, true, printer)

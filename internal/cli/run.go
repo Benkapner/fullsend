@@ -102,15 +102,13 @@ var defaultAgentsRepoKnownAgents = map[string]bool{
 // runtime tokens). Tests that override it affect both paths.
 var statusMintToken = mintclient.MintToken
 
-// agentWorkingDirExcludes lists directory patterns that must stay out of
-// commits. They are appended to .git/info/exclude before the agent runs.
-// "output/" is the host runDir base on GitLab (under --target-repo); the
-// same pattern is also omitted from the UploadDir tarball (see the
-// UploadDir call site) so flushed telemetry is not handed to the agent.
+// agentWorkingDirExcludes lists fullsend-reserved directory patterns that
+// must stay out of commits. They are appended to .git/info/exclude before
+// the agent runs. Host run output (often named output/) is excluded only
+// when it actually sits inside --target-repo — see outputDirExcludeRel.
 var agentWorkingDirExcludes = []string{
 	".agentready/",
 	".fullsend-workspace/",
-	"output/",
 }
 
 // resolveFlags groups CLI flags that control remote resource resolution.
@@ -1258,9 +1256,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.StepDone(fmt.Sprintf("Sandbox bootstrapped (%.1fs)", time.Since(bootstrapStart).Seconds()))
 
 	// 8. Make project code available (copy repo root into a named subdirectory).
+	// When --output-dir sits inside --target-repo (GitLab CI layout), omit that
+	// top-level directory from the tarball and git exclude so host telemetry
+	// is not uploaded or committed. GHA keeps output as a sibling, so Rel
+	// fails IsLocal and nothing is excluded.
 	copyStart := time.Now()
 	printer.StepStart("Copying project code into sandbox")
-	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, "output/"); err != nil {
+	var uploadExcludes []string
+	var gitExtraExcludes []string
+	if rel, ok := outputDirExcludeRel(hostRepositoryDir, outputBase); ok {
+		uploadExcludes = append(uploadExcludes, rel)
+		gitExtraExcludes = append(gitExtraExcludes, rel+"/")
+	}
+	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, uploadExcludes...); err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("copying project code: %w", err)
 	}
@@ -1302,7 +1310,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Agents may create working directories (e.g. .agentready/) during
 	// execution. These must never appear in commits. Adding them to
 	// .git/info/exclude ensures git status/add ignores them entirely.
-	if err := excludeAgentWorkingDirs(sandboxName, remoteRepositoryDir, printer); err != nil {
+	if err := excludeAgentWorkingDirs(sandboxName, remoteRepositoryDir, gitExtraExcludes, printer); err != nil {
 		printer.StepWarn("Could not exclude agent working dirs: " + err.Error())
 	}
 
@@ -3046,13 +3054,43 @@ func relOrAbs(base, path string) string {
 	return rel
 }
 
+// outputDirExcludeRel returns the top-level directory name to omit from the
+// sandbox upload when outputBase is inside hostRepositoryDir. Only single-
+// segment relative paths are returned so nested names like build/output are
+// not handled by dropping an entire parent tree (GitLab uses top-level
+// output/). Returns ok=false when output is a sibling of the checkout
+// (GitHub Actions layout), multi-segment, or otherwise outside the repo.
+func outputDirExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
+	if hostRepositoryDir == "" || outputBase == "" {
+		return "", false
+	}
+	absRepo, err := filepath.Abs(hostRepositoryDir)
+	if err != nil {
+		return "", false
+	}
+	absOut, err := filepath.Abs(outputBase)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(absRepo, absOut)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", false
+	}
+	if strings.ContainsRune(rel, os.PathSeparator) {
+		return "", false
+	}
+	return rel, true
+}
+
 // excludeAgentWorkingDirs adds agent working directory patterns to
 // .git/info/exclude so they are invisible to git status and git add.
-func excludeAgentWorkingDirs(sandboxName, repoDir string, printer *ui.Printer) error {
+// extra holds layout-specific patterns (e.g. host output/ when nested).
+func excludeAgentWorkingDirs(sandboxName, repoDir string, extra []string, printer *ui.Printer) error {
 	var lines []string
 	for _, pattern := range agentWorkingDirExcludes {
 		lines = append(lines, pattern)
 	}
+	lines = append(lines, extra...)
 	if len(lines) == 0 {
 		return nil
 	}

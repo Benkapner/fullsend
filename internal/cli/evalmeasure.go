@@ -197,7 +197,17 @@ func localMeasurementManifest(fullsendDir, agent string) (string, error) {
 func evalMeasureFetchContext(fullsendDir string, offline bool, printer *ui.Printer) (harness.ComposeOpts, forge.Client) {
 	workspace := fullsendDir
 	if workspace == "" {
-		workspace = os.TempDir()
+		// Prefer a per-user cache dir over shared os.TempDir() (sticky,
+		// multi-user /tmp races and predictable paths). Fall back to a
+		// process-private temp dir if UserCacheDir is unavailable.
+		if cache, err := os.UserCacheDir(); err == nil && cache != "" {
+			workspace = filepath.Join(cache, "fullsend", "eval-measure")
+		} else {
+			workspace = filepath.Join(os.TempDir(), fmt.Sprintf("fullsend-evalmeasure-%d", os.Getpid()))
+		}
+		if err := os.MkdirAll(workspace, 0o700); err != nil && printer != nil {
+			printer.StepWarn("Could not create eval-measure cache dir: " + err.Error())
+		}
 	}
 	abs, err := filepath.Abs(workspace)
 	if err != nil {

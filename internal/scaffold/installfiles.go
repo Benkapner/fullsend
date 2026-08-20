@@ -71,8 +71,9 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 // The embedded root .gitignore is also excluded: installing it would
 // overwrite a consumer's existing ignore file with a one-line fragment.
 // The embed still ships for docs/tests; adopters (and the guide) add
-// output/ themselves. Host telemetry is kept out of the sandbox via
-// agentWorkingDirExcludes regardless.
+// output/ themselves. When --output-dir sits inside --target-repo
+// (GitLab layout), fullsend run omits that top-level directory from the
+// sandbox tarball and .git/info/exclude via outputDirExcludeRel.
 // runnerTags specifies GitLab runner tags to inject into CI job definitions.
 // upstreamRef and upstreamTag control the version marker embedded in the
 // dispatch file for upgrade/status drift detection.

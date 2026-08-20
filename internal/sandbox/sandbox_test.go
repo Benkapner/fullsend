@@ -678,6 +678,8 @@ func TestUploadDir_ExcludesPatternsFromTarball(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "output", "agent-x-1-1"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "output", "agent-x-1-1", "run-telemetry.jsonl"), []byte("telem\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub", "output"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "output", "keep.txt"), []byte("nested\n"), 0o644))
 
 	binDir := t.TempDir()
 	logPath := filepath.Join(binDir, "openshell.log")
@@ -691,7 +693,18 @@ func TestUploadDir_ExcludesPatternsFromTarball(t *testing.T) {
 	_, err := os.Stat(filepath.Join(extracted, "keep.txt"))
 	require.NoError(t, err, "keep.txt should be in the tarball")
 	_, err = os.Stat(filepath.Join(extracted, "output"))
-	assert.True(t, os.IsNotExist(err), "output/ must be excluded from the sandbox tarball")
+	assert.True(t, os.IsNotExist(err), "root output/ must be excluded from the sandbox tarball")
+	got, err := os.ReadFile(filepath.Join(extracted, "sub", "output", "keep.txt"))
+	require.NoError(t, err, "nested sub/output/ must survive (bsdtar --exclude would drop it)")
+	assert.Equal(t, "nested\n", string(got))
+}
+
+func TestTarRootMembers_RejectsNestedExclude(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0o644))
+	_, err := tarRootMembers(dir, "build/output")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "top-level")
 }
 
 // fakeOpenshell writes a script that logs every invocation's full argv to

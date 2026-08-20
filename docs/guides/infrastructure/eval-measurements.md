@@ -118,9 +118,9 @@ measurements:
     version: 1
 ```
 
-Illustrative **logic-as-config** (future declarative engine — not wired yet;
-attribute names below match what fullsend emits today and are **not** a
-contract for the declarative surface):
+Illustrative **logic-as-config** (future declarative engine — not wired yet).
+Attribute names in the example match attrs fullsend emits on the **`run`**
+span today; they are **not** a contract for the declarative surface:
 
 ```yaml
 agent: code
@@ -132,7 +132,7 @@ measurements:
     scorer: declarative
     version: 1
     where:
-      span: agent
+      span: run
     checks:
       - name: turn_token_ratio
         assert: ratio_lte
@@ -194,8 +194,9 @@ Add `output/` to the consuming repo's `.gitignore` so local GitLab-checkout
 runs do not stage telemetry accidentally. The GitLab per-repo scaffold embeds
 a recommended `.gitignore` fragment (asserted in tests) but does **not**
 install it as a root file — that would overwrite an existing consumer ignore
-list. `fullsend run` excludes `output/` from the sandbox tarball and from
-`.git/info/exclude`.
+list. When `--output-dir` sits inside `--target-repo` (GitLab layout),
+`fullsend run` omits that top-level directory from the sandbox tarball and
+`.git/info/exclude`; sibling layouts (GitHub Actions) are unchanged.
 
 ## Manifest resolution in CI
 

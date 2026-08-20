@@ -2198,7 +2198,8 @@ func TestValidateLinuxBinary_AcceptsHostBinary(t *testing.T) {
 
 func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
 	// Verify the exclusion list contains the known agent working directories.
-	expected := []string{".agentready/", ".fullsend-workspace/", "output/"}
+	// Host output/ is layout-scoped via outputDirExcludeRel, not this list.
+	expected := []string{".agentready/", ".fullsend-workspace/"}
 	for _, pattern := range expected {
 		found := false
 		for _, exclude := range agentWorkingDirExcludes {
@@ -2209,6 +2210,29 @@ func TestAgentWorkingDirExcludes_ContainsKnownPatterns(t *testing.T) {
 		}
 		assert.True(t, found, "agentWorkingDirExcludes should contain %q", pattern)
 	}
+	for _, exclude := range agentWorkingDirExcludes {
+		assert.NotEqual(t, "output/", exclude, "output/ must not be hardcoded in agentWorkingDirExcludes")
+	}
+}
+
+func TestOutputDirExcludeRel(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	nested := filepath.Join(repo, "output")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+
+	rel, ok := outputDirExcludeRel(repo, nested)
+	assert.True(t, ok)
+	assert.Equal(t, "output", rel)
+
+	sibling := filepath.Join(filepath.Dir(repo), "output-sibling")
+	_, ok = outputDirExcludeRel(repo, sibling)
+	assert.False(t, ok, "sibling output must not be excluded")
+
+	deep := filepath.Join(repo, "build", "output")
+	require.NoError(t, os.MkdirAll(deep, 0o755))
+	_, ok = outputDirExcludeRel(repo, deep)
+	assert.False(t, ok, "multi-segment Rel must not exclude a whole parent tree")
 }
 
 func TestAgentWorkingDirExcludes_NotEmpty(t *testing.T) {
