@@ -33,6 +33,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls, jq patterns, and stdout contamination in command substitution |
 | [Forge Abstraction](docs/contributing/forge-abstraction.md) | Adding forge operations — covers `forge.Client` interface rules |
 | [Harness Composition](docs/contributing/harness-composition.md) | Changing merge functions in `internal/harness/` — covers the invariant between compose and forge merge functions |
+| [Harness Field Reference](docs/contributing/harness-fields.md) | Adding or modifying fields in `Harness` or `ForgeConfig` — covers field classifications, merge rules, and the `ForgeConfig` struct |
 | [CEL Triggers](docs/contributing/cel-triggers.md) | Writing or reviewing harness `trigger` CEL expressions or `.feature` CEL filters — covers normalized transition kinds |
 | [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability and status rules |
 | [Sandbox Topology](docs/contributing/sandbox-topology.md) | Modifying sandbox images, CI image pulling, or agent harness configs |

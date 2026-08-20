@@ -1,6 +1,6 @@
 ---
 title: "45. Forge-portable harness schema"
-status: Accepted
+status: Superseded
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -17,7 +17,12 @@ Date: 2026-05-27
 
 ## Status
 
-Accepted
+Superseded by [ADR-0088](0088-cel-guarded-overlays.md) (CEL-guarded overlays)
+
+> **Living reference:** The field classification tables, `ForgeConfig` struct
+> definition, and merge rules in this ADR reflect the state at the time of
+> acceptance. For the current authoritative version, see
+> [Harness Field Reference](../contributing/harness-fields.md).
 
 ## Context
 

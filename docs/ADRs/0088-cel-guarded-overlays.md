@@ -20,6 +20,11 @@ Date: 2026-08-14
 
 Accepted
 
+> **Living reference:** The overlay resolution pipeline, CEL environment,
+> and merge rules described here are maintained in
+> [Harness Field Reference](../contributing/harness-fields.md). Update
+> that document (not this ADR) when overlay behavior evolves.
+
 ## Context
 
 [ADR 0045](0045-forge-portable-harness-schema.md) added a `forge:` block to
