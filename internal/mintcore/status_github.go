@@ -65,6 +65,7 @@ func githubGetUser(ctx context.Context, token string) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := mintHTTP(req)
 	if err != nil {
@@ -103,6 +104,7 @@ func githubCheckTeamMembership(ctx context.Context, token, org, team, username s
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := mintHTTP(req)
 	if err != nil {
