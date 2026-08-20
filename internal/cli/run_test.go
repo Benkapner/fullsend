@@ -5455,25 +5455,47 @@ func TestForceRemoveAll_NonExistent(t *testing.T) {
 }
 
 func TestGenerateSandboxName_Length(t *testing.T) {
-	name := generateSandboxName()
+	name := generateSandboxName("triage")
 	assert.LessOrEqual(t, len(name), maxSandboxNameLen,
 		"sandbox name %q (%d chars) exceeds %d-char OpenShell limit",
 		name, len(name), maxSandboxNameLen)
 }
 
 func TestGenerateSandboxName_Prefix(t *testing.T) {
-	name := generateSandboxName()
-	assert.True(t, strings.HasPrefix(name, "fs-"),
-		"sandbox name %q should start with fs- prefix", name)
+	name := generateSandboxName("triage")
+	assert.True(t, strings.HasPrefix(name, "fs-tri-"),
+		"sandbox name %q should start with fs-tri- prefix", name)
 }
 
 func TestGenerateSandboxName_Uniqueness(t *testing.T) {
 	seen := make(map[string]struct{})
 	for range 50 {
-		name := generateSandboxName()
+		name := generateSandboxName("code")
 		assert.LessOrEqual(t, len(name), maxSandboxNameLen)
 		_, dup := seen[name]
 		assert.False(t, dup, "duplicate sandbox name: %q", name)
 		seen[name] = struct{}{}
+	}
+}
+
+func TestGenerateSandboxName_AgentSlug(t *testing.T) {
+	tests := []struct {
+		agent  string
+		prefix string
+	}{
+		{"triage", "fs-tri-"},
+		{"code", "fs-cod-"},
+		{"review", "fs-rev-"},
+		{"", "fs-unk-"},
+		{"ab", "fs-abb-"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.agent, func(t *testing.T) {
+			name := generateSandboxName(tt.agent)
+			assert.True(t, strings.HasPrefix(name, tt.prefix),
+				"generateSandboxName(%q) = %q, want prefix %q", tt.agent, name, tt.prefix)
+			assert.Equal(t, maxSandboxNameLen, len(name),
+				"sandbox name %q should be exactly %d chars", name, maxSandboxNameLen)
+		})
 	}
 }
