@@ -1018,10 +1018,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var runCount int
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
-		stringAttr("fullsend.agent", agentName),
+		boundedStringAttr("fullsend.agent", agentName),
 		boundedStringAttr("fullsend.work_item_id", workItemID),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		stringAttr("gen_ai.agent.name", agentName),
+		boundedStringAttr("gen_ai.agent.name", agentName),
 	})
 	ctx = tid.Ctx
 	rootSpan := tid.RootSpan
@@ -2690,7 +2690,7 @@ func agentSpanStartAttrs(iteration int, agentName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		stringAttr("gen_ai.agent.name", agentName),
+		boundedStringAttr("gen_ai.agent.name", agentName),
 	}
 }
 
