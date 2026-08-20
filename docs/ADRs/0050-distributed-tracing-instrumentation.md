@@ -163,3 +163,9 @@ beside telemetry when at least one new score is produced (tool-agnostic). Distin
 
 > **Planned:** portable remote score export follows the same OTLP
 > configuration as this ADR — no vendor score adapters in core.
+
+**2026-08-18 — Remove duplicate token/cost from root span (3278b059):**
+`gen_ai.request.model` and `gen_ai.usage.*` token attributes moved to agent
+spans only; the root span keeps `fullsend.cost_usd` and `fullsend.tool_calls`
+(custom-namespaced, not auto-summed by MLflow). This prevents MLflow from
+double-counting token usage across the trace.
