@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -90,6 +91,54 @@ var ErrNotFork = errors.New("repository exists but is not a fork of the source")
 // IsNotFork reports whether err indicates a non-fork name collision.
 func IsNotFork(err error) bool {
 	return errors.Is(err, ErrNotFork)
+}
+
+// IsTransient reports whether err represents a transient failure that
+// may succeed on retry. It checks for:
+//   - non-fast-forward race conditions (ErrNonFastForward)
+//   - forge-specific API errors that self-report transient-ness via the
+//     transientReporter interface (e.g., HTTP 429, 500–504)
+//   - HTTP client/network timeouts
+//   - unexpected connection closures (io.EOF, io.ErrUnexpectedEOF)
+//
+// Callers can use this to decide whether retrying an operation is
+// worthwhile before falling back to a log-and-continue strategy.
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsNonFastForward(err) {
+		return true
+	}
+	// Forge-specific error types (github.APIError, gitlab.APIError,
+	// jira.APIError) implement this interface to self-report whether
+	// the status code indicates a transient server-side failure.
+	type transientReporter interface {
+		IsTransient() bool
+	}
+	var te transientReporter
+	if errors.As(err, &te) {
+		return te.IsTransient()
+	}
+	// Context cancellation / deadline errors are not transient —
+	// they reflect caller intent, not a server-side failure.
+	// context.DeadlineExceeded implements Timeout() bool (returning
+	// true), so this guard must come before the Timeout() check.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	// HTTP client timeout (e.g. net/http.Client.Timeout exceeded).
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return true
+	}
+	// Unexpected connection closure — the server dropped the connection
+	// before a full response was read. Common under load or during
+	// transient GCP/GitHub infrastructure issues.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	return false
 }
 
 // ErrNotSupported indicates that the forge implementation does not

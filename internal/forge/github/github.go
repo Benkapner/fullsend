@@ -88,6 +88,15 @@ func (e *APIError) Error() string {
 	return s
 }
 
+// IsTransient reports whether the API error represents a transient
+// failure that may succeed on retry: server errors (500–504) and
+// rate limits (429). This method satisfies the transientReporter
+// interface used by forge.IsTransient.
+func (e *APIError) IsTransient() bool {
+	return e.StatusCode == http.StatusTooManyRequests ||
+		(e.StatusCode >= 500 && e.StatusCode <= 504)
+}
+
 // Unwrap returns sentinel errors for well-known API responses.
 //
 // ErrBranchProtected is intentionally NOT mapped here. Branch protection
