@@ -180,6 +180,7 @@ jobs:
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}')"
+            COMMAND="${COMMAND%%[.,;:!?]}"
           fi
 
           case "${EVENT_NAME}" in
