@@ -5453,3 +5453,27 @@ func TestForceRemoveAll_NonExistent(t *testing.T) {
 	// Removing a path that does not exist should succeed (same as os.RemoveAll).
 	require.NoError(t, forceRemoveAll(filepath.Join(t.TempDir(), "does-not-exist")))
 }
+
+func TestGenerateSandboxName_Length(t *testing.T) {
+	name := generateSandboxName()
+	assert.LessOrEqual(t, len(name), maxSandboxNameLen,
+		"sandbox name %q (%d chars) exceeds %d-char OpenShell limit",
+		name, len(name), maxSandboxNameLen)
+}
+
+func TestGenerateSandboxName_Prefix(t *testing.T) {
+	name := generateSandboxName()
+	assert.True(t, strings.HasPrefix(name, "fs-"),
+		"sandbox name %q should start with fs- prefix", name)
+}
+
+func TestGenerateSandboxName_Uniqueness(t *testing.T) {
+	seen := make(map[string]struct{})
+	for range 50 {
+		name := generateSandboxName()
+		assert.LessOrEqual(t, len(name), maxSandboxNameLen)
+		_, dup := seen[name]
+		assert.False(t, dup, "duplicate sandbox name: %q", name)
+		seen[name] = struct{}{}
+	}
+}

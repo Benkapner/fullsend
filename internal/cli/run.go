@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,6 +70,10 @@ const (
 	// harness dynamically.
 	defaultAgentsRepoOwner = "fullsend-ai"
 	defaultAgentsRepoName  = "agents"
+
+	// maxSandboxNameLen is the maximum length of an OpenShell sandbox name.
+	// OpenShell enforces this at creation time.
+	maxSandboxNameLen = 19
 )
 
 // preflightCheckTimeout bounds the execution time for a validation_loop
@@ -899,9 +905,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	workItemID := resolveWorkItemID()
 
 	// 3. Create run directory and initialise tracer.
-	// Lowercase the agent segment so eval-measure --agent (also lowercased)
-	// matches the host runDir even when the CLI arg was mixed-case.
-	sandboxName := fmt.Sprintf("agent-%s-%d-%d", strings.ToLower(agentName), os.Getpid(), time.Now().Unix())
+	sandboxName := generateSandboxName()
 	if outputBase == "" {
 		outputBase = filepath.Join(os.TempDir(), "fullsend")
 	}
@@ -3327,6 +3331,16 @@ func injectTraceID(sandboxName, traceID string) error {
 	cmd := fmt.Sprintf("echo 'export FULLSEND_TRACE_ID=%s' >> %s/.env", traceID, sandbox.SandboxWorkspace)
 	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	return err
+}
+
+// generateSandboxName produces a unique sandbox name that fits within the
+// OpenShell maximum of maxSandboxNameLen (19) characters. It hashes the PID
+// and current nanosecond timestamp to produce a short, collision-resistant
+// identifier in the form "fs-<16-hex-chars>" (19 characters total).
+func generateSandboxName() string {
+	h := sha256.Sum256(fmt.Appendf(nil, "%d-%d", os.Getpid(), time.Now().UnixNano()))
+	name := "fs-" + hex.EncodeToString(h[:])[:maxSandboxNameLen-len("fs-")]
+	return name
 }
 
 // applySandboxImageOverride replaces image with the FULLSEND_SANDBOX_IMAGE env
