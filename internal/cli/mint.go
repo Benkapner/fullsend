@@ -423,7 +423,6 @@ func newMintDeployCmd() *cobra.Command {
 	// Status auth flags (shared between platforms).
 	var statusAuth string
 	var statusGitHubGroup string
-	var statusGitHubClientID string
 
 	// Cloudflare-specific flags.
 	var workerName string
@@ -576,9 +575,6 @@ Cloudflare mode (--platform=cloudflare):
 				if statusGitHubGroup == "" {
 					return fmt.Errorf("--status-github-group is required when --status-auth includes github")
 				}
-				if statusGitHubClientID == "" {
-					return fmt.Errorf("--status-github-client-id is required when --status-auth includes github")
-				}
 				// Validate ORG/TEAM format before stamping into ldflags.
 				parts := strings.SplitN(statusGitHubGroup, "/", 2)
 				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -589,12 +585,10 @@ Cloudflare mode (--platform=cloudflare):
 				// active so downstream functions can key off non-empty
 				// strings to decide whether to activate the build tag.
 				statusGitHubGroup = ""
-				statusGitHubClientID = ""
 			}
 
 			statusGitHub := gcf.StatusGitHubAuth{
-				Group:    statusGitHubGroup,
-				ClientID: statusGitHubClientID,
+				Group: statusGitHubGroup,
 			}
 
 			switch platform {
@@ -608,8 +602,7 @@ Cloudflare mode (--platform=cloudflare):
 					return fmt.Errorf("--public and --per-repo-wif-repos are mutually exclusive; use one or the other")
 				}
 				cfStatusGitHub := cf.StatusGitHubAuth{
-					Group:    statusGitHubGroup,
-					ClientID: statusGitHubClientID,
+					Group: statusGitHubGroup,
 				}
 				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
 			default:
@@ -633,11 +626,9 @@ Mutually exclusive with --per-repo-wif-repos on Cloudflare`)
 	// Status auth flags.
 	cmd.Flags().StringVar(&statusAuth, "status-auth", "oidc", `comma-separated status auth modes (default: oidc)
 Each non-oidc mode selects a Go build tag. Modes: oidc, github.
-oidc is always compiled in; github requires --status-github-group
-and --status-github-client-id.`)
+oidc is always compiled in; github requires --status-github-group.`)
 	cmd.Flags().StringVar(&statusGitHubGroup, "status-github-group", "", `ORG/TEAM slug for GitHub status auth (required when github mode enabled)
 Example: --status-github-group=acme/platform-team`)
-	cmd.Flags().StringVar(&statusGitHubClientID, "status-github-client-id", "", `GitHub OAuth App client ID for status auth (required when github mode enabled)`)
 
 	// GCP-specific flags.
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")

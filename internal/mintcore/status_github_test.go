@@ -45,10 +45,8 @@ func TestStatusGitHub_ValidToken_TeamMember(t *testing.T) {
 
 	// Configure status consts.
 	StatusGitHubGroup = "acme/admins"
-	StatusGitHubClientID = "test-client-id"
 	t.Cleanup(func() {
 		StatusGitHubGroup = ""
-		StatusGitHubClientID = ""
 	})
 
 	// Create handler with OIDC that will fail (no valid JWKS).
@@ -101,10 +99,8 @@ func TestStatusGitHub_InvalidToken_Returns401(t *testing.T) {
 	})
 
 	StatusGitHubGroup = "acme/admins"
-	StatusGitHubClientID = "test-client-id"
 	t.Cleanup(func() {
 		StatusGitHubGroup = ""
-		StatusGitHubClientID = ""
 	})
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
@@ -149,10 +145,8 @@ func TestStatusGitHub_NotInTeam_Returns401(t *testing.T) {
 	})
 
 	StatusGitHubGroup = "acme/admins"
-	StatusGitHubClientID = "test-client-id"
 	t.Cleanup(func() {
 		StatusGitHubGroup = ""
-		StatusGitHubClientID = ""
 	})
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
@@ -172,10 +166,8 @@ func TestStatusGitHub_OIDCSuccess_BypassesValidator(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
 
 	StatusGitHubGroup = "acme/admins"
-	StatusGitHubClientID = "test-client-id"
 	t.Cleanup(func() {
 		StatusGitHubGroup = ""
-		StatusGitHubClientID = ""
 	})
 
 	// Set up mintHTTP to fail loudly if GitHub API is called.
@@ -210,7 +202,6 @@ func TestStatusGitHub_NotConfigured_Returns401(t *testing.T) {
 	t.Setenv("ALLOWED_ORGS", "test-org")
 
 	StatusGitHubGroup = ""
-	StatusGitHubClientID = ""
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 	rec := httptest.NewRecorder()
@@ -247,10 +238,8 @@ func TestStatusGitHub_ValidateStatusGitHub_DirectCall(t *testing.T) {
 	})
 
 	StatusGitHubGroup = "org1/devs"
-	StatusGitHubClientID = "cid"
 	t.Cleanup(func() {
 		StatusGitHubGroup = ""
-		StatusGitHubClientID = ""
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
@@ -288,10 +277,8 @@ func TestStatusGitHub_PendingMembership_Returns401(t *testing.T) {
 	})
 
 	StatusGitHubGroup = "acme/team"
-	StatusGitHubClientID = "cid"
 	t.Cleanup(func() {
 		StatusGitHubGroup = ""
-		StatusGitHubClientID = ""
 	})
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})

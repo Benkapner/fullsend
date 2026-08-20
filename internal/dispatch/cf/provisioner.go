@@ -136,8 +136,6 @@ type Config struct {
 type StatusGitHubAuth struct {
 	// Group is the ORG/TEAM slug for the GitHub status validator.
 	Group string
-	// ClientID is the GitHub OAuth App client ID for the status validator.
-	ClientID string
 }
 
 // WranglerRunner abstracts wrangler CLI operations for testing.
@@ -533,9 +531,6 @@ func wasmLDFlags(version, commit string, statusGitHub StatusGitHubAuth) string {
 		version, commit)
 	if statusGitHub.Group != "" {
 		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubGroup=%s", statusGitHub.Group)
-	}
-	if statusGitHub.ClientID != "" {
-		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubClientID=%s", statusGitHub.ClientID)
 	}
 	return flags
 }

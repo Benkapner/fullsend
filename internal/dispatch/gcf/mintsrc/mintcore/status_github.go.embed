@@ -21,11 +21,11 @@ import (
 //     StatusGitHubGroup (ORG/TEAM format).
 //
 // Returns nil on success. Returns errStatusAuthSkip when the
-// validator is not configured (group or client ID empty).
+// validator is not configured (group empty).
 // Returns an error on all other failures (invalid token, not a
 // member, API error). All status-auth failures collapse to 401.
 func validateStatusGitHub(ctx context.Context, r *http.Request) error {
-	if StatusGitHubGroup == "" || StatusGitHubClientID == "" {
+	if StatusGitHubGroup == "" {
 		return errStatusAuthSkip
 	}
 

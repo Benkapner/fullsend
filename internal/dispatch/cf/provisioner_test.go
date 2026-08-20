@@ -520,10 +520,9 @@ func TestWasmLDFlags(t *testing.T) {
 		assert.Contains(t, flags, "Commit=")
 	})
 
-	t.Run("non-empty status GitHub group and client ID", func(t *testing.T) {
-		flags := wasmLDFlags("1.0.0", "def456", StatusGitHubAuth{Group: "my-org/my-team", ClientID: "client-id-123"})
+	t.Run("non-empty status GitHub group", func(t *testing.T) {
+		flags := wasmLDFlags("1.0.0", "def456", StatusGitHubAuth{Group: "my-org/my-team"})
 		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubGroup=my-org/my-team")
-		assert.Contains(t, flags, "-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubClientID=client-id-123")
 	})
 }
 
@@ -560,10 +559,9 @@ func TestEnsureWASMArtifacts_ForwardsStatusParams(t *testing.T) {
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{Group: "acme/team", ClientID: "cid-123"})
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{Group: "acme/team"})
 	require.NoError(t, err)
 	assert.Equal(t, "acme/team", capturedStatusGitHub.Group, "StatusGitHub.Group should be forwarded to BuildWASMFn")
-	assert.Equal(t, "cid-123", capturedStatusGitHub.ClientID, "StatusGitHub.ClientID should be forwarded to BuildWASMFn")
 }
 
 func TestBuildWASM(t *testing.T) {
@@ -615,13 +613,13 @@ func TestBuildWASM(t *testing.T) {
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
 		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
-		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/team", ClientID: "cid-123"})
+		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/team"})
 		require.NoError(t, err)
 		require.NotNil(t, capturedCmd)
 
 		args := strings.Join(capturedCmd.Args, " ")
 		assert.Contains(t, args, "-tags github")
-		assert.Contains(t, args, wasmLDFlags("1.0.0", "abc", StatusGitHubAuth{Group: "acme/team", ClientID: "cid-123"}))
+		assert.Contains(t, args, wasmLDFlags("1.0.0", "abc", StatusGitHubAuth{Group: "acme/team"}))
 	})
 
 	t.Run("omits github build tag when status group is empty", func(t *testing.T) {

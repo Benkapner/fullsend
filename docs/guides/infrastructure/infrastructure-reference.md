@@ -144,7 +144,7 @@ A single mint instance can serve multiple orgs:
   ```
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token. Non-OIDC auth enables status checks from outside GitHub Actions (e.g. `gh` CLI, OAuth login).
 - **Security:** OIDC returns only the requesting org. Non-OIDC returns allowed orgs (not individual role app IDs).
-- **Enabling optional validators:** Pass `--status-auth=github` to `mint deploy` along with `--status-github-group=ORG/TEAM` and `--status-github-client-id=CLIENT_ID`. This compiles the GitHub validator via the `github` build tag. Without these flags, OIDC is the only auth path.
+- **Enabling optional validators:** Pass `--status-auth=github` to `mint deploy` along with `--status-github-group=ORG/TEAM`. This compiles the GitHub validator via the `github` build tag. Without these flags, OIDC is the only auth path.
 
 ---
 

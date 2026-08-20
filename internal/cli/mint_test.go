@@ -417,23 +417,15 @@ func TestMintDeployCmd_StatusAuthUnknownMode(t *testing.T) {
 
 func TestMintDeployCmd_StatusAuthGitHubMissingGroup(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github", "--status-github-client-id=cid-123"})
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--status-github-group is required")
 }
 
-func TestMintDeployCmd_StatusAuthGitHubMissingClientID(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github", "--status-github-group=acme/team"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--status-github-client-id is required")
-}
-
 func TestMintDeployCmd_StatusAuthGitHubInvalidGroup(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github", "--status-github-group=no-slash", "--status-github-client-id=cid"})
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github", "--status-github-group=no-slash"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ORG/TEAM format")

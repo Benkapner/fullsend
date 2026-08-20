@@ -1427,10 +1427,11 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/go.sum")
 	assert.Contains(t, names, "mintcore/version.go")
 	assert.Contains(t, names, "mintcore/mintconsts/mintconsts.go")
+	assert.Contains(t, names, "mintcore/oidc_verify.go")
 	assert.Contains(t, names, "mintcore/status_auth.go")
 	assert.Contains(t, names, "mintcore/status_consts.go")
 	assert.Contains(t, names, "mintcore/status_github_stub.go")
-	assert.Len(t, names, 24)
+	assert.Len(t, names, 25)
 }
 
 func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
@@ -1540,7 +1541,7 @@ func TestWriteVersionGoToZip(t *testing.T) {
 func TestWriteStatusConstsGoToZip(t *testing.T) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
-	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "acme/team", "cid-abc")
+	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "acme/team")
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
@@ -1556,14 +1557,13 @@ func TestWriteStatusConstsGoToZip(t *testing.T) {
 
 	src := string(content)
 	assert.Contains(t, src, "package mintcore")
-	assert.Contains(t, src, `StatusGitHubGroup    = "acme/team"`)
-	assert.Contains(t, src, `StatusGitHubClientID = "cid-abc"`)
+	assert.Contains(t, src, `StatusGitHubGroup = "acme/team"`)
 }
 
 func TestWriteStatusConstsGoToZip_Empty(t *testing.T) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
-	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "", "")
+	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "")
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
@@ -1577,8 +1577,7 @@ func TestWriteStatusConstsGoToZip_Empty(t *testing.T) {
 	require.NoError(t, err)
 
 	src := string(content)
-	assert.Contains(t, src, `StatusGitHubGroup    = ""`)
-	assert.Contains(t, src, `StatusGitHubClientID = ""`)
+	assert.Contains(t, src, `StatusGitHubGroup = ""`)
 }
 
 func TestWriteStatusGitHubFileToZip_StripsBuildConstraint(t *testing.T) {
@@ -1605,7 +1604,7 @@ func TestWriteStatusGitHubFileToZip_StripsBuildConstraint(t *testing.T) {
 }
 
 func TestBundleEmbeddedMintSource_GitHubMode(t *testing.T) {
-	data, err := bundleEmbeddedMintSource("1.0.0", "abc123", StatusGitHubAuth{Group: "acme/team", ClientID: "cid-123"})
+	data, err := bundleEmbeddedMintSource("1.0.0", "abc123", StatusGitHubAuth{Group: "acme/team"})
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1634,13 +1633,12 @@ func TestBundleEmbeddedMintSource_GitHubMode(t *testing.T) {
 	assert.NotContains(t, contents["mintcore/status_github.go"], "//go:build")
 
 	// Status consts should be stamped.
-	assert.Contains(t, contents["mintcore/status_consts.go"], `StatusGitHubGroup    = "acme/team"`)
-	assert.Contains(t, contents["mintcore/status_consts.go"], `StatusGitHubClientID = "cid-123"`)
+	assert.Contains(t, contents["mintcore/status_consts.go"], `StatusGitHubGroup = "acme/team"`)
 }
 
 func TestBundleFunctionSource_GitHubMode(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	data, err := bundleFunctionSource(srcDir, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/devs", ClientID: "cid-456"})
+	data, err := bundleFunctionSource(srcDir, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/devs"})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1664,13 +1662,12 @@ func TestBundleFunctionSource_GitHubMode(t *testing.T) {
 	// Status consts should be stamped.
 	consts, ok := contents["mintcore/status_consts.go"]
 	require.True(t, ok, "mintcore/status_consts.go should be present in zip")
-	assert.Contains(t, consts, `StatusGitHubGroup    = "acme/devs"`)
-	assert.Contains(t, consts, `StatusGitHubClientID = "cid-456"`)
+	assert.Contains(t, consts, `StatusGitHubGroup = "acme/devs"`)
 }
 
 func TestBundleFunctionSource_StampsStatusConsts(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	data, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{Group: "org/team", ClientID: "cid-789"})
+	data, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{Group: "org/team"})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1687,8 +1684,7 @@ func TestBundleFunctionSource_StampsStatusConsts(t *testing.T) {
 		require.NoError(t, err)
 
 		src := string(content)
-		assert.Contains(t, src, `StatusGitHubGroup    = "org/team"`)
-		assert.Contains(t, src, `StatusGitHubClientID = "cid-789"`)
+		assert.Contains(t, src, `StatusGitHubGroup = "org/team"`)
 		return
 	}
 	t.Fatal("mintcore/status_consts.go not found in zip")
