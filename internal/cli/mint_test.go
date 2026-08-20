@@ -221,7 +221,7 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	require.NoError(t, err)
 	oldStdout := os.Stdout
 	os.Stdout = w
-	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false)
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{})
 	require.NoError(t, w.Close())
 	os.Stdout = oldStdout
 	require.NoError(t, deployErr)
@@ -405,6 +405,41 @@ func TestMintDeployCmd_InvalidPlatform(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported platform")
+}
+
+func TestMintDeployCmd_StatusAuthUnknownMode(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=magic"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown --status-auth mode")
+}
+
+func TestMintDeployCmd_StatusAuthGitHubMissingGroup(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-github-group is required")
+}
+
+func TestMintDeployCmd_StatusAuthGitHubInvalidGroup(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=github", "--status-github-group=no-slash"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ORG/TEAM format")
+}
+
+func TestMintDeployCmd_StatusAuthOIDCOnly(t *testing.T) {
+	// When --status-auth=oidc (the default), github-specific flags are
+	// silently cleared and should not cause errors.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=oidc", "--dry-run"})
+	err := cmd.Execute()
+	// Should fail further down (missing --project), not on status auth.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "status-auth")
 }
 
 func TestMintDeployCmd_CloudflareMissingEnv(t *testing.T) {
@@ -614,7 +649,7 @@ func withFakeWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := cf.BuildWASMFn
 	origCopy := cf.CopyWASMExecFn
-	cf.BuildWASMFn = func(outPath, _, _ string) error {
+	cf.BuildWASMFn = func(outPath, _, _ string, _ cf.StatusGitHubAuth) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	cf.CopyWASMExecFn = func(destPath string) error {
