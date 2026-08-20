@@ -94,12 +94,12 @@ func TestZeroRSAKey_Nil(t *testing.T) {
 	zeroRSAKey(nil)
 }
 
-func TestGenerateAppJWT_ZeroesKeyMaterial(t *testing.T) {
-	// Generate a key and PEM-encode it, then call GenerateAppJWT.
-	// After the call, the block.Bytes inside GenerateAppJWT should have
-	// been zeroed. We cannot observe block.Bytes directly, but we can
-	// verify the function still produces a valid JWT (i.e., zeroing
-	// happens via defer after signing, not before).
+func TestGenerateAppJWT_DeferredZeroDoesNotBreakSigning(t *testing.T) {
+	// Verify that the deferred zeroSlice/zeroRSAKey calls added in
+	// GenerateAppJWT do not interfere with signing. The zeroing helpers
+	// are tested independently (TestZeroSlice, TestZeroBigInt,
+	// TestZeroRSAKey); this test confirms the defer ordering is correct
+	// — i.e., zeroing runs after the JWT is fully assembled.
 	pemData := testPEM(t)
 
 	jwt, err := GenerateAppJWT("12345", pemData)
