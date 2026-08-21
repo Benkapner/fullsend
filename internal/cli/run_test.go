@@ -3318,17 +3318,17 @@ func TestPRHeadSHAFromEventPath_NoInputs(t *testing.T) {
 // --- detectForgePlatform tests ---
 
 func TestDetectForgePlatform_ExplicitFlag(t *testing.T) {
-	p, err := detectForgePlatform("github")
+	p, err := detectForgePlatform("github", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "github", p)
 
-	p, err = detectForgePlatform("gitlab")
+	p, err = detectForgePlatform("gitlab", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab", p)
 }
 
 func TestDetectForgePlatform_InvalidFlag(t *testing.T) {
-	_, err := detectForgePlatform("bitbucket")
+	_, err := detectForgePlatform("bitbucket", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid forge platform")
 }
@@ -3337,7 +3337,7 @@ func TestDetectForgePlatform_GitHubActions(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITLAB_CI", "")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "github", p)
 }
@@ -3346,7 +3346,7 @@ func TestDetectForgePlatform_GitLabCI(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("GITLAB_CI", "true")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab", p)
 }
@@ -3355,7 +3355,7 @@ func TestDetectForgePlatform_NoEnv(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("GITLAB_CI", "")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "", p)
 }
@@ -3363,7 +3363,7 @@ func TestDetectForgePlatform_NoEnv(t *testing.T) {
 func TestDetectForgePlatform_FlagOverridesEnv(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 
-	p, err := detectForgePlatform("gitlab")
+	p, err := detectForgePlatform("gitlab", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab", p)
 }
@@ -3372,9 +3372,63 @@ func TestDetectForgePlatform_GitHubPrecedesGitLab(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITLAB_CI", "true")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "github", p)
+}
+
+func TestDetectForgePlatform_ConfigForge(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: github
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	p, err := detectForgePlatform("", cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestDetectForgePlatform_FlagOverridesConfig(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: github
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	p, err := detectForgePlatform("gitlab", cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_ConfigOverridesEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: gitlab
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	p, err := detectForgePlatform("", cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
 }
 
 func TestRunCommand_HasForgeFlag(t *testing.T) {
