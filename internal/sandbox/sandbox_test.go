@@ -1703,3 +1703,67 @@ func TestResolvedBasename(t *testing.T) {
 		assert.Equal(t, "gone.txt", resolvedBasename("/no/such/gone.txt"))
 	})
 }
+
+func TestProfileDirLockPath_DeterministicAndUnique(t *testing.T) {
+	p1 := profileDirLockPath("/some/profiles")
+	p2 := profileDirLockPath("/some/profiles")
+	p3 := profileDirLockPath("/other/profiles")
+
+	assert.Equal(t, p1, p2, "same dir must produce same lock path")
+	assert.NotEqual(t, p1, p3, "different dirs must produce different lock paths")
+	assert.True(t, strings.HasPrefix(p1, os.TempDir()), "lock path must be in temp dir")
+	assert.True(t, strings.HasSuffix(p1, ".lock"), "lock path must end with .lock")
+}
+
+// TestImportProfiles_FlockSerializesConcurrent verifies that the flock in
+// ImportProfiles serializes concurrent access. The fake openshell import
+// handler uses a marker file to detect overlapping executions: it creates
+// the marker at entry and removes it at exit, failing if the marker
+// already exists. Without the flock, concurrent goroutines would enter
+// the import section simultaneously and the marker-already-present check
+// would trigger a failure, proving the lock is load-bearing.
+func TestImportProfiles_FlockSerializesConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p1.yaml"), []byte("id: p1\nname: profile-one"), 0o644))
+
+	// Marker file used by the fake openshell to detect concurrent imports.
+	markerFile := filepath.Join(dir, "import-active")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$3" = "import" ]; then
+  if [ -f "%s" ]; then
+    echo "concurrent import detected" >&2
+    exit 1
+  fi
+  echo $$ > "%s"
+  sleep 0.05
+  rm -f "%s"
+fi
+exit 0
+`, markerFile, markerFile, markerFile)
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	cachePath := profileCachePath(dir)
+	lockPath := profileDirLockPath(dir)
+	t.Cleanup(func() {
+		os.Remove(cachePath)
+		os.Remove(lockPath)
+	})
+
+	const goroutines = 12
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = ImportProfiles(dir)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		assert.NoError(t, err, "goroutine %d should succeed under flock serialization", i)
+	}
+}
