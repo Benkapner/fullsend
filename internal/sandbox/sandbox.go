@@ -196,6 +196,12 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	}
 	defer lockFile.Close()
 
+	// NOTE: LOCK_EX blocks without respecting ctx cancellation. This is
+	// acceptable because the lock holder's critical section is short: just
+	// a delete + reimport, each bounded by providerTimeout (30 s), so the
+	// worst-case wait is ~60 s. If stricter context-awareness is ever
+	// needed, switch to LOCK_NB in a poll loop that checks ctx.Done()
+	// between attempts.
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("acquiring profile lock for %q: %w", id, err)
 	}
