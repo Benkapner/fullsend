@@ -215,8 +215,7 @@ jobs:
                 /fs-retro|/fullsend)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     if [[ "${COMMAND}" == "/fullsend" ]]; then
-                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
-                      while [[ "${SECOND_WORD}" =~ [.,;:!?]$ ]]; do SECOND_WORD="${SECOND_WORD%[.,;:!?]}"; done
+                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}' | sed 's/[.,;:!?]$//')"
                       if [[ "${SECOND_WORD}" == "retro" ]]; then
                         STAGE="retro"
                       fi
