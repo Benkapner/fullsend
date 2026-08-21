@@ -72,6 +72,11 @@ on:
         required: false
         type: string
         default: ""
+      jira_base_url:
+        description: "Jira instance base URL (e.g., https://mysite.atlassian.net) for Jira-based agents"
+        required: false
+        type: string
+        default: ""
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
@@ -85,6 +90,12 @@ on:
           endpoint variable alone suffices.
         required: false
       OTEL_EXPORTER_OTLP_HEADERS:
+        required: false
+      JIRA_TOKEN:
+        description: "Jira Cloud API token for Jira-based agents"
+        required: false
+      JIRA_USER_EMAIL:
+        description: "Jira account email for Basic auth"
         required: false
 
 jobs:
@@ -1683,6 +1694,9 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
