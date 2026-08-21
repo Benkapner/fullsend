@@ -1,13 +1,13 @@
 # Custom Poller Example
 
-This guide shows how to create a custom poller in your own repository that invokes fullsend harness agents directly, bypassing the standard GitHub event trigger flow.
+This guide shows how to create a custom poller in your own repository that invokes fullsend [harness](../../glossary.md#harness) agents directly, bypassing the standard GitHub event trigger flow.
 
 ## Use Case
 
 Custom pollers are useful when you want to:
 - Poll external systems (Jira, Linear, Slack, etc.) on a schedule
-- Trigger harness agents based on custom logic
-- Reuse fullsend's harness infrastructure without duplicating workflow code
+- Trigger [harness](../../glossary.md#harness) agents based on custom logic
+- Reuse fullsend's [harness](../../glossary.md#harness) infrastructure without duplicating workflow code
 
 ## Example: Jira Polling Workflow
 
@@ -96,7 +96,7 @@ jobs:
 
 ## Matrix Format
 
-The `matrix` input must follow the format produced by `fullsend dispatch --output-driver gha-matrix`:
+The `matrix` input (a GitHub Actions [matrix strategy](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/running-variations-of-jobs-in-a-workflow#using-a-matrix-strategy) that runs parallel jobs) must follow the format produced by `fullsend dispatch --output-driver gha-matrix`:
 
 ```json
 {
@@ -113,20 +113,20 @@ The `matrix` input must follow the format produced by `fullsend dispatch --outpu
 }
 ```
 
-## Required Configuration
+## Prerequisites
 
 Your external repository needs these variables and secrets configured:
 
 **Variables:**
 - `FULLSEND_MINT_URL` - Token mint service URL
 - `FULLSEND_GCP_REGION` - GCP region for Vertex AI
-- `OTEL_EXPORTER_OTLP_ENDPOINT` - OpenTelemetry endpoint (optional)
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - [OpenTelemetry](../../glossary.md#otel-primary-facts) endpoint (optional)
 - `JIRA_BASE_URL` - Jira instance URL (if using Jira agents)
 
 **Secrets:**
-- `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation provider
+- `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider
 - `FULLSEND_GCP_PROJECT_ID` - GCP project ID
-- `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - OTEL auth headers (optional)
+- `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
 - `JIRA_TOKEN` - Jira API token (if using Jira agents)
 - `JIRA_USER_EMAIL` - Jira user email (if using Jira agents)
 
@@ -134,8 +134,8 @@ Your external repository needs these variables and secrets configured:
 
 1. **Poll job** runs your custom logic to query an external system and builds a dispatch matrix
 2. **Harness job** calls `reusable-dispatch.yml` with the pre-computed matrix
-3. `reusable-dispatch.yml` skips the routing and dispatch steps, directly invoking `harness-run` with your matrix
-4. Harness agents execute according to your matrix configuration
+3. `reusable-dispatch.yml` skips the routing and dispatch steps (see [architecture.md](../../architecture.md) for the standard dispatch flow), directly invoking `harness-run` with your matrix
+4. [Harness](../../glossary.md#harness) agents execute according to your matrix configuration
 
 ## Permissions
 
@@ -148,4 +148,4 @@ Required permissions:
 
 ## Authorization
 
-When using a pre-computed matrix, the `.fullsend/config.yaml` agent-enablement checks are bypassed. The token mint service acts as the authorization boundary - ensure your mint service is properly configured to control which agents external callers can invoke.
+When using a pre-computed matrix, the `.fullsend/config.yaml` agent-enablement checks are bypassed. The token mint service acts as the authorization boundary (see [mint-administration.md](../infrastructure/mint-administration.md)) - ensure your mint service is properly configured to control which agents external callers can invoke.
