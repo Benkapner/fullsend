@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"strings"
 )
 
 // Pi --mode json event types and field paths are taken from earendil-works/pi
@@ -90,23 +91,54 @@ func piLastAssistant(messages []piWireMessage) (piWireMessage, bool) {
 	return piWireMessage{}, false
 }
 
+// piSummaryMax bounds tool-result summaries so a large payload cannot flood
+// the renderer. One-line titles from other runtimes are well under this.
+const piSummaryMax = 1024
+
+type piContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// piToolResult is the AgentToolResult shape on tool_execution_end.result
+// (packages/agent/src/types.ts): text lives at content[].text, not top-level
+// output/text/error/message keys.
+type piToolResult struct {
+	Content []piContentBlock `json:"content"`
+}
+
+func piTruncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
 func piResultSummary(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return redactSummary(s)
+		return redactSummary(piTruncate(s, piSummaryMax))
 	}
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err == nil {
-		for _, k := range []string{"output", "text", "error", "message"} {
-			if v, ok := obj[k].(string); ok && v != "" {
-				return redactSummary(v)
+	var res piToolResult
+	if err := json.Unmarshal(raw, &res); err == nil && len(res.Content) > 0 {
+		var b strings.Builder
+		for _, c := range res.Content {
+			if c.Text == "" || (c.Type != "" && c.Type != "text") {
+				continue
 			}
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(c.Text)
+		}
+		if b.Len() > 0 {
+			return redactSummary(piTruncate(b.String(), piSummaryMax))
 		}
 	}
-	return redactSummary(string(raw))
+	return redactSummary(piTruncate(string(raw), piSummaryMax))
 }
 
 func piIsErrorStop(reason string) bool {
@@ -151,7 +183,7 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 	)
 
 	emitInit := func(model string) {
-		if emittedInit {
+		if emittedInit || model == "" {
 			return
 		}
 		emittedInit = true
@@ -268,12 +300,11 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			// followed by retry/compaction. Only emit ResultEvent when this
 			// is not a retry checkpoint (willRetry=false).
 			if evt.WillRetry {
-				if msg, ok := piLastAssistant(evt.Messages); ok {
-					lastStopReason = msg.StopReason
-					if msg.ErrorMessage != "" {
-						lastErrorMsg = redactSummary(msg.ErrorMessage)
-					}
-				}
+				// A retry checkpoint discards the failed attempt's error
+				// so a later successful agent_end is not sticky-IsError.
+				sawError = false
+				lastErrorMsg = ""
+				lastStopReason = ""
 				continue
 			}
 			sawAgentEnd = true
@@ -305,21 +336,28 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			// Lifecycle / intermediate events — no AgentEvent mapping.
 
 		default:
-			// Unknown event types are silently skipped. Monitor for
-			// schema drift after pi releases.
+			// Known lifecycle types are listed above. Unknown types are skipped
+			// (same as OpenCode). When parsePiStream is wired into the
+			// exit-0-override, fail closed if the stream ended with no
+			// recognized terminal event — a renamed error type must not
+			// fail-open. Today the missing-agent_end fallback already marks
+			// incomplete streams as IsError.
 		}
 	}
 
-	// If no agent_end was seen (truncated stream), synthesize a ResultEvent
-	// from accumulated message_end data — same fallback as OpenCode.
+	// If no terminal agent_end was seen, the stream is incomplete. --mode json
+	// exits 0 on model error, so a missing sentinel is not evidence of success.
 	if !sawAgentEnd {
-		isError := sawError || numTurns == 0 || piIsErrorStop(lastStopReason)
+		subtype := lastStopReason
+		if subtype == "" || !piIsErrorStop(subtype) {
+			subtype = "incomplete"
+		}
 		onEvent(ResultEvent{
 			NumTurns:                 numTurns,
 			TotalCostUSD:             totalCostUSD,
-			IsError:                  isError,
+			IsError:                  true,
 			ErrorMessage:             lastErrorMsg,
-			Subtype:                  lastStopReason,
+			Subtype:                  subtype,
 			InputTokens:              totalInput,
 			OutputTokens:             totalOutput,
 			ReasoningTokens:          totalReasoning,

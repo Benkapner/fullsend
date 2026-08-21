@@ -238,6 +238,7 @@ func TestParsePiStream_Empty(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, result.IsError)
 	assert.Equal(t, 0, result.NumTurns)
+	assert.Equal(t, "incomplete", result.Subtype)
 }
 
 func TestParsePiStream_Truncated(t *testing.T) {
@@ -257,7 +258,8 @@ func TestParsePiStream_Truncated(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.Equal(t, 1, results[0].NumTurns)
 	assert.InDelta(t, 0.015, results[0].TotalCostUSD, 0.001)
-	assert.False(t, results[0].IsError)
+	assert.True(t, results[0].IsError, "missing agent_end is incomplete, not success")
+	assert.Equal(t, "incomplete", results[0].Subtype)
 	assert.Equal(t, 100, results[0].InputTokens)
 	assert.Equal(t, 50, results[0].OutputTokens)
 	assert.Equal(t, 80, results[0].CacheReadInputTokens)
@@ -441,8 +443,8 @@ func TestParsePiStream_ToolExecutionStartAbsorbed(t *testing.T) {
 func TestParsePiStream_ToolResultObjectSummary(t *testing.T) {
 	t.Parallel()
 
-	input := `{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":{"output":"ok from object"},"isError":false}
-{"type":"tool_execution_end","toolCallId":"c2","toolName":"edit","result":{"error":"file not found"},"isError":true}
+	input := `{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":{"content":[{"type":"text","text":"ok from content"}]},"isError":false}
+{"type":"tool_execution_end","toolCallId":"c2","toolName":"edit","result":{"content":[{"type":"text","text":"file not found"},{"type":"image","text":""}]},"isError":true}
 {"type":"agent_end","messages":[],"willRetry":false}
 `
 	var tools []ToolUseEvent
@@ -453,7 +455,7 @@ func TestParsePiStream_ToolResultObjectSummary(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, tools, 2)
-	assert.Equal(t, "ok from object", tools[0].Summary)
+	assert.Equal(t, "ok from content", tools[0].Summary)
 	assert.Equal(t, "file not found", tools[1].Summary)
 }
 
@@ -486,6 +488,51 @@ func TestParsePiStream_AgentEndWillRetry(t *testing.T) {
 	assert.Equal(t, "stop", results[0].Subtype)
 }
 
+func TestParsePiStream_RetryClearsStickyError(t *testing.T) {
+	t.Parallel()
+
+	input := `{"type":"session","version":3,"id":"ses_sticky","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"error","errorMessage":"model overloaded"}}
+{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"model overloaded"}],"willRetry":true}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":12,"output":6,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.02}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"stop"}],"willRetry":false}
+`
+	var results []ResultEvent
+	var errs []ErrorEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		switch e := evt.(type) {
+		case ResultEvent:
+			results = append(results, e)
+		case ErrorEvent:
+			errs = append(errs, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, errs, 1, "failed attempt still emits ErrorEvent")
+	require.Len(t, results, 1)
+	assert.False(t, results[0].IsError, "successful retry must not inherit sticky IsError")
+	assert.Empty(t, results[0].ErrorMessage)
+	assert.Equal(t, "stop", results[0].Subtype)
+}
+
+func TestParsePiStream_InitSkipsEmptyModel(t *testing.T) {
+	t.Parallel()
+
+	input := `{"type":"message_start","message":{"role":"assistant","model":"","stopReason":"pending"}}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"cost":{"total":0}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"stop"}],"willRetry":false}
+`
+	var inits []InitEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(InitEvent); ok {
+			inits = append(inits, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, inits, 1)
+	assert.Equal(t, "claude-sonnet-4-20250514", inits[0].Model)
+}
+
 func TestParsePiStream_InventedSchemaIsDropped(t *testing.T) {
 	t.Parallel()
 
@@ -516,4 +563,26 @@ func TestParsePiStream_InventedSchemaIsDropped(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, result.IsError)
 	assert.Equal(t, 0, result.NumTurns)
+}
+
+func TestParsePiStream_ResultSummaryTruncated(t *testing.T) {
+	t.Parallel()
+
+	// Object with no content[] hits the raw-JSON fallback; it must be capped.
+	huge := strings.Repeat("x", piSummaryMax+200)
+	input := fmt.Sprintf(
+		`{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":{"blob":%q},"isError":false}`+"\n"+
+			`{"type":"agent_end","messages":[],"willRetry":false}`+"\n",
+		huge,
+	)
+	var tools []ToolUseEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ToolUseEvent); ok {
+			tools = append(tools, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, tools, 1)
+	assert.LessOrEqual(t, len(tools[0].Summary), piSummaryMax)
+	assert.NotContains(t, tools[0].Summary, strings.Repeat("x", piSummaryMax+1))
 }

@@ -28,7 +28,7 @@ When adding a runtime, fill in the security matrix below and register it in `run
 | **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | N/A — stub | N/A — stub; pi has native `--tools` allowlist; hook adapter translates lowercase tool names (#608) | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
 | **Prompt injection (DeBERTa)** | Host Path A + sandbox Path B | ✓ | N/A — stub | N/A — stub | Same scanner stack as context files when enabled in harness |
 | **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358) | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via OpenCode plugin hooks | ✗ — `Bootstrap` is a stub; will wire `security.HookPlan` via pi's TypeScript extension API (`tool_call`/`tool_result` hooks with `{block: true, reason}` structured denial) | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
-| **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | No-op — see #6464; pi sessions are JSONL files under `PI_CODING_AGENT_DIR`/`--session-dir` | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
+| **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | No-op — see #6464; pi sessions are JSONL files under `PI_CODING_AGENT_SESSION_DIR`/`--session-dir` (not `PI_CODING_AGENT_DIR`) | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
 
 ### Fail modes
 
@@ -175,7 +175,7 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 ### Pi-specific known constraints (#6464)
 
 - **No permission system at all** — pi's stated posture is "run in a container". The OpenShell sandbox + L7 egress policy + credential placeholders (ADR 0017/0025) are the boundary, with the fullsend extension adapter as defense-in-depth (same posture as accepted for OpenCode in #1260 / ADR 0090).
-- **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` detects errors from the assistant message's `stopReason` (on `message_end.message` or the last entry of `agent_end.messages`) so the runner's exit-0-override (#2786/#5361) fires.
+- **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` is the intended detector (assistant `stopReason` on `message_end.message` / last `agent_end.messages` entry) for the runner's exit-0-override (#2786/#5361). That override currently calls `ParseTranscriptFile`, which is still a stub on `PiRuntime` — it will not fire until Bootstrap/Run tee the JSON stream into the parser.
 - **No `--max-turns`/`--timeout`** — runner's exec timeout covers it.
 - **No built-in MCP** — out of scope; fleet uses none.
 - **No Claude-on-Vertex provider yet** — `google-vertex` is Gemini-only; `anthropic-vertex` is an open upstream PR (earendil-works/pi#5262) with a community extension (`twoGiants/pi-anthropic-vertex`) as SHA-pinned interim.

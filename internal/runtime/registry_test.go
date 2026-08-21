@@ -71,13 +71,19 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
 
-	// opencode is not in ValidRuntimes() but is resolvable via Resolve().
+	// opencode/pi are not in ValidRuntimes() but are resolvable via Resolve().
 	// A hand-written config bypassing validation can reach the stub.
 	ocCfg := config.NewPerRepoConfig(nil, "")
 	ocCfg.SetRuntime("opencode")
 	ocBackend, err := ResolveFromPerRepoConfig(ocCfg)
 	require.NoError(t, err)
 	assert.Equal(t, "opencode", ocBackend.Runtime.Name())
+
+	piCfg := config.NewPerRepoConfig(nil, "")
+	piCfg.SetRuntime("pi")
+	piBackend, err := ResolveFromPerRepoConfig(piCfg)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", piBackend.Runtime.Name())
 
 	invalidCfg := config.NewPerRepoConfig(nil, "")
 	invalidCfg.SetRuntime("invalid")

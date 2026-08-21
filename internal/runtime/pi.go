@@ -28,8 +28,13 @@ func (PiRuntime) System() string { return "pi" }
 // ConfigDir returns the pi config directory inside the sandbox.
 // Host default for PI_CODING_AGENT_DIR is ~/.pi/agent (config, skills,
 // settings). Session JSONL storage is a separate path:
-// PI_CODING_AGENT_SESSION_DIR, overridden by --session-dir. This returns
-// a sandbox-local placeholder until Bootstrap wires those env vars.
+// PI_CODING_AGENT_SESSION_DIR, overridden by --session-dir.
+//
+// This returns a sandbox-local placeholder until Bootstrap wires those env
+// vars. Like OpenCode's provisional ConfigDir, it currently sits inside the
+// agent-writable workspace — do not point PI_CODING_AGENT_DIR here without
+// moving it out. defaultProjectTrust: never refuses repo-owned .pi/, and an
+// in-workspace config dir would let the agent rewrite skills/settings.
 func (PiRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.pi" }
 
 func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
