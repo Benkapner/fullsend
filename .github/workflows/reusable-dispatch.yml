@@ -1545,9 +1545,9 @@ jobs:
     if: ${{ !cancelled() && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix) }}
+      matrix: ${{ fromJSON(inputs.matrix != '' && inputs.matrix || (needs.harness-dispatch.outputs.matrix != '' && needs.harness-dispatch.outputs.matrix || '{"include":[]}')) }}
     concurrency:
-      group: fullsend-harness-${{ matrix.agent }}-${{ matrix.status_repo }}-${{ matrix.status_number }}
+      group: fullsend-harness-${{ matrix.agent }}-${{ github.repository }}-${{ matrix.status_repo }}-${{ matrix.status_number }}
       cancel-in-progress: true
     runs-on: ${{ inputs.runner_image }}
     permissions:
