@@ -63,8 +63,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if !r.WorkflowDeleted {
 		t.Error("WorkflowDeleted = false, want true")
 	}
-	if r.VarsDeleted != 3 {
-		t.Errorf("VarsDeleted = %d, want 3", r.VarsDeleted)
+	if r.VarsDeleted != 4 {
+		t.Errorf("VarsDeleted = %d, want 4", r.VarsDeleted)
 	}
 	if r.SecretsDeleted != 2 {
 		t.Errorf("SecretsDeleted = %d, want 2", r.SecretsDeleted)
@@ -73,8 +73,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if len(client.DeletedFiles) == 0 {
 		t.Error("no files were deleted")
 	}
-	if len(client.DeletedVariables) != 3 {
-		t.Errorf("deleted %d variables, want 3", len(client.DeletedVariables))
+	if len(client.DeletedVariables) != 4 {
+		t.Errorf("deleted %d variables, want 4", len(client.DeletedVariables))
 	}
 	if len(client.DeletedSecrets) != 2 {
 		t.Errorf("deleted %d secrets, want 2", len(client.DeletedSecrets))
