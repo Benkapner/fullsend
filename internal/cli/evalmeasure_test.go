@@ -70,7 +70,7 @@ func TestEvalMeasureCmd_MissingRequiredFlags(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry(t *testing.T) {
+func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry_LegacyFormat(t *testing.T) {
 	fsDir := t.TempDir()
 	outBase := t.TempDir()
 	runDir := filepath.Join(outBase, "agent-triage-1-1")
@@ -108,13 +108,86 @@ func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry(t *testing.T) {
 	assert.NotContains(t, string(b), "ffffffffffffffffffffffffffffffff")
 }
 
-// TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL locks the
-// resolved-manifest path used before agents@v0 carries stock YAML: a local
-// FULLSEND_DIR eval/measurements/<agent>.yaml must produce eval-measurements.jsonl.
-func TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL(t *testing.T) {
+// TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL_LegacyFormat
+// locks the resolved-manifest path used before agents@v0 carries stock
+// YAML: a local FULLSEND_DIR eval/measurements/<agent>.yaml must produce
+// eval-measurements.jsonl.
+func TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL_LegacyFormat(t *testing.T) {
 	fsDir := t.TempDir()
 	outBase := t.TempDir()
 	runDir := filepath.Join(outBase, "agent-triage-2-2")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+
+	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, telemetry.TelemetryFile), good, 0o644))
+
+	reg, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(fsDir, "eval", "measurements"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fsDir, "eval", "measurements", "triage.yaml"), reg, 0o644))
+
+	cmd := newRootCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"eval-measure",
+		"--agent", "triage",
+		"--fullsend-dir", fsDir,
+		"--output-dir", outBase,
+		"--offline",
+	})
+	require.NoError(t, cmd.Execute())
+
+	b, err := os.ReadFile(filepath.Join(runDir, evalmeasure.MeasurementsFile))
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"name":"trace_fitness"`)
+	assert.Contains(t, buf.String(), "Wrote")
+}
+
+func TestEvalMeasureCmd_OutputDirIgnoresNestedTelemetry_NewFormat(t *testing.T) {
+	fsDir := t.TempDir()
+	outBase := t.TempDir()
+	runDir := filepath.Join(outBase, "fs-tri-aabbccddee00")
+	nested := filepath.Join(runDir, "iteration-1", "output")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+
+	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, telemetry.TelemetryFile), good, 0o644))
+	// Agent-planted copy: valid JSONL with a different trace id would produce
+	// a second row if scored. Nested path must be ignored.
+	planted := bytes.ReplaceAll(good, []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), []byte("ffffffffffffffffffffffffffffffff"))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, telemetry.TelemetryFile), planted, 0o644))
+
+	reg, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "sample-registry.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(fsDir, "eval", "measurements"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fsDir, "eval", "measurements", "triage.yaml"), reg, 0o644))
+
+	cmd := newRootCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"eval-measure",
+		"--agent", "triage",
+		"--fullsend-dir", fsDir,
+		"--output-dir", outBase,
+	})
+	require.NoError(t, cmd.Execute())
+
+	b, err := os.ReadFile(filepath.Join(runDir, evalmeasure.MeasurementsFile))
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`)
+	assert.NotContains(t, string(b), "ffffffffffffffffffffffffffffffff")
+}
+
+func TestEvalMeasureCmd_LocalFullsendDirManifestProducesJSONL_NewFormat(t *testing.T) {
+	fsDir := t.TempDir()
+	outBase := t.TempDir()
+	runDir := filepath.Join(outBase, "fs-tri-1122334455ff")
 	require.NoError(t, os.MkdirAll(runDir, 0o755))
 
 	good, err := os.ReadFile(filepath.Join("..", "evalmeasure", "testdata", "complete.jsonl"))

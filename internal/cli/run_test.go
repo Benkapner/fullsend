@@ -5480,17 +5480,18 @@ func TestGenerateSandboxName_Uniqueness(t *testing.T) {
 
 func TestGenerateSandboxName_AgentSlug(t *testing.T) {
 	tests := []struct {
+		name   string
 		agent  string
 		prefix string
 	}{
-		{"triage", "fs-tri-"},
-		{"code", "fs-cod-"},
-		{"review", "fs-rev-"},
-		{"", "fs-unk-"},
-		{"ab", "fs-abb-"},
+		{"triage", "triage", "fs-tri-"},
+		{"code", "code", "fs-cod-"},
+		{"review", "review", "fs-rev-"},
+		{"empty", "", "fs-unk-"},
+		{"short_name", "ab", "fs-abb-"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.agent, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			name := generateSandboxName(tt.agent)
 			assert.True(t, strings.HasPrefix(name, tt.prefix),
 				"generateSandboxName(%q) = %q, want prefix %q", tt.agent, name, tt.prefix)
