@@ -1397,6 +1397,12 @@ jobs:
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
+      - name: Validate event_action
+        if: ${{ inputs.event_action == '' }}
+        run: |
+          echo "::error::event_action is required when matrix is not provided"
+          exit 1
+
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1541,7 +1547,7 @@ jobs:
 
   harness-run:
     name: Harness run (${{ matrix.agent }})
-    needs: [route, harness-dispatch]
+    needs: [harness-dispatch]
     if: ${{ !cancelled() && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
     strategy:
       fail-fast: false
