@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Single PostToolUse driver: suppress → unicode → redact.
+"""Single PostToolUse driver: suppress → unicode → redact → canary.
 
-Claude Code runs matching hooks in parallel and does not pipe stdout, so the
-three sanitizers cannot be ordered by settings.json matcher position. This
-driver loads each enabled sibling script and applies them in-process.
+Claude Code runs matching hooks in parallel and does not pipe stdout, so
+sanitizers cannot be ordered by settings.json matcher position, and two
+hooks that both emit ``updatedToolOutput`` race. This driver loads each
+enabled sibling script and applies them in-process.
 
 A stage is enabled when its script file is present next to this driver
 (HookFiles omits disabled sanitizers). FULLSEND_POSTTOOL_SKIP may list stage
-tokens (suppress, unicode, redact) for tests.
+tokens (suppress, unicode, redact, canary) for tests.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ _STAGE_FILES = {
     "suppress": "context_suppress_posttool.py",
     "unicode": "unicode_posttool.py",
     "redact": "secret_redact_posttool.py",
+    "canary": "canary_posttool.py",
 }
 
 
@@ -70,6 +72,10 @@ def _command(hook_input: dict) -> str:
     return command if isinstance(command, str) else ""
 
 
+def _stage_error(metadata: dict, token: str) -> None:
+    metadata[f"{token}_error"] = True
+
+
 def main() -> None:
     try:
         raw = sys.stdin.read(MAX_INPUT_CHARS + 1)
@@ -88,55 +94,90 @@ def main() -> None:
     updated = original
     metadata: dict = {}
 
-    if stage_enabled("suppress"):
-        suppress = _load_stage("suppress")
-        command = _command(hook_input)
-        text = hook_io.scan_text(updated)
-        if suppress is not None and command and not text.startswith("Exit code"):
-            summary = suppress.try_suppress(command, text)
-            if summary is not None:
-                suppress.log_suppression(command, summary)
-                updated = hook_io.apply_text(updated, summary)
-                metadata["context_suppressed"] = True
+    canary_token = os.environ.get("FULLSEND_CANARY_TOKEN", "").strip()
+    canary_hit = False
+    if stage_enabled("canary") and canary_token:
+        try:
+            canary_hit = canary_token.lower() in hook_io.scan_text(original).lower()
+        except Exception:
+            _stage_error(metadata, "canary")
+
+    if not canary_hit and stage_enabled("suppress"):
+        try:
+            suppress = _load_stage("suppress")
+            command = _command(hook_input)
+            text = hook_io.scan_text(updated)
+            if suppress is not None and command and not hook_io.looks_failed(updated, text):
+                summary = suppress.try_suppress(command, text)
+                if summary is not None:
+                    suppress.log_suppression(command, summary)
+                    if hook_io.has_text_slot(updated):
+                        updated = hook_io.apply_text(updated, summary)
+                        metadata["context_suppressed"] = True
+                    else:
+                        metadata["shape_unpatched"] = True
+        except Exception:
+            _stage_error(metadata, "suppress")
 
     unicode_findings: list[dict] = []
     if stage_enabled("unicode"):
-        unicode_mod = _load_stage("unicode")
-        if unicode_mod is not None:
+        try:
+            unicode_mod = _load_stage("unicode")
+            if unicode_mod is not None:
 
-            def _sanitize(text: str) -> str:
-                if not text:
-                    return text
-                cleaned, findings = unicode_mod.scan_text(text)
-                unicode_findings.extend(findings)
-                return cleaned
+                def _sanitize(text: str) -> str:
+                    if not text:
+                        return text
+                    cleaned, findings = unicode_mod.scan_text(text)
+                    unicode_findings.extend(findings)
+                    return cleaned
 
-            updated = hook_io.transform_strings(updated, _sanitize)
-            if unicode_findings:
-                metadata["unicode_findings"] = len(unicode_findings)
-                metadata["categories"] = [f["name"] for f in unicode_findings]
-                for f in unicode_findings:
-                    action = "critical_sanitize" if f["severity"] == "critical" else "sanitize"
-                    unicode_mod.log_finding(f["name"], f["severity"], f["detail"], action)
+                updated = hook_io.transform_strings(updated, _sanitize)
+                if unicode_findings:
+                    metadata["unicode_findings"] = len(unicode_findings)
+                    metadata["categories"] = [f["name"] for f in unicode_findings]
+                    for f in unicode_findings:
+                        action = "critical_sanitize" if f["severity"] == "critical" else "sanitize"
+                        unicode_mod.log_finding(f["name"], f["severity"], f["detail"], action)
+        except Exception:
+            _stage_error(metadata, "unicode")
 
     redact_findings: list[dict] = []
     if stage_enabled("redact"):
-        redact_mod = _load_stage("redact")
-        if redact_mod is not None:
+        try:
+            redact_mod = _load_stage("redact")
+            if redact_mod is not None:
 
-            def _redact(text: str) -> str:
-                if not text:
-                    return text
-                cleaned, findings = redact_mod.redact_text(text)
-                redact_findings.extend(findings)
-                return cleaned
+                def _redact(text: str) -> str:
+                    if not text:
+                        return text
+                    cleaned, findings = redact_mod.redact_text(text)
+                    redact_findings.extend(findings)
+                    return cleaned
 
-            updated = hook_io.transform_strings(updated, _redact)
-            if redact_findings:
-                metadata["secrets_redacted"] = len(redact_findings)
-                metadata["patterns"] = [f["pattern"] for f in redact_findings]
-                for f in redact_findings:
-                    redact_mod.log_finding(f["pattern"], f"Redacted {f['pattern']}: {f['masked']}")
+                updated = hook_io.transform_strings(updated, _redact)
+                if redact_findings:
+                    metadata["secrets_redacted"] = len(redact_findings)
+                    metadata["patterns"] = [f["pattern"] for f in redact_findings]
+                    for f in redact_findings:
+                        redact_mod.log_finding(
+                            f["pattern"], f"Redacted {f['pattern']}: {f['masked']}"
+                        )
+        except Exception:
+            _stage_error(metadata, "redact")
+
+    if canary_hit:
+        try:
+            updated = hook_io.redact_canary(updated, canary_token)
+            canary_mod = _load_stage("canary")
+            tool_name = hook_input.get("tool_name", "unknown")
+            reason = f"CANARY_LEAKED: canary token found in {tool_name} result"
+            if canary_mod is not None:
+                canary_mod.log_finding("canary_leak", "critical", reason, "block")
+            hook_io.emit_block(reason, updated)
+            sys.exit(1)
+        except Exception:
+            _stage_error(metadata, "canary")
 
     if updated == original and not metadata:
         sys.exit(0)

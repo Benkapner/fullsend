@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HOOKS_DIR = Path(__file__).parent
 UNICODE_HOOK = str(HOOKS_DIR / "unicode_posttool.py")
@@ -32,14 +35,27 @@ def result_text(stdout: str) -> str:
     return out["tool_result"]
 
 
-def run_hook(script: str, payload: str | dict, *, key: str = "tool_result") -> tuple[int, str, str]:
-    body: dict = {"tool_name": "Read", key: payload}
+def run_hook(
+    script: str,
+    payload: str | dict,
+    *,
+    key: str = "tool_result",
+    env_extra: dict[str, str] | None = None,
+    tool_name: str = "Read",
+    tool_input: dict | None = None,
+) -> tuple[int, str, str]:
+    body: dict = {"tool_name": tool_name, key: payload}
+    if tool_input is not None:
+        body["tool_input"] = tool_input
+    env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
+    env.update(env_extra or {})
     proc = subprocess.run(
         [sys.executable, script],
         input=json.dumps(body),
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -169,6 +185,82 @@ class TestPostToolChain(unittest.TestCase):
         out = json.loads(stdout)
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PostToolUse")
         self.assertIn("updatedToolOutput", out["hookSpecificOutput"])
+
+    def test_stderr_only_canary_blocks_and_redacts(self):
+        payload = {
+            "stdout": "",
+            "stderr": "leaked SECRET_CANARY_xyz on stderr",
+            "interrupted": False,
+            "isImage": False,
+        }
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            payload,
+            key="tool_response",
+            env_extra={"FULLSEND_CANARY_TOKEN": "SECRET_CANARY_xyz"},
+            tool_name="Bash",
+        )
+        self.assertEqual(rc, 1, stderr)
+        out = json.loads(stdout)
+        self.assertEqual(out["decision"], "block")
+        updated = out["hookSpecificOutput"]["updatedToolOutput"]
+        self.assertEqual(updated["stdout"], "")
+        self.assertIn("[CANARY_REDACTED]", updated["stderr"])
+        self.assertNotIn("SECRET_CANARY_xyz", updated["stderr"])
+
+    def test_canary_and_secret_on_one_call(self):
+        payload = {
+            "stdout": f"token {PLAIN_PAT}\n",
+            "stderr": "leaked SECRET_CANARY_xyz",
+            "interrupted": False,
+            "isImage": False,
+        }
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            payload,
+            key="tool_response",
+            env_extra={"FULLSEND_CANARY_TOKEN": "SECRET_CANARY_xyz"},
+            tool_name="Bash",
+        )
+        self.assertEqual(rc, 1, stderr)
+        out = json.loads(stdout)
+        self.assertEqual(out["decision"], "block")
+        updated = out["hookSpecificOutput"]["updatedToolOutput"]
+        self.assertNotIn("ghp_FAKEtest", updated["stdout"])
+        self.assertIn("[CANARY_REDACTED]", updated["stderr"])
+        self.assertNotIn("SECRET_CANARY_xyz", json.dumps(updated))
+
+    def test_redact_stage_exception_fail_open(self):
+        import posttool_chain
+
+        payload = json.dumps({"tool_name": "Read", "tool_response": PLAIN_PAT})
+        real_load = posttool_chain._load_stage
+
+        def fake_load(token: str):
+            mod = real_load(token)
+            if token == "redact" and mod is not None:
+
+                def boom(_text: str):
+                    raise RuntimeError("boom")
+
+                mod.redact_text = boom
+            return mod
+
+        buf = io.StringIO()
+        with (
+            mock.patch.object(posttool_chain, "_load_stage", fake_load),
+            mock.patch.object(sys, "stdin", io.StringIO(payload)),
+            mock.patch.object(sys, "stdout", buf),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            posttool_chain.main()
+        self.assertEqual(cm.exception.code, 0)
+        out = json.loads(buf.getvalue())
+        self.assertTrue(out["metadata"]["redact_error"])
+        self.assertEqual(
+            out["hookSpecificOutput"]["hookEventName"],
+            "PostToolUse",
+        )
 
 
 if __name__ == "__main__":

@@ -132,3 +132,26 @@ def test_bash_object_tool_response_redacts_stdout():
     updated = response["hookSpecificOutput"]["updatedToolOutput"]
     assert updated["stdout"] == "found [CANARY_REDACTED] in output"
     assert updated["stderr"] == ""
+
+
+def test_bash_object_stderr_only_canary_blocks():
+    code, stdout = _run_hook(
+        json.dumps(
+            {
+                "tool_name": "Bash",
+                "tool_response": {
+                    "stdout": "",
+                    "stderr": "leaked SECRET_CANARY_xyz on stderr",
+                    "interrupted": False,
+                },
+            }
+        ),
+        {"FULLSEND_CANARY_TOKEN": "SECRET_CANARY_xyz"},
+    )
+    assert code == 1
+    response = json.loads(stdout)
+    assert response["decision"] == "block"
+    updated = response["hookSpecificOutput"]["updatedToolOutput"]
+    assert updated["stdout"] == ""
+    assert "[CANARY_REDACTED]" in updated["stderr"]
+    assert "SECRET_CANARY_xyz" not in updated["stderr"]

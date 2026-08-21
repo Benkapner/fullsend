@@ -384,3 +384,37 @@ class TestPassthrough:
     def test_exit_code_prefix_always_passthrough(self):
         out = run_hook(make_input("go test ./...", "Exit code 2\nFAIL something\n"))
         assert out is None
+
+    def test_interrupted_bash_object_passthrough(self):
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "go test ./..."},
+                "tool_response": {
+                    "stdout": "ok\tgithub.com/fullsend-ai/fullsend\t0.1s",
+                    "stderr": "",
+                    "interrupted": True,
+                    "isImage": False,
+                },
+            }
+        )
+        assert out is None
+
+    def test_bash_object_success_clears_stderr(self):
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "go test ./..."},
+                "tool_response": {
+                    "stdout": "ok\tgithub.com/fullsend-ai/fullsend\t0.12s\n",
+                    "stderr": "warning: verbose compiler noise\n",
+                    "interrupted": False,
+                    "isImage": False,
+                },
+            }
+        )
+        assert out is not None
+        updated = out["hookSpecificOutput"]["updatedToolOutput"]
+        assert "packages passed" in updated["stdout"]
+        assert updated["stderr"] == ""
+        assert updated["interrupted"] is False

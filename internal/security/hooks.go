@@ -134,26 +134,15 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 		})
 	}
 
-	// PostToolUse sanitizers for Bash|WebFetch|Read. Claude Code runs matching
-	// hooks in parallel with no stdout piping, so ordering cannot be settings
-	// matcher position — a single posttool_chain.py driver applies suppress →
-	// unicode → redact in-process (fullsend#6357). The driver skips sibling
-	// scripts that HookFiles omitted. Adapters that invoke HookPlan should
-	// call this one script rather than the individual sanitizers.
-	if postToolSanitizeEnabled(hooks) {
-		plan = append(plan, HookGroup{
-			Phase: HookPhasePostToolUse, Tools: []string{"Bash", "WebFetch", "Read"},
-			Scripts: []string{"posttool_chain.py"},
-		})
-	}
-
-	// Canary PostToolUse hook (all tools). Separate group from the
-	// Bash|WebFetch|Read chain because canary must catch leaks from any
-	// tool including MCP tools.
-	if canaryPostToolEnabled(hooks) {
+	// PostToolUse driver for every tool. Claude Code runs matching hooks in
+	// parallel and does not merge two updatedToolOutput rewrites, so suppress →
+	// unicode → redact → canary must share one process (fullsend#6357). The
+	// driver skips sibling scripts that HookFiles omitted. Adapters that
+	// invoke HookPlan should call this one script rather than the stages.
+	if postToolChainEnabled(hooks) {
 		plan = append(plan, HookGroup{
 			Phase: HookPhasePostToolUse, Tools: []string{AllTools},
-			Scripts: []string{"canary_posttool.py"},
+			Scripts: []string{"posttool_chain.py"},
 		})
 	}
 
@@ -195,7 +184,7 @@ func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	if ssrfPreToolEnabled(hooks) {
 		files["ssrf_pretool.py"] = SSRFPreToolHook
 	}
-	if postToolSanitizeEnabled(hooks) {
+	if postToolChainEnabled(hooks) {
 		files["posttool_chain.py"] = PostToolChainHook
 	}
 	if secretRedactPostToolEnabled(hooks) {
@@ -253,8 +242,12 @@ func postToolSanitizeEnabled(hooks SandboxHookConfig) bool {
 		secretRedactPostToolEnabled(hooks)
 }
 
-func postToolProtocolEnabled(hooks SandboxHookConfig) bool {
+func postToolChainEnabled(hooks SandboxHookConfig) bool {
 	return postToolSanitizeEnabled(hooks) || canaryPostToolEnabled(hooks)
+}
+
+func postToolProtocolEnabled(hooks SandboxHookConfig) bool {
+	return postToolChainEnabled(hooks)
 }
 
 // hookLibraryFile reports scripts shipped as imports for other hooks, not
@@ -264,7 +257,8 @@ func hookLibraryFile(name string) bool {
 	case "hook_io.py",
 		"context_suppress_posttool.py",
 		"unicode_posttool.py",
-		"secret_redact_posttool.py":
+		"secret_redact_posttool.py",
+		"canary_posttool.py":
 		return true
 	default:
 		return false

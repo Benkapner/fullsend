@@ -26,21 +26,16 @@ func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	assert.Len(t, preTools, 3) // tirith + ssrf + canary_pretool (tool_allowlist disabled by default)
 
 	postTools := hooks["PostToolUse"].([]any)
-	assert.Len(t, postTools, 2) // Bash|WebFetch|Read chain + canary * matcher
+	assert.Len(t, postTools, 1) // single chain matcher covers sanitizers + canary
 
 	// Verify sanitization is a single chained driver (Claude Code runs hooks
 	// in parallel; ordering is enforced inside posttool_chain.py).
 	matcher := postTools[0].(map[string]any)
-	assert.Equal(t, "Bash|WebFetch|Read", matcher["matcher"])
+	assert.Equal(t, "*", matcher["matcher"])
 	chainedHooks := matcher["hooks"].([]any)
 	assert.Len(t, chainedHooks, 1)
 	assert.Contains(t, chainedHooks[0].(map[string]any)["command"], "posttool_chain.py")
-
-	// Verify canary hook has its own * matcher.
-	canaryMatcher := postTools[1].(map[string]any)
-	assert.Equal(t, "*", canaryMatcher["matcher"])
-	canaryHooks := canaryMatcher["hooks"].([]any)
-	assert.Len(t, canaryHooks, 1)
+	assert.NotContains(t, string(data), "canary_posttool.py")
 }
 
 func TestGenerateHooksConfig_TirithDisabled(t *testing.T) {
@@ -174,7 +169,7 @@ func TestGenerateHooksConfig_UnicodeDisabled(t *testing.T) {
 
 	hooks := settings["hooks"].(map[string]any)
 	postTools := hooks["PostToolUse"].([]any)
-	assert.Len(t, postTools, 2) // chain matcher + canary matcher
+	assert.Len(t, postTools, 1) // chain matcher (canary is an in-process stage)
 
 	// Unicode disabled: chain still runs (suppress + redact as siblings).
 	matcher := postTools[0].(map[string]any)
@@ -201,7 +196,7 @@ func TestGenerateHooksConfig_SecretRedactDisabled(t *testing.T) {
 
 	hooks := settings["hooks"].(map[string]any)
 	postTools := hooks["PostToolUse"].([]any)
-	assert.Len(t, postTools, 2) // chain matcher + canary matcher
+	assert.Len(t, postTools, 1) // chain matcher (canary is an in-process stage)
 
 	// Secret redact disabled: chain still runs (suppress + unicode as siblings).
 	matcher := postTools[0].(map[string]any)
@@ -228,7 +223,7 @@ func TestGenerateHooksConfig_ContextSuppressDisabled(t *testing.T) {
 
 	hooks := settings["hooks"].(map[string]any)
 	postTools := hooks["PostToolUse"].([]any)
-	assert.Len(t, postTools, 2) // chain matcher + canary matcher
+	assert.Len(t, postTools, 1) // chain matcher (canary is an in-process stage)
 
 	// Context suppress disabled: chain still runs (unicode + redact as siblings).
 	matcher := postTools[0].(map[string]any)
@@ -247,7 +242,7 @@ func TestGenerateHooksConfig_PostToolSanitizeHookOrder(t *testing.T) {
 
 	postTools := settings["hooks"].(map[string]any)["PostToolUse"].([]any)
 	matcher := postTools[0].(map[string]any)
-	require.Equal(t, "Bash|WebFetch|Read", matcher["matcher"])
+	require.Equal(t, "*", matcher["matcher"])
 
 	chainedHooks := matcher["hooks"].([]any)
 	require.Len(t, chainedHooks, 1)
@@ -275,7 +270,7 @@ func TestGenerateHooksConfig_CanaryPostToolDisabled(t *testing.T) {
 	assert.Len(t, postTools, 1) // only the chain matcher, no canary posttool
 
 	matcher := postTools[0].(map[string]any)
-	assert.Equal(t, "Bash|WebFetch|Read", matcher["matcher"])
+	assert.Equal(t, "*", matcher["matcher"])
 
 	// canary_pretool should still be in PreToolUse
 	preTools := hooks["PreToolUse"].([]any)
@@ -302,9 +297,9 @@ func TestGenerateHooksConfig_CanaryPreToolDisabled(t *testing.T) {
 	preTools := hooks["PreToolUse"].([]any)
 	assert.Len(t, preTools, 2) // tirith + ssrf, no canary_pretool
 
-	// canary_posttool should still be in PostToolUse
+	// canary_pretool disabled: PostToolUse chain is unchanged
 	postTools := hooks["PostToolUse"].([]any)
-	assert.Len(t, postTools, 2) // chain + canary_posttool
+	assert.Len(t, postTools, 1) // chain still scheduled; canary is an in-process stage
 }
 
 func TestGenerateHooksConfig_ToolAllowlistEnabled(t *testing.T) {
@@ -388,13 +383,11 @@ func TestHookPlan_DefaultsAndOrder(t *testing.T) {
 	assert.Equal(t, []string{AllTools}, pre[2].Tools)
 	assert.Equal(t, []string{"canary_pretool.py"}, pre[2].Scripts)
 
-	// Post-tool: one chained driver plus canary. Individual sanitizers are
-	// libraries imported by posttool_chain.py, not separate plan entries.
-	require.Len(t, post, 2)
-	assert.Equal(t, []string{"Bash", "WebFetch", "Read"}, post[0].Tools)
+	// Post-tool: one chained driver on * (canary is an in-process stage).
+	// Individual sanitizers and canary_posttool.py are libraries.
+	require.Len(t, post, 1)
+	assert.Equal(t, []string{AllTools}, post[0].Tools)
 	assert.Equal(t, []string{"posttool_chain.py"}, post[0].Scripts)
-	assert.Equal(t, []string{AllTools}, post[1].Tools)
-	assert.Equal(t, []string{"canary_posttool.py"}, post[1].Scripts)
 
 	// Every script the plan references is shipped by HookFiles. Library
 	// modules (hook_io + sanitizer stages) are shipped but not scheduled.
@@ -447,13 +440,37 @@ func TestHookPlan_CoversHookFiles_AllEnabled(t *testing.T) {
 	require.NoError(t, err)
 	for name := range files {
 		if hookLibraryFile(name) {
-			if name == "hook_io.py" {
-				assert.NotContains(t, string(settings), SandboxHooksDir+"/"+name)
-			}
+			assert.NotContains(t, string(settings), SandboxHooksDir+"/"+name)
 			continue
 		}
 		assert.Contains(t, string(settings), SandboxHooksDir+"/"+name)
 	}
+}
+
+func TestHookPlan_CanaryOnlyUsesChain(t *testing.T) {
+	off := false
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		SecretRedactPostTool:    &off,
+		UnicodePostTool:         &off,
+		ContextSuppressPostTool: &off,
+	}}}
+	cfg := SandboxHookConfigFromHarness(h)
+	plan := HookPlan(cfg)
+	var post []HookGroup
+	for _, g := range plan {
+		if g.Phase == HookPhasePostToolUse {
+			post = append(post, g)
+		}
+	}
+	require.Len(t, post, 1)
+	assert.Equal(t, []string{AllTools}, post[0].Tools)
+	assert.Equal(t, []string{"posttool_chain.py"}, post[0].Scripts)
+
+	files := HookFiles(cfg)
+	assert.Contains(t, files, "posttool_chain.py")
+	assert.Contains(t, files, "canary_posttool.py")
+	assert.Contains(t, files, "hook_io.py")
+	assert.NotContains(t, files, "secret_redact_posttool.py")
 }
 
 func TestHookPlan_AllDisabled(t *testing.T) {

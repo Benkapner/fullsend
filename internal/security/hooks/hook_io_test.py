@@ -1,0 +1,65 @@
+"""Tests for hook_io PostToolUse helpers."""
+
+from __future__ import annotations
+
+import hook_io
+
+
+def test_scan_text_sees_stderr_when_stdout_empty():
+    text = hook_io.scan_text({"stdout": "", "stderr": "CANARY_LEAK", "interrupted": False})
+    assert "CANARY_LEAK" in text
+
+
+def test_scan_text_concatenates_stdout_and_stderr():
+    text = hook_io.scan_text({"stdout": "out-", "stderr": "err"})
+    assert text == "out-err"
+
+
+def test_scan_text_walks_nested_mcp_body():
+    assert "SECRET" in hook_io.scan_text({"body": "SECRET"})
+
+
+def test_apply_text_blanks_stderr_on_bash_object():
+    original = {"stdout": "verbose\nlogs\n", "stderr": "warning", "interrupted": False}
+    updated = hook_io.apply_text(original, "go test: passed")
+    assert updated["stdout"] == "go test: passed"
+    assert updated["stderr"] == ""
+    assert updated["interrupted"] is False
+
+
+def test_apply_text_preserves_unrecognized_dict_shape():
+    original = {"chunks": [{"bytes": "secret"}], "interrupted": False}
+    updated = hook_io.apply_text(original, "summary")
+    assert updated is original
+    assert not hook_io.has_text_slot(original)
+
+
+def test_has_text_slot_bash_object():
+    assert hook_io.has_text_slot({"stdout": "", "stderr": "x"})
+
+
+def test_looks_failed_exit_code_prefix():
+    assert hook_io.looks_failed("Exit code 1\nboom", "Exit code 1\nboom")
+
+
+def test_looks_failed_interrupted_bash_object():
+    value = {"stdout": "partial", "stderr": "", "interrupted": True}
+    assert hook_io.looks_failed(value, hook_io.scan_text(value))
+
+
+def test_looks_failed_successful_bash_object():
+    value = {"stdout": "ok", "stderr": "", "interrupted": False}
+    assert not hook_io.looks_failed(value, hook_io.scan_text(value))
+
+
+def test_redact_canary_empty_token_is_noop():
+    value = {"stdout": "hello", "stderr": "world"}
+    assert hook_io.redact_canary(value, "") is value
+    assert hook_io.redact_canary(value, "   ") is value
+
+
+def test_redact_canary_walks_stderr():
+    value = {"stdout": "", "stderr": "leaked SECRET_CANARY_xyz here"}
+    updated = hook_io.redact_canary(value, "SECRET_CANARY_xyz")
+    assert updated["stderr"] == "leaked [CANARY_REDACTED] here"
+    assert updated["stdout"] == ""

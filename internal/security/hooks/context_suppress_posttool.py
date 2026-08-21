@@ -281,8 +281,9 @@ def main() -> None:
     original = hook_io.payload(hook_input)
     text = hook_io.scan_text(original)
 
-    # Non-zero exit code: always pass through full output for agent to act on.
-    if text.startswith("Exit code"):
+    # Failures pass through: string adapters prefix ``Exit code``; Claude Code
+    # Bash objects use ``interrupted`` (no exit-code field on the payload).
+    if hook_io.looks_failed(original, text):
         sys.exit(0)
 
     summary = try_suppress(command, text)
@@ -290,6 +291,8 @@ def main() -> None:
         sys.exit(0)
 
     log_suppression(command, summary)
+    if not hook_io.has_text_slot(original):
+        sys.exit(0)
     hook_io.emit_updated(hook_io.apply_text(original, summary))
     sys.exit(0)
 
