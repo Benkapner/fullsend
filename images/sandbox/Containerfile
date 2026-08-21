@@ -53,6 +53,21 @@ ARG CLAUDE_CODE_VERSION=2.1.234
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # ---------------------------------------------------------------------------
+# Install pi (earendil-works/pi) — pinned version, same supply-chain rationale
+# as Claude Code above. --ignore-scripts is the upstream-recommended install
+# (the package ships an npm-shrinkwrap.json; no postinstall needed). Stub
+# runtime for now — see #6464; the runtime is not user-selectable until
+# implemented, but the binary ships so fixture recording and the upcoming
+# Bootstrap/Run work run against a pinned, reviewed version.
+#
+# To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
+# regex entry in renovate.json. pi releases ~weekly minors and has changed
+# its --mode json wire shape within a minor before (0.84.0) — the pi stream
+# parser fixtures must be re-verified when this pin moves.
+ARG PI_VERSION=0.84.2
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
+
+# ---------------------------------------------------------------------------
 # ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection
 # scanning. The fullsend binary loads the model directly via Go (hugot +
 # onnxruntime) — no Python, no cold-start latency.

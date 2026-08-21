@@ -115,6 +115,16 @@
     },
     {
       "customType": "regex",
+      "description": "Track pi CLI version pin in the sandbox image (#6464). Bumps must re-verify the pi stream parser fixtures — the --mode json wire shape changed within a minor before (0.84.0).",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "PI_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "@earendil-works/pi-coding-agent",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
       "description": "Track tirith CLI version pin in the sandbox image. SHA256 checksums are updated automatically by postUpgradeTasks (scripts/renovate/update-tirith-checksums.sh).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
