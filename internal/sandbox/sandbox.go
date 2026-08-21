@@ -316,10 +316,14 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 			return lastErr
 		}
 		if attempt < providerRetries-1 {
-			time.Sleep(providerRetryBackoff)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(providerRetryBackoff):
+			}
 		}
 	}
-	return lastErr
+	return fmt.Errorf("provider create %q failed after %d attempts: %w", name, providerRetries, lastErr)
 }
 
 // isUnsupportedProviderErr reports whether err contains the openshell
