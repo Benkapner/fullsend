@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -68,6 +71,10 @@ const (
 	// harness dynamically.
 	defaultAgentsRepoOwner = "fullsend-ai"
 	defaultAgentsRepoName  = "agents"
+
+	// maxSandboxNameLen is the maximum length of an OpenShell sandbox name.
+	// OpenShell enforces this at creation time.
+	maxSandboxNameLen = 19
 )
 
 // preflightCheckTimeout bounds the execution time for a validation_loop
@@ -899,9 +906,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	workItemID := resolveWorkItemID()
 
 	// 3. Create run directory and initialise tracer.
-	// Lowercase the agent segment so eval-measure --agent (also lowercased)
-	// matches the host runDir even when the CLI arg was mixed-case.
-	sandboxName := fmt.Sprintf("agent-%s-%d-%d", strings.ToLower(agentName), os.Getpid(), time.Now().Unix())
+	sandboxName := generateSandboxName(agentName)
+	if len(sandboxName) > maxSandboxNameLen {
+		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
+	}
 	if outputBase == "" {
 		outputBase = filepath.Join(os.TempDir(), "fullsend")
 	}
@@ -3327,6 +3335,49 @@ func injectTraceID(sandboxName, traceID string) error {
 	cmd := fmt.Sprintf("echo 'export FULLSEND_TRACE_ID=%s' >> %s/.env", traceID, sandbox.SandboxWorkspace)
 	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	return err
+}
+
+// sandboxNameSeq is a monotonic counter appended to sandbox name hash
+// inputs, ensuring uniqueness even when PID and wall-clock are identical
+// (e.g., on coarse-clock VMs or within tight loops in tests).
+var sandboxNameSeq atomic.Uint64
+
+// generateSandboxName produces a unique sandbox name that fits within the
+// OpenShell maximum of maxSandboxNameLen (19) characters. It embeds a
+// truncated agent-name slug for debuggability (visible in logs, output dirs,
+// and --keep-sandbox hints), then hashes the PID, nanosecond timestamp, and a
+// monotonic counter to produce a collision-resistant identifier in the form
+// "fs-<slug>-<hex>" (19 characters total).
+func generateSandboxName(agentName string) string {
+	slug := agentSlug(agentName)
+	seq := sandboxNameSeq.Add(1)
+	h := sha256.Sum256([]byte(fmt.Sprintf("%d-%d-%d", os.Getpid(), time.Now().UnixNano(), seq)))
+	hashLen := maxSandboxNameLen - len("fs-") - len(slug) - 1 // 1 for the dash after slug
+	return fmt.Sprintf("fs-%s-%s", slug, hex.EncodeToString(h[:])[:hashLen])
+}
+
+// agentSlug returns the first 3 lowercase alphanumeric characters of the
+// agent name for embedding in sandbox names. Returns "unk" for empty or
+// non-alphanumeric names.
+func agentSlug(name string) string {
+	const slugLen = 3
+	var slug []byte
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			slug = append(slug, byte(r))
+			if len(slug) == slugLen {
+				return string(slug)
+			}
+		}
+	}
+	if len(slug) == 0 {
+		return "unk"
+	}
+	// Pad short names by repeating the last character.
+	for len(slug) < slugLen {
+		slug = append(slug, slug[len(slug)-1])
+	}
+	return string(slug)
 }
 
 // applySandboxImageOverride replaces image with the FULLSEND_SANDBOX_IMAGE env

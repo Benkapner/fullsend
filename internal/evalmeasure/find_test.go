@@ -155,3 +155,103 @@ func TestFindPlatformTelemetry_EmptyMatchingRunDirIgnoresPlantedRoot(t *testing.
 	require.NoError(t, err)
 	assert.Empty(t, got, "matching empty runDir must not fall back to planted root")
 }
+
+// --- Tests for the current fs-<slug>-<hex> naming scheme ---
+
+func TestFindPlatformTelemetry_NewFormatRunDir(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	runDir := filepath.Join(outputDir, "fs-rev-a1b2c3d4e5f6")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+	platform := filepath.Join(runDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(platform, []byte("platform\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "review")
+	require.NoError(t, err)
+	require.Equal(t, []string{platform}, got)
+}
+
+func TestFindPlatformTelemetry_NewFormatNoAgentFilter(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	runDir := filepath.Join(outputDir, "fs-tri-deadbeef1234")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+	platform := filepath.Join(runDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(platform, []byte("platform\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{platform}, got)
+}
+
+func TestFindPlatformTelemetry_NewFormatAgentMismatch(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	runDir := filepath.Join(outputDir, "fs-cod-abcdef012345")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, PlatformTelemetryFile), []byte("x\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "triage")
+	require.NoError(t, err)
+	assert.Empty(t, got, "fs-cod-* must not match agent=triage")
+}
+
+func TestFindPlatformTelemetry_MixedOldAndNewFormat(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	// Legacy dir — older mod time.
+	oldDir := filepath.Join(outputDir, "agent-triage-1-1")
+	require.NoError(t, os.MkdirAll(oldDir, 0o755))
+	oldFile := filepath.Join(oldDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(oldFile, []byte("old\n"), 0o644))
+
+	// New-format dir — newer mod time.
+	newDir := filepath.Join(outputDir, "fs-tri-aabbccddee00")
+	require.NoError(t, os.MkdirAll(newDir, 0o755))
+	newFile := filepath.Join(newDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(newFile, []byte("new\n"), 0o644))
+
+	// Without agent filter: newest file wins.
+	got, err := FindPlatformTelemetry(outputDir, "")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	// With agent filter: both formats match "triage" (legacy full name,
+	// new slug "tri"); newest wins.
+	gotAgent, err := FindPlatformTelemetry(outputDir, "triage")
+	require.NoError(t, err)
+	require.Len(t, gotAgent, 1)
+}
+
+func TestFindPlatformTelemetry_NewFormatIgnoresNestedCopy(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	runDir := filepath.Join(outputDir, "fs-rev-1234567890ab")
+	nested := filepath.Join(runDir, "iteration-1", "output")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+
+	platform := filepath.Join(runDir, PlatformTelemetryFile)
+	planted := filepath.Join(nested, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(platform, []byte("platform\n"), 0o644))
+	require.NoError(t, os.WriteFile(planted, []byte("planted\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{platform}, got)
+}
+
+func TestFindPlatformTelemetry_NewFormatPrefersRunDirOverPlantedRoot(t *testing.T) {
+	t.Parallel()
+	outputDir := t.TempDir()
+	planted := filepath.Join(outputDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(planted, []byte("planted\n"), 0o644))
+
+	runDir := filepath.Join(outputDir, "fs-rev-ffeeddccbbaa")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+	platform := filepath.Join(runDir, PlatformTelemetryFile)
+	require.NoError(t, os.WriteFile(platform, []byte("platform\n"), 0o644))
+
+	got, err := FindPlatformTelemetry(outputDir, "review")
+	require.NoError(t, err)
+	require.Equal(t, []string{platform}, got)
+}
