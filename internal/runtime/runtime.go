@@ -88,3 +88,49 @@ func Default() Backend {
 	r := ClaudeRuntime{}
 	return Backend{Runtime: r, Transcripts: r}
 }
+
+// DebugLogNamer is an optional extension a runtime or TranscriptHandler
+// implements to name the local debug-log artifact the runner writes per
+// iteration (e.g. "claude-debug.log"). Runtimes without it get
+// DefaultDebugLogName.
+type DebugLogNamer interface {
+	DebugLogName() string
+}
+
+// DefaultDebugLogName is the local debug-log filename for runtimes that do
+// not implement DebugLogNamer.
+const DefaultDebugLogName = "agent-debug.log"
+
+// DebugLogNameFor returns the debug-log filename from the first candidate
+// that implements DebugLogNamer with a non-empty name (callers pass the
+// Backend's Runtime and TranscriptHandler), falling back to
+// DefaultDebugLogName.
+func DebugLogNameFor(candidates ...any) string {
+	for _, v := range candidates {
+		if n, ok := v.(DebugLogNamer); ok {
+			if name := n.DebugLogName(); name != "" {
+				return name
+			}
+		}
+	}
+	return DefaultDebugLogName
+}
+
+// ContextBridger is an optional Runtime extension for runtimes that only
+// auto-load CLAUDE.md (not AGENTS.md) into their system context. When it
+// reports true and the target repo has AGENTS.md but no CLAUDE.md, the runner
+// injects a minimal CLAUDE.md pointer so the agent is not context-blind.
+// Runtimes that read AGENTS.md natively should not implement it (or return
+// false).
+type ContextBridger interface {
+	NeedsClaudeMDBridge() bool
+}
+
+// WantsClaudeMDBridge reports whether rt wants the CLAUDE.md→AGENTS.md
+// bridge file; false for runtimes that do not implement ContextBridger.
+func WantsClaudeMDBridge(rt Runtime) bool {
+	if b, ok := rt.(ContextBridger); ok {
+		return b.NeedsClaudeMDBridge()
+	}
+	return false
+}

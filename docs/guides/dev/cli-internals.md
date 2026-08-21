@@ -93,7 +93,7 @@ fullsend
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution
-│   ├── --debug [filter]                     #   Enable Claude Code debug logging
+│   ├── --debug [filter]                     #   Enable agent runtime debug logging
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth (0 disables)
 │   ├── --max-resources <int>                #   Max total remote resources per harness
