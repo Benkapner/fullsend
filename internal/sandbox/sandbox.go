@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -36,6 +37,12 @@ const (
 	DefaultMaxCreateAttempts = 3
 	retryInitialBackoff      = 5 * time.Second
 	retryMaxBackoff          = 15 * time.Second
+
+	// providerRetries is the number of times EnsureProvider retries on
+	// transient "unsupported provider type or profile" errors caused by
+	// concurrent ImportProfile processes deleting and reimporting profiles.
+	providerRetries      = 3
+	providerRetryBackoff = 500 * time.Millisecond
 )
 
 // RetrySleepFn is the function called between retry attempts in
@@ -156,6 +163,13 @@ func inGitDir(path, root string) bool {
 // is skipped entirely. This makes parallel fullsend run invocations safe —
 // only the first process imports, and subsequent processes see the cache hit.
 //
+// Concurrency safety: the delete+reimport critical section is protected by
+// a cross-process file lock (flock) keyed by profile id. This prevents the
+// race where a concurrent process deletes a profile between another
+// process's import and provider creation. Processes that block on the lock
+// re-check the cache after acquiring it (double-check pattern) and skip
+// the import if the winner already wrote the cache.
+//
 // When content has changed (hash mismatch or no cache), the existing profile
 // is deleted and reimported. If the reimport fails because a parallel process
 // already imported it, the error is treated as success.
@@ -165,7 +179,36 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 		return fmt.Errorf("hashing profile %q: %w", filepath.Base(profilePath), err)
 	}
 
+	// Fast path: check cache before acquiring the lock.
 	cachePath := profileFileCachePath(id)
+	if cached, readErr := os.ReadFile(cachePath); readErr == nil {
+		if strings.TrimSpace(string(cached)) == currentHash {
+			return nil
+		}
+	}
+
+	// Acquire a cross-process file lock so only one process at a time
+	// performs the non-atomic delete+reimport sequence for this profile.
+	lockPath := profileFileLockPath(id)
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("opening profile lock for %q: %w", id, err)
+	}
+	defer lockFile.Close()
+
+	// NOTE: LOCK_EX blocks without respecting ctx cancellation. This is
+	// acceptable because the lock holder's critical section is short: just
+	// a delete + reimport, each bounded by providerTimeout (30 s), so the
+	// worst-case wait is ~60 s. If stricter context-awareness is ever
+	// needed, switch to LOCK_NB in a poll loop that checks ctx.Done()
+	// between attempts.
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("acquiring profile lock for %q: %w", id, err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	// Double-check: the process that held the lock before us may have
+	// already imported this profile and written the cache.
 	if cached, readErr := os.ReadFile(cachePath); readErr == nil {
 		if strings.TrimSpace(string(cached)) == currentHash {
 			return nil
@@ -252,6 +295,10 @@ var reservedCredentialKeys = map[string]bool{
 // never appear on the process command line. The expanded values are injected
 // into the child process environment, where openshell reads them directly.
 // See https://docs.nvidia.com/openshell/latest/sandboxes/manage-providers#bare-key-form
+//
+// Transient "unsupported provider type or profile" errors are retried with
+// short backoff. These occur when a concurrent ImportProfile process
+// temporarily removes a profile during its delete+reimport cycle.
 func EnsureProvider(ctx context.Context, name, providerType string, credentials, config map[string]string, fromURL bool) error {
 	if fromURL {
 		for k := range credentials {
@@ -263,6 +310,42 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 
 	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config, fromURL)
 
+	var lastErr error
+	for attempt := range providerRetries {
+		lastErr = tryCreateProvider(ctx, name, args, extraEnv, secrets, credentials, config, fromURL)
+		if lastErr == nil {
+			return nil
+		}
+		// Retry only on "unsupported provider type or profile" — this is
+		// the transient error from the ImportProfile race.
+		if !isUnsupportedProviderErr(lastErr) {
+			return lastErr
+		}
+		if attempt < providerRetries-1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(providerRetryBackoff):
+			}
+		}
+	}
+	return fmt.Errorf("retries exhausted after %d attempts: %w", providerRetries, lastErr)
+}
+
+// isUnsupportedProviderErr reports whether err contains the openshell
+// error message indicating a missing or not-yet-imported profile.
+//
+// NOTE: This matches literal text from the openshell CLI's stderr output.
+// If openshell changes its error wording in a future version, this check
+// will silently stop matching and retries will no longer trigger. Update
+// the substring if the upstream message changes.
+func isUnsupportedProviderErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unsupported provider type or profile")
+}
+
+// tryCreateProvider performs a single attempt to create (or update) a
+// provider via openshell. Extracted from EnsureProvider to support retry.
+func tryCreateProvider(ctx context.Context, name string, args, extraEnv, secrets []string, credentials, config map[string]string, fromURL bool) error {
 	createCtx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(createCtx, "openshell", args...)
@@ -514,12 +597,28 @@ func hashProfileFile(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// profileTempPath returns a temp file path keyed by profile id with the
+// given extension. Used by profileFileCachePath and profileFileLockPath to
+// derive deterministic, per-profile paths without duplicating the hashing
+// logic.
+func profileTempPath(id, ext string) string {
+	idHash := sha256.Sum256([]byte(id))
+	return filepath.Join(os.TempDir(), "fullsend-profile-"+hex.EncodeToString(idHash[:8])+"."+ext)
+}
+
 // profileFileCachePath returns a temp file path for caching the hash of a
 // single profile file. The path is keyed to the profile id so that
 // different profiles get separate caches.
 func profileFileCachePath(id string) string {
-	idHash := sha256.Sum256([]byte(id))
-	return filepath.Join(os.TempDir(), "fullsend-profile-"+hex.EncodeToString(idHash[:8])+".sha256")
+	return profileTempPath(id, "sha256")
+}
+
+// profileFileLockPath returns a temp file path used as a cross-process
+// flock for serializing the delete+reimport critical section in
+// ImportProfile. Keyed by profile id so different profiles lock
+// independently.
+func profileFileLockPath(id string) string {
+	return profileTempPath(id, "lock")
 }
 
 // EnableProvidersV2 enables the providers_v2_enabled setting globally in the
