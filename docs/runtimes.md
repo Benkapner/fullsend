@@ -10,24 +10,25 @@ When adding a runtime, fill in the security matrix below and register it in `run
 |---------|---------|-----------|
 | `claude` | Production agent runs via Claude Code | Required |
 | `opencode` | OpenCode agent runs (stub — not yet functional; resolved by `runtime.Resolve()` but not in `ValidRuntimes()` until implemented) | Required |
+| `pi` | Pi agent runs ([earendil-works/pi](https://github.com/earendil-works/pi); stub — not yet functional; resolved by `runtime.Resolve()` but not in `ValidRuntimes()` until implemented, per #6464) | Required |
 | `dummy` | Behaviour tests — scripted ops in real sandbox | None |
 
 ## Security feature matrix
 
-| Feature | Where it runs | Claude Code | OpenCode (stub) | Notes for future runtimes |
-|---------|---------------|-------------|-----------------|---------------------------|
-| **Host-side context injection scan** (DeBERTa / LLM Guard, unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | N/A — stub | Requires sandbox image with ML models; harness `security.host_scanners` |
-| **Host-side runtime content scan** (agent def, SKILL.md, plugin JSON before upload) | Host (`scanRuntimeContent`) | ✓ | N/A — stub | Uses `security.InputPipeline()`; not part of `Runtime` interface — runner responsibility |
-| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ (loaded via `--settings`, #6358) | N/A — stub | `tirith_check.py`; harness `security.sandbox_hooks.tirith`; fails open on missing binary/timeout unless `TIRITH_REQUIRED=1` |
-| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ (e2e-guarded by `hooks-loaded.feature`) | N/A — stub | `ssrf_pretool.py`; default on |
-| **Canary token detection** | Sandbox Pre/PostToolUse hooks | pre ✓; post-tool field mismatch (#6357) | N/A — stub | `canary_pretool.py` / `canary_posttool.py`; both inert unless `FULLSEND_CANARY_TOKEN` is set |
-| **Secret redaction** | Sandbox PostToolUse hook | wired; not effective under Claude Code (#6357) | N/A — stub | `secret_redact_posttool.py` |
-| **Unicode normalization** | Sandbox PostToolUse hook | wired; not effective under Claude Code (#6357) | N/A — stub | `unicode_posttool.py` |
-| **Context suppression** | Sandbox PostToolUse hook | wired; not effective under Claude Code (#6357) | N/A — stub | `context_suppress_posttool.py` |
-| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | N/A — stub | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
-| **Prompt injection (DeBERTa)** | Host Path A + sandbox Path B | ✓ | N/A — stub | Same scanner stack as context files when enabled in harness |
-| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358) | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via OpenCode plugin hooks | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
-| **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
+| Feature | Where it runs | Claude Code | OpenCode (stub) | Pi (stub) | Notes for future runtimes |
+|---------|---------------|-------------|-----------------|-----------|---------------------------|
+| **Host-side context injection scan** (DeBERTa / LLM Guard, unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | N/A — stub | N/A — stub | Requires sandbox image with ML models; harness `security.host_scanners` |
+| **Host-side runtime content scan** (agent def, SKILL.md, plugin JSON before upload) | Host (`scanRuntimeContent`) | ✓ | N/A — stub | N/A — stub | Uses `security.InputPipeline()`; not part of `Runtime` interface — runner responsibility |
+| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ (loaded via `--settings`, #6358) | N/A — stub | N/A — stub; pi's blocking `tool_call` hook (`{block: true, reason}`) is a natural adapter for `HookPlan` | `tirith_check.py`; harness `security.sandbox_hooks.tirith`; fails open on missing binary/timeout unless `TIRITH_REQUIRED=1` |
+| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ (e2e-guarded by `hooks-loaded.feature`) | N/A — stub | N/A — stub | `ssrf_pretool.py`; default on |
+| **Canary token detection** | Sandbox Pre/PostToolUse hooks | pre ✓; post-tool field mismatch (#6357) | N/A — stub | N/A — stub | `canary_pretool.py` / `canary_posttool.py`; both inert unless `FULLSEND_CANARY_TOKEN` is set |
+| **Secret redaction** | Sandbox PostToolUse hook | wired; not effective under Claude Code (#6357) | N/A — stub | N/A — stub; pi's `tool_result` middleware chaining supports sequential PostToolUse script execution | `secret_redact_posttool.py` |
+| **Unicode normalization** | Sandbox PostToolUse hook | wired; not effective under Claude Code (#6357) | N/A — stub | N/A — stub | `unicode_posttool.py` |
+| **Context suppression** | Sandbox PostToolUse hook | wired; not effective under Claude Code (#6357) | N/A — stub | N/A — stub | `context_suppress_posttool.py` |
+| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | N/A — stub | N/A — stub; pi has native `--tools` allowlist; hook adapter translates lowercase tool names (#608) | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
+| **Prompt injection (DeBERTa)** | Host Path A + sandbox Path B | ✓ | N/A — stub | N/A — stub | Same scanner stack as context files when enabled in harness |
+| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358) | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via OpenCode plugin hooks | ✗ — `Bootstrap` is a stub; will wire `security.HookPlan` via pi's TypeScript extension API (`tool_call`/`tool_result` hooks with `{block: true, reason}` structured denial) | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
+| **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | No-op — see #6464; pi sessions are JSONL files under `PI_CODING_AGENT_DIR`/`--session-dir` | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
 
 ### Fail modes
 
@@ -50,7 +51,7 @@ A runtime whose `Bootstrap` does not type-assert `SandboxHooksBootstrap` will **
 
 **Contract version: v1** — as implemented by the scripts today. Field names below are what the *scripts* consume; see the Claude Code caveat before assuming they match a given runtime's native hook payload. A corrected/extended field set will bump the version (tracked in #6357).
 
-The hook scripts in `internal/security/hooks/*.py` are plain programs with no Claude Code dependency; Claude Code invokes them through `settings.json`. Any runtime can call them from its own tool-call interception point (OpenCode `tool.execute.before/after`, pi `tool_call`/`tool_result`, Cursor hooks, …).
+The hook scripts in `internal/security/hooks/*.py` are plain programs with no Claude Code dependency; Claude Code invokes them through `settings.json`. Any runtime can call them from its own tool-call interception point (OpenCode `tool.execute.before/after`, pi TypeScript extension API `tool_call`/`tool_result` with `{block: true, reason}` structured denial, Cursor hooks, …).
 
 - **Files:** `security.HookFiles(cfg)` returns `filename → script bytes` for the enabled hooks; `runtime.installHookScripts(sandbox, dir, cfg)` creates `dir` in the sandbox and uploads them there (executable) — any directory works. Claude uses `/sandbox/claude-config/hooks/` (`security.SandboxHooksDir`), with the wiring at `/sandbox/claude-config/hooks.json` (`security.SandboxHooksSettings`) loaded via `--settings`.
 - **Wiring:** `security.HookPlan(cfg)` returns ordered `HookGroup{Phase, Tools, Scripts}` entries. `Phase` is `PreToolUse` or `PostToolUse`; `Tools` are Claude Code tool names (`Bash`, `Read`, `WebFetch`, `*` = all) — runtimes with other names translate before matching (see #608). **Adapters must run the `Scripts` of one group sequentially in the listed order, feeding each script's modified result to the next** (the PostToolUse order suppress → unicode → redact is a security invariant). `GenerateHooksConfig` is rendered from `HookPlan`, so the two cannot diverge.
@@ -63,15 +64,15 @@ The hook scripts in `internal/security/hooks/*.py` are plain programs with no Cl
 
 Harness keys are runtime-neutral in the YAML but each runtime owns their translation. Claude Code passes them through unchanged; other runtimes must document their mapping here (this is also an acceptance criterion in #6319).
 
-| Harness key | Claude Code | OpenCode (stub) | Dummy | Notes for new runtimes |
-|-------------|-------------|-----------------|-------|------------------------|
-| `model` | `--model` (identity; aliases like `opus` resolved by the CLI) | — | ignored | `validModelName` is `^[a-zA-Z0-9_.@-]+$` — no `/`. Runtimes with `provider/model` ids need an alias table or a follow-up regex change |
-| `effort` | `--effort` (`low\|medium\|high\|xhigh\|max`, #6218) | — | ignored | Map to the runtime's reasoning knob or reject with a clear error |
-| `plugins` | Claude plugin marketplace layout (`bootstrapPlugins`) | — | ignored | Claude-specific format; warn and skip if unsupported |
-| Agent frontmatter `tools:` (`Bash(gh,jq)` syntax, ADR 0027) | Native Claude permission syntax | — | ignored | Enforce via `--tools`/allowlist plus a hook adapter; Claude tool names differ in case from most runtimes (#608) |
-| `skills` | `CLAUDE_CONFIG_DIR/skills/` | — | ignored | Agent Skills spec (`SKILL.md`) is portable; destination is `rt.ConfigDir() + "/skills"` (also used by the runtime fetch service) |
-| `security.sandbox_hooks` | `SandboxHooksBootstrap` → hooks.json via `--settings` | ✗ (stub) | ignored | See [Sandbox hook contract](#sandbox-hook-contract) |
-| `--debug` (CLI flag) | `--debug-file`, artifact `claude-debug.log` | — | no-op | Implement `DebugLogNamer` to name the artifact |
+| Harness key | Claude Code | OpenCode (stub) | Pi (stub) | Dummy | Notes for new runtimes |
+|-------------|-------------|-----------------|-----------|-------|------------------------|
+| `model` | `--model` (identity; aliases like `opus` resolved by the CLI) | — | — (pi uses `provider/model` format; needs alias table mapping, e.g. `anthropic/claude-sonnet-4-20250514`; no built-in Claude-on-Vertex yet — `anthropic-vertex` is pending upstream earendil-works/pi#5262, SHA-pinned community extension as interim) | ignored | `validModelName` is `^[a-zA-Z0-9_.@-]+$` — no `/`. Runtimes with `provider/model` ids need an alias table or a follow-up regex change |
+| `effort` | `--effort` (`low\|medium\|high\|xhigh\|max`, #6218) | — | — (maps to `--thinking`) | ignored | Map to the runtime's reasoning knob or reject with a clear error |
+| `plugins` | Claude plugin marketplace layout (`bootstrapPlugins`) | — | unsupported — warn and skip (pi uses TypeScript extensions, not plugins) | ignored | Claude-specific format; warn and skip if unsupported |
+| Agent frontmatter `tools:` (`Bash(gh,jq)` syntax, ADR 0027) | Native Claude permission syntax | — | — (pi has native `--tools` allowlist; tool names are lowercase — hook adapter translates to Claude-name vocabulary, see #608) | ignored | Enforce via `--tools`/allowlist plus a hook adapter; Claude tool names differ in case from most runtimes (#608) |
+| `skills` | `CLAUDE_CONFIG_DIR/skills/` | — | — (pi implements Agent Skills spec natively; destination is `PI_CODING_AGENT_DIR/skills/`) | ignored | Agent Skills spec (`SKILL.md`) is portable; destination is `rt.ConfigDir() + "/skills"` (also used by the runtime fetch service) |
+| `security.sandbox_hooks` | `SandboxHooksBootstrap` → hooks.json via `--settings` | ✗ (stub) | ✗ (stub; will wire via pi extension adapter using `tool_call`/`tool_result` hooks, ADR 0090) | ignored | See [Sandbox hook contract](#sandbox-hook-contract) |
+| `--debug` (CLI flag) | `--debug-file`, artifact `claude-debug.log` | — | — (no `DebugLogNamer` yet; uses default `agent-debug.log`) | no-op | Implement `DebugLogNamer` to name the artifact |
 
 ## Sandbox workspace layout
 
@@ -170,6 +171,18 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 | `assert_env` | `VAR_NAME` | Assert env var is set and non-empty in the sandbox |
 | `assert_file` | `path` | Assert file exists and is readable under the workspace |
 | `assert_json` | `path,json_path` | Assert JSON file exists and dot-path field is present and non-null (uses `jq`) |
+
+### Pi-specific known constraints (#6464)
+
+- **No permission system at all** — pi's stated posture is "run in a container". The OpenShell sandbox + L7 egress policy + credential placeholders (ADR 0017/0025) are the boundary, with the fullsend extension adapter as defense-in-depth (same posture as accepted for OpenCode in #1260 / ADR 0090).
+- **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` detects errors from the `agent_end` event's `stop_reason` field so the runner's exit-0-override (#2786/#5361) fires.
+- **No `--max-turns`/`--timeout`** — runner's exec timeout covers it.
+- **No built-in MCP** — out of scope; fleet uses none.
+- **No Claude-on-Vertex provider yet** — `google-vertex` is Gemini-only; `anthropic-vertex` is an open upstream PR (earendil-works/pi#5262) with a community extension (`twoGiants/pi-anthropic-vertex`) as SHA-pinned interim.
+- **Fast release cadence** (~weekly minors; 0.84.0 changed `message_update` wire shape) — pin exact versions, record test fixtures per pinned version.
+- **Tool names are lowercase** (`bash`, `read`, `write`, `edit`) — the hook adapter translates to the contract's Claude-name vocabulary (#608).
+- **Reads AGENTS.md natively** — no CLAUDE.md bridge needed (does not implement `ContextBridger`).
+- **Hardening levers** — `--tools` allowlist, `--no-extensions/--no-skills/--no-prompt-templates/--no-context-files`, `defaultProjectTrust: never` (repo-owned `.pi/` never loaded), `PI_OFFLINE=1`.
 
 ## Related docs
 

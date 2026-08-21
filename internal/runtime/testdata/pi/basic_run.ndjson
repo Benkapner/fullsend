@@ -1,0 +1,6 @@
+{"type":"session","session_id":"ses_pi_abc123","model":"claude-sonnet-4-20250514","version":"0.84.2"}
+{"type":"text","session_id":"ses_pi_abc123","text":"I'll list the files for you."}
+{"type":"tool_call","session_id":"ses_pi_abc123","tool":"bash","input":{"command":"ls"}}
+{"type":"tool_result","session_id":"ses_pi_abc123","tool":"bash","status":"completed","title":"$ ls","output":"file1.txt\nfile2.txt"}
+{"type":"message_end","session_id":"ses_pi_abc123","usage":{"input_tokens":100,"output_tokens":50,"reasoning_tokens":0,"cache_read":80,"cache_write":20},"cost":0.015}
+{"type":"agent_end","session_id":"ses_pi_abc123","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50,"reasoning_tokens":0,"cache_read":80,"cache_write":20},"cost":0.015}

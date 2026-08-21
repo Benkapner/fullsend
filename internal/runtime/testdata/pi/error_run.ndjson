@@ -1,0 +1,6 @@
+{"type":"session","session_id":"ses_pi_err456","model":"claude-sonnet-4-20250514","version":"0.84.2"}
+{"type":"tool_call","session_id":"ses_pi_err456","tool":"edit","input":{"file_path":"/nonexistent"}}
+{"type":"tool_result","session_id":"ses_pi_err456","tool":"edit","status":"error","error":"file not found"}
+{"type":"error","session_id":"ses_pi_err456","name":"APIError","message":"quota exhausted"}
+{"type":"message_end","session_id":"ses_pi_err456","usage":{"input_tokens":50,"output_tokens":10,"reasoning_tokens":0,"cache_read":40,"cache_write":5},"cost":0.005}
+{"type":"agent_end","session_id":"ses_pi_err456","stop_reason":"error","usage":{"input_tokens":50,"output_tokens":10,"reasoning_tokens":0,"cache_read":40,"cache_write":5},"cost":0.005}

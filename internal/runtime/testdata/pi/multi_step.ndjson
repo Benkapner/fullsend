@@ -1,0 +1,6 @@
+{"type":"session","session_id":"ses_pi_multi","model":"claude-sonnet-4-20250514","version":"0.84.2"}
+{"type":"text","session_id":"ses_pi_multi","text":"Step one."}
+{"type":"message_end","session_id":"ses_pi_multi","usage":{"input_tokens":100,"output_tokens":30,"reasoning_tokens":0,"cache_read":80,"cache_write":10},"cost":0.01}
+{"type":"text","session_id":"ses_pi_multi","text":"Step two."}
+{"type":"message_end","session_id":"ses_pi_multi","usage":{"input_tokens":200,"output_tokens":70,"reasoning_tokens":0,"cache_read":160,"cache_write":25},"cost":0.02}
+{"type":"agent_end","session_id":"ses_pi_multi","stop_reason":"end_turn","usage":{"input_tokens":300,"output_tokens":100,"reasoning_tokens":0,"cache_read":240,"cache_write":35},"cost":0.03}

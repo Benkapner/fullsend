@@ -26,6 +26,13 @@ func TestResolve(t *testing.T) {
 	_, isOC := oc.Transcripts.(OpenCodeRuntime)
 	assert.True(t, isOC, "Transcripts should be OpenCodeRuntime")
 
+	pi, err := Resolve("pi")
+	require.NoError(t, err)
+	assert.Equal(t, "pi", pi.Runtime.Name())
+	assert.NotNil(t, pi.Transcripts)
+	_, isPi := pi.Transcripts.(PiRuntime)
+	assert.True(t, isPi, "Transcripts should be PiRuntime")
+
 	_, err = Resolve("unknown")
 	require.Error(t, err)
 }
