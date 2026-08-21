@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1766,4 +1767,78 @@ exit 0
 	for i, err := range errs {
 		assert.NoError(t, err, "goroutine %d should succeed under flock serialization", i)
 	}
+}
+
+// TestImportProfiles_DoubleCheckCacheHit verifies the double-check pattern:
+// after acquiring the lock, ImportProfiles re-reads the cache and returns early
+// if another process already imported the profiles while we were waiting.
+func TestImportProfiles_DoubleCheckCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p1.yaml"), []byte("id: p1\nname: profile-one"), 0o644))
+
+	// Set up a no-op openshell so the test doesn't need a real one.
+	// If the double-check cache hit works, openshell import is never called.
+	script := `#!/bin/sh
+if [ "$3" = "import" ]; then
+  echo "import should not be called" >&2
+  exit 1
+fi
+exit 0
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	cachePath := profileCachePath(dir)
+	lockPath := profileDirLockPath(dir)
+	t.Cleanup(func() {
+		os.Remove(cachePath)
+		os.Remove(lockPath)
+	})
+
+	// Compute the expected hash so we can pre-populate the cache.
+	currentHash, err := hashProfileDir(dir)
+	require.NoError(t, err)
+
+	// Acquire the lock before starting ImportProfiles so it blocks.
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	require.NoError(t, err)
+	defer lockFile.Close()
+	require.NoError(t, syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX))
+
+	// No cache file → fast-path will miss. Start ImportProfiles in a
+	// goroutine; it will block waiting for our lock.
+	var importErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		importErr = ImportProfiles(dir)
+	}()
+
+	// Give ImportProfiles time to pass the fast-path check and block on the lock.
+	time.Sleep(50 * time.Millisecond)
+
+	// Simulate the "other process" having written the cache while we held the lock.
+	require.NoError(t, os.WriteFile(cachePath, []byte(currentHash), 0o600))
+
+	// Release the lock — ImportProfiles should now hit the double-check,
+	// see the cache, and return nil without calling openshell import.
+	require.NoError(t, syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN))
+
+	<-done
+	assert.NoError(t, importErr, "double-check cache hit should succeed without importing")
+}
+
+// TestImportProfiles_LockOpenFailure verifies that ImportProfiles returns a
+// clear error when the lock file cannot be created (e.g., temp dir missing).
+func TestImportProfiles_LockOpenFailure(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p1.yaml"), []byte("id: p1\nname: profile-one"), 0o644))
+
+	// Point TMPDIR to a non-existent directory so lock file creation fails.
+	t.Setenv("TMPDIR", filepath.Join(dir, "nonexistent"))
+
+	err := ImportProfiles(dir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "opening profiles lock")
 }

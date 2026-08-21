@@ -604,28 +604,31 @@ func hashProfileDir(dir string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// profileCachePath returns a temp file path for caching the profile directory
-// hash. The path is keyed to the absolute directory path so that different
-// fullsend-dir values get separate caches.
-func profileCachePath(dir string) string {
+// profileDirTempPath returns a temp file path keyed by the absolute directory
+// path with the given extension. Used by profileCachePath and profileDirLockPath
+// to derive deterministic, per-directory paths without duplicating the hashing
+// logic. This mirrors profileTempPath for single-profile paths.
+func profileDirTempPath(dir, ext string) string {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		absDir = dir
 	}
 	dirHash := sha256.Sum256([]byte(absDir))
-	return filepath.Join(os.TempDir(), "fullsend-profiles-"+hex.EncodeToString(dirHash[:8])+".sha256")
+	return filepath.Join(os.TempDir(), "fullsend-profiles-"+hex.EncodeToString(dirHash[:8])+"."+ext)
+}
+
+// profileCachePath returns a temp file path for caching the profile directory
+// hash. The path is keyed to the absolute directory path so that different
+// fullsend-dir values get separate caches.
+func profileCachePath(dir string) string {
+	return profileDirTempPath(dir, "sha256")
 }
 
 // profileDirLockPath returns a temp file path used as a cross-process flock
 // for serializing the delete+reimport critical section in ImportProfiles.
 // Keyed by directory path so different profile directories lock independently.
 func profileDirLockPath(dir string) string {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		absDir = dir
-	}
-	dirHash := sha256.Sum256([]byte(absDir))
-	return filepath.Join(os.TempDir(), "fullsend-profiles-"+hex.EncodeToString(dirHash[:8])+".lock")
+	return profileDirTempPath(dir, "lock")
 }
 
 // hashProfileFile computes a SHA-256 digest of a single profile file's
