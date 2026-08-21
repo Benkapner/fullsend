@@ -21,6 +21,14 @@ on:
     - cron: '*/30 * * * *'  # every 30 minutes
   workflow_dispatch:
 
+permissions:
+  actions: write
+  contents: write
+  id-token: write
+  issues: write
+  packages: read
+  pull-requests: write
+
 jobs:
   poll:
     runs-on: ubuntu-24.04
@@ -31,9 +39,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install fullsend CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Download and install fullsend CLI
-          # (use your preferred installation method)
+          gh release download --repo fullsend-ai/fullsend \
+            -p 'fullsend_*_linux_amd64.tar.gz' -O - | tar xz
+          sudo mv fullsend /usr/local/bin/
 
       - name: Poll Jira and build dispatch matrix
         id: dispatch
@@ -41,30 +52,39 @@ jobs:
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          TARGET_REPO: ${{ github.repository }}
         run: |
-          # Query Jira for relevant issues
-          # Build a matrix in the format fullsend dispatch produces
-          MATRIX=$(fullsend poll jira \
+          fullsend poll \
+            --input-driver jira-poll \
+            --jira-url "${JIRA_BASE_URL}" \
+            --jira-project MYPROJECT \
             --jql 'project=MYPROJECT and statusCategory != Done and updated > -1week and type=Bug' \
-            --output-driver gha-matrix)
+            --target-repo "${TARGET_REPO}" \
+            --output dispatches.json \
+            --fullsend-dir .fullsend
 
-          echo "matrix<<EOF" >> $GITHUB_OUTPUT
-          echo "$MATRIX" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Build GitHub Actions matrix format
+          if ! jq -e 'length > 0' dispatches.json > /dev/null 2>&1; then
+            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          MATRIX=$(jq -c '{include: .}' dispatches.json)
+          DELIM="MATRIX_$(openssl rand -hex 8)"
+          {
+            echo "matrix<<${DELIM}"
+            printf '%s' "${MATRIX}"
+            echo
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
 
   harness:
     needs: poll
-    permissions:
-      actions: write
-      contents: read
-      id-token: write
-      issues: write
-      pull-requests: write
     uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0
     with:
       matrix: ${{ needs.poll.outputs.matrix }}
       mint_url: ${{ vars.FULLSEND_MINT_URL }}
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      jira_base_url: ${{ vars.JIRA_BASE_URL }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -116,6 +136,15 @@ Your external repository needs these variables and secrets configured:
 2. **Harness job** calls `reusable-dispatch.yml` with the pre-computed matrix
 3. `reusable-dispatch.yml` skips the routing and dispatch steps, directly invoking `harness-run` with your matrix
 4. Harness agents execute according to your matrix configuration
+
+## Permissions
+
+The top-level `permissions:` block grants the maximum permissions required by `reusable-dispatch.yml`. Even though you're only running harness agents via the pre-computed matrix, GitHub validates that the caller grants sufficient permissions for all jobs in the reusable workflow (including code and fix jobs that won't actually run).
+
+Required permissions:
+- `contents: write` - needed by code/fix agents
+- `packages: read` - needed by code/fix agents
+- `actions: write`, `id-token: write`, `issues: write`, `pull-requests: write` - needed by all agents
 
 ## Authorization
 
