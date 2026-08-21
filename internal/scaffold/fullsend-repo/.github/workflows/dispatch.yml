@@ -113,8 +113,7 @@ jobs:
           # Extract the first word of the comment as the command
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
-            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}')"
-            while [[ "${COMMAND}" =~ [.,;:!?]$ ]]; do COMMAND="${COMMAND%[.,;:!?]}"; done
+            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]$//')"
           fi
 
           case "${EVENT_NAME}" in
