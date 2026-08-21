@@ -149,9 +149,29 @@ func inGitDir(path, root string) bool {
 
 // ImportProfile imports a single openshell provider profile from a YAML
 // file. The profile defines a provider type schema (credentials, endpoints).
-// To ensure content changes propagate on persistent gateways, the profile
-// is deleted by id before re-importing (mirroring the ImportProfiles flow).
+//
+// Idempotency is hash-based: the function computes a SHA-256 digest of the
+// profile file and compares it against a cached value in a temp file keyed
+// by the profile id. When the hash matches (content unchanged), the import
+// is skipped entirely. This makes parallel fullsend run invocations safe —
+// only the first process imports, and subsequent processes see the cache hit.
+//
+// When content has changed (hash mismatch or no cache), the existing profile
+// is deleted and reimported. If the reimport fails because a parallel process
+// already imported it, the error is treated as success.
 func ImportProfile(ctx context.Context, id, profilePath string) error {
+	currentHash, err := hashProfileFile(profilePath)
+	if err != nil {
+		return fmt.Errorf("hashing profile %q: %w", filepath.Base(profilePath), err)
+	}
+
+	cachePath := profileFileCachePath(id)
+	if cached, readErr := os.ReadFile(cachePath); readErr == nil {
+		if strings.TrimSpace(string(cached)) == currentHash {
+			return nil
+		}
+	}
+
 	// Best-effort delete so content changes propagate (same pattern as ImportProfiles).
 	delCtx, delCancel := context.WithTimeout(ctx, providerTimeout)
 	exec.CommandContext(delCtx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
@@ -164,10 +184,13 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	if err != nil {
 		outStr := strings.ToLower(string(out))
 		if strings.Contains(outStr, "already exists") {
+			// A parallel process imported the profile — safe to continue.
+			os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 			return nil
 		}
 		return fmt.Errorf("profile import %q failed: openshell: %w\noutput: %s", filepath.Base(profilePath), err, bytes.TrimSpace(out))
 	}
+	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 	return nil
 }
 
@@ -478,6 +501,25 @@ func profileCachePath(dir string) string {
 	}
 	dirHash := sha256.Sum256([]byte(absDir))
 	return filepath.Join(os.TempDir(), "fullsend-profiles-"+hex.EncodeToString(dirHash[:8])+".sha256")
+}
+
+// hashProfileFile computes a SHA-256 digest of a single profile file's
+// contents. This is the single-file analog of hashProfileDir.
+func hashProfileFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// profileFileCachePath returns a temp file path for caching the hash of a
+// single profile file. The path is keyed to the profile id so that
+// different profiles get separate caches.
+func profileFileCachePath(id string) string {
+	idHash := sha256.Sum256([]byte(id))
+	return filepath.Join(os.TempDir(), "fullsend-profile-"+hex.EncodeToString(idHash[:8])+".sha256")
 }
 
 // EnableProvidersV2 enables the providers_v2_enabled setting globally in the
