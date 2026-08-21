@@ -1388,8 +1388,7 @@ jobs:
 
   harness-dispatch:
     name: Harness dispatch
-    if: ${{ needs.route.outputs.stage == 'harness' && inputs.matrix == '' }}
-    needs: route
+    if: ${{ inputs.matrix == '' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
