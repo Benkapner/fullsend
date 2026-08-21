@@ -276,6 +276,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │    Variables (managed by sync):                            │ │
 │  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
+│  │              FULLSEND_REVIEW_CLIENT_ID (best-effort)       │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  secrets → .fullsend config repo│              │ │
