@@ -2,7 +2,6 @@ package security
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,11 +28,13 @@ func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	postTools := hooks["PostToolUse"].([]any)
 	assert.Len(t, postTools, 2) // Bash|WebFetch|Read chain + canary * matcher
 
-	// Verify sanitization hooks are chained within the first matcher.
+	// Verify sanitization is a single chained driver (Claude Code runs hooks
+	// in parallel; ordering is enforced inside posttool_chain.py).
 	matcher := postTools[0].(map[string]any)
 	assert.Equal(t, "Bash|WebFetch|Read", matcher["matcher"])
 	chainedHooks := matcher["hooks"].([]any)
-	assert.Len(t, chainedHooks, 3) // context_suppress → unicode → secret_redact
+	assert.Len(t, chainedHooks, 1)
+	assert.Contains(t, chainedHooks[0].(map[string]any)["command"], "posttool_chain.py")
 
 	// Verify canary hook has its own * matcher.
 	canaryMatcher := postTools[1].(map[string]any)
@@ -94,7 +95,7 @@ func TestGenerateHooksConfig_AllHooksDisabled(t *testing.T) {
 func TestHookFiles_AllDefaults(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
 	files := HookFiles(SandboxHookConfigFromHarness(h))
-	assert.Len(t, files, 7) // 5 existing + canary_pretool + canary_posttool (tool_allowlist disabled by default)
+	assert.Len(t, files, 9) // 7 default + hook_io + posttool_chain
 	assert.Contains(t, files, "tirith_check.py")
 	assert.Contains(t, files, "ssrf_pretool.py")
 	assert.Contains(t, files, "secret_redact_posttool.py")
@@ -102,6 +103,8 @@ func TestHookFiles_AllDefaults(t *testing.T) {
 	assert.Contains(t, files, "context_suppress_posttool.py")
 	assert.Contains(t, files, "canary_pretool.py")
 	assert.Contains(t, files, "canary_posttool.py")
+	assert.Contains(t, files, "hook_io.py")
+	assert.Contains(t, files, "posttool_chain.py")
 	assert.NotContains(t, files, "tool_allowlist_pretool.py")
 
 	// Verify embedded content is non-empty.
@@ -121,7 +124,7 @@ func TestHookFiles_SSRFDisabled(t *testing.T) {
 		},
 	}
 	files := HookFiles(SandboxHookConfigFromHarness(h))
-	assert.Len(t, files, 6) // both canary hooks still enabled
+	assert.Len(t, files, 8) // both canary hooks still enabled; chain + hook_io remain
 	assert.NotContains(t, files, "ssrf_pretool.py")
 }
 
@@ -136,7 +139,7 @@ func TestHookFiles_UnicodeDisabled(t *testing.T) {
 		},
 	}
 	files := HookFiles(SandboxHookConfigFromHarness(h))
-	assert.Len(t, files, 6) // both canary hooks still enabled
+	assert.Len(t, files, 8) // both canary hooks still enabled; chain + hook_io remain
 	assert.NotContains(t, files, "unicode_posttool.py")
 }
 
@@ -149,6 +152,8 @@ func TestEmbeddedHooksNotEmpty(t *testing.T) {
 	assert.NotEmpty(t, CanaryPreToolHook)
 	assert.NotEmpty(t, CanaryPostToolHook)
 	assert.NotEmpty(t, ToolAllowlistPreToolHook)
+	assert.NotEmpty(t, HookIO)
+	assert.NotEmpty(t, PostToolChainHook)
 }
 
 func TestGenerateHooksConfig_UnicodeDisabled(t *testing.T) {
@@ -171,10 +176,11 @@ func TestGenerateHooksConfig_UnicodeDisabled(t *testing.T) {
 	postTools := hooks["PostToolUse"].([]any)
 	assert.Len(t, postTools, 2) // chain matcher + canary matcher
 
-	// With unicode disabled: context_suppress + secret_redact in the chain.
+	// Unicode disabled: chain still runs (suppress + redact as siblings).
 	matcher := postTools[0].(map[string]any)
 	chainedHooks := matcher["hooks"].([]any)
-	assert.Len(t, chainedHooks, 2) // context_suppress + secret_redact
+	assert.Len(t, chainedHooks, 1)
+	assert.Contains(t, chainedHooks[0].(map[string]any)["command"], "posttool_chain.py")
 }
 
 func TestGenerateHooksConfig_SecretRedactDisabled(t *testing.T) {
@@ -197,10 +203,11 @@ func TestGenerateHooksConfig_SecretRedactDisabled(t *testing.T) {
 	postTools := hooks["PostToolUse"].([]any)
 	assert.Len(t, postTools, 2) // chain matcher + canary matcher
 
-	// With secret_redact disabled: context_suppress + unicode in the chain.
+	// Secret redact disabled: chain still runs (suppress + unicode as siblings).
 	matcher := postTools[0].(map[string]any)
 	chainedHooks := matcher["hooks"].([]any)
-	assert.Len(t, chainedHooks, 2) // context_suppress + unicode
+	assert.Len(t, chainedHooks, 1)
+	assert.Contains(t, chainedHooks[0].(map[string]any)["command"], "posttool_chain.py")
 }
 
 func TestGenerateHooksConfig_ContextSuppressDisabled(t *testing.T) {
@@ -223,10 +230,11 @@ func TestGenerateHooksConfig_ContextSuppressDisabled(t *testing.T) {
 	postTools := hooks["PostToolUse"].([]any)
 	assert.Len(t, postTools, 2) // chain matcher + canary matcher
 
-	// With context_suppress disabled: unicode + secret_redact in the chain.
+	// Context suppress disabled: chain still runs (unicode + redact as siblings).
 	matcher := postTools[0].(map[string]any)
 	chainedHooks := matcher["hooks"].([]any)
-	assert.Len(t, chainedHooks, 2) // unicode + secret_redact
+	assert.Len(t, chainedHooks, 1)
+	assert.Contains(t, chainedHooks[0].(map[string]any)["command"], "posttool_chain.py")
 }
 
 func TestGenerateHooksConfig_PostToolSanitizeHookOrder(t *testing.T) {
@@ -242,27 +250,8 @@ func TestGenerateHooksConfig_PostToolSanitizeHookOrder(t *testing.T) {
 	require.Equal(t, "Bash|WebFetch|Read", matcher["matcher"])
 
 	chainedHooks := matcher["hooks"].([]any)
-	commands := make([]string, len(chainedHooks))
-	for i, h := range chainedHooks {
-		commands[i] = h.(map[string]any)["command"].(string)
-	}
-
-	hookIndex := func(substr string) int {
-		for i, cmd := range commands {
-			if strings.Contains(cmd, substr) {
-				return i
-			}
-		}
-		t.Fatalf("hook containing %q not found in %v", substr, commands)
-		return -1
-	}
-
-	suppressIdx := hookIndex("context_suppress_posttool.py")
-	unicodeIdx := hookIndex("unicode_posttool.py")
-	redactIdx := hookIndex("secret_redact_posttool.py")
-
-	assert.Less(t, suppressIdx, unicodeIdx, "context_suppress must run before unicode")
-	assert.Less(t, unicodeIdx, redactIdx, "unicode must run before secret_redact")
+	require.Len(t, chainedHooks, 1)
+	assert.Contains(t, chainedHooks[0].(map[string]any)["command"].(string), "posttool_chain.py")
 }
 
 func TestGenerateHooksConfig_CanaryPostToolDisabled(t *testing.T) {
@@ -356,7 +345,7 @@ func TestHookFiles_ToolAllowlistEnabled(t *testing.T) {
 		},
 	}
 	files := HookFiles(SandboxHookConfigFromHarness(h))
-	assert.Len(t, files, 8) // 7 default + tool_allowlist
+	assert.Len(t, files, 10) // 9 default + tool_allowlist
 	assert.Contains(t, files, "tool_allowlist_pretool.py")
 }
 
@@ -371,7 +360,7 @@ func TestHookFiles_ContextSuppressDisabled(t *testing.T) {
 		},
 	}
 	files := HookFiles(SandboxHookConfigFromHarness(h))
-	assert.Len(t, files, 6) // both canary hooks still enabled
+	assert.Len(t, files, 8) // both canary hooks still enabled; chain + hook_io remain
 	assert.NotContains(t, files, "context_suppress_posttool.py")
 }
 
@@ -399,16 +388,16 @@ func TestHookPlan_DefaultsAndOrder(t *testing.T) {
 	assert.Equal(t, []string{AllTools}, pre[2].Tools)
 	assert.Equal(t, []string{"canary_pretool.py"}, pre[2].Scripts)
 
-	// Post-tool chain order is an invariant: suppress → unicode → redact.
+	// Post-tool: one chained driver plus canary. Individual sanitizers are
+	// libraries imported by posttool_chain.py, not separate plan entries.
 	require.Len(t, post, 2)
 	assert.Equal(t, []string{"Bash", "WebFetch", "Read"}, post[0].Tools)
-	assert.Equal(t, []string{
-		"context_suppress_posttool.py", "unicode_posttool.py", "secret_redact_posttool.py",
-	}, post[0].Scripts)
+	assert.Equal(t, []string{"posttool_chain.py"}, post[0].Scripts)
 	assert.Equal(t, []string{AllTools}, post[1].Tools)
 	assert.Equal(t, []string{"canary_posttool.py"}, post[1].Scripts)
 
-	// Every script the plan references is shipped by HookFiles, and vice versa.
+	// Every script the plan references is shipped by HookFiles. Library
+	// modules (hook_io + sanitizer stages) are shipped but not scheduled.
 	files := HookFiles(SandboxHookConfigFromHarness(&harness.Harness{}))
 	seen := map[string]bool{}
 	for _, g := range plan {
@@ -418,6 +407,9 @@ func TestHookPlan_DefaultsAndOrder(t *testing.T) {
 		}
 	}
 	for name := range files {
+		if hookLibraryFile(name) {
+			continue
+		}
 		assert.True(t, seen[name], "HookFiles ships %s but HookPlan never runs it", name)
 	}
 }
@@ -442,13 +434,24 @@ func TestHookPlan_CoversHookFiles_AllEnabled(t *testing.T) {
 		}
 	}
 	for name := range files {
+		if hookLibraryFile(name) {
+			assert.Equal(t, 0, seen[name], "library script %s should not be scheduled", name)
+			continue
+		}
 		assert.Equal(t, 1, seen[name], "script %s scheduled %d times", name, seen[name])
 	}
 	assert.Contains(t, seen, "tool_allowlist_pretool.py")
+	assert.Contains(t, seen, "posttool_chain.py")
 
 	settings, err := GenerateHooksConfig(cfg)
 	require.NoError(t, err)
 	for name := range files {
+		if hookLibraryFile(name) {
+			if name == "hook_io.py" {
+				assert.NotContains(t, string(settings), SandboxHooksDir+"/"+name)
+			}
+			continue
+		}
 		assert.Contains(t, string(settings), SandboxHooksDir+"/"+name)
 	}
 }

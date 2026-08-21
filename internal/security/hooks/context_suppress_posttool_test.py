@@ -25,11 +25,11 @@ def run_hook(hook_input: dict) -> dict | None:
     return json.loads(result.stdout)
 
 
-def make_input(command: str, tool_result: str) -> dict:
+def make_input(command: str, tool_result: str, *, key: str = "tool_result") -> dict:
     return {
         "tool_name": "Bash",
         "tool_input": {"command": command},
-        "tool_result": tool_result,
+        key: tool_result,
     }
 
 
@@ -39,6 +39,14 @@ def make_input(command: str, tool_result: str) -> dict:
 class TestScanSecrets:
     def test_no_findings(self):
         out = run_hook(make_input("scan-secrets foo.go bar.go", "No leaks found\n"))
+        assert out is not None
+        assert out["tool_result"] == "scan-secrets: passed (no findings)"
+        assert out["hookSpecificOutput"]["updatedToolOutput"] == out["tool_result"]
+
+    def test_tool_response_payload(self):
+        out = run_hook(
+            make_input("scan-secrets foo.go bar.go", "No leaks found\n", key="tool_response")
+        )
         assert out is not None
         assert out["tool_result"] == "scan-secrets: passed (no findings)"
 

@@ -12,6 +12,7 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).parent
 UNICODE_HOOK = str(HOOKS_DIR / "unicode_posttool.py")
 SECRET_HOOK = str(HOOKS_DIR / "secret_redact_posttool.py")
+CHAIN_HOOK = str(HOOKS_DIR / "posttool_chain.py")
 
 PLAIN_PAT = "ghp_FAKEtesttoken000000000000000000000000"
 
@@ -21,10 +22,21 @@ def obfuscate_with_char(text: str, char: str) -> str:
     return char.join(text)
 
 
-def run_hook(script: str, tool_result: str) -> tuple[int, str, str]:
+def result_text(stdout: str) -> str:
+    out = json.loads(stdout)
+    updated = out.get("hookSpecificOutput", {}).get("updatedToolOutput")
+    if isinstance(updated, dict) and isinstance(updated.get("stdout"), str):
+        return updated["stdout"]
+    if isinstance(updated, str):
+        return updated
+    return out["tool_result"]
+
+
+def run_hook(script: str, payload: str | dict, *, key: str = "tool_result") -> tuple[int, str, str]:
+    body: dict = {"tool_name": "Read", key: payload}
     proc = subprocess.run(
         [sys.executable, script],
-        input=json.dumps({"tool_name": "Read", "tool_result": tool_result}),
+        input=json.dumps(body),
         capture_output=True,
         text=True,
         timeout=10,
@@ -38,15 +50,13 @@ def run_wrong_chain(tool_result: str) -> str:
     if rc != 0:
         raise RuntimeError(f"secret_redact hook failed: rc={rc}, stderr={stderr}")
     if stdout.strip():
-        out = json.loads(stdout)
-        tool_result = out["tool_result"]
+        tool_result = result_text(stdout)
 
     rc, stdout, stderr = run_hook(UNICODE_HOOK, tool_result)
     if rc != 0:
         raise RuntimeError(f"unicode hook failed: rc={rc}, stderr={stderr}")
     if stdout.strip():
-        out = json.loads(stdout)
-        return out["tool_result"]
+        return result_text(stdout)
     return tool_result
 
 
@@ -62,22 +72,32 @@ def to_fullwidth_ascii(text: str) -> str:
     return "".join(out)
 
 
-def run_chain(tool_result: str) -> str:
-    """Run unicode_posttool then secret_redact_posttool (correct sandbox order)."""
+def run_piped_chain(tool_result: str) -> str:
+    """Run unicode_posttool then secret_redact_posttool (legacy sequential order)."""
     rc, stdout, stderr = run_hook(UNICODE_HOOK, tool_result)
     if rc != 0:
         raise RuntimeError(f"unicode hook failed: rc={rc}, stderr={stderr}")
     if stdout.strip():
-        out = json.loads(stdout)
-        tool_result = out["tool_result"]
+        tool_result = result_text(stdout)
 
     rc, stdout, stderr = run_hook(SECRET_HOOK, tool_result)
     if rc != 0:
         raise RuntimeError(f"secret_redact hook failed: rc={rc}, stderr={stderr}")
     if stdout.strip():
-        out = json.loads(stdout)
-        return out["tool_result"]
+        return result_text(stdout)
     return tool_result
+
+
+def run_chain(payload: str | dict, *, key: str = "tool_response") -> str:
+    """Run the in-process driver Claude Code actually invokes."""
+    rc, stdout, stderr = run_hook(CHAIN_HOOK, payload, key=key)
+    if rc != 0:
+        raise RuntimeError(f"posttool_chain failed: rc={rc}, stderr={stderr}")
+    if not stdout.strip():
+        if isinstance(payload, str):
+            return payload
+        return json.dumps(payload)
+    return result_text(stdout)
 
 
 class TestPostToolChain(unittest.TestCase):
@@ -85,6 +105,10 @@ class TestPostToolChain(unittest.TestCase):
         result = run_chain(PLAIN_PAT)
         self.assertNotIn("ghp_FAKEtest", result)
         self.assertIn("...", result)
+
+    def test_tool_result_fallback_still_redacts(self):
+        result = run_chain(PLAIN_PAT, key="tool_result")
+        self.assertNotIn("ghp_FAKEtest", result)
 
     def test_zero_width_obfuscated_pat_redacted_by_chain(self):
         obfuscated = obfuscate_with_char(PLAIN_PAT, "\u200c")
@@ -117,6 +141,34 @@ class TestPostToolChain(unittest.TestCase):
         result = run_chain(fullwidth)
         self.assertNotIn("ghp_FAKEtest", result)
         self.assertIn("...", result)
+
+    def test_piped_legacy_order_still_redacts(self):
+        obfuscated = obfuscate_with_char(PLAIN_PAT, "\u200c")
+        result = run_piped_chain(obfuscated)
+        self.assertNotIn("ghp_FAKEtest", result)
+
+    def test_bash_object_tool_response_preserves_shape(self):
+        payload = {
+            "stdout": f"token {PLAIN_PAT}\n",
+            "stderr": "",
+            "interrupted": False,
+            "isImage": False,
+        }
+        rc, stdout, stderr = run_hook(CHAIN_HOOK, payload, key="tool_response")
+        self.assertEqual(rc, 0, stderr)
+        out = json.loads(stdout)
+        updated = out["hookSpecificOutput"]["updatedToolOutput"]
+        self.assertIsInstance(updated, dict)
+        self.assertNotIn("ghp_FAKEtest", updated["stdout"])
+        self.assertEqual(updated["stderr"], "")
+        self.assertFalse(updated["interrupted"])
+
+    def test_emits_hook_specific_output(self):
+        rc, stdout, _ = run_hook(CHAIN_HOOK, PLAIN_PAT, key="tool_response")
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+        self.assertIn("updatedToolOutput", out["hookSpecificOutput"])
 
 
 if __name__ == "__main__":
