@@ -112,6 +112,12 @@ jobs:
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
+      - name: Validate event_action
+        if: ${{ inputs.event_action == '' }}
+        run: |
+          echo "::error::event_action is required when matrix is not provided"
+          exit 1
+
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1537,18 +1543,12 @@ jobs:
   harness-run:
     name: Harness run (${{ matrix.agent }})
     needs: [route, harness-dispatch]
-    if: |
-      ${{
-        !cancelled() && (
-          (inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) ||
-          (needs.route.outputs.stage == 'harness' && needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)
-        )
-      }}
+    if: ${{ !cancelled() && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix) }}
     concurrency:
-      group: fullsend-harness-${{ matrix.agent }}-${{ github.repository }}-${{ matrix.status_number }}
+      group: fullsend-harness-${{ matrix.agent }}-${{ matrix.status_repo }}-${{ matrix.status_number }}
       cancel-in-progress: true
     runs-on: ${{ inputs.runner_image }}
     permissions:
