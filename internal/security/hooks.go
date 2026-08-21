@@ -32,6 +32,9 @@ var CanaryPostToolHook []byte
 //go:embed hooks/tool_allowlist_pretool.py
 var ToolAllowlistPreToolHook []byte
 
+// HookIO is the shared PostToolUse protocol library imported by the chain
+// and by individual sanitizer/canary scripts. It is not itself a hook.
+//
 //go:embed hooks/hook_io.py
 var HookIO []byte
 

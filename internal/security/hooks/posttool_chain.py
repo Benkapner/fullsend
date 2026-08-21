@@ -7,8 +7,8 @@ hooks that both emit ``updatedToolOutput`` race. This driver loads each
 enabled sibling script and applies them in-process.
 
 A stage is enabled when its script file is present next to this driver
-(HookFiles omits disabled sanitizers). FULLSEND_POSTTOOL_SKIP may list stage
-tokens (suppress, unicode, redact, canary) for tests.
+(HookFiles omits disabled sanitizers). Tests disable a stage by omitting
+its sibling file, not via environment variables.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import os
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import hook_io
 
@@ -33,14 +34,7 @@ _STAGE_FILES = {
 }
 
 
-def _skip_set() -> set[str]:
-    raw = os.environ.get("FULLSEND_POSTTOOL_SKIP", "")
-    return {s.strip() for s in raw.split(",") if s.strip()}
-
-
 def stage_enabled(token: str) -> bool:
-    if token in _skip_set():
-        return False
     return (HOOKS_DIR / _STAGE_FILES[token]).is_file()
 
 
@@ -57,7 +51,7 @@ def _load_stage(token: str) -> types.ModuleType | None:
     return mod
 
 
-def _command(hook_input: dict) -> str:
+def _command(hook_input: dict[str, Any]) -> str:
     if hook_input.get("tool_name") != "Bash":
         return ""
     tool_input = hook_input.get("tool_input", {})
@@ -72,7 +66,7 @@ def _command(hook_input: dict) -> str:
     return command if isinstance(command, str) else ""
 
 
-def _stage_error(metadata: dict, token: str) -> None:
+def _stage_error(metadata: dict[str, Any], token: str) -> None:
     metadata[f"{token}_error"] = True
 
 
@@ -92,7 +86,7 @@ def main() -> None:
 
     original = hook_io.payload(hook_input)
     updated = original
-    metadata: dict = {}
+    metadata: dict[str, Any] = {}
 
     canary_token = os.environ.get("FULLSEND_CANARY_TOKEN", "").strip()
     canary_hit = False

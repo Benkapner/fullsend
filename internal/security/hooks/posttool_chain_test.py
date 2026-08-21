@@ -179,6 +179,42 @@ class TestPostToolChain(unittest.TestCase):
         self.assertEqual(updated["stderr"], "")
         self.assertFalse(updated["interrupted"])
 
+    def test_bash_object_unicode_then_redact(self):
+        obfuscated = obfuscate_with_char(PLAIN_PAT, "\u200c")
+        payload = {
+            "stdout": f"token {obfuscated}\n",
+            "stderr": "",
+            "interrupted": False,
+            "isImage": False,
+        }
+        rc, stdout, stderr = run_hook(CHAIN_HOOK, payload, key="tool_response")
+        self.assertEqual(rc, 0, stderr)
+        updated = json.loads(stdout)["hookSpecificOutput"]["updatedToolOutput"]
+        self.assertIsInstance(updated, dict)
+        self.assertNotIn("ghp_FAKEtest", updated["stdout"])
+        self.assertNotIn("\u200c", updated["stdout"])
+        self.assertEqual(updated["stderr"], "")
+
+    def test_bash_object_suppress_clears_stderr(self):
+        payload = {
+            "stdout": "ok  \tgithub.com/org/repo/internal/foo\t0.123s\n",
+            "stderr": "warning: verbose compiler noise\n",
+            "interrupted": False,
+            "isImage": False,
+        }
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            payload,
+            key="tool_response",
+            tool_name="Bash",
+            tool_input={"command": "go test ./internal/..."},
+        )
+        self.assertEqual(rc, 0, stderr)
+        updated = json.loads(stdout)["hookSpecificOutput"]["updatedToolOutput"]
+        self.assertIn("packages passed", updated["stdout"])
+        self.assertEqual(updated["stderr"], "")
+        self.assertFalse(updated["interrupted"])
+
     def test_emits_hook_specific_output(self):
         rc, stdout, _ = run_hook(CHAIN_HOOK, PLAIN_PAT, key="tool_response")
         self.assertEqual(rc, 0)
