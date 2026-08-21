@@ -429,11 +429,12 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  ┌──────────────────────────────────────────┐                   │
 │  │ Exec() — Run agent in sandbox            │                   │
 │  │                                          │                   │
-│  │ Command built by buildClaudeCommand():   │                   │
+│  │ Command built by buildRunCommand():      │                   │
 │  │  cd {repoDir} &&                         │                   │
 │  │  . {envFile} &&                          │                   │
 │  │  claude --print --verbose                │                   │
 │  │    --output-format stream-json           │                   │
+│  │    [--settings {hooksSettingsPath}]      │                   │
 │  │    --model {model}                       │                   │
 │  │    --effort {effort}                     │                   │
 │  │    --agent {agent}                       │                   │

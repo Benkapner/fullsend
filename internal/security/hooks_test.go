@@ -11,9 +11,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
-func TestGenerateClaudeSettings_AllDefaults(t *testing.T) {
+func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -42,7 +42,7 @@ func TestGenerateClaudeSettings_AllDefaults(t *testing.T) {
 	assert.Len(t, canaryHooks, 1)
 }
 
-func TestGenerateClaudeSettings_TirithDisabled(t *testing.T) {
+func TestGenerateHooksConfig_TirithDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -52,7 +52,7 @@ func TestGenerateClaudeSettings_TirithDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -63,7 +63,7 @@ func TestGenerateClaudeSettings_TirithDisabled(t *testing.T) {
 	assert.Len(t, preTools, 2) // ssrf + canary_pretool
 }
 
-func TestGenerateClaudeSettings_AllHooksDisabled(t *testing.T) {
+func TestGenerateHooksConfig_AllHooksDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -80,7 +80,7 @@ func TestGenerateClaudeSettings_AllHooksDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -151,7 +151,7 @@ func TestEmbeddedHooksNotEmpty(t *testing.T) {
 	assert.NotEmpty(t, ToolAllowlistPreToolHook)
 }
 
-func TestGenerateClaudeSettings_UnicodeDisabled(t *testing.T) {
+func TestGenerateHooksConfig_UnicodeDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -161,7 +161,7 @@ func TestGenerateClaudeSettings_UnicodeDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -177,7 +177,7 @@ func TestGenerateClaudeSettings_UnicodeDisabled(t *testing.T) {
 	assert.Len(t, chainedHooks, 2) // context_suppress + secret_redact
 }
 
-func TestGenerateClaudeSettings_SecretRedactDisabled(t *testing.T) {
+func TestGenerateHooksConfig_SecretRedactDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -187,7 +187,7 @@ func TestGenerateClaudeSettings_SecretRedactDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -203,7 +203,7 @@ func TestGenerateClaudeSettings_SecretRedactDisabled(t *testing.T) {
 	assert.Len(t, chainedHooks, 2) // context_suppress + unicode
 }
 
-func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
+func TestGenerateHooksConfig_ContextSuppressDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -213,7 +213,7 @@ func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -229,9 +229,9 @@ func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
 	assert.Len(t, chainedHooks, 2) // unicode + secret_redact
 }
 
-func TestGenerateClaudeSettings_PostToolSanitizeHookOrder(t *testing.T) {
+func TestGenerateHooksConfig_PostToolSanitizeHookOrder(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -265,7 +265,7 @@ func TestGenerateClaudeSettings_PostToolSanitizeHookOrder(t *testing.T) {
 	assert.Less(t, unicodeIdx, redactIdx, "unicode must run before secret_redact")
 }
 
-func TestGenerateClaudeSettings_CanaryPostToolDisabled(t *testing.T) {
+func TestGenerateHooksConfig_CanaryPostToolDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -275,7 +275,7 @@ func TestGenerateClaudeSettings_CanaryPostToolDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -293,7 +293,7 @@ func TestGenerateClaudeSettings_CanaryPostToolDisabled(t *testing.T) {
 	assert.Len(t, preTools, 3) // tirith + ssrf + canary_pretool
 }
 
-func TestGenerateClaudeSettings_CanaryPreToolDisabled(t *testing.T) {
+func TestGenerateHooksConfig_CanaryPreToolDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -303,7 +303,7 @@ func TestGenerateClaudeSettings_CanaryPreToolDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -318,7 +318,7 @@ func TestGenerateClaudeSettings_CanaryPreToolDisabled(t *testing.T) {
 	assert.Len(t, postTools, 2) // chain + canary_posttool
 }
 
-func TestGenerateClaudeSettings_ToolAllowlistEnabled(t *testing.T) {
+func TestGenerateHooksConfig_ToolAllowlistEnabled(t *testing.T) {
 	enabled := true
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -328,7 +328,7 @@ func TestGenerateClaudeSettings_ToolAllowlistEnabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(SandboxHookConfigFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -433,7 +433,7 @@ func TestHookPlan_CoversHookFiles_AllEnabled(t *testing.T) {
 
 	// With the opt-in allowlist enabled, every shipped script must be scheduled
 	// exactly once and every scheduled script must be shipped — the "cannot
-	// diverge" invariant between HookFiles, HookPlan and GenerateClaudeSettings.
+	// diverge" invariant between HookFiles, HookPlan and GenerateHooksConfig.
 	seen := map[string]int{}
 	for _, g := range plan {
 		for _, s := range g.Scripts {
@@ -446,7 +446,7 @@ func TestHookPlan_CoversHookFiles_AllEnabled(t *testing.T) {
 	}
 	assert.Contains(t, seen, "tool_allowlist_pretool.py")
 
-	settings, err := GenerateClaudeSettings(cfg)
+	settings, err := GenerateHooksConfig(cfg)
 	require.NoError(t, err)
 	for name := range files {
 		assert.Contains(t, string(settings), SandboxHooksDir+"/"+name)

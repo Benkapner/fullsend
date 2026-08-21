@@ -1518,17 +1518,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		var metrics agentruntime.RunMetrics
+		hooksSettings := ""
+		if h.SecurityEnabled() {
+			hooksSettings = security.SandboxHooksSettings
+		}
 		exitCode, runErr := rt.Run(agentCtx, agentruntime.RunParams{
-			SandboxName:   sandboxName,
-			AgentBaseName: agentBaseName,
-			Model:         h.Model,
-			Effort:        h.Effort,
-			RepoDir:       remoteRepositoryDir,
-			FullsendDir:   absFullsendDir,
-			PluginDirs:    pluginDirs,
-			Debug:         debug,
-			Timeout:       timeout,
-			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
+			SandboxName:       sandboxName,
+			AgentBaseName:     agentBaseName,
+			Model:             h.Model,
+			Effort:            h.Effort,
+			RepoDir:           remoteRepositoryDir,
+			FullsendDir:       absFullsendDir,
+			PluginDirs:        pluginDirs,
+			Debug:             debug,
+			HooksSettingsPath: hooksSettings,
+			Timeout:           timeout,
+			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
@@ -1793,7 +1798,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
 	// Runner-level dirs only; sandbox hook scripts are installed by the runtime
-	// (Claude: workspace/.claude/ via installClaudeHooks) when the bootstrap
+	// (Claude: claude-config/hooks/ via installClaudeHooks) when the bootstrap
 	// input implements SandboxHooksBootstrap.
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/bin %s/.env.d %s/.security",
 		sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
