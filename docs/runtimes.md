@@ -175,11 +175,11 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 ### Pi-specific known constraints (#6464)
 
 - **No permission system at all** — pi's stated posture is "run in a container". The OpenShell sandbox + L7 egress policy + credential placeholders (ADR 0017/0025) are the boundary, with the fullsend extension adapter as defense-in-depth (same posture as accepted for OpenCode in #1260 / ADR 0090).
-- **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` detects errors from the `agent_end` event's `stop_reason` field so the runner's exit-0-override (#2786/#5361) fires.
+- **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` detects errors from the assistant message's `stopReason` (on `message_end.message` or the last entry of `agent_end.messages`) so the runner's exit-0-override (#2786/#5361) fires.
 - **No `--max-turns`/`--timeout`** — runner's exec timeout covers it.
 - **No built-in MCP** — out of scope; fleet uses none.
 - **No Claude-on-Vertex provider yet** — `google-vertex` is Gemini-only; `anthropic-vertex` is an open upstream PR (earendil-works/pi#5262) with a community extension (`twoGiants/pi-anthropic-vertex`) as SHA-pinned interim.
-- **Fast release cadence** (~weekly minors; 0.84.0 changed `message_update` wire shape) — pin exact versions, record test fixtures per pinned version.
+- **Fast release cadence** (~weekly minors; 0.84.0 changed `message_update` wire shape) — pin exact versions; `parsePiStream` fixtures follow `packages/coding-agent/docs/json.md` for the pinned version (regen via `internal/runtime/testdata/pi/regen.sh`).
 - **Tool names are lowercase** (`bash`, `read`, `write`, `edit`) — the hook adapter translates to the contract's Claude-name vocabulary (#608).
 - **Reads AGENTS.md natively** — no CLAUDE.md bridge needed (does not implement `ContextBridger`).
 - **Hardening levers** — `--tools` allowlist, `--no-extensions/--no-skills/--no-prompt-templates/--no-context-files`, `defaultProjectTrust: never` (repo-owned `.pi/` never loaded), `PI_OFFLINE=1`.

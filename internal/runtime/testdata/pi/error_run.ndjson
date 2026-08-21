@@ -1,6 +1,7 @@
-{"type":"session","session_id":"ses_pi_err456","model":"claude-sonnet-4-20250514","version":"0.84.2"}
-{"type":"tool_call","session_id":"ses_pi_err456","tool":"edit","input":{"file_path":"/nonexistent"}}
-{"type":"tool_result","session_id":"ses_pi_err456","tool":"edit","status":"error","error":"file not found"}
-{"type":"error","session_id":"ses_pi_err456","name":"APIError","message":"quota exhausted"}
-{"type":"message_end","session_id":"ses_pi_err456","usage":{"input_tokens":50,"output_tokens":10,"reasoning_tokens":0,"cache_read":40,"cache_write":5},"cost":0.005}
-{"type":"agent_end","session_id":"ses_pi_err456","stop_reason":"error","usage":{"input_tokens":50,"output_tokens":10,"reasoning_tokens":0,"cache_read":40,"cache_write":5},"cost":0.005}
+{"type":"session","version":3,"id":"ses_pi_err456","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"tool_execution_start","toolCallId":"call_err","toolName":"edit","args":{"file_path":"/nonexistent"}}
+{"type":"tool_execution_end","toolCallId":"call_err","toolName":"edit","result":"file not found","isError":true}
+{"type":"message_end","message":{"role":"assistant","content":[],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":50,"output":10,"cacheRead":40,"cacheWrite":5,"totalTokens":60,"cost":{"input":0.003,"output":0.002,"cacheRead":0,"cacheWrite":0,"total":0.005}},"stopReason":"error","errorMessage":"quota exhausted","timestamp":1723456781000}}
+{"type":"agent_end","messages":[{"role":"assistant","content":[],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":50,"output":10,"cacheRead":40,"cacheWrite":5,"totalTokens":60,"cost":{"input":0.003,"output":0.002,"cacheRead":0,"cacheWrite":0,"total":0.005}},"stopReason":"error","errorMessage":"quota exhausted","timestamp":1723456781000}],"willRetry":false}

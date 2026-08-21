@@ -6,92 +6,136 @@ import (
 	"io"
 )
 
-// Pi --mode json event types and field paths verified against
-// earendil-works/pi 0.84.2 --print --mode json output.
-// Re-verify after pi releases change the wire format (fast cadence:
-// ~weekly minors; 0.84.0 changed message_update shape).
+// Pi --mode json event types and field paths are taken from earendil-works/pi
+// v0.84.2: packages/coding-agent/docs/json.md, packages/ai/src/types.ts
+// (Usage, AssistantMessage, StopReason), and packages/coding-agent/src/modes/json-event.ts.
+// Fixtures under testdata/pi/ are constructed to that schema (not a live capture);
+// regenerate with testdata/pi/regen.sh when a recorded run is available.
+// Re-verify after pi releases change the wire format (fast cadence: ~weekly
+// minors; 0.84.0 changed message_update to delta-only).
 
 // piEnvelope is the common shape of every NDJSON line from pi --mode json.
 type piEnvelope struct {
-	Type      string `json:"type"`
-	SessionID string `json:"session_id"`
+	Type string `json:"type"`
 }
 
-// session event — emitted first, carries runtime metadata.
+// session header — first line; schema version is an int, id is the session UUID.
+// There is no model field on the header (model lives on AssistantMessage).
 type piSessionEvent struct {
-	SessionID string `json:"session_id"`
-	Model     string `json:"model"`
-	Version   string `json:"version"`
+	ID      string `json:"id"`
+	Version int    `json:"version"`
 }
 
-// text event payload.
-type piTextEvent struct {
-	Text string `json:"text"`
+type piCost struct {
+	Total float64 `json:"total"`
 }
 
-// thinking event payload.
-type piThinkingEvent struct {
-	Text string `json:"text"`
-}
-
-// tool_result event — emitted when a tool invocation completes.
-type piToolResultEvent struct {
-	Tool   string `json:"tool"`
-	Status string `json:"status"` // "completed" or "error"
-	Title  string `json:"title,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
-
-// message_end event — per-message token usage and cost.
-type piMessageEndEvent struct {
-	Usage piUsage `json:"usage"`
-	Cost  float64 `json:"cost"`
-}
-
+// piUsage matches packages/ai/src/types.ts Usage (camelCase).
 type piUsage struct {
-	InputTokens     int `json:"input_tokens"`
-	OutputTokens    int `json:"output_tokens"`
-	ReasoningTokens int `json:"reasoning_tokens"`
-	CacheRead       int `json:"cache_read"`
-	CacheWrite      int `json:"cache_write"`
+	Input      int    `json:"input"`
+	Output     int    `json:"output"`
+	CacheRead  int    `json:"cacheRead"`
+	CacheWrite int    `json:"cacheWrite"`
+	Reasoning  *int   `json:"reasoning"`
+	Cost       piCost `json:"cost"`
 }
 
-// agent_end event — terminal sentinel with stop reason and cumulative usage.
+func (u piUsage) reasoningTokens() int {
+	if u.Reasoning == nil {
+		return 0
+	}
+	return *u.Reasoning
+}
+
+// piWireMessage is the subset of UserMessage | AssistantMessage | ToolResultMessage
+// that parsePiStream reads. Unknown roles are ignored.
+type piWireMessage struct {
+	Role         string  `json:"role"`
+	Model        string  `json:"model"`
+	Usage        piUsage `json:"usage"`
+	StopReason   string  `json:"stopReason"`
+	ErrorMessage string  `json:"errorMessage"`
+}
+
+type piMessageEvent struct {
+	Message piWireMessage `json:"message"`
+}
+
+type piDeltaEvent struct {
+	Type  string `json:"type"`
+	Delta string `json:"delta"`
+}
+
+type piMessageUpdateEvent struct {
+	AssistantMessageEvent piDeltaEvent `json:"assistantMessageEvent"`
+}
+
+type piToolExecutionEndEvent struct {
+	ToolName string          `json:"toolName"`
+	Result   json.RawMessage `json:"result"`
+	IsError  bool            `json:"isError"`
+}
+
 type piAgentEndEvent struct {
-	StopReason string  `json:"stop_reason"`
-	Usage      piUsage `json:"usage"`
-	Cost       float64 `json:"cost"`
+	Messages  []piWireMessage `json:"messages"`
+	WillRetry bool            `json:"willRetry"`
 }
 
-// error event payload.
-type piErrorEvent struct {
-	Name    string `json:"name"`
-	Message string `json:"message"`
+func piLastAssistant(messages []piWireMessage) (piWireMessage, bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			return messages[i], true
+		}
+	}
+	return piWireMessage{}, false
+}
+
+func piResultSummary(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return redactSummary(s)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		for _, k := range []string{"output", "text", "error", "message"} {
+			if v, ok := obj[k].(string); ok && v != "" {
+				return redactSummary(v)
+			}
+		}
+	}
+	return redactSummary(string(raw))
+}
+
+func piIsErrorStop(reason string) bool {
+	return reason == "error" || reason == "aborted"
 }
 
 // parsePiStream reads NDJSON from pi's --mode json output and emits
 // normalized AgentEvent values via the onEvent callback. It returns the
-// sessionID captured from the session header.
+// sessionID captured from the session header's `id` field.
 //
-// Pi's wire format differs from both Claude and OpenCode:
-//   - An explicit session header carries model/version metadata → InitEvent.
-//   - message_end events carry per-message token usage → TokensEvent.
-//   - An explicit agent_end terminal event carries stop_reason → ResultEvent.
+// Pi's wire format (v0.84.2):
+//   - Session header {type:session, version:3, id, timestamp, cwd} — no model.
+//   - Streaming deltas arrive as message_update.assistantMessageEvent
+//     (text_delta / thinking_delta). message_end.message is authoritative.
+//   - Tool completion is tool_execution_end {toolCallId, toolName, result, isError}.
+//   - Usage/cost on AssistantMessage are camelCase; cost is a nested object.
+//   - agent_end is {messages, willRetry} — stopReason lives on the assistant
+//     message, not on the agent_end envelope. willRetry=true is a checkpoint
+//     (retry/compaction may follow); ResultEvent is emitted only when
+//     willRetry is false.
 //   - Tool names are lowercase (bash, read, write, edit, glob, grep) — the
 //     hook adapter translates to Claude-name vocabulary (#608).
 //   - --mode json exits 0 on model error (stopReason: error/aborted only
 //     maps to exit 1 in text mode) — ParseTranscriptFile must detect errors
 //     from the stream, not the exit code.
-//
-// The parser accumulates message_end stats for ResultEvent synthesis but
-// prefers the explicit agent_end event when present (unlike OpenCode, which
-// has no terminal sentinel and must synthesize at EOF).
 func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
-		// Accumulated state for ResultEvent synthesis (fallback when
-		// agent_end is missing, e.g. truncated stream).
 		numTurns        int
 		totalCostUSD    float64
 		totalInput      int
@@ -103,7 +147,48 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		lastErrorMsg    string
 		lastStopReason  string
 		sawAgentEnd     bool
+		emittedInit     bool
 	)
+
+	emitInit := func(model string) {
+		if emittedInit {
+			return
+		}
+		emittedInit = true
+		onEvent(InitEvent{Model: model})
+	}
+
+	accumulateAssistant := func(msg piWireMessage) {
+		if msg.Role != "assistant" {
+			return
+		}
+		emitInit(msg.Model)
+		numTurns++
+		totalCostUSD += msg.Usage.Cost.Total
+		totalInput += msg.Usage.Input
+		totalOutput += msg.Usage.Output
+		totalReasoning += msg.Usage.reasoningTokens()
+		totalCacheRead += msg.Usage.CacheRead
+		totalCacheWrite += msg.Usage.CacheWrite
+		lastStopReason = msg.StopReason
+		if msg.ErrorMessage != "" {
+			lastErrorMsg = redactSummary(msg.ErrorMessage)
+		}
+		if piIsErrorStop(msg.StopReason) {
+			sawError = true
+			onEvent(ErrorEvent{
+				ErrorType: msg.StopReason,
+				Message:   lastErrorMsg,
+			})
+		}
+		onEvent(TokensEvent{
+			InputTokens:     msg.Usage.Input,
+			OutputTokens:    msg.Usage.Output,
+			ReasoningTokens: msg.Usage.reasoningTokens(),
+			CacheRead:       msg.Usage.CacheRead,
+			CacheWrite:      msg.Usage.CacheWrite,
+		})
+	}
 
 	for {
 		line, isPrefix, err := br.ReadLine()
@@ -129,110 +214,95 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			continue
 		}
 
-		// Capture sessionID from the first event that has one.
-		if sessionID == "" && env.SessionID != "" {
-			sessionID = env.SessionID
-		}
-
 		switch env.Type {
 		case "session":
 			var evt piSessionEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			onEvent(InitEvent{
-				Model:   evt.Model,
-				Version: evt.Version,
-			})
+			if sessionID == "" && evt.ID != "" {
+				sessionID = evt.ID
+			}
 
-		case "text":
-			var evt piTextEvent
+		case "message_start":
+			var evt piMessageEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			onEvent(TextEvent{Text: evt.Text})
+			if evt.Message.Role == "assistant" {
+				emitInit(evt.Message.Model)
+			}
 
-		case "thinking":
-			var evt piThinkingEvent
+		case "message_update":
+			var evt piMessageUpdateEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			onEvent(ThinkingEvent{Text: evt.Text})
-
-		case "tool_result":
-			var evt piToolResultEvent
-			if err := json.Unmarshal(line, &evt); err != nil {
-				continue
+			switch evt.AssistantMessageEvent.Type {
+			case "text_delta":
+				onEvent(TextEvent{Text: evt.AssistantMessageEvent.Delta})
+			case "thinking_delta":
+				onEvent(ThinkingEvent{Text: evt.AssistantMessageEvent.Delta})
 			}
-			summary := redactSummary(evt.Title)
-			if evt.Status == "error" {
-				summary = redactSummary(evt.Error)
-			}
-			onEvent(ToolUseEvent{Name: evt.Tool, Summary: summary})
 
 		case "message_end":
-			var evt piMessageEndEvent
+			var evt piMessageEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			numTurns++
-			totalCostUSD += evt.Cost
-			totalInput += evt.Usage.InputTokens
-			totalOutput += evt.Usage.OutputTokens
-			totalReasoning += evt.Usage.ReasoningTokens
-			totalCacheRead += evt.Usage.CacheRead
-			totalCacheWrite += evt.Usage.CacheWrite
+			accumulateAssistant(evt.Message)
 
-			onEvent(TokensEvent{
-				InputTokens:     evt.Usage.InputTokens,
-				OutputTokens:    evt.Usage.OutputTokens,
-				ReasoningTokens: evt.Usage.ReasoningTokens,
-				CacheRead:       evt.Usage.CacheRead,
-				CacheWrite:      evt.Usage.CacheWrite,
-			})
+		case "tool_execution_end":
+			var evt piToolExecutionEndEvent
+			if err := json.Unmarshal(line, &evt); err != nil {
+				continue
+			}
+			onEvent(ToolUseEvent{Name: evt.ToolName, Summary: piResultSummary(evt.Result)})
 
 		case "agent_end":
 			var evt piAgentEndEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			sawAgentEnd = true
-			lastStopReason = evt.StopReason
-
-			// Detect error from stop_reason: --mode json exits 0 on
-			// model error, so the stream is the authoritative error
-			// signal (not the process exit code).
-			isErr := sawError || evt.StopReason == "error" || evt.StopReason == "aborted"
-
-			onEvent(ResultEvent{
-				NumTurns:                 numTurns,
-				TotalCostUSD:             evt.Cost,
-				IsError:                  isErr,
-				ErrorMessage:             lastErrorMsg,
-				Subtype:                  evt.StopReason,
-				InputTokens:              evt.Usage.InputTokens,
-				OutputTokens:             evt.Usage.OutputTokens,
-				ReasoningTokens:          evt.Usage.ReasoningTokens,
-				CacheCreationInputTokens: evt.Usage.CacheWrite,
-				CacheReadInputTokens:     evt.Usage.CacheRead,
-			})
-
-		case "error":
-			var evt piErrorEvent
-			if err := json.Unmarshal(line, &evt); err != nil {
+			// agent_end fires when one low-level run completes and may be
+			// followed by retry/compaction. Only emit ResultEvent when this
+			// is not a retry checkpoint (willRetry=false).
+			if evt.WillRetry {
+				if msg, ok := piLastAssistant(evt.Messages); ok {
+					lastStopReason = msg.StopReason
+					if msg.ErrorMessage != "" {
+						lastErrorMsg = redactSummary(msg.ErrorMessage)
+					}
+				}
 				continue
 			}
-			sawError = true
-			msg := redactSummary(evt.Message)
-			lastErrorMsg = msg
-			onEvent(ErrorEvent{
-				ErrorType: evt.Name,
-				Message:   msg,
+			sawAgentEnd = true
+			if msg, ok := piLastAssistant(evt.Messages); ok {
+				lastStopReason = msg.StopReason
+				if msg.ErrorMessage != "" {
+					lastErrorMsg = redactSummary(msg.ErrorMessage)
+				}
+				if piIsErrorStop(msg.StopReason) {
+					sawError = true
+				}
+			}
+			isErr := sawError || piIsErrorStop(lastStopReason) || numTurns == 0
+			onEvent(ResultEvent{
+				NumTurns:                 numTurns,
+				TotalCostUSD:             totalCostUSD,
+				IsError:                  isErr,
+				ErrorMessage:             lastErrorMsg,
+				Subtype:                  lastStopReason,
+				InputTokens:              totalInput,
+				OutputTokens:             totalOutput,
+				ReasoningTokens:          totalReasoning,
+				CacheCreationInputTokens: totalCacheWrite,
+				CacheReadInputTokens:     totalCacheRead,
 			})
 
-		case "tool_call":
-			// Silently absorbed — tool_call is intermediate; we emit
-			// ToolUseEvent from tool_result when the call completes.
+		case "agent_start", "turn_start", "turn_end", "tool_execution_start",
+			"tool_execution_update", "agent_settled", "queue_update":
+			// Lifecycle / intermediate events — no AgentEvent mapping.
 
 		default:
 			// Unknown event types are silently skipped. Monitor for
@@ -243,7 +313,7 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 	// If no agent_end was seen (truncated stream), synthesize a ResultEvent
 	// from accumulated message_end data — same fallback as OpenCode.
 	if !sawAgentEnd {
-		isError := sawError || numTurns == 0
+		isError := sawError || numTurns == 0 || piIsErrorStop(lastStopReason)
 		onEvent(ResultEvent{
 			NumTurns:                 numTurns,
 			TotalCostUSD:             totalCostUSD,

@@ -22,13 +22,14 @@ func (PiRuntime) Name() string { return "pi" }
 // System returns the OTEL GenAI gen_ai.system value. Pi is multi-provider
 // (anthropic, google-vertex, community extensions), so the system is the
 // runtime itself rather than a single model vendor. The actual model vendor
-// may be capturable from pi's session header once Bootstrap/Run are wired.
+// is on AssistantMessage.provider once Bootstrap/Run consume the stream.
 func (PiRuntime) System() string { return "pi" }
 
 // ConfigDir returns the pi config directory inside the sandbox.
-// PI_CODING_AGENT_DIR defaults to ~/.pi but is redirectable via env var
-// or --session-dir. Placed outside the agent-writable workspace to
-// prevent the agent from rewriting its own runtime config.
+// Host default for PI_CODING_AGENT_DIR is ~/.pi/agent (config, skills,
+// settings). Session JSONL storage is a separate path:
+// PI_CODING_AGENT_SESSION_DIR, overridden by --session-dir. This returns
+// a sandbox-local placeholder until Bootstrap wires those env vars.
 func (PiRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.pi" }
 
 func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }

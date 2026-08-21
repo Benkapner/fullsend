@@ -1,6 +1,10 @@
-{"type":"session","session_id":"ses_pi_abc123","model":"claude-sonnet-4-20250514","version":"0.84.2"}
-{"type":"text","session_id":"ses_pi_abc123","text":"I'll list the files for you."}
-{"type":"tool_call","session_id":"ses_pi_abc123","tool":"bash","input":{"command":"ls"}}
-{"type":"tool_result","session_id":"ses_pi_abc123","tool":"bash","status":"completed","title":"$ ls","output":"file1.txt\nfile2.txt"}
-{"type":"message_end","session_id":"ses_pi_abc123","usage":{"input_tokens":100,"output_tokens":50,"reasoning_tokens":0,"cache_read":80,"cache_write":20},"cost":0.015}
-{"type":"agent_end","session_id":"ses_pi_abc123","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50,"reasoning_tokens":0,"cache_read":80,"cache_write":20},"cost":0.015}
+{"type":"session","version":3,"id":"ses_pi_abc123","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"pending","timestamp":1723456780000}}
+{"type":"message_update","usage":{"input":100,"output":10,"cacheRead":80,"cacheWrite":20,"totalTokens":130,"cost":{"input":0.01,"output":0.005,"cacheRead":0,"cacheWrite":0,"total":0.015}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"I'll list the files for you."}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"I'll list the files for you."}],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":100,"output":50,"cacheRead":80,"cacheWrite":20,"reasoning":0,"totalTokens":150,"cost":{"input":0.01,"output":0.005,"cacheRead":0,"cacheWrite":0,"total":0.015}},"stopReason":"stop","timestamp":1723456781000}}
+{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"ls"}}
+{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":"file1.txt\nfile2.txt","isError":false}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"I'll list the files for you."}],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":100,"output":50,"cacheRead":80,"cacheWrite":20,"totalTokens":150,"cost":{"input":0.01,"output":0.005,"cacheRead":0,"cacheWrite":0,"total":0.015}},"stopReason":"stop","timestamp":1723456781000},"toolResults":[]}
+{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"I'll list the files for you."}],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":100,"output":50,"cacheRead":80,"cacheWrite":20,"totalTokens":150,"cost":{"input":0.01,"output":0.005,"cacheRead":0,"cacheWrite":0,"total":0.015}},"stopReason":"stop","timestamp":1723456781000}],"willRetry":false}
