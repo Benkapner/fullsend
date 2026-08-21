@@ -1612,7 +1612,7 @@ exit 0
 	// Verify that 3 attempts were made.
 	entries, readErr := os.ReadDir(markerDir)
 	require.NoError(t, readErr)
-	assert.Equal(t, 3, len(entries), "should have made 3 attempts")
+	assert.Len(t, entries, 3, "should have made 3 attempts")
 }
 
 // TestEnsureProvider_NoRetryOnOtherErrors verifies that non-transient
@@ -1641,7 +1641,7 @@ exit 0
 	// Should have only attempted once — no retry on non-transient errors.
 	entries, readErr := os.ReadDir(markerDir)
 	require.NoError(t, readErr)
-	assert.Equal(t, 1, len(entries), "should not retry on non-transient errors")
+	assert.Len(t, entries, 1, "should not retry on non-transient errors")
 }
 
 // TestEnsureProvider_RetryCancelledByContext verifies that context
@@ -1679,7 +1679,7 @@ exit 0
 	// the backoff sleep.
 	entries, readErr := os.ReadDir(markerDir)
 	require.NoError(t, readErr)
-	assert.Equal(t, 1, len(entries), "should stop retrying when context is cancelled")
+	assert.Len(t, entries, 1, "should stop retrying when context is cancelled")
 }
 
 func TestResolvedBasename(t *testing.T) {

@@ -323,7 +323,7 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 			}
 		}
 	}
-	return fmt.Errorf("provider create %q failed after %d attempts: %w", name, providerRetries, lastErr)
+	return fmt.Errorf("retries exhausted after %d attempts: %w", providerRetries, lastErr)
 }
 
 // isUnsupportedProviderErr reports whether err contains the openshell
