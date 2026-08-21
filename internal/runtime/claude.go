@@ -310,6 +310,10 @@ func buildRunCommand(params RunParams) string {
 		"--output-format stream-json",
 	}
 
+	if params.HooksSettingsPath != "" {
+		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
+	}
+
 	if params.Debug != "" {
 		parts = append(parts, fmt.Sprintf("--debug-file '%s/%s'", sandbox.SandboxWorkspace, claudeDebugLog))
 		if params.Debug != "*" {
@@ -338,40 +342,39 @@ func buildRunCommand(params RunParams) string {
 	return strings.Join(parts, " ")
 }
 
-// Claude Code reads two settings.json files in the sandbox:
+// Claude Code reads settings from two separate files in the sandbox:
 //   - {CLAUDE_CONFIG_DIR}/settings.json — plugin marketplace state (bootstrapPlugins)
-//   - {SandboxWorkspace}/.claude/settings.json — security Pre/PostToolUse hooks (here)
+//   - {CLAUDE_CONFIG_DIR}/hooks.json    — security Pre/PostToolUse hooks (here)
 //
-// Keep these paths separate; merging them would mix plugin config with hook wiring.
+// The hooks file is loaded via --settings in buildRunCommand, which takes
+// precedence over project/local settings. Hook scripts and wiring are
+// co-located under the runner-owned config directory, outside the
+// agent-writable workspace tree (#6358).
 func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig) error {
-	// security.SandboxHooksDir is the directory the generated settings.json
-	// commands point at; installHookScripts creates it (and its .claude parent).
+	// security.SandboxHooksDir is the directory the generated hooks.json
+	// commands point at; installHookScripts creates it.
 	if err := installHookScripts(sandboxName, security.SandboxHooksDir, hooks); err != nil {
 		return err
 	}
 
-	settingsJSON, err := security.GenerateClaudeSettings(hooks)
+	hooksJSON, err := security.GenerateHooksConfig(hooks)
 	if err != nil {
-		return fmt.Errorf("generating claude settings: %w", err)
+		return fmt.Errorf("generating hooks config: %w", err)
 	}
 
-	tmpSettings, err := os.CreateTemp("", "fullsend-settings-*.json")
+	tmpDir, err := os.MkdirTemp("", "fullsend-hooks-")
 	if err != nil {
-		return fmt.Errorf("creating temp settings file: %w", err)
+		return fmt.Errorf("creating temp hooks file: %w", err)
 	}
-	if _, err := tmpSettings.Write(settingsJSON); err != nil {
-		tmpSettings.Close()
-		os.Remove(tmpSettings.Name())
-		return fmt.Errorf("writing settings: %w", err)
+	defer os.RemoveAll(tmpDir)
+	tmpPath := filepath.Join(tmpDir, "hooks.json")
+	if err := os.WriteFile(tmpPath, hooksJSON, 0o600); err != nil {
+		return fmt.Errorf("writing hooks config: %w", err)
 	}
-	tmpSettings.Close()
 
-	remoteSettings := fmt.Sprintf("%s/.claude/settings.json", sandbox.SandboxWorkspace)
-	if err := sandbox.Upload(sandboxName, tmpSettings.Name(), remoteSettings); err != nil {
-		os.Remove(tmpSettings.Name())
-		return fmt.Errorf("copying settings.json to sandbox: %w", err)
+	if err := sandbox.Upload(sandboxName, tmpPath, security.SandboxHooksSettings); err != nil {
+		return fmt.Errorf("copying hooks.json to sandbox: %w", err)
 	}
-	os.Remove(tmpSettings.Name())
 
 	return appendHookEnv(sandboxName, hooks)
 }

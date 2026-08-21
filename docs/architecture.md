@@ -169,7 +169,7 @@ repo baseline and overrides)
 
 **Open questions:**
 
-- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Tool permissions are injected as a host-managed `.claude/settings.json` — configured outside, enforced inside; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
+- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Security hooks are injected as a runner-owned `hooks.json` loaded via `--settings`; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
 - How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md).)
 - How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests now test the full pipeline including harness-assembled configuration — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Harness versioning remains open.)
 

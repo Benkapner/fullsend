@@ -46,10 +46,10 @@ func TestClaudeRuntime_Bootstrap_InstallsSandboxHooks(t *testing.T) {
 	log := string(logBytes)
 
 	// Hook scripts are uploaded to the Claude hooks dir and chmod'ed.
-	assert.Contains(t, log, "/sandbox/workspace/.claude/hooks/tirith_check.py")
-	assert.Contains(t, log, "chmod +x '/sandbox/workspace/.claude/hooks/tirith_check.py'")
-	// Claude-specific wiring (settings.json) is still installed.
-	assert.Contains(t, log, "/sandbox/workspace/.claude/settings.json")
+	assert.Contains(t, log, "/sandbox/claude-config/hooks/tirith_check.py")
+	assert.Contains(t, log, "chmod +x '/sandbox/claude-config/hooks/tirith_check.py'")
+	// Claude-specific wiring (hooks.json, loaded via --settings) is installed.
+	assert.Contains(t, log, "/sandbox/claude-config/hooks.json")
 	// Hook env is appended to the workspace .env.
 	assert.Contains(t, log, "export TIRITH_FAIL_ON=high")
 	assert.Contains(t, log, "export TIRITH_REQUIRED=1")
@@ -68,7 +68,7 @@ func TestClaudeRuntime_Bootstrap_NoHooksWithoutExtension(t *testing.T) {
 
 	logBytes, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.False(t, strings.Contains(string(logBytes), ".claude/hooks/"),
+	assert.False(t, strings.Contains(string(logBytes), "claude-config/hooks"),
 		"no hook scripts must be installed when the input lacks SandboxHooksBootstrap")
 }
 

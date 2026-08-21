@@ -44,14 +44,20 @@ type hookMatcher struct {
 	Hooks   []hookEntry `json:"hooks"`
 }
 
-// claudeSettings represents the .claude/settings.json structure.
-type claudeSettings struct {
+// hooksConfig represents the hooks.json structure for Claude Code hook wiring.
+type hooksConfig struct {
 	Hooks map[string][]hookMatcher `json:"hooks"`
 }
 
-// SandboxHooksDir is the path where hook scripts are installed inside the
-// sandbox. Must match sandbox.SandboxWorkspace + "/.claude/hooks".
-const SandboxHooksDir = sandbox.SandboxWorkspace + "/.claude/hooks"
+// SandboxHooksDir is the directory where hook scripts are installed inside
+// the sandbox. Co-located with SandboxHooksSettings under the runner-owned
+// config directory so they are outside the agent-writable workspace tree.
+const SandboxHooksDir = sandbox.SandboxClaudeConfig + "/hooks"
+
+// SandboxHooksSettings is the path where the hook wiring hooks.json is
+// written inside the sandbox. buildRunCommand passes this via --settings so
+// Claude Code loads the hooks regardless of its working directory.
+const SandboxHooksSettings = sandbox.SandboxClaudeConfig + "/hooks.json"
 
 // HookPhase identifies when a sandbox hook group runs relative to a tool call.
 // The names match Claude Code's settings.json event names; other runtimes map
@@ -82,7 +88,7 @@ const AllTools = "*"
 
 // HookPlan returns the runtime-neutral wiring for the enabled sandbox hooks:
 // which scripts run in which phase, for which tools, in what order. It is the
-// single source of truth consumed by GenerateClaudeSettings (Claude Code) and
+// single source of truth consumed by GenerateHooksConfig (Claude Code) and
 // by any other runtime's hook adapter, so the two cannot diverge.
 func HookPlan(hooks SandboxHookConfig) []HookGroup {
 	var plan []HookGroup
@@ -132,10 +138,8 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 	// NOTE: Claude Code runs all matching hooks in parallel and does not
 	// pipe one hook's output into the next, and its PostToolUse payload uses
 	// `tool_response` rather than the `tool_result` these scripts read — so
-	// under Claude Code this chain is not effective today (fullsend#6357);
-	// the settings.json it is rendered into is also not loaded from where
-	// the runner writes it (fullsend#6358). The ordering here is the
-	// contract adapters must meet.
+	// under Claude Code this chain is not effective today (fullsend#6357).
+	// The ordering here is the contract adapters must meet.
 	var postScripts []string
 	if contextSuppressPostToolEnabled(hooks) {
 		postScripts = append(postScripts, "context_suppress_posttool.py")
@@ -166,11 +170,12 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 	return plan
 }
 
-// GenerateClaudeSettings produces a .claude/settings.json with security hooks
-// configured according to hooks. Returns the JSON bytes. The wiring comes from
-// HookPlan; this function only renders it in Claude Code's settings format.
-func GenerateClaudeSettings(hooks SandboxHookConfig) ([]byte, error) {
-	settings := claudeSettings{
+// GenerateHooksConfig produces the hooks.json Claude Code hook wiring,
+// loaded via --settings in buildRunCommand. Returns the JSON bytes. The
+// wiring comes from HookPlan; this function only renders it in Claude Code's
+// settings format.
+func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
+	cfg := hooksConfig{
 		Hooks: make(map[string][]hookMatcher),
 	}
 
@@ -181,13 +186,13 @@ func GenerateClaudeSettings(hooks SandboxHookConfig) ([]byte, error) {
 				Type: "command", Command: "python3 " + SandboxHooksDir + "/" + script,
 			})
 		}
-		settings.Hooks[string(g.Phase)] = append(settings.Hooks[string(g.Phase)], hookMatcher{
+		cfg.Hooks[string(g.Phase)] = append(cfg.Hooks[string(g.Phase)], hookMatcher{
 			Matcher: strings.Join(g.Tools, "|"),
 			Hooks:   entries,
 		})
 	}
 
-	return json.MarshalIndent(settings, "", "  ")
+	return json.MarshalIndent(cfg, "", "  ")
 }
 
 // HookFiles returns a map of filename -> content for all enabled hook scripts.
