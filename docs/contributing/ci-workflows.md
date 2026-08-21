@@ -19,9 +19,10 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
           && format('{0}-{1}', github.workflow, github.event.pull_request.number)
           || format('{0}-{1}', github.workflow, github.ref) }}
   ```
+- **Exception:** reusable workflows (`on: workflow_call`) must use a hardcoded role-specific prefix (e.g., `fullsend-code-agent-`) instead of `${{ github.workflow }}`, because in `workflow_call` context `github.workflow` resolves to the *caller's* workflow name, not the reusable workflow's own name. Using it would produce incorrect concurrency scoping and could cancel the caller's runs.
 - Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main`.
 
-**Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters.
+**Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
 ## Timeout policy
 
