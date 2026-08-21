@@ -324,6 +324,11 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 
 // isUnsupportedProviderErr reports whether err contains the openshell
 // error message indicating a missing or not-yet-imported profile.
+//
+// NOTE: This matches literal text from the openshell CLI's stderr output.
+// If openshell changes its error wording in a future version, this check
+// will silently stop matching and retries will no longer trigger. Update
+// the substring if the upstream message changes.
 func isUnsupportedProviderErr(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unsupported provider type or profile")
 }
@@ -582,12 +587,20 @@ func hashProfileFile(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// profileTempPath returns a temp file path keyed by profile id with the
+// given extension. Used by profileFileCachePath and profileFileLockPath to
+// derive deterministic, per-profile paths without duplicating the hashing
+// logic.
+func profileTempPath(id, ext string) string {
+	idHash := sha256.Sum256([]byte(id))
+	return filepath.Join(os.TempDir(), "fullsend-profile-"+hex.EncodeToString(idHash[:8])+"."+ext)
+}
+
 // profileFileCachePath returns a temp file path for caching the hash of a
 // single profile file. The path is keyed to the profile id so that
 // different profiles get separate caches.
 func profileFileCachePath(id string) string {
-	idHash := sha256.Sum256([]byte(id))
-	return filepath.Join(os.TempDir(), "fullsend-profile-"+hex.EncodeToString(idHash[:8])+".sha256")
+	return profileTempPath(id, "sha256")
 }
 
 // profileFileLockPath returns a temp file path used as a cross-process
@@ -595,8 +608,7 @@ func profileFileCachePath(id string) string {
 // ImportProfile. Keyed by profile id so different profiles lock
 // independently.
 func profileFileLockPath(id string) string {
-	idHash := sha256.Sum256([]byte(id))
-	return filepath.Join(os.TempDir(), "fullsend-profile-"+hex.EncodeToString(idHash[:8])+".lock")
+	return profileTempPath(id, "lock")
 }
 
 // EnableProvidersV2 enables the providers_v2_enabled setting globally in the

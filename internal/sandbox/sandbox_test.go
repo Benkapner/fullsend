@@ -1519,21 +1519,34 @@ func TestProfileFileLockPath_DeterministicAndUnique(t *testing.T) {
 }
 
 // TestImportProfile_FlockSerializesConcurrent verifies that the flock in
-// ImportProfile serializes concurrent access so that all goroutines
-// succeed without "unsupported provider" errors.
+// ImportProfile serializes concurrent access. The fake openshell import
+// handler uses a marker file to detect overlapping executions: it creates
+// the marker at entry and removes it at exit, failing if the marker
+// already exists. Without the flock, concurrent goroutines would enter
+// the import section simultaneously and the marker-already-present check
+// would trigger a failure, proving the lock is load-bearing.
 func TestImportProfile_FlockSerializesConcurrent(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "flock-test.yaml")
 	require.NoError(t, os.WriteFile(profilePath, []byte("id: flock-test\nname: test"), 0o644))
 
-	// Fake openshell that succeeds on all operations.
-	// The script introduces a small sleep on import to widen the race window.
-	script := `#!/bin/sh
+	// Marker file used by the fake openshell to detect concurrent imports.
+	// The script creates the marker on entry and removes it on exit. If the
+	// marker already exists at entry, another import is running concurrently
+	// and the script fails — proving the flock was needed to serialize access.
+	markerFile := filepath.Join(dir, "import-active")
+	script := fmt.Sprintf(`#!/bin/sh
 if [ "$3" = "import" ]; then
-  sleep 0.01
+  if [ -f "%s" ]; then
+    echo "concurrent import detected" >&2
+    exit 1
+  fi
+  echo $$ > "%s"
+  sleep 0.05
+  rm -f "%s"
 fi
 exit 0
-`
+`, markerFile, markerFile, markerFile)
 	fakePath := filepath.Join(dir, "openshell")
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
@@ -1558,7 +1571,7 @@ exit 0
 	wg.Wait()
 
 	for i, err := range errs {
-		assert.NoError(t, err, "goroutine %d should succeed", i)
+		assert.NoError(t, err, "goroutine %d should succeed under flock serialization", i)
 	}
 }
 
