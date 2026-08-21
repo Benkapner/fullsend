@@ -833,6 +833,56 @@ func TestInstallVarsForForge_GitHub_IncludesRegion(t *testing.T) {
 	}
 }
 
+func TestInstallVarsForForge_GitHub_IncludesReviewClientID(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:             ForgeGitHub,
+		ReviewAppClientID: "Iv23li1nIorNLIQy6NWK",
+	}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if v, ok := vars["FULLSEND_REVIEW_CLIENT_ID"]; !ok || v != "Iv23li1nIorNLIQy6NWK" {
+		t.Errorf("FULLSEND_REVIEW_CLIENT_ID = %q, want %q", v, "Iv23li1nIorNLIQy6NWK")
+	}
+}
+
+func TestInstallVarsForForge_GitHub_OmitsEmptyReviewClientID(t *testing.T) {
+	cfg := InstallConfig{
+		Forge: ForgeGitHub,
+	}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if _, ok := vars["FULLSEND_REVIEW_CLIENT_ID"]; ok {
+		t.Error("FULLSEND_REVIEW_CLIENT_ID should not be set when ReviewAppClientID is empty")
+	}
+}
+
+func TestInstall_FreshInstall_WritesReviewClientID(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	cfg.ReviewAppClientID = "Iv23li1nIorNLIQy6NWK"
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install() returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+
+	varMap := make(map[string]string)
+	for _, v := range fc.Variables {
+		varMap[v.Name] = v.Value
+	}
+	if v, ok := varMap["FULLSEND_REVIEW_CLIENT_ID"]; !ok || v != "Iv23li1nIorNLIQy6NWK" {
+		t.Errorf("FULLSEND_REVIEW_CLIENT_ID = %q, want %q", v, "Iv23li1nIorNLIQy6NWK")
+	}
+}
+
 func TestInstallVarsForForge_UnsupportedForge(t *testing.T) {
 	cfg := InstallConfig{Forge: "bitbucket"}
 	_, err := installVarsForForge(cfg, "")

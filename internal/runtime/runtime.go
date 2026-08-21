@@ -32,9 +32,12 @@ type RunParams struct {
 	FullsendDir   string
 	PluginDirs    []string
 	Debug         string
-	Timeout       time.Duration
-	OutputPath    string           // if set, tee stream-json stdout to this file
-	OnEvent       func(AgentEvent) // if non-nil, called with normalized events during Run
+	// HooksSettingsPath, if set, is passed as --settings so Claude Code
+	// loads the runner's hook wiring regardless of its working directory.
+	HooksSettingsPath string
+	Timeout           time.Duration
+	OutputPath        string           // if set, tee stream-json stdout to this file
+	OnEvent           func(AgentEvent) // if non-nil, called with normalized events during Run
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.

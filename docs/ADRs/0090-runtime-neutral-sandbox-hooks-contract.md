@@ -77,7 +77,8 @@ feature:
 - The contract is versioned (v1 = the scripts' current stdin/stdout fields).
   Verifying it against Claude Code surfaced two pre-existing gaps the
   runtimes.md matrix now records instead of a blanket ✓: the runner's
-  `settings.json` is not loaded from where it is written (#6358), and the
+  hook wiring was not loaded from where it was written (#6358 — since fixed
+  via `--settings`), and the
   PostToolUse payload differs (`tool_response`,
   `hookSpecificOutput.updatedToolOutput`, parallel execution — #6357).
 - Alongside this decision the runner's remaining Claude-specific branches
