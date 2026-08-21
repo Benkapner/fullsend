@@ -67,8 +67,8 @@ const (
 
 	// Default agents repository for runtime fallback when an agent is not
 	// registered in config. The binary resolves the commit SHA for the
-	// floating version tag (config.DefaultUpstreamRef) and fetches the
-	// harness dynamically.
+	// version ref returned by resolveAgentsRef and fetches the harness
+	// dynamically. See resolveAgentsRef for the ref selection logic.
 	defaultAgentsRepoOwner = "fullsend-ai"
 	defaultAgentsRepoName  = "agents"
 
@@ -3902,11 +3902,23 @@ func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.Agent
 	return nil
 }
 
+// resolveAgentsRef returns the display ref and fully-qualified git ref path
+// for fetching agent harnesses from fullsend-ai/agents. Release builds
+// (identified by commitSHA being set by GoReleaser) use their own version
+// tag; all other builds use the main branch.
+func resolveAgentsRef() (displayRef, gitRef string) {
+	if commitSHA != "" && commitSHA != "dev" {
+		v := strings.TrimPrefix(version, "v")
+		return "v" + v, "tags/v" + v
+	}
+	return "main", "heads/main"
+}
+
 // tryAgentsRepoFallback attempts to resolve an agent from the default agents
-// repository (fullsend-ai/agents) by fetching the latest harness from the
-// main branch. This is a transitional mechanism to support the extraction of
-// first-party agents into a separate repository (fullsend-ai/agents) without
-// requiring config changes from existing users.
+// repository (fullsend-ai/agents) at the ref returned by resolveAgentsRef().
+// This is a transitional mechanism to support the extraction of first-party
+// agents into a separate repository (fullsend-ai/agents) without requiring
+// config changes from existing users.
 //
 // Returns (path, deps, true) on success, or ("", nil, false) if the fallback
 // should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
@@ -3935,8 +3947,8 @@ func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, for
 	return path, ok
 }
 
-// fetchPinnedAgentsRepoFile resolves tags/DefaultUpstreamRef to a commit SHA
-// and fetches relPath from fullsend-ai/agents. All errors are non-fatal.
+// fetchPinnedAgentsRepoFile resolves the agents ref to a commit SHA and
+// fetches relPath from fullsend-ai/agents. All errors are non-fatal.
 func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
 	var none harness.Dependency
 	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
@@ -3951,25 +3963,25 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 	allowlist := composeOpts.OrgAllowlist
 
-	tagRef := "tags/" + config.DefaultUpstreamRef
-	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)
+	displayRef, gitRef := resolveAgentsRef()
+	resolvedSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, gitRef)
 	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, err))
+		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
 		return "", none, false
 	}
-	if !commitSHAPattern.MatchString(tagSHA) {
-		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, tagSHA))
+	if !commitSHAPattern.MatchString(resolvedSHA) {
+		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, resolvedSHA))
 		return "", none, false
 	}
 
-	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/" + relPath
+	rawURL := defaultAgentsRepoURLPrefix + resolvedSHA + "/" + relPath
 
 	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
 		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", noun))
 		return "", none, false
 	}
 
-	shortSHA := tagSHA
+	shortSHA := resolvedSHA
 	if len(shortSHA) > 12 {
 		shortSHA = shortSHA[:12]
 	}
@@ -4026,7 +4038,7 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		Type:      "file",
 	}
 
-	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
+	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef))
 	return localPath, dep, true
 }
 
