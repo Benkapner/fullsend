@@ -185,59 +185,73 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 		ExpectedMintURL: cfg.MintURL,
 	}
 
-	state, err := ProbeRepoState(ctx, client, owner, repo, fc)
-	if err != nil {
-		status.Error = err.Error()
+	// Check guard variable to determine if the repo is installed.
+	guardVal, _, guardErr := client.GetRepoVariable(ctx, owner, repo, forge.PerRepoGuardVar)
+	if guardErr != nil {
+		status.Error = fmt.Sprintf("checking guard variable for %s/%s: %v", owner, repo, guardErr)
+		return status
 	}
-
-	if !state.Installed {
+	if guardVal != "true" {
 		return status
 	}
 	status.Installed = true
-	status.MintURL = state.MintURL
-	status.Region = state.InferenceRegion
-	status.CurrentRef = state.FullsendRef
 
-	if err != nil {
+	// Probe all components using the shared function so that status
+	// and install check the same set of components.
+	expectedVars := map[string]string{}
+	if cfg.MintURL != "" {
+		expectedVars["FULLSEND_MINT_URL"] = cfg.MintURL
+	}
+	components, probeErr := ProbeComponents(ctx, client, owner, repo, cfg.Forge, fc, expectedVars)
+	if probeErr != nil {
+		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status
 	}
 
-	if cfg.MintURL != "" && status.MintURL != cfg.MintURL {
+	// Extract display values from probe results.
+	workflowPresent := false
+	for _, c := range components {
+		if c.Name == "var:FULLSEND_MINT_URL" {
+			status.MintURL = c.Actual
+		}
+		if c.Name == "workflow" {
+			status.CurrentRef = c.Actual
+			workflowPresent = c.Present
+		}
+	}
+
+	// Convert non-matching components to drift entries before
+	// display-only reads, so drifts are preserved on later errors.
+	for _, c := range components {
+		if c.Match {
+			continue
+		}
+		field := DriftFieldName(c.Name)
+		expected := c.Expected
+		if expected == "" {
+			expected = "present"
+		}
+		actual := c.Actual
+		if !c.Present {
+			actual = "missing"
+		}
 		status.Drifts = append(status.Drifts, Drift{
-			Field:    "FULLSEND_MINT_URL",
-			Expected: cfg.MintURL,
-			Actual:   status.MintURL,
+			Field:    field,
+			Expected: expected,
+			Actual:   actual,
 		})
 	}
 
-	// Inference secrets are always required.
-	for _, secretName := range requiredSecretsForForge() {
-		exists, secretErr := client.RepoSecretExists(ctx, owner, repo, secretName)
-		if secretErr != nil {
-			if status.Error == "" {
-				status.Error = fmt.Sprintf("checking secret %s: %v", secretName, secretErr)
-			}
-			break
-		}
-		if !exists {
-			status.Drifts = append(status.Drifts, Drift{
-				Field:    secretName,
-				Expected: "present",
-				Actual:   "missing",
-			})
-		}
-	}
-
 	// Resolve the manifest's fullsend_ref to a commit SHA for
-	// comparison. This handles floating refs like "main" — if the
-	// branch has moved, the resolved SHA differs from the installed
-	// SHA and drift is correctly reported.
+	// comparison. Skip when the workflow is absent — that is already
+	// reported as a component drift; an empty ref is a consequence,
+	// not a separate problem.
 	//
 	// When the symbolic refs already match (e.g. both are "v0"), skip
 	// SHA resolution entirely. This avoids false drift reports where
 	// the resolver converts the expected ref to a SHA while the
 	// installed ref stays symbolic.
-	if cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
+	if workflowPresent && cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
 		expectedSHA := cfg.FullsendRef
 		if resolver != nil {
 			expectedSHA = resolver.Resolve(ctx, cfg.FullsendRef)
@@ -250,6 +264,14 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 			})
 		}
 	}
+
+	// Read display-only variable not covered by required vars.
+	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_GCP_REGION")
+	if regionErr != nil {
+		status.Error = fmt.Sprintf("reading variable FULLSEND_GCP_REGION for %s/%s: %v", owner, repo, regionErr)
+		return status
+	}
+	status.Region = region
 
 	return status
 }

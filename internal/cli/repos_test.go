@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -929,6 +930,11 @@ func TestReposUninstallCmd_RequiresArgs(t *testing.T) {
 func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
+	// Simulate a GitHub App bot identity with write access to each repo.
+	// Without this, commitScaffoldViaPR falls into the fork path and
+	// waitForFork polls a fake that never reports ready (#6489).
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
@@ -936,12 +942,16 @@ func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 			Name:          parts[1],
 			DefaultBranch: "main",
 		})
+		fc.CollaboratorPermissions[r+"/fullsend-app[bot]"] = "write"
 		fc.VariableValues[r+"/FULLSEND_PER_REPO_INSTALL"] = "true"
 		fc.VariableValues[r+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 		fc.VariableValues[r+"/FULLSEND_GCP_REGION"] = "us-central1"
 		fc.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		fc.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 		fc.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0")
+		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+			fc.FileContents[r+"/"+tcPath] = []byte("uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v1.0.0")
+		}
 	}
 	return fc
 }

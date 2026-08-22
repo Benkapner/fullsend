@@ -172,7 +172,11 @@ func Install(ctx context.Context, cfg InstallConfig,
 			return result, fmt.Errorf("checking guard variable: %w", guardErr)
 		}
 		if guardExists && guardVal == "true" {
-			fullyInstalled, checkErr := checkInstallComponents(ctx, client, cfg.Owner, cfg.Repo, cfg.Forge, ForgeConfigFor(cfg.Forge))
+			expectedVars := map[string]string{}
+			if cfg.MintURL != "" {
+				expectedVars["FULLSEND_MINT_URL"] = cfg.MintURL
+			}
+			fullyInstalled, checkErr := checkInstallComponents(ctx, client, cfg.Owner, cfg.Repo, cfg.Forge, ForgeConfigFor(cfg.Forge), expectedVars)
 			if checkErr != nil {
 				return result, fmt.Errorf("checking installation components: %w", checkErr)
 			}
@@ -399,49 +403,14 @@ func requiredSecretsForForge() []string {
 }
 
 // checkInstallComponents verifies that all per-repo installation
-// components beyond the guard variable are present: workflow file,
-// variables, and secrets. The caller has already confirmed the guard
-// variable is set. Returns true only when every component exists.
-func checkInstallComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig) (bool, error) {
-	// Workflow file (try forge-appropriate extensions).
-	workflowFound := false
-	for _, path := range fc.WorkflowPaths {
-		_, err := client.GetFileContent(ctx, owner, repo, path)
-		if err != nil {
-			if forge.IsNotFound(err) {
-				continue
-			}
-			return false, fmt.Errorf("checking workflow file: %w", err)
-		}
-		workflowFound = true
-		break
+// components beyond the guard variable are present (and, when
+// expectedVarValues is provided, that variable values match). The
+// caller has already confirmed the guard variable is set. Returns
+// true only when every component matches.
+func checkInstallComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string) (bool, error) {
+	components, err := ProbeComponents(ctx, client, owner, repo, forgeName, fc, expectedVarValues)
+	if err != nil {
+		return false, err
 	}
-	if !workflowFound {
-		return false, nil
-	}
-
-	// Variables (forge-specific).
-	for _, varName := range requiredVarsForForge(forgeName) {
-		_, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
-		if err != nil {
-			return false, fmt.Errorf("checking variable %s: %w", varName, err)
-		}
-		if !exists {
-			return false, nil
-		}
-	}
-
-	// Secrets (existence check only — values cannot be read back).
-	// Inference secrets are always required.
-	for _, secretName := range requiredSecretsForForge() {
-		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
-		if err != nil {
-			return false, fmt.Errorf("checking secret %s: %w", secretName, err)
-		}
-		if !exists {
-			return false, nil
-		}
-	}
-
-	return true, nil
+	return AllMatch(components), nil
 }

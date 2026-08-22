@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func newInstalledFakeClient(repos ...string) *forge.FakeClient {
@@ -22,6 +23,9 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 		client.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		client.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 		client.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
+		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+			client.FileContents[r+"/"+tcPath] = []byte("uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v1.0.0\n")
+		}
 	}
 	return client
 }
@@ -72,6 +76,18 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 
 	if len(client.DeletedFiles) == 0 {
 		t.Error("no files were deleted")
+	}
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		found := false
+		for _, df := range client.DeletedFiles {
+			if df.Path == tcPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("thin caller %s was not in deleted files", tcPath)
+		}
 	}
 	if len(client.DeletedVariables) != 4 {
 		t.Errorf("deleted %d variables, want 4", len(client.DeletedVariables))

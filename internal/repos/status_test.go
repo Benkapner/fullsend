@@ -49,6 +49,7 @@ jobs:
     uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@%s
 `, ref)
 	fc.FileContents[owner+"/"+repo+"/.github/workflows/fullsend.yml"] = []byte(workflow)
+	addThinCallerFiles(fc, owner, repo)
 }
 
 func TestProbeRepoState_Installed(t *testing.T) {
@@ -393,7 +394,7 @@ func TestStatus_APIError(t *testing.T) {
 		},
 	}
 
-	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit exceeded")
+	fc.Errors["GetRepoVariable"] = fmt.Errorf("API rate limit exceeded")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -573,15 +574,18 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 	if s.CurrentRef != "" {
 		t.Errorf("ref = %q, want empty (no workflow)", s.CurrentRef)
 	}
-	// Empty current ref vs v2.3.0 expected → drift
+	// Missing workflow → component drift, not fullsend_ref drift.
 	found := false
 	for _, d := range s.Drifts {
-		if d.Field == "fullsend_ref" {
+		if d.Field == "workflow" && d.Expected == "present" && d.Actual == "missing" {
 			found = true
+		}
+		if d.Field == "fullsend_ref" {
+			t.Error("fullsend_ref drift should not be reported when workflow is absent")
 		}
 	}
 	if !found {
-		t.Error("expected fullsend_ref drift when workflow is missing")
+		t.Error("expected workflow drift when workflow file is missing")
 	}
 }
 

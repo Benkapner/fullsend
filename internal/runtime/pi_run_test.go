@@ -237,3 +237,20 @@ func TestPiThinkingFor_DefaultAndUnknown(t *testing.T) {
 	cmd := buildPiRunCommand(params, &piManifest{AgentName: "triage", Model: "opus"})
 	assert.Contains(t, cmd, "--thinking 'high'", "unknown effort falls back to the default, not to pi's medium")
 }
+
+func TestBuildPiRunCommand_HonoursPromptOverride(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	m := &piManifest{AgentName: "triage", Model: "opus"}
+
+	params := piTestParams()
+	cmd := buildPiRunCommand(params, m)
+	assert.Contains(t, cmd, shellQuote(DefaultAgentPrompt), "empty prompt falls back to the default")
+
+	// The validation loop injects the previous iteration's failure here; a
+	// runtime that ignores it turns feedback_mode into a blind retry (#1050).
+	params.Prompt = "Previous iteration failed: tests did not pass.\nFix it; don't repeat it."
+	cmd = buildPiRunCommand(params, m)
+	assert.Contains(t, cmd, shellQuote(params.Prompt))
+	assert.NotContains(t, cmd, shellQuote(DefaultAgentPrompt))
+	assert.True(t, strings.HasSuffix(cmd, "</dev/null"), "stdin stays closed")
+}

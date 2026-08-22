@@ -149,9 +149,9 @@ Install runs in three phases:
 2. **Provision** — repos not yet provisioned get scaffold files,
    variables, and secrets. Partially-installed repos are repaired
    automatically.
-3. **Convergence** — repos already installed are checked for variable
-   drift (synced automatically) and scaffold ref drift (upgraded
-   automatically).
+3. **Convergence** — repos already installed are checked for component
+   drift (workflow, thin callers, variables, secrets — repaired
+   automatically) and scaffold ref drift (upgraded automatically).
 
 > **Prerequisite:** GCP WIF provisioning (`fullsend inference provision`)
 > must be completed before running install. For self-managed mints,
@@ -210,8 +210,9 @@ fullsend repos status -f repos.yaml --json
 
 ### Detecting and reconciling configuration drift
 
-Run `repos install` to detect and fix variable drift and scaffold ref
-drift across all manifest repos:
+Run `repos install` to detect and fix component drift (workflow, thin
+callers, variables, secrets) and scaffold ref drift across all manifest
+repos:
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -223,11 +224,10 @@ Preview what would change without modifying anything:
 fullsend repos install -f repos.yaml --dry-run
 ```
 
-The convergence phase checks variables (`FULLSEND_MINT_URL`)
-and scaffold workflow refs against the manifest.
-Variables are synced automatically; ref updates are committed as PRs
-(or direct pushes with `--direct`). Secrets are write-once at install
-time and are not reconciled.
+The convergence phase checks all components (workflow, thin callers,
+variables, secrets) and scaffold workflow refs against the manifest.
+Missing or drifted components are repaired automatically; ref updates
+are committed as PRs (or direct pushes with `--direct`).
 
 Use `repos status` for a read-only drift report (no changes applied):
 

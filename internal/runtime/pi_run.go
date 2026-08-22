@@ -191,7 +191,14 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	// blocks while the pipe stays open (verified on 0.84.2: an idle pipe
 	// hangs, /dev/null proceeds). Close it here so the run never depends on
 	// how the sandbox exec wires stdin.
-	parts = append(parts, shellQuote("Run the agent task"), "</dev/null")
+	// The validation loop replaces the prompt on a retry iteration to inject
+	// the previous failure (#1050/#6494); every runtime must honour it, or
+	// feedback_mode silently degrades to a blind retry.
+	prompt := DefaultAgentPrompt
+	if params.Prompt != "" {
+		prompt = params.Prompt
+	}
+	parts = append(parts, shellQuote(prompt), "</dev/null")
 
 	if params.Debug != "" {
 		// pi has no debug-file flag; in debug mode its stderr goes to the
