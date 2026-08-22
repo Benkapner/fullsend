@@ -10,6 +10,21 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
+// hookLibraryFile reports scripts shipped as imports for other hooks, not
+// invoked directly by HookPlan or settings.json.
+func hookLibraryFile(name string) bool {
+	switch name {
+	case "hook_io.py",
+		"context_suppress_posttool.py",
+		"unicode_posttool.py",
+		"secret_redact_posttool.py",
+		"canary_posttool.py":
+		return true
+	default:
+		return false
+	}
+}
+
 func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
 	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))

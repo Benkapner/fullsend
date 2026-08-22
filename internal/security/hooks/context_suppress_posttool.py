@@ -281,8 +281,9 @@ def main() -> None:
     original = hook_io.payload(hook_input)
     text = hook_io.scan_text(original)
 
-    # Failures pass through: string adapters prefix ``Exit code``; Claude Code
-    # Bash objects use ``interrupted`` (no exit-code field on the payload).
+    # Failures pass through: v1 adapters prefix ``Exit code``. Under Claude Code
+    # a failed tool call fires PostToolUseFailure and never reaches here, and
+    # ``interrupted`` marks a cancelled tool rather than a non-zero exit.
     if hook_io.looks_failed(original, text):
         sys.exit(0)
 

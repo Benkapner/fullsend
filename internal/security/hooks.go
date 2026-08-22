@@ -199,7 +199,7 @@ func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	if contextSuppressPostToolEnabled(hooks) {
 		files["context_suppress_posttool.py"] = ContextSuppressPostToolHook
 	}
-	if postToolProtocolEnabled(hooks) {
+	if postToolChainEnabled(hooks) {
 		files["hook_io.py"] = HookIO
 	}
 	if canaryPreToolEnabled(hooks) {
@@ -247,25 +247,6 @@ func postToolSanitizeEnabled(hooks SandboxHookConfig) bool {
 
 func postToolChainEnabled(hooks SandboxHookConfig) bool {
 	return postToolSanitizeEnabled(hooks) || canaryPostToolEnabled(hooks)
-}
-
-func postToolProtocolEnabled(hooks SandboxHookConfig) bool {
-	return postToolChainEnabled(hooks)
-}
-
-// hookLibraryFile reports scripts shipped as imports for other hooks, not
-// invoked directly by HookPlan or settings.json.
-func hookLibraryFile(name string) bool {
-	switch name {
-	case "hook_io.py",
-		"context_suppress_posttool.py",
-		"unicode_posttool.py",
-		"secret_redact_posttool.py",
-		"canary_posttool.py":
-		return true
-	default:
-		return false
-	}
 }
 
 func secretRedactPostToolEnabled(hooks SandboxHookConfig) bool {

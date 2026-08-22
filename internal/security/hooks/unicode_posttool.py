@@ -235,7 +235,11 @@ def main() -> None:
         findings.extend(field_findings)
         return sanitized
 
-    updated = hook_io.transform_strings(original, _sanitize_field)
+    # Identifier fields (paths, URLs, commands) are scanned by other hooks but
+    # never rewritten here: NFKC would hand Claude a path that does not exist.
+    updated = hook_io.transform_strings(
+        original, _sanitize_field, skip_keys=hook_io.IDENTIFIER_KEYS
+    )
     if not findings:
         sys.exit(0)
 

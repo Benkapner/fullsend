@@ -3,20 +3,22 @@
 
 Claude Code sends the tool output as ``tool_response`` (string or structured
 object). Adapters and existing tests may still send ``tool_result``. Sanitizers
-replace output via ``hookSpecificOutput.updatedToolOutput`` and also write
-``tool_result`` (scan text) so sequential adapters can keep reading the v1
-field.
+replace output via ``hookSpecificOutput.updatedToolOutput``.
 
 ``updatedToolOutput`` must match the original value's shape: a string stays a
 string; a Bash object keeps ``stdout``/``stderr``/… keys. A bare string
 replacement is ignored for built-in Claude Code tools.
+
+Emissions also carry ``tool_result`` (and ``metadata``) so sequential adapters
+can keep reading the v1 field.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 MAX_INPUT_CHARS = 10 * 1024 * 1024
@@ -25,6 +27,26 @@ MAX_INPUT_CHARS = 10 * 1024 * 1024
 # apply_text writes a replacement there and blanks the remaining slots
 # (stderr must be cleared on suppress, not left as a second copy).
 _TEXT_KEYS = ("stdout", "stderr", "content", "text", "output")
+
+# Keys whose values are identifiers Claude re-uses verbatim (paths, URLs,
+# commands, exact-match edit strings). Unicode normalization must not rewrite
+# them — NFKC/NFC would hand Claude a path that does not exist on disk. Secret
+# redaction still walks them: it only replaces matched secret patterns and
+# never reshapes the rest of the string.
+IDENTIFIER_KEYS = frozenset(
+    {
+        "filePath",
+        "file_path",
+        "path",
+        "filename",
+        "fileName",
+        "url",
+        "uri",
+        "command",
+        "oldString",
+        "newString",
+    }
+)
 
 
 def payload(hook_input: dict[str, Any]) -> Any:
@@ -40,17 +62,37 @@ def scan_text(value: Any) -> str:
     Claude Code Bash ``tool_response`` is ``{stdout, stderr, interrupted, isImage}``
     with stdout always a string (possibly empty). Detection must not stop at
     the first key — a leak only in stderr would otherwise be invisible.
+
+    Fields are joined with a newline so a needle cannot match across a field
+    boundary: such a match is unredactable, because the redactors rewrite each
+    string field independently.
     """
     if value is None:
         return ""
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        return "".join(scan_text(v) for v in value.values())
+        return _join(scan_text(v) for v in value.values())
     if isinstance(value, list):
-        return "".join(scan_text(item) for item in value)
+        return _join(scan_text(item) for item in value)
     if isinstance(value, (bool, int, float)):
         return ""
+    return json.dumps(value)
+
+
+def _join(parts: Iterable[str]) -> str:
+    return "\n".join(part for part in parts if part)
+
+
+def v1_text(value: Any) -> str:
+    """Render a tool output value for the v1 ``tool_result`` field.
+
+    A string passes through; a structured shape is serialized rather than
+    flattened, so an adapter writing this back does not hand the agent a
+    concatenation of unrelated fields.
+    """
+    if isinstance(value, str):
+        return value
     return json.dumps(value)
 
 
@@ -96,28 +138,41 @@ def apply_text(original: Any, new_text: str) -> Any:
 def looks_failed(value: Any, text: str) -> bool:
     """True when output should not be context-suppressed.
 
-    String adapters prefix failures with ``Exit code``. Claude Code's Bash
-    object has no such field — ``interrupted`` is the structured equivalent.
+    v1 adapters prefix failures with ``Exit code``. Under Claude Code a
+    non-zero-exit Bash call does not reach PostToolUse at all (it fires
+    PostToolUseFailure), and ``interrupted`` marks a cancelled tool.
     """
     if text.startswith("Exit code"):
         return True
     return isinstance(value, dict) and value.get("interrupted") is True
 
 
-def transform_strings(value: Any, fn: Callable[[str], str]) -> Any:
-    """Apply ``fn`` to every string in a nested JSON-like value."""
+def transform_strings(
+    value: Any,
+    fn: Callable[[str], str],
+    *,
+    skip_keys: frozenset[str] = frozenset(),
+) -> Any:
+    """Apply ``fn`` to every string in a nested JSON-like value.
+
+    Values under a key in ``skip_keys`` are left untouched (see
+    ``IDENTIFIER_KEYS``).
+    """
     if isinstance(value, str):
         return fn(value)
     if isinstance(value, dict):
-        return {k: transform_strings(v, fn) for k, v in value.items()}
+        return {
+            k: (v if k in skip_keys else transform_strings(v, fn, skip_keys=skip_keys))
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [transform_strings(v, fn) for v in value]
+        return [transform_strings(v, fn, skip_keys=skip_keys) for v in value]
     return value
 
 
 def emit_updated(updated: Any, *, metadata: dict[str, Any] | None = None) -> None:
     payload_out: dict[str, Any] = {
-        "tool_result": scan_text(updated),
+        "tool_result": v1_text(updated),
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
             "updatedToolOutput": updated,
@@ -125,40 +180,55 @@ def emit_updated(updated: Any, *, metadata: dict[str, Any] | None = None) -> Non
     }
     if metadata:
         payload_out["metadata"] = metadata
-    json.dump(payload_out, sys.stdout)
+    _write(payload_out)
 
 
-def emit_block(reason: str, updated: Any | None = None) -> None:
+def emit_block(reason: str, updated: Any | None = None, *, stop: bool = False) -> None:
     payload_out: dict[str, Any] = {"decision": "block", "reason": reason}
+    if stop:
+        # PostToolUse ``decision: block`` only appends the reason; ``continue``
+        # is the documented field that actually halts the session.
+        payload_out["continue"] = False
     if updated is not None:
-        payload_out["tool_result"] = scan_text(updated)
+        payload_out["tool_result"] = v1_text(updated)
         payload_out["hookSpecificOutput"] = {
             "hookEventName": "PostToolUse",
             "updatedToolOutput": updated,
         }
-    json.dump(payload_out, sys.stdout)
+    _write(payload_out)
+
+
+def _write(payload_out: dict[str, Any]) -> None:
+    """Serialize first, then write — a serialization error must not leave
+    half an object on stdout for the caller's fallback to append to."""
+    sys.stdout.write(json.dumps(payload_out))
+
+
+def canary_pattern(canary: str) -> re.Pattern[str] | None:
+    """Case-insensitive matcher for the canary token.
+
+    Detection and redaction must share one mechanism. Walking a ``str.lower()``
+    copy with indices taken from the original string desynchronizes as soon as
+    a character case-folds to more code points than it started with (``İ`` →
+    two), which can leave a detected token unredacted in the emitted output.
+    """
+    needle = canary.strip()
+    if not needle:
+        return None
+    return re.compile(re.escape(needle), re.IGNORECASE)
+
+
+def contains_canary(value: Any, canary: str) -> bool:
+    """True when the canary appears anywhere in ``value``."""
+    pattern = canary_pattern(canary)
+    if pattern is None:
+        return False
+    return pattern.search(scan_text(value)) is not None
 
 
 def redact_canary(value: Any, canary: str) -> Any:
     """Replace case-insensitive canary matches in every string field."""
-    needle = canary.strip().lower()
-    if not needle:
+    pattern = canary_pattern(canary)
+    if pattern is None:
         return value
-
-    def _redact(text: str) -> str:
-        lower = text.lower()
-        if needle not in lower:
-            return text
-        out: list[str] = []
-        i = 0
-        n = len(needle)
-        while i < len(text):
-            if lower.startswith(needle, i):
-                out.append("[CANARY_REDACTED]")
-                i += n
-            else:
-                out.append(text[i])
-                i += 1
-        return "".join(out)
-
-    return transform_strings(value, _redact)
+    return transform_strings(value, lambda text: pattern.sub("[CANARY_REDACTED]", text))

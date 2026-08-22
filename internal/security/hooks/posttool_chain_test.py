@@ -293,10 +293,253 @@ class TestPostToolChain(unittest.TestCase):
         self.assertEqual(cm.exception.code, 0)
         out = json.loads(buf.getvalue())
         self.assertTrue(out["metadata"]["redact_error"])
-        self.assertEqual(
-            out["hookSpecificOutput"]["hookEventName"],
-            "PostToolUse",
+        # A stage error alone must not emit a rewrite: Claude Code lets one
+        # hook's updatedToolOutput replace another's, so a no-op rewrite would
+        # clobber a legitimate one from a repo-local hook.
+        self.assertNotIn("hookSpecificOutput", out)
+
+
+CANARY = "FULLSEND_CANARY_ABC123XYZ"
+
+
+def to_fullwidth(text: str) -> str:
+    return "".join(chr(ord(c) + 0xFEE0) if 33 <= ord(c) <= 126 else c for c in text)
+
+
+class TestCanaryObfuscationBypass(unittest.TestCase):
+    """A canary split by obfuscation characters must not survive the chain.
+
+    Regression: canary detection used to run on the raw payload, before the
+    unicode stage. An obfuscated token evaded detection and the unicode stage
+    then reassembled the clean token into updatedToolOutput — a leak the hook
+    is specifically there to stop.
+    """
+
+    def _run(self, leaked: str) -> tuple[int, dict]:
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            {"stdout": f"leak: {leaked}", "stderr": "", "interrupted": False, "isImage": False},
+            key="tool_response",
+            env_extra={"FULLSEND_CANARY_TOKEN": CANARY},
+            tool_name="Bash",
+            tool_input={"command": "echo hi"},
         )
+        self.assertEqual(rc, 1, stderr)
+        return rc, json.loads(stdout)
+
+    def _assert_blocked_and_clean(self, out: dict) -> None:
+        self.assertEqual(out["decision"], "block")
+        self.assertIs(out["continue"], False)
+        emitted = json.dumps(out.get("hookSpecificOutput", {}).get("updatedToolOutput"))
+        self.assertNotIn(CANARY, emitted)
+        self.assertIn("[CANARY_REDACTED]", emitted)
+
+    def test_zero_width_split_canary_blocks(self):
+        _, out = self._run(obfuscate_with_char(CANARY, "\u200b"))
+        self._assert_blocked_and_clean(out)
+
+    def test_fullwidth_canary_blocks(self):
+        _, out = self._run(to_fullwidth(CANARY))
+        self._assert_blocked_and_clean(out)
+
+    def test_plain_canary_still_blocks_and_halts(self):
+        _, out = self._run(CANARY)
+        self._assert_blocked_and_clean(out)
+
+    def test_cross_field_boundary_is_not_a_false_positive(self):
+        """ "ABC" + "DEF" must not match canary "CDEF" — such a hit spans two
+        fields and the redactor, which rewrites fields independently, could
+        never remove it."""
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            {"stdout": "ABC", "stderr": "DEF", "interrupted": False, "isImage": False},
+            key="tool_response",
+            env_extra={"FULLSEND_CANARY_TOKEN": "CDEF"},
+            tool_name="Bash",
+            tool_input={"command": "echo hi"},
+        )
+        self.assertEqual(rc, 0, stderr)
+
+
+class TestCanaryFailsClosed(unittest.TestCase):
+    def test_scan_failure_blocks(self):
+        """A canary scan that raises must block, not silently allow."""
+        import posttool_chain
+
+        payload = json.dumps({"tool_name": "Read", "tool_response": "harmless"})
+
+        def boom(_value):
+            raise RuntimeError("boom")
+
+        buf = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"FULLSEND_CANARY_TOKEN": CANARY}),
+            mock.patch.object(posttool_chain.hook_io, "scan_text", boom),
+            mock.patch.object(sys, "stdin", io.StringIO(payload)),
+            mock.patch.object(sys, "stdout", buf),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            posttool_chain.main()
+        self.assertEqual(cm.exception.code, 1)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("CANARY_SCAN_ERROR", out["reason"])
+
+    def test_redaction_failure_withholds_output_and_still_blocks(self):
+        """If the canary cannot be redacted, block without emitting output."""
+        import posttool_chain
+
+        payload = json.dumps({"tool_name": "Read", "tool_response": f"leak {CANARY}"})
+
+        def boom(_value, _canary):
+            raise RuntimeError("boom")
+
+        buf = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"FULLSEND_CANARY_TOKEN": CANARY}),
+            mock.patch.object(posttool_chain.hook_io, "redact_canary", boom),
+            mock.patch.object(sys, "stdin", io.StringIO(payload)),
+            mock.patch.object(sys, "stdout", buf),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            posttool_chain.main()
+        self.assertEqual(cm.exception.code, 1)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["decision"], "block")
+        self.assertNotIn("hookSpecificOutput", out)
+        self.assertNotIn(CANARY, buf.getvalue())
+
+    def test_emit_failure_still_blocks_with_hardcoded_json(self):
+        """If emitting the block fails, fall back to hard-coded JSON and exit 1."""
+        import posttool_chain
+
+        payload = json.dumps({"tool_name": "Read", "tool_response": f"leak {CANARY}"})
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        buf = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"FULLSEND_CANARY_TOKEN": CANARY}),
+            mock.patch.object(posttool_chain.hook_io, "emit_block", boom),
+            mock.patch.object(sys, "stdin", io.StringIO(payload)),
+            mock.patch.object(sys, "stdout", buf),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            posttool_chain.main()
+        self.assertEqual(cm.exception.code, 1)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["decision"], "block")
+        self.assertIs(out["continue"], False)
+        self.assertNotIn(CANARY, buf.getvalue())
+
+
+class TestIdentifierFieldsPreserved(unittest.TestCase):
+    def test_write_file_path_is_not_normalized(self):
+        """The chain now matches ``*``. Rewriting a path would tell Claude it
+        wrote a file that does not exist on disk."""
+        nfd_path = "/p/cafe\u0301.txt"
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            {"filePath": nfd_path, "success": True},
+            key="tool_response",
+            tool_name="Write",
+        )
+        self.assertEqual(rc, 0, stderr)
+        # The NFC form must appear nowhere: either nothing is emitted, or the
+        # decomposed path is emitted verbatim.
+        self.assertNotIn("caf\u00e9", stdout)
+        if stdout.strip():
+            updated = json.loads(stdout)["hookSpecificOutput"]["updatedToolOutput"]
+            self.assertEqual(updated["filePath"], nfd_path)
+
+    def test_secrets_are_still_redacted_in_identifier_fields(self):
+        """Redaction still walks identifier fields — it only replaces matched
+        secret patterns, it does not reshape the string."""
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            {"url": f"https://example.test/?t={PLAIN_PAT}", "success": True},
+            key="tool_response",
+            tool_name="WebFetch",
+        )
+        self.assertEqual(rc, 0, stderr)
+        self.assertNotIn(PLAIN_PAT, stdout)
+
+
+class TestChainFailsClosedOnUnreadableInput(unittest.TestCase):
+    """The chain is the only PostToolUse entry point Claude Code schedules.
+
+    Input it cannot read must not silently skip canary detection the way the
+    fail-open sanitizer stages do.
+    """
+
+    def _run(self, raw: str, *, armed: bool = True) -> tuple[int, str]:
+        env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
+        if armed:
+            env["FULLSEND_CANARY_TOKEN"] = CANARY
+        proc = subprocess.run(
+            [sys.executable, CHAIN_HOOK],
+            input=raw,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        return proc.returncode, proc.stdout
+
+    def test_malformed_json_blocks_when_canary_armed(self):
+        rc, stdout = self._run("{not json")
+        self.assertEqual(rc, 1)
+        out = json.loads(stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIs(out["continue"], False)
+
+    def test_oversized_input_blocks_when_canary_armed(self):
+        oversized = json.dumps({"tool_name": "Read", "tool_response": "x" * (11 * 1024 * 1024)})
+        rc, stdout = self._run(oversized)
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(stdout)["decision"], "block")
+
+    def test_malformed_json_still_passes_through_when_canary_disarmed(self):
+        """Without a canary token the chain stays fail-open, as documented."""
+        rc, stdout = self._run("{not json", armed=False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout.strip(), "")
+
+    def test_empty_stdin_is_allowed(self):
+        rc, stdout = self._run("")
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout.strip(), "")
+
+
+class TestCanaryRedactionIsCaseFoldSafe(unittest.TestCase):
+    def test_case_expanding_prefix_does_not_leave_token_behind(self):
+        """Regression: redaction walked a ``str.lower()`` copy using indices
+        from the original string. A character that case-folds to more code
+        points than it started with (``İ`` → two) desynchronized the two, and
+        a detected token could survive into updatedToolOutput."""
+        leaked = "\u0130" * 20 + CANARY
+        rc, stdout, stderr = run_hook(
+            CHAIN_HOOK,
+            {"stdout": leaked, "stderr": "", "interrupted": False, "isImage": False},
+            key="tool_response",
+            env_extra={"FULLSEND_CANARY_TOKEN": CANARY},
+            tool_name="Bash",
+            tool_input={"command": "echo hi"},
+        )
+        self.assertEqual(rc, 1, stderr)
+        self.assertNotIn(CANARY, stdout)
+        out = json.loads(stdout)
+        self.assertEqual(out["decision"], "block")
+
+    def test_hook_io_redacts_what_it_detects(self):
+        import hook_io
+
+        for prefix in ("", "\u0130" * 5, "\u0130" * 20):
+            value = {"stdout": prefix + CANARY}
+            self.assertTrue(hook_io.contains_canary(value, CANARY), prefix)
+            redacted = hook_io.redact_canary(value, CANARY)
+            self.assertFalse(hook_io.contains_canary(redacted, CANARY), prefix)
 
 
 if __name__ == "__main__":

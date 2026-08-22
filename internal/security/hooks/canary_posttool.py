@@ -42,6 +42,10 @@ _ERR_UNEXPECTED = (
     '{"decision":"block","reason":"CANARY_HOOK_ERROR: unexpected error reading input"}'
 )
 _ERR_OVERSIZED = '{"decision":"block","reason":"CANARY_HOOK_ERROR: input exceeds 10 MB limit"}'
+_ERR_BLOCK = (
+    '{"decision":"block","continue":false,'
+    '"reason":"CANARY_HOOK_ERROR: canary leak detected; output withheld"}'
+)
 
 
 def log_finding(name: str, severity: str, detail: str, action: str) -> None:
@@ -85,16 +89,27 @@ def main() -> None:
         sys.exit(0)
 
     original = hook_io.payload(hook_input)
-    text = hook_io.scan_text(original)
-    if canary.lower() not in text.lower():
+    if not hook_io.contains_canary(original, canary):
         sys.exit(0)
 
     tool_name = hook_input.get("tool_name", "unknown")
     reason = f"CANARY_LEAKED: canary token found in {tool_name} result"
     log_finding("canary_leak", "critical", reason, "block")
-    # Block for adapters; also replace output so Claude Code does not keep
-    # the leaked token (decision:block alone does not hide PostToolUse output).
-    hook_io.emit_block(reason, hook_io.redact_canary(original, canary))
+    # Block for adapters; also replace output so Claude Code does not keep the
+    # leaked token (decision:block alone does not hide PostToolUse output) and
+    # set ``continue: false``, the field that actually halts the session.
+    # Fails closed: output is withheld unless redaction provably succeeded, and
+    # exit 1 is unconditional.
+    try:
+        blocked = hook_io.redact_canary(original, canary)
+        if hook_io.contains_canary(blocked, canary):
+            blocked = None
+    except Exception:  # noqa: BLE001
+        blocked = None
+    try:
+        hook_io.emit_block(reason, blocked, stop=True)
+    except Exception:  # noqa: BLE001
+        sys.stdout.write(_ERR_BLOCK)
     sys.exit(1)
 
 

@@ -10,9 +10,33 @@ def test_scan_text_sees_stderr_when_stdout_empty():
     assert "CANARY_LEAK" in text
 
 
-def test_scan_text_concatenates_stdout_and_stderr():
+def test_scan_text_joins_fields_on_a_boundary():
+    """Fields are newline-joined so a needle cannot match across a boundary.
+
+    A cross-boundary match would be unredactable: the redactors rewrite each
+    string field independently.
+    """
     text = hook_io.scan_text({"stdout": "out-", "stderr": "err"})
-    assert text == "out-err"
+    assert text == "out-\nerr"
+    assert "out-err" not in text
+
+
+def test_scan_text_skips_empty_fields():
+    assert hook_io.scan_text({"stdout": "out", "stderr": ""}) == "out"
+
+
+def test_v1_text_serializes_structured_shapes():
+    assert hook_io.v1_text("plain") == "plain"
+    assert hook_io.v1_text({"stdout": "a", "stderr": "b"}) == '{"stdout": "a", "stderr": "b"}'
+
+
+def test_transform_strings_skips_identifier_keys():
+    value = {"filePath": "/p/a\u200bb.txt", "stdout": "x\u200by"}
+    out = hook_io.transform_strings(
+        value, lambda t: t.replace("\u200b", ""), skip_keys=hook_io.IDENTIFIER_KEYS
+    )
+    assert out["filePath"] == "/p/a\u200bb.txt"
+    assert out["stdout"] == "xy"
 
 
 def test_scan_text_walks_nested_mcp_body():
