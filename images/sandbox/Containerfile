@@ -90,7 +90,8 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 
 # ---------------------------------------------------------------------------
 # pi-anthropic-vertex — interim Claude-on-Vertex provider for pi
-# (github.com/twoGiants/pi-anthropic-vertex, MIT, ~160 lines: registers an
+# (github.com/twoGiants/pi-anthropic-vertex, MIT; a ~300-line entry point
+# plus ~220 lines mirrored from pi's streamSimple helpers: registers an
 # "anthropic-vertex" provider that delegates streaming to pi's built-in
 # Anthropic provider through an AnthropicVertex client). pi's own
 # google-vertex provider is Gemini-only and the upstream anthropic-vertex
@@ -107,11 +108,14 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # the wrong version); --ignore-scripts as for the pi install above (no
 # install scripts in the pruned tree).
 #
-# To update: pick a tag from https://github.com/twoGiants/pi-anthropic-vertex/tags,
-# check its pi compatibility (sync/compat.json upstream; v0.1.13 was synced
-# against pi 0.81.1 and its mirrored thinking/max-tokens mapping can lag the
-# pinned PI_VERSION), set PI_ANTHROPIC_VERTEX_VERSION and refresh
-# PI_ANTHROPIC_VERTEX_SHA256 from
+# To update (also re-run on every PI_VERSION bump): pick a tag from
+# https://github.com/twoGiants/pi-anthropic-vertex/tags, check its pi
+# compatibility (sync/compat.json upstream; v0.1.13 was synced against pi
+# 0.81.1 and its mirrored thinking/max-tokens mapping can lag the pinned
+# PI_VERSION), confirm the extension's package.json "overrides" pin of
+# @anthropic-ai/sdk matches the version in pi's packages/ai/package.json
+# (the Vertex client is cast to pi's Anthropic client type), then set
+# PI_ANTHROPIC_VERTEX_VERSION and refresh PI_ANTHROPIC_VERTEX_SHA256 from
 #   sha256sum <(curl -fsSL https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
 ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.13
 ARG PI_ANTHROPIC_VERTEX_SHA256=6b465c374734b0ae98e7c48d58f935bcfb12760c509475df2c82785a463c7249

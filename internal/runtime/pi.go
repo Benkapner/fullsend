@@ -25,10 +25,14 @@ type PiRuntime struct{}
 // PI_ANTHROPIC_VERTEX_VERSION). pi's built-in google-vertex provider is
 // Gemini-only and the upstream anthropic-vertex provider
 // (earendil-works/pi#5262) is still open. Run will load it with
-// `-e` alongside `--no-extensions`; it registers provider "anthropic-vertex"
-// and reads GOOGLE_CLOUD_PROJECT / ANTHROPIC_VERTEX_PROJECT_ID and
-// CLOUD_ML_REGION / GOOGLE_CLOUD_LOCATION. Swap for the upstream provider
-// once #5262 ships in a pinned pi release.
+// `-e` alongside `--no-extensions`; it registers provider "anthropic-vertex".
+// Project comes from GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT,
+// ANTHROPIC_VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT_ID (first set wins —
+// Run should export GOOGLE_CLOUD_PROJECT explicitly), region from
+// CLOUD_ML_REGION or GOOGLE_CLOUD_LOCATION. Its bundled Anthropic SDK also
+// honours ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL /
+// ANTHROPIC_VERTEX_BASE_URL, which Run must not forward. Swap for the
+// upstream provider once #5262 ships in a pinned pi release.
 const PiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
 func (PiRuntime) Name() string { return "pi" }
