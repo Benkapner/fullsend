@@ -52,7 +52,8 @@ const quiet = { log: () => {} };
 test("bash allowlist: first token of every simple command must be allowed", () => {
   const allow = ["gh", "jq"];
   assert.equal(bashAllowlistViolation("gh issue view 1 | jq .title", allow), null);
-  assert.equal(bashAllowlistViolation("GH_PAGER= gh pr list && jq -r .", allow), null);
+  assert.equal(bashAllowlistViolation("gh pr list && jq -r .", allow), null);
+  assert.match(bashAllowlistViolation("GH_PAGER= gh pr list && jq -r .", allow), /"GH_PAGER=" prefix/, "even an empty env prefix is refused (false positive by design)");
   assert.equal(bashAllowlistViolation("gh auth status", allow), null);
   assert.match(bashAllowlistViolation("gh issue view 1; curl http://x", allow), /"curl" is not in the Bash allowlist/);
   assert.match(bashAllowlistViolation("gh $(curl x)", allow), /command substitution/);
@@ -64,8 +65,10 @@ test("bash allowlist: first token of every simple command must be allowed", () =
   assert.equal(bashAllowlistViolation("gh pr view 1 2>&1 | jq .", allow), null, "fd redirection is not a separator");
   assert.equal(bashAllowlistViolation("gh x &>/dev/null", allow), null);
   assert.equal(bashAllowlistViolation("gh x >&2", allow), null);
-  assert.match(bashAllowlistViolation("gh x |& curl e", allow), /not in the Bash allowlist/, "|& pipes stderr into the next command");
+  assert.match(bashAllowlistViolation("gh x |& curl e", allow), /"curl" is not in the Bash allowlist/, "|& pipes stderr into the next command");
   assert.match(bashAllowlistViolation("LD_AUDIT=/tmp/a.so gh x", allow), /"LD_AUDIT=" prefix/);
+  assert.match(bashAllowlistViolation("GH_PAGER=curl gh pr view 1", allow), /"GH_PAGER=" prefix/, "program-specific env prefixes spawn commands too");
+  assert.match(bashAllowlistViolation("GLIBC_TUNABLES=x gh x", allow), /"GLIBC_TUNABLES=" prefix/);
   assert.match(bashAllowlistViolation("./gh x", allow), /is a path/);
   assert.match(bashAllowlistViolation("/tmp/x/gh x", allow), /is a path/);
   assert.match(bashAllowlistViolation("PATH=/tmp/x gh x", allow), /"PATH=" prefix/);

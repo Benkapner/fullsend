@@ -70,10 +70,15 @@ export function claudeToolInput(piName, input) {
 // to a binary) is refused rather than guessed. Heredoc bodies and `command`/
 // `env`/quoted/escaped/variable first tokens are refused too — false
 // positives only, which is the right side to err on in enforce mode.
-const RESOLUTION_ENV = /^(PATH|LD_[A-Z_]+|GCONV_PATH|BASH_ENV|ENV|CDPATH|IFS|SHELLOPTS|PS4)=/;
+// Every `VAR=value` prefix is refused: beyond the loader/shell variables
+// (PATH, LD_*, BASH_ENV, ...), program-specific ones such as GH_PAGER or
+// GIT_SSH_COMMAND make an allowlisted program spawn an arbitrary command,
+// and a deny-list cannot enumerate them.
+const ENV_PREFIX = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // Command separators. A lone `&` backgrounds a command, but `&` is also part
 // of fd redirections (`2>&1`, `&>file`, `>&2`); only the former separates.
-const SEPARATORS = /\r?\n|&&|\|\||;|\||(?<![<>|])&(?!>)/;
+// `|&` is listed before `|` so the refusal names the program, not the `&`.
+const SEPARATORS = /\r?\n|&&|\|\||;|\|&|\||(?<![<>|])&(?!>)/;
 
 export function bashAllowlistViolation(command, allowlist) {
   if (!Array.isArray(allowlist) || allowlist.length === 0) return null;
@@ -88,14 +93,10 @@ export function bashAllowlistViolation(command, allowlist) {
     const seg = raw.trim();
     if (seg === "") continue;
     const words = seg.split(/\s+/);
-    let i = 0;
-    while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) {
-      if (RESOLUTION_ENV.test(words[i])) {
-        return `"${words[i].split("=")[0]}=" prefix is not allowed under a Bash allowlist`;
-      }
-      i++;
+    if (ENV_PREFIX.test(words[0])) {
+      return `"${words[0].split("=")[0]}=" prefix is not allowed under a Bash allowlist`;
     }
-    const first = words[i] ?? "";
+    const first = words[0] ?? "";
     if (first === "" || first.startsWith("(") || first.startsWith("{")) {
       return `subshell or group "${first}" is not allowed under a Bash allowlist`;
     }

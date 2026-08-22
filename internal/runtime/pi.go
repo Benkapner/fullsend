@@ -22,15 +22,17 @@ type PiRuntime struct{}
 // (earendil-works/pi#5262) is still open. Run loads it with `-e` alongside
 // `--no-extensions`; it registers provider "anthropic-vertex". Project comes
 // from GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT, ANTHROPIC_VERTEX_PROJECT_ID or
-// GOOGLE_CLOUD_PROJECT_ID (first set wins — the fleet env exports
-// GOOGLE_CLOUD_PROJECT), region from CLOUD_ML_REGION or
-// GOOGLE_CLOUD_LOCATION. Credentials come from google-auth-library reading
-// GOOGLE_APPLICATION_CREDENTIALS — the WIF external_account config plus the
-// runner-refreshed OIDC token file the harness delivers via host_files, the
-// same path Claude Code on Vertex uses. Its bundled Anthropic SDK also honours
-// ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL /
-// ANTHROPIC_VERTEX_BASE_URL, which must not reach pi runs. Swap for the
-// upstream provider once #5262 ships in a pinned pi release.
+// GOOGLE_CLOUD_PROJECT_ID (first set wins; the fleet env exports both
+// GOOGLE_CLOUD_PROJECT and ANTHROPIC_VERTEX_PROJECT_ID, and Run pins the
+// former to the latter so pi cannot diverge from Claude Code), region from
+// CLOUD_ML_REGION or GOOGLE_CLOUD_LOCATION. Credentials come from
+// google-auth-library reading GOOGLE_APPLICATION_CREDENTIALS — the WIF
+// external_account config plus the runner-refreshed OIDC token file the
+// harness delivers via host_files, the same path Claude Code on Vertex uses.
+// Its bundled Anthropic SDK would send a stray ANTHROPIC_API_KEY to Google
+// and honour ANTHROPIC_VERTEX_BASE_URL as the endpoint, so Run unsets the
+// ANTHROPIC_* variables for this provider. Swap for the upstream provider
+// once #5262 ships in a pinned pi release.
 const PiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
 func (PiRuntime) Name() string { return "pi" }

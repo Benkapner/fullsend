@@ -86,6 +86,12 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	piIdx := strings.Index(cmd, "&& pi ")
 	assert.True(t, unsetIdx > envIdx && unsetIdx < piIdx, "unset runs after sourcing .env and before pi: %s", cmd)
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`)
+
+	// pi resolves the provider prefix case-insensitively; so must the gate.
+	t.Setenv(piModelEnv, "Anthropic-Vertex/claude-opus-4-6")
+	cmd = buildPiRunCommand(params, m)
+	assert.Contains(t, cmd, "&& unset ANTHROPIC_API_KEY")
+	assert.Contains(t, cmd, "--model 'Anthropic-Vertex/claude-opus-4-6'")
 }
 
 // TestPiHooksGuard runs the rendered guard under a real sh: it must exit 97
@@ -93,6 +99,9 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 // fall through when both files are intact.
 func TestPiHooksGuard(t *testing.T) {
 	t.Parallel()
+	if _, err := exec.LookPath("sha256sum"); err != nil {
+		t.Skip("sha256sum not on PATH (stock macOS); the sandbox image has coreutils")
+	}
 	dir := t.TempDir()
 	ext := filepath.Join(dir, "fullsend-hooks.js")
 	manifest := filepath.Join(dir, "fullsend-manifest.json")

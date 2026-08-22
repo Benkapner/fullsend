@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,7 +93,6 @@ func TestParsePiAgent_FenceIsExactLine(t *testing.T) {
 	require.ErrorContains(t, err, "not a frontmatter fence")
 	_, err = parsePiAgent([]byte("---x: y\n---\nbody"))
 	require.ErrorContains(t, err, "not a frontmatter fence")
-	_ = strings.HasPrefix
 }
 
 func TestParsePiAgent_NoFrontmatter(t *testing.T) {

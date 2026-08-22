@@ -302,7 +302,8 @@ func TestPiRuntimeExtractTranscripts(t *testing.T) {
 	binDir := t.TempDir()
 	// find lists two sessions (one nested); download writes a session
 	// file into the requested local dir, as `openshell sandbox download`
-	// does. A traversal-shaped name from find must be rejected, not written.
+	// does. Local names come from the remote basename, so the nested entry
+	// lands flat in outputDir.
 	script := `#!/bin/sh
 echo "$@" >> '` + logPath + `'
 if [ "$2" = "exec" ]; then

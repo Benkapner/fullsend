@@ -112,13 +112,18 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		fmt.Sprintf("cd %s && . %s", shellQuote(params.RepoDir), shellQuote(envFile)),
 		"&& export " + piManifestEnv + "=" + shellQuote(r.piManifestPath()),
 	}
-	if strings.HasPrefix(modelSpec, piDefaultProvider+"/") {
-		// Claude-on-Vertex: the bundled Anthropic SDK would honour a stray
-		// ANTHROPIC_API_KEY / AUTH_TOKEN / BASE_URL / VERTEX_BASE_URL and
-		// route inference past Vertex, so they never reach pi. The project
-		// is pinned to the variable Claude Code on Vertex is driven by, so
-		// both runtimes hit the same GCP project regardless of an ambient
-		// GOOGLE_CLOUD_PROJECT (the extension reads that one first).
+	// pi matches the provider prefix case-insensitively, so the gate must
+	// too or "Anthropic-Vertex/..." would run on Vertex with the unset
+	// skipped.
+	provider, _, _ := strings.Cut(modelSpec, "/")
+	if strings.EqualFold(provider, piDefaultProvider) {
+		// Claude-on-Vertex: the bundled Anthropic SDK would send a stray
+		// ANTHROPIC_API_KEY to Google as X-Api-Key and honour
+		// ANTHROPIC_VERTEX_BASE_URL as the endpoint; AUTH_TOKEN and BASE_URL
+		// are cleared for hygiene. The project is pinned to the variable
+		// Claude Code on Vertex is driven by, so both runtimes hit the same
+		// GCP project regardless of an ambient GOOGLE_CLOUD_PROJECT (the
+		// extension reads that one first).
 		parts = append(parts,
 			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
 			`&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
@@ -191,9 +196,10 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	if err != nil {
 		return -1, err
 	}
-	if params.HooksSettingsPath != "" && m.Hooks == nil {
-		// The adapter would load and block every tool call; fail before
-		// spending an iteration on it.
+	if params.HooksSettingsPath != "" && (m.Hooks == nil || m.Hooks.Groups == nil) {
+		// Same predicate as the adapter's `wired` check (a groups array,
+		// possibly empty): without it the adapter would load and block every
+		// tool call, so fail before spending an iteration on it.
 		return -1, fmt.Errorf("security is enabled but the pi manifest at %s carries no hook plan (Bootstrap ran without the sandbox hook config, or the manifest was modified)", r.piManifestPath())
 	}
 	if _, ok := piThinkingFor(params.Effort); params.Effort != "" && !ok {
