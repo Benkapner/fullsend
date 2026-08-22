@@ -122,7 +122,8 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	// too or "Anthropic-Vertex/..." would run on Vertex with the unset
 	// skipped.
 	provider, _, _ := strings.Cut(modelSpec, "/")
-	if strings.EqualFold(provider, piDefaultProvider) {
+	vertex := strings.EqualFold(provider, piDefaultProvider)
+	if vertex {
 		// Claude-on-Vertex: the bundled Anthropic SDK would send a stray
 		// ANTHROPIC_API_KEY to Google as X-Api-Key and honour
 		// ANTHROPIC_VERTEX_BASE_URL as the endpoint; AUTH_TOKEN and BASE_URL
@@ -144,8 +145,12 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		"--no-prompt-templates",
 		"--no-themes",
 		"--session-dir "+shellQuote(r.piSessionsDir()),
-		"-e "+shellQuote(PiVertexExtensionPath),
 	)
+	if vertex {
+		// The interim Claude-on-Vertex provider is only needed for the
+		// anthropic-vertex model spec; other providers get pi's built-ins.
+		parts = append(parts, "-e "+shellQuote(PiVertexExtensionPath))
+	}
 	if hooksEnabled {
 		parts = append(parts, "-e "+shellQuote(hooksExt))
 	}

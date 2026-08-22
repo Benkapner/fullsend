@@ -168,6 +168,7 @@ func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
 	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-4-6'")
 	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "direct Anthropic provider needs its key")
 	assert.NotContains(t, cmd, "GOOGLE_CLOUD_PROJECT")
+	assert.NotContains(t, cmd, "/opt/pi-extensions/anthropic-vertex", "the Vertex extension is only loaded for the anthropic-vertex provider")
 }
 
 func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
