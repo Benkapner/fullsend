@@ -11,37 +11,47 @@ import (
 )
 
 // PiRuntime is a stub implementation of the Runtime and TranscriptHandler
-// interfaces for the pi agent runtime (earendil-works/pi). All methods are
-// no-ops or return not-implemented errors. Subsequent PRs will fill in
-// bootstrap, run execution, and transcript extraction once upstream
-// dependencies (#608, #6445, #6358) land.
+// interfaces for the pi agent runtime (earendil-works/pi, CLI `pi`). All
+// lifecycle methods are no-ops or return not-implemented errors; the
+// `pi --mode json` stream parser (parsePiStream, pi_progress.go) is in place
+// but not yet wired. Subsequent PRs will fill in bootstrap, run execution,
+// and transcript extraction once upstream dependencies (#608, #6445, #6358)
+// land. Tracked in #6464.
 type PiRuntime struct{}
 
 func (PiRuntime) Name() string { return "pi" }
 
 // System returns the OTEL GenAI gen_ai.system value. Pi is multi-provider
 // (anthropic, google-vertex, community extensions), so the system is the
-// runtime itself rather than a single model vendor. The actual model vendor
-// is on AssistantMessage.provider once Bootstrap/Run consume the stream.
+// runtime itself rather than a single model vendor (same precedent as
+// OpenCodeRuntime). The actual model vendor is on AssistantMessage.provider
+// once Bootstrap/Run consume the stream.
 func (PiRuntime) System() string { return "pi" }
 
-// ConfigDir returns the pi config directory inside the sandbox.
-// Host default for PI_CODING_AGENT_DIR is ~/.pi/agent (config, skills,
-// settings). Session JSONL storage is a separate path:
-// PI_CODING_AGENT_SESSION_DIR, overridden by --session-dir.
-//
-// This returns a sandbox-local placeholder until Bootstrap wires those env
-// vars. Like OpenCode's provisional ConfigDir, it currently sits inside the
-// agent-writable workspace — do not point PI_CODING_AGENT_DIR here.
-// defaultProjectTrust: never refuses repo-owned .pi/, but an in-workspace
-// config dir would still let the agent rewrite its own skills/settings, so
-// the Bootstrap PR must move this to a runner-owned path (cf.
-// sandbox.SandboxClaudeConfig) before pi is added to ValidRuntimes().
-func (PiRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.pi" }
+// ConfigDir returns the pi config directory inside the sandbox. It is
+// exported to the agent process as PI_CODING_AGENT_DIR (see EnvExports) and
+// lives outside the agent-writable workspace so the target repo cannot
+// rewrite the runtime's settings, extensions, or skills. Session JSONL
+// storage is a separate path (PI_CODING_AGENT_SESSION_DIR, overridden by
+// --session-dir), pinned under it by EnvExports.
+func (PiRuntime) ConfigDir() string { return sandbox.SandboxPiConfig }
 
 func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 
-func (PiRuntime) EnvExports() []string { return nil }
+// EnvExports pins pi's config and session locations to runner-owned paths
+// and disables all startup network traffic (update checks, package update
+// checks, telemetry). PI_OFFLINE does not affect the inference call itself.
+// Var names/semantics per earendil-works/pi docs/environment-variables.md
+// (PI_CODING_AGENT_DIR, PI_CODING_AGENT_SESSION_DIR, PI_OFFLINE,
+// PI_SKIP_VERSION_CHECK) — re-verify against that doc when PI_VERSION moves.
+func (r PiRuntime) EnvExports() []string {
+	return []string{
+		fmt.Sprintf("export PI_CODING_AGENT_DIR=%s", r.ConfigDir()),
+		fmt.Sprintf("export PI_CODING_AGENT_SESSION_DIR=%s/sessions", r.ConfigDir()),
+		"export PI_OFFLINE=1",
+		"export PI_SKIP_VERSION_CHECK=1",
+	}
+}
 
 func (PiRuntime) Bootstrap(_ BootstrapInput) error {
 	return fmt.Errorf("pi runtime is not yet implemented (see #6464)")
@@ -55,7 +65,9 @@ func (PiRuntime) ClearIterationArtifacts(_ string) error { return nil }
 
 // TranscriptHandler stub methods — return not-implemented errors for extract
 // methods (to avoid silent success claims in CI logs) and no-ops for parse
-// methods (which correctly indicate "nothing found"). See #6464.
+// methods (which correctly indicate "nothing found"). pi writes JSONL session
+// files under PI_CODING_AGENT_SESSION_DIR, so extraction will follow the
+// Claude find-and-download shape rather than OpenCode's export path (#6464).
 
 func (PiRuntime) ExtractTranscripts(_, _, _ string) error {
 	return fmt.Errorf("pi transcript extraction not implemented (see #6464)")

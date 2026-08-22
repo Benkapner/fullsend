@@ -26,6 +26,10 @@ const (
 	SandboxWorkspace = "/sandbox/workspace" //nolint:gosec // not a credential
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
 	SandboxClaudeConfig = "/sandbox/claude-config" //nolint:gosec // not a credential
+	// SandboxPiConfig is the pi config directory inside the sandbox
+	// (PI_CODING_AGENT_DIR). Outside the agent-writable workspace, like
+	// SandboxClaudeConfig, so the agent cannot rewrite its own runtime config.
+	SandboxPiConfig = "/sandbox/pi-config" //nolint:gosec // not a credential
 
 	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second
