@@ -77,12 +77,24 @@ var piThinkingLevels = map[string]bool{
 	"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true,
 }
 
+// piDefaultThinking is passed when the harness sets no effort. pi's own
+// default is "medium" (core/defaults.js DEFAULT_THINKING_LEVEL); Claude Code
+// runs at "high" on Vertex/API-key, so without this the same agent would
+// reason at a lower level on pi. pi maps the level onto Anthropic's adaptive
+// effort and clamps it for models without reasoning.
+const piDefaultThinking = "high"
+
+// piThinkingFor returns the --thinking level for a harness effort value and
+// whether effort was a recognised level; an empty effort yields the default.
 func piThinkingFor(effort string) (string, bool) {
 	effort = strings.TrimSpace(effort)
 	if effort == "" {
-		return "", false
+		return piDefaultThinking, true
 	}
-	return effort, piThinkingLevels[effort]
+	if piThinkingLevels[effort] {
+		return effort, true
+	}
+	return piDefaultThinking, false
 }
 
 // piHooksMissingExit is the exit code the run command uses when the hook
@@ -172,9 +184,8 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 
 	parts = append(parts, "--model "+shellQuote(modelSpec))
 
-	if level, ok := piThinkingFor(params.Effort); ok {
-		parts = append(parts, "--thinking "+shellQuote(level))
-	}
+	level, _ := piThinkingFor(params.Effort)
+	parts = append(parts, "--thinking "+shellQuote(level))
 
 	// In --print mode pi reads a non-TTY stdin to EOF as extra input and
 	// blocks while the pipe stays open (verified on 0.84.2: an idle pipe
@@ -222,8 +233,8 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		// tool call, so fail before spending an iteration on it.
 		return -1, fmt.Errorf("security is enabled but the pi manifest at %s carries no hook plan (Bootstrap ran without the sandbox hook config, or the manifest was modified)", r.piManifestPath())
 	}
-	if _, ok := piThinkingFor(params.Effort); params.Effort != "" && !ok {
-		printer.StepWarn(fmt.Sprintf("effort %q is not a pi thinking level; running without --thinking", sanitizeOutput(params.Effort)))
+	if _, ok := piThinkingFor(params.Effort); !ok {
+		printer.StepWarn(fmt.Sprintf("effort %q is not a pi thinking level; running at --thinking %s", sanitizeOutput(params.Effort), piDefaultThinking))
 	}
 	cmd := buildPiRunCommand(params, m)
 

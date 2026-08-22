@@ -81,7 +81,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	} {
 		assert.Contains(t, cmd, want)
 	}
-	assert.NotContains(t, cmd, "--thinking")
+	assert.Contains(t, cmd, "--thinking 'high'", "no harness effort: pi's own default is medium, Claude Code's is high")
 	assert.NotContains(t, cmd, "2>>")
 	assert.NotContains(t, cmd, "  ", "no double spaces")
 	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' </dev/null"), "stdin is closed: pi --print reads an open stdin to EOF")
@@ -212,4 +212,26 @@ func TestBuildPiRunCommand_QuotesRepoDirAndModel(t *testing.T) {
 	cmd := buildPiRunCommand(params, &piManifest{})
 	assert.Contains(t, cmd, `cd '/sandbox/workspace/it'\''s'`)
 	assert.Contains(t, cmd, `--model 'anthropic/claude'\''x'`)
+}
+
+func TestPiThinkingFor_DefaultAndUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		effort, want string
+		ok           bool
+	}{
+		{"", "high", true},
+		{"  ", "high", true},
+		{"low", "low", true},
+		{"max", "max", true},
+		{"bogus", "high", false},
+	} {
+		got, ok := piThinkingFor(tc.effort)
+		assert.Equal(t, tc.want, got, tc.effort)
+		assert.Equal(t, tc.ok, ok, tc.effort)
+	}
+
+	params := piTestParams()
+	params.Effort = "bogus"
+	cmd := buildPiRunCommand(params, &piManifest{AgentName: "triage", Model: "opus"})
+	assert.Contains(t, cmd, "--thinking 'high'", "unknown effort falls back to the default, not to pi's medium")
 }
