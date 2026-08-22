@@ -41,10 +41,10 @@ func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 // Var names/semantics per earendil-works/pi docs/environment-variables.md
 // (PI_CODING_AGENT_DIR, PI_CODING_AGENT_SESSION_DIR, PI_OFFLINE,
 // PI_SKIP_VERSION_CHECK) — re-verify against that doc when PI_VERSION moves.
-func (PiRuntime) EnvExports() []string {
+func (r PiRuntime) EnvExports() []string {
 	return []string{
-		"export PI_CODING_AGENT_DIR=" + sandbox.SandboxPiConfig,
-		"export PI_CODING_AGENT_SESSION_DIR=" + sandbox.SandboxPiConfig + "/sessions",
+		fmt.Sprintf("export PI_CODING_AGENT_DIR=%s", r.ConfigDir()),
+		fmt.Sprintf("export PI_CODING_AGENT_SESSION_DIR=%s/sessions", r.ConfigDir()),
 		"export PI_OFFLINE=1",
 		"export PI_SKIP_VERSION_CHECK=1",
 	}

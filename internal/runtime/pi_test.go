@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
-	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func TestPiRuntimeMetadata(t *testing.T) {
@@ -35,7 +34,7 @@ func TestPiRuntimeEnvExports(t *testing.T) {
 
 func TestPiRuntimeRun_NotImplemented(t *testing.T) {
 	t.Parallel()
-	exit, err := PiRuntime{}.Run(context.Background(), RunParams{}, ui.New(nil), time.Now(), nil)
+	exit, err := PiRuntime{}.Run(context.Background(), RunParams{}, nil, time.Now(), nil)
 	assert.Equal(t, -1, exit)
 	require.ErrorContains(t, err, "not yet implemented")
 }
