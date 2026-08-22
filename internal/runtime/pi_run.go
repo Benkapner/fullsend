@@ -38,8 +38,17 @@ var piModelAliases = map[string]string{
 
 // translatePiModel resolves the harness/agent model into pi's --model value.
 func translatePiModel(model string) string {
+	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
+	if provider == "" {
+		provider = piDefaultProvider
+	}
 	if v := strings.TrimSpace(os.Getenv(piModelEnv)); v != "" {
-		return v
+		// A bare override still needs a provider, or the Vertex extension
+		// and the credential hygiene would both be skipped.
+		if strings.Contains(v, "/") {
+			return v
+		}
+		return provider + "/" + v
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -50,10 +59,6 @@ func translatePiModel(model string) string {
 	}
 	if id, ok := piModelAliases[model]; ok {
 		model = id
-	}
-	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
-	if provider == "" {
-		provider = piDefaultProvider
 	}
 	return provider + "/" + model
 }

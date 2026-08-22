@@ -32,6 +32,10 @@ func TestTranslatePiModel(t *testing.T) {
 
 	t.Setenv(piModelEnv, "google-vertex/gemini-2.5-pro")
 	assert.Equal(t, "google-vertex/gemini-2.5-pro", translatePiModel("opus"), "FULLSEND_PI_MODEL overrides everything")
+
+	t.Setenv(piProviderEnv, "")
+	t.Setenv(piModelEnv, "claude-opus-4-8")
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("opus"), "a bare override still gets the provider prefix")
 }
 
 func TestPiThinkingFor(t *testing.T) {

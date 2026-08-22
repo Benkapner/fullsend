@@ -14,8 +14,9 @@ sequenceDiagram
   participant A as agent runtime (claude | pi)
   participant M as model (Vertex AI)
   R->>R: resolve runtime from .fullsend/config.yaml
+  R->>S: write .env, upload host files (WIF config)
   R->>S: Bootstrap — agent definition, skills, hook scripts + wiring, runtime settings
-  R->>S: upload .env, host files, OIDC token (refreshed every 4 min)
+  R->>S: upload the OIDC token file (refreshed every 4 min while the run lasts)
   R->>S: Run — one command per iteration
   S->>A: start (claude: hooks via --settings · pi: hash-checked adapter or exit 97)
   loop tool-use loop
@@ -48,7 +49,7 @@ flowchart TB
   subgraph HOST["Runner host — trusted, runs fullsend"]
     direction LR
     SCAN["host scans\ncontext files · agent def · skills · plugins"]
-    CRED["credentials stay here\nonly the OIDC token file + WIF config enter"]
+    CRED["long-lived credentials stay here (WIF path)\nonly a short-lived OIDC token file + WIF config enter"]
     SIG["hooks on/off decided from the harness\nnever from agent-writable files"]
   end
   subgraph SB["Sandbox boundary — OpenShell + L7 egress policy (containment)"]
@@ -61,8 +62,8 @@ flowchart TB
       POST["PostToolUse\nsecret redaction · unicode · context suppression"]
       PRE --> TOOL --> POST
     end
-    WR["agent-writable between iterations:\nrepo · .env · output/ · hook wiring files (Claude parity)"]
-    RO["read-only, pinned: runtime binary · provider extension\nhash-checked hook adapter (pi)"]
+    WR["agent-writable between iterations (Claude parity):\nrepo · .env · output/ · hook wiring files\nincl. pi's adapter — integrity-checked before each run"]
+    RO["read-only, pinned: runtime binary · provider extension"]
   end
   HOST --> SB
   style SB fill:#fbf0d6,stroke:#d98e04,stroke-dasharray:6 4,color:#1b2230
@@ -261,10 +262,10 @@ One iteration, end to end — the amber decision is what makes "hooks enabled" e
 ```mermaid
 flowchart LR
   B["Bootstrap (once per run)\nagent .md → APPEND_SYSTEM.md + --tools\nhook scripts + manifest + adapter\npi --version preflight"]
-  G{"adapter SHA-256 = embedded copy?\nmanifest carries a hook plan?\n(checked before .env, command -p)"}
-  X["exit 97\npi never starts unhooked"]
+  G{"shell guard, before .env (command -p):\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
+  X["exit 97\npi never starts unhooked\n(Run refuses earlier, exit -1,\nif the manifest has no hook plan)"]
   E["source .env\nunset ANTHROPIC_*\npin GOOGLE_CLOUD_PROJECT"]
-  P["pi --print --mode json --no-approve\n--no-extensions -e vertex -e hooks\n--tools … --model … </dev/null"]
+  P["pi --print --mode json --no-approve\n--no-extensions -e vertex -e hooks\n--tools … --model … #lt;/dev/null"]
   S["parsePiStream\nexactly one ResultEvent\nexit 0 + stream error ⇒ run fails"]
   A["artifacts\noutput.jsonl · transcripts/\nmetrics.json (runtime: pi)"]
   B --> G

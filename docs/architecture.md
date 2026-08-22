@@ -186,7 +186,7 @@ flowchart LR
   subgraph RUNNER["fullsend run — runner host"]
     direction TB
     CFG[".fullsend/config.yaml\nruntime: claude | pi | dummy"]
-    RT["runtime.Runtime\nBootstrap · Run · transcripts"]
+    RT["runtime.Runtime\nBootstrap · Run (+ TranscriptHandler)"]
     HOOKS["security.HookPlan\nruntime-neutral scripts (ADR 0090)"]
     CFG --> RT
   end
@@ -828,7 +828,7 @@ The OpenShell box above is drawn for Claude Code. With `runtime: pi` the outer l
 
 ```mermaid
 flowchart TB
-  subgraph SB["OpenShell sandbox (per run, no credentials)"]
+  subgraph SB["OpenShell sandbox (per run — only a short-lived OIDC token + WIF config enter, ADR 0017/0025)"]
     direction LR
     subgraph CL["runtime: claude"]
       direction TB
@@ -839,15 +839,15 @@ flowchart TB
     subgraph PL["runtime: pi"]
       direction TB
       P1["/sandbox/pi-config\nAPPEND_SYSTEM.md · settings.json · skills/\nhooks/ · fullsend-hooks.js · fullsend-manifest.json"]
-      P0{"adapter hash = embedded copy?\nmanifest carries a hook plan?"}
-      P2["pi --print --mode json --no-approve\n--no-extensions -e anthropic-vertex -e fullsend-hooks.js\n--tools … --model anthropic-vertex/… </dev/null"]
-      PX["exit 97 — never runs unhooked"]
+      P0{"shell guard, before .env:\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
+      P2["pi --print --mode json --no-approve\n--no-extensions -e anthropic-vertex -e fullsend-hooks.js\n--tools … --model anthropic-vertex/… #lt;/dev/null"]
+      PX["exit 97 — never runs unhooked\n(Run refuses earlier, exit -1, if the manifest has no hook plan)"]
       P1 --> P0
       P0 -- yes --> P2
       P0 -- no --> PX
     end
   end
-  OUT["extracted: output/ · transcripts/ · metrics.json (runtime: …) · debug log"]
+  OUT["extracted: output/ · transcripts/ · debug log\nhost-written: metrics.json (runtime: …)"]
   C2 --> OUT
   P2 --> OUT
   classDef guard fill:#fbf0d6,stroke:#d98e04,color:#1b2230;
