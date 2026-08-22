@@ -75,12 +75,66 @@ type piMessageUpdateEvent struct {
 	AssistantMessageEvent piDeltaEvent `json:"assistantMessageEvent"`
 }
 
-// piToolExecutionEndEvent reads the subset of tool_execution_end that feeds
-// ToolUseEvent. The wire `isError` flag has no ToolUseEvent counterpart and
-// is not parsed.
+// piToolExecutionStartEvent carries the tool arguments; the ToolUseEvent
+// summary is built from them (like Claude's extractSafeContext) and held
+// until the matching tool_execution_end.
+type piToolExecutionStartEvent struct {
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	Args       json.RawMessage `json:"args"`
+}
+
 type piToolExecutionEndEvent struct {
-	ToolName string          `json:"toolName"`
-	Result   json.RawMessage `json:"result"`
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	Result     json.RawMessage `json:"result"`
+	IsError    bool            `json:"isError"`
+}
+
+// piToolContext returns a redacted one-line summary of a pi tool call from
+// its arguments. Tool and argument names are pi's (lowercase tools;
+// packages/coding-agent/src/core/tools/*.ts schemas: bash.command,
+// read/write/edit.path, ls.path, grep/find.pattern).
+func piToolContext(toolName string, args json.RawMessage) string {
+	raw := piToolRawContext(toolName, args)
+	if raw == "" {
+		return ""
+	}
+	return redactSummary(raw)
+}
+
+func piToolRawContext(toolName string, args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(args, &fields); err != nil {
+		return ""
+	}
+	str := func(key string) string {
+		var s string
+		if raw, ok := fields[key]; ok && json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+		return ""
+	}
+	capRunes := func(s string, n int) string {
+		if utf8.RuneCountInString(s) > n {
+			return string([]rune(s)[:n]) + "…"
+		}
+		return s
+	}
+	switch toolName {
+	case "bash":
+		if cmd := collapseCommand(str("command")); cmd != "" {
+			return "$ " + cmd
+		}
+	case "read", "write", "edit", "ls":
+		return capRunes(str("path"), maxPathDisplay)
+	case "grep", "find":
+		return capRunes(str("pattern"), maxPatternDisplay)
+	}
+	return ""
 }
 
 type piAgentEndEvent struct {
@@ -196,7 +250,12 @@ func piIsErrorStop(reason string) bool {
 //   - Session header {type:session, version:3, id, timestamp, cwd} — no model.
 //   - Streaming deltas arrive as message_update.assistantMessageEvent
 //     (text_delta / thinking_delta). message_end.message is authoritative.
-//   - Tool completion is tool_execution_end {toolCallId, toolName, result, isError}.
+//   - Tool calls are tool_execution_start {toolCallId, toolName, args} and
+//     tool_execution_end {toolCallId, toolName, result, isError}. The
+//     ToolUseEvent summary is the argument context captured at start
+//     (command/path/pattern, as for Claude and OpenCode); on isError the
+//     result text is appended so failures are diagnosable. Result text is
+//     only used on its own when no start was seen.
 //   - Usage/cost on AssistantMessage are camelCase; cost is a nested object.
 //   - agent_end is {messages, willRetry} — stopReason lives on the assistant
 //     message, not on the agent_end envelope. willRetry=true is a retry
@@ -253,6 +312,8 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		compacting    bool
 		sawAgentEnd   bool
 		emittedInit   bool
+		// Argument context per in-flight tool call, keyed by toolCallId.
+		toolContext = map[string]string{}
 	)
 
 	emitInit := func(model string) {
@@ -439,12 +500,32 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			}
 			accumulateAssistant(evt.Message)
 
+		case "tool_execution_start":
+			var evt piToolExecutionStartEvent
+			if err := json.Unmarshal(line, &evt); err != nil {
+				continue
+			}
+			if ctx := piToolContext(evt.ToolName, evt.Args); ctx != "" {
+				toolContext[evt.ToolCallID] = ctx
+			}
+
 		case "tool_execution_end":
 			var evt piToolExecutionEndEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			onEvent(ToolUseEvent{Name: evt.ToolName, Summary: piResultSummary(evt.Result)})
+			summary := toolContext[evt.ToolCallID]
+			delete(toolContext, evt.ToolCallID)
+			if evt.IsError || summary == "" {
+				if result := piResultSummary(evt.Result); result != "" {
+					if summary != "" {
+						summary = piTruncate(summary+": "+result, piSummaryMax)
+					} else {
+						summary = result
+					}
+				}
+			}
+			onEvent(ToolUseEvent{Name: evt.ToolName, Summary: summary})
 
 		case "auto_retry_start":
 			var evt piAutoRetryStartEvent
@@ -533,8 +614,8 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 				pendingResult = nil
 			}
 
-		case "turn_start", "turn_end", "tool_execution_start",
-			"tool_execution_update", "queue_update", "auto_retry_end":
+		case "turn_start", "turn_end", "tool_execution_update",
+			"queue_update", "auto_retry_end":
 			// Lifecycle / intermediate events — no AgentEvent mapping.
 
 		default:

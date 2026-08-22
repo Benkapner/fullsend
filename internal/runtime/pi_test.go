@@ -30,6 +30,7 @@ func TestPiRuntimeEnvExports(t *testing.T) {
 	assert.Contains(t, exports, "PI_CODING_AGENT_SESSION_DIR="+sandbox.SandboxPiConfig+"/sessions")
 	assert.Contains(t, exports, "PI_OFFLINE=1")
 	assert.Contains(t, exports, "PI_SKIP_VERSION_CHECK=1")
+	assert.Contains(t, exports, "PI_TELEMETRY=0")
 }
 
 func TestPiRuntimeRun_NotImplemented(t *testing.T) {

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,7 +73,7 @@ func TestParsePiStream_BasicRun(t *testing.T) {
 
 	require.Len(t, tools, 1)
 	assert.Equal(t, "bash", tools[0].Name)
-	assert.Equal(t, "file1.txt\nfile2.txt", tools[0].Summary)
+	assert.Equal(t, "$ ls", tools[0].Summary, "summary comes from the call's arguments, not its output")
 
 	require.Len(t, tokens, 1)
 	assert.Equal(t, 100, tokens[0].InputTokens)
@@ -115,7 +116,8 @@ func TestParsePiStream_ErrorRun(t *testing.T) {
 
 	require.Len(t, tools, 1)
 	assert.Equal(t, "edit", tools[0].Name)
-	assert.Equal(t, "file not found", tools[0].Summary)
+	assert.Equal(t, "/nonexistent: file not found", tools[0].Summary,
+		"failed tool keeps its argument context and appends the error text")
 
 	require.Len(t, errEvents, 1)
 	assert.Equal(t, "error", errEvents[0].ErrorType)
@@ -420,7 +422,7 @@ func TestParsePiStream_ToolExecutionStartAbsorbed(t *testing.T) {
 
 	input := `{"type":"session","version":3,"id":"ses_tc","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
 {"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"echo hello"}}
-{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":"$ echo hello","isError":false}
+{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":"hello\n","isError":false}
 {"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
 {"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}
 `
@@ -438,7 +440,70 @@ func TestParsePiStream_ToolExecutionStartAbsorbed(t *testing.T) {
 	}
 
 	require.Len(t, tools, 1, "only tool_execution_end should emit ToolUseEvent")
-	assert.Equal(t, "$ echo hello", tools[0].Summary)
+	assert.Equal(t, "$ echo hello", tools[0].Summary, "summary is the command from tool_execution_start.args")
+}
+
+func TestPiToolContext(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		tool, args, want string
+	}{
+		{"bash", `{"command":"  ls  -la\n/tmp "}`, "$ ls -la /tmp"},
+		{"read", `{"path":"/sandbox/workspace/repo/main.go","offset":1}`, "/sandbox/workspace/repo/main.go"},
+		{"write", `{"path":"out.txt","content":"secret body"}`, "out.txt"},
+		{"edit", `{"path":"a.go","edits":[]}`, "a.go"},
+		{"ls", `{"path":"src"}`, "src"},
+		{"grep", `{"pattern":"TODO","path":"."}`, "TODO"},
+		{"find", `{"pattern":"**/*.go"}`, "**/*.go"},
+		{"bash", `{"timeout":5}`, ""},
+		{"unknown_tool", `{"command":"x"}`, ""},
+		{"bash", `not json`, ""},
+		{"bash", `{"command":"curl -H 'Authorization: Bearer ghp_` + strings.Repeat("q", 40) + `'"}`, "$ curl -H 'Authorization: Bearer "},
+	}
+	for _, tc := range cases {
+		got := piToolContext(tc.tool, json.RawMessage(tc.args))
+		if strings.HasSuffix(tc.want, "Bearer ") {
+			assert.True(t, strings.HasPrefix(got, tc.want), "%s %s → %q", tc.tool, tc.args, got)
+			assert.NotContains(t, got, "ghp_q", "token in tool args must be redacted")
+			continue
+		}
+		assert.Equal(t, tc.want, got, "%s %s", tc.tool, tc.args)
+	}
+
+	long := strings.Repeat("p", maxPathDisplay+5)
+	assert.Equal(t, strings.Repeat("p", maxPathDisplay)+"…", piToolRawContext("read", json.RawMessage(`{"path":"`+long+`"}`)))
+}
+
+func TestParsePiStream_ToolSummaryFromArgsNotOutput(t *testing.T) {
+	t.Parallel()
+
+	// A successful tool's (possibly huge or sensitive) output never reaches
+	// the summary; a failed tool appends its result text for diagnosis.
+	output := strings.Repeat("secret-looking-output ", 50)
+	input := `{"type":"tool_execution_start","toolCallId":"ok","toolName":"read","args":{"path":"notes.txt"}}
+{"type":"tool_execution_end","toolCallId":"ok","toolName":"read","result":{"content":[{"type":"text","text":` + fmt.Sprintf("%q", output) + `}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"bad","toolName":"bash","args":{"command":"make"}}
+{"type":"tool_execution_end","toolCallId":"bad","toolName":"bash","result":{"content":[{"type":"text","text":"make: *** No targets. Stop."}]},"isError":true}
+{"type":"tool_execution_start","toolCallId":"interleaved-a","toolName":"grep","args":{"pattern":"alpha"}}
+{"type":"tool_execution_start","toolCallId":"interleaved-b","toolName":"grep","args":{"pattern":"beta"}}
+{"type":"tool_execution_end","toolCallId":"interleaved-b","toolName":"grep","result":"b","isError":false}
+{"type":"tool_execution_end","toolCallId":"interleaved-a","toolName":"grep","result":"a","isError":false}
+{"type":"agent_end","messages":[],"willRetry":false}
+`
+	var tools []ToolUseEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ToolUseEvent); ok {
+			tools = append(tools, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, tools, 4)
+	assert.Equal(t, "notes.txt", tools[0].Summary)
+	assert.NotContains(t, tools[0].Summary, "secret-looking-output")
+	assert.Equal(t, "$ make: make: *** No targets. Stop.", tools[1].Summary)
+	assert.Equal(t, "beta", tools[2].Summary, "parallel tool calls are matched by toolCallId")
+	assert.Equal(t, "alpha", tools[3].Summary)
 }
 
 func TestParsePiStream_ToolResultObjectSummary(t *testing.T) {

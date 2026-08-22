@@ -1,0 +1,22 @@
+package sandbox
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The sandbox image bakes pi's config paths as ENV defaults for ad-hoc
+// invocations; they must agree with the constants PiRuntime.EnvExports uses.
+func TestSandboxImagePiDefaults(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("..", "..", "images", "sandbox", "Containerfile"))
+	require.NoError(t, err)
+	containerfile := string(data)
+	assert.Contains(t, containerfile, `PI_CODING_AGENT_DIR="`+SandboxPiConfig+`"`)
+	assert.Contains(t, containerfile, `PI_CODING_AGENT_SESSION_DIR="`+SandboxPiConfig+`/sessions"`)
+	assert.Contains(t, containerfile, `PI_TELEMETRY="0"`)
+}

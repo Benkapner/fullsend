@@ -76,10 +76,12 @@ Harness keys are runtime-neutral in the YAML but each runtime owns their transla
 
 ## Sandbox workspace layout
 
-The sandbox has two key directories that map to Claude Code's config levels:
+The sandbox has two key directories that map to Claude Code's config levels (plus a runner-owned config directory per additional runtime, e.g. `pi-config/` for pi):
 
 ```
 /sandbox/
+├── pi-config/                       ← PI_CODING_AGENT_DIR (pi stub; empty until its Bootstrap lands)
+│
 ├── claude-config/                   ← CLAUDE_CONFIG_DIR (personal level)
 │   ├── agents/
 │   │   └── <name>.md                   Agent definition (filename derived from the agent name)
@@ -178,11 +180,12 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 - **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` is the intended detector (assistant `stopReason` on `message_end.message` / last `agent_end.messages` entry) for the runner's exit-0-override (#2786/#5361). That override currently calls `ParseTranscriptFile`, which is still a stub on `PiRuntime` — it will not fire until Bootstrap/Run tee the JSON stream into the parser.
 - **No `--max-turns`/`--timeout`** — runner's exec timeout covers it.
 - **No built-in MCP** — out of scope; fleet uses none.
-- **No Claude-on-Vertex provider yet** — `google-vertex` is Gemini-only; `anthropic-vertex` is an open upstream PR (earendil-works/pi#5262, still open as of 2026-08-21). Community extensions exist (e.g. `twoGiants/pi-anthropic-vertex`, unreviewed, last updated 2026-07-25) but none is adopted here; adopting one would need a code review and a SHA pin first.
-- **Fast release cadence** (~weekly minors; 0.84.0 changed `message_update` wire shape) — pin exact versions; `parsePiStream` fixtures follow `packages/coding-agent/docs/json.md` for the pinned version (regen via `internal/runtime/testdata/pi/regen.sh`).
+- **No Claude-on-Vertex provider yet** — `google-vertex` is Gemini-only; `anthropic-vertex` is an open upstream PR (earendil-works/pi#5262, still open as of 2026-08-21). Community extensions exist (e.g. `twoGiants/pi-anthropic-vertex`, unreviewed, last updated 2026-07-25) but none is adopted here; the choice (upstream provider vs. a reviewed, SHA-pinned extension) is deferred to the Bootstrap/Run PR, which is the first one that can exercise it.
+- **Binary present but unhooked** — the pinned `pi` CLI ships in every sandbox image (so Bootstrap/Run work targets a reviewed version), so an agent on another runtime can invoke `pi` ad hoc from Bash with none of that runtime's tool hooks. The OpenShell sandbox, L7 egress policy and credential placeholders still apply, no pi provider credentials are provisioned, and the image bakes `PI_OFFLINE=1`/`PI_TELEMETRY=0` and the runner-owned config paths as defaults; treat the `N/A — stub` matrix cells as "not wired", not "cannot run".
+- **Fast release cadence** (~weekly minors; 0.84.0 changed `message_update` wire shape) — pin exact versions; `parsePiStream` fixtures are hand-authored to `packages/coding-agent/docs/json.md` (and `core/agent-session.ts` for the session-level events) for the pinned version; `internal/runtime/testdata/pi/regen.sh` re-records `basic_run.ndjson` from a live run.
 - **Tool names are lowercase** (`bash`, `read`, `write`, `edit`) — the hook adapter translates to the contract's Claude-name vocabulary (#608).
 - **Reads AGENTS.md natively** — no CLAUDE.md bridge needed (does not implement `ContextBridger`).
-- **Hardening levers** — `--tools` allowlist, `--no-extensions/--no-skills/--no-prompt-templates/--no-context-files`, `defaultProjectTrust: never` (repo-owned `.pi/` never loaded), `PI_OFFLINE=1`.
+- **Hardening levers** — `--tools` allowlist, `--no-extensions/--no-skills/--no-prompt-templates/--no-context-files`, `defaultProjectTrust: never` (repo-owned `.pi/` never loaded), `PI_OFFLINE=1`, `PI_TELEMETRY=0`. Note `PI_CODING_AGENT_DIR/extensions/` is arbitrary TypeScript loaded at startup and the config dir is not a permission boundary, so Bootstrap should pass `--no-extensions` plus the runner-supplied adapter explicitly.
 
 ## Related docs
 

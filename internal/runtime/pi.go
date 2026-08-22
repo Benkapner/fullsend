@@ -15,8 +15,9 @@ import (
 // lifecycle methods are no-ops or return not-implemented errors; the
 // `pi --mode json` stream parser (parsePiStream, pi_progress.go) is in place
 // but not yet wired. Subsequent PRs will fill in bootstrap, run execution,
-// and transcript extraction once upstream dependencies (#608, #6445, #6358)
-// land. Tracked in #6464.
+// and transcript extraction; tool-name translation for the hook adapter
+// waits on #608, and hook wiring follows the --settings pattern from #6358.
+// Tracked in #6464.
 type PiRuntime struct{}
 
 func (PiRuntime) Name() string { return "pi" }
@@ -40,16 +41,20 @@ func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 
 // EnvExports pins pi's config and session locations to runner-owned paths
 // and disables all startup network traffic (update checks, package update
-// checks, telemetry). PI_OFFLINE does not affect the inference call itself.
+// checks, telemetry). PI_OFFLINE does not affect the inference call itself;
+// PI_TELEMETRY=0 additionally drops pi's provider attribution headers.
 // Var names/semantics per earendil-works/pi docs/environment-variables.md
 // (PI_CODING_AGENT_DIR, PI_CODING_AGENT_SESSION_DIR, PI_OFFLINE,
-// PI_SKIP_VERSION_CHECK) — re-verify against that doc when PI_VERSION moves.
+// PI_SKIP_VERSION_CHECK, PI_TELEMETRY) — re-verify against that doc when
+// PI_VERSION moves. The sandbox image bakes the same values as ENV defaults
+// for ad-hoc invocations (images/sandbox/Containerfile).
 func (r PiRuntime) EnvExports() []string {
 	return []string{
 		fmt.Sprintf("export PI_CODING_AGENT_DIR=%s", r.ConfigDir()),
 		fmt.Sprintf("export PI_CODING_AGENT_SESSION_DIR=%s/sessions", r.ConfigDir()),
 		"export PI_OFFLINE=1",
 		"export PI_SKIP_VERSION_CHECK=1",
+		"export PI_TELEMETRY=0",
 	}
 }
 

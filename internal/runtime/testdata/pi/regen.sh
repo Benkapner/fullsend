@@ -5,30 +5,48 @@
 # hand-authored to packages/coding-agent/docs/json.md v0.84.2. Run this
 # when you have a configured provider to replace basic_run.ndjson.
 #
+# The pi version defaults to the sandbox image pin (ARG PI_VERSION in
+# images/sandbox/Containerfile) so a renovate bump is picked up here too;
+# override with PI_VERSION=x.y.z in the environment.
+#
 # Usage (from repo root or this directory):
 #   internal/runtime/testdata/pi/regen.sh
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-PINNED="${PI_VERSION:-0.84.2}"
-PI=(npx -y "@earendil-works/pi-coding-agent@${PINNED}" --print --mode json)
+CONTAINERFILE="${DIR}/../../../../images/sandbox/Containerfile"
+IMAGE_PIN="$(sed -n 's/^ARG PI_VERSION=//p' "${CONTAINERFILE}" | head -n1)"
+PINNED="${PI_VERSION:-${IMAGE_PIN}}"
+if [[ -z "${PINNED}" ]]; then
+	echo "regen.sh: could not read ARG PI_VERSION from ${CONTAINERFILE}; set PI_VERSION" >&2
+	exit 1
+fi
+PKG="@earendil-works/pi-coding-agent@${PINNED}"
+# --ignore-scripts mirrors the image install (the package needs no install scripts).
+PI=(npx -y --ignore-scripts "${PKG}" --print --mode json)
 
 if ! command -v npx >/dev/null 2>&1; then
 	echo "regen.sh: npx is required" >&2
 	exit 1
 fi
 
-echo "regen.sh: capturing fixtures with @earendil-works/pi-coding-agent@${PINNED}" >&2
+echo "regen.sh: capturing fixtures with ${PKG}" >&2
 echo "regen.sh: writing into ${DIR}" >&2
 
-# --no-session keeps the capture out of the operator's session store when supported.
-# If the flag is unknown on this pin, drop it and retry.
+# --no-session keeps the capture out of the operator's session store. Probe
+# the flag via --help rather than by swallowing a real run's stderr, so a
+# genuine failure is not silently retried without it.
+NO_SESSION=()
+if npx -y --ignore-scripts "${PKG}" --help 2>/dev/null | grep -q -- '--no-session'; then
+	NO_SESSION=(--no-session)
+else
+	echo "regen.sh: --no-session not supported by ${PKG}; capture will be stored in your session dir" >&2
+fi
+
 capture() {
 	local out="$1"
 	shift
-	if ! "${PI[@]}" --no-session "$@" >"${out}" 2>/dev/null; then
-		"${PI[@]}" "$@" >"${out}"
-	fi
+	"${PI[@]}" "${NO_SESSION[@]}" "$@" >"${out}"
 }
 
 capture "${DIR}/basic_run.ndjson" "List files in one sentence, then stop."

@@ -59,8 +59,9 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # as Claude Code above. --ignore-scripts is the upstream-recommended install
 # (the package ships an npm-shrinkwrap.json; no postinstall needed). Stub
 # runtime for now — see #6464; the runtime is not user-selectable until
-# implemented, but the binary ships so fixture recording and the upcoming
-# Bootstrap/Run work run against a pinned, reviewed version.
+# implemented, but the binary ships now so the Bootstrap/Run work and any
+# in-sandbox fixture capture run against a pinned, reviewed version
+# (internal/runtime/testdata/pi/regen.sh reads the pin from this file).
 #
 # To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
@@ -74,12 +75,17 @@ RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a
 # pi is present in every sandbox regardless of runtime selection (PiRuntime
 # is a stub, not yet reachable via config — see internal/runtime/pi.go), so
 # an agent invoking the `pi` binary ad-hoc via Bash would otherwise get none
-# of PiRuntime.EnvExports()'s safety defaults. Bake them at image level too;
-# PI_CODING_AGENT_DIR must match sandbox.SandboxPiConfig (internal/sandbox/sandbox.go).
+# of PiRuntime.EnvExports()'s defaults. Bake them at image level too. These
+# are hygiene defaults (no startup network traffic, runner-owned paths), not
+# a security boundary — a process can override its own environment; the
+# sandbox egress policy and credential placeholders are the boundary.
+# PI_CODING_AGENT_DIR must match sandbox.SandboxPiConfig
+# (internal/sandbox/sandbox.go; guarded by TestSandboxImagePiDefaults).
 ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
     PI_CODING_AGENT_SESSION_DIR="/sandbox/pi-config/sessions" \
     PI_OFFLINE="1" \
-    PI_SKIP_VERSION_CHECK="1"
+    PI_SKIP_VERSION_CHECK="1" \
+    PI_TELEMETRY="0"
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection
