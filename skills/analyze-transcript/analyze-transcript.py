@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Analyze fullsend agent JSONL transcripts."""
+"""Analyze fullsend agent JSONL transcripts.
+
+Understands Claude Code session transcripts (stream-json `assistant`/`user`
+lines) and pi session files (`message` entries wrapping pi-ai messages);
+the latter are normalized to the Claude shape on read.
+"""
 
 import argparse
 import json
@@ -93,7 +98,83 @@ def get_tool_result_text(block):
     return ""
 
 
-TRANSCRIPT_TYPES = ("assistant", "user", "agent-setting", "queue-operation", "last-prompt")
+# Claude Code stream-json line types, plus pi session-file entry types
+# ("session" header, "session_info" name, "message" wrapper — see
+# packages/coding-agent/src/core/session-manager.ts in earendil-works/pi).
+TRANSCRIPT_TYPES = (
+    "assistant",
+    "user",
+    "agent-setting",
+    "queue-operation",
+    "last-prompt",
+    "message",
+    "session",
+    "session_info",
+)
+
+
+def _pi_usage(usage):
+    """Map pi's Usage {input, output, cacheRead, cacheWrite} to Claude keys."""
+    if not isinstance(usage, dict):
+        return {}
+    return {
+        "input_tokens": usage.get("input", 0) or 0,
+        "output_tokens": usage.get("output", 0) or 0,
+        "cache_read_input_tokens": usage.get("cacheRead", 0) or 0,
+        "cache_creation_input_tokens": usage.get("cacheWrite", 0) or 0,
+    }
+
+
+def normalize_pi_message(entry):
+    """Translate a pi session `message` entry into the Claude message shape
+    the subcommands already understand: toolCall → tool_use, toolResult →
+    a user message carrying a tool_result block, camelCase usage/stop reason
+    → snake_case. Returns (role, msg) or None for unknown roles."""
+    msg = entry.get("message")
+    if not isinstance(msg, dict):
+        return None
+    role = msg.get("role")
+    if role == "user":
+        return "user", {"role": "user", "content": msg.get("content", "")}
+    if role == "assistant":
+        blocks = []
+        for block in msg.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "toolCall":
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": block.get("id"),
+                        "name": block.get("name", "unknown"),
+                        "input": block.get("arguments", {}),
+                    }
+                )
+            else:
+                blocks.append(block)
+        out = {
+            "role": "assistant",
+            "content": blocks,
+            "model": msg.get("model"),
+            "usage": _pi_usage(msg.get("usage")),
+            "stop_reason": msg.get("stopReason"),
+        }
+        if msg.get("errorMessage"):
+            out["error_message"] = msg["errorMessage"]
+        return "assistant", out
+    if role == "toolResult":
+        return "user", {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("toolCallId"),
+                    "content": msg.get("content", []),
+                    "is_error": bool(msg.get("isError")),
+                }
+            ],
+        }
+    return None
 
 
 def detect_file_type(path):
@@ -122,7 +203,7 @@ def detect_file_type(path):
                     continue
                 if "resourceSpans" in obj or "scopeSpans" in obj:
                     return (
-                        "This looks like OTLP telemetry data, not a Claude transcript. "
+                        "This looks like OTLP telemetry data, not an agent transcript. "
                         "Look for a file named <agent>-<session-id>.jsonl instead."
                     )
                 if obj.get("type") in TRANSCRIPT_TYPES:
@@ -147,11 +228,16 @@ def iter_messages(path, line_range=None):
             msg = obj.get("message", {})
             role = msg.get("role", obj_type)
             yield i, role, msg, obj
+        elif obj_type == "message":
+            normalized = normalize_pi_message(obj)
+            if normalized is not None:
+                role, msg = normalized
+                yield i, role, msg, obj
         elif obj_type == "agent-setting":
             yield i, "meta", obj, obj
         elif obj_type == "queue-operation":
             yield i, "queue", obj, obj
-        elif obj_type == "last-prompt":
+        elif obj_type in ("last-prompt", "session", "session_info"):
             yield i, "meta", obj, obj
 
 
@@ -182,11 +268,20 @@ def _accumulate_stats(path, line_range=None, messages=None):
     source = messages if messages is not None else iter_messages(path, line_range)
     for _i, role, msg, raw in source:
         if role == "meta":
-            if raw.get("type") == "agent-setting":
+            raw_type = raw.get("type")
+            if raw_type == "agent-setting":
                 agent_setting = raw.get("agentSetting")
                 sid = raw.get("sessionId")
                 if sid:
                     session_ids.add(sid)
+            elif raw_type == "session":
+                # pi session header; the fullsend hook extension names the
+                # session after the agent (session_info below).
+                sid = raw.get("id")
+                if sid:
+                    session_ids.add(sid)
+            elif raw_type == "session_info" and raw.get("name"):
+                agent_setting = raw.get("name")
             continue
         if role == "queue":
             ts = raw.get("timestamp")

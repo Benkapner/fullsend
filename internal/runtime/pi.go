@@ -11,8 +11,8 @@ import (
 // Claude-style agent definition and installs the sandbox hook scripts behind
 // a pi extension; Run (pi_run.go) executes `pi --print --mode json` and
 // normalizes the stream via parsePiStream (pi_progress.go); transcripts are
-// pi's session JSONL files (pi_transcript.go). Not in ValidRuntimes() until
-// the lifecycle test passes (#6464).
+// pi's session JSONL files (pi_transcript.go). Selected per org/repo with
+// `runtime: pi` (#6464).
 type PiRuntime struct{}
 
 // PiVertexExtensionPath is the interim Claude-on-Vertex provider for pi
