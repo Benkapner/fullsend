@@ -102,8 +102,11 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 // fall through when both files are intact.
 func TestPiHooksGuard(t *testing.T) {
 	t.Parallel()
-	if _, err := exec.LookPath("sha256sum"); err != nil {
-		t.Skip("sha256sum not on PATH (stock macOS); the sandbox image has coreutils")
+	// Probe the way the guard looks the tools up (`command -p`, the system
+	// default PATH), not the caller's PATH: Homebrew coreutils on macOS
+	// would pass LookPath and still fail the intact case.
+	if err := exec.Command("sh", "-c", "command -p sha256sum /dev/null >/dev/null && command -p cut -d' ' -f1 /dev/null").Run(); err != nil {
+		t.Skip("sha256sum/cut not on the default PATH (stock macOS); the sandbox image has coreutils")
 	}
 	dir := t.TempDir()
 	ext := filepath.Join(dir, "fullsend-hooks.js")
@@ -150,7 +153,7 @@ func TestPiHooksGuard(t *testing.T) {
 	sum := sha256.Sum256(piHooksExtensionJS)
 	fake := "#!/bin/sh\necho '" + hex.EncodeToString(sum[:]) + "  x'\n"
 	require.NoError(t, os.WriteFile(filepath.Join(shadowDir, "sha256sum"), []byte(fake), 0o755))
-	shadowed := exec.Command("sh", "-c", "sha256sum() { echo '"+hex.EncodeToString(sum[:])+"  x'; }; PATH="+shellQuote(shadowDir)+":$PATH; "+piHooksGuard(ext, manifest)+" && echo RAN")
+	shadowed := exec.Command("sh", "-c", "sha256sum() { echo '"+hex.EncodeToString(sum[:])+"  x'; }; cut() { echo '"+hex.EncodeToString(sum[:])+"'; }; PATH="+shellQuote(shadowDir)+":$PATH; "+piHooksGuard(ext, manifest)+" && echo RAN")
 	out2, err := shadowed.CombinedOutput()
 	var exitErr *exec.ExitError
 	require.ErrorAs(t, err, &exitErr, string(out2))
