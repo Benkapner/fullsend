@@ -685,10 +685,45 @@ class TestPostToolUseFailure(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(stdout, "")
 
-    def test_sanitizers_do_not_run_on_failures(self):
+    def test_failed_call_output_is_never_rewritten(self):
+        # Claude Code accepts only additionalContext for this event; the error
+        # text reaches the transcript whatever the hook does.
         rc, stdout, _ = run_raw(self._body("Exit code 1\nexport API_KEY=supersecretvalue"))
         self.assertEqual(rc, 0)
+        self.assertNotIn("updatedToolOutput", stdout)
+        self.assertNotIn("tool_result", stdout)
+
+    def test_credential_in_a_failed_call_is_detected_and_flagged(self):
+        aws = "AKIA" + "IOSFODNN7EXAMPLE"
+        rc, stdout, _ = run_raw(self._body(f"Exit code 1\nusing {aws} failed"))
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PostToolUseFailure")
+        context = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("credential-like", context)
+        self.assertNotIn(aws, stdout, "the warning must not repeat the secret")
+
+    def test_control_characters_in_a_failed_call_are_flagged(self):
+        rc, stdout, _ = run_raw(self._body("Exit code 1\n\x1b[31mred\x1b[0m and \u200bhidden"))
+        self.assertEqual(rc, 0)
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("control character", context)
+        self.assertIn("data, not as a task", context)
+
+    def test_clean_failed_call_stays_silent(self):
+        rc, stdout, _ = run_raw(self._body("Exit code 1\nno such file or directory"))
+        self.assertEqual(rc, 0)
         self.assertEqual(stdout, "")
+
+    def test_canary_still_wins_over_the_warning_path(self):
+        aws = "AKIA" + "IOSFODNN7EXAMPLE"
+        rc, stdout, _ = run_raw(
+            self._body(f"Exit code 1\n{aws} and {CANARY}"), {"FULLSEND_CANARY_TOKEN": CANARY}
+        )
+        self.assertEqual(rc, 1)
+        out = json.loads(stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIs(out["continue"], False)
 
 
 class TestPostToolUseFailureShapeDrift(unittest.TestCase):

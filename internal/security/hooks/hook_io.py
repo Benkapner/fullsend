@@ -216,6 +216,20 @@ def emit_updated(
     _write(payload_out)
 
 
+def emit_context(event_name: str, context: str) -> None:
+    """Emit ``additionalContext`` alone — the only output PostToolUseFailure
+    accepts (no rewrite, no decision). Claude Code caps hook strings at 10,000
+    characters, so the caller passes a summary, never raw output."""
+    _write(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": event_name,
+                "additionalContext": context[:9000],
+            }
+        }
+    )
+
+
 def emit_block(reason: str, updated: Any | None = None, *, stop: bool = False) -> None:
     payload_out: dict[str, Any] = {"decision": "block", "reason": reason}
     if stop:
