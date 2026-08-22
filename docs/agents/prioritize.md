@@ -73,9 +73,10 @@ mint token access).
   scaffold; per-repo orgs can find it in the fullsend source tree at
   `internal/scaffold/fullsend-repo/scripts/setup-prioritize.sh`.
 - `prioritize.yml` installed in every target repo (handled by `repos install`).
-- `FULLSEND_PROJECT_NUMBER` set on every target repo (or as an org-level
-  variable visible to them). The `prioritize.yml` thin caller passes this
-  value to the reusable workflow.
+- The scheduler passes `project_number` to each target repo's
+  `prioritize.yml` thin caller via `workflow_dispatch` input. If the input
+  is not provided, the thin caller falls back to
+  `vars.FULLSEND_PROJECT_NUMBER` (repo or org-level variable).
 - The following variables set on the repo that hosts the scheduler:
 
 | Variable | Required | Default | Description |
@@ -263,7 +264,8 @@ jobs:
               --repo "${SOURCE_REPO}" \
               -f event_type="schedule" \
               -f source_repo="${SOURCE_REPO}" \
-              -f event_payload="${EVENT_PAYLOAD}"; then
+              -f event_payload="${EVENT_PAYLOAD}" \
+              -f project_number="${PROJECT_NUMBER}"; then
               DISPATCHED=$((DISPATCHED + 1))
             else
               echo "::warning::Failed to dispatch for ${ISSUE_URL}"
