@@ -116,7 +116,7 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
 	assert.Equal(t, "triage", m.AgentName)
 	assert.Equal(t, "opus", m.Model)
-	assert.Equal(t, []string{"bash"}, m.Tools)
+	assert.Equal(t, []string{"bash", "read"}, m.Tools, "Skill (and shipped skills) need pi's read tool for the skills prompt section")
 	assert.Equal(t, []string{"gh", "jq"}, m.BashAllowlist)
 	assert.Equal(t, "warn", m.BashAllowlistMode, "advisory by default (ADR 0027 parity)")
 	assert.Equal(t, "0.84.2", m.PiVersion)
@@ -238,6 +238,38 @@ func TestPiRuntimeRun_ExitZeroWithStreamErrorReturnsOne(t *testing.T) {
 	assert.Equal(t, 1, exit, "pi's exit 0 on model error is overridden by the stream verdict")
 }
 
+func TestPiRuntimeRun_MissingHookAdapterFailsClosed(t *testing.T) {
+	t.Setenv(piModelEnv, "")
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	// Bootstrap normally, then replace the fake so the run command's
+	// `test -f` guard fails the way a deleted adapter would (exit 97).
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, testAgentDef), agentName: "triage",
+	}))
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + store + `'/"$f"; exit $? ;;
+    *"refusing to run unhooked"*) echo 'fullsend: pi hook adapter or manifest missing' >&2; exit 97 ;;
+  esac
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second, HooksSettingsPath: "/sandbox/claude-config/hooks.json",
+		OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
+	assert.Equal(t, piHooksMissingExit, exit)
+	require.ErrorContains(t, err, "hook adapter or manifest missing")
+}
+
 func TestPiRuntimeClearIterationArtifacts(t *testing.T) {
 	work := t.TempDir()
 	logPath := filepath.Join(work, "openshell.log")
@@ -245,5 +277,5 @@ func TestPiRuntimeClearIterationArtifacts(t *testing.T) {
 	require.NoError(t, PiRuntime{}.ClearIterationArtifacts("sb"))
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(log), "rm -rf /sandbox/workspace/output/* /sandbox/pi-config/sessions/*")
+	assert.Contains(t, string(log), "rm -rf '/sandbox/workspace'/output/* '/sandbox/pi-config/sessions'/* '/sandbox/workspace/pi-debug.log'")
 }

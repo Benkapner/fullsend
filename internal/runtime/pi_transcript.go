@@ -135,7 +135,10 @@ func parsePiTranscriptFile(path string) (TranscriptError, bool) {
 
 // isPiStreamCapture reports whether the JSONL contains agent lifecycle
 // events, which only the --mode json stream emits (session files persist
-// messages, not agent_start/agent_end).
+// messages, not agent_start/agent_end). A whole-file substring check is
+// safe against tool output that mentions these markers: inside a JSON
+// string the quotes are escaped (\"type\":\"agent_end\"), so the raw byte
+// sequence can only occur as a top-level event key.
 func isPiStreamCapture(data []byte) bool {
 	for _, marker := range [][]byte{
 		[]byte(`"type":"agent_start"`), []byte(`"type":"agent_end"`),

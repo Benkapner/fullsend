@@ -53,9 +53,11 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	t.Setenv(piModelEnv, "")
 	t.Setenv(piProviderEnv, "")
 	m := &piManifest{AgentName: "triage", Model: "opus", Tools: []string{"bash"}, BashAllowlist: []string{"gh"}, Hooks: &piHooksManifest{}}
-	cmd := buildPiRunCommand(piTestParams(), m)
+	params := piTestParams()
+	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
+	cmd := buildPiRunCommand(params, m)
 
-	assert.True(t, strings.HasPrefix(cmd, "cd '/sandbox/workspace/repo' && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && pi --print --mode json"), cmd)
+	assert.True(t, strings.HasPrefix(cmd, "cd '/sandbox/workspace/repo' && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && { test -f '/sandbox/pi-config/fullsend-hooks.js' && test -f '/sandbox/pi-config/fullsend-manifest.json' || { echo 'fullsend: pi hook adapter or manifest missing; refusing to run unhooked' >&2; exit 97; }; } && pi --print --mode json"), cmd)
 	for _, want := range []string{
 		"--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
 		"--session-dir '/sandbox/pi-config/sessions'",
@@ -80,14 +82,16 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	params.Model = "sonnet"
 	params.Effort = "high"
 	params.Debug = "*"
-	m := &piManifest{AgentName: "code", Model: "opus", Tools: nil, Hooks: nil}
+	// A manifest claiming hooks must not matter: the runner's signal decides.
+	m := &piManifest{AgentName: "code", Model: "opus", Tools: nil, Hooks: &piHooksManifest{}}
 	cmd := buildPiRunCommand(params, m)
 
 	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-4-6'", "harness model wins over the agent definition")
 	assert.Contains(t, cmd, "--thinking 'high'")
 	assert.NotContains(t, cmd, "--tools", "nil tools keeps pi's default tool set")
 	assert.NotContains(t, cmd, "--no-builtin-tools")
-	assert.NotContains(t, cmd, "fullsend-hooks.js", "no hook extension when security is disabled")
+	assert.NotContains(t, cmd, "fullsend-hooks.js", "no hook extension when the runner has security disabled")
+	assert.NotContains(t, cmd, "test -f")
 	assert.Contains(t, cmd, "-e '/opt/pi-extensions/anthropic-vertex'")
 	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' 2>>'/sandbox/workspace/pi-debug.log'"), cmd)
 }

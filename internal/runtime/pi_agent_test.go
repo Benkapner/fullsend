@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,6 +67,25 @@ func TestParsePiAgent_UnrestrictedBashAndEmptyTools(t *testing.T) {
 	def, err = parsePiAgent([]byte("---\nname: x\ntools: \"\"\n---\nb"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{}, def.Tools, "explicitly empty tools is a restriction, not the default")
+}
+
+func TestParsePiAgent_FenceIsExactLine(t *testing.T) {
+	t.Parallel()
+	// CRLF, a "---" that only starts a line inside the YAML, and a "---"
+	// horizontal rule in the body.
+	src := "---\r\nname: x\r\ndescription: >-\r\n  --- not a fence\r\n  still yaml\r\n---\r\nBody line\r\n\r\n---\r\n\r\nAfter rule\r\n"
+	def, err := parsePiAgent([]byte(src))
+	require.NoError(t, err)
+	assert.Equal(t, "x", def.Name)
+	assert.Equal(t, "--- not a fence still yaml", def.Description)
+	assert.Contains(t, def.Body, "Body line")
+	assert.Contains(t, def.Body, "After rule")
+
+	// A line starting with --- but longer is not an opener.
+	def, err = parsePiAgent([]byte("----\nname: y\n---\nbody"))
+	require.NoError(t, err)
+	assert.Empty(t, def.Name)
+	assert.True(t, strings.HasPrefix(def.Body, "----"))
 }
 
 func TestParsePiAgent_NoFrontmatter(t *testing.T) {

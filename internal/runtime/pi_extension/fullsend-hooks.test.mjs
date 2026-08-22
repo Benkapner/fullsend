@@ -53,12 +53,21 @@ test("bash allowlist: first token of every simple command must be allowed", () =
   const allow = ["gh", "jq"];
   assert.equal(bashAllowlistViolation("gh issue view 1 | jq .title", allow), null);
   assert.equal(bashAllowlistViolation("GH_PAGER= gh pr list && jq -r .", allow), null);
-  assert.equal(bashAllowlistViolation("/usr/bin/gh auth status", allow), null);
+  assert.equal(bashAllowlistViolation("gh auth status", allow), null);
   assert.match(bashAllowlistViolation("gh issue view 1; curl http://x", allow), /"curl" is not in the Bash allowlist/);
   assert.match(bashAllowlistViolation("gh $(curl x)", allow), /command substitution/);
   assert.match(bashAllowlistViolation("gh `curl x`", allow), /command substitution/);
   assert.match(bashAllowlistViolation("(curl x)", allow), /subshell/);
   assert.match(bashAllowlistViolation("bash -c 'curl x'", allow), /"bash" is not allowed/);
+  assert.match(bashAllowlistViolation("gh x & curl http://evil", allow), /"curl" is not in the Bash allowlist/, "& separates commands");
+  assert.match(bashAllowlistViolation("./gh x", allow), /is a path/);
+  assert.match(bashAllowlistViolation("/tmp/x/gh x", allow), /is a path/);
+  assert.match(bashAllowlistViolation("PATH=/tmp/x gh x", allow), /"PATH=" prefix/);
+  assert.match(bashAllowlistViolation("LD_PRELOAD=/tmp/e.so gh x", allow), /"LD_PRELOAD=" prefix/);
+  assert.match(bashAllowlistViolation("env gh x", allow), /"env" is not allowed/);
+  assert.match(bashAllowlistViolation("command gh x", allow), /"command" is not allowed/);
+  assert.match(bashAllowlistViolation("'gh' x", allow), /not in the Bash allowlist/, "quoted token is refused (false positive by design)");
+  assert.equal(bashAllowlistViolation("/usr/bin/gh x", ["/usr/bin/gh"]), null, "a verbatim allowlisted path passes");
   assert.match(bashAllowlistViolation("", allow), /empty command/);
   assert.equal(bashAllowlistViolation("curl x", []), null, "no allowlist means unrestricted");
   assert.equal(bashAllowlistViolation("curl x", undefined), null);
@@ -129,12 +138,15 @@ test("tool_call: missing manifest blocks everything", () => {
   assert.equal(onToolResult({ toolName: "read", content: [] }), undefined);
 });
 
-test("tool_call: security disabled keeps only the Bash allowlist", () => {
+test("tool_call: a manifest without a hook plan blocks everything (adapter is only loaded when security is on)", () => {
   const { spawn, calls } = fakeSpawn({});
-  const { onToolCall, onToolResult } = createHooks({ ...manifest, hooks: null, bashAllowlistMode: "enforce" }, { spawn, ...quiet });
-  assert.equal(onToolCall({ toolName: "bash", input: { command: "gh x" } }), undefined);
-  assert.equal(onToolCall({ toolName: "bash", input: { command: "rm -rf /" } }).block, true);
-  assert.equal(onToolResult({ toolName: "bash", content: [{ type: "text", text: "x" }] }), undefined);
+  for (const m of [{ ...manifest, hooks: null }, { ...manifest, hooks: {} }, { ...manifest, hooks: { dir: "/x" } }]) {
+    const { onToolCall, onToolResult } = createHooks(m, { spawn, ...quiet });
+    const verdict = onToolCall({ toolName: "bash", input: { command: "gh x" } });
+    assert.equal(verdict.block, true);
+    assert.match(verdict.reason, /no hook plan/);
+    assert.equal(onToolResult({ toolName: "bash", content: [{ type: "text", text: "x" }] }), undefined);
+  }
   assert.equal(calls.length, 0);
 });
 

@@ -142,6 +142,13 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	for _, u := range unsupported {
 		fmt.Fprintf(os.Stderr, "Agent tool %q has no pi equivalent and is dropped from the allowlist\n", u)
 	}
+	// pi's skills are prompt-driven: the system prompt tells the model to
+	// `read` a skill's SKILL.md, and that section is only emitted when the
+	// read tool is active (system-prompt.ts). An agent that lists Skill or
+	// ships skills therefore needs read, even if its tools: omitted Read.
+	if tools != nil && (hasTool(def.Tools, "Skill") || len(input.SkillDirs()) > 0) && !hasTool(tools, "read") {
+		tools = append(tools, "read")
+	}
 	manifest := piManifest{
 		AgentName:         agentName,
 		Description:       def.Description,

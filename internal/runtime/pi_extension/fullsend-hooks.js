@@ -55,29 +55,43 @@ export function claudeToolInput(piName, input) {
 // bashAllowlistViolation implements Claude's `Bash(a,b,c)` frontmatter
 // restriction: every simple command in the line must start with an allowed
 // program. Anything the first-token check cannot see through (command
-// substitution, subshells, eval/exec/sh -c) is refused rather than guessed.
+// substitution, subshells, eval/exec/sh -c, PATH/loader overrides, a path
+// to a binary) is refused rather than guessed. Heredoc bodies and `command`/
+// `env`/quoted/escaped/variable first tokens are refused too — false
+// positives only, which is the right side to err on in enforce mode.
+const RESOLUTION_ENV = /^(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|CDPATH|IFS|SHELLOPTS|PS4)=/;
+
 export function bashAllowlistViolation(command, allowlist) {
   if (!Array.isArray(allowlist) || allowlist.length === 0) return null;
   if (typeof command !== "string" || command.trim() === "") return "empty command";
   if (/`|\$\(|<\(|>\(/.test(command)) {
     return "command substitution is not allowed under a Bash allowlist";
   }
-  const segments = command.split(/\r?\n|&&|\|\||;|\|/);
+  // `&` (background) separates commands too; a lone `&`/`;` yields empty
+  // segments, which are skipped. `&&` and `||` are matched first.
+  const segments = command.split(/\r?\n|&&|\|\||;|\||&/);
   for (const raw of segments) {
     const seg = raw.trim();
     if (seg === "") continue;
     const words = seg.split(/\s+/);
     let i = 0;
-    while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
+    while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) {
+      if (RESOLUTION_ENV.test(words[i])) {
+        return `"${words[i].split("=")[0]}=" prefix is not allowed under a Bash allowlist`;
+      }
+      i++;
+    }
     const first = words[i] ?? "";
     if (first === "" || first.startsWith("(") || first.startsWith("{")) {
       return `subshell or group "${first}" is not allowed under a Bash allowlist`;
     }
-    const base = first.replace(/^.*\//, "");
-    if (["eval", "exec", "sh", "bash", "source", "."].includes(base)) {
-      return `"${base}" is not allowed under a Bash allowlist`;
+    if (first.includes("/") && !allowlist.includes(first)) {
+      return `"${first}" is a path, not an allowlisted program name`;
     }
-    if (!allowlist.includes(base)) {
+    if (["eval", "exec", "sh", "bash", "source", ".", "command", "env", "nohup", "xargs", "time"].includes(first)) {
+      return `"${first}" is not allowed under a Bash allowlist`;
+    }
+    if (!allowlist.includes(first)) {
       return `"${first}" is not in the Bash allowlist (${allowlist.join(", ")})`;
     }
   }
@@ -141,13 +155,16 @@ function replaceText(content, text) {
   return [{ type: "text", text }, ...others];
 }
 
-// createHooks builds the event handlers from a manifest. With no manifest
-// (unreadable file) every tool call is blocked: running the agent with the
-// hook wiring silently absent is the failure mode ADR 0090 forbids.
+// createHooks builds the event handlers from a manifest. This extension is
+// only loaded when the runner enabled security, so a manifest that is
+// unreadable or carries no hook plan means the wiring was lost or tampered
+// with: every tool call is blocked — running the agent with the hook wiring
+// silently absent is the failure mode ADR 0090 forbids.
 export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.error(m) } = {}) {
+  const wired = Boolean(manifest && manifest.hooks && Array.isArray(manifest.hooks.groups));
   const onToolCall = (event) => {
-    if (!manifest) {
-      return { block: true, reason: `${LOG_PREFIX} manifest unavailable; refusing all tool calls (fail closed)` };
+    if (!wired) {
+      return { block: true, reason: `${LOG_PREFIX} hook manifest unavailable or has no hook plan; refusing all tool calls (fail closed)` };
     }
     const piName = event?.toolName ?? "";
     const input = event?.input ?? {};
@@ -164,7 +181,6 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
         log(`${LOG_PREFIX} Bash allowlist (advisory): ${violation}`);
       }
     }
-    if (!manifest.hooks) return undefined;
 
     const toolName = claudeToolName(manifest, piName);
     const payload = { tool_name: toolName, tool_input: claudeToolInput(piName, input) };
@@ -181,7 +197,7 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
   };
 
   const onToolResult = (event) => {
-    if (!manifest || !manifest.hooks) return undefined;
+    if (!wired) return undefined;
     const piName = event?.toolName ?? "";
     const toolName = claudeToolName(manifest, piName);
     const groups = groupsFor(manifest, "PostToolUse", toolName);
@@ -233,6 +249,10 @@ export default function (pi) {
   pi.on("session_start", () => {
     if (loadError) {
       console.error(`${LOG_PREFIX} cannot read manifest: ${loadError.message}; all tool calls will be blocked`);
+      return;
+    }
+    if (!manifest?.hooks) {
+      console.error(`${LOG_PREFIX} manifest has no hook plan although the hook adapter was loaded; all tool calls will be blocked`);
       return;
     }
     const groups = manifest.hooks?.groups ?? [];

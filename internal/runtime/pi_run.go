@@ -78,18 +78,37 @@ func piThinkingFor(effort string) (string, bool) {
 	return effort, piThinkingLevels[effort]
 }
 
+// piHooksMissingExit is the exit code the run command uses when the hook
+// adapter or manifest is not where Bootstrap put it. pi itself silently
+// skips a missing -e path (package-manager.ts resolveLocalExtensionSource
+// returns on !existsSync), so without this guard a deleted or renamed
+// extension would give a hookless iteration that looks healthy.
+const piHooksMissingExit = 97
+
 // buildPiRunCommand renders the in-sandbox command line. Security-relevant
 // flags: --no-approve and defaultProjectTrust "never" keep repo-owned .pi/
 // out; --no-extensions with explicit -e means only the runner-vetted
 // extensions load; --tools is pi's strict allowlist across built-in and
-// extension tools.
+// extension tools. Whether the hook adapter is loaded is decided from the
+// runner's own signal (params.HooksSettingsPath, set when the harness
+// enables security — the same signal ClaudeRuntime uses for --settings),
+// never from the agent-writable manifest, and the command fails closed if
+// the adapter or manifest file is missing.
 func buildPiRunCommand(params RunParams, m *piManifest) string {
 	r := PiRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
+	hooksEnabled := params.HooksSettingsPath != ""
+	hooksExt := r.ConfigDir() + "/" + piHooksExtensionFile
 
 	parts := []string{
 		fmt.Sprintf("cd %s && . %s", shellQuote(params.RepoDir), shellQuote(envFile)),
 		"&& export " + piManifestEnv + "=" + shellQuote(r.piManifestPath()),
+	}
+	if hooksEnabled {
+		parts = append(parts, fmt.Sprintf("&& { test -f %s && test -f %s || { echo 'fullsend: pi hook adapter or manifest missing; refusing to run unhooked' >&2; exit %d; }; }",
+			shellQuote(hooksExt), shellQuote(r.piManifestPath()), piHooksMissingExit))
+	}
+	parts = append(parts,
 		"&& pi",
 		"--print",
 		"--mode json",
@@ -97,11 +116,11 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		"--no-extensions",
 		"--no-prompt-templates",
 		"--no-themes",
-		"--session-dir " + shellQuote(r.piSessionsDir()),
-		"-e " + shellQuote(PiVertexExtensionPath),
-	}
-	if m.Hooks != nil {
-		parts = append(parts, "-e "+shellQuote(r.ConfigDir()+"/"+piHooksExtensionFile))
+		"--session-dir "+shellQuote(r.piSessionsDir()),
+		"-e "+shellQuote(PiVertexExtensionPath),
+	)
+	if hooksEnabled {
+		parts = append(parts, "-e "+shellQuote(hooksExt))
 	}
 	if m.Tools != nil {
 		tools := m.Tools
@@ -219,6 +238,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
 	}
+	if exitCode == piHooksMissingExit && params.HooksSettingsPath != "" {
+		return exitCode, fmt.Errorf("pi hook adapter or manifest missing from %s; refusing to run unhooked (was Bootstrap run, or did the agent remove it?)", r.ConfigDir())
+	}
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {
 		msg := lastResult.ErrorMessage
@@ -235,7 +257,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 // sessions so transcripts and output files are per-iteration.
 func (r PiRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s",
-		r.WorkspaceDir(), r.piSessionsDir(), shellQuote(r.WorkspaceDir()+"/"+piDebugLog))
+		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLog))
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	return err
 }

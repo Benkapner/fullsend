@@ -44,18 +44,28 @@ func parsePiAgent(data []byte) (*piAgentDef, error) {
 		def.Body = strings.TrimSpace(string(content))
 		return def, nil
 	}
-	rest := content[3:]
-	// Frontmatter ends at the first line that is exactly "---".
+	// The opener must be a line that is exactly "---"; the frontmatter ends
+	// at the next such line (CRLF tolerated). Lines that merely start with
+	// "---" belong to the YAML or the body.
+	lines := bytes.SplitAfter(content, []byte("\n"))
+	isFence := func(line []byte) bool {
+		return string(bytes.TrimRight(line, "\r\n")) == "---"
+	}
+	if !isFence(lines[0]) {
+		def.Body = strings.TrimSpace(string(content))
+		return def, nil
+	}
 	var front, body []byte
-	if i := bytes.Index(rest, []byte("\n---")); i >= 0 {
-		front = rest[:i]
-		body = rest[i+len("\n---"):]
-		if j := bytes.IndexByte(body, '\n'); j >= 0 {
-			body = body[j+1:]
-		} else {
-			body = nil
+	closed := false
+	for i := 1; i < len(lines); i++ {
+		if isFence(lines[i]) {
+			front = bytes.Join(lines[1:i], nil)
+			body = bytes.Join(lines[i+1:], nil)
+			closed = true
+			break
 		}
-	} else {
+	}
+	if !closed {
 		return nil, fmt.Errorf("agent definition: unterminated frontmatter")
 	}
 
@@ -193,6 +203,15 @@ var claudeToolForPi = map[string]string{
 	"grep":  "Grep",
 	"find":  "Glob",
 	"ls":    "LS",
+}
+
+func hasTool(tools []string, name string) bool {
+	for _, t := range tools {
+		if t == name {
+			return true
+		}
+	}
+	return false
 }
 
 // piToolsFor translates Claude tool names to pi's. The returned tools list
