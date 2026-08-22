@@ -16,7 +16,13 @@ func TestSandboxImagePiDefaults(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "images", "sandbox", "Containerfile"))
 	require.NoError(t, err)
 	containerfile := string(data)
-	assert.Contains(t, containerfile, `PI_CODING_AGENT_DIR="`+SandboxPiConfig+`"`)
-	assert.Contains(t, containerfile, `PI_CODING_AGENT_SESSION_DIR="`+SandboxPiConfig+`/sessions"`)
-	assert.Contains(t, containerfile, `PI_TELEMETRY="0"`)
+	for _, want := range []string{
+		`PI_CODING_AGENT_DIR="` + SandboxPiConfig + `"`,
+		`PI_CODING_AGENT_SESSION_DIR="` + SandboxPiConfig + `/sessions"`,
+		`PI_OFFLINE="1"`,
+		`PI_SKIP_VERSION_CHECK="1"`,
+		`PI_TELEMETRY="0"`,
+	} {
+		assert.Contains(t, containerfile, want)
+	}
 }

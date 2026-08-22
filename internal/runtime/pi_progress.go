@@ -94,16 +94,11 @@ type piToolExecutionEndEvent struct {
 // piToolContext returns a redacted one-line summary of a pi tool call from
 // its arguments. Tool and argument names are pi's (lowercase tools;
 // packages/coding-agent/src/core/tools/*.ts schemas: bash.command,
-// read/write/edit.path, ls.path, grep/find.pattern).
+// read/write/edit.path, ls.path, grep/find.pattern). Each argument is
+// redacted before it is collapsed or capped — the secret patterns need the
+// whole token, so a display cut landing mid-token would let the fragment
+// through. Tools outside pi's built-in set yield "".
 func piToolContext(toolName string, args json.RawMessage) string {
-	raw := piToolRawContext(toolName, args)
-	if raw == "" {
-		return ""
-	}
-	return redactSummary(raw)
-}
-
-func piToolRawContext(toolName string, args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
 	}
@@ -114,7 +109,7 @@ func piToolRawContext(toolName string, args json.RawMessage) string {
 	str := func(key string) string {
 		var s string
 		if raw, ok := fields[key]; ok && json.Unmarshal(raw, &s) == nil {
-			return s
+			return redactSummary(s)
 		}
 		return ""
 	}
@@ -254,8 +249,10 @@ func piIsErrorStop(reason string) bool {
 //     tool_execution_end {toolCallId, toolName, result, isError}. The
 //     ToolUseEvent summary is the argument context captured at start
 //     (command/path/pattern, as for Claude and OpenCode); on isError the
-//     result text is appended so failures are diagnosable. Result text is
-//     only used on its own when no start was seen.
+//     result text is appended so failures are diagnosable. A successful
+//     call never surfaces its output: tools with no known context (extension
+//     tools) get an empty summary. Result text stands alone only when no
+//     start was seen for the call.
 //   - Usage/cost on AssistantMessage are camelCase; cost is a nested object.
 //   - agent_end is {messages, willRetry} — stopReason lives on the assistant
 //     message, not on the agent_end envelope. willRetry=true is a retry
@@ -312,7 +309,8 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		compacting    bool
 		sawAgentEnd   bool
 		emittedInit   bool
-		// Argument context per in-flight tool call, keyed by toolCallId.
+		// Argument context per in-flight tool call, keyed by toolCallId; an
+		// entry exists for every start seen, even when the context is "".
 		toolContext = map[string]string{}
 	)
 
@@ -505,18 +503,16 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			if ctx := piToolContext(evt.ToolName, evt.Args); ctx != "" {
-				toolContext[evt.ToolCallID] = ctx
-			}
+			toolContext[evt.ToolCallID] = piToolContext(evt.ToolName, evt.Args)
 
 		case "tool_execution_end":
 			var evt piToolExecutionEndEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			summary := toolContext[evt.ToolCallID]
+			summary, sawStart := toolContext[evt.ToolCallID]
 			delete(toolContext, evt.ToolCallID)
-			if evt.IsError || summary == "" {
+			if evt.IsError || !sawStart {
 				if result := piResultSummary(evt.Result); result != "" {
 					if summary != "" {
 						summary = piTruncate(summary+": "+result, piSummaryMax)

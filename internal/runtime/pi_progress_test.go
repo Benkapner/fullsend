@@ -472,7 +472,51 @@ func TestPiToolContext(t *testing.T) {
 	}
 
 	long := strings.Repeat("p", maxPathDisplay+5)
-	assert.Equal(t, strings.Repeat("p", maxPathDisplay)+"…", piToolRawContext("read", json.RawMessage(`{"path":"`+long+`"}`)))
+	assert.Equal(t, strings.Repeat("p", maxPathDisplay)+"…", piToolContext("read", json.RawMessage(`{"path":"`+long+`"}`)))
+}
+
+func TestPiToolContext_RedactsBeforeCapping(t *testing.T) {
+	t.Parallel()
+
+	// A token that starts inside the display cap but ends past it must be
+	// redacted as a whole; cutting first would leave a usable prefix. These
+	// forms have no "Authorization:"/"token=" wrapper, so only the prefix
+	// pattern (which needs the full token) can catch them.
+	token := "ghp_" + strings.Repeat("Q", 40)
+	cmd := "cd /sandbox/workspace/repo && git clone --depth 1 --single-branch --branch main https://x-access-token:" + token + "@github.com/org/repo.git ../clone"
+	got := piToolContext("bash", json.RawMessage(fmt.Sprintf(`{"command":%q}`, cmd)))
+	assert.NotContains(t, got, "ghp_Q", "command: %q", got)
+	assert.Contains(t, got, "x-access-token:ghp_", "redaction marker keeps the prefix for context")
+
+	path := "/sandbox/workspace/" + strings.Repeat("d/", (maxPathDisplay-len("/sandbox/workspace/")-6)/2) + token
+	got = piToolContext("read", json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)))
+	assert.NotContains(t, got, "ghp_Q", "path: %q", got)
+	assert.LessOrEqual(t, utf8.RuneCountInString(got), maxPathDisplay+1)
+}
+
+func TestParsePiStream_UnknownToolNeverSurfacesOutput(t *testing.T) {
+	t.Parallel()
+
+	// An extension-registered tool has no argument context. Its successful
+	// output must not become the summary; its error text still may.
+	input := `{"type":"tool_execution_start","toolCallId":"x1","toolName":"my_ext_tool","args":{"query":"q"}}
+{"type":"tool_execution_end","toolCallId":"x1","toolName":"my_ext_tool","result":"BIG OUTPUT","isError":false}
+{"type":"tool_execution_start","toolCallId":"x2","toolName":"my_ext_tool","args":{"query":"q"}}
+{"type":"tool_execution_end","toolCallId":"x2","toolName":"my_ext_tool","result":"upstream 503","isError":true}
+{"type":"tool_execution_end","toolCallId":"orphan","toolName":"my_ext_tool","result":"no start seen","isError":false}
+{"type":"agent_end","messages":[],"willRetry":false}
+`
+	var tools []ToolUseEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ToolUseEvent); ok {
+			tools = append(tools, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, tools, 3)
+	assert.Equal(t, "", tools[0].Summary, "successful unknown tool: no output leaks into the summary")
+	assert.Equal(t, "upstream 503", tools[1].Summary)
+	assert.Equal(t, "no start seen", tools[2].Summary, "end without a start falls back to result text")
 }
 
 func TestParsePiStream_ToolSummaryFromArgsNotOutput(t *testing.T) {
