@@ -77,7 +77,7 @@ fullsend repos migrate <org> --project <gcp-project>
 
 ## `repos install`
 
-Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, syncing variable drift, and upgrading scaffold refs.
+Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, repairing component drift (workflow, thin callers, variables, secrets), and upgrading scaffold refs.
 
 When the manifest file does not exist and positional repo arguments are
 provided, `repos install` bootstraps a new manifest (`version: 1`),
@@ -89,7 +89,7 @@ Runs in three phases:
 
 1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`) are written to the manifest entry.
 2. **Provision** — repos in the manifest that are not yet provisioned are installed (scaffold files, variables, secrets). Repos with a guard variable set but other components missing are repaired automatically.
-3. **Convergence** — repos that are already installed are checked for variable drift (synced automatically) and scaffold ref drift (upgraded automatically).
+3. **Convergence** — repos that are already installed are checked for component drift (workflow, thin callers, variables, secrets — repaired automatically) and scaffold ref drift (upgraded automatically).
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -132,7 +132,7 @@ fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxx
 
 ### Common workflows
 
-Converge all repos from a manifest (provision new, sync drift, upgrade refs):
+Converge all repos from a manifest (provision new, repair component drift, upgrade refs):
 
 ```bash
 fullsend repos install -f repos.yaml

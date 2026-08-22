@@ -48,7 +48,7 @@ fullsend
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --concurrency <int>              #   Parallel limit (1-32, default: 4)
 │   │   └── -f, --manifest <path>            #   Output path for repos.yaml (default: repos.yaml)
-│   ├── install      [repos...]              # Converge repos to desired state (provision, sync, upgrade)
+│   ├── install      [repos...]              # Converge repos to desired state (provision, repair drift, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)

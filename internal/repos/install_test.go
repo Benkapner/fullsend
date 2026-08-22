@@ -688,7 +688,7 @@ func TestCheckInstallComponents_WorkflowCheckError(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	fc.Errors["GetFileContent"] = fmt.Errorf("API error")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig, nil)
 	if err == nil {
 		t.Fatal("expected error from workflow file check")
 	}
@@ -703,7 +703,7 @@ func TestCheckInstallComponents_VariableCheckError(t *testing.T) {
 	addThinCallerFiles(fc, "acme", "widgets")
 	fc.Errors["GetRepoVariable"] = fmt.Errorf("API rate limit")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig, nil)
 	if err == nil {
 		t.Fatal("expected error from variable check")
 	}
@@ -720,7 +720,7 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 	fc.VariableValues["acme/widgets/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.Errors["RepoSecretExists"] = fmt.Errorf("API error")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig, nil)
 	if err == nil {
 		t.Fatal("expected error from secret check")
 	}
@@ -734,7 +734,7 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
 	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -750,7 +750,7 @@ func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -765,7 +765,7 @@ func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -782,7 +782,7 @@ func TestCheckInstallComponents_GitHub_WithSecrets(t *testing.T) {
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -798,7 +798,7 @@ func TestCheckInstallComponents_GitHub_MissingThinCaller(t *testing.T) {
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
