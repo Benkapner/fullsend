@@ -542,5 +542,154 @@ class TestCanaryRedactionIsCaseFoldSafe(unittest.TestCase):
             self.assertFalse(hook_io.contains_canary(redacted, CANARY), prefix)
 
 
+def run_raw(body: dict, env_extra: dict[str, str] | None = None) -> tuple[int, str, str]:
+    env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
+    env.update(env_extra or {})
+    proc = subprocess.run(
+        [sys.executable, CHAIN_HOOK],
+        input=json.dumps(body),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def read_payload(content: str) -> dict:
+    return {
+        "type": "text",
+        "file": {
+            "filePath": "/r/f",
+            "content": content,
+            "numLines": 1,
+            "startLine": 1,
+            "totalLines": 1,
+        },
+    }
+
+
+class TestContentPreservedAndRewriteNotes(unittest.TestCase):
+    """What the agent reads must be what is on disk unless a control fired,
+    and when one fires the agent is told (additionalContext)."""
+
+    def test_source_read_not_rewritten(self):
+        rc, stdout, _ = run_hook(
+            CHAIN_HOOK,
+            read_payload("const token = request.headers.authorization;\n"),
+            key="tool_response",
+            tool_input={"file_path": "/r/f"},
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("updatedToolOutput", stdout)
+
+    def test_cjk_read_not_rewritten(self):
+        rc, stdout, _ = run_hook(
+            CHAIN_HOOK,
+            read_payload("使い方：`make`（必須）！ \ufb01le\n"),
+            key="tool_response",
+            tool_input={"file_path": "/r/f"},
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("updatedToolOutput", stdout)
+
+    def test_redaction_adds_additional_context(self):
+        rc, stdout, _ = run_hook(
+            CHAIN_HOOK,
+            {
+                "stdout": "export API_KEY=supersecretvalue\n",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            },
+            key="tool_response",
+            tool_name="Bash",
+            tool_input={"command": "cat .env"},
+        )
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertNotIn(
+            "supersecretvalue", json.dumps(out["hookSpecificOutput"]["updatedToolOutput"])
+        )
+        self.assertIn("masked", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_suppression_adds_additional_context(self):
+        rc, stdout, _ = run_hook(
+            CHAIN_HOOK,
+            {
+                "stdout": "ok  \tgithub.com/o/r\t0.1s\n",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            },
+            key="tool_response",
+            tool_name="Bash",
+            tool_input={"command": "go test ./..."},
+        )
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertIn("condensed", out["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("go test ./...", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_compound_failing_command_not_condensed(self):
+        rc, stdout, _ = run_hook(
+            CHAIN_HOOK,
+            {
+                "stdout": "3 failed, 2 passed in 1.2s\nok  \tfoo\t0.5s\nEXIT=1\n",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            },
+            key="tool_response",
+            tool_name="Bash",
+            tool_input={"command": "uvx pytest -q; go test ./... ; echo EXIT=$?"},
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+
+class TestPostToolUseFailure(unittest.TestCase):
+    """Failed calls carry error text only: canary detection halts, nothing
+    is rewritten, sanitizers do not run."""
+
+    def _body(self, error: str) -> dict:
+        return {
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl x"},
+            "error": error,
+        }
+
+    def test_canary_in_error_blocks_and_halts(self):
+        rc, stdout, _ = run_raw(
+            self._body(f"Exit code 1\nleak {CANARY}"), {"FULLSEND_CANARY_TOKEN": CANARY}
+        )
+        self.assertEqual(rc, 1)
+        out = json.loads(stdout)
+        self.assertEqual(out["decision"], "block")
+        self.assertIs(out["continue"], False)
+        self.assertNotIn("updatedToolOutput", stdout)
+
+    def test_fullwidth_canary_in_error_blocks(self):
+        rc, stdout, _ = run_raw(
+            self._body(f"Exit code 1\nleak {to_fullwidth(CANARY)}"),
+            {"FULLSEND_CANARY_TOKEN": CANARY},
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(stdout)["decision"], "block")
+
+    def test_clean_error_passes(self):
+        rc, stdout, _ = run_raw(
+            self._body("Exit code 1\nno such file"), {"FULLSEND_CANARY_TOKEN": CANARY}
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+    def test_sanitizers_do_not_run_on_failures(self):
+        rc, stdout, _ = run_raw(self._body("Exit code 1\nexport API_KEY=supersecretvalue"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+
 if __name__ == "__main__":
     unittest.main()

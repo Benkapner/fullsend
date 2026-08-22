@@ -68,7 +68,7 @@ func (r PiRuntime) ExtractDebugLog(sandboxName, localPath, debug string) error {
 	if debug == "" {
 		return nil
 	}
-	return sandbox.DownloadFile(sandboxName, r.WorkspaceDir()+"/"+piDebugLog, localPath)
+	return sandbox.DownloadFile(sandboxName, r.WorkspaceDir()+"/"+piDebugLogFile, localPath)
 }
 
 // ParseTranscriptErrors scans every JSONL file in transcriptDir (the

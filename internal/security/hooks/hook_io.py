@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import unicodedata
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -170,7 +171,21 @@ def transform_strings(
     return value
 
 
-def emit_updated(updated: Any, *, metadata: dict[str, Any] | None = None) -> None:
+def nfkc(value: Any) -> Any:
+    """Return ``value`` with every string NFKC-normalized (detection copy).
+
+    Sanitizers keep the original text; scanners that must see through
+    fullwidth/compatibility obfuscation run on this copy.
+    """
+    return transform_strings(value, lambda text: unicodedata.normalize("NFKC", text))
+
+
+def emit_updated(
+    updated: Any,
+    *,
+    metadata: dict[str, Any] | None = None,
+    additional_context: str | None = None,
+) -> None:
     payload_out: dict[str, Any] = {
         "tool_result": v1_text(updated),
         "hookSpecificOutput": {
@@ -178,6 +193,10 @@ def emit_updated(updated: Any, *, metadata: dict[str, Any] | None = None) -> Non
             "updatedToolOutput": updated,
         },
     }
+    if additional_context:
+        # Claude Code inserts this next to the tool result, so the agent
+        # knows the output it sees was rewritten and why.
+        payload_out["hookSpecificOutput"]["additionalContext"] = additional_context
     if metadata:
         payload_out["metadata"] = metadata
     _write(payload_out)

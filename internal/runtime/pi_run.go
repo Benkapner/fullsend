@@ -154,7 +154,7 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	if vertex {
 		// The interim Claude-on-Vertex provider is only needed for the
 		// anthropic-vertex model spec; other providers get pi's built-ins.
-		parts = append(parts, "-e "+shellQuote(PiVertexExtensionPath))
+		parts = append(parts, "-e "+shellQuote(piVertexExtensionPath))
 	}
 	if hooksEnabled {
 		parts = append(parts, "-e "+shellQuote(hooksExt))
@@ -185,7 +185,7 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	if params.Debug != "" {
 		// pi has no debug-file flag; in debug mode its stderr goes to the
 		// artifact ExtractDebugLog downloads instead of the console.
-		parts = append(parts, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+piDebugLog))
+		parts = append(parts, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+piDebugLogFile))
 	}
 	return strings.Join(parts, " ")
 }
@@ -318,10 +318,10 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 // sessions so transcripts and output files are per-iteration.
 func (r PiRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s",
-		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLog))
+		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLogFile))
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	return err
 }
 
 // DebugLogName implements DebugLogNamer.
-func (PiRuntime) DebugLogName() string { return piDebugLog }
+func (PiRuntime) DebugLogName() string { return piDebugLogFile }

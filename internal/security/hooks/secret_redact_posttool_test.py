@@ -80,17 +80,17 @@ class TestJsonSecretRedaction(unittest.TestCase):
         self.assertNotIn("my-super-secret-pass-1234", result["tool_result"])
 
     def test_single_quoted_json(self):
-        _, stdout, _ = run_hook("{'api_key': 'not-a-prefix-match-value'}")
+        _, stdout, _ = run_hook("{'api_key': 'not-a-prefix-match-v4lue9'}")
         self.assertTrue(stdout, "Expected redaction output")
         result = json.loads(stdout)
-        self.assertNotIn("not-a-prefix-match-value", result["tool_result"])
+        self.assertNotIn("not-a-prefix-match-v4lue9", result["tool_result"])
 
     def test_capture_group_selection(self):
         """The last non-None capture group should be used as the secret."""
-        _, stdout, _ = run_hook("{'token': 'not-a-prefix-match-value'}")
+        _, stdout, _ = run_hook("{'token': 'not-a-prefix-match-v4lue9'}")
         self.assertTrue(stdout, "Expected redaction output")
         result = json.loads(stdout)
-        self.assertNotIn("not-a-prefix-match-value", result["tool_result"])
+        self.assertNotIn("not-a-prefix-match-v4lue9", result["tool_result"])
 
 
 class TestDbPasswordRedaction(unittest.TestCase):
@@ -147,6 +147,79 @@ class TestClaudeContract(unittest.TestCase):
         result = json.loads(proc.stdout)
         self.assertNotIn("superSecretValue123", result["tool_result"])
         self.assertEqual(result["hookSpecificOutput"]["updatedToolOutput"], result["tool_result"])
+
+
+class TestCodeIsNotASecret(unittest.TestCase):
+    """Structural patterns must not rewrite ordinary source, docs or fixtures.
+
+    Regression: ``token = request.headers.authorization`` used to come back as
+    ``token = requ...`` — an agent then edits against text that is not on disk.
+    """
+
+    def test_source_assignment_expression_untouched(self):
+        _, stdout, _ = run_hook(
+            "const token = request.headers.authorization;\n"
+            "const key = Object.keys(map)[0];\n"
+            "const auth = HTTPBasicAuth(user, pw);\n"
+            'canary_token = os.environ.get("X", "")\n'
+            'run(key="tool_response")\n'
+        )
+        self.assertEqual(stdout, "")
+
+    def test_quoted_literal_in_source_redacted(self):
+        _, stdout, _ = run_hook('password = "S3cr3t-P4ss"\n')
+        self.assertTrue(stdout)
+        self.assertNotIn("S3cr3t-P4ss", json.loads(stdout)["tool_result"])
+
+    def test_jwt_under_camel_case_key_redacted(self):
+        value = "eyJhbGciOiJIUzI1NiJ9.abc123xyz"
+        _, stdout, _ = run_hook(f'{{"accessToken": "{value}"}}')
+        self.assertTrue(stdout)
+        self.assertNotIn(value, json.loads(stdout)["tool_result"])
+
+    def test_weak_names_need_credential_shaped_values(self):
+        _, stdout, _ = run_hook(
+            '{"key": "compound-command", "auth": "basic-header-style", "author": "wayne-sun-dev"}'
+        )
+        self.assertEqual(stdout, "")
+        strong_value = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"  # gitleaks:allow
+        _, stdout, _ = run_hook(f'{{"key": "{strong_value}"}}')
+        self.assertTrue(stdout)
+
+    def test_fixture_phrases_untouched(self):
+        _, stdout, _ = run_hook(
+            'DispatchSecret: "test-secret"\n'
+            'Token: "ghs_policy_token"\n'
+            'AccessToken: "cached-token"\n'
+            'NextPageToken: "page-2-token"\n'
+        )
+        self.assertEqual(stdout, "")
+
+    def test_names_about_a_secret_untouched(self):
+        _, stdout, _ = run_hook(
+            "TOKEN_URL=https://example.com/oauth/token\n"
+            "KEY_ID=abcd1234efgh\n"
+            "PUBLIC_KEY=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\n"
+            "GOOGLE_APPLICATION_CREDENTIALS=fullsend-local-credentials.json\n"
+            'tokenUrl: "https://x.example/oauth"\n'
+        )
+        self.assertEqual(stdout, "")
+
+    def test_env_style_values_redacted(self):
+        env_lines = "DB_PASSWORD=Tr0ub4dor3xyz\nexport API_KEY=supersecretvalue\n"  # gitleaks:allow
+        _, stdout, _ = run_hook(env_lines)
+        self.assertTrue(stdout)
+        result = json.loads(stdout)
+        self.assertNotIn("Tr0ub4dor3xyz", result["tool_result"])
+        self.assertNotIn("supersecretvalue", result["tool_result"])
+        self.assertEqual(result["metadata"]["patterns"], ["env_secret", "env_secret"])
+
+    def test_placeholders_untouched(self):
+        _, stdout, _ = run_hook(
+            "export GH_TOKEN=<your-token>\nPASSWORD=changeme\nSECRET=${SECRET}\n"
+            "postgres://user:password@host/db\n"
+        )
+        self.assertEqual(stdout, "")
 
 
 if __name__ == "__main__":

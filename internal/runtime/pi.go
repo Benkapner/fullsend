@@ -15,7 +15,7 @@ import (
 // `runtime: pi` (#6464).
 type PiRuntime struct{}
 
-// PiVertexExtensionPath is the interim Claude-on-Vertex provider for pi
+// piVertexExtensionPath is the interim Claude-on-Vertex provider for pi
 // (twoGiants/pi-anthropic-vertex, pinned in the sandbox image by
 // PI_ANTHROPIC_VERTEX_VERSION). pi's built-in google-vertex provider is
 // Gemini-only and the upstream anthropic-vertex provider
@@ -33,7 +33,7 @@ type PiRuntime struct{}
 // and honour ANTHROPIC_VERTEX_BASE_URL as the endpoint, so Run unsets the
 // ANTHROPIC_* variables for this provider. Swap for the upstream provider
 // once #5262 ships in a pinned pi release.
-const PiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
+const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
 func (PiRuntime) Name() string { return "pi" }
 

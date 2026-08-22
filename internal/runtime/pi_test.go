@@ -23,7 +23,7 @@ func TestPiRuntimeMetadata(t *testing.T) {
 	assert.Equal(t, sandbox.SandboxWorkspace, rt.WorkspaceDir())
 	// Config dir must be outside the agent-writable workspace tree.
 	assert.False(t, strings.HasPrefix(rt.ConfigDir(), sandbox.SandboxWorkspace))
-	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/anthropic-vertex", PiVertexExtensionPath)
+	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/anthropic-vertex", piVertexExtensionPath)
 }
 
 func TestPiRuntimeEnvExports(t *testing.T) {
@@ -40,7 +40,7 @@ func TestPiRuntimeCapabilities(t *testing.T) {
 	t.Parallel()
 	// pi reads AGENTS.md natively — no CLAUDE.md bridge.
 	assert.False(t, WantsClaudeMDBridge(PiRuntime{}))
-	assert.Equal(t, piDebugLog, DebugLogNameFor(PiRuntime{}))
+	assert.Equal(t, piDebugLogFile, DebugLogNameFor(PiRuntime{}))
 	assert.Equal(t, "pi-debug.log", PiRuntime{}.DebugLogName())
 }
 

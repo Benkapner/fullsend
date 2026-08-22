@@ -59,7 +59,34 @@ _GO_TEST_OK_RE = re.compile(r"^ok\s+\S+\s+([\d.]+)s", re.MULTILINE)
 _GO_TEST_FAIL_RE = re.compile(r"^FAIL\s+", re.MULTILINE)
 
 # pytest output patterns
-_PYTEST_SUMMARY_RE = re.compile(r"=+\s+(\d+)\s+passed.*?in\s+([\d.]+)s\s+=+", re.MULTILINE)
+_PYTEST_SUMMARY_RE = re.compile(
+    r"(?:=+\s+)?(\d+)\s+passed(?:,\s*\d+\s+(?:skipped|deselected|xfailed|xpassed|warnings?))*"
+    r"\s+in\s+([\d.]+)s",
+    re.MULTILINE,
+)
+
+# Output that reports a failure is never condensed, whatever the command
+# summarizer would make of the rest of it: a line-leading FAIL/ERROR/panic
+# marker or a "<n> failed" style count.
+_FAILURE_LINE_RE = re.compile(
+    r"^(?:FAIL\b|FAILED\b|ERROR\b|--- FAIL|panic:|Traceback|fatal:)", re.MULTILINE
+)
+_FAILURE_COUNT_RE = re.compile(
+    r"\b[1-9]\d*\s+(?:failed|failing|failures?|errors?)\b", re.IGNORECASE
+)
+
+# Command shapes that are not summarized: a pipeline (``| tail`` can cut the
+# FAIL line the summarizer keys on), ``||``, command substitution, and any
+# compound whose segments are not exactly one verification command plus
+# benign setup (cd/export/source...). ``pytest; go test`` ran two suites and
+# one summary cannot speak for both; ``go test; echo $?`` hides the status.
+_PIPE_OR_SUBSHELL_RE = re.compile(r"\||`|\$\(")
+_SEGMENT_SPLIT_RE = re.compile(r"\r?\n|&&|;")
+_ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+_BENIGN_SEGMENT_RE = re.compile(
+    r"^(?:cd|pushd|popd|export|unset|set|source|\.|true|ulimit|umask)(?:\s|$)"
+)
+
 _PYTEST_FAIL_RE = re.compile(r"=+\s+.*?(\d+)\s+(?:failed|error)", re.MULTILINE)
 
 
@@ -203,53 +230,60 @@ def suppress_gitlint(output: str) -> str | None:
     return None
 
 
-def try_suppress(command: str, output: str) -> str | None:
-    if _SCAN_SECRETS_RE.search(command):
-        return suppress_scan_secrets(output)
+def reports_failure(output: str) -> bool:
+    return bool(_FAILURE_LINE_RE.search(output) or _FAILURE_COUNT_RE.search(output))
 
-    if _GITLEAKS_RE.search(command):
-        return suppress_gitleaks(output)
 
-    if _PRECOMMIT_RE.search(command):
-        return suppress_precommit(output)
-
-    if _GO_TEST_RE.search(command):
-        return suppress_go_test(output)
-
-    if _PYTEST_RE.search(command):
-        return suppress_pytest(output)
-
-    if _NPM_TEST_RE.search(command):
-        return suppress_npm_test(output)
-
-    if _MAKE_TEST_RE.search(command):
-        return suppress_make_test(output)
-
-    if _GO_VET_RE.search(command):
-        return suppress_go_vet(output)
-
-    if _GO_BUILD_RE.search(command):
-        return suppress_go_build(output)
-
-    if _GOLANGCI_RE.search(command):
-        return suppress_linter("golangci-lint", output)
-
-    if _ESLINT_RE.search(command):
-        return suppress_linter("eslint", output)
-
-    if _RUFF_FORMAT_RE.search(command):
-        return suppress_linter("ruff-format", output)
-
-    if _RUFF_RE.search(command):
-        return suppress_linter("ruff", output)
-
-    if _MAKE_LINT_RE.search(command):
-        return suppress_linter("lint", output)
-
-    if _GITLINT_RE.search(command):
-        return suppress_gitlint(output)
-
+def _summarizer_for(segment: str):
+    """Return the summarizer for one command segment, "benign" for setup
+    commands, or None for anything else."""
+    seg = _ENV_PREFIX_RE.sub("", segment.strip())
+    if not seg or _BENIGN_SEGMENT_RE.match(seg):
+        return "benign"
+    for pattern, fn in _SUMMARIZERS:
+        if pattern.search(seg):
+            return fn
     return None
+
+
+_SUMMARIZERS = [
+    (_SCAN_SECRETS_RE, suppress_scan_secrets),
+    (_GITLEAKS_RE, suppress_gitleaks),
+    (_PRECOMMIT_RE, suppress_precommit),
+    (_GO_TEST_RE, suppress_go_test),
+    (_PYTEST_RE, suppress_pytest),
+    (_NPM_TEST_RE, suppress_npm_test),
+    (_MAKE_TEST_RE, suppress_make_test),
+    (_GO_VET_RE, suppress_go_vet),
+    (_GO_BUILD_RE, suppress_go_build),
+    (_GOLANGCI_RE, lambda out: suppress_linter("golangci-lint", out)),
+    (_ESLINT_RE, lambda out: suppress_linter("eslint", out)),
+    (_RUFF_FORMAT_RE, lambda out: suppress_linter("ruff-format", out)),
+    (_RUFF_RE, lambda out: suppress_linter("ruff", out)),
+    (_MAKE_LINT_RE, lambda out: suppress_linter("lint", out)),
+    (_GITLINT_RE, suppress_gitlint),
+]
+
+
+def select_summarizer(command: str):
+    """Pick the single verification command in ``command``, or None."""
+    if _PIPE_OR_SUBSHELL_RE.search(command):
+        return None
+    chosen = []
+    for segment in _SEGMENT_SPLIT_RE.split(command):
+        fn = _summarizer_for(segment)
+        if fn is None:
+            return None
+        if fn != "benign":
+            chosen.append(fn)
+    return chosen[0] if len(chosen) == 1 else None
+
+
+def try_suppress(command: str, output: str) -> str | None:
+    fn = select_summarizer(command)
+    if fn is None or reports_failure(output):
+        return None
+    return fn(output)
 
 
 def main() -> None:

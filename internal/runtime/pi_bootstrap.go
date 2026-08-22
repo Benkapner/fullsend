@@ -28,7 +28,7 @@ const (
 	// goes here rather than SYSTEM.md so pi's tool guidance is kept.
 	piAppendSystemFile = "APPEND_SYSTEM.md"
 	piSettingsFile     = "settings.json"
-	piDebugLog         = "pi-debug.log"
+	piDebugLogFile     = "pi-debug.log"
 )
 
 //go:embed pi_extension/fullsend-hooks.js

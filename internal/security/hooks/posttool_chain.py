@@ -15,8 +15,10 @@ A stage is enabled when its script file is present next to this driver
 (HookFiles omits disabled sanitizers). Tests disable a stage by omitting
 its sibling file, not via environment variables.
 
-Note: Claude Code fires PostToolUse only for tool calls that *succeed*;
-failed calls go to PostToolUseFailure, which is not wired yet (#6357).
+Claude Code fires PostToolUse only for tool calls that *succeed*; failed
+calls fire PostToolUseFailure, which carries the error text but cannot
+replace it. The driver is wired to both: on a failure it runs canary
+detection only (block + halt), since nothing can be rewritten there.
 """
 
 from __future__ import annotations
@@ -127,6 +129,38 @@ def _stage_error(metadata: dict[str, Any], token: str) -> None:
     )
 
 
+def _rewrite_note(metadata: dict[str, Any], command: str) -> str | None:
+    """Tell the agent what was changed in the output it is about to read.
+
+    Without this an agent that reads ``requ...`` in a file treats it as the
+    file's content; with it, it knows the mask is the hook's and the value is
+    still on disk.
+    """
+    notes: list[str] = []
+    redacted = metadata.get("secrets_redacted")
+    if redacted:
+        notes.append(
+            f"fullsend: {redacted} credential-like value(s) in this tool output were "
+            "masked as `xxxx...`. The masks are not in the underlying file or command "
+            "output; never copy a mask into an edit, a file or a commit."
+        )
+    if metadata.get("context_suppressed"):
+        shown = command.strip().replace("\n", " ")
+        if len(shown) > 80:
+            shown = shown[:77] + "..."
+        notes.append(
+            f"fullsend: the output of `{shown}` reported success and was condensed to a "
+            "one-line summary. Failing output is never condensed."
+        )
+    removed = [c for c in metadata.get("categories", []) if c != "fullwidth"]
+    if removed:
+        notes.append(
+            f"fullsend: {len(removed)} hidden or control character sequence(s) "
+            f"({', '.join(sorted(set(removed)))}) were removed from this tool output."
+        )
+    return "\n".join(notes) or None
+
+
 def _canary_armed() -> bool:
     return stage_enabled("canary") and bool(os.environ.get("FULLSEND_CANARY_TOKEN", "").strip())
 
@@ -143,6 +177,36 @@ def _bail(reason: str) -> None:
         sys.stdout.write(json.dumps({"decision": "block", "continue": False, "reason": reason}))
         sys.exit(1)
     sys.exit(0)
+
+
+def _handle_failure(hook_input: dict[str, Any]) -> None:
+    """PostToolUseFailure: canary detection on the error text, nothing else.
+
+    The event supports no output rewrite, so sanitizers are skipped; a canary
+    hit still halts the session (``continue: false``). Fails closed like the
+    PostToolUse path.
+    """
+    error = hook_input.get("error")
+    if not isinstance(error, str) or not error or not _canary_armed():
+        sys.exit(0)
+    canary_token = os.environ.get("FULLSEND_CANARY_TOKEN", "").strip()
+    tool_name = hook_input.get("tool_name", "unknown")
+    try:
+        hit = hook_io.contains_canary(error, canary_token) or hook_io.contains_canary(
+            hook_io.nfkc(error), canary_token
+        )
+        reason = f"CANARY_LEAKED: canary token found in failed {tool_name} call output"
+    except Exception:  # noqa: BLE001
+        hit = True
+        reason = f"CANARY_SCAN_ERROR: canary scan failed on failed {tool_name} call; blocking"
+    if not hit:
+        sys.exit(0)
+    log_finding("canary_leak", "critical", reason, "block")
+    try:
+        hook_io.emit_block(reason, None, stop=True)
+    except Exception:  # noqa: BLE001
+        sys.stdout.write(_ERR_CANARY_BLOCK)
+    sys.exit(1)
 
 
 def main() -> None:
@@ -162,6 +226,9 @@ def main() -> None:
 
     if not isinstance(hook_input, dict):
         _bail("CANARY_HOOK_ERROR: unexpected input shape; cannot scan for canary")
+
+    if hook_input.get("hook_event_name") == "PostToolUseFailure":
+        _handle_failure(hook_input)
 
     original = hook_io.payload(hook_input)
     updated = original
@@ -219,8 +286,10 @@ def main() -> None:
     canary_scan_failed = False
     if stage_enabled("canary") and canary_token:
         try:
-            canary_hit = hook_io.contains_canary(updated, canary_token) or hook_io.contains_canary(
-                original, canary_token
+            canary_hit = (
+                hook_io.contains_canary(updated, canary_token)
+                or hook_io.contains_canary(original, canary_token)
+                or hook_io.contains_canary(hook_io.nfkc(updated), canary_token)
             )
         except Exception:
             canary_hit = True
@@ -246,6 +315,7 @@ def main() -> None:
 
     redact_findings: list[dict] = []
     redact_field_errors: list[str] = []
+    nfkc_rewrites: list[int] = []
     if stage_enabled("redact"):
         try:
             redact_mod = _load_stage("redact")
@@ -256,6 +326,16 @@ def main() -> None:
                         return text
                     try:
                         cleaned, findings = redact_mod.redact_text(text)
+                        normalized = hook_io.nfkc(text)
+                        if normalized != text:
+                            # Fullwidth/compatibility obfuscation: the unicode
+                            # stage keeps such text, so scan a normalized copy
+                            # and, only when that finds more, emit the
+                            # normalized+redacted field instead.
+                            cleaned_n, findings_n = redact_mod.redact_text(normalized)
+                            if len(findings_n) > len(findings):
+                                cleaned, findings = cleaned_n, findings_n
+                                nfkc_rewrites.append(1)
                     except Exception as exc:  # noqa: BLE001
                         redact_field_errors.append(type(exc).__name__)
                         redact_mod.log_finding(
@@ -267,6 +347,8 @@ def main() -> None:
                     return cleaned
 
                 updated = hook_io.transform_strings(updated, _redact)
+                if nfkc_rewrites:
+                    metadata["nfkc_redacted_fields"] = len(nfkc_rewrites)
                 if redact_findings:
                     metadata["secrets_redacted"] = len(redact_findings)
                     metadata["patterns"] = [f["pattern"] for f in redact_findings]
@@ -291,10 +373,16 @@ def main() -> None:
         blocked: Any | None
         try:
             blocked = hook_io.redact_canary(updated, canary_token)
+            if hook_io.contains_canary(hook_io.nfkc(blocked), canary_token):
+                # Token hidden behind compatibility characters: the unicode
+                # stage keeps such text, so redact the normalized form.
+                blocked = hook_io.redact_canary(hook_io.nfkc(blocked), canary_token)
             # Never emit output that still carries the token, whatever the
             # redactor did: withholding it costs the agent context, leaking it
             # defeats the hook.
-            if hook_io.contains_canary(blocked, canary_token):
+            if hook_io.contains_canary(blocked, canary_token) or hook_io.contains_canary(
+                hook_io.nfkc(blocked), canary_token
+            ):
                 blocked = None
                 _stage_error(metadata, "canary_redact")
         except Exception:
@@ -323,7 +411,11 @@ def main() -> None:
             json.dump({"metadata": metadata}, sys.stdout)
         sys.exit(0)
 
-    hook_io.emit_updated(updated, metadata=metadata or None)
+    hook_io.emit_updated(
+        updated,
+        metadata=metadata or None,
+        additional_context=_rewrite_note(metadata, _command(hook_input)),
+    )
     sys.exit(0)
 
 

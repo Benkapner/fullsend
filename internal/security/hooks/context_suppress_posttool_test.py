@@ -418,3 +418,54 @@ class TestPassthrough:
         assert "packages passed" in updated["stdout"]
         assert updated["stderr"] == ""
         assert updated["interrupted"] is False
+
+
+# --- command shapes ---
+
+
+class TestCommandShapes:
+    """One summary can only speak for one verification command."""
+
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_two_suites_not_condensed(self):
+        out = run_hook(
+            make_input("uvx pytest -q; go test ./...", "3 failed, 2 passed in 1.2s\n" + self.GO_OK)
+        )
+        assert out is None
+
+    def test_setup_prefix_still_condensed(self):
+        out = run_hook(make_input("cd /r && GOFLAGS=-mod=mod go test ./... 2>&1", self.GO_OK))
+        assert out is not None
+        assert "packages passed" in out["tool_result"]
+
+    def test_pipeline_not_condensed(self):
+        assert run_hook(make_input("go test ./... | tail -5", self.GO_OK)) is None
+
+    def test_exit_status_echo_not_condensed(self):
+        assert run_hook(make_input("go test ./...; echo EXIT=$?", self.GO_OK + "EXIT=0\n")) is None
+
+    def test_substitution_not_condensed(self):
+        assert run_hook(make_input("go test $(go list ./...)", self.GO_OK)) is None
+
+    def test_failure_count_never_condensed(self):
+        out = run_hook(make_input("go test ./...", self.GO_OK + "3 failed in 1s\n"))
+        assert out is None
+
+    def test_panic_never_condensed(self):
+        out = run_hook(make_input("go test ./...", "panic: boom\n" + self.GO_OK))
+        assert out is None
+
+    def test_pytest_quiet_summary(self):
+        out = run_hook(make_input("pytest -q", "....\n4 passed in 0.31s\n"))
+        assert out is not None
+        assert out["tool_result"] == "tests: 4 passed (0.31s)"
+
+    def test_select_summarizer(self):
+        import context_suppress_posttool as cs
+
+        assert cs.select_summarizer("cd x && go test ./...") is cs.suppress_go_test
+        assert cs.select_summarizer("export A=1; go test ./...") is cs.suppress_go_test
+        assert cs.select_summarizer("pytest; go test ./...") is None
+        assert cs.select_summarizer("go test ./... || true") is None
+        assert cs.select_summarizer("ls") is None

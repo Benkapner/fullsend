@@ -79,6 +79,11 @@ _CHECKS: list[tuple[str, str, re.Pattern]] = [
 ]
 
 
+# Variation selectors to strip: any run of two or more, or a selector that
+# does not follow a non-ASCII character (nothing for it to select).
+_VS_STRIP_RE = re.compile("(?:[\ufe00-\ufe0f]{2,}|(?<![^\x00-\x7f])[\ufe00-\ufe0f])")
+
+
 def log_finding(name: str, severity: str, detail: str, action: str) -> None:
     trace_id = os.environ.get("FULLSEND_TRACE_ID", "")
     finding = {
@@ -111,6 +116,11 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
     result = text
 
     for name, severity, pattern in _CHECKS:
+        if name == "variation_selector":
+            # Smuggling needs runs of selectors; one selector after a
+            # non-ASCII character is ordinary text (emoji presentation "⚠️",
+            # CJK/Mongolian variants) that an Edit must still match on disk.
+            pattern = _VS_STRIP_RE
         matches = pattern.findall(result)
         if not matches:
             continue
@@ -147,31 +157,34 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
         )
         result = "".join(c for c in result if not (0xE0100 <= ord(c) <= 0xE01EF))
 
-    # NFKC normalization (fullwidth -> ASCII, compatibility decomposition).
+    # Compatibility characters (fullwidth, ligatures, vulgar fractions) are
+    # reported but kept: NFKC-rewriting a Read result hands the agent file
+    # content that is not on disk (CJK punctuation, "ﬁ" → "fi"), and every
+    # Edit it then composes misses. Detection that depends on the normalized
+    # form (canary, secret patterns) runs on a normalized *copy* in the chain
+    # driver. The one rewrite kept is the escape-reassembly case below.
     nfkc = unicodedata.normalize("NFKC", result)
     if nfkc != result:
-        orig_chars = list(result)
-        nfkc_chars = list(nfkc)
-        min_len = min(len(orig_chars), len(nfkc_chars))
-        diff_count = sum(1 for i in range(min_len) if orig_chars[i] != nfkc_chars[i])
-        diff_count += abs(len(orig_chars) - len(nfkc_chars))
-        diff_count = max(diff_count, 1)
+        diff_count = sum(1 for a, b in zip(result, nfkc, strict=False) if a != b)
+        diff_count += abs(len(result) - len(nfkc))
         findings.append(
             {
                 "name": "fullwidth",
-                "severity": "high",
-                "detail": f"NFKC normalization applied ({diff_count} characters affected)",
+                "severity": "medium",
+                "detail": (
+                    f"{max(diff_count, 1)} compatibility (fullwidth/NFKC) character(s) "
+                    "detected; text kept, normalized copy used for detection"
+                ),
             }
         )
-        result = nfkc
 
-        # Second pass: NFKC can reconstruct escape sequences from fullwidth
-        # characters (e.g. fullwidth [ + ESC → valid CSI). Re-check ANSI/OSC.
+        # NFKC can reconstruct escape sequences from fullwidth characters
+        # (ESC + fullwidth "[" → a valid CSI once normalized downstream).
         for name, severity, pattern in _CHECKS:
             if name not in ("ansi_escape", "osc_escape"):
                 continue
-            matches = pattern.findall(result)
-            if not matches:
+            matches = pattern.findall(nfkc)
+            if not matches or "\x1b" not in result:
                 continue
             total_chars = sum(len(m) for m in matches)
             findings.append(
@@ -179,11 +192,15 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
                     "name": name,
                     "severity": severity,
                     "detail": (
-                        f"{total_chars} {name.replace('_', ' ')} character(s) removed (post-NFKC)"
+                        f"{total_chars} {name.replace('_', ' ')} character(s) "
+                        "removed (reassembled by NFKC; field normalized)"
                     ),
                 }
             )
-            result = pattern.sub("", result)
+            # Attack case only: emit the normalized field with the sequence
+            # removed (the fullwidth form was a delivery vehicle, not content).
+            result = pattern.sub("", nfkc)
+            nfkc = result
 
     return result, findings
 

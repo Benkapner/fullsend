@@ -141,13 +141,21 @@ class TestAnsiEscape(unittest.TestCase):
 
 
 class TestNFKC(unittest.TestCase):
-    def test_fullwidth_normalized(self):
-        # Fullwidth A = U+FF21
+    def test_fullwidth_kept_and_reported(self):
+        # Fullwidth A = U+FF21. Compatibility characters are content (CJK
+        # punctuation, ligatures); they are reported, never rewritten, and
+        # detection runs on a normalized copy in the chain driver.
         rc, stdout, _ = run_hook("\uff21\uff22\uff23")
         self.assertEqual(rc, 0)
         out = json.loads(stdout)
-        self.assertEqual(out["tool_result"], "ABC")
+        self.assertEqual(out["tool_result"], "\uff21\uff22\uff23")
         self.assertIn("fullwidth", out["metadata"]["categories"])
+
+    def test_cjk_content_untouched(self):
+        text = "使い方：`make`（必須）！ \ufb01le \u00bd\n"
+        rc, stdout, _ = run_hook(text)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(stdout)["tool_result"], text)
 
 
 class TestVariationSelector(unittest.TestCase):
@@ -156,6 +164,20 @@ class TestVariationSelector(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = json.loads(stdout)
         self.assertEqual(out["tool_result"], "testdata")
+        self.assertIn("variation_selector", out["metadata"]["categories"])
+
+    def test_emoji_presentation_selector_kept(self):
+        # One selector after a non-ASCII character is ordinary text ("⚠️");
+        # an Edit composed from a stripped copy would not match the file.
+        rc, stdout, _ = run_hook("\u26a0\ufe0f warn \u845b\ufe00\u57ce")
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+    def test_variation_selector_run_stripped(self):
+        rc, stdout, _ = run_hook("a\ufe0f\ufe0f\ufe0fb")
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertEqual(out["tool_result"], "ab")
         self.assertIn("variation_selector", out["metadata"]["categories"])
 
 

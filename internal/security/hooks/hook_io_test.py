@@ -87,3 +87,17 @@ def test_redact_canary_walks_stderr():
     updated = hook_io.redact_canary(value, "SECRET_CANARY_xyz")
     assert updated["stderr"] == "leaked [CANARY_REDACTED] here"
     assert updated["stdout"] == ""
+
+
+def test_nfkc_copy_normalizes_every_string():
+    value = {"stdout": "\uff21\uff22", "nested": ["\uff23"], "n": 1}
+    assert hook_io.nfkc(value) == {"stdout": "AB", "nested": ["C"], "n": 1}
+    assert value["stdout"] == "\uff21\uff22"  # a copy, never in place
+
+
+def test_emit_updated_carries_additional_context(capsys):
+    hook_io.emit_updated({"stdout": "x", "stderr": ""}, additional_context="fullsend: note")
+    out = capsys.readouterr().out
+    assert '"additionalContext": "fullsend: note"' in out
+    hook_io.emit_updated("y")
+    assert "additionalContext" not in capsys.readouterr().out

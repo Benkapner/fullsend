@@ -43,6 +43,23 @@ func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	postTools := hooks["PostToolUse"].([]any)
 	assert.Len(t, postTools, 1) // single chain matcher covers sanitizers + canary
 
+	// Failed calls: canary detection only, same driver.
+	assert.Contains(t, hooks, "PostToolUseFailure")
+	failed := hooks["PostToolUseFailure"].([]any)
+	require.Len(t, failed, 1)
+	failedEntry := failed[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	assert.Contains(t, failedEntry["command"], "posttool_chain.py")
+
+	// Every hook carries an explicit timeout: Claude Code's 600 s default
+	// fails open and would stall an iteration on a wedged script.
+	for _, phase := range []string{"PreToolUse", "PostToolUse", "PostToolUseFailure"} {
+		for _, m := range hooks[phase].([]any) {
+			for _, e := range m.(map[string]any)["hooks"].([]any) {
+				assert.EqualValues(t, HookTimeoutSeconds, e.(map[string]any)["timeout"], phase)
+			}
+		}
+	}
+
 	// Verify sanitization is a single chained driver (Claude Code runs hooks
 	// in parallel; ordering is enforced inside posttool_chain.py).
 	matcher := postTools[0].(map[string]any)
@@ -377,13 +394,15 @@ func TestHookFiles_ContextSuppressDisabled(t *testing.T) {
 func TestHookPlan_DefaultsAndOrder(t *testing.T) {
 	plan := HookPlan(SandboxHookConfigFromHarness(&harness.Harness{}))
 
-	var pre, post []HookGroup
+	var pre, post, failed []HookGroup
 	for _, g := range plan {
 		switch g.Phase {
 		case HookPhasePreToolUse:
 			pre = append(pre, g)
 		case HookPhasePostToolUse:
 			post = append(post, g)
+		case HookPhasePostToolUseFailure:
+			failed = append(failed, g)
 		default:
 			t.Fatalf("unexpected phase %q", g.Phase)
 		}
@@ -403,6 +422,12 @@ func TestHookPlan_DefaultsAndOrder(t *testing.T) {
 	require.Len(t, post, 1)
 	assert.Equal(t, []string{AllTools}, post[0].Tools)
 	assert.Equal(t, []string{"posttool_chain.py"}, post[0].Scripts)
+
+	// Failed tool calls: the same driver runs canary detection on the
+	// PostToolUseFailure error text (no rewrite is possible there).
+	require.Len(t, failed, 1)
+	assert.Equal(t, []string{AllTools}, failed[0].Tools)
+	assert.Equal(t, []string{"posttool_chain.py"}, failed[0].Scripts)
 
 	// Every script the plan references is shipped by HookFiles. Library
 	// modules (hook_io + sanitizer stages) are shipped but not scheduled.
@@ -446,7 +471,11 @@ func TestHookPlan_CoversHookFiles_AllEnabled(t *testing.T) {
 			assert.Equal(t, 0, seen[name], "library script %s should not be scheduled", name)
 			continue
 		}
-		assert.Equal(t, 1, seen[name], "script %s scheduled %d times", name, seen[name])
+		expected := 1
+		if name == "posttool_chain.py" {
+			expected = 2 // PostToolUse rewrite + PostToolUseFailure canary detection
+		}
+		assert.Equal(t, expected, seen[name], "script %s scheduled %d times", name, seen[name])
 	}
 	assert.Contains(t, seen, "tool_allowlist_pretool.py")
 	assert.Contains(t, seen, "posttool_chain.py")

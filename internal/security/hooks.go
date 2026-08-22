@@ -45,7 +45,14 @@ var PostToolChainHook []byte
 type hookEntry struct {
 	Type    string `json:"type"`
 	Command string `json:"command"`
+	// Timeout bounds one hook run in seconds. Claude Code's default is 600 s
+	// and a hook that exceeds it fails open, so a wedged sanitizer would stall
+	// an iteration for ten minutes; the scripts finish in well under a second.
+	Timeout int `json:"timeout,omitempty"`
 }
+
+// HookTimeoutSeconds is the per-run timeout written for every sandbox hook.
+const HookTimeoutSeconds = 30
 
 // hookMatcher groups a tool matcher with its hooks.
 type hookMatcher struct {
@@ -79,6 +86,11 @@ const (
 	HookPhasePreToolUse HookPhase = "PreToolUse"
 	// HookPhasePostToolUse runs after the tool executes and may rewrite its result.
 	HookPhasePostToolUse HookPhase = "PostToolUse"
+	// HookPhasePostToolUseFailure runs after a tool call fails. Claude Code
+	// delivers the error text but allows no rewrite, so only detection (the
+	// canary halt) is possible here. Runtimes whose post-tool event already
+	// covers failed calls (pi) map it onto nothing.
+	HookPhasePostToolUseFailure HookPhase = "PostToolUseFailure"
 )
 
 // HookGroup is one ordered chain of hook scripts bound to a set of tools.
@@ -138,13 +150,25 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 	}
 
 	// PostToolUse driver for every tool. Claude Code runs matching hooks in
-	// parallel and does not merge two updatedToolOutput rewrites, so suppress →
-	// unicode → redact → canary must share one process (fullsend#6357). The
+	// parallel and does not merge two updatedToolOutput rewrites, so the stages
+	// (unicode → canary → suppress → redact, in that order) must share one
+	// process (fullsend#6357). The
 	// driver skips sibling scripts that HookFiles omitted. Adapters that
 	// invoke HookPlan should call this one script rather than the stages.
 	if postToolChainEnabled(hooks) {
 		plan = append(plan, HookGroup{
 			Phase: HookPhasePostToolUse, Tools: []string{AllTools},
+			Scripts: []string{"posttool_chain.py"},
+		})
+	}
+
+	// Failed tool calls never reach PostToolUse under Claude Code; the same
+	// driver runs canary detection on PostToolUseFailure's error text so a
+	// leak in a failing command's output still halts the session. Sanitizers
+	// cannot run there (no output rewrite), which the runtimes matrix records.
+	if canaryPostToolEnabled(hooks) {
+		plan = append(plan, HookGroup{
+			Phase: HookPhasePostToolUseFailure, Tools: []string{AllTools},
 			Scripts: []string{"posttool_chain.py"},
 		})
 	}
@@ -166,6 +190,7 @@ func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
 		for _, script := range g.Scripts {
 			entries = append(entries, hookEntry{
 				Type: "command", Command: "python3 " + SandboxHooksDir + "/" + script,
+				Timeout: HookTimeoutSeconds,
 			})
 		}
 		cfg.Hooks[string(g.Phase)] = append(cfg.Hooks[string(g.Phase)], hookMatcher{
