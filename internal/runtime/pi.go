@@ -20,6 +20,17 @@ import (
 // Tracked in #6464.
 type PiRuntime struct{}
 
+// PiVertexExtensionPath is the interim Claude-on-Vertex provider for pi
+// (twoGiants/pi-anthropic-vertex, pinned in the sandbox image by
+// PI_ANTHROPIC_VERTEX_VERSION). pi's built-in google-vertex provider is
+// Gemini-only and the upstream anthropic-vertex provider
+// (earendil-works/pi#5262) is still open. Run will load it with
+// `-e` alongside `--no-extensions`; it registers provider "anthropic-vertex"
+// and reads GOOGLE_CLOUD_PROJECT / ANTHROPIC_VERTEX_PROJECT_ID and
+// CLOUD_ML_REGION / GOOGLE_CLOUD_LOCATION. Swap for the upstream provider
+// once #5262 ships in a pinned pi release.
+const PiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
+
 func (PiRuntime) Name() string { return "pi" }
 
 // System returns the OTEL GenAI gen_ai.system value. Pi is multi-provider

@@ -34,6 +34,11 @@ const (
 	// <dir>/extensions/, so Bootstrap must pass --no-extensions plus the
 	// runner-supplied adapter explicitly.
 	SandboxPiConfig = "/sandbox/pi-config" //nolint:gosec // not a credential
+	// SandboxPiExtensionsDir holds runner-vetted pi extensions baked into the
+	// sandbox image (images/sandbox/Containerfile), root-owned and outside
+	// PI_CODING_AGENT_DIR so pi never auto-loads them; PiRuntime.Run passes
+	// each one explicitly with -e.
+	SandboxPiExtensionsDir = "/opt/pi-extensions"
 
 	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second

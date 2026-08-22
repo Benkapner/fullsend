@@ -22,6 +22,9 @@ func TestSandboxImagePiDefaults(t *testing.T) {
 		`PI_OFFLINE="1"`,
 		`PI_SKIP_VERSION_CHECK="1"`,
 		`PI_TELEMETRY="0"`,
+		// The vetted extension set lives where PiRuntime expects to -e it from.
+		`ARG PI_EXTENSIONS_DIR=` + SandboxPiExtensionsDir,
+		`/anthropic-vertex`,
 	} {
 		assert.Contains(t, containerfile, want)
 	}

@@ -64,6 +64,11 @@
       "description": "pi releases ~weekly minors and has changed its --mode json wire shape within a minor before (0.84.0); require manual review so the stream parser fixtures (#6464) are re-verified before a pin bump lands, even for patch/pin updates",
       "matchPackageNames": ["@earendil-works/pi-coding-agent"],
       "automerge": false
+    },
+    {
+      "description": "pi-anthropic-vertex is pinned by tag + tarball SHA256 and tracks specific pi versions; a bump needs the checksum refreshed and its compat.json checked against PI_VERSION (#6464)",
+      "matchPackageNames": ["twoGiants/pi-anthropic-vertex"],
+      "automerge": false
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
@@ -117,6 +122,17 @@
       ],
       "depNameTemplate": "@anthropic-ai/claude-code",
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (#6464). PI_ANTHROPIC_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is — and the new tag's pi compatibility (sync/compat.json upstream) must be checked against PI_VERSION.",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG PI_ANTHROPIC_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "twoGiants/pi-anthropic-vertex",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {
       "customType": "regex",
