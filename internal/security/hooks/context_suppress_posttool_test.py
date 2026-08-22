@@ -497,3 +497,18 @@ class TestCommandShapesRoundTwo:
         out = run_hook(make_input("pytest -q", "2 passed, 1 xfailed in 0.3s\n"))
         assert out is not None
         assert out["tool_result"] == "tests: 2 passed, 1 xfailed (0.3s)"
+
+
+class TestQuotedRegions:
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_escaped_quote_does_not_swallow_a_pipe(self):
+        assert run_hook(make_input('go test ./... -run "A\\\\" | tee "log"', self.GO_OK)) is None
+
+    def test_double_quoted_pipe_is_not_a_pipeline(self):
+        assert run_hook(make_input('go test ./... -run "A|B"', self.GO_OK)) is not None
+
+    def test_lowercase_error_line_not_condensed(self):
+        assert (
+            run_hook(make_input("pytest -q", "5 passed in 0.1s\nerror: something broke\n")) is None
+        )

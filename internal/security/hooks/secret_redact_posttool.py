@@ -37,6 +37,9 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ),
     ("stripe_key", re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}")),
     ("sendgrid_key", re.compile(r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}")),
+    ("gitlab_pat", re.compile(r"gl(?:pat|rt|ptt|dt|ft|soat|cs)-[A-Za-z0-9_-]{20,}")),
+    ("google_oauth_token", re.compile(r"ya29\.[A-Za-z0-9_-]{30,}")),
+    ("aws_sts_key", re.compile(r"ASIA[A-Z0-9]{16}")),
     ("hf_token", re.compile(r"hf_[A-Za-z0-9]{20,}")),
     ("npm_token", re.compile(r"npm_[A-Za-z0-9]{36}")),
     ("pypi_token", re.compile(r"pypi-[A-Za-z0-9_-]{20,}")),
@@ -153,8 +156,11 @@ _NOT_SECRET_PARTS = frozenset(
         "optional",
         "public",
         "page",
+        "next",
+        "continuation",
         "cursor",
         "pagination",
+        "paging",
         "placeholder",
         "example",
     }
@@ -193,12 +199,23 @@ _FILE_EXT_RE = re.compile(r"\.[A-Za-z]{1,5}$")
 _MASKED_RE = re.compile(r"^(?:.{4}\.\.\.|\*\*\*)$")
 # A value that is itself a constant/env-var name: SecretWIFProvider = "FULLSEND_GCP_WIF_PROVIDER".
 _CONSTANT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
-# Known token prefixes: a real one has already been masked by the prefix
-# patterns (which run first); what reaches the structural check with such a
-# prefix is a fixture too short to be real (``ghs_maskable``, ``glpat-new``).
+# Known token prefixes followed by words, not by token material: a fixture
+# (``ghs_maskable``, ``glpat-new``, ``ghp_test123``). Real tokens with these
+# prefixes are matched by the prefix patterns above, which run first.
 _KNOWN_PREFIX_RE = re.compile(
     r"^(?:gh[opsur]_|github_pat_|glpat-|glrt-|sk-|xox[abpr]-|AKIA|ASIA|ya29\.|AIza|hf_|npm_|pypi-|dop_v1_|pplx-|dapi)"
+    r"(?P<rest>.*)$"
 )
+
+
+def _fake_prefixed(value: str) -> bool:
+    match = _KNOWN_PREFIX_RE.match(value)
+    if not match:
+        return False
+    rest = match.group("rest")
+    return bool(rest) and (rest.isalpha() or _word_phrase(rest) or _fixture_marker(rest))
+
+
 _SEGMENT_SPLIT_RE = re.compile(r"[-_.]+")
 _SECRET_WORDS = frozenset({"token", "secret", "password", "passwd", "key", "credential", "auth"})
 _FIXTURE_WORDS = frozenset(
@@ -279,7 +296,7 @@ def _credential_like(value: str, strength: str, *, literal: bool = True) -> bool
     """
     if _PLACEHOLDER_RE.match(value) or _URL_PATH_FLAG_RE.match(value):
         return False
-    if _CONSTANT_NAME_RE.match(value) or _KNOWN_PREFIX_RE.match(value):
+    if (literal and _CONSTANT_NAME_RE.match(value)) or _fake_prefixed(value):
         return False
     if _IDENT_PATH_RE.match(value) and not any(_random_segment(s) for s in value.split(".")):
         return False
@@ -315,7 +332,8 @@ _ENV_ASSIGN_RE = re.compile(
 )
 # What may follow an unquoted value for it to be a value and not the head of an
 # expression: ``token=fetchToken()`` / ``key=cfg[0]`` / ``secret=obj.attr``.
-_EXPRESSION_TAIL = frozenset("([{.")
+_EXPRESSION_TAIL = frozenset("([{")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # "name": "value" / 'name': 'value' / name: "value" (JSON, dicts, YAML).
 _KV_RE = re.compile(
     r"""(?:(["'])([^"'\n]{1,64})\1|(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_-]{0,63}))"""
@@ -346,9 +364,14 @@ def structural_secrets(text: str) -> list[tuple[str, str]]:
             # literal. Only a quoted literal counts in source-style assignments.
             continue
         tail = text[match.end() : match.end() + 1]
-        if not quote and tail and (tail in _EXPRESSION_TAIL or tail.isalnum() or tail == "_"):
+        if not quote and tail in _EXPRESSION_TAIL:
             # ``Client(token=fetchToken(), api_key=loadApiKey(cfg))`` — the
             # "value" is the start of a call or subscript.
+            continue
+        head = text[: match.start()].rstrip(" \t")[-1:]
+        if not quote and head and head in "(," and _IDENTIFIER_RE.match(value):
+            # ``Client(token=accessToken, password=userPassword)`` — a keyword
+            # argument whose value is a variable, not a literal.
             continue
         literal = bool(space_before or space_after)
         if _credential_like(value, strength, literal=literal):

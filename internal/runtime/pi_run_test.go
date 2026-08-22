@@ -45,10 +45,12 @@ func TestPiThinkingFor(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, level, got)
 	}
-	_, ok := piThinkingFor("")
-	assert.False(t, ok)
-	_, ok = piThinkingFor("turbo")
-	assert.False(t, ok, "unknown levels are dropped rather than passed to pi")
+	got, ok := piThinkingFor("")
+	assert.True(t, ok)
+	assert.Equal(t, piDefaultThinking, got, "unset effort runs at the default, not at pi's medium")
+	got, ok = piThinkingFor("turbo")
+	assert.False(t, ok, "unknown levels are reported")
+	assert.Equal(t, piDefaultThinking, got, "and fall back to the default")
 }
 
 func piTestParams() RunParams {

@@ -69,7 +69,7 @@ _PYTEST_SUMMARY_RE = re.compile(
 # summarizer would make of the rest of it: a line-leading FAIL/ERROR/panic
 # marker or a "<n> failed" style count.
 _FAILURE_LINE_RE = re.compile(
-    r"^(?:FAIL\b|FAILED\b|ERROR\b|--- FAIL|panic:|Traceback|fatal:)", re.MULTILINE
+    r"^(?:FAIL\b|FAILED\b|ERROR\b|[Ee]rror:|--- FAIL|panic:|Traceback|fatal:)", re.MULTILINE
 )
 _FAILURE_COUNT_RE = re.compile(
     r"\b[1-9]\d*\s+(?:failed|failing|failures?|errors?)\b", re.IGNORECASE
@@ -86,7 +86,7 @@ _ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
 _BENIGN_SEGMENT_RE = re.compile(
     r"^(?:cd|pushd|popd|export|unset|set|source|\.|true|ulimit|umask)(?:\s|$)|^#"
 )
-_QUOTED_RE = re.compile(r"'[^']*'|\"(?:[^\"\\\\]|\\\\.)*\"")
+_QUOTED_RE = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 _CONTINUATION_RE = re.compile(r"\\\r?\n")
 
 _PYTEST_FAIL_RE = re.compile(r"\b(\d+)\s+(?:failed|errors?)\b", re.IGNORECASE)

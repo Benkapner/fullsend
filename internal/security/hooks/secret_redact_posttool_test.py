@@ -305,5 +305,53 @@ class TestSweepResidue(unittest.TestCase):
         self.assertEqual(stdout, "")
 
 
+class TestVerifyRound(unittest.TestCase):
+    def test_real_vendor_tokens_with_known_prefixes_redacted(self):
+        glpat = "glpat-" + "Ab3dEf9hIjKlMnOpQrSt"
+        glrt = "glrt-" + "Zz9yXx8wVv7uTt6sRr5q"
+        ya29 = "ya29." + "a0AfH6SMB" + "q1W2e3R4t5Y6u7I8o9P0a1S2d3F4g5"
+        asia = "ASIA" + "ABCDEFGHIJ123456"
+        _, stdout, _ = run_hook(
+            f"GITLAB_TOKEN={glpat}\nRUNNER_TOKEN={glrt}\nACCESS_TOKEN={ya29}\nAWS_ACCESS_KEY_ID={asia}\n"
+        )
+        self.assertTrue(stdout)
+        text = json.loads(stdout)["tool_result"]
+        for leaked in (glpat, glrt, ya29, asia):
+            self.assertNotIn(leaked, text)
+
+    def test_short_prefixed_fakes_still_untouched(self):
+        _, stdout, _ = run_hook(
+            'Token: "ghs_maskable"\n"token": "glpat-new"\nGitToken: "ghp_test123"\n'
+        )
+        self.assertEqual(stdout, "")
+
+    def test_bare_identifier_keyword_arguments_untouched(self):
+        _, stdout, _ = run_hook(
+            "client = Client(token=accessToken, api_key=apiKeyValue)\n"
+            "retry(password=userPassword)\n"
+        )
+        self.assertEqual(stdout, "")
+
+    def test_non_ascii_tail_does_not_hide_a_token(self):
+        value = "Ab3dEf9hIjKlMnOpQrSt"  # gitleaks:allow
+        _, stdout, _ = run_hook(f"API_TOKEN={value}\u00e9\n")
+        self.assertTrue(stdout)
+        self.assertNotIn(value, json.loads(stdout)["tool_result"])
+
+    def test_constant_name_exemption_only_for_source_literals(self):
+        _, stdout, _ = run_hook('SecretWIFProvider = "FULLSEND_GCP_WIF_PROVIDER"\n')
+        self.assertEqual(stdout, "")
+        env_value = "PROD_K3Y_9F86D081884C7D659A"  # gitleaks:allow
+        _, stdout, _ = run_hook(f"SECRET_KEY={env_value}\n")
+        self.assertTrue(stdout)
+
+    def test_aws_pagination_tokens_untouched(self):
+        continuation = "1a2B3c4D5e6F7g8H9i0J"  # gitleaks:allow
+        next_token = "ZXlKaGJHY2lPaUpJVXpJMU5pSjk"  # gitleaks:allow
+        page = f'{{"NextToken": "{next_token}", "ContinuationToken": "{continuation}"}}'
+        _, stdout, _ = run_hook(page)
+        self.assertEqual(stdout, "")
+
+
 if __name__ == "__main__":
     unittest.main()

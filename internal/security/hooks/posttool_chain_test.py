@@ -750,5 +750,18 @@ class TestObfuscationRoundTwo(unittest.TestCase):
         self.assertEqual(json.loads(stdout)["decision"], "block")
 
 
+class TestNfkcSamePrefix(unittest.TestCase):
+    def test_same_prefix_fullwidth_secret_still_redacted(self):
+        plain = "abcd1234efgh5678"
+        hidden = to_fullwidth("abcd5678ijklmnop")
+        rc, stdout, _ = run_hook(
+            CHAIN_HOOK, f"TOKEN={plain}\nTOKEN2={hidden}\n", key="tool_response"
+        )
+        self.assertEqual(rc, 0)
+        emitted = json.dumps(json.loads(stdout)["hookSpecificOutput"]["updatedToolOutput"])
+        self.assertNotIn(hidden, emitted)
+        self.assertNotIn(plain, emitted)
+
+
 if __name__ == "__main__":
     unittest.main()

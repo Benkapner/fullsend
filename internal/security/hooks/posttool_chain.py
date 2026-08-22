@@ -338,7 +338,9 @@ def main() -> None:
                             # normalized+redacted field instead.
                             cleaned_n, findings_n = redact_mod.redact_text(normalized)
                             seen = {(f["pattern"], f["masked"]) for f in findings}
-                            if any((f["pattern"], f["masked"]) not in seen for f in findings_n):
+                            if len(findings_n) > len(findings) or any(
+                                (f["pattern"], f["masked"]) not in seen for f in findings_n
+                            ):
                                 cleaned, findings = cleaned_n, findings_n
                                 nfkc_rewrites.append(1)
                     except Exception as exc:  # noqa: BLE001
