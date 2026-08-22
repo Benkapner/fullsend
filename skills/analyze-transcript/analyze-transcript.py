@@ -183,8 +183,10 @@ def normalize_pi_message(entry):
             # A pi model error has no text block (pi-ai AssistantMessage
             # carries it in errorMessage); surface it as text so errors,
             # conversation and search see it like a Claude "API Error".
-            text = f"Model error (stopReason={stop_reason}): {error_message or ''}"
-            blocks.append({"type": "text", "text": text.strip(), "model_error": True})
+            text = f"Model error (stopReason={stop_reason})"
+            if error_message:
+                text += f": {error_message}"
+            blocks.append({"type": "text", "text": text, "model_error": True})
         out = {
             "role": "assistant",
             "content": blocks,

@@ -862,8 +862,8 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			printer.StepInfo(fmt.Sprintf("  Repo restriction: %s/%s", owner, repo))
 			printer.Blank()
 		}
-		// BuildScaffoldFiles only reads Owner, Repo, Roles, VendorBinary,
-		// UpstreamRef, UpstreamTag. Extra fields are included to stay aligned
+		// BuildScaffoldFiles only reads Owner, Repo, Roles, Runtime,
+		// VendorBinary, UpstreamRef, UpstreamTag. Extra fields are included to stay aligned
 		// with the non-dry-run installCfg; Skip* flags are omitted because
 		// they control Install() flow, not scaffold file generation.
 		dryRunFiles, dryRunErr := repos.BuildScaffoldFiles(repos.InstallConfig{

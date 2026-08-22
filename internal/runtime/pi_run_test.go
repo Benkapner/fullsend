@@ -80,7 +80,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	assert.NotContains(t, cmd, "--thinking")
 	assert.NotContains(t, cmd, "2>>")
 	assert.NotContains(t, cmd, "  ", "no double spaces")
-	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task'"))
+	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' </dev/null"), "stdin is closed: pi --print reads an open stdin to EOF")
 
 	// Claude-on-Vertex: stray direct-API variables never reach pi, and the
 	// project is pinned to the variable Claude Code on Vertex uses.
@@ -188,7 +188,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	assert.NotContains(t, cmd, "fullsend-hooks.js", "no hook extension when the runner has security disabled")
 	assert.NotContains(t, cmd, "test -f")
 	assert.Contains(t, cmd, "-e '/opt/pi-extensions/anthropic-vertex'")
-	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' 2>>'/sandbox/workspace/pi-debug.log'"), cmd)
+	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' </dev/null 2>>'/sandbox/workspace/pi-debug.log'"), cmd)
 }
 
 func TestBuildPiRunCommand_EmptyToolRestriction(t *testing.T) {

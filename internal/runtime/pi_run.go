@@ -166,7 +166,11 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		parts = append(parts, "--thinking "+shellQuote(level))
 	}
 
-	parts = append(parts, shellQuote("Run the agent task"))
+	// In --print mode pi reads a non-TTY stdin to EOF as extra input and
+	// blocks while the pipe stays open (verified on 0.84.2: an idle pipe
+	// hangs, /dev/null proceeds). Close it here so the run never depends on
+	// how the sandbox exec wires stdin.
+	parts = append(parts, shellQuote("Run the agent task"), "</dev/null")
 
 	if params.Debug != "" {
 		// pi has no debug-file flag; in debug mode its stderr goes to the

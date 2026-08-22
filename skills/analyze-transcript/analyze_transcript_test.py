@@ -54,7 +54,7 @@ def _pi_session_lines():
             "message": {
                 "role": "user",
                 "content": "Run the agent task",
-                "timestamp": 1755856801000,
+                "timestamp": 1787392801000,
             },
         },
         {
@@ -77,7 +77,7 @@ def _pi_session_lines():
                 "model": "claude-opus-4-6",
                 "usage": {"input": 120, "output": 30, "cacheRead": 50, "cacheWrite": 10},
                 "stopReason": "toolUse",
-                "timestamp": 1755856805000,
+                "timestamp": 1787392805000,
             },
         },
         {
@@ -94,7 +94,7 @@ def _pi_session_lines():
                     {"type": "image", "data": "", "mimeType": "image/png"},
                 ],
                 "isError": True,
-                "timestamp": 1755856806000,
+                "timestamp": 1787392806000,
             },
         },
         {
@@ -116,7 +116,7 @@ def _pi_session_lines():
                 "usage": {"input": 200, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                 "stopReason": "error",
                 "errorMessage": "429 quota exhausted",
-                "timestamp": 1755856809000,
+                "timestamp": 1787392809000,
             },
         },
     ]
@@ -227,6 +227,55 @@ class SubcommandsOnPiSessionTest(unittest.TestCase):
         lines = [line for line in _pi_session_lines() if line["type"] != "session_info"]
         path = _write(self.tmp.name, "code-2026-08-22T11-00-00-000Z_def.jsonl", lines)
         self.assertEqual(at._accumulate_stats(path)["agent"], "code")
+        # Hyphenated agent label, and the Go-side shape without millis/Z.
+        path = _write(self.tmp.name, "code-review-2026-08-22T11-00-00_def.jsonl", lines)
+        self.assertEqual(at._accumulate_stats(path)["agent"], "code-review")
+        # A Claude-style name never matches the pi pattern.
+        self.assertIsNone(at._PI_SESSION_FILENAME.match("triage-0c1f2e3d-4a5b.jsonl"))
+
+    def test_aborted_without_error_message(self):
+        lines = _pi_session_lines()[:4] + [
+            {
+                "type": "message",
+                "id": "m9",
+                "parentId": "m1",
+                "timestamp": "2026-08-22T10:00:02.000Z",
+                "message": {"role": "assistant", "content": [], "stopReason": "aborted"},
+            }
+        ]
+        path = _write(self.tmp.name, "triage-2026-08-22T10-00-00_x.jsonl", lines)
+        _, msg = at.normalize_pi_message(lines[-1])
+        ((_, block),) = at.extract_content_blocks(msg)
+        self.assertEqual(block["text"], "Model error (stopReason=aborted)")
+        out = _run(at.cmd_errors, file=path)
+        self.assertIn("ERROR: Model error (stopReason=aborted)", out)
+
+    def test_model_error_is_not_also_a_keyword_mention(self):
+        lines = _pi_session_lines()[:4] + [
+            {
+                "type": "message",
+                "id": "m9",
+                "parentId": "m1",
+                "timestamp": "2026-08-22T10:00:02.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [],
+                    "stopReason": "error",
+                    "errorMessage": "API Error: 529 overloaded",
+                },
+            }
+        ]
+        path = _write(self.tmp.name, "triage-2026-08-22T10-00-00_y.jsonl", lines)
+        errors, mentions = at._collect_errors(path, 0)
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(mentions, [])
+
+    def test_duration_from_unix_ms_entry_timestamps(self):
+        lines = _pi_session_lines()
+        for line in lines:
+            line["timestamp"] = int(at._parse_timestamp(line["timestamp"]).timestamp() * 1000)
+        path = _write(self.tmp.name, "triage-2026-08-22T10-00-00_z.jsonl", lines)
+        self.assertEqual(at._accumulate_stats(path)["duration_seconds"], 8.0)
 
     def test_errors_reports_tool_error_and_model_error(self):
         out = _run(at.cmd_errors, file=self.path)
