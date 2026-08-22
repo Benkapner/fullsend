@@ -1209,7 +1209,7 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 	sha := "deadbeef1234567890abcdef1234567890abcdef"
 
 	for _, sp := range scaffoldGitLabPaths {
-		content := "---\n__RUNNER_TAGS__\n"
+		content := "---\n__RUNNER_TAGS__\nVERSION=\"__FULLSEND_VERSION__\"\n"
 		if sp.outPath == ".gitlab/ci/fullsend-dispatch.yml" {
 			content = "---\n# fullsend-stage: dispatch\ntags: __RUNNER_TAGS__\n"
 		}
@@ -1229,9 +1229,17 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 		if strings.Contains(s, "__RUNNER_TAGS__") {
 			t.Errorf("%s: __RUNNER_TAGS__ was not substituted", f.Path)
 		}
+		if strings.Contains(s, "__FULLSEND_VERSION__") {
+			t.Errorf("%s: __FULLSEND_VERSION__ was not substituted", f.Path)
+		}
 		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
 			if !strings.Contains(s, "# fullsend-ref: "+sha) {
 				t.Errorf("dispatch file should contain version marker with SHA")
+			}
+		}
+		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+			if !strings.Contains(s, `VERSION="`+ref+`"`) {
+				t.Errorf("%s: should contain rendered version %q", f.Path, ref)
 			}
 		}
 	}

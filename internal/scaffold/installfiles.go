@@ -80,12 +80,14 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstreamTag string) (InstallFiles, error) {
 	tagYAML := FormatRunnerTags(runnerTags)
 	versionMarker := FormatVersionMarker(upstreamRef, upstreamTag)
+	fullsendVersion := ResolveFullsendVersion(upstreamRef, upstreamTag)
 	var files InstallFiles
 	err := WalkGitLabPerRepo(func(path string, content []byte) error {
 		if path == ".fullsend/config.yaml" || path == ".gitignore" {
 			return nil
 		}
 		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
+		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
 		// Embed a version marker in the dispatch file so that
 		// extractWorkflowRef (via glWorkflowRefPattern) can detect
 		// the installed version for status and upgrade operations.
@@ -148,6 +150,24 @@ func FormatRunnerTags(tags []string) string {
 		quoted[i] = fmt.Sprintf("%q", t)
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// ResolveFullsendVersion returns the version string for the
+// __FULLSEND_VERSION__ placeholder in GitLab CI templates. The templates'
+// before_script uses this to install the fullsend CLI at runtime: version
+// tags (v0.42.0) trigger a pre-built binary download from GitHub Releases;
+// commit SHAs trigger a clone-and-build from source. Dev builds (both
+// inputs empty) return "latest" so the before_script resolves the newest
+// release — the before_script always installs the pinned version,
+// overwriting any default binary in the runner image.
+func ResolveFullsendVersion(upstreamRef, upstreamTag string) string {
+	if upstreamTag != "" {
+		return upstreamTag
+	}
+	if upstreamRef != "" {
+		return upstreamRef
+	}
+	return "latest"
 }
 
 // ManagedPaths returns embed-derived scaffold paths for analyze/sync.

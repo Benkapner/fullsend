@@ -3918,9 +3918,9 @@ func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.Agent
 // (identified by commitSHA being set by GoReleaser) use their own version
 // tag; all other builds use the main branch.
 func resolveAgentsRef() (displayRef, gitRef string) {
-	if commitSHA != "" && commitSHA != "dev" {
-		v := strings.TrimPrefix(version, "v")
-		return "v" + v, "tags/v" + v
+	_, tag := resolveBuildVersion()
+	if tag != "" {
+		return tag, "tags/" + tag
 	}
 	return "main", "heads/main"
 }

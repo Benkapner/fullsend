@@ -264,6 +264,22 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// RUNNER_TEMP must be exported with /tmp fallback so harness host_files
 	// paths that reference ${RUNNER_TEMP} resolve on GitLab CI (#6460).
 	assert.Contains(t, s, `export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"`)
+	// Runtime CLI install via before_script (#6445)
+	assert.Contains(t, s, "before_script:")
+	// CI_DEBUG_TRACE guard must be in before_script, before token-bearing commands
+	assert.Contains(t, s, "CI_DEBUG_TRACE")
+	assert.Contains(t, s, "__FULLSEND_VERSION__")
+	assert.Contains(t, s, "fullsend-ai/fullsend")
+	assert.Contains(t, s, "fullsend --version")
+	// Release path downloads pre-built binary with checksum verification
+	assert.Contains(t, s, "github.com/${FULLSEND_REPO}/releases/download")
+	assert.Contains(t, s, "checksums.txt")
+	assert.Contains(t, s, "sha256sum -c")
+	// Source-build path clones and builds from source (direct go build, no make)
+	assert.Contains(t, s, "go build")
+	assert.Contains(t, s, "./cmd/fullsend/")
+	// "latest" resolution via GitHub API
+	assert.Contains(t, s, "releases/latest")
 }
 
 func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
@@ -422,6 +438,14 @@ func TestGitLabPollContent(t *testing.T) {
 	// No dotenv gating
 	assert.NotContains(t, s, "dispatch.env")
 	assert.NotContains(t, s, "HAS_DISPATCHES")
+	// Runtime CLI install via before_script (#6445)
+	assert.Contains(t, s, "before_script:")
+	assert.Contains(t, s, "__FULLSEND_VERSION__")
+	assert.Contains(t, s, "fullsend-ai/fullsend")
+	assert.Contains(t, s, "fullsend --version")
+	assert.Contains(t, s, "checksums.txt")
+	assert.Contains(t, s, "sha256sum -c")
+	assert.Contains(t, s, "releases/latest")
 }
 
 func TestGitLabRootPipelineContent(t *testing.T) {
@@ -575,6 +599,59 @@ func TestFormatVersionMarker(t *testing.T) {
 	assert.Equal(t, "# fullsend-ref: v0.34.0", FormatVersionMarker("", "v0.34.0"))
 	assert.Equal(t, "# fullsend-ref: abc123 (v0.35.0)", FormatVersionMarker("abc123", "v0.35.0"))
 	assert.Equal(t, "# fullsend-ref: abc123", FormatVersionMarker("abc123", "abc123"))
+}
+
+func TestResolveFullsendVersion(t *testing.T) {
+	assert.Equal(t, "latest", ResolveFullsendVersion("", ""))
+	assert.Equal(t, "v0.42.0", ResolveFullsendVersion("abc123", "v0.42.0"))
+	assert.Equal(t, "v0.42.0", ResolveFullsendVersion("", "v0.42.0"))
+	assert.Equal(t, "abc123", ResolveFullsendVersion("abc123", ""))
+}
+
+func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.42.0")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		s := string(f.Content)
+		assert.NotContains(t, s, "__FULLSEND_VERSION__",
+			"%s should have __FULLSEND_VERSION__ replaced", f.Path)
+	}
+
+	// Agent and poll templates should contain the rendered version
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+			s := string(f.Content)
+			assert.Contains(t, s, `FULLSEND_VERSION="v0.42.0"`,
+				"%s should contain the rendered version tag", f.Path)
+		}
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_SHAFallbackWhenNoTag(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+			s := string(f.Content)
+			assert.Contains(t, s, `FULLSEND_VERSION="abc123def"`,
+				"%s should contain the SHA when no tag is available", f.Path)
+		}
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_LatestWhenNoVersion(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+			s := string(f.Content)
+			assert.Contains(t, s, `FULLSEND_VERSION="latest"`,
+				"%s should fall back to latest when no ref/tag provided", f.Path)
+		}
+	}
 }
 
 func TestInsertAfterDocStart(t *testing.T) {
