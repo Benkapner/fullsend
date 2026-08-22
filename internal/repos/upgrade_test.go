@@ -1885,7 +1885,10 @@ func TestUpgrade_GitLabConvergesAllTemplateFiles(t *testing.T) {
 		t.Fatalf("expected upgrade, got %+v", results)
 	}
 
-	// Verify all expected files are committed.
+	// Verify exactly 3 files are committed (dispatch + agent + poll).
+	if len(committedFiles) != 3 {
+		t.Fatalf("expected exactly 3 committed files (dispatch + agent + poll), got %d", len(committedFiles))
+	}
 	paths := make(map[string]string)
 	for _, f := range committedFiles {
 		paths[f.Path] = string(f.Content)
@@ -1898,6 +1901,10 @@ func TestUpgrade_GitLabConvergesAllTemplateFiles(t *testing.T) {
 		if _, ok := paths[expected]; !ok {
 			t.Errorf("expected %s in committed files", expected)
 		}
+	}
+	// Root pipeline file must NOT be included — users may customize it.
+	if _, ok := paths[".gitlab-ci.yml"]; ok {
+		t.Error(".gitlab-ci.yml should not be included in upgrade commit")
 	}
 
 	// Verify runner tags are rendered in template files.
