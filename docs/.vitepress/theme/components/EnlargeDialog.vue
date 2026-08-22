@@ -125,6 +125,20 @@ button.enlargeable__hint:focus-visible {
   margin: 0;
 }
 
+/* Code blocks keep VitePress's own top-right copy button (12px from the
+   edge, 40px wide) and language label; the pill sits to their left. */
+.enlargeable--code > .enlargeable__hint--code {
+  top: 12px;
+  right: 60px;
+  z-index: 3;
+}
+
+/* The language label hides on hover in the default theme; keep our pill
+   from colliding with it when it is shown. */
+.enlargeable--code:hover > span.lang {
+  opacity: 0;
+}
+
 /* --- the dialog --- */
 .enlarge-dialog {
   width: min(96vw, 1800px);
@@ -216,6 +230,16 @@ button.enlargeable__hint:focus-visible {
 .enlarge-dialog__pane th {
   background: var(--vp-c-bg-soft);
   text-align: left;
+}
+
+/* Code blocks: the clone keeps the theme's highlighting (the dialog lives
+   inside .vp-doc); drop the margins and the copied-in controls. */
+.enlarge-dialog__pane div[class*='language-'] {
+  margin: 0;
+}
+
+.enlarge-dialog__pane div[class*='language-'] > button.copy {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
