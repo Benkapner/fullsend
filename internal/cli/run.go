@@ -265,7 +265,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&envFiles, "env-file", nil, "load environment variables from a dotenv file (repeatable)")
 	cmd.Flags().BoolVar(&noPostScript, "no-post-script", false, "skip post-script execution (agent still runs full inference)")
 	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox and download directory deletion after the run (useful for post-failure inspection)")
-	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable Claude Code debug logging with optional category filter (e.g. "api,hooks")`)
+	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable agent runtime debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
@@ -1181,33 +1181,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	repoName := filepath.Base(hostRepositoryDir)
 	remoteRepositoryDir := fmt.Sprintf("%s/%s", sandbox.SandboxWorkspace, repoName)
 
-	// 6. Start runtime fetch service (Phase 4, ADR-0038).
-	var fetchEnvVal fetchServiceEnv
-	startFetch, deprecationWarning := shouldStartFetchService(h)
-	if deprecationWarning != "" {
-		printer.StepWarn(deprecationWarning)
-	}
-	if startFetch {
-		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveToken, fetchsvc.ServiceConfig{
-			Harness:       h,
-			FetchPolicy:   fetch.DefaultPolicy,
-			WorkspaceRoot: absFullsendDir,
-			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-			TraceID:       securityTraceID,
-			SandboxName:   sandboxName,
-			MaxFetches:    h.EffectiveMaxRuntimeFetches(),
-			Uploader:      &fetchsvc.SandboxUploader{},
-			SkillDestDir:  sandbox.SandboxClaudeConfig + "/skills",
-		}, printer.StepWarn)
-		if fetchErr != nil {
-			printer.StepWarn("Runtime fetch service failed to start: " + fetchErr.Error())
-		} else {
-			defer fetchShutdown()
-			fetchEnvVal = env
-		}
-	}
-
-	// 7. Bootstrap sandbox.
+	// 5b. Resolve the agent runtime. Done before the fetch service starts so
+	// runtime-owned paths (skill destination) come from the runtime, not from
+	// Claude-specific constants.
 	var backend agentruntime.Backend
 	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
 	backend, configSource, backendErr := backendFromConfigFile(orgConfigPath)
@@ -1225,6 +1201,34 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
 	rt := backend.Runtime
 	tx := backend.Transcripts
+
+	// 6. Start runtime fetch service (Phase 4, ADR-0038).
+	var fetchEnvVal fetchServiceEnv
+	startFetch, deprecationWarning := shouldStartFetchService(h)
+	if deprecationWarning != "" {
+		printer.StepWarn(deprecationWarning)
+	}
+	if startFetch {
+		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveToken, fetchsvc.ServiceConfig{
+			Harness:       h,
+			FetchPolicy:   fetch.DefaultPolicy,
+			WorkspaceRoot: absFullsendDir,
+			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+			TraceID:       securityTraceID,
+			SandboxName:   sandboxName,
+			MaxFetches:    h.EffectiveMaxRuntimeFetches(),
+			Uploader:      &fetchsvc.SandboxUploader{},
+			SkillDestDir:  rt.ConfigDir() + "/skills",
+		}, printer.StepWarn)
+		if fetchErr != nil {
+			printer.StepWarn("Runtime fetch service failed to start: " + fetchErr.Error())
+		} else {
+			defer fetchShutdown()
+			fetchEnvVal = env
+		}
+	}
+
+	// 7. Bootstrap sandbox.
 	bootstrapStart := time.Now()
 	printer.StepStart("Bootstrapping sandbox")
 	boot := newHarnessBootstrap(h, sandboxName, agentName)
@@ -1292,12 +1296,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// 8a.1. Inject a minimal CLAUDE.md pointer when running Claude Code
-	// against repos that have AGENTS.md but no CLAUDE.md. Claude Code
-	// auto-loads CLAUDE.md into its system context but does not read
-	// AGENTS.md by default. Without this bridge file, agents are
-	// effectively context-blind in repos that only have AGENTS.md.
-	if rt.Name() == "claude" && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
+	// 8a.1. Inject a minimal CLAUDE.md pointer when the runtime only
+	// auto-loads CLAUDE.md (not AGENTS.md) into its system context — e.g.
+	// Claude Code — against repos that have AGENTS.md but no CLAUDE.md.
+	// Without this bridge file, agents are effectively context-blind in
+	// repos that only have AGENTS.md. Runtimes opt in via ContextBridger.
+	if agentruntime.WantsClaudeMDBridge(rt) && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
 		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
 	}
 
@@ -1514,17 +1518,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		var metrics agentruntime.RunMetrics
+		hooksSettings := ""
+		if h.SecurityEnabled() {
+			hooksSettings = security.SandboxHooksSettings
+		}
 		exitCode, runErr := rt.Run(agentCtx, agentruntime.RunParams{
-			SandboxName:   sandboxName,
-			AgentBaseName: agentBaseName,
-			Model:         h.Model,
-			Effort:        h.Effort,
-			RepoDir:       remoteRepositoryDir,
-			FullsendDir:   absFullsendDir,
-			PluginDirs:    pluginDirs,
-			Debug:         debug,
-			Timeout:       timeout,
-			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
+			SandboxName:       sandboxName,
+			AgentBaseName:     agentBaseName,
+			Model:             h.Model,
+			Effort:            h.Effort,
+			RepoDir:           remoteRepositoryDir,
+			FullsendDir:       absFullsendDir,
+			PluginDirs:        pluginDirs,
+			Debug:             debug,
+			HooksSettingsPath: hooksSettings,
+			Timeout:           timeout,
+			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
@@ -1606,11 +1615,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// Extract debug log if --debug was enabled.
 		if debug != "" {
-			debugDst := filepath.Join(iterDir, "claude-debug.log")
+			debugLogName := agentruntime.DebugLogNameFor(rt, tx)
+			debugDst := filepath.Join(iterDir, debugLogName)
 			if err := tx.ExtractDebugLog(sandboxName, debugDst, debug); err != nil {
 				printer.StepWarn("Failed to extract debug log: " + err.Error())
 			} else {
-				printer.StepInfo("Extracted claude-debug.log")
+				printer.StepInfo("Extracted " + debugLogName)
 			}
 		}
 
@@ -1787,8 +1797,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
-	// Runner-level dirs only; Claude hook scripts live under workspace/.claude/
-	// and are created in installClaudeHooks when ClaudeHooksBootstrap is present.
+	// Runner-level dirs only; sandbox hook scripts are installed by the runtime
+	// (Claude: claude-config/hooks/ via installClaudeHooks) when the bootstrap
+	// input implements SandboxHooksBootstrap.
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/bin %s/.env.d %s/.security",
 		sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
 	if _, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); err != nil {
@@ -3907,9 +3918,9 @@ func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.Agent
 // (identified by commitSHA being set by GoReleaser) use their own version
 // tag; all other builds use the main branch.
 func resolveAgentsRef() (displayRef, gitRef string) {
-	if commitSHA != "" && commitSHA != "dev" {
-		v := strings.TrimPrefix(version, "v")
-		return "v" + v, "tags/v" + v
+	_, tag := resolveBuildVersion()
+	if tag != "" {
+		return tag, "tags/" + tag
 	}
 	return "main", "heads/main"
 }
