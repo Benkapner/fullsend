@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -585,4 +586,503 @@ func TestParsePiStream_ResultSummaryTruncated(t *testing.T) {
 	require.Len(t, tools, 1)
 	assert.LessOrEqual(t, len(tools[0].Summary), piSummaryMax)
 	assert.NotContains(t, tools[0].Summary, strings.Repeat("x", piSummaryMax+1))
+}
+
+func TestParsePiStream_SecretStraddlesSummaryCap(t *testing.T) {
+	t.Parallel()
+
+	// The token starts 20 bytes before the cap. Truncating before redacting
+	// would hand the redactor a fragment too short to match its pattern and
+	// emit "ghp_" + 20 real characters.
+	token := "ghp_" + strings.Repeat("A", 40)
+	body := strings.Repeat("x", piSummaryMax-len("ghp_")-20) + token + " trailing"
+
+	cases := map[string]string{
+		"string":  fmt.Sprintf("%q", body),
+		"content": fmt.Sprintf(`{"content":[{"type":"text","text":%q}]}`, body),
+		"raw":     fmt.Sprintf(`{"blob":%q}`, body),
+	}
+	for name, result := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			input := fmt.Sprintf(
+				`{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":%s,"isError":false}`+"\n"+
+					`{"type":"agent_end","messages":[],"willRetry":false}`+"\n",
+				result,
+			)
+			var tools []ToolUseEvent
+			_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+				if e, ok := evt.(ToolUseEvent); ok {
+					tools = append(tools, e)
+				}
+			})
+			require.NoError(t, err)
+			require.Len(t, tools, 1)
+			assert.LessOrEqual(t, len(tools[0].Summary), piSummaryMax)
+			assert.NotContains(t, tools[0].Summary, "ghp_A",
+				"partial token must not survive the summary cap")
+		})
+	}
+}
+
+func TestPiTruncate_RuneBoundary(t *testing.T) {
+	t.Parallel()
+
+	prefix := strings.Repeat("x", piSummaryMax-1)
+	out := piTruncate(prefix+"日本", piSummaryMax)
+	assert.True(t, utf8.ValidString(out))
+	assert.Equal(t, prefix, out, "cut must step back to the rune boundary")
+
+	assert.Equal(t, "ab", piTruncate("ab", 2))
+	assert.Equal(t, "日", piTruncate("日本", 3))
+	assert.Equal(t, "", piTruncate("日", 1))
+
+	// Already-invalid input (a run of continuation bytes) has no boundary to
+	// find; the walk-back is bounded so the cap, not an empty string, wins.
+	junk := strings.Repeat("\x80", 8)
+	assert.Equal(t, junk[:4], piTruncate(junk, 4))
+}
+
+func TestParsePiStream_RetryCheckpointErrorFromAgentEndOnly(t *testing.T) {
+	t.Parallel()
+
+	// The checkpoint's own messages[] is the only source of the error when
+	// no message_end preceded it.
+	input := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"model overloaded"}],"willRetry":true}` + "\n"
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError)
+	assert.Equal(t, "error", results[0].Subtype)
+	assert.Equal(t, "model overloaded", results[0].ErrorMessage)
+}
+
+func TestParsePiStream_AgentSettledReleasesResultOnce(t *testing.T) {
+	t.Parallel()
+
+	// agent_settled is the end-of-prompt marker; the result built at
+	// agent_end is settled there and emitted exactly once at EOF, so
+	// trailing lines after it do not produce a second ResultEvent.
+	input := `{"type":"session","version":3,"id":"ses_settled","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"stop"}],"willRetry":false}
+{"type":"agent_settled"}
+{"type":"queue_update","steering":[],"followUp":[]}
+`
+	var events []AgentEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	require.NoError(t, err)
+	var results []ResultEvent
+	for _, evt := range events {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	}
+	require.Len(t, results, 1)
+	assert.False(t, results[0].IsError)
+	assert.Equal(t, "stop", results[0].Subtype)
+	_, last := events[len(events)-1].(ResultEvent)
+	assert.True(t, last, "ResultEvent is released at agent_settled, after TokensEvent")
+}
+
+func TestParsePiStream_CompactionContinuesRun(t *testing.T) {
+	t.Parallel()
+
+	// Context overflow: pi emits agent_end{willRetry:false} (overflow is not
+	// a retryable error), then compacts and continues the same prompt via a
+	// fresh agent_start. Only the settled run may produce a ResultEvent, and
+	// it must not inherit the overflow attempt's sticky error.
+	input := `{"type":"session","version":3,"id":"ses_compact","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":100000,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.30}},"stopReason":"error","errorMessage":"context window exceeded"}}
+{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"context window exceeded"}],"willRetry":false}
+{"type":"compaction_start","reason":"overflow"}
+{"type":"compaction_end","reason":"overflow","result":{},"aborted":false,"willRetry":true}
+{"type":"agent_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"done"}}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":2000,"output":50,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.02}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"stop"}],"willRetry":false}
+{"type":"agent_settled"}
+`
+	var results []ResultEvent
+	var errs []ErrorEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		switch e := evt.(type) {
+		case ResultEvent:
+			results = append(results, e)
+		case ErrorEvent:
+			errs = append(errs, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, errs, 1, "overflow attempt still surfaces an ErrorEvent")
+	require.Len(t, results, 1, "continued run must not emit two ResultEvents")
+	assert.False(t, results[0].IsError)
+	assert.Empty(t, results[0].ErrorMessage)
+	assert.Equal(t, "stop", results[0].Subtype)
+	assert.Equal(t, 2, results[0].NumTurns)
+	assert.InDelta(t, 0.32, results[0].TotalCostUSD, 0.001)
+}
+
+func TestParsePiStream_ContinuedRunThenEOF(t *testing.T) {
+	t.Parallel()
+
+	// The run continued after agent_end but died before producing anything:
+	// the discarded result must not leak out, and the overflow reason is
+	// carried into the incomplete-stream fallback.
+	input := `{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":100000,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.30}},"stopReason":"error","errorMessage":"context window exceeded"}}
+{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"context window exceeded"}],"willRetry":false}
+{"type":"compaction_start","reason":"overflow"}
+{"type":"compaction_end","reason":"overflow","result":{},"aborted":false,"willRetry":true}
+{"type":"agent_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"retrying"}}
+`
+	var events []AgentEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	require.NoError(t, err)
+	var results []ResultEvent
+	for _, evt := range events {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	}
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError)
+	assert.Equal(t, "error", results[0].Subtype)
+	assert.Equal(t, "context window exceeded", results[0].ErrorMessage)
+	_, last := events[len(events)-1].(ResultEvent)
+	assert.True(t, last, "ResultEvent must come from the EOF fallback, after the continued run's TextEvent")
+}
+
+func TestParsePiStream_CompactionWithoutRetryThenSettled(t *testing.T) {
+	t.Parallel()
+
+	// Threshold/overflow compaction after a clean stop does not re-run the
+	// turn: the parked result stands and is emitted at EOF.
+	input := `{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"stop"}],"willRetry":false}
+{"type":"compaction_start","reason":"threshold"}
+{"type":"compaction_end","reason":"threshold","result":{},"aborted":false,"willRetry":false}
+{"type":"agent_settled"}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.False(t, results[0].IsError)
+	assert.Equal(t, "stop", results[0].Subtype)
+}
+
+func TestParsePiStream_DiedDuringCompactionIsIncomplete(t *testing.T) {
+	t.Parallel()
+
+	// A recoverable "length" stop is compact-and-retried by pi. If the
+	// stream dies inside the compaction window the parked result (which
+	// would read as a clean length stop) must not be reported as finished.
+	input := `{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"length"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"length"}],"willRetry":false}
+{"type":"compaction_start","reason":"overflow"}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError)
+	assert.Equal(t, "incomplete", results[0].Subtype)
+}
+
+func TestParsePiStream_ReadErrorStillEmitsResult(t *testing.T) {
+	t.Parallel()
+
+	run := `{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}` + "\n" +
+		`{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"stop"}],"willRetry":false}` + "\n"
+
+	// A lost stream (read error, not EOF) is not evidence that pi finished:
+	// an unsettled result is reported incomplete, a settled one stands.
+	cases := map[string]struct {
+		input   string
+		isError bool
+		subtype string
+	}{
+		"before settled": {run, true, "incomplete"},
+		"after settled":  {run + `{"type":"agent_settled"}` + "\n", false, "stop"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := io.MultiReader(
+				strings.NewReader(tc.input),
+				iotest.ErrReader(errors.New("pipe broken")),
+			)
+			var results []ResultEvent
+			_, err := parsePiStream(r, func(evt AgentEvent) {
+				if e, ok := evt.(ResultEvent); ok {
+					results = append(results, e)
+				}
+			})
+			require.Error(t, err)
+			require.Len(t, results, 1, "a read error must still yield the stream's ResultEvent")
+			assert.Equal(t, tc.isError, results[0].IsError)
+			assert.Equal(t, tc.subtype, results[0].Subtype)
+			assert.Equal(t, 1, results[0].NumTurns)
+		})
+	}
+}
+
+func TestParsePiStream_QueuedFollowUpContinuesRun(t *testing.T) {
+	t.Parallel()
+
+	// A follow-up queued by an agent_end extension handler continues the
+	// prompt with a bare agent_start (no compaction events). The first
+	// agent_end's result is discarded; the settled continuation is reported.
+	input := `{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"error","errorMessage":"transient"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"error","errorMessage":"transient"}],"willRetry":false}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"stop"}],"willRetry":false}
+{"type":"agent_settled"}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.False(t, results[0].IsError)
+	assert.Equal(t, "stop", results[0].Subtype)
+	assert.Equal(t, 2, results[0].NumTurns)
+}
+
+func TestParsePiStream_MalformedCompactionEndDoesNotPoisonRun(t *testing.T) {
+	t.Parallel()
+
+	input := `{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"stop"}],"willRetry":false}
+{"type":"compaction_start","reason":"threshold"}
+{"type":"compaction_end","willRetry":"not-a-bool"}
+{"type":"agent_settled"}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.False(t, results[0].IsError, "an unparseable compaction_end must not leave the run marked as compacting")
+}
+
+func TestParsePiStream_MultiPromptLastRunWins(t *testing.T) {
+	t.Parallel()
+
+	// pi runs one prompt per positional message, each ending in
+	// agent_settled. The stream yields a single ResultEvent covering all
+	// runs; a failure in any run is sticky.
+	run := func(stop, errMsg string) string {
+		return `{"type":"agent_start"}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"` + stop + `","errorMessage":"` + errMsg + `"}}` + "\n" +
+			`{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"` + stop + `","errorMessage":"` + errMsg + `"}],"willRetry":false}` + "\n" +
+			`{"type":"agent_settled"}` + "\n"
+	}
+	cases := map[string]struct {
+		input   string
+		isError bool
+	}{
+		"second fails": {run("stop", "") + run("error", "quota exhausted"), true},
+		"first fails":  {run("error", "quota exhausted") + run("stop", ""), true},
+		"both succeed": {run("stop", "") + run("stop", ""), false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var results []ResultEvent
+			_, err := parsePiStream(strings.NewReader(tc.input), func(evt AgentEvent) {
+				if e, ok := evt.(ResultEvent); ok {
+					results = append(results, e)
+				}
+			})
+			require.NoError(t, err)
+			require.Len(t, results, 1)
+			assert.Equal(t, tc.isError, results[0].IsError)
+			assert.Equal(t, 2, results[0].NumTurns)
+			if tc.isError {
+				assert.Equal(t, "quota exhausted", results[0].ErrorMessage)
+			}
+		})
+	}
+}
+
+func TestParsePiStream_EarlierPromptFailureSurvivesLaterRetry(t *testing.T) {
+	t.Parallel()
+
+	// Prompt 1 fails; prompt 2 hits a retryable error, retries (a checkpoint
+	// resets the per-run error state) and recovers. The earlier failure
+	// must still make the single result an error.
+	input := `{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"error","errorMessage":"quota exhausted"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"error","errorMessage":"quota exhausted"}],"willRetry":false}
+{"type":"agent_settled"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"error","errorMessage":"overloaded"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"error","errorMessage":"overloaded"}],"willRetry":true}
+{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":1000,"errorMessage":"overloaded"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"stop"}],"willRetry":false}
+{"type":"agent_settled"}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError, "prompt 1 failure must survive prompt 2's retry checkpoint")
+	assert.Equal(t, "quota exhausted", results[0].ErrorMessage)
+	assert.Equal(t, 3, results[0].NumTurns)
+}
+
+func TestParsePiStream_SecondPromptDiesBeforeAgentEnd(t *testing.T) {
+	t.Parallel()
+
+	input := `{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"stop"}],"willRetry":false}
+{"type":"agent_settled"}
+{"type":"agent_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"second"}}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError, "the settled first prompt must not mask an incomplete second prompt")
+	assert.Equal(t, "incomplete", results[0].Subtype)
+}
+
+func TestParsePiStream_AutoRetryStartEmitsRetryEvent(t *testing.T) {
+	t.Parallel()
+
+	ghToken := "ghp_" + strings.Repeat("x", 40)
+	input := fmt.Sprintf(`{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"error","errorMessage":"overloaded"}}
+{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"overloaded"}],"willRetry":true}
+{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":2000,"errorMessage":"overloaded (token %s)"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":12,"output":6,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.02}},"stopReason":"stop"}}
+{"type":"auto_retry_end","success":true,"attempt":1}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"stop"}],"willRetry":false}
+{"type":"agent_settled"}
+`, ghToken)
+	var retries []RetryEvent
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		switch e := evt.(type) {
+		case RetryEvent:
+			retries = append(retries, e)
+		case ResultEvent:
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, retries, 1)
+	assert.Equal(t, 1, retries[0].Attempt)
+	assert.Equal(t, 3, retries[0].MaxRetries)
+	assert.Equal(t, 2000, retries[0].DelayMs)
+	assert.Contains(t, retries[0].Error, "overloaded")
+	assert.NotContains(t, retries[0].Error, ghToken, "retry error text is redacted")
+	require.Len(t, results, 1)
+	assert.False(t, results[0].IsError)
+}
+
+func TestParsePiStream_RetryCheckpointThenEOF(t *testing.T) {
+	t.Parallel()
+
+	// Stream dies right after a willRetry checkpoint: the result must still
+	// be an error and must carry the reason the runtime was retrying.
+	input := `{"type":"session","version":3,"id":"ses_ckpt","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"error","errorMessage":"model overloaded"}}
+{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"model overloaded"}],"willRetry":true}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError)
+	assert.Equal(t, "error", results[0].Subtype)
+	assert.Equal(t, "model overloaded", results[0].ErrorMessage)
+	assert.Equal(t, 1, results[0].NumTurns)
+}
+
+func TestParsePiStream_RetryCheckpointSupersededThenEOF(t *testing.T) {
+	t.Parallel()
+
+	// Once any assistant message arrives after the checkpoint, the EOF
+	// fallback reports that live state (here: a clean "stop" that never got
+	// its agent_end → incomplete) rather than the parked checkpoint error.
+	input := `{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"error","errorMessage":"model overloaded"}}
+{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"model overloaded"}],"willRetry":true}
+{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":12,"output":6,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.02}},"stopReason":"stop"}}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError)
+	assert.Equal(t, "incomplete", results[0].Subtype)
+	assert.Empty(t, results[0].ErrorMessage)
+}
+
+func TestParsePiStream_LengthStopReasonIsNotError(t *testing.T) {
+	t.Parallel()
+
+	// stopReason "length" (max output tokens) is a completed run; the cutoff
+	// is surfaced via Subtype only.
+	input := `{"type":"message_end","message":{"role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"length"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"claude-sonnet-4-20250514","stopReason":"length"}],"willRetry":false}
+`
+	var results []ResultEvent
+	_, err := parsePiStream(strings.NewReader(input), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.False(t, results[0].IsError)
+	assert.Equal(t, "length", results[0].Subtype)
 }

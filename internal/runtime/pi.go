@@ -32,9 +32,11 @@ func (PiRuntime) System() string { return "pi" }
 //
 // This returns a sandbox-local placeholder until Bootstrap wires those env
 // vars. Like OpenCode's provisional ConfigDir, it currently sits inside the
-// agent-writable workspace — do not point PI_CODING_AGENT_DIR here without
-// moving it out. defaultProjectTrust: never refuses repo-owned .pi/, and an
-// in-workspace config dir would let the agent rewrite skills/settings.
+// agent-writable workspace — do not point PI_CODING_AGENT_DIR here.
+// defaultProjectTrust: never refuses repo-owned .pi/, but an in-workspace
+// config dir would still let the agent rewrite its own skills/settings, so
+// the Bootstrap PR must move this to a runner-owned path (cf.
+// sandbox.SandboxClaudeConfig) before pi is added to ValidRuntimes().
 func (PiRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.pi" }
 
 func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
