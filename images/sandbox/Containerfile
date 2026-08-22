@@ -132,7 +132,7 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
     && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
     && find node_modules -type d -empty -delete \
     && npm cache clean --force \
-    && chmod -R a-w "${PI_EXTENSIONS_DIR}"
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}"
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection
