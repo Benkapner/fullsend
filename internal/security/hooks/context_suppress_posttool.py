@@ -2,11 +2,12 @@
 """Claude Code PostToolUse hook for context suppression.
 
 Intercepts Bash tool results from verification commands (scan-secrets,
-pre-commit, go test, linters, etc.) and replaces verbose success output
-with compact one-line summaries. Failures pass through unchanged so the
-agent can act on them.
+gitleaks, pre-commit, go test, pytest, npm test, make test) and replaces
+verbose success output with compact one-line summaries. Failures pass
+through unchanged so the agent can act on them.
 
-Principle: success is silent, failure is loud.
+Principles: success is silent, failure is loud — and a summary is only ever
+built from positive evidence the tool printed, never inferred from silence.
 
 Protocol: reads JSON from stdin (``tool_response`` preferred, ``tool_result``
 fallback). Writes ``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``)
@@ -27,22 +28,26 @@ FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # --- Command pattern matchers ---
+#
+# Anchored at the start of a command segment (after any VAR=... prefix and an
+# optional runner such as ``uvx``/``npx``/``uv run``): a command that merely
+# mentions a tool (``grep -n scan-secrets hooks.py``) must not have its
+# output replaced by that tool's summary.
+#
+# Only tools whose successful run prints positive evidence are listed.
+# Silence is never condensed into "passed": a linter or ``go vet`` that prints
+# nothing because its interpreter is missing looks identical to a clean run,
+# and Claude Code's Bash result carries no exit code to tell them apart.
 
-_SCAN_SECRETS_RE = re.compile(r"\bscan-secrets\b")
-_GITLEAKS_RE = re.compile(r"\bgitleaks\s+detect\b")
-_PRECOMMIT_RE = re.compile(r"\bpre-commit\s+run\b")
-_GO_TEST_RE = re.compile(r"\bgo\s+test\b")
-_MAKE_TEST_RE = re.compile(r"\bmake\s+(?:test|check)\b")
-_NPM_TEST_RE = re.compile(r"\bnpm\s+test\b")
-_PYTEST_RE = re.compile(r"\bpytest\b")
-_GO_VET_RE = re.compile(r"\bgo\s+vet\b")
-_GO_BUILD_RE = re.compile(r"\bgo\s+build\b")
-_MAKE_LINT_RE = re.compile(r"\bmake\s+lint\b")
-_GOLANGCI_RE = re.compile(r"\bgolangci-lint\s+run\b")
-_ESLINT_RE = re.compile(r"\beslint\b")
-_RUFF_RE = re.compile(r"\bruff\s+(?:check|format)\b")
-_RUFF_FORMAT_RE = re.compile(r"\bruff\s+format\b")
-_GITLINT_RE = re.compile(r"\bgitlint\b")
+_CMD_PREFIX = r"^(?:(?:uvx|npx|bunx|time|uv\s+run|poetry\s+run|pipenv\s+run)\s+)?(?:\S*/)?"
+
+_SCAN_SECRETS_RE = re.compile(_CMD_PREFIX + r"scan-secrets\b")
+_GITLEAKS_RE = re.compile(_CMD_PREFIX + r"gitleaks\s+detect\b")
+_PRECOMMIT_RE = re.compile(_CMD_PREFIX + r"pre-commit\s+run\b")
+_GO_TEST_RE = re.compile(_CMD_PREFIX + r"go\s+test\b")
+_MAKE_TEST_RE = re.compile(_CMD_PREFIX + r"make\s+(?:test|check)\b")
+_NPM_TEST_RE = re.compile(_CMD_PREFIX + r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b")
+_PYTEST_RE = re.compile(_CMD_PREFIX + r"(?:pytest\b|python3?\s+-m\s+pytest\b)")
 
 # pre-commit output patterns
 _PRECOMMIT_HOOK_LINE_RE = re.compile(
@@ -130,8 +135,8 @@ def suppress_gitleaks(output: str) -> str | None:
 def suppress_precommit(output: str) -> str | None:
     hook_results = _PRECOMMIT_HOOK_LINE_RE.findall(output)
     if not hook_results:
-        if not output.strip():
-            return "pre-commit: passed"
+        # No per-hook lines: either nothing ran (an interpreter missing from
+        # PATH is silent) or the output is not pre-commit's. Never "passed".
         return None
 
     statuses = [status for _, status in hook_results]
@@ -207,30 +212,6 @@ def suppress_make_test(output: str) -> str | None:
     return None
 
 
-def suppress_go_vet(output: str) -> str | None:
-    if not output.strip():
-        return "go vet: clean"
-    return None
-
-
-def suppress_go_build(output: str) -> str | None:
-    if not output.strip():
-        return "go build: clean"
-    return None
-
-
-def suppress_linter(name: str, output: str) -> str | None:
-    if not output.strip():
-        return f"{name}: clean"
-    return None
-
-
-def suppress_gitlint(output: str) -> str | None:
-    if not output.strip():
-        return "gitlint: passed"
-    return None
-
-
 def reports_failure(output: str) -> bool:
     return bool(_FAILURE_LINE_RE.search(output) or _FAILURE_COUNT_RE.search(output))
 
@@ -255,14 +236,6 @@ _SUMMARIZERS = [
     (_PYTEST_RE, suppress_pytest),
     (_NPM_TEST_RE, suppress_npm_test),
     (_MAKE_TEST_RE, suppress_make_test),
-    (_GO_VET_RE, suppress_go_vet),
-    (_GO_BUILD_RE, suppress_go_build),
-    (_GOLANGCI_RE, lambda out: suppress_linter("golangci-lint", out)),
-    (_ESLINT_RE, lambda out: suppress_linter("eslint", out)),
-    (_RUFF_FORMAT_RE, lambda out: suppress_linter("ruff-format", out)),
-    (_RUFF_RE, lambda out: suppress_linter("ruff", out)),
-    (_MAKE_LINT_RE, lambda out: suppress_linter("lint", out)),
-    (_GITLINT_RE, suppress_gitlint),
 ]
 
 

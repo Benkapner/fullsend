@@ -139,10 +139,11 @@ class TestPreCommit:
         out = run_hook(make_input("pre-commit run --files foo.go bar.go", output))
         assert out is None  # mixed → passthrough
 
-    def test_empty_output(self):
+    def test_empty_output_is_not_a_pass(self):
+        # A hook whose interpreter is missing from PATH prints nothing, and
+        # Claude Code's Bash result carries no exit code: silence is not proof.
         out = run_hook(make_input("pre-commit run --files foo.go", ""))
-        assert out is not None
-        assert "passed" in out["tool_result"]
+        assert out is None
 
     def test_failure_exit_code(self):
         out = run_hook(
@@ -255,83 +256,55 @@ class TestMakeTest:
         assert out is None  # "bypass"/"password" contain "pass" but are not the word "pass"
 
 
-# --- go vet / go build ---
+# --- silence is not evidence ---
 
 
-class TestGoVetBuild:
-    def test_go_vet_clean(self):
-        out = run_hook(make_input("go vet ./...", ""))
-        assert out is not None
-        assert out["tool_result"] == "go vet: clean"
+class TestSilenceIsNotEvidence:
+    """Tools whose clean run prints nothing are never condensed: an empty
+    result already costs no context, and a silent failure (missing
+    interpreter, wrong PATH) would otherwise be reported as clean."""
 
-    def test_go_vet_with_errors(self):
-        out = run_hook(make_input("go vet ./...", "foo.go:12: unreachable code\n"))
+    def test_go_vet_and_build_pass_through(self):
+        assert run_hook(make_input("go vet ./...", "")) is None
+        assert run_hook(make_input("go build ./...", "")) is None
+        assert run_hook(make_input("go vet ./...", "foo.go:12: unreachable code\n")) is None
+
+    def test_linters_pass_through(self):
+        for cmd in (
+            "golangci-lint run ./...",
+            "eslint src/",
+            "ruff check .",
+            "ruff format --check .",
+            "make lint",
+        ):
+            assert run_hook(make_input(cmd, "")) is None, cmd
+        assert run_hook(make_input("make lint", "all checks passed\n")) is None
+
+    def test_gitlint_passes_through(self):
+        assert run_hook(make_input("gitlint --commit HEAD", "")) is None
+        assert (
+            run_hook(make_input("gitlint --commit HEAD", "1: T1 Title exceeds max length\n"))
+            is None
+        )
+
+
+# --- mention is not invocation ---
+
+
+class TestMentionIsNotInvocation:
+    def test_grep_for_a_tool_name_keeps_its_hits(self):
+        out = run_hook(make_input("grep -n scan-secrets hooks.py", "12: scan-secrets\n"))
         assert out is None
 
-    def test_go_build_clean(self):
-        out = run_hook(make_input("go build ./...", ""))
-        assert out is not None
-        assert out["tool_result"] == "go build: clean"
+    def test_runner_prefixes_still_dispatch(self):
+        import context_suppress_posttool as cs
 
-    def test_go_build_with_errors(self):
-        out = run_hook(make_input("go build ./...", "foo.go:5:3: undefined: bar\n"))
-        assert out is None
-
-
-# --- linters ---
-
-
-class TestLinters:
-    def test_golangci_lint_clean(self):
-        out = run_hook(make_input("golangci-lint run ./...", ""))
-        assert out is not None
-        assert "golangci-lint: clean" in out["tool_result"]
-
-    def test_golangci_lint_errors(self):
-        out = run_hook(make_input("golangci-lint run", "foo.go:5: error: unused\n"))
-        assert out is None
-
-    def test_eslint_clean(self):
-        out = run_hook(make_input("eslint src/", ""))
-        assert out is not None
-        assert "eslint: clean" in out["tool_result"]
-
-    def test_ruff_check_clean(self):
-        out = run_hook(make_input("ruff check .", ""))
-        assert out is not None
-        assert "ruff: clean" in out["tool_result"]
-
-    def test_ruff_format_clean(self):
-        out = run_hook(make_input("ruff format --check .", ""))
-        assert out is not None
-        assert "ruff-format: clean" in out["tool_result"]
-
-    def test_make_lint_clean(self):
-        out = run_hook(make_input("make lint", ""))
-        assert out is not None
-        assert "lint: clean" in out["tool_result"]
-
-    def test_make_lint_nonempty_passthrough(self):
-        out = run_hook(make_input("make lint", "all checks passed\n"))
-        assert out is None
-
-    def test_make_lint_failure(self):
-        out = run_hook(make_input("make lint", "golangci-lint: error in foo.go\n"))
-        assert out is None
-
-
-# --- gitlint ---
-
-
-class TestGitlint:
-    def test_pass(self):
-        out = run_hook(make_input("gitlint --commit HEAD", ""))
-        assert out is not None
-        assert out["tool_result"] == "gitlint: passed"
-
-    def test_failure(self):
-        out = run_hook(make_input("gitlint --commit HEAD", "1: T1 Title exceeds max length\n"))
-        assert out is None
+        assert cs.select_summarizer("uvx pytest -q") is cs.suppress_pytest
+        assert cs.select_summarizer("python3 -m pytest") is cs.suppress_pytest
+        assert cs.select_summarizer("./bin/go test ./...") is cs.suppress_go_test
+        assert cs.select_summarizer("pnpm run test") is cs.suppress_npm_test
+        assert cs.select_summarizer("echo go test ./...") is None
+        assert cs.select_summarizer("cat go-test.log") is None
 
 
 # --- passthrough cases ---
