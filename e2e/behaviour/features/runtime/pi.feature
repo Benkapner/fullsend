@@ -34,14 +34,14 @@ Feature: pi runtime runs an agent unattended
       ---
       name: pi-smoke
       description: Behaviour smoke agent for the pi runtime.
-      tools: Bash(mkdir,ls), Write
+      tools: Bash(ls), Write
       ---
       You are an unattended smoke-test agent. Do exactly the following, in
       order, then stop. Do not ask questions, do not explain, do not read or
       modify any other file.
 
-      1. Using the bash tool, run: mkdir -p /sandbox/workspace/output && ls /sandbox/workspace/repo
-      2. Using the write tool, create /sandbox/workspace/output/agent-result.json
+      1. Using the bash tool, run: ls .
+      2. Using the write tool, create the file /sandbox/workspace/output/agent-result.json
          with exactly this content and nothing else:
 
       {{fixture:fixtures/triage/sufficient.json}}
