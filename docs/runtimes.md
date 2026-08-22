@@ -2,6 +2,32 @@
 
 Fullsend's `fullsend run` command delegates in-sandbox agent execution to a pluggable **runtime**. Recognized values in org `config.yaml` `defaults.runtime` (and per-repo `runtime`) are **`claude`** (production default), **`pi`** (opt-in, #6464) and **`dummy`** (behaviour tests only). Select it per repo with `fullsend github setup <owner/repo> --runtime pi` or by setting `runtime: pi` in the repo's `.fullsend/config.yaml` (org-level: `defaults.runtime: pi`; `fullsend admin install --runtime` also accepts it for org installs) — no per-repo workflow change is needed, but the harness `image:` must be a sandbox build that includes `PI_VERSION` (the digest pinned in fullsend-ai/agents `harness/*.yaml` has to be bumped to such a build first; an older image has no `pi` binary and the run fails at the preflight). The runner resolves the backend via `runtime.ResolveFromConfig()` after loading the org config and prints `runtime: selected "<name>" from <source>` at the start of every run.
 
+## How a run uses the runtime
+
+Every runtime is driven the same way. The runner owns the sandbox, credentials and verdict; the runtime owns what happens between "start" and "event stream". Where pi and Claude Code differ is noted inline.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant R as fullsend run (runner host)
+  participant S as OpenShell sandbox
+  participant A as agent runtime (claude | pi)
+  participant M as model (Vertex AI)
+  R->>R: resolve runtime from .fullsend/config.yaml
+  R->>S: Bootstrap — agent definition, skills, hook scripts + wiring, runtime settings
+  R->>S: upload .env, host files, OIDC token (refreshed every 4 min)
+  R->>S: Run — one command per iteration
+  S->>A: start (claude: hooks via --settings · pi: hash-checked adapter or exit 97)
+  loop tool-use loop
+    A->>M: request over WIF credentials, egress allowlist only
+    M-->>A: response
+    A->>A: PreToolUse hooks → tool → PostToolUse hooks
+  end
+  A-->>R: event stream (init, text, tool use, tokens, result)
+  R->>S: extract output/, transcripts, debug log
+  R->>R: verdict from the stream and transcripts · metrics.json (runtime, tokens, cost)
+```
+
 When adding a runtime, fill in the security matrix below and register it in `runtime.Resolve()`.
 
 ## Registered runtimes
@@ -14,6 +40,40 @@ When adding a runtime, fill in the security matrix below and register it in `run
 | `dummy` | Behaviour tests — scripted ops in real sandbox | None |
 
 ## Security feature matrix
+
+The sandbox is the containment boundary; everything a runtime does with hooks and tool restrictions is steering inside it ([ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md)). Read the matrix with that picture in mind:
+
+```mermaid
+flowchart TB
+  subgraph HOST["Runner host — trusted, runs fullsend"]
+    direction LR
+    SCAN["host scans\ncontext files · agent def · skills · plugins"]
+    CRED["credentials stay here\nonly the OIDC token file + WIF config enter"]
+    SIG["hooks on/off decided from the harness\nnever from agent-writable files"]
+  end
+  subgraph SB["Sandbox boundary — OpenShell + L7 egress policy (containment)"]
+    direction TB
+    EG["egress allowlist: *.googleapis.com · api.anthropic.com\nbinaries: **/claude · **/node"]
+    subgraph PROC["Runtime process — steering, defense in depth"]
+      direction LR
+      PRE["PreToolUse\nTirith · SSRF · canary · tool allowlist"]
+      TOOL["tool call"]
+      POST["PostToolUse\nsecret redaction · unicode · context suppression"]
+      PRE --> TOOL --> POST
+    end
+    WR["agent-writable between iterations:\nrepo · .env · output/ · hook wiring files (Claude parity)"]
+    RO["read-only, pinned: runtime binary · provider extension\nhash-checked hook adapter (pi)"]
+  end
+  HOST --> SB
+  style SB fill:#fbf0d6,stroke:#d98e04,stroke-dasharray:6 4,color:#1b2230
+  style PROC fill:#e3e9fb,stroke:#2d5be3,color:#1b2230
+  classDef boundary fill:#fff,stroke:#d98e04,color:#1b2230;
+  classDef steer fill:#fff,stroke:#2d5be3,color:#1b2230;
+  classDef host fill:#eceee8,stroke:#a9afa4,color:#1b2230;
+  class EG,WR,RO boundary;
+  class PRE,TOOL,POST steer;
+  class SCAN,CRED,SIG host;
+```
 
 | Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Notes for future runtimes |
 |---------|---------------|-------------|-----------------|-----------|---------------------------|
@@ -182,6 +242,41 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 | `assert_json` | `path,json_path` | Assert JSON file exists and dot-path field is present and non-null (uses `jq`) |
 
 ### Pi-specific known constraints (#6464)
+
+#### At a glance
+
+| | Status |
+|---|---|
+| Select per repo | `runtime: pi` in `.fullsend/config.yaml` (or `fullsend github setup <owner/repo> --runtime pi`); needs a sandbox image that includes `PI_VERSION` |
+| Roles | `triage`, `prioritize`, then `code`/`fix`; `review` and `retro` stay on Claude Code (sub-agents) |
+| Security | equal to Claude Code on every control, stricter on PostToolUse sanitizers, failed-call sanitizing, repo-owned config and hook-wiring integrity |
+| Credentials | same WIF `external_account` + refreshed OIDC token path; `ANTHROPIC_*` unset for the Vertex provider |
+| Unattended | no approval prompts; missing credential exits 1; stdin closed; bounded retries |
+| Artifacts | `output.jsonl`, `transcripts/<agent>-<timestamp>_<id>.jsonl`, `metrics.json` with `runtime: pi`, `pi-debug.log` with `--debug`; `analyze-transcript` reads them |
+| Knobs | `FULLSEND_PI_MODEL`, `FULLSEND_PI_PROVIDER`, `FULLSEND_PI_BASH_ALLOWLIST=enforce` |
+| Not yet | fleet lifecycle run on Vertex, sub-agents, Bedrock/Azure providers, `plugins:` |
+
+One iteration, end to end — the amber decision is what makes "hooks enabled" enforceable, since pi silently skips a missing `-e` extension:
+
+```mermaid
+flowchart LR
+  B["Bootstrap (once per run)\nagent .md → APPEND_SYSTEM.md + --tools\nhook scripts + manifest + adapter\npi --version preflight"]
+  G{"adapter SHA-256 = embedded copy?\nmanifest carries a hook plan?\n(checked before .env, command -p)"}
+  X["exit 97\npi never starts unhooked"]
+  E["source .env\nunset ANTHROPIC_*\npin GOOGLE_CLOUD_PROJECT"]
+  P["pi --print --mode json --no-approve\n--no-extensions -e vertex -e hooks\n--tools … --model … </dev/null"]
+  S["parsePiStream\nexactly one ResultEvent\nexit 0 + stream error ⇒ run fails"]
+  A["artifacts\noutput.jsonl · transcripts/\nmetrics.json (runtime: pi)"]
+  B --> G
+  G -- no --> X
+  G -- yes --> E --> P --> S --> A
+  classDef guard fill:#fbf0d6,stroke:#d98e04,color:#1b2230;
+  classDef bad fill:#f8e1de,stroke:#c0392b,color:#1b2230;
+  classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
+  class G guard;
+  class X bad;
+  class B,P,S opt;
+```
 
 - **No permission system at all** — pi's stated posture is "run in a container". The OpenShell sandbox + L7 egress policy + credential placeholders (ADR 0017/0025) are the boundary, with the fullsend extension adapter as defense-in-depth (same posture as accepted for OpenCode in #1260 / ADR 0090).
 - **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` is the intended detector (assistant `stopReason` on `message_end.message` / last `agent_end.messages` entry) for the runner's exit-0-override (#2786/#5361). `Run` tees the stream to `output.jsonl`, `ParseTranscriptFile` reads it, and `Run` itself returns 1 on a stream-reported error, so the override and the runtime agree.
