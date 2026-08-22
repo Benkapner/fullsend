@@ -8,8 +8,9 @@ agent can act on them.
 
 Principle: success is silent, failure is loud.
 
-Protocol: reads JSON from stdin, writes JSON to stdout with compacted
-tool_result when suppression applies. Exit code 0 always (never blocks).
+Protocol: reads JSON from stdin (``tool_response`` preferred, ``tool_result``
+fallback). Writes ``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``)
+when suppression applies. Exit code 0 always (never blocks).
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import os
 import re
 import sys
 from datetime import UTC, datetime
+
+import hook_io
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -275,20 +278,23 @@ def main() -> None:
     if not command:
         sys.exit(0)
 
-    tool_result = hook_input.get("tool_result", "")
-    if not isinstance(tool_result, str):
+    original = hook_io.payload(hook_input)
+    text = hook_io.scan_text(original)
+
+    # Failures pass through: v1 adapters prefix ``Exit code``. Under Claude Code
+    # a failed tool call fires PostToolUseFailure and never reaches here, and
+    # ``interrupted`` marks a cancelled tool rather than a non-zero exit.
+    if hook_io.looks_failed(original, text):
         sys.exit(0)
 
-    # Non-zero exit code: always pass through full output for agent to act on.
-    if tool_result.startswith("Exit code"):
-        sys.exit(0)
-
-    summary = try_suppress(command, tool_result)
+    summary = try_suppress(command, text)
     if summary is None:
         sys.exit(0)
 
     log_suppression(command, summary)
-    json.dump({"tool_result": summary}, sys.stdout)
+    if not hook_io.has_text_slot(original):
+        sys.exit(0)
+    hook_io.emit_updated(hook_io.apply_text(original, summary))
     sys.exit(0)
 
 

@@ -212,6 +212,17 @@ class TestProtocol(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = json.loads(stdout)
         self.assertIn("tool_result", out)
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+        self.assertEqual(out["hookSpecificOutput"]["updatedToolOutput"], out["tool_result"])
+
+    def test_tool_response_payload(self):
+        rc, stdout, _ = run_hook(
+            stdin_raw=json.dumps({"tool_name": "Read", "tool_response": "hello\u200bworld"})
+        )
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertEqual(out["tool_result"], "helloworld")
+        self.assertEqual(out["hookSpecificOutput"]["updatedToolOutput"], "helloworld")
 
     def test_metadata_present(self):
         rc, stdout, _ = run_hook("has\u200bzero")

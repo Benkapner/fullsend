@@ -131,5 +131,23 @@ class TestDbPasswordRedaction(unittest.TestCase):
             self.assertNotIn("db_password", patterns)
 
 
+class TestClaudeContract(unittest.TestCase):
+    def test_tool_response_redacts_and_emits_updated_output(self):
+        stdin_raw = json.dumps(
+            {"tool_name": "Bash", "tool_response": "export API_KEY=superSecretValue123"}
+        )
+        proc = subprocess.run(
+            [sys.executable, HOOK],
+            input=stdin_raw,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(proc.returncode, 0)
+        result = json.loads(proc.stdout)
+        self.assertNotIn("superSecretValue123", result["tool_result"])
+        self.assertEqual(result["hookSpecificOutput"]["updatedToolOutput"], result["tool_result"])
+
+
 if __name__ == "__main__":
     unittest.main()

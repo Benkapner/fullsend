@@ -32,6 +32,15 @@ var CanaryPostToolHook []byte
 //go:embed hooks/tool_allowlist_pretool.py
 var ToolAllowlistPreToolHook []byte
 
+// HookIO is the shared PostToolUse protocol library imported by the chain
+// and by individual sanitizer/canary scripts. It is not itself a hook.
+//
+//go:embed hooks/hook_io.py
+var HookIO []byte
+
+//go:embed hooks/posttool_chain.py
+var PostToolChainHook []byte
+
 // hookEntry represents a single hook command in Claude settings.
 type hookEntry struct {
 	Type    string `json:"type"`
@@ -128,42 +137,15 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 		})
 	}
 
-	// PostToolUse hooks for Bash|WebFetch|Read. Combined into a single group
-	// so adapters chain them sequentially, each feeding its modified result to
-	// the next. Order: context suppress (compacts verbose success output) →
-	// unicode normalize → secret redact. Suppressing first avoids scanning
-	// text we'd discard. Invariant: unicode normalization must run before
-	// secret redaction so zero-width characters cannot break prefix regexes
-	// and reconstruct secrets.
-	// NOTE: Claude Code runs all matching hooks in parallel and does not
-	// pipe one hook's output into the next, and its PostToolUse payload uses
-	// `tool_response` rather than the `tool_result` these scripts read — so
-	// under Claude Code this chain is not effective today (fullsend#6357).
-	// The ordering here is the contract adapters must meet.
-	var postScripts []string
-	if contextSuppressPostToolEnabled(hooks) {
-		postScripts = append(postScripts, "context_suppress_posttool.py")
-	}
-	if unicodePostToolEnabled(hooks) {
-		postScripts = append(postScripts, "unicode_posttool.py")
-	}
-	if secretRedactPostToolEnabled(hooks) {
-		postScripts = append(postScripts, "secret_redact_posttool.py")
-	}
-	if len(postScripts) > 0 {
-		plan = append(plan, HookGroup{
-			Phase: HookPhasePostToolUse, Tools: []string{"Bash", "WebFetch", "Read"},
-			Scripts: postScripts,
-		})
-	}
-
-	// Canary PostToolUse hook (all tools). Separate group from the
-	// Bash|WebFetch|Read chain because canary must catch leaks from any
-	// tool including MCP tools.
-	if canaryPostToolEnabled(hooks) {
+	// PostToolUse driver for every tool. Claude Code runs matching hooks in
+	// parallel and does not merge two updatedToolOutput rewrites, so suppress →
+	// unicode → redact → canary must share one process (fullsend#6357). The
+	// driver skips sibling scripts that HookFiles omitted. Adapters that
+	// invoke HookPlan should call this one script rather than the stages.
+	if postToolChainEnabled(hooks) {
 		plan = append(plan, HookGroup{
 			Phase: HookPhasePostToolUse, Tools: []string{AllTools},
-			Scripts: []string{"canary_posttool.py"},
+			Scripts: []string{"posttool_chain.py"},
 		})
 	}
 
@@ -205,6 +187,9 @@ func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	if ssrfPreToolEnabled(hooks) {
 		files["ssrf_pretool.py"] = SSRFPreToolHook
 	}
+	if postToolChainEnabled(hooks) {
+		files["posttool_chain.py"] = PostToolChainHook
+	}
 	if secretRedactPostToolEnabled(hooks) {
 		files["secret_redact_posttool.py"] = SecretRedactPostToolHook
 	}
@@ -213,6 +198,9 @@ func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	}
 	if contextSuppressPostToolEnabled(hooks) {
 		files["context_suppress_posttool.py"] = ContextSuppressPostToolHook
+	}
+	if postToolChainEnabled(hooks) {
+		files["hook_io.py"] = HookIO
 	}
 	if canaryPreToolEnabled(hooks) {
 		files["canary_pretool.py"] = CanaryPreToolHook
@@ -249,6 +237,16 @@ func ssrfPreToolEnabled(hooks SandboxHookConfig) bool {
 		return true
 	}
 	return boolDefault(sh.SSRFPreTool, true)
+}
+
+func postToolSanitizeEnabled(hooks SandboxHookConfig) bool {
+	return contextSuppressPostToolEnabled(hooks) ||
+		unicodePostToolEnabled(hooks) ||
+		secretRedactPostToolEnabled(hooks)
+}
+
+func postToolChainEnabled(hooks SandboxHookConfig) bool {
+	return postToolSanitizeEnabled(hooks) || canaryPostToolEnabled(hooks)
 }
 
 func secretRedactPostToolEnabled(hooks SandboxHookConfig) bool {

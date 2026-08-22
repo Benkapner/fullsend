@@ -5,8 +5,9 @@ Intercepts tool results (Bash, WebFetch, Read) and redacts secrets
 before they enter the LLM context window. This prevents the agent from
 seeing or leaking credentials in subsequent output.
 
-Protocol: reads JSON from stdin, writes JSON to stdout with modified
-tool_result if secrets found. Exit code 0 always (never blocks).
+Protocol: reads JSON from stdin (``tool_response`` preferred, ``tool_result``
+fallback). Writes ``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``)
+when secrets are found. Exit code 0 always (never blocks).
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ import os
 import re
 import sys
 from datetime import UTC, datetime
+
+import hook_io
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
@@ -165,32 +168,34 @@ def main():
     except (json.JSONDecodeError, Exception):
         sys.exit(0)
 
-    tool_result = hook_input.get("tool_result", "")
-    if not tool_result or not isinstance(tool_result, str):
+    original = hook_io.payload(hook_input)
+    findings: list[dict] = []
+
+    def _redact_field(text: str) -> str:
+        if not text:
+            return text
+        try:
+            redacted, field_findings = redact_text(text)
+        except Exception as e:
+            log_finding("redaction_error", f"Redaction failed (passing original): {e}")
+            return text
+        findings.extend(field_findings)
+        return redacted
+
+    updated = hook_io.transform_strings(original, _redact_field)
+    if not findings:
         sys.exit(0)
 
-    try:
-        redacted, findings = redact_text(tool_result)
-    except Exception as e:
-        # Redaction error — log and pass through original (post-tool, never blocks).
-        log_finding("redaction_error", f"Redaction failed (passing original): {e}")
-        sys.exit(0)
+    for f in findings:
+        log_finding(f["pattern"], f"Redacted {f['pattern']}: {f['masked']}")
 
-    if findings:
-        for f in findings:
-            log_finding(f["pattern"], f"Redacted {f['pattern']}: {f['masked']}")
-
-        json.dump(
-            {
-                "tool_result": redacted,
-                "metadata": {
-                    "secrets_redacted": len(findings),
-                    "patterns": [f["pattern"] for f in findings],
-                },
-            },
-            sys.stdout,
-        )
-
+    hook_io.emit_updated(
+        updated,
+        metadata={
+            "secrets_redacted": len(findings),
+            "patterns": [f["pattern"] for f in findings],
+        },
+    )
     sys.exit(0)
 
 

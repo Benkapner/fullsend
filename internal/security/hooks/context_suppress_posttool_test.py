@@ -25,11 +25,11 @@ def run_hook(hook_input: dict) -> dict | None:
     return json.loads(result.stdout)
 
 
-def make_input(command: str, tool_result: str) -> dict:
+def make_input(command: str, tool_result: str, *, key: str = "tool_result") -> dict:
     return {
         "tool_name": "Bash",
         "tool_input": {"command": command},
-        "tool_result": tool_result,
+        key: tool_result,
     }
 
 
@@ -39,6 +39,14 @@ def make_input(command: str, tool_result: str) -> dict:
 class TestScanSecrets:
     def test_no_findings(self):
         out = run_hook(make_input("scan-secrets foo.go bar.go", "No leaks found\n"))
+        assert out is not None
+        assert out["tool_result"] == "scan-secrets: passed (no findings)"
+        assert out["hookSpecificOutput"]["updatedToolOutput"] == out["tool_result"]
+
+    def test_tool_response_payload(self):
+        out = run_hook(
+            make_input("scan-secrets foo.go bar.go", "No leaks found\n", key="tool_response")
+        )
         assert out is not None
         assert out["tool_result"] == "scan-secrets: passed (no findings)"
 
@@ -376,3 +384,37 @@ class TestPassthrough:
     def test_exit_code_prefix_always_passthrough(self):
         out = run_hook(make_input("go test ./...", "Exit code 2\nFAIL something\n"))
         assert out is None
+
+    def test_interrupted_bash_object_passthrough(self):
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "go test ./..."},
+                "tool_response": {
+                    "stdout": "ok\tgithub.com/fullsend-ai/fullsend\t0.1s",
+                    "stderr": "",
+                    "interrupted": True,
+                    "isImage": False,
+                },
+            }
+        )
+        assert out is None
+
+    def test_bash_object_success_clears_stderr(self):
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "go test ./..."},
+                "tool_response": {
+                    "stdout": "ok\tgithub.com/fullsend-ai/fullsend\t0.12s\n",
+                    "stderr": "warning: verbose compiler noise\n",
+                    "interrupted": False,
+                    "isImage": False,
+                },
+            }
+        )
+        assert out is not None
+        updated = out["hookSpecificOutput"]["updatedToolOutput"]
+        assert "packages passed" in updated["stdout"]
+        assert updated["stderr"] == ""
+        assert updated["interrupted"] is False

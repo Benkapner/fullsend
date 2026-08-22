@@ -11,8 +11,9 @@ text is returned. PostToolUse hooks cannot block — they sanitize only.
 Critical findings (tag characters) are logged to findings.jsonl for the
 post-script to act on.
 
-Protocol: reads JSON from stdin, writes JSON to stdout with modified
-tool_result if findings detected. Always exits 0.
+Protocol: reads JSON from stdin (``tool_response`` preferred, ``tool_result``
+fallback). Writes ``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``)
+when findings are detected. Always exits 0.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ import re
 import sys
 import unicodedata
 from datetime import UTC, datetime
+
+import hook_io
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_DECODED_LOG = 200
@@ -213,44 +216,47 @@ def main() -> None:
     if not isinstance(hook_input, dict):
         sys.exit(0)
 
-    tool_result = hook_input.get("tool_result", "")
-    if not tool_result or not isinstance(tool_result, str):
-        sys.exit(0)
+    original = hook_io.payload(hook_input)
+    findings: list[dict] = []
 
-    try:
-        sanitized, findings = scan_text(tool_result)
-    except Exception as e:
-        log_finding(
-            "scan_error",
-            "high",
-            f"Unicode scan failed (passing original): {type(e).__name__}",
-            "warn",
-        )
-        sys.exit(0)
+    def _sanitize_field(text: str) -> str:
+        if not text:
+            return text
+        try:
+            sanitized, field_findings = scan_text(text)
+        except Exception as e:
+            log_finding(
+                "scan_error",
+                "high",
+                f"Unicode scan failed (passing original): {type(e).__name__}",
+                "warn",
+            )
+            return text
+        findings.extend(field_findings)
+        return sanitized
 
+    # Identifier fields (paths, URLs, commands) are scanned by other hooks but
+    # never rewritten here: NFKC would hand Claude a path that does not exist.
+    updated = hook_io.transform_strings(
+        original, _sanitize_field, skip_keys=hook_io.IDENTIFIER_KEYS
+    )
     if not findings:
         sys.exit(0)
 
     for f in findings:
-        action = "sanitize"
-        if f["severity"] == "critical":
-            action = "critical_sanitize"
+        action = "critical_sanitize" if f["severity"] == "critical" else "sanitize"
         log_finding(f["name"], f["severity"], f["detail"], action)
 
     # PostToolUse hooks always exit 0 — they sanitize, never block.
-    # Critical findings (tag chars) are stripped from tool_result and logged
-    # to findings.jsonl for the post-script to escalate.
-    json.dump(
-        {
-            "tool_result": sanitized,
-            "metadata": {
-                "unicode_findings": len(findings),
-                "categories": [f["name"] for f in findings],
-            },
+    # Critical findings (tag chars) are stripped and logged to findings.jsonl
+    # for the post-script to escalate.
+    hook_io.emit_updated(
+        updated,
+        metadata={
+            "unicode_findings": len(findings),
+            "categories": [f["name"] for f in findings],
         },
-        sys.stdout,
     )
-
     sys.exit(0)
 
 
