@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // UpgradeConfig holds configuration for a batch upgrade operation.
@@ -338,6 +339,21 @@ func upgradeRepo(ctx context.Context,
 		Mode:    "100644",
 	}}
 
+	// GitLab repos have additional CI template files (agent, poll) that
+	// must be converged alongside the dispatch shim. The commit API's
+	// blob-SHA comparison makes this idempotent — unchanged files are
+	// skipped automatically.
+	if resolvedCfg.Forge == ForgeGitLab {
+		templateFiles, tplErr := collectGitLabUpgradeTemplates(
+			gitlabRunnerTags(cfg.Manifest), targetRef,
+		)
+		if tplErr != nil {
+			result.Error = fmt.Errorf("collecting GitLab CI templates: %w", tplErr)
+			return result
+		}
+		files = append(files, templateFiles...)
+	}
+
 	if err := commitFn(ctx, owner, repo, files, cfg.Direct); err != nil {
 		result.Error = fmt.Errorf("committing upgrade: %w", err)
 		return result
@@ -346,6 +362,33 @@ func upgradeRepo(ctx context.Context,
 	result.Upgraded = true
 	progress(repoFullName, "done", fmt.Sprintf("Upgraded %s → %s", currentRef, targetRef))
 	return result
+}
+
+// collectGitLabUpgradeTemplates collects the GitLab CI template files
+// (agent, poll) for inclusion in an upgrade commit. The dispatch file
+// is excluded because the upgrade path handles it separately via
+// replaceShimRef. The targetRef is used as the fullsend version
+// embedded in the before_script install block.
+func collectGitLabUpgradeTemplates(runnerTags []string, targetRef string) ([]forge.TreeFile, error) {
+	installFiles, err := scaffold.CollectGitLabPerRepoInstallFiles(runnerTags, targetRef, "")
+	if err != nil {
+		return nil, err
+	}
+	var files []forge.TreeFile
+	for _, f := range installFiles {
+		// Skip the dispatch file — upgrade handles it via replaceShimRef.
+		// Skip the root pipeline file — users may have customized it
+		// (e.g. adding workflow:rules for push events).
+		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" || f.Path == ".gitlab-ci.yml" {
+			continue
+		}
+		files = append(files, forge.TreeFile{
+			Path:    f.Path,
+			Content: f.Content,
+			Mode:    f.Mode,
+		})
+	}
+	return files, nil
 }
 
 // readWorkflowContent tries each known shim workflow path and returns
