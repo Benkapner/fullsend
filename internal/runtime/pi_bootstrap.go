@@ -280,6 +280,10 @@ func uploadBytes(sandboxName, remotePath string, data []byte) error {
 	return sandbox.Upload(sandboxName, tmp.Name(), remotePath)
 }
 
+// piManifestMaxBytes bounds the manifest read back through exec stdout; a
+// real manifest is a few KiB.
+const piManifestMaxBytes = 1 << 20
+
 // readPiManifest fetches the manifest Bootstrap wrote.
 func readPiManifest(sandboxName, manifestPath string) (*piManifest, error) {
 	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, "cat "+shellQuote(manifestPath), 10*time.Second)
@@ -288,6 +292,9 @@ func readPiManifest(sandboxName, manifestPath string) (*piManifest, error) {
 	}
 	if exitCode != 0 {
 		return nil, fmt.Errorf("reading pi manifest: exit %d: %s (was Bootstrap run?)", exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	if len(stdout) > piManifestMaxBytes {
+		return nil, fmt.Errorf("reading pi manifest: %d bytes exceeds the %d-byte limit", len(stdout), piManifestMaxBytes)
 	}
 	var m piManifest
 	if err := json.Unmarshal([]byte(stdout), &m); err != nil {

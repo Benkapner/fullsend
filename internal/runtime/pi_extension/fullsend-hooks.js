@@ -45,8 +45,19 @@ export function claudeToolInput(piName, input) {
   switch (piName) {
     case "read":
     case "write":
-    case "edit":
       return typeof src.path === "string" ? { ...src, file_path: src.path } : { ...src };
+    case "edit": {
+      // pi batches edits ({edits:[{oldText,newText}]}); Claude's Edit has one
+      // old_string/new_string pair. Mirror the first pair for scripts that
+      // read Claude's names and keep edits[] for the rest.
+      const out = typeof src.path === "string" ? { ...src, file_path: src.path } : { ...src };
+      const first = Array.isArray(src.edits) ? src.edits[0] : undefined;
+      if (first && typeof first === "object") {
+        if (typeof first.oldText === "string") out.old_string = first.oldText;
+        if (typeof first.newText === "string") out.new_string = first.newText;
+      }
+      return out;
+    }
     default:
       return { ...src };
   }
@@ -88,7 +99,7 @@ export function bashAllowlistViolation(command, allowlist) {
     if (first.includes("/") && !allowlist.includes(first)) {
       return `"${first}" is a path, not an allowlisted program name`;
     }
-    if (["eval", "exec", "sh", "bash", "source", ".", "command", "env", "nohup", "xargs", "time"].includes(first)) {
+    if (["eval", "exec", "sh", "bash", "source", ".", "command", "builtin", "env", "nohup", "nice", "timeout", "xargs", "time"].includes(first)) {
       return `"${first}" is not allowed under a Bash allowlist`;
     }
     if (!allowlist.includes(first)) {

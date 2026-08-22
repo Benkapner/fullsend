@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import {
+import defaultExport, {
   bashAllowlistViolation,
   claudeToolInput,
   claudeToolName,
@@ -80,6 +80,28 @@ test("tool name and input translation", () => {
   assert.deepEqual(claudeToolInput("read", { path: "/a", offset: 1 }), { path: "/a", offset: 1, file_path: "/a" });
   assert.deepEqual(claudeToolInput("bash", { command: "ls" }), { command: "ls" });
   assert.deepEqual(claudeToolInput("read", null), {});
+  assert.deepEqual(
+    claudeToolInput("edit", { path: "a.go", edits: [{ oldText: "x", newText: "y" }, { oldText: "p", newText: "q" }] }),
+    { path: "a.go", edits: [{ oldText: "x", newText: "y" }, { oldText: "p", newText: "q" }], file_path: "a.go", old_string: "x", new_string: "y" },
+  );
+});
+
+test("default export registers the three pi events and names the session", () => {
+  const registered = {};
+  const names = [];
+  const piFake = { on: (ev, fn) => { registered[ev] = fn; }, setSessionName: (n) => names.push(n) };
+  process.env.FULLSEND_PI_MANIFEST = "/nonexistent/manifest.json";
+  try {
+    defaultExport(piFake);
+  } finally {
+    delete process.env.FULLSEND_PI_MANIFEST;
+  }
+  assert.deepEqual(Object.keys(registered).sort(), ["session_start", "tool_call", "tool_result"]);
+  // Unreadable manifest: session_start only reports, tool calls are blocked.
+  registered.session_start({});
+  assert.equal(names.length, 0);
+  assert.equal(registered.tool_call({ toolName: "read", input: {} }).block, true);
+  assert.equal(registered.tool_result({ toolName: "read", content: [] }), undefined);
 });
 
 test("tool_call: allowlist violation is advisory by default (logged, scripts still run)", () => {

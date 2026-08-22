@@ -57,7 +57,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
 	cmd := buildPiRunCommand(params, m)
 
-	assert.True(t, strings.HasPrefix(cmd, "cd '/sandbox/workspace/repo' && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && { test -f '/sandbox/pi-config/fullsend-hooks.js' && test -f '/sandbox/pi-config/fullsend-manifest.json' || { echo 'fullsend: pi hook adapter or manifest missing; refusing to run unhooked' >&2; exit 97; }; } && pi --print --mode json"), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && { test -f '/sandbox/pi-config/fullsend-hooks.js' && test -f '/sandbox/pi-config/fullsend-manifest.json' || { echo 'fullsend: pi hook adapter or manifest missing; refusing to run unhooked' >&2; exit 97; }; } && pi --print --mode json`), cmd)
 	for _, want := range []string{
 		"--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
 		"--session-dir '/sandbox/pi-config/sessions'",
@@ -73,6 +73,23 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	assert.NotContains(t, cmd, "2>>")
 	assert.NotContains(t, cmd, "  ", "no double spaces")
 	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task'"))
+
+	// Claude-on-Vertex: stray direct-API variables never reach pi, and the
+	// project is pinned to the variable Claude Code on Vertex uses.
+	unsetIdx := strings.Index(cmd, "&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL")
+	envIdx := strings.Index(cmd, ". '/sandbox/workspace/.env'")
+	piIdx := strings.Index(cmd, "&& pi ")
+	assert.True(t, unsetIdx > envIdx && unsetIdx < piIdx, "unset runs after sourcing .env and before pi: %s", cmd)
+	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`)
+}
+
+func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
+	t.Setenv(piModelEnv, "")
+	t.Setenv(piProviderEnv, "anthropic")
+	cmd := buildPiRunCommand(piTestParams(), &piManifest{})
+	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-4-6'")
+	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "direct Anthropic provider needs its key")
+	assert.NotContains(t, cmd, "GOOGLE_CLOUD_PROJECT")
 }
 
 func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {

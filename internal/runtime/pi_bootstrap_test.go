@@ -270,6 +270,46 @@ exit 0
 	require.ErrorContains(t, err, "hook adapter or manifest missing")
 }
 
+func TestPiRuntimeExtractTranscripts(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	binDir := t.TempDir()
+	// find lists two sessions (one nested); download writes a session
+	// file into the requested local dir, as `openshell sandbox download`
+	// does. A traversal-shaped name from find must be rejected, not written.
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    find\ *) printf '%s\n' '/sandbox/pi-config/sessions/2026-08-22T10-00-00_abc.jsonl' '/sandbox/pi-config/sessions/sub/2026-08-22T11-00-00_def.jsonl'; exit 0 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = "download" ]; then
+  printf '{"type":"message","message":{"role":"assistant","stopReason":"stop"}}\n' > "$5/$(basename "$4")"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := filepath.Join(work, "transcripts")
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "triage", out))
+	entries, err := os.ReadDir(out)
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.ElementsMatch(t, []string{"triage-2026-08-22T10-00-00_abc.jsonl", "triage-2026-08-22T11-00-00_def.jsonl"}, names)
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "find '/sandbox/pi-config/sessions' -name '*.jsonl'")
+	assert.Empty(t, PiRuntime{}.ParseTranscriptErrors(out), "clean sessions produce no error annotations")
+}
+
 func TestPiRuntimeClearIterationArtifacts(t *testing.T) {
 	work := t.TempDir()
 	logPath := filepath.Join(work, "openshell.log")

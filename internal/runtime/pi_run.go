@@ -100,9 +100,27 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	hooksEnabled := params.HooksSettingsPath != ""
 	hooksExt := r.ConfigDir() + "/" + piHooksExtensionFile
 
+	model := params.Model
+	if model == "" {
+		model = m.Model
+	}
+	modelSpec := translatePiModel(model)
+
 	parts := []string{
 		fmt.Sprintf("cd %s && . %s", shellQuote(params.RepoDir), shellQuote(envFile)),
 		"&& export " + piManifestEnv + "=" + shellQuote(r.piManifestPath()),
+	}
+	if strings.HasPrefix(modelSpec, piDefaultProvider+"/") {
+		// Claude-on-Vertex: the bundled Anthropic SDK would honour a stray
+		// ANTHROPIC_API_KEY / AUTH_TOKEN / BASE_URL / VERTEX_BASE_URL and
+		// route inference past Vertex, so they never reach pi. The project
+		// is pinned to the variable Claude Code on Vertex is driven by, so
+		// both runtimes hit the same GCP project regardless of an ambient
+		// GOOGLE_CLOUD_PROJECT (the extension reads that one first).
+		parts = append(parts,
+			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
+			`&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
+		)
 	}
 	if hooksEnabled {
 		parts = append(parts, fmt.Sprintf("&& { test -f %s && test -f %s || { echo 'fullsend: pi hook adapter or manifest missing; refusing to run unhooked' >&2; exit %d; }; }",
@@ -133,11 +151,7 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		}
 	}
 
-	model := params.Model
-	if model == "" {
-		model = m.Model
-	}
-	parts = append(parts, "--model "+shellQuote(translatePiModel(model)))
+	parts = append(parts, "--model "+shellQuote(modelSpec))
 
 	if level, ok := piThinkingFor(params.Effort); ok {
 		parts = append(parts, "--thinking "+shellQuote(level))
@@ -163,6 +177,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	m, err := readPiManifest(params.SandboxName, r.piManifestPath())
 	if err != nil {
 		return -1, err
+	}
+	if _, ok := piThinkingFor(params.Effort); params.Effort != "" && !ok {
+		printer.StepWarn(fmt.Sprintf("effort %q is not a pi thinking level; running without --thinking", sanitizeOutput(params.Effort)))
 	}
 	cmd := buildPiRunCommand(params, m)
 

@@ -140,9 +140,13 @@ func parsePiTranscriptFile(path string) (TranscriptError, bool) {
 // string the quotes are escaped (\"type\":\"agent_end\"), so the raw byte
 // sequence can only occur as a top-level event key.
 func isPiStreamCapture(data []byte) bool {
+	// pi writes compact JSON; the spaced variants cost nothing and cover a
+	// hand-reformatted capture.
 	for _, marker := range [][]byte{
 		[]byte(`"type":"agent_start"`), []byte(`"type":"agent_end"`),
 		[]byte(`"type":"message_end"`), []byte(`"type":"agent_settled"`),
+		[]byte(`"type": "agent_start"`), []byte(`"type": "agent_end"`),
+		[]byte(`"type": "message_end"`), []byte(`"type": "agent_settled"`),
 	} {
 		if bytes.Contains(data, marker) {
 			return true
