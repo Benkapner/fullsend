@@ -240,7 +240,7 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "unexpected pipeline source")
 	assert.Contains(t, s, "rejecting forged dispatch")
 	// Generic runner image, not agent-specific
-	assert.Contains(t, s, "fullsend-runner:latest")
+	assert.Contains(t, s, "fullsend-runner:dev")
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
