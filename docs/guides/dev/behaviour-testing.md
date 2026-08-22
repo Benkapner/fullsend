@@ -72,6 +72,15 @@ And the agent will output issues.out with:
   """
 ```
 
+### Runtime steps
+
+Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
+
+- **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection. Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
+- **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores the previous value — slots are reused, so never set it any other way), then the scenario dispatches a custom harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled that call went through the fullsend hook adapter), `the run metrics report tokens`. Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they stay off until the runner declares the capability (for pi: after `fullsend-sandbox:latest` ships `PI_VERSION`). See `features/runtime/pi.feature`.
+
+Do not add runtime coverage to `e2e/admin` (org-mode install, deprecated per ADR 0044) or behind new `fullsend admin` flags.
+
 ### Branch assertion steps
 
 For scenarios that drive a run through the post-scripts to a real push,
