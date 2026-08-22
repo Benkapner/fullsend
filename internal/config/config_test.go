@@ -422,9 +422,12 @@ func TestOrgConfigValidateRuntime(t *testing.T) {
 	}
 	require.NoError(t, cfg.Validate())
 
-	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
-	// so config validation must reject it until the runtime is implemented.
+	// opencode/pi are resolvable via runtime.Resolve() but not in ValidRuntimes(),
+	// so config validation must reject them until the runtime is implemented.
 	cfg.Defaults.Runtime = "opencode"
+	require.Error(t, cfg.Validate())
+
+	cfg.Defaults.Runtime = "pi"
 	require.Error(t, cfg.Validate())
 
 	cfg.Defaults.Runtime = "invalid"
@@ -676,10 +679,15 @@ func TestPerRepoConfigValidate_Runtime(t *testing.T) {
 	}
 	assert.NoError(t, cfg.Validate())
 
-	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
-	// so config validation must reject it until the runtime is implemented.
+	// opencode/pi are resolvable via runtime.Resolve() but not in ValidRuntimes(),
+	// so config validation must reject them until the runtime is implemented.
 	cfg.Runtime = "opencode"
 	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid runtime")
+
+	cfg.Runtime = "pi"
+	err = cfg.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid runtime")
 

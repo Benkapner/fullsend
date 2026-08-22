@@ -2,6 +2,8 @@
 #
 # Pre-installs all runtime dependencies needed by any fullsend agent:
 #   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG)
+#   - pi (npm, version-pinned via PI_VERSION ARG; stub runtime, not yet
+#     user-selectable — see #6464)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - acli (Atlassian CLI for Jira issue queries)
@@ -65,7 +67,19 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
 ARG PI_VERSION=0.84.2
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
+RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
+        || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
+    && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
+
+# pi is present in every sandbox regardless of runtime selection (PiRuntime
+# is a stub, not yet reachable via config — see internal/runtime/pi.go), so
+# an agent invoking the `pi` binary ad-hoc via Bash would otherwise get none
+# of PiRuntime.EnvExports()'s safety defaults. Bake them at image level too;
+# PI_CODING_AGENT_DIR must match sandbox.SandboxPiConfig (internal/sandbox/sandbox.go).
+ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
+    PI_CODING_AGENT_SESSION_DIR="/sandbox/pi-config/sessions" \
+    PI_OFFLINE="1" \
+    PI_SKIP_VERSION_CHECK="1"
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection

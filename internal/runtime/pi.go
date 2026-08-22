@@ -13,8 +13,9 @@ import (
 // PiRuntime is a stub implementation of the Runtime and TranscriptHandler
 // interfaces for the pi agent runtime (earendil-works/pi, CLI `pi`). All
 // methods are no-ops or return not-implemented errors. Subsequent PRs will
-// fill in stream parsing (`pi --print --mode json`), bootstrap, run
-// execution, and transcript extraction. Tracked in #6464.
+// fill in stream parsing (`pi --mode json`, per docs/json.md — confirm at
+// implementation time whether `--print` is required alongside it), bootstrap,
+// run execution, and transcript extraction. Tracked in #6464.
 type PiRuntime struct{}
 
 func (PiRuntime) Name() string { return "pi" }
@@ -37,6 +38,9 @@ func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 // EnvExports pins pi's config and session locations to runner-owned paths
 // and disables all startup network traffic (update checks, package update
 // checks, telemetry). PI_OFFLINE does not affect the inference call itself.
+// Var names/semantics per earendil-works/pi docs/environment-variables.md
+// (PI_CODING_AGENT_DIR, PI_CODING_AGENT_SESSION_DIR, PI_OFFLINE,
+// PI_SKIP_VERSION_CHECK) — re-verify against that doc when PI_VERSION moves.
 func (PiRuntime) EnvExports() []string {
 	return []string{
 		"export PI_CODING_AGENT_DIR=" + sandbox.SandboxPiConfig,

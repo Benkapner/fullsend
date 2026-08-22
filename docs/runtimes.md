@@ -27,7 +27,7 @@ When adding a runtime, fill in the security matrix below and register it in `run
 | **Context suppression** | Sandbox PostToolUse hook | wired; not effective under Claude Code (#6357) | N/A — stub | N/A — stub | `context_suppress_posttool.py` |
 | **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | N/A — stub | N/A — stub | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
 | **Prompt injection (DeBERTa)** | Host Path A + sandbox Path B | ✓ | N/A — stub | N/A — stub | Same scanner stack as context files when enabled in harness |
-| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358) | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via OpenCode plugin hooks | N/A — stub | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
+| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358) | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via OpenCode plugin hooks | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via pi's `tool_call`/`tool_result` extension hooks | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
 | **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | N/A — stub | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
 
 ### Fail modes
@@ -71,7 +71,7 @@ Harness keys are runtime-neutral in the YAML but each runtime owns their transla
 | `plugins` | Claude plugin marketplace layout (`bootstrapPlugins`) | — | — | ignored | Claude-specific format; warn and skip if unsupported |
 | Agent frontmatter `tools:` (`Bash(gh,jq)` syntax, ADR 0027) | Native Claude permission syntax | — | — | ignored | Enforce via `--tools`/allowlist plus a hook adapter; Claude tool names differ in case from most runtimes (#608) |
 | `skills` | `CLAUDE_CONFIG_DIR/skills/` | — | — | ignored | Agent Skills spec (`SKILL.md`) is portable; destination is `rt.ConfigDir() + "/skills"` (also used by the runtime fetch service) |
-| `security.sandbox_hooks` | `SandboxHooksBootstrap` → hooks.json via `--settings` | ✗ (stub) | — | ignored | See [Sandbox hook contract](#sandbox-hook-contract) |
+| `security.sandbox_hooks` | `SandboxHooksBootstrap` → hooks.json via `--settings` | ✗ (stub) | ✗ (stub) | ignored | See [Sandbox hook contract](#sandbox-hook-contract) |
 | `--debug` (CLI flag) | `--debug-file`, artifact `claude-debug.log` | — | — | no-op | Implement `DebugLogNamer` to name the artifact |
 
 ## Sandbox workspace layout

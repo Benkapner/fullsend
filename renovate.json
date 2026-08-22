@@ -59,6 +59,11 @@
         "fileFilters": ["images/sandbox/Containerfile"],
         "executionMode": "branch"
       }
+    },
+    {
+      "description": "pi releases ~weekly minors and has changed its --mode json wire shape within a minor before (0.84.0); require manual review so the stream parser fixtures (#6464) are re-verified before a pin bump lands, even for patch/pin updates",
+      "matchPackageNames": ["@earendil-works/pi-coding-agent"],
+      "automerge": false
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
