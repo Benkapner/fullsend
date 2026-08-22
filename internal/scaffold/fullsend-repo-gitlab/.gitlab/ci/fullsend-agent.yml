@@ -94,6 +94,8 @@ stages:
             echo "Use a runner image with Go 1.20+ installed or pin to a release version tag"
             exit 1
           fi
+          export GOPATH="${RUNNER_TEMP:-/tmp}/go"
+          export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"
           FSSRC=$(mktemp -d)
           git init "${FSSRC}"
           git -C "${FSSRC}" remote add origin "https://github.com/${FULLSEND_REPO}.git"

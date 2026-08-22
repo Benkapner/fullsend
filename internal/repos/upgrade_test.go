@@ -1826,6 +1826,7 @@ func TestUpgrade_GitLabNonPinnedKeepsStringRef(t *testing.T) {
 			r.Skipped, r.SkipReason, r.Error)
 	}
 
+	// First file is the dispatch shim.
 	content := string(committedFiles[0].Content)
 	// Non-SHA-pinned: write string ref directly.
 	if !strings.Contains(content, "v0.33.0") {
@@ -1834,6 +1835,119 @@ func TestUpgrade_GitLabNonPinnedKeepsStringRef(t *testing.T) {
 	// Should NOT contain SHA.
 	if strings.Contains(content, "aaa111") {
 		t.Errorf("non-SHA-pinned GitLab repo should not contain resolved SHA, got:\n%s", content)
+	}
+
+	// GitLab upgrade should also include agent and poll template files.
+	if len(committedFiles) < 3 {
+		t.Fatalf("expected at least 3 committed files (dispatch + agent + poll), got %d", len(committedFiles))
+	}
+	paths := make(map[string]bool)
+	for _, f := range committedFiles {
+		paths[f.Path] = true
+	}
+	if !paths[".gitlab/ci/fullsend-agent.yml"] {
+		t.Error("expected .gitlab/ci/fullsend-agent.yml in committed files")
+	}
+	if !paths[".gitlab/ci/fullsend-poll.yml"] {
+		t.Error("expected .gitlab/ci/fullsend-poll.yml in committed files")
+	}
+}
+
+func TestUpgrade_GitLabConvergesAllTemplateFiles(t *testing.T) {
+	// GitLab upgrade must converge all scaffold files (dispatch shim,
+	// agent template, poll template), not just the dispatch shim.
+	// Verifies the fix for #6477.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.gitlab/ci/fullsend-dispatch.yml"] = makeGitLabDispatch("v0.32.0")
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v0.34.0",
+			RunnerTags:  []string{"docker", "linux"},
+			Repos:       []RepoEntry{{Name: "acme-corp/api-server"}},
+		},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected upgrade, got %+v", results)
+	}
+
+	// Verify all expected files are committed.
+	paths := make(map[string]string)
+	for _, f := range committedFiles {
+		paths[f.Path] = string(f.Content)
+	}
+	for _, expected := range []string{
+		".gitlab/ci/fullsend-dispatch.yml",
+		".gitlab/ci/fullsend-agent.yml",
+		".gitlab/ci/fullsend-poll.yml",
+	} {
+		if _, ok := paths[expected]; !ok {
+			t.Errorf("expected %s in committed files", expected)
+		}
+	}
+
+	// Verify runner tags are rendered in template files.
+	for _, path := range []string{".gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-poll.yml"} {
+		content := paths[path]
+		if !strings.Contains(content, `"docker"`) || !strings.Contains(content, `"linux"`) {
+			t.Errorf("%s: expected runner tags [docker, linux], got:\n%s", path, content[:min(200, len(content))])
+		}
+	}
+
+	// Verify __FULLSEND_VERSION__ is replaced with the target ref.
+	for _, path := range []string{".gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-poll.yml"} {
+		content := paths[path]
+		if strings.Contains(content, "__FULLSEND_VERSION__") {
+			t.Errorf("%s: __FULLSEND_VERSION__ placeholder should be replaced", path)
+		}
+		if !strings.Contains(content, "v0.34.0") {
+			t.Errorf("%s: expected version v0.34.0 in content", path)
+		}
+	}
+}
+
+func TestUpgrade_GitHubDoesNotIncludeExtraFiles(t *testing.T) {
+	// GitHub upgrade should only commit the workflow shim — no extra
+	// template files. Ensures the GitLab convergence logic does not
+	// affect GitHub repos.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := newUpgradeManifest("v2.3.0")
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1, RepoFilter: []string{"acme-corp/api-server"}}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected upgrade, got %+v", results)
+	}
+
+	if len(committedFiles) != 1 {
+		t.Errorf("GitHub upgrade should commit exactly 1 file, got %d", len(committedFiles))
+	}
+	if committedFiles[0].Path != ".github/workflows/fullsend.yml" {
+		t.Errorf("expected .github/workflows/fullsend.yml, got %s", committedFiles[0].Path)
 	}
 }
 

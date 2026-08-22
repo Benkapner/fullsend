@@ -278,6 +278,10 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Source-build path clones and builds from source (direct go build, no make)
 	assert.Contains(t, s, "go build")
 	assert.Contains(t, s, "./cmd/fullsend/")
+	// Source-build path sets GOPATH and GOCACHE so go build works on
+	// non-root runners where /root/go is not writable (#6477).
+	assert.Contains(t, s, `export GOPATH="${RUNNER_TEMP:-/tmp}/go"`)
+	assert.Contains(t, s, `export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"`)
 	// "latest" resolution via GitHub API
 	assert.Contains(t, s, "releases/latest")
 }
@@ -446,6 +450,10 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.Contains(t, s, "checksums.txt")
 	assert.Contains(t, s, "sha256sum -c")
 	assert.Contains(t, s, "releases/latest")
+	// Source-build path sets GOPATH and GOCACHE so go build works on
+	// non-root runners where /root/go is not writable (#6477).
+	assert.Contains(t, s, `export GOPATH="${RUNNER_TEMP:-/tmp}/go"`)
+	assert.Contains(t, s, `export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"`)
 }
 
 func TestGitLabRootPipelineContent(t *testing.T) {
