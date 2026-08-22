@@ -116,6 +116,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 		repo            ResolvedRepo
 		resolved        ResolvedConfig
 		installed       bool
+		guardSet        bool
+		components      []ComponentStatus
 		secretsExist    bool
 		regionVarExists bool
 		err             error
@@ -157,17 +159,21 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				return
 			}
 			installed := false
+			var guardSet bool
+			var components []ComponentStatus
 			if guardExists && guardVal == "true" {
+				guardSet = true
 				expectedVars := map[string]string{}
 				if resolved.MintURL != "" {
 					expectedVars["FULLSEND_MINT_URL"] = resolved.MintURL
 				}
-				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars)
-				if checkErr != nil {
-					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
+				probed, probeErr := ProbeComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars)
+				if probeErr != nil {
+					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: probeErr}
 					return
 				}
-				installed = fullyInstalled
+				components = probed
+				installed = AllMatch(probed)
 			}
 
 			// When repo is NOT fully installed, check whether GCP
@@ -195,6 +201,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 					discoveries[idx] = discoveryResult{
 						repo:            rr,
 						resolved:        resolved,
+						guardSet:        guardSet,
+						components:      components,
 						secretsExist:    true,
 						regionVarExists: regionExists,
 					}
@@ -221,6 +229,8 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				repo:         rr,
 				resolved:     resolved,
 				installed:    installed,
+				guardSet:     guardSet,
+				components:   components,
 				secretsExist: secretsExist,
 			}
 		}(i, r)
@@ -262,7 +272,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				Repo:    d.repo.Repo,
 				Success: true,
 			})
-			progress(fullName, "dry-run", "Would install")
+			progress(fullName, "dry-run", dryRunMessage(d.guardSet, d.components))
 		}
 		return result, nil
 	}
@@ -479,4 +489,31 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	wg2.Wait()
 
 	return result, nil
+}
+
+// dryRunMessage builds a human-readable progress message for --dry-run.
+// It distinguishes a fresh install from a partial repair and lists the
+// specific components that are missing or drifted.
+func dryRunMessage(guardSet bool, components []ComponentStatus) string {
+	if !guardSet {
+		return "Would install (new)"
+	}
+
+	var actions []string
+	for _, c := range components {
+		if c.Match {
+			continue
+		}
+		field := DriftFieldName(c.Name)
+		if !c.Present {
+			actions = append(actions, "would add "+field)
+		} else {
+			actions = append(actions, "would update "+field)
+		}
+	}
+
+	if len(actions) == 0 {
+		return "Would install"
+	}
+	return "Would repair: " + strings.Join(actions, ", ")
 }
