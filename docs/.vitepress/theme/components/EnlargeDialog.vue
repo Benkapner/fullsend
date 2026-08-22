@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 
-// A shared click-to-enlarge dialog for content that the 688px content
-// column squeezes: mermaid diagrams (rendered at their viewBox width) and
-// wide tables. Callers pass the HTML to show; a "Fit to screen" toggle is
-// offered only when a natural width is known (SVG), since tables reflow.
+// A shared click-to-enlarge dialog for content that the content column
+// (~690px wide) squeezes: mermaid diagrams (rendered at their viewBox
+// width) and wide tables or code blocks. Callers pass the HTML to show;
+// a "Fit to screen" toggle is offered only when a natural width is known
+// (SVG), since tables and code reflow.
+//
+// The pane carries the `vp-doc` class on purpose: this component is
+// mounted from the doc-after layout slot, a sibling of the rendered
+// markdown, so without it the theme's table and code-block styles would
+// not reach the enlarged copy.
 const props = defineProps<{
   title: string
 }>()
@@ -14,22 +20,25 @@ const open = ref(false)
 const fit = ref(false)
 const html = ref('')
 const naturalWidth = ref<number | null>(null)
+const title = ref(props.title)
 
 const style = computed(() => {
   if (fit.value || !naturalWidth.value) return {}
   return { '--enlarge-natural-width': `${Math.round(naturalWidth.value)}px` }
 })
 
-function show(content: string, width: number | null = null) {
+function show(content: string, width: number | null = null, label?: string) {
   if (!dialog.value) return
   html.value = content
   naturalWidth.value = width
+  title.value = label ?? props.title
   fit.value = false
   open.value = true
   dialog.value.showModal()
 }
 
 function close() {
+  if (!open.value) return
   open.value = false
   dialog.value?.close()
 }
@@ -45,14 +54,14 @@ defineExpose({ show, close })
   <dialog
     ref="dialog"
     class="enlarge-dialog"
-    :aria-label="`${props.title}, enlarged`"
+    :aria-label="`${title}, enlarged`"
     :style="style"
     :data-fit="fit ? 'true' : 'false'"
     @click="onBackdropClick"
     @close="open = false"
   >
     <div class="enlarge-dialog__bar">
-      <span class="enlarge-dialog__title">{{ props.title }}</span>
+      <span class="enlarge-dialog__title">{{ title }}</span>
       <button
         v-if="naturalWidth"
         type="button"
@@ -64,7 +73,7 @@ defineExpose({ show, close })
       </button>
       <button type="button" class="enlarge-dialog__btn" @click="close">Close</button>
     </div>
-    <div v-if="open" class="enlarge-dialog__pane" v-html="html" />
+    <div v-if="open" class="enlarge-dialog__pane vp-doc" v-html="html" />
   </dialog>
 </template>
 
@@ -73,11 +82,13 @@ defineExpose({ show, close })
    figure classes below are applied by other components. Everything is
    namespaced under .enlarge-* / .enlargeable. */
 
-/* --- inline figure affordance, shared by diagrams and tables --- */
+/* --- inline affordance, shared by diagrams, tables and code --- */
 .enlargeable {
   position: relative;
 }
 
+/* The pill is a real button (keyboard reachable); for diagrams the whole
+   figure also opens the dialog on click, for pointer convenience. */
 .enlargeable__hint {
   position: absolute;
   top: 8px;
@@ -90,8 +101,20 @@ defineExpose({ show, close })
   color: var(--vp-c-text-2);
   font-size: 12px;
   line-height: 18px;
+  cursor: zoom-in;
   opacity: 0;
   transition: opacity 0.15s ease;
+}
+
+.enlargeable__hint:hover,
+.enlargeable__hint:focus-visible {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-text-1);
+  outline: none;
+}
+
+.enlargeable__hint:focus-visible {
+  box-shadow: 0 0 0 2px var(--vp-c-brand-soft);
 }
 
 .enlargeable:hover .enlargeable__hint,
@@ -103,18 +126,6 @@ defineExpose({ show, close })
   .enlargeable__hint {
     opacity: 1;
   }
-}
-
-/* Tables keep their text selectable; only the pill is the control. */
-button.enlargeable__hint {
-  cursor: zoom-in;
-}
-
-button.enlargeable__hint:hover,
-button.enlargeable__hint:focus-visible {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-text-1);
-  outline: none;
 }
 
 .enlargeable--table {
@@ -189,8 +200,10 @@ button.enlargeable__hint:focus-visible {
   outline: none;
 }
 
-.enlarge-dialog__pane {
+/* The pane is also .vp-doc; undo the column constraints that class brings. */
+.enlarge-dialog .enlarge-dialog__pane {
   height: calc(92vh - 41px);
+  max-width: none;
   padding: 16px;
   overflow: auto;
   box-sizing: border-box;
@@ -212,33 +225,19 @@ button.enlargeable__hint:focus-visible {
 
 /* Tables: use the whole pane and let cells wrap, instead of the
    scroll-box the content column forces on them. */
-.enlarge-dialog__pane table {
+.enlarge-dialog .enlarge-dialog__pane table {
   display: table;
   width: 100%;
   margin: 0;
-  border-collapse: collapse;
-  font-size: 14px;
 }
 
-.enlarge-dialog__pane th,
-.enlarge-dialog__pane td {
-  padding: 8px 12px;
-  border: 1px solid var(--vp-c-divider);
-  vertical-align: top;
-}
-
-.enlarge-dialog__pane th {
-  background: var(--vp-c-bg-soft);
-  text-align: left;
-}
-
-/* Code blocks: the clone keeps the theme's highlighting (the dialog lives
-   inside .vp-doc); drop the margins and the copied-in controls. */
-.enlarge-dialog__pane div[class*='language-'] {
+/* Code blocks: the theme's highlighting applies through .vp-doc; drop the
+   margins and the copied-in copy button. */
+.enlarge-dialog .enlarge-dialog__pane div[class*='language-'] {
   margin: 0;
 }
 
-.enlarge-dialog__pane div[class*='language-'] > button.copy {
+.enlarge-dialog .enlarge-dialog__pane div[class*='language-'] > button.copy {
   display: none;
 }
 

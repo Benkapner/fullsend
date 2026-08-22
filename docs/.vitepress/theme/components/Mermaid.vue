@@ -19,7 +19,9 @@ let renderSeq = 0
 // The inline diagram is scaled to the content column (mermaid sets
 // width: 100%; max-width: <viewBox width>), which makes wide flowcharts
 // unreadable, so every diagram opens in the shared enlarge dialog at its
-// natural size.
+// natural size. The pill is the keyboard-reachable control; a pointer
+// click anywhere on the figure opens it too, and the diagram text stays
+// selectable because the figure itself is not a button.
 async function renderChart() {
   if (rendering) return
   rendering = true
@@ -54,7 +56,14 @@ async function renderChart() {
 }
 
 function openLightbox() {
-  if (svg.value) enlarge.value?.show(svg.value, naturalWidth.value)
+  if (svg.value) enlarge.value?.show(svg.value, naturalWidth.value, 'Diagram')
+}
+
+function onFigureClick(e: MouseEvent) {
+  // Let a text selection drag end without opening; open on a plain click.
+  if (window.getSelection()?.toString()) return
+  if ((e.target as HTMLElement).closest('button')) return
+  openLightbox()
 }
 
 onMounted(async () => {
@@ -68,17 +77,17 @@ onUnmounted(() => observer?.disconnect())
 
 <template>
   <div v-if="error" class="mermaid-error">{{ error }}</div>
-  <figure v-else-if="svg" class="mermaid-figure enlargeable">
+  <figure v-else-if="svg" class="mermaid-figure enlargeable" @click="onFigureClick">
+    <div class="mermaid-figure__svg" v-html="svg" />
     <button
       type="button"
-      class="mermaid-figure__surface"
+      class="enlargeable__hint"
       aria-label="Enlarge diagram"
-      title="Click to enlarge"
-      @click="openLightbox"
+      title="Enlarge diagram"
+      @click.stop="openLightbox"
     >
-      <div class="mermaid-figure__svg" v-html="svg" />
+      ⤢ Enlarge
     </button>
-    <span class="enlargeable__hint" aria-hidden="true">⤢ Click to enlarge</span>
     <EnlargeDialog ref="enlarge" title="Diagram" />
   </figure>
   <div v-else class="mermaid-loading">Loading diagram...</div>
@@ -88,28 +97,16 @@ onUnmounted(() => observer?.disconnect())
 /* Not scoped: the SVG comes from v-html. */
 .mermaid-figure {
   margin: 16px 0;
-}
-
-.mermaid-figure__surface {
-  display: block;
-  width: 100%;
-  padding: 0;
   border: 1px solid var(--vp-c-divider);
   border-radius: 8px;
   background: var(--vp-c-bg);
   cursor: zoom-in;
-  text-align: inherit;
   transition: border-color 0.15s ease;
 }
 
-.mermaid-figure__surface:hover,
-.mermaid-figure__surface:focus-visible {
+.mermaid-figure:hover,
+.mermaid-figure:focus-within {
   border-color: var(--vp-c-brand-1);
-  outline: none;
-}
-
-.mermaid-figure__surface:focus-visible {
-  box-shadow: 0 0 0 2px var(--vp-c-brand-soft);
 }
 
 .mermaid-figure__svg {
@@ -122,13 +119,8 @@ onUnmounted(() => observer?.disconnect())
   margin: 0 auto;
 }
 
-/* The whole figure is the control; the pill is only a hint. */
-.mermaid-figure .enlargeable__hint {
-  pointer-events: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .mermaid-figure__surface {
+  .mermaid-figure {
     transition: none;
   }
 }

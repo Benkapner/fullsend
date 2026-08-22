@@ -841,7 +841,7 @@ flowchart TB
       direction TB
       P1["/sandbox/pi-config\nAPPEND_SYSTEM.md · settings.json · skills/\nhooks/ · fullsend-hooks.js · fullsend-manifest.json"]
       P0{"shell guard, before .env:\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
-      P2["pi --print --mode json --no-approve\n--no-extensions -e anthropic-vertex -e fullsend-hooks.js\n--tools … --model anthropic-vertex/… #lt;/dev/null"]
+      P2["pi --print --mode json --no-approve\n--no-extensions [-e anthropic-vertex, on Vertex] -e fullsend-hooks.js\n--tools … --model anthropic-vertex/… #lt;/dev/null"]
       PX["exit 97 — never runs unhooked\n(Run refuses earlier, exit -1, if the manifest has no hook plan)"]
       P1 --> P0
       P0 -- yes --> P2

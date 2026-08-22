@@ -54,7 +54,7 @@ flowchart TB
   end
   subgraph SB["Sandbox boundary — OpenShell + L7 egress policy (containment)"]
     direction TB
-    EG["egress allowlist: *.googleapis.com · api.anthropic.com\nbinaries: **/claude · **/node"]
+    EG["egress allowlist: *.googleapis.com · api.anthropic.com\nbinaries: **/claude · **/node (pi runs via node)"]
     subgraph PROC["Runtime process — steering, defense in depth"]
       direction LR
       PRE["PreToolUse\nTirith · SSRF\ncanary · allowlist"]
@@ -255,7 +255,7 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 |---|---|
 | Select per repo | `runtime: pi` in `.fullsend/config.yaml` (or `fullsend github setup <owner/repo> --runtime pi`); needs a sandbox image that includes `PI_VERSION` |
 | Roles | `triage`, `prioritize`, then `code`/`fix`; `review` and `retro` stay on Claude Code (sub-agents) |
-| Security | equal to Claude Code on every control, stricter on PostToolUse sanitizers, failed-call sanitizing, repo-owned config and hook-wiring integrity |
+| Security | every fullsend control in the matrix below is at least as effective as under Claude Code, four are stricter (PostToolUse sanitizers, failed-call sanitizing, repo-owned config, hook-wiring integrity); pi itself has no permission system — the sandbox is the boundary (ADR 0027) |
 | Credentials | same WIF `external_account` + refreshed OIDC token path; `ANTHROPIC_*` unset for the Vertex provider |
 | Unattended | no approval prompts; missing credential exits 1; stdin closed; bounded retries |
 | Artifacts | `output.jsonl`, `transcripts/<agent>-<timestamp>_<id>.jsonl`, `metrics.json` with `runtime: pi`, `pi-debug.log` with `--debug`; `analyze-transcript` reads them |
@@ -270,7 +270,7 @@ flowchart TB
   G{"shell guard, before .env (command -p):\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
   X["exit 97\npi never starts unhooked\n(Run refuses earlier, exit -1,\nif the manifest has no hook plan)"]
   E["source .env\nunset ANTHROPIC_*\npin GOOGLE_CLOUD_PROJECT"]
-  P["pi --print --mode json --no-approve\n--no-extensions -e vertex -e hooks\n--tools … --model … #lt;/dev/null"]
+  P["pi --print --mode json --no-approve\n--no-extensions [-e vertex, on Vertex] -e hooks\n--tools … --model … #lt;/dev/null"]
   S["parsePiStream\nexactly one ResultEvent\nexit 0 + stream error ⇒ run fails"]
   A["artifacts\noutput.jsonl · transcripts/\nmetrics.json (runtime: pi)"]
   B --> G
