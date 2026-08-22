@@ -294,6 +294,45 @@ func TestPiRuntimeRun_SecurityOnButManifestWithoutHooksFailsFast(t *testing.T) {
 	log, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
 	assert.NotContains(t, string(log), "pi --print", "pi must not have been started")
+
+	// A hooks object without a groups array is what the adapter's `wired`
+	// check rejects too; Run must apply the same predicate.
+	manifestStore := filepath.Join(store, strings.ReplaceAll(PiRuntime{}.piManifestPath(), "/", "_"))
+	require.NoError(t, os.WriteFile(manifestStore, []byte(`{"agentName":"triage","hooks":{"dir":"/sandbox/pi-config/hooks"}}`), 0o644))
+	exit, err = PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second, HooksSettingsPath: "/sandbox/claude-config/hooks.json",
+		OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
+	assert.Equal(t, -1, exit)
+	require.ErrorContains(t, err, "carries no hook plan")
+	log, readErr = os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(log), "pi --print", "pi must not have been started")
+}
+
+func TestPiRuntimeBootstrap_SkillDirsOnlyAddsRead(t *testing.T) {
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+
+	skillDir := filepath.Join(t.TempDir(), "issue-labels")
+	require.NoError(t, os.MkdirAll(skillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# labels"), 0o644))
+
+	// No Skill in tools:, but a shipped skill dir still needs pi's read
+	// tool for the skills section of the system prompt to be emitted.
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, "---\nname: code\ntools: Bash(go)\n---\nBody"),
+		agentName:   "code",
+		skillDirs:   []string{skillDir},
+	}
+	require.NoError(t, PiRuntime{}.Bootstrap(in))
+
+	var m piManifest
+	require.NoError(t, json.Unmarshal(storedUpload(t, store, PiRuntime{}.ConfigDir()+"/fullsend-manifest.json"), &m))
+	assert.Equal(t, []string{"bash", "read"}, m.Tools)
+	assert.Equal(t, []string{"go"}, m.BashAllowlist)
 }
 
 func TestPiRuntimeExtractTranscripts(t *testing.T) {

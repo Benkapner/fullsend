@@ -44,15 +44,15 @@ func parsePiAgent(data []byte) (*piAgentDef, error) {
 		def.Body = strings.TrimSpace(string(content))
 		return def, nil
 	}
-	// The opener must be a line that is exactly "---" (surrounding
-	// whitespace and CRLF tolerated); the frontmatter ends at the next such
-	// line. Lines that merely start with "---" belong to the YAML or the
-	// body. A file whose first line starts with "---" but is not a fence is
-	// rejected rather than treated as all-body: that would silently drop the
-	// tools: restriction.
+	// The opener must be a line that is exactly "---" (trailing whitespace
+	// and CRLF tolerated); the frontmatter ends at the next such line. Lines
+	// that merely start with "---", or an indented "---" inside a YAML block
+	// scalar, belong to the YAML or the body. A file whose first line starts
+	// with "---" but is not a fence is rejected rather than treated as
+	// all-body: that would silently drop the tools: restriction.
 	lines := bytes.SplitAfter(content, []byte("\n"))
 	isFence := func(line []byte) bool {
-		return strings.TrimSpace(string(line)) == "---"
+		return strings.TrimRight(string(line), " \t\r\n") == "---"
 	}
 	if !isFence(lines[0]) {
 		return nil, fmt.Errorf("agent definition: first line starts with --- but is not a frontmatter fence: %q", strings.TrimRight(string(lines[0]), "\r\n"))

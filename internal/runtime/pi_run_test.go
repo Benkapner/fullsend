@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -62,7 +64,8 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
 	cmd := buildPiRunCommand(params, m)
 
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && pi --print --mode json`), cmd)
+	// The guard runs before the agent-writable .env is sourced.
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && pi --print --mode json`), cmd)
 	for _, want := range []string{
 		"--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
 		"--session-dir '/sandbox/pi-config/sessions'",
@@ -138,6 +141,21 @@ func TestPiHooksGuard(t *testing.T) {
 	require.NoError(t, os.Remove(manifest))
 	code, _ = run()
 	assert.Equal(t, piHooksMissingExit, code, "missing manifest")
+
+	// A shell function or PATH entry standing in for sha256sum must not
+	// make a tampered adapter pass: the guard uses `command -p`.
+	require.NoError(t, os.WriteFile(manifest, []byte("{}"), 0o644))
+	require.NoError(t, os.WriteFile(ext, []byte("// tampered\n"), 0o644))
+	shadowDir := t.TempDir()
+	sum := sha256.Sum256(piHooksExtensionJS)
+	fake := "#!/bin/sh\necho '" + hex.EncodeToString(sum[:]) + "  x'\n"
+	require.NoError(t, os.WriteFile(filepath.Join(shadowDir, "sha256sum"), []byte(fake), 0o755))
+	shadowed := exec.Command("sh", "-c", "sha256sum() { echo '"+hex.EncodeToString(sum[:])+"  x'; }; PATH="+shellQuote(shadowDir)+":$PATH; "+piHooksGuard(ext, manifest)+" && echo RAN")
+	out2, err := shadowed.CombinedOutput()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr, string(out2))
+	assert.Equal(t, piHooksMissingExit, exitErr.ExitCode(), "shadowed sha256sum")
+	assert.NotContains(t, string(out2), "RAN")
 }
 
 func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {

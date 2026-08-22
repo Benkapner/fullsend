@@ -80,6 +80,15 @@ func TestParsePiAgent_FenceIsExactLine(t *testing.T) {
 	assert.Contains(t, def.Body, "Body line")
 	assert.Contains(t, def.Body, "After rule")
 
+	// An indented "---" inside a block scalar (a markdown rule in the
+	// description) is YAML content, not the closing fence; tools: after it
+	// must survive.
+	def, err = parsePiAgent([]byte("---\nname: z\ndescription: |\n  Intro\n  ---\n  More\ntools: Bash(gh)\n---\nbody"))
+	require.NoError(t, err)
+	assert.Equal(t, "Intro\n---\nMore", def.Description)
+	assert.Equal(t, []string{"Bash"}, def.Tools)
+	assert.Equal(t, "body", def.Body)
+
 	// Trailing whitespace on a fence is tolerated; the restriction must not
 	// be dropped silently.
 	def, err = parsePiAgent([]byte("--- \nname: y\ntools: Bash(gh)\n---\t\nbody"))

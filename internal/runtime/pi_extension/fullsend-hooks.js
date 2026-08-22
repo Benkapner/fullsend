@@ -96,8 +96,8 @@ export function bashAllowlistViolation(command, allowlist) {
     if (ENV_PREFIX.test(words[0])) {
       return `"${words[0].split("=")[0]}=" prefix is not allowed under a Bash allowlist`;
     }
-    const first = words[0] ?? "";
-    if (first === "" || first.startsWith("(") || first.startsWith("{")) {
+    const first = words[0];
+    if (first.startsWith("(") || first.startsWith("{")) {
       return `subshell or group "${first}" is not allowed under a Bash allowlist`;
     }
     if (first.includes("/") && !allowlist.includes(first)) {

@@ -108,10 +108,16 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	}
 	modelSpec := translatePiModel(model)
 
-	parts := []string{
-		fmt.Sprintf("cd %s && . %s", shellQuote(params.RepoDir), shellQuote(envFile)),
-		"&& export " + piManifestEnv + "=" + shellQuote(r.piManifestPath()),
+	parts := []string{"cd " + shellQuote(params.RepoDir)}
+	if hooksEnabled {
+		// Before .env: that file is agent-writable and could otherwise
+		// shadow the guard's tools with functions or a PATH entry.
+		parts = append(parts, "&& "+piHooksGuard(hooksExt, r.piManifestPath()))
 	}
+	parts = append(parts,
+		"&& . "+shellQuote(envFile),
+		"&& export "+piManifestEnv+"="+shellQuote(r.piManifestPath()),
+	)
 	// pi matches the provider prefix case-insensitively, so the gate must
 	// too or "Anthropic-Vertex/..." would run on Vertex with the unset
 	// skipped.
@@ -128,9 +134,6 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
 			`&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
 		)
-	}
-	if hooksEnabled {
-		parts = append(parts, "&& "+piHooksGuard(hooksExt, r.piManifestPath()))
 	}
 	parts = append(parts,
 		"&& pi",
@@ -184,7 +187,10 @@ const piManifestEnv = "FULLSEND_PI_MANIFEST"
 // message goes to the runner's stderr, not the debug log.
 func piHooksGuard(hooksExt, manifestPath string) string {
 	sum := sha256.Sum256(piHooksExtensionJS)
-	return fmt.Sprintf(`{ test -f %s && test -f %s && [ "$(sha256sum %s | cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi hook adapter or manifest missing or modified; refusing to run unhooked' >&2; exit %d; }; }`,
+	// `command -p` bypasses shell functions and uses the system default
+	// PATH, so nothing the agent left in the environment can stand in for
+	// sha256sum or cut; test, [ and echo are builtins.
+	return fmt.Sprintf(`{ test -f %s && test -f %s && [ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi hook adapter or manifest missing or modified; refusing to run unhooked' >&2; exit %d; }; }`,
 		shellQuote(hooksExt), shellQuote(manifestPath), shellQuote(hooksExt), shellQuote(hex.EncodeToString(sum[:])), piHooksMissingExit)
 }
 
