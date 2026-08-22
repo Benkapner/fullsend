@@ -116,3 +116,14 @@ def test_detection_form_keeps_field_separators():
     # scan_text joins fields with a newline so a needle cannot match across a
     # boundary; folding that away would manufacture unredactable matches.
     assert hook_io.nfkc("out-\nerr") == "out-\nerr"
+
+
+def test_detection_form_folds_separators_controls_and_escapes():
+    for char in ("\u2028", "\u2029", "\x00", "\x1b[31m", "\x1b]8;;X\x07", "\x1b"):
+        assert hook_io.nfkc("CAN" + char + "ARY") == "CANARY", repr(char)
+
+
+def test_detection_form_keeps_tabs_and_returns_with_the_newline():
+    # scan_text's field separator and ordinary whitespace must survive, or
+    # detection would manufacture matches across field boundaries.
+    assert hook_io.nfkc("a\tb\r\nc") == "a\tb\r\nc"

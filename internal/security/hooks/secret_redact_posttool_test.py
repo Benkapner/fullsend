@@ -363,5 +363,20 @@ class TestPaginationVsSecretNames(unittest.TestCase):
             self.assertEqual("strong", sr.name_strength(name), name)
 
 
+class TestQualifiedKeyUnderPaginationWords(unittest.TestCase):
+    def test_api_key_survives_a_pagination_word(self):
+        import secret_redact_posttool as sr
+
+        for name in ("NEXT_API_KEY", "PAGE_ACCESS_KEY", "next_secret"):
+            self.assertEqual("strong", sr.name_strength(name), name)
+        for name in ("NextToken", "nextPageToken", "PAGE_TOKEN", "NEXT_PUBLIC_API_KEY"):
+            self.assertIsNone(sr.name_strength(name), name)
+
+    def test_gitlab_prefixed_fakes_are_left_alone(self):
+        fixtures = '"token": "glptt-new"\nToken: "gldt-example"\n"runner": "glrt-test"\n'
+        _, stdout, _ = run_hook(fixtures)
+        self.assertEqual(stdout, "")
+
+
 if __name__ == "__main__":
     unittest.main()

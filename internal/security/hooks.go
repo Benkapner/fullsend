@@ -87,9 +87,11 @@ const (
 	// HookPhasePostToolUse runs after the tool executes and may rewrite its result.
 	HookPhasePostToolUse HookPhase = "PostToolUse"
 	// HookPhasePostToolUseFailure runs after a tool call fails. Claude Code
-	// delivers the error text but allows no rewrite, so only detection (the
-	// canary halt) is possible here. Runtimes whose post-tool event already
-	// covers failed calls (pi) map it onto nothing.
+	// delivers the error text but allows no rewrite, so this phase detects
+	// rather than sanitizes: a canary halts the session, and credential-shaped
+	// or control content is logged and returned to the agent as an
+	// additionalContext warning. Runtimes whose post-tool event already covers
+	// failed calls (pi) map it onto nothing.
 	HookPhasePostToolUseFailure HookPhase = "PostToolUseFailure"
 )
 
@@ -167,8 +169,9 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 	// still halts the session (canary) and credential-shaped or control
 	// content is still logged and flagged (sanitizers, detection-only — the
 	// event allows no output rewrite, which the runtimes matrix records).
-	// Scheduled whenever either half has something to do there.
-	if postToolChainEnabled(hooks) {
+	// Scheduled only when something actually runs there: context suppression
+	// cannot (it rewrites output, which this event does not allow).
+	if failurePhaseEnabled(hooks) {
 		plan = append(plan, HookGroup{
 			Phase: HookPhasePostToolUseFailure, Tools: []string{AllTools},
 			Scripts: []string{"posttool_chain.py"},
@@ -264,6 +267,16 @@ func ssrfPreToolEnabled(hooks SandboxHookConfig) bool {
 		return true
 	}
 	return boolDefault(sh.SSRFPreTool, true)
+}
+
+// failurePhaseEnabled reports whether anything the chain does on a failed
+// tool call is enabled. Context suppression is deliberately excluded: it
+// rewrites output, which PostToolUseFailure does not allow, so a
+// suppress-only configuration would schedule a hook that does nothing.
+func failurePhaseEnabled(hooks SandboxHookConfig) bool {
+	return canaryPostToolEnabled(hooks) ||
+		secretRedactPostToolEnabled(hooks) ||
+		unicodePostToolEnabled(hooks)
 }
 
 func postToolSanitizeEnabled(hooks SandboxHookConfig) bool {

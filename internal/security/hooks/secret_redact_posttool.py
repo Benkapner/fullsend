@@ -181,9 +181,16 @@ def name_strength(name: str) -> str | None:
     if not parts:
         return None
     vetoes = {p for p in parts if p in _NOT_SECRET_PARTS}
-    # A pagination word only disqualifies a token/key name (NextToken,
-    # PageToken): NEXT_SECRET and PAGE_PASSWORD are still secrets.
-    if vetoes and not (vetoes <= _PAGINATION_PARTS and any(p in _SECRET_ONLY_PARTS for p in parts)):
+    # A pagination word only vetoes a plain token/cursor name (NextToken,
+    # nextPageToken): a name that also says "secret"/"password", or that pairs
+    # "key" with a qualifier (NEXT_API_KEY, PAGE_ACCESS_KEY), still names one.
+    if vetoes and not (
+        vetoes <= _PAGINATION_PARTS
+        and (
+            any(p in _SECRET_ONLY_PARTS for p in parts)
+            or ("key" in parts and any(p in _KEY_QUALIFIERS for p in parts))
+        )
+    ):
         return None
     if parts[-1] == "id":
         # KEY_ID / CLIENT_ID name an identifier; id_token / ID_TOKEN is a token.

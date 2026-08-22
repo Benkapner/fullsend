@@ -819,6 +819,11 @@ class TestFailurePathObfuscation(unittest.TestCase):
             ("bidi_override", "\u202e"),
             ("tag_char", "\U000e0041"),
             ("combining_mark", "\u0300"),
+            ("line_separator", "\u2028"),
+            ("paragraph_separator", "\u2029"),
+            ("nul", "\x00"),
+            ("ansi_escape", "\x1b[31m"),
+            ("osc_escape", "\x1b]8;;X\x07"),
         ):
             with self.subTest(name):
                 rc, stdout, _ = run_raw(

@@ -171,31 +171,52 @@ def transform_strings(
     return value
 
 
+# Escape sequences are removed whole: dropping only the ESC would leave the
+# parameter bytes ("[31m") sitting inside the token, splitting it just as
+# effectively. Mirrors the ansi_escape/osc_escape classes in unicode_posttool.
+_ESCAPE_RE = re.compile(
+    r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\x1b[\]P_^][^\x1b\x07]*(?:\x1b\\|\x07)|\x1b"
+)
+# Control characters that never appear inside a credential and can therefore
+# only be there to split one. ``\n`` is excluded on purpose: scan_text joins
+# fields with it, and folding it away would manufacture cross-field matches
+# that no redactor could undo. ``\r``/``\t`` follow it for the same reason.
+_KEEP_CONTROLS = frozenset("\n\r\t")
+
+
 def _detection_form(text: str) -> str:
     """Fold away every way a token can be split or disguised without changing
-    what it reads as: combining marks, variation selectors, and format
-    characters (zero-width, bidi overrides, language tags), then NFKC.
+    what it reads as, then NFKC.
 
-    Line and field separators are deliberately kept: ``scan_text`` joins fields
-    with a newline so a needle cannot match across a field boundary, and
-    removing them would manufacture matches that no redactor could undo.
+    Removed: combining marks (``Mn``), format characters (``Cf`` — zero-width,
+    bidi overrides, language tags), line and paragraph separators (``Zl``,
+    ``Zp`` — U+2028/U+2029), variation selectors, other control characters
+    (``Cc``, NUL included) and whole ANSI/OSC escape sequences. This is the
+    same set the unicode stage strips from a *successful* call's output, so
+    detection on a failed call — where nothing can be rewritten — sees through
+    exactly as much.
     """
-    decomposed = unicodedata.normalize("NFKD", text)
+    stripped_escapes = _ESCAPE_RE.sub("", text)
+    decomposed = unicodedata.normalize("NFKD", stripped_escapes)
     stripped = "".join(
         c
         for c in decomposed
-        if unicodedata.category(c) not in ("Mn", "Cf")
-        and not (0xFE00 <= ord(c) <= 0xFE0F or 0xE0100 <= ord(c) <= 0xE01EF)
+        if c in _KEEP_CONTROLS
+        or (
+            unicodedata.category(c) not in ("Mn", "Cf", "Zl", "Zp", "Cc")
+            and not (0xFE00 <= ord(c) <= 0xFE0F or 0xE0100 <= ord(c) <= 0xE01EF)
+        )
     )
     return unicodedata.normalize("NFKC", stripped)
 
 
 def nfkc(value: Any) -> Any:
-    """Return ``value`` with every string in detection form: NFKC-normalized
-    with combining marks and variation selectors removed.
+    """Return ``value`` with every string in detection form (see
+    ``_detection_form``): NFKC-normalized with combining marks, format
+    characters, separators, control characters and escape sequences removed.
 
     Sanitizers keep the original text; scanners that must see through
-    fullwidth, combining-mark or selector obfuscation run on this copy.
+    obfuscation run on this copy, which is never emitted.
     """
     return transform_strings(value, _detection_form)
 

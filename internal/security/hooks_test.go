@@ -573,6 +573,17 @@ func TestHookPlan_FailurePhaseFollowsSanitizersToo(t *testing.T) {
 	plan := HookPlan(SandboxHookConfigFromHarness(h))
 	assert.Equal(t, 1, countPhase(plan, HookPhasePostToolUseFailure), "sanitizers still run there")
 
+	// Suppression alone cannot run there (it rewrites output), so a
+	// suppress-only configuration schedules no failure group.
+	h = &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		CanaryPostTool:       &off,
+		SecretRedactPostTool: &off,
+		UnicodePostTool:      &off,
+	}}}
+	plan = HookPlan(SandboxHookConfigFromHarness(h))
+	assert.Equal(t, 0, countPhase(plan, HookPhasePostToolUseFailure))
+	assert.Equal(t, 1, countPhase(plan, HookPhasePostToolUse), "suppression still runs on success")
+
 	// Everything the chain does post-tool is off: no failure group at all.
 	h = &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
 		CanaryPostTool:          &off,
