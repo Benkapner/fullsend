@@ -554,6 +554,10 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			}
 
 		case "compaction_start":
+			// Only a compaction that follows a terminal agent_end (pending
+			// result present) can still change the outcome; compactions
+			// with nothing pending — before the first prompt, after
+			// agent_settled, manual /compact — are irrelevant here.
 			if pendingResult != nil {
 				compacting = true
 			}
@@ -561,6 +565,9 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		case "compaction_end":
 			// willRetry=true means pi re-runs the interrupted turn (an
 			// agent_start follows); false means the parked result stands.
+			// Clearing compacting unconditionally is safe: it is only ever
+			// set while a result is pending, and a compaction_end with
+			// nothing pending has nothing to release.
 			compacting = false
 			var evt piCompactionEndEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
