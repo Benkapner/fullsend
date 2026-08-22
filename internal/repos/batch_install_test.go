@@ -212,6 +212,210 @@ func TestBatchInstall_DryRunSkipsInstalled(t *testing.T) {
 	}
 }
 
+func TestBatchInstall_DryRun_ReportsComponentDetail(t *testing.T) {
+	t.Run("fresh install reports new", func(t *testing.T) {
+		repos := []string{"acme/api"}
+		fc := newFakeClientForBatch(repos...)
+		manifest := newBatchManifest(repos...)
+		sc := &fakeScaffoldCommit{}
+
+		var messages []string
+		progress := func(_, phase, msg string) {
+			if phase == "dry-run" {
+				messages = append(messages, msg)
+			}
+		}
+
+		cfg := BatchInstallConfig{
+			Manifest:               manifest,
+			DryRun:                 true,
+			MaxConcurrency:         4,
+			Roles:                  []string{"triage"},
+			InferenceProject:       "test-inference",
+			InferenceProjectNumber: "123456789",
+		}
+
+		result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), progress)
+		if err != nil {
+			t.Fatalf("BatchInstall() error: %v", err)
+		}
+		if len(result.Installed) != 1 {
+			t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+		}
+		if len(messages) != 1 {
+			t.Fatalf("expected 1 dry-run message, got %d", len(messages))
+		}
+		if messages[0] != "Would install (new)" {
+			t.Errorf("expected %q, got %q", "Would install (new)", messages[0])
+		}
+	})
+
+	t.Run("partial install reports repair with missing components", func(t *testing.T) {
+		repos := []string{"acme/api"}
+		fc := newFakeClientForBatch(repos...)
+		// Guard variable set but no workflow file → partial install.
+		fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+		manifest := newBatchManifest(repos...)
+		sc := &fakeScaffoldCommit{}
+
+		var messages []string
+		progress := func(_, phase, msg string) {
+			if phase == "dry-run" {
+				messages = append(messages, msg)
+			}
+		}
+
+		cfg := BatchInstallConfig{
+			Manifest:               manifest,
+			DryRun:                 true,
+			MaxConcurrency:         4,
+			Roles:                  []string{"triage"},
+			InferenceProject:       "test-inference",
+			InferenceProjectNumber: "123456789",
+		}
+
+		result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), progress)
+		if err != nil {
+			t.Fatalf("BatchInstall() error: %v", err)
+		}
+		if len(result.Installed) != 1 {
+			t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+		}
+		if len(messages) != 1 {
+			t.Fatalf("expected 1 dry-run message, got %d", len(messages))
+		}
+		if !strings.HasPrefix(messages[0], "Would repair: ") {
+			t.Errorf("expected message to start with %q, got %q", "Would repair: ", messages[0])
+		}
+		// Missing workflow should be reported.
+		if !strings.Contains(messages[0], "would add") {
+			t.Errorf("expected missing component reported as 'would add', got %q", messages[0])
+		}
+	})
+
+	t.Run("drifted mint URL reports update", func(t *testing.T) {
+		repos := []string{"acme/api"}
+		fc := newFakeClientForBatch(repos...)
+		markFullyInstalled(fc, "acme", "api")
+		// Drift the mint URL from the manifest value.
+		fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+		manifest := newBatchManifest(repos...)
+		sc := &fakeScaffoldCommit{}
+
+		var messages []string
+		progress := func(_, phase, msg string) {
+			if phase == "dry-run" {
+				messages = append(messages, msg)
+			}
+		}
+
+		cfg := BatchInstallConfig{
+			Manifest:               manifest,
+			DryRun:                 true,
+			MaxConcurrency:         4,
+			Roles:                  []string{"triage"},
+			InferenceProject:       "test-inference",
+			InferenceProjectNumber: "123456789",
+		}
+
+		result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), progress)
+		if err != nil {
+			t.Fatalf("BatchInstall() error: %v", err)
+		}
+		if len(result.Installed) != 1 {
+			t.Fatalf("expected 1 installed, got %d", len(result.Installed))
+		}
+		if len(messages) != 1 {
+			t.Fatalf("expected 1 dry-run message, got %d", len(messages))
+		}
+		if !strings.HasPrefix(messages[0], "Would repair: ") {
+			t.Errorf("expected message to start with %q, got %q", "Would repair: ", messages[0])
+		}
+		if !strings.Contains(messages[0], "would update FULLSEND_MINT_URL") {
+			t.Errorf("expected drifted FULLSEND_MINT_URL reported as 'would update', got %q", messages[0])
+		}
+	})
+}
+
+func TestDryRunMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		guardSet   bool
+		components []ComponentStatus
+		want       string
+	}{
+		{
+			name:     "fresh install",
+			guardSet: false,
+			want:     "Would install (new)",
+		},
+		{
+			name:     "guard set but no components",
+			guardSet: true,
+			want:     "Would install",
+		},
+		{
+			name:     "guard set all match",
+			guardSet: true,
+			components: []ComponentStatus{
+				{Name: "workflow", Present: true, Match: true},
+				{Name: "var:FULLSEND_MINT_URL", Present: true, Match: true},
+			},
+			want: "Would install",
+		},
+		{
+			name:     "missing workflow",
+			guardSet: true,
+			components: []ComponentStatus{
+				{Name: "workflow", Present: false, Match: false},
+			},
+			want: "Would repair: would add workflow",
+		},
+		{
+			name:     "drifted variable",
+			guardSet: true,
+			components: []ComponentStatus{
+				{Name: "workflow", Present: true, Match: true},
+				{Name: "var:FULLSEND_MINT_URL", Present: true, Match: false,
+					Expected: "https://new.example.com",
+					Actual:   "https://old.example.com"},
+			},
+			want: "Would repair: would update FULLSEND_MINT_URL",
+		},
+		{
+			name:     "missing thin caller",
+			guardSet: true,
+			components: []ComponentStatus{
+				{Name: "workflow", Present: true, Match: true},
+				{Name: "thin-caller:.github/workflows/prioritize.yml",
+					Present: false, Match: false},
+			},
+			want: "Would repair: would add .github/workflows/prioritize.yml",
+		},
+		{
+			name:     "multiple issues",
+			guardSet: true,
+			components: []ComponentStatus{
+				{Name: "workflow", Present: false, Match: false},
+				{Name: "var:FULLSEND_MINT_URL", Present: true, Match: false,
+					Expected: "https://new.example.com",
+					Actual:   "https://old.example.com"},
+				{Name: "secret:FULLSEND_GCP_PROJECT_ID", Present: false, Match: false},
+			},
+			want: "Would repair: would add workflow, would update FULLSEND_MINT_URL, would add FULLSEND_GCP_PROJECT_ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dryRunMessage(tt.guardSet, tt.components)
+			if got != tt.want {
+				t.Errorf("dryRunMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBatchInstall_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	manifest := newBatchManifest()
