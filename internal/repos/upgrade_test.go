@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func newUpgradeManifest(defaultRef string) *Manifest {
@@ -1928,9 +1929,10 @@ func TestUpgrade_GitLabConvergesAllTemplateFiles(t *testing.T) {
 }
 
 func TestUpgrade_GitHubDoesNotIncludeExtraFiles(t *testing.T) {
-	// GitHub upgrade should only commit the workflow shim — no extra
-	// template files. Ensures the GitLab convergence logic does not
-	// affect GitHub repos.
+	// GitHub upgrade with no thin callers installed should commit only
+	// the workflow shim. Ensures the GitLab convergence logic does not
+	// affect GitHub repos. When thin callers exist, they are also
+	// included — see TestUpgrade_ThinCallerRefBumped.
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
 
@@ -1955,6 +1957,92 @@ func TestUpgrade_GitHubDoesNotIncludeExtraFiles(t *testing.T) {
 	}
 	if committedFiles[0].Path != ".github/workflows/fullsend.yml" {
 		t.Errorf("expected .github/workflows/fullsend.yml, got %s", committedFiles[0].Path)
+	}
+}
+
+func TestUpgrade_ThinCallerRefBumped(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	fc.FileContents["acme-corp/api-server/.github/workflows/prioritize.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v2.1.0\n")
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := newUpgradeManifest("v2.3.0")
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1, RepoFilter: []string{"acme-corp/api-server"}}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected upgrade, got %+v", results)
+	}
+	if len(committedFiles) != 2 {
+		t.Fatalf("expected 2 committed files (shim + thin caller), got %d", len(committedFiles))
+	}
+	if committedFiles[1].Path != ".github/workflows/prioritize.yml" {
+		t.Errorf("expected thin caller path, got %s", committedFiles[1].Path)
+	}
+	if !strings.Contains(string(committedFiles[1].Content), "v2.3.0") {
+		t.Error("thin caller content should contain upgraded ref v2.3.0")
+	}
+}
+
+func TestUpgrade_ThinCallerOnlyDrift(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.3.0")
+	fc.FileContents["acme-corp/api-server/.github/workflows/prioritize.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v2.1.0\n")
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := newUpgradeManifest("v2.3.0")
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1, RepoFilter: []string{"acme-corp/api-server"}}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected upgrade for thin caller drift, got %+v", results)
+	}
+	if len(committedFiles) != 1 {
+		t.Fatalf("expected 1 committed file (thin caller only), got %d", len(committedFiles))
+	}
+	if committedFiles[0].Path != ".github/workflows/prioritize.yml" {
+		t.Errorf("expected thin caller path, got %s", committedFiles[0].Path)
+	}
+}
+
+func TestUpgrade_ThinCallerReadError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	fc.GetFileContentErrors = make(map[string]error)
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.GetFileContentErrors["acme-corp/api-server/"+tcPath] = fmt.Errorf("simulated API error")
+	}
+
+	m := newUpgradeManifest("v2.3.0")
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1, RepoFilter: []string{"acme-corp/api-server"}}
+	results, err := Upgrade(context.Background(), cfg, newTestClientFactory(fc), nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Error == nil {
+		t.Error("expected error from thin caller read failure")
+	}
+	if results[0].Error != nil && !strings.Contains(results[0].Error.Error(), "thin caller") {
+		t.Errorf("expected error about thin caller, got: %v", results[0].Error)
 	}
 }
 
