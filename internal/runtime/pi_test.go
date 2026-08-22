@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,7 @@ func TestPiRuntimeMetadata(t *testing.T) {
 	assert.Equal(t, sandbox.SandboxWorkspace, rt.WorkspaceDir())
 	// Config dir must be outside the agent-writable workspace tree.
 	assert.False(t, strings.HasPrefix(rt.ConfigDir(), sandbox.SandboxWorkspace))
+	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/anthropic-vertex", PiVertexExtensionPath)
 }
 
 func TestPiRuntimeEnvExports(t *testing.T) {
@@ -33,44 +36,48 @@ func TestPiRuntimeEnvExports(t *testing.T) {
 	assert.Contains(t, exports, "PI_TELEMETRY=0")
 }
 
-func TestPiRuntimeRun_NotImplemented(t *testing.T) {
+func TestPiRuntimeCapabilities(t *testing.T) {
 	t.Parallel()
-	exit, err := PiRuntime{}.Run(context.Background(), RunParams{}, nil, time.Now(), nil)
+	// pi reads AGENTS.md natively — no CLAUDE.md bridge.
+	assert.False(t, WantsClaudeMDBridge(PiRuntime{}))
+	assert.Equal(t, piDebugLog, DebugLogNameFor(PiRuntime{}))
+	assert.Equal(t, "pi-debug.log", PiRuntime{}.DebugLogName())
+}
+
+func TestPiRuntimeBootstrap_EmptyAgentPath(t *testing.T) {
+	t.Parallel()
+	err := PiRuntime{}.Bootstrap(bootstrapInput{sandboxName: "sb"})
+	require.ErrorContains(t, err, "agent path is required")
+}
+
+func TestPiRuntimeBootstrap_MissingAgentFile(t *testing.T) {
+	t.Parallel()
+	err := PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   filepath.Join(t.TempDir(), "missing.md"),
+		agentName:   "triage",
+	})
+	require.ErrorContains(t, err, "reading agent definition")
+}
+
+func TestPiRuntimeRun_OpenshellNotInPath(t *testing.T) {
+	// Run first reads the manifest through openshell; with no binary on
+	// PATH that fails before anything is executed.
+	t.Setenv("PATH", t.TempDir())
+	exit, err := PiRuntime{}.Run(context.Background(), RunParams{SandboxName: "sb", Timeout: time.Second}, nil, time.Now(), &RunMetrics{})
 	assert.Equal(t, -1, exit)
-	require.ErrorContains(t, err, "not yet implemented")
-	assert.Contains(t, err.Error(), "#6464")
-}
-
-func TestPiRuntimeBootstrap_NotImplemented(t *testing.T) {
-	t.Parallel()
-	err := PiRuntime{}.Bootstrap(bootstrapInput{})
-	require.ErrorContains(t, err, "not yet implemented")
-	assert.Contains(t, err.Error(), "#6464")
-}
-
-func TestPiRuntimeExtractStubs_NotImplemented(t *testing.T) {
-	t.Parallel()
-	rt := PiRuntime{}
-	require.ErrorContains(t, rt.ExtractTranscripts("sb", "agent", t.TempDir()), "not implemented")
-	require.ErrorContains(t, rt.ExtractDebugLog("sb", "/tmp/x", "*"), "not implemented")
+	require.ErrorContains(t, err, "reading pi manifest")
 }
 
 func TestPiRuntimeNoopMethods(t *testing.T) {
 	t.Parallel()
 	rt := PiRuntime{}
-	assert.NoError(t, rt.ClearIterationArtifacts("sb"))
 	assert.Nil(t, rt.ParseTranscriptErrors(t.TempDir()))
-	te, ok := rt.ParseTranscriptFile("/nonexistent")
+	_, ok := rt.ParseTranscriptFile("/nonexistent")
 	assert.False(t, ok)
-	assert.Equal(t, TranscriptError{}, te)
+	require.NoError(t, rt.ExtractDebugLog("sb", filepath.Join(t.TempDir(), "x"), ""), "no --debug: nothing to download")
 	var sb strings.Builder
 	rt.EmitTranscriptErrors(&sb, nil)
-}
-
-func TestPiRuntimeCapabilities(t *testing.T) {
-	t.Parallel()
-	// pi reads AGENTS.md natively — no CLAUDE.md bridge.
-	assert.False(t, WantsClaudeMDBridge(PiRuntime{}))
-	// No DebugLogNamer yet — falls back to the runtime-neutral default.
-	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor(PiRuntime{}))
+	assert.Empty(t, sb.String())
+	_ = os.Stderr
 }
