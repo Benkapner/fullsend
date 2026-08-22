@@ -261,6 +261,9 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Harness passthrough variables must be declared so os.Expand doesn't
 	// reject unset variables during harness env validation (#6273).
 	assert.Contains(t, s, "CODE_ALLOWED_TARGET_BRANCHES")
+	// RUNNER_TEMP must be exported with /tmp fallback so harness host_files
+	// paths that reference ${RUNNER_TEMP} resolve on GitLab CI (#6460).
+	assert.Contains(t, s, `export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"`)
 }
 
 func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
@@ -585,11 +588,26 @@ func TestInsertAfterDocStart(t *testing.T) {
 	})
 }
 
+func TestGitLabAgentTemplateRunnerTempBeforeRun(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	exportIdx := strings.Index(s, "export RUNNER_TEMP=")
+	require.Greater(t, exportIdx, 0, "RUNNER_TEMP export must exist")
+
+	runIdx := strings.Index(s, "fullsend run")
+	require.Greater(t, runIdx, 0, "fullsend run must exist")
+
+	assert.Less(t, exportIdx, runIdx,
+		"RUNNER_TEMP must be exported before fullsend run is invoked")
+}
+
 // TestGitLabAgentTemplateHarnessPassthroughVars validates that harness
 // passthrough variables declared in the GitHub reusable workflows are also
 // present in the GitLab agent template's variables: section. When a harness
 // YAML uses ${VAR} passthrough syntax, the harness engine's os.Expand rejects
-// unset variables. GitHub workflows set these to ” in their env: blocks; the
+// unset variables. GitHub workflows set these to " in their env: blocks; the
 // GitLab template must do the same or the agent aborts at env validation (#6273).
 func TestGitLabAgentTemplateHarnessPassthroughVars(t *testing.T) {
 	// Variables that GitHub reusable workflows set for harness passthrough.

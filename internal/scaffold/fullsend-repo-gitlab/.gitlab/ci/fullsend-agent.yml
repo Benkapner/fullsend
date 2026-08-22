@@ -262,9 +262,14 @@ stages:
         fi
       fi
 
-      # Harness environment variables — export the forge token and entity
-      # URL in the format that harnesses expect.
+      # Harness environment variables — export the forge token, runner
+      # temp directory, and entity URL in the format that harnesses expect.
       export GITLAB_TOKEN="${FULLSEND_FORGE_TOKEN}"
+
+      # RUNNER_TEMP — GitHub Actions sets this automatically; GitLab CI
+      # does not. Harnesses that use ${RUNNER_TEMP} in host_files paths
+      # (e.g. the scribe harness) need it to resolve correctly.
+      export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
 
       # Construct the entity URL for the harness. EVENT_TYPE values from
       # the poller use prefixed forms: issue_note, issue_label (→ issue
