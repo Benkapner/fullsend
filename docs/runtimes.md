@@ -9,24 +9,24 @@ Every runtime is driven the same way. The runner owns the sandbox, credentials a
 ```mermaid
 sequenceDiagram
   autonumber
-  participant R as fullsend run (runner host)
-  participant S as OpenShell sandbox
-  participant A as agent runtime (claude | pi)
-  participant M as model (Vertex AI)
-  R->>R: resolve runtime from .fullsend/config.yaml
-  R->>S: write .env, upload host files (WIF config)
-  R->>S: Bootstrap — agent definition, skills, hook scripts + wiring, runtime settings
-  R->>S: upload the OIDC token file (refreshed every 4 min while the run lasts)
-  R->>S: Run — one command per iteration
-  S->>A: start (claude: hooks via --settings · pi: hash-checked adapter or exit 97)
+  participant R as Runner
+  participant S as Sandbox
+  participant A as Runtime
+  participant M as Model
+  R->>R: pick runtime (config.yaml)
+  R->>S: .env, host files
+  R->>S: Bootstrap
+  R->>S: OIDC token (4-min refresh)
+  R->>S: Run (per iteration)
+  S->>A: start + hook wiring
   loop tool-use loop
-    A->>M: request over WIF credentials, egress allowlist only
+    A->>M: request (WIF)
     M-->>A: response
-    A->>A: PreToolUse hooks → tool → PostToolUse hooks
+    A->>A: Pre → tool → Post hooks
   end
-  A-->>R: event stream (init, text, tool use, tokens, result)
-  R->>S: extract output/, transcripts, debug log
-  R->>R: verdict from the stream and transcripts · metrics.json (runtime, tokens, cost)
+  A-->>R: event stream
+  R->>S: extract artifacts
+  R->>R: verdict, metrics.json
 ```
 
 When adding a runtime, fill in the security matrix below and register it in `runtime.Resolve()`.
@@ -48,26 +48,31 @@ The sandbox is the containment boundary; everything a runtime does with hooks an
 flowchart TB
   subgraph HOST["Runner host — trusted, runs fullsend"]
     direction LR
-    SCAN["host scans\ncontext files · agent def · skills · plugins"]
-    CRED["long-lived credentials stay here (WIF path)\nonly a short-lived OIDC token file + WIF config enter"]
-    SIG["hooks on/off decided from the harness\nnever from agent-writable files"]
+    SCAN["host scans\ncontext · agent def\nskills · plugins"]
+    CRED["long-lived credentials stay here\nonly a short-lived OIDC token\n+ WIF config enter"]
+    SIG["hooks on/off decided\nfrom the harness, never\nfrom agent-writable files"]
   end
   subgraph SB["Sandbox boundary — OpenShell + L7 egress policy (containment)"]
     direction TB
     EG["egress allowlist: *.googleapis.com · api.anthropic.com\nbinaries: **/claude · **/node"]
     subgraph PROC["Runtime process — steering, defense in depth"]
       direction LR
-      PRE["PreToolUse\nTirith · SSRF · canary · tool allowlist"]
+      PRE["PreToolUse\nTirith · SSRF\ncanary · allowlist"]
       TOOL["tool call"]
-      POST["PostToolUse\nsecret redaction · unicode · context suppression"]
+      POST["PostToolUse\nredact · unicode\nsuppress"]
       PRE --> TOOL --> POST
     end
-    WR["agent-writable between iterations (Claude parity):\nrepo · .env · output/ · hook wiring files\nincl. pi's adapter — integrity-checked before each run"]
-    RO["read-only, pinned: runtime binary · provider extension"]
+    subgraph FS["Files"]
+      direction LR
+      WR["agent-writable between iterations\n(Claude parity): repo · .env · output/\nhook wiring incl. pi's adapter\n(integrity-checked before each run)"]
+      RO["read-only, pinned:\nruntime binary · provider extension"]
+    end
+    EG --> PROC --> FS
   end
   HOST --> SB
   style SB fill:#fbf0d6,stroke:#d98e04,stroke-dasharray:6 4,color:#1b2230
   style PROC fill:#e3e9fb,stroke:#2d5be3,color:#1b2230
+  style FS fill:#fff8ea,stroke:#d98e04,color:#1b2230
   classDef boundary fill:#fff,stroke:#d98e04,color:#1b2230;
   classDef steer fill:#fff,stroke:#2d5be3,color:#1b2230;
   classDef host fill:#eceee8,stroke:#a9afa4,color:#1b2230;
@@ -260,7 +265,7 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 One iteration, end to end — the amber decision is what makes "hooks enabled" enforceable, since pi silently skips a missing `-e` extension:
 
 ```mermaid
-flowchart LR
+flowchart TB
   B["Bootstrap (once per run)\nagent .md → APPEND_SYSTEM.md + --tools\nhook scripts + manifest + adapter\npi --version preflight"]
   G{"shell guard, before .env (command -p):\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
   X["exit 97\npi never starts unhooked\n(Run refuses earlier, exit -1,\nif the manifest has no hook plan)"]

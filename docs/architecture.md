@@ -182,26 +182,27 @@ This is the thing that actually reasons and acts. Everything else in this docume
 The runner talks to every runtime through one contract, so the harness, sandbox, hook scripts and credentials are shared; only the in-sandbox config directory and the way hooks are wired differ per runtime:
 
 ```mermaid
-flowchart LR
+flowchart TB
   subgraph RUNNER["fullsend run — runner host"]
-    direction TB
+    direction LR
     CFG[".fullsend/config.yaml\nruntime: claude | pi | dummy"]
     RT["runtime.Runtime\nBootstrap · Run (+ TranscriptHandler)"]
     HOOKS["security.HookPlan\nruntime-neutral scripts (ADR 0090)"]
     CFG --> RT
   end
-  subgraph SANDBOX["OpenShell sandbox — same image, policy and egress for every runtime"]
-    direction TB
-    CC["Claude Code\nclaude -p --agent\nhooks loaded via --settings"]
-    PI["pi\npi --print --mode json\nhooks via fullsend-hooks.js adapter"]
-    DM["dummy\nscripted ops for behaviour tests"]
+  subgraph SANDBOX["OpenShell sandbox — same image, policy and egress"]
+    direction LR
+    CC["Claude Code\nclaude -p --agent\nhooks via --settings"]
+    PI["pi\npi --print --mode json\nhooks via fullsend-hooks.js"]
+    DM["dummy\nscripted ops\n(behaviour tests)"]
   end
   RT -->|"/sandbox/claude-config"| CC
   RT -->|"/sandbox/pi-config"| PI
   RT --> DM
   HOOKS -.-> CC
   HOOKS -.-> PI
-  CC -->|"WIF: OIDC token → STS"| VX["Vertex AI\n*.googleapis.com"]
+  VX["Vertex AI — *.googleapis.com\nWIF: OIDC token → STS"]
+  CC --> VX
   PI -->|"same credential path"| VX
   classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
   classDef def fill:#eceee8,stroke:#a9afa4,color:#1b2230;
