@@ -239,7 +239,11 @@ func piIsErrorStop(reason string) bool {
 
 // parsePiStream reads NDJSON from pi's --mode json output and emits
 // normalized AgentEvent values via the onEvent callback. It returns the
-// sessionID captured from the session header's `id` field.
+// sessionID captured from the session header's `id` field. Exactly one
+// ResultEvent is emitted per call — also when a read error is returned, in
+// which case the result reports the stream as incomplete unless it had
+// already settled — so callers must not treat a non-nil error as "no
+// result was delivered".
 //
 // Pi's wire format (v0.84.2):
 //   - Session header {type:session, version:3, id, timestamp, cwd} — no model.

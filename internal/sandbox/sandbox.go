@@ -26,8 +26,8 @@ const (
 	SandboxWorkspace = "/sandbox/workspace" //nolint:gosec // not a credential
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
 	SandboxClaudeConfig = "/sandbox/claude-config" //nolint:gosec // not a credential
-	// SandboxPiConfig is the pi config directory inside the sandbox
-	// (PI_CODING_AGENT_DIR). Outside the cloned repo tree, like
+	// SandboxPiConfig is the pi config directory inside the sandbox.
+	// Exported as PI_CODING_AGENT_DIR. Outside the cloned repo tree, like
 	// SandboxClaudeConfig, so repo contents cannot pre-seed it and workspace
 	// resets do not clear it. It is not a permission boundary: the agent
 	// process runs as the same user, and pi loads extensions from

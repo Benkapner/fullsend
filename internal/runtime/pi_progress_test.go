@@ -1074,6 +1074,32 @@ func TestParsePiStream_EarlierPromptFailureSurvivesLaterRetry(t *testing.T) {
 	assert.Equal(t, 3, results[0].NumTurns)
 }
 
+func TestParsePiStream_ReadErrorDuringSecondPrompt(t *testing.T) {
+	t.Parallel()
+
+	// Prompt 1 settled cleanly, prompt 2 started, then the stream was lost:
+	// the settled result must not mask the unfinished prompt.
+	valid := `{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"m","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"assistant","model":"m","stopReason":"stop"}],"willRetry":false}
+{"type":"agent_settled"}
+{"type":"agent_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"second"}}
+`
+	r := io.MultiReader(strings.NewReader(valid), iotest.ErrReader(errors.New("pipe broken")))
+	var results []ResultEvent
+	_, err := parsePiStream(r, func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	})
+	require.Error(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].IsError)
+	assert.Equal(t, "incomplete", results[0].Subtype)
+	assert.Equal(t, 1, results[0].NumTurns)
+}
+
 func TestParsePiStream_SecondPromptDiesBeforeAgentEnd(t *testing.T) {
 	t.Parallel()
 
