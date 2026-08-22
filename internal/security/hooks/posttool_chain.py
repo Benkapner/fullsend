@@ -232,6 +232,13 @@ def _handle_failure(hook_input: dict[str, Any]) -> None:
             redact_mod = _load_stage("redact")
             if redact_mod is not None:
                 _, findings = redact_mod.redact_text(text)
+                # Same obfuscation cover as the success path: a fullwidth or
+                # mark-split credential is only visible in detection form.
+                seen = {(f["pattern"], f["masked"]) for f in findings}
+                normalized = hook_io._detection_form(text)
+                if normalized != text:
+                    _, extra = redact_mod.redact_text(normalized)
+                    findings += [f for f in extra if (f["pattern"], f["masked"]) not in seen]
                 if findings:
                     for f in findings:
                         redact_mod.log_finding(
@@ -253,7 +260,7 @@ def _handle_failure(hook_input: dict[str, Any]) -> None:
         try:
             unicode_mod = _load_stage("unicode")
             if unicode_mod is not None:
-                _, findings = unicode_mod.scan_text(text)
+                _, findings = unicode_mod.scan_text(text)  # detection only
                 removed = [f["name"] for f in findings if f["name"] != "fullwidth"]
                 if removed:
                     for f in findings:

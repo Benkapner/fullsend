@@ -39,7 +39,14 @@ MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB
 # nothing because its interpreter is missing looks identical to a clean run,
 # and Claude Code's Bash result carries no exit code to tell them apart.
 
-_CMD_PREFIX = r"^(?:(?:uvx|npx|bunx|time|uv\s+run|poetry\s+run|pipenv\s+run)\s+)?(?:\S*/)?"
+# Wrappers that run the real command: ``sudo go test``, ``timeout 60 go test``,
+# ``env FOO=1 go test``, ``mise exec -- go test``, ``uvx pytest``. Repeatable,
+# since wrappers stack (``sudo timeout 60 go test``).
+_CMD_PREFIX = (
+    r"^(?:(?:uvx|npx|bunx|time|sudo|nice|stdbuf|command|timeout\s+[\d.]+[smhd]?"
+    r"|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*|uv\s+run|poetry\s+run|pipenv\s+run"
+    r"|mise\s+exec(?:\s+--)?|rye\s+run|pdm\s+run|hatch\s+run)\s+)*(?:\S*/)?"
+)
 
 _SCAN_SECRETS_RE = re.compile(_CMD_PREFIX + r"scan-secrets\b")
 _GITLEAKS_RE = re.compile(_CMD_PREFIX + r"gitleaks\s+detect\b")
@@ -47,7 +54,7 @@ _PRECOMMIT_RE = re.compile(_CMD_PREFIX + r"pre-commit\s+run\b")
 _GO_TEST_RE = re.compile(_CMD_PREFIX + r"go\s+test\b")
 _MAKE_TEST_RE = re.compile(_CMD_PREFIX + r"make\s+(?:test|check)\b")
 _NPM_TEST_RE = re.compile(_CMD_PREFIX + r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b")
-_PYTEST_RE = re.compile(_CMD_PREFIX + r"(?:pytest\b|python3?\s+-m\s+pytest\b)")
+_PYTEST_RE = re.compile(_CMD_PREFIX + r"(?:pytest\b|python3?(?:\.\d+)?\s+-m\s+pytest\b)")
 
 # pre-commit output patterns
 _PRECOMMIT_HOOK_LINE_RE = re.compile(

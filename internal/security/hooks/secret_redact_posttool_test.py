@@ -353,5 +353,15 @@ class TestVerifyRound(unittest.TestCase):
         self.assertEqual(stdout, "")
 
 
+class TestPaginationVsSecretNames(unittest.TestCase):
+    def test_pagination_words_only_veto_token_names(self):
+        import secret_redact_posttool as sr
+
+        for name in ("NextToken", "ContinuationToken", "nextPageToken", "cursor"):
+            self.assertIsNone(sr.name_strength(name), name)
+        for name in ("NEXT_SECRET", "PAGE_PASSWORD", "next_credential"):
+            self.assertEqual("strong", sr.name_strength(name), name)
+
+
 if __name__ == "__main__":
     unittest.main()

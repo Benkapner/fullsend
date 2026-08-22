@@ -163,10 +163,12 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 	}
 
 	// Failed tool calls never reach PostToolUse under Claude Code; the same
-	// driver runs canary detection on PostToolUseFailure's error text so a
-	// leak in a failing command's output still halts the session. Sanitizers
-	// cannot run there (no output rewrite), which the runtimes matrix records.
-	if canaryPostToolEnabled(hooks) {
+	// driver runs on PostToolUseFailure so a leak in a failing command's output
+	// still halts the session (canary) and credential-shaped or control
+	// content is still logged and flagged (sanitizers, detection-only — the
+	// event allows no output rewrite, which the runtimes matrix records).
+	// Scheduled whenever either half has something to do there.
+	if postToolChainEnabled(hooks) {
 		plan = append(plan, HookGroup{
 			Phase: HookPhasePostToolUseFailure, Tools: []string{AllTools},
 			Scripts: []string{"posttool_chain.py"},

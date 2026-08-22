@@ -510,15 +510,9 @@ func TestHookPlan_CanaryOnlyUsesChain(t *testing.T) {
 	assert.Equal(t, []string{AllTools}, post[0].Tools)
 	assert.Equal(t, []string{"posttool_chain.py"}, post[0].Scripts)
 
-	// The failure-phase group is gated on the canary, not on the sanitizers.
-	var failed int
-	for _, g := range plan {
-		if g.Phase == HookPhasePostToolUseFailure {
-			failed++
-			assert.Equal(t, []string{"posttool_chain.py"}, g.Scripts)
-		}
-	}
-	assert.Equal(t, 1, failed)
+	// The failure phase is scheduled whenever either half of the chain has
+	// something to do there — canary halt or detection-only warnings.
+	assert.Equal(t, 1, countPhase(plan, HookPhasePostToolUseFailure))
 
 	files := HookFiles(cfg)
 	assert.Contains(t, files, "posttool_chain.py")
@@ -556,4 +550,37 @@ func TestSandboxHookConfig_Tirith(t *testing.T) {
 	cfg = SandboxHookConfigFromHarness(h)
 	assert.False(t, cfg.TirithRequired())
 	assert.Equal(t, "medium", cfg.TirithFailOn())
+}
+
+func countPhase(plan []HookGroup, phase HookPhase) int {
+	n := 0
+	for _, g := range plan {
+		if g.Phase == phase {
+			n++
+		}
+	}
+	return n
+}
+
+func TestHookPlan_FailurePhaseFollowsSanitizersToo(t *testing.T) {
+	off := false
+
+	// Canary off, sanitizers on: the detection-only warnings still need the
+	// failure phase scheduled.
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		CanaryPostTool: &off,
+	}}}
+	plan := HookPlan(SandboxHookConfigFromHarness(h))
+	assert.Equal(t, 1, countPhase(plan, HookPhasePostToolUseFailure), "sanitizers still run there")
+
+	// Everything the chain does post-tool is off: no failure group at all.
+	h = &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		CanaryPostTool:          &off,
+		SecretRedactPostTool:    &off,
+		UnicodePostTool:         &off,
+		ContextSuppressPostTool: &off,
+	}}}
+	plan = HookPlan(SandboxHookConfigFromHarness(h))
+	assert.Equal(t, 0, countPhase(plan, HookPhasePostToolUseFailure))
+	assert.Equal(t, 0, countPhase(plan, HookPhasePostToolUse))
 }

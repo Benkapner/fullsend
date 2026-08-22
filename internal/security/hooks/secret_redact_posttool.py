@@ -68,6 +68,11 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
 # URL, path or placeholder (see _credential_like). Source-style assignments
 # with spaces around ``=`` only count when the value is a quoted literal.
 
+# Words that only ever name a credential, never a paginator or an identifier.
+_SECRET_ONLY_PARTS = frozenset(
+    {"secret", "secrets", "password", "passwd", "pwd", "passphrase", "credential", "credentials"}
+)
+_PAGINATION_PARTS = frozenset({"page", "next", "continuation", "cursor", "pagination", "paging"})
 _STRONG_NAME_PARTS = frozenset(
     {
         "secret",
@@ -173,7 +178,12 @@ _NAME_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=
 def name_strength(name: str) -> str | None:
     """Return "strong", "weak" or None for a variable/JSON key name."""
     parts = [p.lower() for p in _NAME_SPLIT_RE.split(name) if p]
-    if not parts or any(p in _NOT_SECRET_PARTS for p in parts):
+    if not parts:
+        return None
+    vetoes = {p for p in parts if p in _NOT_SECRET_PARTS}
+    # A pagination word only disqualifies a token/key name (NextToken,
+    # PageToken): NEXT_SECRET and PAGE_PASSWORD are still secrets.
+    if vetoes and not (vetoes <= _PAGINATION_PARTS and any(p in _SECRET_ONLY_PARTS for p in parts)):
         return None
     if parts[-1] == "id":
         # KEY_ID / CLIENT_ID name an identifier; id_token / ID_TOKEN is a token.
@@ -203,7 +213,8 @@ _CONSTANT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 # (``ghs_maskable``, ``glpat-new``, ``ghp_test123``). Real tokens with these
 # prefixes are matched by the prefix patterns above, which run first.
 _KNOWN_PREFIX_RE = re.compile(
-    r"^(?:gh[opsur]_|github_pat_|glpat-|glrt-|sk-|xox[abpr]-|AKIA|ASIA|ya29\.|AIza|hf_|npm_|pypi-|dop_v1_|pplx-|dapi)"
+    r"^(?:gh[opsur]_|github_pat_|gl(?:pat|rt|ptt|dt|ft|soat|cs)-|sk-|xox[abpr]-|AKIA|ASIA"
+    r"|ya29\.|AIza|hf_|npm_|pypi-|dop_v1_|pplx-|dapi)"
     r"(?P<rest>.*)$"
 )
 

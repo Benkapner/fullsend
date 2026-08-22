@@ -485,3 +485,27 @@ class TestQuotedRegions:
         assert (
             run_hook(make_input("pytest -q", "5 passed in 0.1s\nerror: something broke\n")) is None
         )
+
+
+class TestCommandWrappers:
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_wrappers_still_dispatch(self):
+        for cmd in (
+            "sudo go test ./...",
+            "timeout 60 go test ./...",
+            "env GOFLAGS=-mod=mod go test ./...",
+            "mise exec -- go test ./...",
+            "sudo timeout 90 go test ./...",
+        ):
+            assert run_hook(make_input(cmd, self.GO_OK)) is not None, cmd
+
+    def test_versioned_python_module_invocation(self):
+        out = run_hook(make_input("python3.12 -m pytest", "4 passed in 0.3s\n"))
+        assert out is not None
+        assert "4 passed" in out["tool_result"]
+
+    def test_mention_after_a_wrapper_is_still_not_an_invocation(self):
+        assert (
+            run_hook(make_input("sudo grep -n scan-secrets hooks.py", "12: scan-secrets\n")) is None
+        )

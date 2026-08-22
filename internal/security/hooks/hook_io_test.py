@@ -105,3 +105,14 @@ def test_emit_updated_carries_additional_context(capsys):
 
 def test_detection_form_strips_marks_and_selectors():
     assert hook_io.nfkc("C\u0300A\ufe0fN\U000e0100") == "CAN"
+
+
+def test_detection_form_folds_every_splitter():
+    for char in ("\u200b", "\u202e", "\U000e0041", "\u0300", "\ufe0f"):
+        assert hook_io.nfkc("CAN" + char + "ARY") == "CANARY", repr(char)
+
+
+def test_detection_form_keeps_field_separators():
+    # scan_text joins fields with a newline so a needle cannot match across a
+    # boundary; folding that away would manufacture unredactable matches.
+    assert hook_io.nfkc("out-\nerr") == "out-\nerr"

@@ -649,8 +649,8 @@ class TestContentPreservedAndRewriteNotes(unittest.TestCase):
 
 
 class TestPostToolUseFailure(unittest.TestCase):
-    """Failed calls carry error text only: canary detection halts, nothing
-    is rewritten, sanitizers do not run."""
+    """Failed calls carry error text only: the canary halts the session and
+    everything else is detect-and-warn — the event allows no rewrite."""
 
     def _body(self, error: str) -> dict:
         return {
@@ -796,6 +796,45 @@ class TestNfkcSamePrefix(unittest.TestCase):
         emitted = json.dumps(json.loads(stdout)["hookSpecificOutput"]["updatedToolOutput"])
         self.assertNotIn(hidden, emitted)
         self.assertNotIn(plain, emitted)
+
+
+def _split(token: str, char: str) -> str:
+    return token[0] + char + token[1:]
+
+
+class TestFailurePathObfuscation(unittest.TestCase):
+    """A canary the success path catches must also halt a failed call."""
+
+    def _fail(self, err: str) -> dict:
+        return {
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl x"},
+            "error": err,
+        }
+
+    def test_format_character_split_canary_blocks(self):
+        for name, char in (
+            ("zero_width", "\u200b"),
+            ("bidi_override", "\u202e"),
+            ("tag_char", "\U000e0041"),
+            ("combining_mark", "\u0300"),
+        ):
+            with self.subTest(name):
+                rc, stdout, _ = run_raw(
+                    self._fail(f"Exit code 1\nleak {_split(CANARY, char)}"),
+                    {"FULLSEND_CANARY_TOKEN": CANARY},
+                )
+                self.assertEqual(rc, 1, name)
+                self.assertEqual(json.loads(stdout)["decision"], "block")
+
+    def test_obfuscated_credential_in_a_failed_call_is_flagged(self):
+        pat = to_fullwidth("ghp_" + "E" * 36)
+        rc, stdout, _ = run_raw(self._fail(f"Exit code 1\n{pat}"))
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "credential-like", json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        )
 
 
 if __name__ == "__main__":

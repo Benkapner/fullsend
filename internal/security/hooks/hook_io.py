@@ -172,13 +172,19 @@ def transform_strings(
 
 
 def _detection_form(text: str) -> str:
-    # NFKD first so combining marks become separate code points, drop them and
-    # every variation selector, then NFKC for the compatibility folding.
+    """Fold away every way a token can be split or disguised without changing
+    what it reads as: combining marks, variation selectors, and format
+    characters (zero-width, bidi overrides, language tags), then NFKC.
+
+    Line and field separators are deliberately kept: ``scan_text`` joins fields
+    with a newline so a needle cannot match across a field boundary, and
+    removing them would manufacture matches that no redactor could undo.
+    """
     decomposed = unicodedata.normalize("NFKD", text)
     stripped = "".join(
         c
         for c in decomposed
-        if unicodedata.category(c) != "Mn"
+        if unicodedata.category(c) not in ("Mn", "Cf")
         and not (0xFE00 <= ord(c) <= 0xFE0F or 0xE0100 <= ord(c) <= 0xE01EF)
     )
     return unicodedata.normalize("NFKC", stripped)
