@@ -81,11 +81,20 @@ func TestParsePiAgent_FenceIsExactLine(t *testing.T) {
 	assert.Contains(t, def.Body, "Body line")
 	assert.Contains(t, def.Body, "After rule")
 
-	// A line starting with --- but longer is not an opener.
-	def, err = parsePiAgent([]byte("----\nname: y\n---\nbody"))
+	// Trailing whitespace on a fence is tolerated; the restriction must not
+	// be dropped silently.
+	def, err = parsePiAgent([]byte("--- \nname: y\ntools: Bash(gh)\n---\t\nbody"))
 	require.NoError(t, err)
-	assert.Empty(t, def.Name)
-	assert.True(t, strings.HasPrefix(def.Body, "----"))
+	assert.Equal(t, "y", def.Name)
+	assert.Equal(t, []string{"Bash"}, def.Tools)
+
+	// A first line that starts with --- but is not a fence is an error, not
+	// an all-body file with the tools: restriction lost.
+	_, err = parsePiAgent([]byte("----\nname: y\n---\nbody"))
+	require.ErrorContains(t, err, "not a frontmatter fence")
+	_, err = parsePiAgent([]byte("---x: y\n---\nbody"))
+	require.ErrorContains(t, err, "not a frontmatter fence")
+	_ = strings.HasPrefix
 }
 
 func TestParsePiAgent_NoFrontmatter(t *testing.T) {

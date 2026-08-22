@@ -242,11 +242,14 @@ func TestPiRuntimeRun_MissingHookAdapterFailsClosed(t *testing.T) {
 	t.Setenv(piModelEnv, "")
 	work := t.TempDir()
 	store := filepath.Join(work, "store")
-	// Bootstrap normally, then replace the fake so the run command's
-	// `test -f` guard fails the way a deleted adapter would (exit 97).
+	// Bootstrap with security on (so the manifest carries a hook plan),
+	// then replace the fake so the run command's guard fails the way a
+	// deleted or modified adapter would (exit 97).
 	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
-	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
-		sandboxName: "sb", agentPath: writeAgentFile(t, testAgentDef), agentName: "triage",
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{}}}
+	require.NoError(t, PiRuntime{}.Bootstrap(piHooksBootstrapInput{
+		bootstrapInput: bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, testAgentDef), agentName: "triage"},
+		hooks:          security.SandboxHookConfigFromHarness(h),
 	}))
 	binDir := t.TempDir()
 	script := `#!/bin/sh
@@ -254,7 +257,7 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + store + `'/"$f"; exit $? ;;
-    *"refusing to run unhooked"*) echo 'fullsend: pi hook adapter or manifest missing' >&2; exit 97 ;;
+    *"exit 97"*) echo 'fullsend: pi hook adapter or manifest missing' >&2; exit 97 ;;
   esac
 fi
 exit 0
@@ -268,6 +271,29 @@ exit 0
 	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
 	assert.Equal(t, piHooksMissingExit, exit)
 	require.ErrorContains(t, err, "hook adapter or manifest missing")
+}
+
+func TestPiRuntimeRun_SecurityOnButManifestWithoutHooksFailsFast(t *testing.T) {
+	t.Setenv(piModelEnv, "")
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	logPath := filepath.Join(work, "openshell.log")
+	fakeOpenshellPi(t, logPath, store, "/dev/null")
+	// Bootstrap without the hook config (or a manifest rewritten to drop
+	// it): Run must refuse before starting pi rather than let the adapter
+	// block every tool call for a whole iteration.
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, testAgentDef), agentName: "triage",
+	}))
+	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second, HooksSettingsPath: "/sandbox/claude-config/hooks.json",
+		OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
+	assert.Equal(t, -1, exit)
+	require.ErrorContains(t, err, "carries no hook plan")
+	log, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(log), "pi --print", "pi must not have been started")
 }
 
 func TestPiRuntimeExtractTranscripts(t *testing.T) {

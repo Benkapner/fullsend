@@ -44,16 +44,18 @@ func parsePiAgent(data []byte) (*piAgentDef, error) {
 		def.Body = strings.TrimSpace(string(content))
 		return def, nil
 	}
-	// The opener must be a line that is exactly "---"; the frontmatter ends
-	// at the next such line (CRLF tolerated). Lines that merely start with
-	// "---" belong to the YAML or the body.
+	// The opener must be a line that is exactly "---" (surrounding
+	// whitespace and CRLF tolerated); the frontmatter ends at the next such
+	// line. Lines that merely start with "---" belong to the YAML or the
+	// body. A file whose first line starts with "---" but is not a fence is
+	// rejected rather than treated as all-body: that would silently drop the
+	// tools: restriction.
 	lines := bytes.SplitAfter(content, []byte("\n"))
 	isFence := func(line []byte) bool {
-		return string(bytes.TrimRight(line, "\r\n")) == "---"
+		return strings.TrimSpace(string(line)) == "---"
 	}
 	if !isFence(lines[0]) {
-		def.Body = strings.TrimSpace(string(content))
-		return def, nil
+		return nil, fmt.Errorf("agent definition: first line starts with --- but is not a frontmatter fence: %q", strings.TrimRight(string(lines[0]), "\r\n"))
 	}
 	var front, body []byte
 	closed := false
@@ -179,8 +181,9 @@ func parseClaudeToolSpecs(specs []string) (tools, bashAllowlist []string) {
 // piToolForClaude maps the Claude Code tool names an agent definition may
 // list to pi's built-in tools (packages/coding-agent/src/core/tools/index.ts:
 // read, bash, edit, write, grep, find, ls). Claude tools without a pi
-// counterpart are reported as unsupported; Skill is dropped silently because
-// pi loads skills natively rather than through a tool.
+// counterpart are reported as unsupported; Skill maps to no tool (pi's
+// skills are prompt-driven), and Bootstrap adds read for it, since pi only
+// emits the skills section of the system prompt when read is active.
 var piToolForClaude = map[string]string{
 	"Bash":      "bash",
 	"Read":      "read",

@@ -60,6 +60,12 @@ test("bash allowlist: first token of every simple command must be allowed", () =
   assert.match(bashAllowlistViolation("(curl x)", allow), /subshell/);
   assert.match(bashAllowlistViolation("bash -c 'curl x'", allow), /"bash" is not allowed/);
   assert.match(bashAllowlistViolation("gh x & curl http://evil", allow), /"curl" is not in the Bash allowlist/, "& separates commands");
+  assert.match(bashAllowlistViolation("gh x&curl http://evil", allow), /"curl" is not in the Bash allowlist/);
+  assert.equal(bashAllowlistViolation("gh pr view 1 2>&1 | jq .", allow), null, "fd redirection is not a separator");
+  assert.equal(bashAllowlistViolation("gh x &>/dev/null", allow), null);
+  assert.equal(bashAllowlistViolation("gh x >&2", allow), null);
+  assert.match(bashAllowlistViolation("gh x |& curl e", allow), /not in the Bash allowlist/, "|& pipes stderr into the next command");
+  assert.match(bashAllowlistViolation("LD_AUDIT=/tmp/a.so gh x", allow), /"LD_AUDIT=" prefix/);
   assert.match(bashAllowlistViolation("./gh x", allow), /is a path/);
   assert.match(bashAllowlistViolation("/tmp/x/gh x", allow), /is a path/);
   assert.match(bashAllowlistViolation("PATH=/tmp/x gh x", allow), /"PATH=" prefix/);

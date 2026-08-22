@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -123,8 +125,7 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		)
 	}
 	if hooksEnabled {
-		parts = append(parts, fmt.Sprintf("&& { test -f %s && test -f %s || { echo 'fullsend: pi hook adapter or manifest missing; refusing to run unhooked' >&2; exit %d; }; }",
-			shellQuote(hooksExt), shellQuote(r.piManifestPath()), piHooksMissingExit))
+		parts = append(parts, "&& "+piHooksGuard(hooksExt, r.piManifestPath()))
 	}
 	parts = append(parts,
 		"&& pi",
@@ -170,6 +171,18 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 // piManifestEnv tells the hook extension where the manifest is.
 const piManifestEnv = "FULLSEND_PI_MANIFEST"
 
+// piHooksGuard is the POSIX sh fragment run before pi when hooks are
+// expected: the adapter must exist and be byte-identical to the embedded
+// copy (the agent can write to the config dir between iterations, as it can
+// to Claude's hooks.json), and the manifest must exist. Otherwise it exits
+// piHooksMissingExit, which terminates the `sh -c` before pi starts; the
+// message goes to the runner's stderr, not the debug log.
+func piHooksGuard(hooksExt, manifestPath string) string {
+	sum := sha256.Sum256(piHooksExtensionJS)
+	return fmt.Sprintf(`{ test -f %s && test -f %s && [ "$(sha256sum %s | cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi hook adapter or manifest missing or modified; refusing to run unhooked' >&2; exit %d; }; }`,
+		shellQuote(hooksExt), shellQuote(manifestPath), shellQuote(hooksExt), shellQuote(hex.EncodeToString(sum[:])), piHooksMissingExit)
+}
+
 // Run executes one agent iteration and normalizes pi's --mode json stream
 // into AgentEvents. pi exits 0 on model error in json mode, so the stream's
 // verdict overrides the exit code (#2786/#5361).
@@ -177,6 +190,11 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	m, err := readPiManifest(params.SandboxName, r.piManifestPath())
 	if err != nil {
 		return -1, err
+	}
+	if params.HooksSettingsPath != "" && m.Hooks == nil {
+		// The adapter would load and block every tool call; fail before
+		// spending an iteration on it.
+		return -1, fmt.Errorf("security is enabled but the pi manifest at %s carries no hook plan (Bootstrap ran without the sandbox hook config, or the manifest was modified)", r.piManifestPath())
 	}
 	if _, ok := piThinkingFor(params.Effort); params.Effort != "" && !ok {
 		printer.StepWarn(fmt.Sprintf("effort %q is not a pi thinking level; running without --thinking", sanitizeOutput(params.Effort)))
@@ -256,7 +274,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
 	}
 	if exitCode == piHooksMissingExit && params.HooksSettingsPath != "" {
-		return exitCode, fmt.Errorf("pi hook adapter or manifest missing from %s; refusing to run unhooked (was Bootstrap run, or did the agent remove it?)", r.ConfigDir())
+		return exitCode, fmt.Errorf("pi hook adapter or manifest missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
 	}
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {

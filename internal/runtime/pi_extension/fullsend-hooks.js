@@ -70,7 +70,10 @@ export function claudeToolInput(piName, input) {
 // to a binary) is refused rather than guessed. Heredoc bodies and `command`/
 // `env`/quoted/escaped/variable first tokens are refused too — false
 // positives only, which is the right side to err on in enforce mode.
-const RESOLUTION_ENV = /^(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|CDPATH|IFS|SHELLOPTS|PS4)=/;
+const RESOLUTION_ENV = /^(PATH|LD_[A-Z_]+|GCONV_PATH|BASH_ENV|ENV|CDPATH|IFS|SHELLOPTS|PS4)=/;
+// Command separators. A lone `&` backgrounds a command, but `&` is also part
+// of fd redirections (`2>&1`, `&>file`, `>&2`); only the former separates.
+const SEPARATORS = /\r?\n|&&|\|\||;|\||(?<![<>|])&(?!>)/;
 
 export function bashAllowlistViolation(command, allowlist) {
   if (!Array.isArray(allowlist) || allowlist.length === 0) return null;
@@ -78,9 +81,9 @@ export function bashAllowlistViolation(command, allowlist) {
   if (/`|\$\(|<\(|>\(/.test(command)) {
     return "command substitution is not allowed under a Bash allowlist";
   }
-  // `&` (background) separates commands too; a lone `&`/`;` yields empty
-  // segments, which are skipped. `&&` and `||` are matched first.
-  const segments = command.split(/\r?\n|&&|\|\||;|\||&/);
+  // A lone `&`/`;` yields empty segments, which are skipped; `&&` and `||`
+  // are matched before the single-character alternatives.
+  const segments = command.split(SEPARATORS);
   for (const raw of segments) {
     const seg = raw.trim();
     if (seg === "") continue;

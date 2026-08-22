@@ -1,11 +1,16 @@
 package runtime
 
 import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
@@ -57,7 +62,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
 	cmd := buildPiRunCommand(params, m)
 
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && { test -f '/sandbox/pi-config/fullsend-hooks.js' && test -f '/sandbox/pi-config/fullsend-manifest.json' || { echo 'fullsend: pi hook adapter or manifest missing; refusing to run unhooked' >&2; exit 97; }; } && pi --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && pi --print --mode json`), cmd)
 	for _, want := range []string{
 		"--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
 		"--session-dir '/sandbox/pi-config/sessions'",
@@ -81,6 +86,49 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	piIdx := strings.Index(cmd, "&& pi ")
 	assert.True(t, unsetIdx > envIdx && unsetIdx < piIdx, "unset runs after sourcing .env and before pi: %s", cmd)
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`)
+}
+
+// TestPiHooksGuard runs the rendered guard under a real sh: it must exit 97
+// without running what follows when the adapter is missing or modified, and
+// fall through when both files are intact.
+func TestPiHooksGuard(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ext := filepath.Join(dir, "fullsend-hooks.js")
+	manifest := filepath.Join(dir, "fullsend-manifest.json")
+	require.NoError(t, os.WriteFile(manifest, []byte("{}"), 0o644))
+
+	run := func() (int, string) {
+		cmd := exec.Command("sh", "-c", piHooksGuard(ext, manifest)+" && echo RAN")
+		out, err := cmd.CombinedOutput()
+		code := 0
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			code = exitErr.ExitCode()
+		} else {
+			require.NoError(t, err)
+		}
+		return code, string(out)
+	}
+
+	code, out := run()
+	assert.Equal(t, piHooksMissingExit, code, "missing adapter")
+	assert.NotContains(t, out, "RAN")
+	assert.Contains(t, out, "refusing to run unhooked")
+
+	require.NoError(t, os.WriteFile(ext, append(append([]byte{}, piHooksExtensionJS...), []byte("\n// tampered\n")...), 0o644))
+	code, out = run()
+	assert.Equal(t, piHooksMissingExit, code, "modified adapter")
+	assert.NotContains(t, out, "RAN")
+
+	require.NoError(t, os.WriteFile(ext, piHooksExtensionJS, 0o644))
+	code, out = run()
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "RAN")
+
+	require.NoError(t, os.Remove(manifest))
+	code, _ = run()
+	assert.Equal(t, piHooksMissingExit, code, "missing manifest")
 }
 
 func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
