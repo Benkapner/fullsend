@@ -2,8 +2,8 @@
 #
 # Pre-installs all runtime dependencies needed by any fullsend agent:
 #   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG)
-#   - pi (npm, version-pinned via PI_VERSION ARG; stub runtime, not yet
-#     user-selectable — see #6464) + the pi-anthropic-vertex extension
+#   - pi (npm, version-pinned via PI_VERSION ARG; opt-in runtime, see
+#     #6464) + the pi-anthropic-vertex extension
 #     (tag + SHA256 pinned under /opt/pi-extensions)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)

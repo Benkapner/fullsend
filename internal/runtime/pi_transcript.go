@@ -169,7 +169,9 @@ func parsePiSessionEntries(data []byte, source string) (TranscriptError, bool) {
 	scanner.Buffer(make([]byte, 0, 64*1024), maxTranscriptLineSize)
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if !bytes.Contains(line, []byte(`"type":"message"`)) {
+		// Cheap pre-filter before unmarshalling; accept the spaced variant
+		// too, as isPiStreamCapture does.
+		if !bytes.Contains(line, []byte(`"type":"message"`)) && !bytes.Contains(line, []byte(`"type": "message"`)) {
 			continue
 		}
 		var entry piSessionEntry

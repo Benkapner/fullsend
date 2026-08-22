@@ -785,7 +785,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 | Agent runner | GitHub Actions job → `fullsend run` CLI (via `fullsend-ai/fullsend@<version>` composite action) | |
 | Harness store | YAML files in `.fullsend/harness/` (e.g. `code.yaml`, `triage.yaml`) | |
 | Sandbox | OpenShell with per-agent L7 network policies (endpoint + binary restrictions) | |
-| Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`) | |
+| Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`); pi (`pi --print --mode json`) as an opt-in second runtime | [runtimes.md](runtimes.md) |
 | Sandbox image | `ghcr.io/fullsend-ai/fullsend-code:latest` (pre-built with tools, runtimes, security scanners) | |
 | Credential isolation | Read-only GitHub App token inside sandbox; write token only in post-script | [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) |
 | Validation | Host-side schema validation script with retry loop | [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) |

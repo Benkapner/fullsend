@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -236,7 +237,7 @@ func piSettingsJSON() ([]byte, error) {
 }
 
 func piHooksManifestFor(hooksDir string, hooks security.SandboxHookConfig) *piHooksManifest {
-	m := &piHooksManifest{Dir: hooksDir, Groups: []piHookGroup{}, ToolNames: claudeToolForPi}
+	m := &piHooksManifest{Dir: hooksDir, Groups: []piHookGroup{}, ToolNames: maps.Clone(claudeToolForPi)}
 	for _, g := range security.HookPlan(hooks) {
 		m.Groups = append(m.Groups, piHookGroup{
 			Phase:   string(g.Phase),

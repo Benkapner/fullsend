@@ -12,7 +12,7 @@ import re
 import signal
 import sys
 from collections import Counter
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TypedDict
 from urllib.parse import urlsplit
 
@@ -113,6 +113,31 @@ TRANSCRIPT_TYPES = (
 )
 
 
+# <agent>-<ISO timestamp with : and . replaced by -> _<session id>.jsonl
+_PI_SESSION_FILENAME = re.compile(r"^(?P<agent>.+?)-\d{4}-\d{2}-\d{2}T[\dT-]+Z?_[^/]+\.jsonl$")
+
+
+def _parse_timestamp(ts):
+    """ISO-8601 string (Claude stream-json, pi session entries) or Unix
+    milliseconds (pi-ai message.timestamp) → aware datetime, else None."""
+    if isinstance(ts, bool):
+        return None
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.fromtimestamp(ts / 1000, tz=UTC)
+        except (ValueError, OverflowError, OSError):
+            return None
+    if isinstance(ts, str):
+        try:
+            parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+    return None
+
+
 def _pi_usage(usage):
     """Map pi's Usage {input, output, cacheRead, cacheWrite} to Claude keys."""
     if not isinstance(usage, dict):
@@ -152,15 +177,23 @@ def normalize_pi_message(entry):
                 )
             else:
                 blocks.append(block)
+        stop_reason = msg.get("stopReason")
+        error_message = msg.get("errorMessage")
+        if stop_reason in ("error", "aborted") or error_message:
+            # A pi model error has no text block (pi-ai AssistantMessage
+            # carries it in errorMessage); surface it as text so errors,
+            # conversation and search see it like a Claude "API Error".
+            text = f"Model error (stopReason={stop_reason}): {error_message or ''}"
+            blocks.append({"type": "text", "text": text.strip(), "model_error": True})
         out = {
             "role": "assistant",
             "content": blocks,
             "model": msg.get("model"),
             "usage": _pi_usage(msg.get("usage")),
-            "stop_reason": msg.get("stopReason"),
+            "stop_reason": stop_reason,
         }
-        if msg.get("errorMessage"):
-            out["error_message"] = msg["errorMessage"]
+        if error_message:
+            out["error_message"] = error_message
         return "assistant", out
     if role == "toolResult":
         return "user", {
@@ -204,7 +237,8 @@ def detect_file_type(path):
                 if "resourceSpans" in obj or "scopeSpans" in obj:
                     return (
                         "This looks like OTLP telemetry data, not an agent transcript. "
-                        "Look for a file named <agent>-<session-id>.jsonl instead."
+                        "Look for a file named <agent>-<session-id>.jsonl "
+                        "(or <agent>-<timestamp>_<id>.jsonl for pi) instead."
                     )
                 if obj.get("type") in TRANSCRIPT_TYPES:
                     has_transcript_line = True
@@ -312,14 +346,17 @@ def _accumulate_stats(path, line_range=None, messages=None):
                 tool_counts[block.get("name", "unknown")] += 1
 
     duration = None
-    if len(timestamps) >= 2:
-        try:
-            ts_sorted = sorted(timestamps)
-            t0 = datetime.fromisoformat(ts_sorted[0].replace("Z", "+00:00"))
-            t1 = datetime.fromisoformat(ts_sorted[-1].replace("Z", "+00:00"))
-            duration = (t1 - t0).total_seconds()
-        except (ValueError, TypeError):
-            pass
+    parsed = [t for t in (_parse_timestamp(ts) for ts in timestamps) if t is not None]
+    if len(parsed) >= 2:
+        duration = (max(parsed) - min(parsed)).total_seconds()
+
+    if agent_setting is None and path and path != "-":
+        # pi sessions only carry a name when the fullsend hook extension is
+        # loaded; ExtractTranscripts always prefixes the file with the agent
+        # label (<agent>-<timestamp>_<id>.jsonl).
+        m = _PI_SESSION_FILENAME.match(path.rsplit("/", 1)[-1])
+        if m:
+            agent_setting = m.group("agent")
 
     return {
         "agent": agent_setting,
@@ -476,6 +513,10 @@ def _check_block_error(role, btype, block, line, max_w, errors, mentions):
             errors.append((line, truncate(text.strip(), max_w)))
     elif role == "assistant" and btype == "text":
         text = block if isinstance(block, str) else block.get("text", "")
+        if isinstance(block, dict) and block.get("model_error"):
+            # Definitive: a pi assistant turn that ended in error/aborted.
+            errors.append((line, truncate(text.strip(), max_w)))
+            return
         lower = text.lower()
         if any(kw in lower for kw in _ASSISTANT_ERROR_KEYWORDS):
             mentions.append((line, truncate(text.strip(), max_w)))

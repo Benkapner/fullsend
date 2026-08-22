@@ -178,6 +178,9 @@ type perRepoInstallConfig struct {
 	FullsendBinary       string
 	FullsendSource       string
 	Direct               bool
+	// Runtime is the --runtime value when the flag was given; empty keeps
+	// the per-repo config's code default.
+	Runtime string
 
 	// Testing overrides — when non-nil, used instead of resolving from
 	// the environment. Not set by CLI flag parsing.
@@ -334,8 +337,16 @@ Inference authentication:
 				if perRepoMintProject == "" {
 					perRepoMintProject = inferenceProject
 				}
+				perRepoRuntime := ""
+				if cmd.Flags().Changed("runtime") {
+					if !slices.Contains(config.ValidRuntimes(), runtimeName) {
+						return fmt.Errorf("invalid --runtime %q: must be one of %s", runtimeName, strings.Join(config.ValidRuntimes(), ", "))
+					}
+					perRepoRuntime = runtimeName
+				}
 				return runPerRepoInstall(cmd.Context(), perRepoInstallConfig{
 					RepoFullName:         arg,
+					Runtime:              perRepoRuntime,
 					Agents:               perRepoAgents,
 					MintURL:              mintURL,
 					InferenceRegion:      inferenceRegion,
@@ -860,6 +871,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			Repo:             repo,
 			Forge:            repos.ForgeGitHub,
 			Roles:            roles,
+			Runtime:          c.Runtime,
 			MintURL:          mintDisplay,
 			InferenceProject: inferenceProject,
 			InferenceRegion:  inferenceRegion,
@@ -1083,6 +1095,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		Repo:                  repo,
 		Forge:                 repos.ForgeGitHub,
 		Roles:                 roles,
+		Runtime:               c.Runtime,
 		MintURL:               mintURL,
 		InferenceProject:      inferenceProject,
 		InferenceRegion:       inferenceRegion,
