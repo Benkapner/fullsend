@@ -158,7 +158,11 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 			installed := false
 			if guardExists && guardVal == "true" {
-				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc)
+				expectedVars := map[string]string{}
+				if resolved.MintURL != "" {
+					expectedVars["FULLSEND_MINT_URL"] = resolved.MintURL
+				}
+				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars)
 				if checkErr != nil {
 					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
 					return

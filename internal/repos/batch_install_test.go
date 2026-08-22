@@ -1334,3 +1334,28 @@ func TestBatchInstall_Phase1_CheckInstallComponentsError(t *testing.T) {
 		t.Errorf("expected 0 installed, got %d", len(result.Installed))
 	}
 }
+
+func TestBatchInstall_DriftedMintURL_NotSkipped(t *testing.T) {
+	repos := []string{"acme/api"}
+	fc := newFakeClientForBatch(repos...)
+	markFullyInstalled(fc, "acme", "api")
+	// Drift the mint URL from the manifest value.
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+
+	manifest := newBatchManifest(repos...)
+	sc := &fakeScaffoldCommit{}
+
+	cfg := batchCfgWithDefaults(manifest)
+
+	result, err := BatchInstall(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("BatchInstall() error: %v", err)
+	}
+
+	if len(result.Skipped) != 0 {
+		t.Errorf("expected 0 skipped (drifted mint URL should trigger reinstall), got %d", len(result.Skipped))
+	}
+	if len(result.Installed) != 1 {
+		t.Errorf("expected 1 installed (repair drifted repo), got %d", len(result.Installed))
+	}
+}
