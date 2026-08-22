@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,6 +48,45 @@ func TestGivenRepositoryRuntime_WritesRuntimeAndRecordsOriginal(t *testing.T) {
 	scmDriver.fileContent = scmDriver.lastContent
 	require.NoError(t, givenRepositoryRuntime(w, "claude"))
 	assert.Equal(t, "dummy", w.RuntimeOriginal)
+}
+
+func TestGivenRepositoryRuntime_RefusesNonDummyOriginal(t *testing.T) {
+	t.Parallel()
+	// No explicit runtime: ConfigRuntime resolves to the code default
+	// ("claude"); recording that for restore would hand the slot a real
+	// runtime after cleanup, so the step must refuse.
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("version: \"1\"\nroles:\n  - triage\n")}}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
+	err := givenRepositoryRuntime(w, "pi")
+	require.ErrorContains(t, err, "suite invariant")
+	assert.False(t, scmDriver.commitFileCalled)
+	assert.False(t, w.RuntimeOverridden)
+}
+
+func TestRestoreRuntime_DefaultsToDummyWhenOriginalUnset(t *testing.T) {
+	t.Parallel()
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("version: \"1\"\nruntime: pi\nroles:\n  - triage\n")}}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver, RuntimeOverridden: true}
+	require.NoError(t, RestoreRuntime(w))
+	assert.Contains(t, string(scmDriver.lastContent), "runtime: dummy")
+}
+
+func TestGivenPiAgent_CommitsDefinitionWithFixtureInlined(t *testing.T) {
+	t.Parallel()
+	scmDriver := &recordingSCM{}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver, FixturesRoot: "e2e/behaviour"}
+	doc := "---\nname: pi-smoke\ntools: Bash(ls), Write\n---\nWrite this:\n\n{{fixture:fixtures/triage/sufficient.json}}\n"
+	require.NoError(t, givenPiAgent(w, "pi-smoke", doc))
+	assert.Equal(t, filepath.Join(".fullsend", "agents", "pi-smoke.md"), scmDriver.lastPath)
+	body := string(scmDriver.lastContent)
+	assert.True(t, strings.HasPrefix(body, "---\nname: pi-smoke"), body)
+	assert.NotContains(t, body, "{{fixture:")
+	assert.Contains(t, body, `"action": "sufficient"`, "fixture content is inlined verbatim")
+
+	require.ErrorContains(t, givenPiAgent(w, "x", "no frontmatter"), "frontmatter")
+	require.ErrorContains(t, givenPiAgent(w, "x", "---\nname: x\n---\n{{fixture:fixtures/nope.json}}"), "reading fixture")
+	require.ErrorContains(t, givenPiAgent(w, "../x", doc), "bare file name")
+	require.ErrorContains(t, givenPiAgent(&world.World{Org: "org", RepoName: "repo", SCM: scmDriver}, "x", doc), "FixturesRoot")
 }
 
 func TestGivenRepositoryRuntime_RejectsUnknownAndMissingRepo(t *testing.T) {

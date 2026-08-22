@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/cucumber/godog"
@@ -18,6 +19,10 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
+// suiteInstallRuntime is the runtime every pool repo is installed with
+// (`github setup … --runtime dummy`, asserted post-install).
+const suiteInstallRuntime = "dummy"
+
 // Runtime steps cover the runtime layer that every other scenario takes
 // for granted: the repo's `runtime:` selects the backend (core, runs under
 // the dummy runtime on every suite run), and a real runtime can be
@@ -26,6 +31,9 @@ import (
 func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the repository runtime is "([^"]+)"$`, func(ctx context.Context, name string) (context.Context, error) {
 		return ctx, givenRepositoryRuntime(world.FromContext(ctx), name)
+	})
+	sc.Step(`^a pi agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenPiAgent(world.FromContext(ctx), name, doc)
 	})
 	sc.Step(`^the run selected the "([^"]+)" runtime$`, func(ctx context.Context, name string) (context.Context, error) {
 		return ctx, assertRunSelectedRuntime(world.FromContext(ctx), name)
@@ -63,7 +71,16 @@ func givenRepositoryRuntime(w *world.World, name string) error {
 		return err
 	}
 	if !w.RuntimeOverridden {
-		w.RuntimeOriginal = cfg.ConfigRuntime()
+		// ConfigRuntime resolves through the defaults layer (code default
+		// "claude" when the key is absent). The suite installs every pool
+		// repo with an explicit `runtime: dummy` and validates that after
+		// install, so anything else here means a slot is in an unexpected
+		// state; refuse rather than restore a real runtime later.
+		original := cfg.ConfigRuntime()
+		if original != suiteInstallRuntime {
+			return fmt.Errorf("repo runtime is %q before override, want %q (suite invariant; refusing to record it for restore)", original, suiteInstallRuntime)
+		}
+		w.RuntimeOriginal = original
 	}
 	cfg.SetRuntime(name)
 	merged, err := cfg.Marshal()
@@ -74,6 +91,56 @@ func givenRepositoryRuntime(w *world.World, name string) error {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	w.RuntimeOverridden = true
+	return nil
+}
+
+// fixturePlaceholder marks `{{fixture:<path>}}` in an agent body; the path
+// is relative to the fixtures root and is inlined verbatim, so a real
+// runtime can be told to write a schema-valid result file deterministically.
+var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
+
+// givenPiAgent commits a complete agent definition (frontmatter + body) to
+// `.fullsend/agents/<name>.md` on the enrolled repo. The custom-harness
+// step commits a placeholder for any relative `agent:` path (the per-repo
+// scaffold ships no agents — fleet agents are URL-sourced), which is fine
+// under the dummy runtime but gives a real runtime no task; this step runs
+// after it and replaces the placeholder with a body whose tool use is
+// deliberate, so the transcript assertions are grounded.
+func givenPiAgent(w *world.World, name, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("agent name %q must be a bare file name", name)
+	}
+	doc = strings.TrimSpace(doc)
+	if !strings.HasPrefix(doc, "---") {
+		return fmt.Errorf("agent %q must start with a --- frontmatter block (name, description, tools)", name)
+	}
+	if strings.TrimSpace(w.FixturesRoot) == "" {
+		return fmt.Errorf("world.FixturesRoot is not set")
+	}
+	moduleRoot, err := findModuleSubdir(w.FixturesRoot)
+	if err != nil {
+		return err
+	}
+	var expandErr error
+	body := fixturePlaceholder.ReplaceAllStringFunc(doc, func(m string) string {
+		rel := strings.TrimSpace(fixturePlaceholder.FindStringSubmatch(m)[1])
+		content, readErr := os.ReadFile(filepath.Join(moduleRoot, rel))
+		if readErr != nil && expandErr == nil {
+			expandErr = fmt.Errorf("reading fixture %s: %w", rel, readErr)
+		}
+		return strings.TrimSpace(string(content))
+	})
+	if expandErr != nil {
+		return expandErr
+	}
+	agentPath := filepath.Join(".fullsend", "agents", name+".md")
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, agentPath, "behaviour: define agent "+name, []byte(body+"\n")); err != nil {
+		return fmt.Errorf("committing agent %s: %w", agentPath, err)
+	}
 	return nil
 }
 
@@ -106,7 +173,11 @@ func RestoreRuntime(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	cfg.SetRuntime(w.RuntimeOriginal)
+	restore := w.RuntimeOriginal
+	if restore == "" {
+		restore = suiteInstallRuntime
+	}
+	cfg.SetRuntime(restore)
 	merged, err := cfg.Marshal()
 	if err != nil {
 		return err
