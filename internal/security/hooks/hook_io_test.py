@@ -101,3 +101,7 @@ def test_emit_updated_carries_additional_context(capsys):
     assert '"additionalContext": "fullsend: note"' in out
     hook_io.emit_updated("y")
     assert "additionalContext" not in capsys.readouterr().out
+
+
+def test_detection_form_strips_marks_and_selectors():
+    assert hook_io.nfkc("C\u0300A\ufe0fN\U000e0100") == "CAN"

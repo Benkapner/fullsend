@@ -186,14 +186,18 @@ def _handle_failure(hook_input: dict[str, Any]) -> None:
     hit still halts the session (``continue: false``). Fails closed like the
     PostToolUse path.
     """
-    error = hook_input.get("error")
-    if not isinstance(error, str) or not error or not _canary_armed():
+    if not _canary_armed():
         sys.exit(0)
+    # The documented shape carries the failure as a string ``error``, but the
+    # key has varied across doc versions (``tool_error``), so do not trust one
+    # key: scan every string in the payload. Nothing here is rewritable, so
+    # over-scanning costs nothing and shape drift cannot open a gap.
+    scannable: Any = hook_input
     canary_token = os.environ.get("FULLSEND_CANARY_TOKEN", "").strip()
     tool_name = hook_input.get("tool_name", "unknown")
     try:
-        hit = hook_io.contains_canary(error, canary_token) or hook_io.contains_canary(
-            hook_io.nfkc(error), canary_token
+        hit = hook_io.contains_canary(scannable, canary_token) or hook_io.contains_canary(
+            hook_io.nfkc(scannable), canary_token
         )
         reason = f"CANARY_LEAKED: canary token found in failed {tool_name} call output"
     except Exception:  # noqa: BLE001
@@ -333,7 +337,8 @@ def main() -> None:
                             # and, only when that finds more, emit the
                             # normalized+redacted field instead.
                             cleaned_n, findings_n = redact_mod.redact_text(normalized)
-                            if len(findings_n) > len(findings):
+                            seen = {(f["pattern"], f["masked"]) for f in findings}
+                            if any((f["pattern"], f["masked"]) not in seen for f in findings_n):
                                 cleaned, findings = cleaned_n, findings_n
                                 nfkc_rewrites.append(1)
                     except Exception as exc:  # noqa: BLE001

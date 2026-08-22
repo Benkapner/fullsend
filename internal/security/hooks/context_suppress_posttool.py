@@ -60,7 +60,7 @@ _GO_TEST_FAIL_RE = re.compile(r"^FAIL\s+", re.MULTILINE)
 
 # pytest output patterns
 _PYTEST_SUMMARY_RE = re.compile(
-    r"(?:=+\s+)?(\d+)\s+passed(?:,\s*\d+\s+(?:skipped|deselected|xfailed|xpassed|warnings?))*"
+    r"((\d+)\s+passed(?:,\s*\d+\s+(?:skipped|deselected|xfailed|xpassed|warnings?))*)"
     r"\s+in\s+([\d.]+)s",
     re.MULTILINE,
 )
@@ -84,10 +84,12 @@ _PIPE_OR_SUBSHELL_RE = re.compile(r"\||`|\$\(")
 _SEGMENT_SPLIT_RE = re.compile(r"\r?\n|&&|;")
 _ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
 _BENIGN_SEGMENT_RE = re.compile(
-    r"^(?:cd|pushd|popd|export|unset|set|source|\.|true|ulimit|umask)(?:\s|$)"
+    r"^(?:cd|pushd|popd|export|unset|set|source|\.|true|ulimit|umask)(?:\s|$)|^#"
 )
+_QUOTED_RE = re.compile(r"'[^']*'|\"(?:[^\"\\\\]|\\\\.)*\"")
+_CONTINUATION_RE = re.compile(r"\\\r?\n")
 
-_PYTEST_FAIL_RE = re.compile(r"=+\s+.*?(\d+)\s+(?:failed|error)", re.MULTILINE)
+_PYTEST_FAIL_RE = re.compile(r"\b(\d+)\s+(?:failed|errors?)\b", re.IGNORECASE)
 
 
 def log_suppression(command: str, summary: str) -> None:
@@ -174,9 +176,8 @@ def suppress_pytest(output: str) -> str | None:
 
     match = _PYTEST_SUMMARY_RE.search(output)
     if match:
-        passed = match.group(1)
-        duration = match.group(2)
-        return f"tests: {passed} passed ({duration}s)"
+        # Echo the whole count list ("2 passed, 1 xfailed"), not only "passed".
+        return f"tests: {match.group(1)} ({match.group(3)}s)"
 
     return None
 
@@ -267,10 +268,14 @@ _SUMMARIZERS = [
 
 def select_summarizer(command: str):
     """Pick the single verification command in ``command``, or None."""
-    if _PIPE_OR_SUBSHELL_RE.search(command):
+    command = _CONTINUATION_RE.sub(" ", command)
+    # ``-run 'TestA|TestB'`` is a regex, not a pipeline: judge shape with the
+    # quoted regions blanked out.
+    unquoted = _QUOTED_RE.sub("''", command)
+    if _PIPE_OR_SUBSHELL_RE.search(unquoted):
         return None
     chosen = []
-    for segment in _SEGMENT_SPLIT_RE.split(command):
+    for segment in _SEGMENT_SPLIT_RE.split(unquoted):
         fn = _summarizer_for(segment)
         if fn is None:
             return None

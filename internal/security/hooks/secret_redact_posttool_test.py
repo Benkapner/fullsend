@@ -222,5 +222,88 @@ class TestCodeIsNotASecret(unittest.TestCase):
         self.assertEqual(stdout, "")
 
 
+class TestEnvStyleWeakPasswords(unittest.TestCase):
+    def test_lowercase_password_in_env_line_redacted(self):
+        _, stdout, _ = run_hook("DB_PASSWORD=letmeinnow\n")
+        self.assertTrue(stdout)
+        self.assertNotIn("letmeinnow", json.loads(stdout)["tool_result"])
+
+    def test_same_value_as_source_literal_untouched(self):
+        _, stdout, _ = run_hook('password = "letmeinnow"\n')
+        self.assertEqual(stdout, "")
+
+
+class TestSecondReviewRound(unittest.TestCase):
+    def test_keyword_arguments_untouched(self):
+        _, stdout, _ = run_hook(
+            "client = Client(token=fetchToken(), api_key=loadApiKey(cfg))\n"
+            "secret=readSecretFile(path)\n"
+            "run(key=cfg[0], auth=obj.attr)\n"
+        )
+        self.assertEqual(stdout, "")
+
+    def test_system_qualified_names_redacted(self):
+        value = "Tr0ub4dor3xyz"  # gitleaks:allow
+        _, stdout, _ = run_hook(
+            f"SOURCE_DB_PASSWORD={value}\nSTORE_PASSWORD={value}\nBACKEND_API_KEY={value}\n"
+        )
+        self.assertTrue(stdout)
+        result = json.loads(stdout)
+        self.assertNotIn(value, result["tool_result"])
+        self.assertEqual(
+            result["metadata"]["secrets_redacted"], 1
+        )  # one value, replaced everywhere
+
+    def test_id_token_is_a_token_but_key_id_is_not(self):
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        _, stdout, _ = run_hook(f'{{"id_token": "{jwt}"}}\nID_TOKEN={jwt}\n')
+        self.assertTrue(stdout)
+        self.assertNotIn(jwt, json.loads(stdout)["tool_result"])
+        _, stdout, _ = run_hook("KEY_ID=abcd1234efgh5678\nCLIENT_ID=1234567890-abcdefghij\n")
+        self.assertEqual(stdout, "")
+
+    def test_human_passwords_as_literals_redacted(self):
+        _, stdout, _ = run_hook(
+            '{"password": "Welcome-123"}\ndb_password = "secretpassword"\nJWT_SECRET=mysecretkey\n'
+        )
+        self.assertTrue(stdout)
+        text = json.loads(stdout)["tool_result"]
+        for leaked in ("Welcome-123", "secretpassword", "mysecretkey"):
+            self.assertNotIn(leaked, text)
+
+    def test_extension_and_placeholder_evasions_redacted(self):
+        value = "Tr0ub4dor3xyz"  # gitleaks:allow
+        dotted = "Tr0ub4dor.xyz"  # gitleaks:allow
+        _, stdout, _ = run_hook(
+            f"DB_PASSWORD={value}.txt\nDB_PASSWORD=your_{value}\nDB_PASSWORD={dotted}\n"
+        )
+        self.assertTrue(stdout)
+        text = json.loads(stdout)["tool_result"]
+        self.assertNotIn(value, text)
+        self.assertNotIn(dotted, text)
+
+    def test_db_password_bounded_and_idempotent(self):
+        line = "DATABASE_URL=postgres://u:p4ssw0rd@db:5432/app # contact admin@example.com\n"
+        _, stdout, _ = run_hook(line)
+        first = json.loads(stdout)["tool_result"]
+        self.assertIn("admin@example.com", first)
+        self.assertNotIn("p4ssw0rd", first)
+        _, stdout, _ = run_hook(first)
+        self.assertEqual(stdout, "")
+
+
+class TestSweepResidue(unittest.TestCase):
+    def test_constant_names_and_pagination_and_short_prefixed_fakes_untouched(self):
+        _, stdout, _ = run_hook(
+            'SecretWIFProvider = "FULLSEND_GCP_WIF_PROVIDER"\n'
+            'NextPageToken: "next-page"\n'
+            'Token: "ghs_maskable"\n'
+            '"token": "glpat-new"\n'
+            'GitToken: "ghp_test123"\n'
+            '{"key": "fullsend-triage-mr-1", "process_mode": "newest_first"}\n'
+        )
+        self.assertEqual(stdout, "")
+
+
 if __name__ == "__main__":
     unittest.main()

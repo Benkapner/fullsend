@@ -82,6 +82,9 @@ _CHECKS: list[tuple[str, str, re.Pattern]] = [
 # Variation selectors to strip: any run of two or more, or a selector that
 # does not follow a non-ASCII character (nothing for it to select).
 _VS_STRIP_RE = re.compile("(?:[\ufe00-\ufe0f]{2,}|(?<![^\x00-\x7f])[\ufe00-\ufe0f])")
+_SUPP_VS_STRIP_RE = re.compile(
+    "(?:[\U000e0100-\U000e01ef]{2,}|(?<![^\x00-\x7f])[\U000e0100-\U000e01ef])"
+)
 
 
 def log_finding(name: str, severity: str, detail: str, action: str) -> None:
@@ -145,17 +148,23 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
 
         result = pattern.sub("", result)
 
-    # Supplementary variation selectors (VS17-VS256, U+E0100-U+E01EF).
-    supp_vs = [c for c in result if 0xE0100 <= ord(c) <= 0xE01EF]
-    if supp_vs:
+    # Supplementary variation selectors (VS17-VS256, U+E0100-U+E01EF): same
+    # rule as the BMP ones — one selector after a non-ASCII base character is
+    # an ideographic variation sequence (Japanese IVS), a run or an orphan is
+    # smuggling.
+    supp_matches = _SUPP_VS_STRIP_RE.findall(result)
+    if supp_matches:
         findings.append(
             {
                 "name": "variation_selector",
                 "severity": "medium",
-                "detail": (f"{len(supp_vs)} supplementary variation selector character(s) removed"),
+                "detail": (
+                    f"{sum(len(m) for m in supp_matches)} supplementary variation selector "
+                    "character(s) removed"
+                ),
             }
         )
-        result = "".join(c for c in result if not (0xE0100 <= ord(c) <= 0xE01EF))
+        result = _SUPP_VS_STRIP_RE.sub("", result)
 
     # Compatibility characters (fullwidth, ligatures, vulgar fractions) are
     # reported but kept: NFKC-rewriting a Read result hands the agent file
@@ -263,6 +272,20 @@ def main() -> None:
     for f in findings:
         action = "critical_sanitize" if f["severity"] == "critical" else "sanitize"
         log_finding(f["name"], f["severity"], f["detail"], action)
+
+    if updated == original:
+        # Detection-only findings (compatibility characters kept): report,
+        # but never emit a no-op rewrite that could clobber another hook's.
+        json.dump(
+            {
+                "metadata": {
+                    "unicode_findings": len(findings),
+                    "categories": [f["name"] for f in findings],
+                }
+            },
+            sys.stdout,
+        )
+        sys.exit(0)
 
     # PostToolUse hooks always exit 0 — they sanitize, never block.
     # Critical findings (tag chars) are stripped and logged to findings.jsonl

@@ -510,6 +510,16 @@ func TestHookPlan_CanaryOnlyUsesChain(t *testing.T) {
 	assert.Equal(t, []string{AllTools}, post[0].Tools)
 	assert.Equal(t, []string{"posttool_chain.py"}, post[0].Scripts)
 
+	// The failure-phase group is gated on the canary, not on the sanitizers.
+	var failed int
+	for _, g := range plan {
+		if g.Phase == HookPhasePostToolUseFailure {
+			failed++
+			assert.Equal(t, []string{"posttool_chain.py"}, g.Scripts)
+		}
+	}
+	assert.Equal(t, 1, failed)
+
 	files := HookFiles(cfg)
 	assert.Contains(t, files, "posttool_chain.py")
 	assert.Contains(t, files, "canary_posttool.py")

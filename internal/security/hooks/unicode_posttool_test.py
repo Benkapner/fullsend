@@ -148,14 +148,14 @@ class TestNFKC(unittest.TestCase):
         rc, stdout, _ = run_hook("\uff21\uff22\uff23")
         self.assertEqual(rc, 0)
         out = json.loads(stdout)
-        self.assertEqual(out["tool_result"], "\uff21\uff22\uff23")
+        self.assertNotIn("hookSpecificOutput", out)
         self.assertIn("fullwidth", out["metadata"]["categories"])
 
     def test_cjk_content_untouched(self):
         text = "使い方：`make`（必須）！ \ufb01le \u00bd\n"
         rc, stdout, _ = run_hook(text)
         self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(stdout)["tool_result"], text)
+        self.assertNotIn("hookSpecificOutput", stdout)
 
 
 class TestVariationSelector(unittest.TestCase):
@@ -253,6 +253,28 @@ class TestProtocol(unittest.TestCase):
         self.assertIn("metadata", out)
         self.assertIn("unicode_findings", out["metadata"])
         self.assertIn("categories", out["metadata"])
+
+
+class TestIdeographicVariationSequences(unittest.TestCase):
+    def test_single_ivs_kept(self):
+        # U+845B + U+E0100 is a registered ideographic variation sequence.
+        rc, stdout, _ = run_hook("\u845b\U000e0100\u57ce")
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+    def test_ivs_run_stripped(self):
+        rc, stdout, _ = run_hook("a\U000e0100\U000e0101b")
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertEqual(out["tool_result"], "ab")
+        self.assertIn("variation_selector", out["metadata"]["categories"])
+
+    def test_detection_only_findings_do_not_emit_a_rewrite(self):
+        rc, stdout, _ = run_hook("\uff21\uff22")
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertNotIn("hookSpecificOutput", out)
+        self.assertIn("fullwidth", out["metadata"]["categories"])
 
 
 if __name__ == "__main__":

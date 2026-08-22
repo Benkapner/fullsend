@@ -171,13 +171,27 @@ def transform_strings(
     return value
 
 
+def _detection_form(text: str) -> str:
+    # NFKD first so combining marks become separate code points, drop them and
+    # every variation selector, then NFKC for the compatibility folding.
+    decomposed = unicodedata.normalize("NFKD", text)
+    stripped = "".join(
+        c
+        for c in decomposed
+        if unicodedata.category(c) != "Mn"
+        and not (0xFE00 <= ord(c) <= 0xFE0F or 0xE0100 <= ord(c) <= 0xE01EF)
+    )
+    return unicodedata.normalize("NFKC", stripped)
+
+
 def nfkc(value: Any) -> Any:
-    """Return ``value`` with every string NFKC-normalized (detection copy).
+    """Return ``value`` with every string in detection form: NFKC-normalized
+    with combining marks and variation selectors removed.
 
     Sanitizers keep the original text; scanners that must see through
-    fullwidth/compatibility obfuscation run on this copy.
+    fullwidth, combining-mark or selector obfuscation run on this copy.
     """
-    return transform_strings(value, lambda text: unicodedata.normalize("NFKC", text))
+    return transform_strings(value, _detection_form)
 
 
 def emit_updated(

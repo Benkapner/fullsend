@@ -238,6 +238,10 @@ func piSettingsJSON() ([]byte, error) {
 
 func piHooksManifestFor(hooksDir string, hooks security.SandboxHookConfig) *piHooksManifest {
 	m := &piHooksManifest{Dir: hooksDir, Groups: []piHookGroup{}, ToolNames: maps.Clone(claudeToolForPi)}
+	// Every plan group is written, including PostToolUseFailure: the adapter
+	// only asks for PreToolUse/PostToolUse, and pi's tool_result event already
+	// covers failed calls, so that group maps onto nothing there. The adapter
+	// also keeps its own spawn timeout rather than reading one from here.
 	for _, g := range security.HookPlan(hooks) {
 		m.Groups = append(m.Groups, piHookGroup{
 			Phase:   string(g.Phase),

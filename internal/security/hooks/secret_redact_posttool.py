@@ -114,7 +114,6 @@ _NOT_SECRET_PARTS = frozenset(
         "dir",
         "name",
         "names",
-        "id",
         "ids",
         "type",
         "kind",
@@ -131,7 +130,6 @@ _NOT_SECRET_PARTS = frozenset(
         "header",
         "prefix",
         "suffix",
-        "source",
         "endpoint",
         "region",
         "version",
@@ -139,9 +137,7 @@ _NOT_SECRET_PARTS = frozenset(
         "format",
         "audience",
         "issuer",
-        "env",
         "var",
-        "label",
         "policy",
         "alg",
         "algorithm",
@@ -155,12 +151,10 @@ _NOT_SECRET_PARTS = frozenset(
         "interval",
         "required",
         "optional",
-        "provider",
-        "store",
-        "backend",
-        "ref",
         "public",
-        "cache",
+        "page",
+        "cursor",
+        "pagination",
         "placeholder",
         "example",
     }
@@ -175,6 +169,9 @@ def name_strength(name: str) -> str | None:
     parts = [p.lower() for p in _NAME_SPLIT_RE.split(name) if p]
     if not parts or any(p in _NOT_SECRET_PARTS for p in parts):
         return None
+    if parts[-1] == "id":
+        # KEY_ID / CLIENT_ID name an identifier; id_token / ID_TOKEN is a token.
+        return None
     if any(p in _STRONG_NAME_PARTS for p in parts):
         return "strong"
     if "key" in parts and any(p in _KEY_QUALIFIERS for p in parts):
@@ -187,13 +184,23 @@ def name_strength(name: str) -> str | None:
 _VALUE_CLASS = r"[A-Za-z0-9_.+/=@:%-]"
 _PLACEHOLDER_RE = re.compile(
     r"^(?:changeme|change[-_]me|password|passw0rd|passwd|secret|example|placeholder|dummy"
-    r"|sample|test|testing|redacted|replace[-_]?me|your[-_].*|[xX]{3,}|\.{3,}|_+|-+|\*+)$",
+    r"|sample|test|testing|redacted|replace[-_]?me|your[-_][A-Za-z_-]*|[xX]{3,}|\.{3,}|_+|-+|\*+)$",
     re.IGNORECASE,
 )
 _IDENT_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
 _URL_PATH_FLAG_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://|\.{0,2}/|~/|-)")
 _FILE_EXT_RE = re.compile(r"\.[A-Za-z]{1,5}$")
+_MASKED_RE = re.compile(r"^(?:.{4}\.\.\.|\*\*\*)$")
+# A value that is itself a constant/env-var name: SecretWIFProvider = "FULLSEND_GCP_WIF_PROVIDER".
+_CONSTANT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+# Known token prefixes: a real one has already been masked by the prefix
+# patterns (which run first); what reaches the structural check with such a
+# prefix is a fixture too short to be real (``ghs_maskable``, ``glpat-new``).
+_KNOWN_PREFIX_RE = re.compile(
+    r"^(?:gh[opsur]_|github_pat_|glpat-|glrt-|sk-|xox[abpr]-|AKIA|ASIA|ya29\.|AIza|hf_|npm_|pypi-|dop_v1_|pplx-|dapi)"
+)
 _SEGMENT_SPLIT_RE = re.compile(r"[-_.]+")
+_SECRET_WORDS = frozenset({"token", "secret", "password", "passwd", "key", "credential", "auth"})
 _FIXTURE_WORDS = frozenset(
     {
         "test",
@@ -215,9 +222,8 @@ _FIXTURE_WORDS = frozenset(
 def _random_segment(segment: str) -> bool:
     """A dotted segment that is base64/hex-like rather than a word (JWT parts)."""
     return (
-        len(segment) >= 16
-        and any(c.islower() for c in segment)
-        and any(c.isupper() for c in segment)
+        len(segment) >= 8
+        and any(c.isalpha() for c in segment)
         and any(c.isdigit() for c in segment)
     )
 
@@ -244,10 +250,18 @@ def _word_segment(segment: str) -> bool:
     return stripped.isalpha() and len(segment) - len(stripped) <= 3
 
 
+def _names_a_secret(value: str) -> bool:
+    """``cached-token``, ``ghs_policy_token``, ``test-secret``: a phrase whose
+    words include the kind of secret it stands in for is a fixture; a real
+    credential does not call itself one."""
+    return any(part.lower() in _SECRET_WORDS for part in _SEGMENT_SPLIT_RE.split(value))
+
+
 def _fixture_marker(value: str) -> bool:
     """A phrase that names itself as fake: ``test-token-abc``, ``glpat-xxxx``."""
     for part in _SEGMENT_SPLIT_RE.split(value):
-        if part.lower() in _FIXTURE_WORDS or (len(part) >= 3 and len(set(part.lower())) == 1):
+        word = part.lower().rstrip("0123456789")  # test123 → test
+        if word in _FIXTURE_WORDS or (len(part) >= 3 and len(set(part.lower())) == 1):
             return True
     return False
 
@@ -265,11 +279,17 @@ def _credential_like(value: str, strength: str, *, literal: bool = True) -> bool
     """
     if _PLACEHOLDER_RE.match(value) or _URL_PATH_FLAG_RE.match(value):
         return False
+    if _CONSTANT_NAME_RE.match(value) or _KNOWN_PREFIX_RE.match(value):
+        return False
     if _IDENT_PATH_RE.match(value) and not any(_random_segment(s) for s in value.split(".")):
         return False
-    if _FILE_EXT_RE.search(value) and not any(_random_segment(s) for s in value.split(".")):
-        return False
-    if _word_phrase(value) and (literal or _fixture_marker(value)):
+    if _FILE_EXT_RE.search(value):
+        stem = value.rsplit(".", 1)[0]
+        if stem.isalpha() or _word_phrase(stem) or _IDENT_PATH_RE.match(stem):
+            return False
+    if _word_phrase(value) and (
+        strength == "weak" or _fixture_marker(value) or (literal and _names_a_secret(value))
+    ):
         return False
     has_lower = any(c.islower() for c in value)
     has_upper = any(c.isupper() for c in value)
@@ -277,17 +297,25 @@ def _credential_like(value: str, strength: str, *, literal: bool = True) -> bool
     has_punct = any(not c.isalnum() and c != "_" for c in value)
     classes = sum((has_lower, has_upper, has_digit, has_punct))
     if strength == "strong":
-        return len(value) >= 8 and (classes >= 2 or len(value) >= 16)
+        # ``PASSWORD=letmeinn`` in a .env file is a real (weak) credential; the
+        # same 8 lowercase letters as a quoted literal in source are usually a
+        # fixture, so literals need a second character class or 16+ chars.
+        return len(value) >= 8 and (classes >= 2 or len(value) >= 12 or not literal)
     return len(value) >= 20 and classes >= 2 and (has_digit or has_upper)
 
 
 # NAME=value / export NAME=value / name = "value". Group 4 is the opening
-# quote (empty when bare); the closing quote must match it.
+# quote (empty when bare); the closing quote must match it. The chain driver
+# additionally re-runs redact_text on an NFKC copy of each field (fullwidth
+# obfuscation); the standalone main() below does not — adapters call the chain.
 _ENV_ASSIGN_RE = re.compile(
     r"(?:^|(?<=[\s;,(]))(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)([ \t]*)=([ \t]*)(['\"]?)"
-    r"(" + _VALUE_CLASS + r"{8,})\4(?![(\[{])",
+    r"(" + _VALUE_CLASS + r"{8,})\4",
     re.MULTILINE,
 )
+# What may follow an unquoted value for it to be a value and not the head of an
+# expression: ``token=fetchToken()`` / ``key=cfg[0]`` / ``secret=obj.attr``.
+_EXPRESSION_TAIL = frozenset("([{.")
 # "name": "value" / 'name': 'value' / name: "value" (JSON, dicts, YAML).
 _KV_RE = re.compile(
     r"""(?:(["'])([^"'\n]{1,64})\1|(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_-]{0,63}))"""
@@ -300,7 +328,7 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
 )
 _DB_PASSWORD_RE = re.compile(
-    r"(?:postgres|mysql|mongodb|redis)(?:ql)?://[^:]+:(.{4,})@[^@\s/]+",
+    r"(?:postgres|mysql|mongodb|redis)(?:ql)?://[^:/\s]+:([^\s]{4,})@[^@\s/]+",
     re.IGNORECASE,
 )
 
@@ -317,6 +345,11 @@ def structural_secrets(text: str) -> list[tuple[str, str]]:
             # ``token = request.headers.authorization`` — an expression, not a
             # literal. Only a quoted literal counts in source-style assignments.
             continue
+        tail = text[match.end() : match.end() + 1]
+        if not quote and tail and (tail in _EXPRESSION_TAIL or tail.isalnum() or tail == "_"):
+            # ``Client(token=fetchToken(), api_key=loadApiKey(cfg))`` — the
+            # "value" is the start of a call or subscript.
+            continue
         literal = bool(space_before or space_after)
         if _credential_like(value, strength, literal=literal):
             hits.append(("env_secret", value))
@@ -328,7 +361,7 @@ def structural_secrets(text: str) -> list[tuple[str, str]]:
             hits.append(("json_secret", value))
     for match in _DB_PASSWORD_RE.finditer(text):
         value = match.group(1)
-        if _PLACEHOLDER_RE.match(value) or value[:1] in "$<{":
+        if _PLACEHOLDER_RE.match(value) or value[:1] in "$<{" or _MASKED_RE.match(value):
             continue
         hits.append(("db_password", value))
     return hits

@@ -469,3 +469,31 @@ class TestCommandShapes:
         assert cs.select_summarizer("pytest; go test ./...") is None
         assert cs.select_summarizer("go test ./... || true") is None
         assert cs.select_summarizer("ls") is None
+
+
+class TestPytestQuietFailure:
+    def test_summarizer_itself_refuses_quiet_failure(self):
+        import context_suppress_posttool as cs
+
+        assert cs.suppress_pytest("3 failed, 2 passed in 1.2s\n") is None
+        assert cs.suppress_pytest("2 passed in 1.2s\n") == "tests: 2 passed (1.2s)"
+
+
+class TestCommandShapesRoundTwo:
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_quoted_pipe_is_not_a_pipeline(self):
+        out = run_hook(make_input("go test ./... -run 'TestA|TestB'", self.GO_OK))
+        assert out is not None
+
+    def test_comment_and_continuation(self):
+        assert run_hook(make_input("# run the suite\ngo test ./...", self.GO_OK)) is not None
+        assert run_hook(make_input("go test \\\n  ./...", self.GO_OK)) is not None
+
+    def test_two_tools_still_not_condensed(self):
+        assert run_hook(make_input("go test ./... && go vet ./...", self.GO_OK)) is None
+
+    def test_pytest_summary_echoes_all_counts(self):
+        out = run_hook(make_input("pytest -q", "2 passed, 1 xfailed in 0.3s\n"))
+        assert out is not None
+        assert out["tool_result"] == "tests: 2 passed, 1 xfailed (0.3s)"

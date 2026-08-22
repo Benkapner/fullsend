@@ -691,5 +691,64 @@ class TestPostToolUseFailure(unittest.TestCase):
         self.assertEqual(stdout, "")
 
 
+class TestPostToolUseFailureShapeDrift(unittest.TestCase):
+    def test_structured_error_is_still_scanned(self):
+        body = {
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl x"},
+            "error": {"message": "Exit code 1", "stderr": f"leak {CANARY}"},
+        }
+        rc, stdout, _ = run_raw(body, {"FULLSEND_CANARY_TOKEN": CANARY})
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(stdout)["decision"], "block")
+
+    def test_nfkc_redaction_prefers_hidden_secret_over_equal_count(self):
+        # One plain PAT the original catches, one fullwidth PAT only the
+        # normalized copy catches: counts tie at 1 unless compared by value.
+        plain = "ghp_" + "B" * 36
+        hidden = to_fullwidth("ghp_" + "C" * 36)
+        rc, stdout, _ = run_hook(CHAIN_HOOK, f"{plain} {hidden}", key="tool_response")
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        emitted = json.dumps(out["hookSpecificOutput"]["updatedToolOutput"])
+        self.assertNotIn(hidden, emitted)
+        self.assertNotIn(plain, emitted)
+
+
+class TestObfuscationRoundTwo(unittest.TestCase):
+    def test_failure_payload_with_other_key_still_scanned(self):
+        body = {
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl x"},
+            "tool_error": f"Exit code 1\nleak {CANARY}",
+        }
+        rc, stdout, _ = run_raw(body, {"FULLSEND_CANARY_TOKEN": CANARY})
+        self.assertEqual(rc, 1)
+
+    def test_selector_interleaved_fullwidth_secret_redacted(self):
+        pat = "ghp_" + "D" * 36
+        hidden = "\ufe0f".join(to_fullwidth(pat))
+        rc, stdout, _ = run_hook(CHAIN_HOOK, f"GITHUB_TOKEN={hidden}", key="tool_response")
+        self.assertEqual(rc, 0)
+        emitted = json.dumps(json.loads(stdout)["hookSpecificOutput"]["updatedToolOutput"])
+        self.assertNotIn(hidden, emitted)
+        self.assertNotIn(pat, emitted)
+
+    def test_combining_mark_canary_blocks(self):
+        hidden = "".join(c + "\u0300" for c in CANARY)
+        rc, stdout, _ = run_hook(
+            CHAIN_HOOK,
+            {"stdout": f"leak {hidden}", "stderr": "", "interrupted": False, "isImage": False},
+            key="tool_response",
+            env_extra={"FULLSEND_CANARY_TOKEN": CANARY},
+            tool_name="Bash",
+            tool_input={"command": "echo"},
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(stdout)["decision"], "block")
+
+
 if __name__ == "__main__":
     unittest.main()

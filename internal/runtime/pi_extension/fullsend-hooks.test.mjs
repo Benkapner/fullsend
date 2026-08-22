@@ -203,6 +203,21 @@ test("tool_result: chains sanitizers, feeding each the previous output (v1 and v
   assert.equal(calls[2].payload.tool_result, "token ghp_...");
 });
 
+test("tool_result: a PostToolUseFailure group in the plan is ignored (pi's tool_result already covers failed calls)", () => {
+  const { spawn, calls } = fakeSpawn({ "canary_posttool.py": { status: 0 } });
+  const withFailure = {
+    ...manifest,
+    hooks: {
+      ...manifest.hooks,
+      groups: [...manifest.hooks.groups, { phase: "PostToolUseFailure", tools: ["*"], scripts: ["posttool_chain.py"] }],
+    },
+  };
+  const { onToolCall, onToolResult } = createHooks(withFailure, { spawn, ...quiet });
+  assert.equal(onToolCall({ toolName: "bash", input: { command: "gh x" } }), undefined);
+  assert.equal(onToolResult({ toolName: "bash", input: {}, content: [{ type: "text", text: "same" }] }), undefined);
+  assert.ok(!calls.some((c) => c.script === "posttool_chain.py"), "the failure-phase script is never spawned by the adapter");
+});
+
 test("tool_result: unchanged output returns undefined", () => {
   const { spawn } = fakeSpawn({});
   const { onToolResult } = createHooks(manifest, { spawn, ...quiet });
