@@ -239,9 +239,10 @@ func assertRunMetricsReportTokens(w *world.World) error {
 
 // assertPiTranscriptHasToolCall finds an extracted pi session file
 // (first line is the pi session header) and requires at least one
-// assistant toolCall block: the agent ran a tool through pi, and with
-// security enabled every such call went through the fullsend hook
-// adapter, which blocks on a refused PreToolUse script.
+// assistant toolCall block: the agent ran a tool through pi. With security
+// enabled the run refuses to start unless the fullsend hook adapter is
+// present and intact (exit 97 guard), so a tool call in such a run was
+// mediated by the adapter; this step does not inspect hook output itself.
 func assertPiTranscriptHasToolCall(w *world.World) error {
 	if err := ensureRunArtifacts(w, "metrics.json"); err != nil {
 		return err

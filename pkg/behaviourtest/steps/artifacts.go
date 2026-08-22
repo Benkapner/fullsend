@@ -62,9 +62,15 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 	if err != nil {
 		return err
 	}
+	// The agent workflow uploads `fullsend-<agent>`; follow the harness
+	// this scenario dispatched rather than assuming the triage stage.
+	artifactName := install.PerRepoAgentArtifact
+	if w.DispatchAgent != "" {
+		artifactName = "fullsend-" + w.DispatchAgent
+	}
 
 	tryDownloadRun := func(runID int) error {
-		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, install.PerRepoAgentArtifact, dest); err != nil {
+		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, artifactName, dest); err != nil {
 			return err
 		}
 		if _, findErr := artifacts.FindOutputFile(dest, marker); findErr != nil {
@@ -100,7 +106,7 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 		}
 	}
 
-	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.RepoName, install.PerRepoAgentArtifact, w.ScenarioStart, dest); err != nil {
+	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.RepoName, artifactName, w.ScenarioStart, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}
