@@ -1704,6 +1704,18 @@ func TestResolveAgentsRef_MakefileBuild(t *testing.T) {
 	assert.Equal(t, "heads/main", gitRef)
 }
 
+func TestResolveAgentsRef_RealSHADevVersion(t *testing.T) {
+	origVersion := version
+	origSHA := commitSHA
+	version = "dev"
+	commitSHA = "abc123def456"
+	t.Cleanup(func() { version = origVersion; commitSHA = origSHA })
+
+	displayRef, gitRef := resolveAgentsRef()
+	assert.Equal(t, "main", displayRef)
+	assert.Equal(t, "heads/main", gitRef)
+}
+
 func TestApplySandboxImageOverride_Applied(t *testing.T) {
 	t.Setenv("FULLSEND_SANDBOX_IMAGE", "ghcr.io/fullsend-ai/fullsend-sandbox:dev")
 

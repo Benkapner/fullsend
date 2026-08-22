@@ -71,6 +71,7 @@ func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
 ) (scaffold.InstallFiles, error) {
 	tagYAML := scaffold.FormatRunnerTags(runnerTags)
 	versionMarker := scaffold.FormatVersionMarker(resolvedSHA, manifestRef)
+	fullsendVersion := scaffold.ResolveFullsendVersion(resolvedSHA, manifestRef)
 
 	var files scaffold.InstallFiles
 	for _, sp := range scaffoldGitLabPaths {
@@ -80,6 +81,7 @@ func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
 		}
 
 		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
+		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
 		if sp.outPath == ".gitlab/ci/fullsend-dispatch.yml" && versionMarker != "" {
 			rendered = scaffold.InsertAfterDocStart(rendered, versionMarker)
 		}
