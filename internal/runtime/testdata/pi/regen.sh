@@ -34,10 +34,15 @@ echo "regen.sh: capturing fixtures with ${PKG}" >&2
 echo "regen.sh: writing into ${DIR}" >&2
 
 # --no-session keeps the capture out of the operator's session store. Probe
-# the flag via --help rather than by swallowing a real run's stderr, so a
-# genuine failure is not silently retried without it.
+# the flag via --help; an npx failure is a hard error, not "flag unsupported",
+# so a broken install never silently falls back to writing a real session.
+if ! help_out="$(npx -y --ignore-scripts "${PKG}" --help 2>&1)"; then
+	echo "regen.sh: '${PKG} --help' failed:" >&2
+	printf '%s\n' "${help_out}" >&2
+	exit 1
+fi
 NO_SESSION=()
-if npx -y --ignore-scripts "${PKG}" --help 2>/dev/null | grep -q -- '--no-session'; then
+if grep -q -- '--no-session' <<<"${help_out}"; then
 	NO_SESSION=(--no-session)
 else
 	echo "regen.sh: --no-session not supported by ${PKG}; capture will be stored in your session dir" >&2

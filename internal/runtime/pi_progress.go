@@ -267,8 +267,9 @@ func piIsErrorStop(reason string) bool {
 //     window (pi may have been about to retry: reported as incomplete).
 //   - auto_retry_start {attempt, maxAttempts, delayMs, errorMessage} precedes
 //     each automatic retry and maps directly onto RetryEvent.
-//   - Tool names are lowercase (bash, read, write, edit, glob, grep) — the
-//     hook adapter translates to Claude-name vocabulary (#608).
+//   - Built-in tool names are lowercase (read, bash, edit, write, grep, find,
+//     ls — packages/coding-agent/src/core/tools/index.ts) — the hook adapter
+//     translates to Claude-name vocabulary (#608).
 //   - --mode json exits 0 on model error (stopReason: error/aborted only
 //     maps to exit 1 in text mode) — ParseTranscriptFile must detect errors
 //     from the stream, not the exit code.
