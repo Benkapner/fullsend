@@ -582,28 +582,14 @@ repo-owned extensions, skills, and settings from loading.
 **Linux (Fedora, rootless Podman):** verified end-to-end. The general
 [Linux platform notes](#linux) apply.
 
-**macOS (Apple Silicon):** verified up to the inference call — sandbox
-creation, the pi bootstrap and preflight, loading the Vertex extension, and
-model-id translation all work on `darwin/arm64` (macOS 26.5.2, podman
-machine, `openshell` from Homebrew). The general [macOS platform
-notes](#macos) apply. In particular:
+**macOS (Apple Silicon):** sandbox creation, the pi bootstrap and preflight,
+loading the Vertex extension, and model-id translation are verified on
+`darwin/arm64` (macOS 26.5.2, podman machine, `openshell` from Homebrew).
+The general [macOS platform notes](#macos) apply. In particular:
 - Use `/private/tmp/...` for bind mounts (not `/tmp/...`)
 - If the sandbox image architecture differs from the host, set
   `FULLSEND_SANDBOX_ARCH` and provide a Linux binary with
   `--fullsend-binary`
-- **Reaching Vertex may need your VPN.** If the GCP project restricts
-  access, the agent starts, resolves the model, and then fails on the first
-  inference call with:
-
-  ```
-  ✗ error: Could not load the default credentials.
-  → Result: ERROR (error)    Turns: 1
-  ```
-
-  That message points at credentials, but the same text appears when the
-  token endpoint is simply unreachable — check the VPN before re-issuing
-  credentials. `Turns: 1` with zero tokens is the tell: pi started and the
-  call never completed.
 
 ## Run from a container
 
