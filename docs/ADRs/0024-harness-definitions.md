@@ -90,8 +90,8 @@ parts:
     sandbox creation (context injection detection, SSRF validation, unicode
     normalization, secret redaction, ML-based LLM Guard — as of #6522 the
     ML scanner ships only in the runner image, not in release binaries).
-    Sandbox-side
-    pre/post-tool hooks are installed into the Claude configuration during
+    Sandbox-side pre/post-tool hooks are installed into the Claude
+    configuration during
     bootstrap (Tirith terminal security, SSRF pre-tool checks, secret
     redaction post-tool). Omitting the `security` block enables all scanners
     with fail-closed semantics. Individual scanners can be toggled off

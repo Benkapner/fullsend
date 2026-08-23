@@ -160,12 +160,15 @@ type HostScanners struct {
 	LLMGuard          *LLMGuardConfig `yaml:"llm_guard,omitempty"`
 }
 
-// LLMGuardConfig configures the ML-based prompt injection scanner. The schema
-// is retained for compatibility, but the scanner is compiled out of every
-// shipped build (CGO_ENABLED=0, no -tags ORT) and its model was removed from
-// the sandbox image in #6522. Neither Path A (scanRepoContextFiles) nor Path B
-// (fullsend scan context) ever called it; the sole call site is
-// `fullsend scan input`. These fields are validated but not read. See #6506.
+// LLMGuardConfig configures the ML-based prompt injection scanner. As of
+// #6522 the scanner ships enabled only in the runner image; the release
+// binaries are built CGO_ENABLED=0 with no -tags ORT, so it is compiled out
+// of those. Neither Path A (scanRepoContextFiles) nor Path B (fullsend scan
+// context) ever called it; the sole call site is `fullsend scan input`.
+//
+// These fields are validated but never read: the scanner is constructed with
+// zero values and hardcodes 0.92/sentence, and the call is gated on
+// MLScanAvailable() rather than on Enabled. See #6506.
 type LLMGuardConfig struct {
 	Enabled   *bool   `yaml:"enabled,omitempty"`    // default: true
 	Threshold float64 `yaml:"threshold,omitempty"`  // default: 0.92
