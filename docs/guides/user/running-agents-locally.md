@@ -489,9 +489,10 @@ On a successful run, you see output like:
 ```
 runtime: selected "pi" from ./pi-hello/config.yaml
 → Agent: claude-haiku-4-5 (v0.84.2)
-→ Result: stop     Turns: 2
-    Tokens: in=7601 out=360 reasoning=185
-  ✓ Agent exited with code 0 (6.7s)
+→ Result: stop
+    Turns: 3
+    Tokens: in=5485 out=531 reasoning=240 cache_create=0 cache_read=0
+  ✓ Agent exited with code 0 (7.6s)
 ```
 
 The `runtime: selected "pi"` line confirms the pi backend was used.
@@ -505,19 +506,26 @@ afterwards — but delete it when you are done (`openshell sandbox delete
 After a successful run, the output directory contains:
 
 ```
-/tmp/fullsend-out/
+/tmp/fullsend-out/<sandbox-name>/
 ├── logs/
 │   ├── openshell-sandbox.log       # OCSF events (network, policy decisions)
 │   └── openshell-gateway.log
 ├── iteration-1/
 │   ├── output/
-│   │   └── agent-result.json       # Agent output
+│   │   └── agent-result.json       # whatever the agent wrote to output/
+│   ├── output.jsonl                # the agent's raw event stream
 │   └── transcripts/
-│       └── <agent>-<timestamp>_<id>.jsonl  # Pi session transcript
-├── metrics.json                    # Includes "runtime": "pi"
-└── security/
-    └── findings.jsonl
+│       └── <agent>-<timestamp>_<id>.jsonl  # pi session transcript
+├── metrics.json                    # includes "runtime": "pi"
+├── run-telemetry.jsonl
+└── security/                       # findings.jsonl appears only when a
+                                    # security hook actually reports something
 ```
+
+Everything lives under a per-run directory named after the sandbox
+(`fs-<slug>-<id>`), so `--output-dir` accumulates one subdirectory per run
+rather than being overwritten. A clean run leaves `security/` empty — that is
+the expected result, not a missing artifact.
 
 Key artifacts to verify:
 
@@ -532,8 +540,24 @@ Use the `analyze-transcript` skill to inspect the session:
 
 ```bash
 python3 skills/analyze-transcript/analyze-transcript.py summary \
-  /tmp/fullsend-out/iteration-1/transcripts/<session>.jsonl
+  /tmp/fullsend-out/<sandbox-name>/iteration-1/transcripts/<session>.jsonl
 ```
+
+```
+Agent:      pi-smoke
+Model:      claude-haiku-4-5
+Messages:   7 (4 user, 3 assistant)
+Tokens:     5485 in / 531 out / 0 cache-read / 0 cache-create
+
+Tool calls:
+  bash                           2
+  write                          1
+
+Stop reasons: toolUse=2, stop=1
+```
+
+`tools` and `conversation` are the other two subcommands worth knowing —
+`tools` for a per-call table, `conversation` for the readable flow.
 
 ### Pi runtime knobs
 
