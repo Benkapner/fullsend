@@ -640,6 +640,9 @@ jobs:
           TRIAGE_TARGET_REPO_DIR: target-repo
           TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, TRIAGE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run triage agent
@@ -755,6 +758,9 @@ jobs:
           CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CODE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
           CODE_ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, CODE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent
@@ -877,6 +883,9 @@ jobs:
           REVIEW_TARGET_REPO_DIR: target-repo
           REVIEW_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           REVIEW_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, REVIEW_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run review agent
@@ -1143,6 +1152,9 @@ jobs:
           FIX_HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
           FIX_FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           FIX_REPO_FULL_NAME: ${{ github.repository }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, FIX_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent
@@ -1246,6 +1258,9 @@ jobs:
           RETRO_TARGET_REPO_DIR: target-repo
           RETRO_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           RETRO_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, RETRO_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run retro agent
@@ -1329,6 +1344,9 @@ jobs:
           PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}
           PRIORITIZE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           PRIORITIZE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, PRIORITIZE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Create empty target-repo directory
@@ -1620,6 +1638,9 @@ jobs:
           MATRIX_ROLE: ${{ matrix.role }}
           GCP_PROJECT: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           GCP_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, <ROLE>_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: |
           set -euo pipefail
           ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]')
