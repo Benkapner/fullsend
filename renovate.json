@@ -18,7 +18,7 @@
     {
       "description": "Ignore fullsend self-references (own reusable workflows and actions)",
       "matchManagers": ["github-actions"],
-      "matchPackageNames": ["/^fullsend-ai\\//"],
+      "matchPackageNames": ["/^fullsend-ai\\/fullsend($|\\/)/"],
       "enabled": false
     },
     {
@@ -165,6 +165,18 @@
       "depNameTemplate": "sigstore/cosign",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the fullsend-ai/agents reusable-workflow SHA pinned in release.yml. The pin targets the agents main branch; Renovate opens a PR when main moves ahead of the pinned commit.",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yml$/"],
+      "matchStrings": [
+        "uses: fullsend-ai/agents/\\.github/workflows/functional-tests\\.yml@(?<currentDigest>[a-f0-9]+)"
+      ],
+      "depNameTemplate": "fullsend-ai/agents",
+      "packageNameTemplate": "https://github.com/fullsend-ai/agents",
+      "datasourceTemplate": "git-refs",
+      "currentValueTemplate": "main"
     }
   ]
 }
