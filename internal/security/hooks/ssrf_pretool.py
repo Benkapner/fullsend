@@ -78,8 +78,9 @@ _NETWORK_COMMANDS = re.compile(
 )
 
 # Shell-reentry commands that spawn a new shell layer where previously-quoted
-# metacharacters become active operators.
-_SHELL_REENTRY = re.compile(r"\b(?:bash|sh|dash|zsh|ksh)\s+-c\b|\beval\b")
+# metacharacters become active operators.  Flags may sit between the shell
+# name and -c (``bash -x -c``, ``sh -l -c``, ``bash --norc -c``).
+_SHELL_REENTRY = re.compile(r"\b(?:bash|sh|dash|zsh|ksh)\s+(?:-\S+\s+)*-c\b|\beval\b")
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 

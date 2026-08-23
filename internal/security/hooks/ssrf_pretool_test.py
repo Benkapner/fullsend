@@ -197,6 +197,16 @@ class TestIsInTextPatternContext:
         m = list(hook.URL_PATTERN.finditer(cmd))[0]
         assert not hook._is_in_text_pattern_context(cmd, m.start())
 
+    def test_bash_c_with_interposed_flags_not_in_context(self, hook):
+        """Flags between the shell name and -c must not defeat reentry detection."""
+        for cmd in (
+            "bash -x -c \"grep 'https://169.254.169.254/latest/' f\"",
+            "bash --norc -c \"grep 'https://169.254.169.254/latest/' f\"",
+            "sh -l -c \"grep 'https://169.254.169.254/latest/' f\"",
+        ):
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
     def test_sed_command_substitution_not_in_context(self, hook):
         """Command substitution inside sed pattern executes the URL."""
         cmd = 'sed "s/$(curl https://169.254.169.254/latest/meta-data/)/replacement/" file'
@@ -648,6 +658,18 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "bash -c nested shell should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_bash_x_c_nested_shell_blocked(self, hook):
+        """bash -x -c nested shell must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "bash -x -c \"grep 'http://169.254.169.254/latest/' f | xargs curl\"",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "bash -x -c nested shell should be blocked"
         assert "169.254.169.254" in result
 
     def test_sed_command_substitution_blocked(self, hook):
