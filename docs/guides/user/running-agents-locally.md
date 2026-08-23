@@ -290,7 +290,7 @@ In addition to the general [prerequisites](#prerequisites) above, you need:
 
 | Requirement | Details |
 |-------------|---------|
-| Sandbox image with pi | `ghcr.io/fullsend-ai/fullsend-sandbox:latest` (must include `PI_VERSION`). Pull the latest to avoid stale cached images — see [Troubleshooting](#troubleshooting-pi) |
+| Sandbox image with pi | `ghcr.io/fullsend-ai/fullsend-sandbox:latest` (must include `PI_VERSION`). Pull the latest to avoid stale cached images — see [Troubleshooting](#troubleshooting-pi-runtime) |
 | GCP credentials | A service account key or `gcloud` ADC (`application_default_credentials.json`). The existing [GCP credentials](#get-google-cloud-platform-credentials) section applies — the pi Vertex provider reads the same variables |
 
 ### Directory layout
@@ -325,7 +325,16 @@ and their contents are given below so this example stays fleet-free.
 #### `config.yaml`
 
 The config must both register the harness **and** set `defaults.runtime: pi`.
-Registering only the harness file causes `resolveAgentSource` to fail:
+The two are checked in different places and fail differently:
+
+- **No `agents:` entry** — placing `harness/pi-smoke.yaml` on disk is not
+  enough. `resolveAgentSource` looks the agent up in the config and, finding
+  nothing, fails with `resolving agent "pi-smoke": no config and agents-repo
+  fallback unavailable`.
+- **No `defaults.runtime: pi`** — the run *succeeds* and silently uses the
+  default `claude` runtime (`backendFromConfigFile` → `ResolveFromConfig`).
+  The give-away is the `runtime: selected "claude"` line; pi is never
+  started.
 
 ```yaml
 version: "1"
@@ -503,7 +512,7 @@ Key artifacts to verify:
 - **Session transcript** — the `.jsonl` file under `transcripts/` contains
   pi's session events; look for `toolCall` / `toolResult` entries
 - **`pi-debug.log`** — appears when `--debug='*'` is passed (note the `=`
-  syntax — see [Troubleshooting](#troubleshooting-pi))
+  syntax — see [Troubleshooting](#troubleshooting-pi-runtime))
 
 Use the `analyze-transcript` skill to inspect the session:
 
@@ -532,7 +541,7 @@ when `--no-approve` is set (the default in fullsend runs). Pi's
 `defaultProjectTrust: never` setting in the sandbox config prevents
 repo-owned extensions, skills, and settings from loading.
 
-### Troubleshooting (pi) {#troubleshooting-pi}
+### Troubleshooting pi runtime
 
 **`pi preflight: pi --version exited 127: sh: 1: pi: not found`**
 - The sandbox image is stale and predates the pi layers. Pull the latest:
