@@ -30,14 +30,15 @@ OpenShell CLI, and every binary the CLI's pre-scripts, validation loop, and
 post-scripts invoke on the machine running fullsend (`gh`, `gitleaks`,
 `pre-commit`, `gitlint`, `python3` + `jsonschema` + `pyyaml`, Go, `git`, `jq`, `tar`).
 It reproduces the environment the composite action assembles in CI so local
-runs behave identically (#5183). It is also the only artifact that ships the
-ML prompt-injection scanner: its `fullsend` binary is built
-`CGO_ENABLED=1 -tags ORT` and the image carries the ProtectAI DeBERTa-v3
-model plus the ONNX Runtime library (#6522). The release tarballs stay
-`CGO_ENABLED=0` and untagged — a ~9 MB static CLI — because the model is
-~740 MB and belongs in an image, not a tarball. It also carries the `gcloud` CLI — not a
+runs behave identically (#5183). It also carries the `gcloud` CLI — not a
 fullsend dependency, but needed for the GCP credential bootstrap in the
 local-run guide.
+
+It is the only artifact that ships the ML prompt-injection scanner: its
+`fullsend` binary is built `CGO_ENABLED=1 -tags ORT` and the image carries
+the ProtectAI DeBERTa-v3 model plus the ONNX Runtime library (#6522). The
+release tarballs stay `CGO_ENABLED=0` and untagged — a ~9 MB static CLI —
+because the model is ~740 MB and belongs in an image, not a tarball.
 
 Podman, the `openshell-gateway` service, and the sandbox supervisor image
 stay on the host — the containerized CLI talks to the host gateway over the
