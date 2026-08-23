@@ -12,6 +12,11 @@
 # the plain one (FULLSEND_MODEL). Values must be single-line and limited to
 # the characters a model id / runtime name can contain; anything else is
 # skipped with a warning. fullsend validates the values themselves.
+# The whole variable map is passed (not individual keys) because the
+# custom-harness matrix job only knows its role at runtime and GitHub
+# expressions cannot upper-case it to build the prefixed name; the map holds
+# the caller repository's own non-secret Actions variables, which the
+# workflow can already read, and only the allowlisted keys leave this script.
 
 set -euo pipefail
 
@@ -35,7 +40,9 @@ done < <(compgen -e | sort -u)
 
 # Override passthrough from repository variables (optional).
 if [[ -n "${FULLSEND_REPO_VARS:-}" ]]; then
-  override_keys=(FULLSEND_RUNTIME FULLSEND_MODEL FULLSEND_EFFORT FULLSEND_FALLBACK_MODELS FULLSEND_PI_PROVIDER)
+  # FULLSEND_PI_MODEL is the pre-#6526 pi-only name, honoured by the CLI as a
+  # lower-precedence alias of FULLSEND_MODEL on pi runs.
+  override_keys=(FULLSEND_RUNTIME FULLSEND_MODEL FULLSEND_EFFORT FULLSEND_FALLBACK_MODELS FULLSEND_PI_PROVIDER FULLSEND_PI_MODEL)
   for key in "${override_keys[@]}"; do
     # Role-prefixed first, then plain. jq -r yields "" when absent.
     value="$(printf '%s' "${FULLSEND_REPO_VARS}" | jq -r --arg k "${AGENT_PREFIX}${key}" --arg p "${key}" '(.[$k] // .[$p] // "") | tostring')"

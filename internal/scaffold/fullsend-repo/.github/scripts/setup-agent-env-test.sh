@@ -41,6 +41,11 @@ check "metachars skipped" "0" "$(grep -c '^FULLSEND_MODEL=' <<<"${out}" || true)
 check "newline skipped" "0" "$(grep -c '^FULLSEND_RUNTIME=' <<<"${out}" || true)"
 check "safe value kept" "FULLSEND_PI_PROVIDER=anthropic-vertex" "$(grep '^FULLSEND_PI_PROVIDER=' <<<"${out}")"
 
+# 6a. The legacy pi-only name is still forwarded (CLI treats it as an alias).
+vars='{"FULLSEND_PI_MODEL":"claude-opus-4-8"}'
+out="$(run AGENT_PREFIX=TRIAGE_ FULLSEND_REPO_VARS="${vars}")"
+check "legacy pi model forwarded" "FULLSEND_PI_MODEL=claude-opus-4-8" "$(grep '^FULLSEND_PI_MODEL=' <<<"${out}")"
+
 # 6. Fallback chain keeps commas.
 vars='{"FULLSEND_FALLBACK_MODELS":"sonnet,haiku"}'
 out="$(run AGENT_PREFIX=TRIAGE_ FULLSEND_REPO_VARS="${vars}")"

@@ -42,6 +42,7 @@ func TestPromptRuntime(t *testing.T) {
 			}
 			if tc.warns {
 				assert.Contains(t, out.String(), "Invalid runtime")
+				assert.NotContains(t, out.String(), "dummy", "dummy is not offered to people")
 			}
 		})
 	}

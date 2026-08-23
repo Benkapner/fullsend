@@ -41,13 +41,6 @@ fullsend repos set-default defaults.runtime pi
 
 To try a runtime or model on one run without changing the repo, use the per-run overrides — `fullsend run --runtime pi --model google-vertex/gemini-2.5-flash`, or the `FULLSEND_RUNTIME` / `FULLSEND_MODEL` / `FULLSEND_EFFORT` environment variables (flag beats environment beats config).
 
-Or set `defaults.runtime:` in the org config to apply to all repos (deprecated per-org mode):
-
-```yaml
-defaults:
-  runtime: pi
-```
-
 No workflow file change is needed — the runner reads the config at the start of every run.
 
 ## Where to see what ran

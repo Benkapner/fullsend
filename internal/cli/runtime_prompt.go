@@ -49,11 +49,24 @@ func promptRuntime(printer *ui.Printer, in io.Reader, interactive bool) (string,
 		if err := validateRuntimeName(choice); err == nil {
 			return choice, nil
 		}
-		printer.StepWarn(fmt.Sprintf("Invalid runtime: %q (expected one of %s)", choice, strings.Join(config.ValidRuntimes(), ", ")))
+		printer.StepWarn(fmt.Sprintf("Invalid runtime: %q (expected one of %s)", choice, strings.Join(userRuntimeChoices(), ", ")))
 		if err == io.EOF {
 			return "", nil
 		}
 	}
+}
+
+// userRuntimeChoices lists the runtimes offered to a person: every valid
+// runtime except dummy, which exists for behaviour-test installs and is only
+// ever selected with an explicit --runtime dummy.
+func userRuntimeChoices() []string {
+	var out []string
+	for _, r := range config.ValidRuntimes() {
+		if r != "dummy" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // stdinIsInteractive reports whether stdin is a terminal.

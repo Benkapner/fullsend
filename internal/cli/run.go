@@ -165,6 +165,9 @@ type aggregateMetrics struct {
 	// RequestedRuntime is the runtime selected for the run (config file or a
 	// --runtime/FULLSEND_RUNTIME override); Runtime is what actually ran.
 	RequestedRuntime string `json:"requested_runtime,omitempty"`
+	// RuntimeSource is where RequestedRuntime came from: "--runtime flag",
+	// "FULLSEND_RUNTIME", the config file path, or "default (config not found)".
+	RuntimeSource string `json:"runtime_source,omitempty"`
 	// RequestedModel is the model handed to the runtime after the per-run
 	// overrides (--model, FULLSEND_MODEL, FULLSEND_PI_MODEL on pi) were
 	// applied; Model is what the provider reported.
@@ -1297,6 +1300,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	rt := backend.Runtime
 	aggMetrics.Runtime = rt.Name()
 	aggMetrics.RequestedRuntime = rt.Name()
+	aggMetrics.RuntimeSource = configSource
 	aggMetrics.RequestedModel = h.Model
 	aggMetrics.OverrideSource = modelOverrideSource(overrides, h.Model)
 	tx := backend.Transcripts
