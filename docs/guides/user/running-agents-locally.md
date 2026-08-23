@@ -272,6 +272,244 @@ For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
 
+## Run a minimal agent on the pi runtime
+
+The pi runtime (`runtime: pi`) lets you run agents using
+[pi](https://github.com/earendil-works/pi) instead of Claude Code inside the
+sandbox. You can run a minimal pi agent locally without cloning the
+`fullsend-ai/agents` fleet repo — `fullsend run --fullsend-dir` resolves a
+config-registered agent to a local harness directory.
+
+> For background on the pi runtime, its security posture, and known
+> constraints, see [Agent runtimes — Pi-specific known
+> constraints](../../runtimes.md#pi-specific-known-constraints-6464).
+
+### Prerequisites (pi-specific)
+
+In addition to the general [prerequisites](#prerequisites) above, you need:
+
+| Requirement | Details |
+|-------------|---------|
+| Sandbox image with pi | `ghcr.io/fullsend-ai/fullsend-sandbox:latest` (must include `PI_VERSION`). Pull the latest to avoid stale cached images — see [Troubleshooting](#troubleshooting-pi) |
+| GCP credentials | A service account key or `gcloud` ADC (`application_default_credentials.json`). The existing [GCP credentials](#get-google-cloud-platform-credentials) section applies — the pi Vertex provider reads the same variables |
+
+### Directory layout
+
+A working `--fullsend-dir` for the pi runtime needs the harness, a
+`config.yaml` that both registers the agent and selects the runtime, and
+supporting files for sandbox credentials and network policy. A bare
+`config.yaml` + `harness/` is **not sufficient** — the agent starts but
+fails when the sandbox has no credentials or Vertex egress:
+
+```
+pi-hello/
+├── config.yaml                 # registers the agent and selects runtime: pi
+├── harness/
+│   └── pi-smoke.yaml           # agent harness: image, model, host_files, policy
+├── agents/
+│   └── pi-smoke.md             # agent definition (frontmatter + task prompt)
+├── policies/
+│   └── base.yaml               # OpenShell sandbox policy (Vertex egress)
+├── profiles/
+│   └── fullsend-vertex-ai.yaml # OpenShell egress allowlist for Vertex
+├── providers/
+│   └── vertex-ai.yaml          # OpenShell inference provider
+└── env/
+    └── gcp-vertex.env           # sandbox-side GCP env vars (expand: true)
+```
+
+The quickest way to assemble these supporting files is to copy the
+`policies/`, `profiles/`, `providers/`, and `env/` directories from a
+`fullsend-ai/agents` clone. If you want a fully self-contained example
+without cloning the fleet repo, create the files with the minimal
+content described below.
+
+#### `config.yaml`
+
+The config must both register the harness **and** set `defaults.runtime: pi`.
+Registering only the harness file causes `resolveAgentSource` to fail:
+
+```yaml
+version: "1"
+agents:
+  - source: harness/pi-smoke.yaml
+defaults:
+  runtime: pi
+```
+
+#### `harness/pi-smoke.yaml`
+
+The harness must include `host_files` to deliver GCP credentials into the
+sandbox, and reference OpenShell profiles/providers for Vertex egress.
+The `--env-file` flag sets the **runner** environment only — sandbox
+environment comes from the harness via `env.sandbox` and `host_files`
+([ADR 0055](../../ADRs/0055-unified-env-var-delivery.md)):
+
+```yaml
+agent: agents/pi-smoke.md
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+providers:
+  - providers/vertex-ai.yaml
+
+role: triage
+slug: fullsend-ai-pi-smoke
+model: haiku
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+```
+
+#### `agents/pi-smoke.md`
+
+A minimal agent definition with a deterministic task:
+
+```markdown
+---
+tools:
+  - Bash(ls)
+  - Write
+model: haiku
+---
+
+You are a smoke-test agent. List the files in the current
+directory with `ls -la`, then write a one-line summary to
+`/sandbox/workspace/output/agent-result.json` with
+`{"target_branch": "main"}`. Do nothing else.
+```
+
+#### `env/gcp-vertex.env`
+
+Sandbox-side GCP environment — these variables reach pi inside the
+sandbox:
+
+```bash
+ANTHROPIC_VERTEX_PROJECT_ID={project-id}
+GOOGLE_CLOUD_PROJECT={project-id}
+CLOUD_ML_REGION=global
+GOOGLE_APPLICATION_CREDENTIALS=/tmp/.gcp-credentials.json
+```
+
+### Running the agent
+
+```bash
+fullsend run pi-smoke \
+  --fullsend-dir ./pi-hello \
+  --target-repo /tmp/target-repo \
+  --env-file fullsend-gcp.env \
+  --no-post-script \
+  --keep-sandbox \
+  --output-dir /tmp/fullsend-out
+```
+
+On a successful run, you see output like:
+
+```
+runtime: selected "pi" from ./pi-hello/config.yaml
+→ Agent: claude-haiku-4-5 (v0.84.2)
+→ Result: stop     Turns: 2
+    Tokens: in=7601 out=360 reasoning=185
+  ✓ Agent exited with code 0 (6.7s)
+```
+
+The `runtime: selected "pi"` line confirms the pi backend was used.
+
+### Run artifacts
+
+After a successful run, the output directory contains:
+
+```
+/tmp/fullsend-out/
+├── logs/
+│   ├── openshell-sandbox.log       # OCSF events (network, policy decisions)
+│   └── openshell-gateway.log
+├── iteration-1/
+│   ├── output/
+│   │   └── agent-result.json       # Agent output
+│   └── transcripts/
+│       └── <agent>-<timestamp>_<id>.jsonl  # Pi session transcript
+├── metrics.json                    # Includes "runtime": "pi"
+└── security/
+    └── findings.jsonl
+```
+
+Key artifacts to verify:
+
+- **`metrics.json`** — check `"runtime": "pi"` to confirm the pi backend
+  was used
+- **Session transcript** — the `.jsonl` file under `transcripts/` contains
+  pi's session events; look for `toolCall` / `toolResult` entries
+- **`pi-debug.log`** — appears when `--debug='*'` is passed (note the `=`
+  syntax — see [Troubleshooting](#troubleshooting-pi))
+
+Use the `analyze-transcript` skill to inspect the session:
+
+```bash
+python3 skills/analyze-transcript/analyze-transcript.py summary \
+  /tmp/fullsend-out/iteration-1/transcripts/<session>.jsonl
+```
+
+### Pi runtime knobs
+
+| Variable | Description |
+|----------|-------------|
+| `FULLSEND_PI_MODEL` | Override the model id (runner env) |
+| `FULLSEND_PI_PROVIDER` | Override the inference provider (runner env) |
+| `FULLSEND_PI_BASH_ALLOWLIST` | Set to `enforce` to make the Bash first-token allowlist block instead of warn |
+
+### Security hooks
+
+Security hooks are enabled by default on pi. The run refuses to start
+(exit 97) without the hook adapter — this is intentional (fail-closed).
+The runner checks the adapter's SHA-256 before sourcing the agent-writable
+`.env`, so a tampered adapter is rejected.
+
+A planted `.pi/extensions/evil.js` in the target repo is **not** loaded
+when `--no-approve` is set (the default in fullsend runs). Pi's
+`defaultProjectTrust: never` setting in the sandbox config prevents
+repo-owned extensions, skills, and settings from loading.
+
+### Troubleshooting (pi) {#troubleshooting-pi}
+
+**`pi preflight: pi --version exited 127: sh: 1: pi: not found`**
+- The sandbox image is stale and predates the pi layers. Pull the latest:
+  ```bash
+  podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest
+  ```
+
+**`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT ...`**
+- The harness is missing `host_files` and/or the OpenShell egress profile.
+  Sandbox environment comes from the harness, not from `--env-file`. See
+  the [harness layout](#directory-layout) above.
+
+**`--debug "..."` fails with `accepts 1 arg(s), received 2`**
+- `--debug` is an optional-value flag. Use `--debug='*'` (with `=`), not
+  `--debug "*"`.
+
+**Agent fails silently — check `pi-debug.log`**
+- When a custom harness is missing `host_files` or the OpenShell profile,
+  the failure appears in `pi-debug.log` inside the run directory, not in
+  the runner's terminal output.
+
+### Platform notes (pi)
+
+**Linux (Fedora, rootless Podman):** verified end-to-end. The general
+[Linux platform notes](#linux) apply.
+
+**macOS (Apple Silicon):** the general [macOS platform notes](#macos)
+apply. In particular:
+- Use `/private/tmp/...` for bind mounts (not `/tmp/...`)
+- If the sandbox image architecture differs from the host, set
+  `FULLSEND_SANDBOX_ARCH` and provide a Linux binary with
+  `--fullsend-binary`
+
 ## Run from a container
 
 Instead of downloading the fullsend binary and installing its host-side
