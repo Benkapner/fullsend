@@ -100,18 +100,19 @@ allow_runtime_fetch: true         # Opt-in to runtime skill fetching (default: f
 max_runtime_fetches: 10           # Max runtime fetch requests per run (1–1000, default: 10)
 
 security:                        # Security is enabled by default with fail_mode: closed
-  enabled: true                  # All scanners enabled by default
+  enabled: true                  # All scanners enabled by default (llm_guard: see note below)
   fail_mode: closed              # "closed" (reject on failure) or "open" (warn only)
   host_scanners:
     unicode_normalizer: true
     context_injection: true
     ssrf_validator: true
     secret_redactor: true
-    llm_guard:                 # NOT active: the ML scanner is compiled out of every
-      enabled: true            # shipped build (#6522) and its only call site is
-      threshold: 0.92          # `fullsend scan input`, not `fullsend run`. These three
-      match_type: sentence     # fields are validated but never read — the scanner
-                               # hardcodes 0.92/sentence and ignores `enabled`.
+    # llm_guard has no effect in shipped builds: the ML scanner is compiled
+    # out (#6522), so these fields are parsed but never used.
+    llm_guard:
+      enabled: true
+      threshold: 0.92
+      match_type: sentence
   sandbox_hooks:
     tirith:
       enabled: true
