@@ -31,7 +31,6 @@ jobs:
 `
 
 func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, region string) {
-	fc.VariableValues[owner+"/"+repo+"/FULLSEND_PER_REPO_INSTALL"] = "true"
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_MINT_URL"] = mintURL
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_GCP_REGION"] = region
 
@@ -56,7 +55,7 @@ func TestProbeRepoState_Installed(t *testing.T) {
 	fc := forge.NewFakeClient()
 	populateInstalledRepo(fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
 	if err != nil {
 		t.Fatalf("ProbeRepoState() error = %v", err)
 	}
@@ -77,7 +76,7 @@ func TestProbeRepoState_Installed(t *testing.T) {
 func TestProbeRepoState_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
 	if err != nil {
 		t.Fatalf("ProbeRepoState() error = %v", err)
 	}
@@ -86,21 +85,18 @@ func TestProbeRepoState_NotInstalled(t *testing.T) {
 	}
 }
 
-func TestProbeRepoState_WorkflowError(t *testing.T) {
+func TestProbeRepoState_ProbeError(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "us-east1"
 	fc.Errors["GetFileContent"] = fmt.Errorf("server error")
 
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", defaultForgeConfig)
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
 	if err == nil {
-		t.Fatal("expected error for workflow read failure")
+		t.Fatal("expected error for probe failure")
 	}
-	if !state.Installed {
-		t.Fatal("Installed = false, want true even on workflow error")
-	}
-	if state.InferenceRegion != "us-east1" {
-		t.Errorf("InferenceRegion = %q, want us-east1", state.InferenceRegion)
+	if state.Installed {
+		t.Fatal("Installed = true, want false when probe fails")
 	}
 }
 
@@ -304,14 +300,14 @@ func TestStatus_WorkflowMissing_NotInstalled(t *testing.T) {
 		},
 	}
 
-	// Guard variable not set → not installed, workflow not checked.
+	// No known variables → not installed, no components present.
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if result.Repos[0].Installed {
-		t.Error("repo should not be installed without guard variable")
+		t.Error("repo should not be installed without known variables")
 	}
 }
 
@@ -326,7 +322,6 @@ func TestStatus_WorkflowYAMLExtension(t *testing.T) {
 		},
 	}
 
-	fc.VariableValues["acme-corp/api-server/FULLSEND_PER_REPO_INSTALL"] = "true"
 	fc.VariableValues["acme-corp/api-server/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["acme-corp/api-server/FULLSEND_GCP_REGION"] = "us-central1"
 	// Use .yaml extension instead of .yml
@@ -526,7 +521,6 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 		},
 	}
 
-	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
 	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.Errors["GetFileContent"] = fmt.Errorf("server error")
@@ -539,8 +533,8 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 	if result.Summary.Errored != 1 {
 		t.Errorf("errored = %d, want 1", result.Summary.Errored)
 	}
-	if result.Summary.Installed != 1 {
-		t.Errorf("installed = %d, want 1 (guard var was set before workflow error)", result.Summary.Installed)
+	if result.Summary.Installed != 0 {
+		t.Errorf("installed = %d, want 0 (probe failed, installed status unknown)", result.Summary.Installed)
 	}
 	if result.Repos[0].Error == "" {
 		t.Error("expected error on repo")
@@ -558,7 +552,6 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 		},
 	}
 
-	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
 	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
 
@@ -569,7 +562,7 @@ func TestStatus_NoWorkflowFiles(t *testing.T) {
 
 	s := result.Repos[0]
 	if !s.Installed {
-		t.Error("should be installed (guard var is set)")
+		t.Error("should be installed (variables are present)")
 	}
 	if s.CurrentRef != "" {
 		t.Errorf("ref = %q, want empty (no workflow)", s.CurrentRef)
@@ -787,7 +780,7 @@ func TestFilterRepos(t *testing.T) {
 	})
 }
 
-func TestStatus_GuardVarFalse(t *testing.T) {
+func TestStatus_NoKnownVariables(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version: 1,
@@ -797,15 +790,13 @@ func TestStatus_GuardVarFalse(t *testing.T) {
 		},
 	}
 
-	fc.VariableValues["org/repo/FULLSEND_PER_REPO_INSTALL"] = "false"
-
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if result.Repos[0].Installed {
-		t.Error("repo should not be installed when guard var is 'false'")
+		t.Error("repo should not be installed when no known variables are present")
 	}
 }
 

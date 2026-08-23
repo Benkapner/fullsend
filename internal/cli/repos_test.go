@@ -842,11 +842,14 @@ func TestRunReposInstall_DryRun(t *testing.T) {
 	fc := newInstallFakeClient("acme/api")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		dryRun:      true,
-		roles:       []string{"triage"},
-		testClient:  fc,
+		manifest:               manifestPath,
+		concurrency:            4,
+		dryRun:                 true,
+		roles:                  []string{"triage"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 }
@@ -1416,9 +1419,9 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify derived values. runReposInstall sets these on opts before
-	// constructing BatchInstallConfig (which copies them verbatim), so
+	// constructing ConvergeConfig (which copies them verbatim), so
 	// asserting here confirms the derivation logic. The require.NoError
-	// above also provides indirect coverage: BatchInstall's all-or-nothing
+	// above also provides indirect coverage: Converge's all-or-nothing
 	// validation would fail if the values were missing or empty.
 	assert.Equal(t, "987654321", opts.inferenceProjectNumber,
 		"project number should be auto-derived from testProjectNumberFn")
@@ -1666,7 +1669,7 @@ func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
 	assert.Equal(t, []string{"https://example.com/harness.yaml"}, m.GitHub.Repos[1].AllowedRemoteResources)
 }
 
-func TestRunReposInstall_SyncFailureSkipsUpgrade(t *testing.T) {
+func TestRunReposInstall_SyncFailureReportsError(t *testing.T) {
 	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
 	// Drift a variable so sync attempts a write.
@@ -1683,8 +1686,7 @@ func TestRunReposInstall_SyncFailureSkipsUpgrade(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "repos failed")
-	assert.Empty(t, fc.CommittedFiles, "upgrade should not commit files for sync-failed repos")
-	assert.Empty(t, fc.CreatedProposals, "upgrade should not create PRs for sync-failed repos")
+	assert.Empty(t, fc.CommittedFiles, "scaffold should not be committed when variable sync fails")
 }
 
 // --- repos uninstall mode tests ---
