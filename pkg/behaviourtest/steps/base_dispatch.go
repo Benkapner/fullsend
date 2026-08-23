@@ -141,6 +141,12 @@ func givenURLSourcedBaseHarness(w *world.World, name, doc string) error {
 	}
 	w.URLBaseHarnesses[name] = rawURL
 
+	// Snapshot the current allowed_remote_resources before any modification
+	// so CleanupScenario can restore it when the slot is reused.
+	if err := snapshotAllowedResources(w); err != nil {
+		return fmt.Errorf("snapshotting allowed_remote_resources: %w", err)
+	}
+
 	// Add hosting repo URL prefix to allowed_remote_resources so
 	// LoadWithBase can fetch the base at dispatch time.
 	urlPrefix := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", hostOwner, hostRepo)

@@ -217,6 +217,20 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Allowed remote resources cleanup ---
+	// Restore the pre-scenario allowed_remote_resources so a later
+	// scenario on this slot does not inherit a leftover URL prefix.
+	// Without this, an allowlist-negative scenario that reuses a slot
+	// after a positive URL scenario sees the stale prefix and the
+	// config validates when it should fail.
+	if w.AllowedResourcesOverridden {
+		if err := cleanupRetry(w.Logf, "restore allowed_remote_resources", func() error {
+			return RestoreAllowedResources(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore allowed_remote_resources: %v", err)
+		}
+	}
+
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		if w.Org == "" || w.RepoName == "" {

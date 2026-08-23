@@ -98,6 +98,8 @@ func resetScenarioWorld(w *world.World) {
 	w.KillSwitchActivated = false
 	w.RuntimeOverridden = false
 	w.RuntimeOriginal = ""
+	w.AllowedResourcesOverridden = false
+	w.AllowedResourcesOriginal = nil
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""

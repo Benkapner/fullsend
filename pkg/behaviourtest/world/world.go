@@ -96,6 +96,15 @@ type World struct {
 	RuntimeOverridden bool
 	RuntimeOriginal   string
 
+	// AllowedResourcesOverridden records that this scenario modified
+	// allowed_remote_resources in config.yaml; AllowedResourcesOriginal
+	// holds the pre-scenario value. CleanupScenario restores it so the
+	// next scenario on this slot does not inherit a leftover allowlist
+	// entry — which would let an allowlist-negative scenario pass
+	// incorrectly on a reused pool slot.
+	AllowedResourcesOverridden bool
+	AllowedResourcesOriginal   []string
+
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State

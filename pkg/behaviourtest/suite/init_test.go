@@ -137,16 +137,18 @@ func TestTagNames(t *testing.T) {
 
 func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	w := &world.World{
-		PRNumber:            99,
-		DispatchAgent:       "dispatch",
-		IssueNumber:         1,
-		ArtifactDir:         "/tmp/x",
-		ForkOwner:           "org",
-		ForkRepo:            "repo-fork",
-		ForkPRNumber:        42,
-		ForkPRBranch:        "branch",
-		URLHarnessRepoOwner: "org",
-		URLHarnessRepoName:  "harness-host",
+		PRNumber:                   99,
+		DispatchAgent:              "dispatch",
+		IssueNumber:                1,
+		ArtifactDir:                "/tmp/x",
+		ForkOwner:                  "org",
+		ForkRepo:                   "repo-fork",
+		ForkPRNumber:               42,
+		ForkPRBranch:               "branch",
+		URLHarnessRepoOwner:        "org",
+		URLHarnessRepoName:         "harness-host",
+		AllowedResourcesOverridden: true,
+		AllowedResourcesOriginal:   []string{"https://example.com/"},
 	}
 	resetScenarioWorld(w)
 	assert.Equal(t, 0, w.PRNumber)
@@ -160,6 +162,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Equal(t, "", w.ForkPRBranch)
 	assert.Equal(t, "", w.URLHarnessRepoOwner)
 	assert.Equal(t, "", w.URLHarnessRepoName)
+	assert.False(t, w.AllowedResourcesOverridden)
+	assert.Nil(t, w.AllowedResourcesOriginal)
 }
 
 func TestSkipErrorForTagNames(t *testing.T) {
