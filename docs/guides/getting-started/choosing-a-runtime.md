@@ -11,13 +11,13 @@ Fullsend supports multiple agent runtimes. A runtime is the program that runs in
 | Runtime | Description | When to use |
 |---------|-------------|-------------|
 | `claude` | Claude Code (production default) | Most deployments — mature, full sub-agent support |
-| `pi` | [Pi](https://github.com/earendil-works/pi) on Claude-on-Vertex | Opt-in alternative; see [Runtimes](/runtimes) for known constraints |
+| `pi` | [Pi](https://github.com/earendil-works/pi) — Claude on Vertex by default; any provider pi supports by model name (e.g. Gemini on Vertex with the same credentials) | Opt-in alternative; no sub-agent tool yet, so `review`/`retro` run single-context; see [Runtimes](../../runtimes.md) for known constraints |
 
 ## How to select a runtime
 
 ### At setup time
 
-Pass `--runtime` when configuring a repo:
+`fullsend github setup <owner/repo>` asks which runtime to use when run from a terminal (press Enter for `claude`), and the setup PR it opens describes the choice. To set it explicitly, pass `--runtime`:
 
 ```bash
 fullsend github setup <owner/repo> \
@@ -33,7 +33,15 @@ Set `runtime:` in the repo's `.fullsend/config.yaml`:
 runtime: pi
 ```
 
-Or set `defaults.runtime:` in the org config to apply to all repos:
+For fleets managed through `repos.yaml`, set `defaults.runtime` (or a per-entry `runtime`) and run `fullsend repos install`, or pass `fullsend repos install --runtime pi` for repos the command adds:
+
+```bash
+fullsend repos set-default defaults.runtime pi
+```
+
+To try a runtime or model on one run without changing the repo, use the per-run overrides — `fullsend run --runtime pi --model google-vertex/gemini-2.5-flash`, or the `FULLSEND_RUNTIME` / `FULLSEND_MODEL` / `FULLSEND_EFFORT` environment variables (flag beats environment beats config).
+
+Or set `defaults.runtime:` in the org config to apply to all repos (deprecated per-org mode):
 
 ```yaml
 defaults:
@@ -54,4 +62,4 @@ After a run completes, the selected runtime and model appear in several places:
 ## Next steps
 
 - [Configuring GitHub](configuring-github.md) to set up your repo
-- [Runtimes](/runtimes) for the full runtime reference, including model override precedence and the capability table
+- [Runtimes](../../runtimes.md) for the full runtime reference, including model override precedence and the capability table

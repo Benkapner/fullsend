@@ -316,18 +316,30 @@ flowchart TB
 
 The runtime and model are resolved in the following order (first non-empty value wins):
 
+Overrides follow the usual CLI convention — **flag > environment variable > config file / harness > built-in default** — and are resolved once by `fullsend run`, validated the same way the config/harness value would be, printed with their source, and recorded in `metrics.json`. Runtimes never read the override variables themselves.
+
 **Runtime:**
 
-1. Per-repo `runtime:` in `.fullsend/config.yaml`
-2. Org-level `defaults.runtime:` in the org config
-3. Built-in default: `claude`
+1. `fullsend run --runtime <claude|pi|dummy>`
+2. `FULLSEND_RUNTIME`
+3. Per-repo `runtime:` in `.fullsend/config.yaml` (written by `fullsend github setup --runtime` / its interactive prompt, or by `fullsend repos install` from `repos.yaml`'s `runtime` / `defaults.runtime`)
+4. Built-in default: `claude`
 
 **Model:**
 
-1. `FULLSEND_PI_MODEL` / `FULLSEND_PI_PROVIDER` (pi-only runner env overrides)
-2. Harness `model:` field
-3. Agent frontmatter `model:` field
-4. Runtime default (Claude Code: provider default; pi: `opus` via alias table)
+1. `fullsend run --model <value>`
+2. `FULLSEND_MODEL` (any runtime); `FULLSEND_PI_MODEL` is kept as a lower-precedence alias on pi runs
+3. Harness `model:` field
+4. Agent frontmatter `model:` field
+5. Runtime default (Claude Code: provider default; pi: `opus` via alias table)
+
+Values are aliases (`opus`, `sonnet`, `haiku`, …), a model id, or — on pi — `provider/id` (e.g. `google-vertex/gemini-2.5-flash`); Claude Code accepts its own aliases natively, pi resolves them through its alias table and applies `FULLSEND_PI_PROVIDER` to bare ids. Gemini on Vertex needs nothing beyond the model name: pi's built-in `google-vertex` provider uses the same `GOOGLE_APPLICATION_CREDENTIALS` and project as Claude-on-Vertex, and the pi run exports `GOOGLE_CLOUD_LOCATION` from `CLOUD_ML_REGION` for it.
+
+**Effort:** `fullsend run --effort` > `FULLSEND_EFFORT` > harness `effort:` > runtime default (Claude Code's own default; pi `--thinking high`).
+
+**Fallback models:** `FULLSEND_FALLBACK_MODELS=a,b` — Claude Code receives it as `--fallback-model a,b` (tried in order when the primary model is overloaded or retired); pi reports it as unsupported and ignores it (a fullsend extension for pi fallback chains is tracked in #6527).
+
+In CI, the `FULLSEND_*` variables are runner-process environment: the dispatch workflow forwards repository variables of the same name (plain, or role-prefixed such as `TRIAGE_FULLSEND_MODEL`) into the run, so a repo can switch one role's model without a pull request; harness `env.runner` does **not** reach the `fullsend` process.
 
 ### Where the selection appears
 
@@ -340,7 +352,7 @@ The runtime and model are resolved in the following order (first non-empty value
 | **OTel span** | `fullsend.runtime` attribute on the agent span, next to `gen_ai.request.model` |
 | **metrics.json** | `runtime`, `requested_runtime`, `requested_model`, `override_source` |
 
-The `requested_model` field records the model handed to the runtime (after any env override). When `FULLSEND_PI_MODEL` is set, `override_source` reads `FULLSEND_PI_MODEL` so a silent override is visible after the fact. When the harness provides the model, it reads `harness`; when no model is specified, `default`.
+The `requested_model` field records the model handed to the runtime after the per-run overrides were applied, and `override_source` says where it came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `harness`, `default`) so a silent override is visible after the fact; `requested_runtime` likewise records the selected runtime (the plan block and stderr line show its source: the flag, `FULLSEND_RUNTIME`, or the config path). The run plan prints `Model: <value> (from <source>)` and `Effort: … (from …)` whenever a per-run override applied.
 
 ### Runtime capability table
 

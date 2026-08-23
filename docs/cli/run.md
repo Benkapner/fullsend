@@ -17,6 +17,9 @@ fullsend run <agent-name> [flags]
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory |
+| `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `dummy`); also `FULLSEND_RUNTIME` |
+| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi); also `FULLSEND_MODEL` |
+| `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
 | `--target-repo` | Path to the target repository |
 | `--fullsend-binary` | Path to a Linux fullsend binary to copy into the sandbox |
@@ -45,20 +48,15 @@ The **Runtime** line shows which runtime was selected and the config source it w
 
 ## Runtime selection
 
-The runtime is resolved from the org or per-repo `config.yaml`:
+The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, the per-repo `runtime:` in `config.yaml` / `.fullsend/config.yaml`, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` is a lower-precedence alias on pi) and to effort (`--effort`, `FULLSEND_EFFORT`, harness `effort:`). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi ignores it with a warning.
 
-```yaml
-# .fullsend/config.yaml
-runtime: pi
+The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. An invalid override (unknown runtime, unknown effort level) fails before the sandbox is created.
+
+```bash
+# try a repo's triage on pi with Gemini Flash, without touching its config
+fullsend run triage --fullsend-dir . --target-repo ../repo \
+  --runtime pi --model google-vertex/gemini-2.5-flash --effort medium
 ```
-
-The runner prints the selection to stderr for script consumers:
-
-```
-runtime: selected "pi" from /path/to/.fullsend/config.yaml
-```
-
-See [Runtimes](/runtimes) for the full list of runtimes, selection precedence, and capability differences.
 
 ## Output artifacts
 
@@ -78,13 +76,13 @@ Each run produces artifacts in the output directory:
 | `model` | Model the provider reported using |
 | `requested_runtime` | Runtime selected from config |
 | `requested_model` | Model the harness/agent requested |
-| `override_source` | Where the model value came from (`harness`, `FULLSEND_PI_MODEL`, `default`) |
+| `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `harness`, `default`) |
 | `total_cost_usd` | Total inference cost |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of retry iterations |
 
 ## Related
 
-- [Running Agents Locally](/guides/user/running-agents-locally) for a step-by-step walkthrough
-- [Runtimes](/runtimes) for runtime selection and capabilities
-- [CLI internals](/guides/dev/cli-internals) for the full command tree
+- [Running Agents Locally](../guides/user/running-agents-locally.md) for a step-by-step walkthrough
+- [Runtimes](../runtimes.md) for runtime selection and capabilities
+- [CLI internals](../guides/dev/cli-internals.md) for the full command tree
