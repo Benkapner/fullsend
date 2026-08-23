@@ -63,6 +63,10 @@ _TEXT_CMD_QUOTED_PREFIX = re.compile(
     r"\b(?:grep|egrep|fgrep|awk|gawk|mawk)\s+(?:-\S+\s+)*['\"]/?$",
 )
 
+# Network-capable commands whose presence in a downstream pipe stage means
+# a URL matched in an upstream grep/awk pattern could actually be fetched.
+_NETWORK_CMDS = re.compile(r"\b(?:curl|wget|fetch|nc|ncat|xargs)\b")
+
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 
@@ -143,12 +147,115 @@ def validate_url(url: str) -> str | None:
     return None
 
 
+def _find_unquoted_separators(command: str) -> list[tuple[int, int, str]]:
+    """Return positions of unquoted shell statement separators.
+
+    Each entry is ``(start, end, sep)`` where *sep* is one of
+    ``&&``, ``||``, ``|``, ``;``, or ``\\n``.  Single and double
+    quoting (with backslash escaping inside double quotes) is respected.
+    """
+    results: list[tuple[int, int, str]] = []
+    i = 0
+    in_sq = False
+    in_dq = False
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if in_sq:
+            if ch == "'":
+                in_sq = False
+            i += 1
+            continue
+        if in_dq:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                in_dq = False
+            i += 1
+            continue
+        if ch == "'":
+            in_sq = True
+            i += 1
+            continue
+        if ch == '"':
+            in_dq = True
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        # Two-char operators first so ``||`` is not mistaken for ``|``.
+        two = command[i : i + 2]
+        if two in ("&&", "||"):
+            results.append((i, i + 2, two))
+            i += 2
+            continue
+        if ch in ";|\n":
+            results.append((i, i + 1, ch))
+            i += 1
+            continue
+        i += 1
+    return results
+
+
+def _segment_bounds_at(command: str, pos: int) -> tuple[int, int]:
+    """Return ``(start, end)`` of the shell segment containing *pos*.
+
+    Segments are delimited by unquoted ``;``, ``&&``, ``||``, ``|``,
+    or newline characters.
+    """
+    seps = _find_unquoted_separators(command)
+    seg_start = 0
+    seg_end = len(command)
+    for sep_start, sep_end, _ in seps:
+        if sep_end <= pos:
+            seg_start = sep_end
+        elif sep_start >= pos:
+            seg_end = sep_start
+            break
+    return seg_start, seg_end
+
+
+def _has_downstream_network_pipe(command: str, url_start: int) -> bool:
+    """Return True if pipe stages after the URL's segment contain network commands."""
+    seps = _find_unquoted_separators(command)
+
+    # Walk separators to find the first one at or after the URL.
+    pipe_end: int | None = None
+    for sep_start, sep_end, sep_str in seps:
+        if sep_start < url_start:
+            continue
+        if sep_str == "|":
+            pipe_end = sep_end
+            break
+        # Non-pipe separator (;, &&, ||, \n) ends the pipeline.
+        return False
+
+    if pipe_end is None:
+        return False
+
+    # Collect the downstream pipeline text (up to the next non-pipe separator).
+    downstream_end = len(command)
+    for sep_start, _sep_end, sep_str in seps:
+        if sep_start < pipe_end:
+            continue
+        if sep_str in ("&&", "||", ";", "\n"):
+            downstream_end = sep_start
+            break
+    return bool(_NETWORK_CMDS.search(command[pipe_end:downstream_end]))
+
+
 def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
     """Return True if the URL at *match_start* is inside a text-manipulation pattern."""
-    prefix = command[:match_start]
+    # Restrict analysis to the shell segment containing the URL so that
+    # ``sed`` or ``grep`` in a *different* statement cannot cause a bypass.
+    seg_start, _seg_end = _segment_bounds_at(command, match_start)
+    prefix = command[seg_start:match_start]
 
-    # sed substitution: require 'sed' as a word in the prefix, then verify
-    # the URL is in the search-pattern field (not the replacement field).
+    # sed substitution: require 'sed' as a word in the segment prefix,
+    # then verify the URL is in the search-pattern field (not the
+    # replacement field).
     if re.search(r"\bsed\b", prefix):
         subst_opens = list(_SED_SUBST_OPEN.finditer(prefix))
         if subst_opens:
@@ -163,7 +270,12 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
         return False
 
     # Quoted argument to grep/awk family: ...grep [-flags] 'URL  or  "URL
-    return bool(_TEXT_CMD_QUOTED_PREFIX.search(prefix))
+    # If the downstream pipeline contains network-capable commands
+    # (e.g. ``grep -o 'URL' | xargs curl``), the URL is effectively
+    # a network target and must not be exempted.
+    return bool(_TEXT_CMD_QUOTED_PREFIX.search(prefix)) and not _has_downstream_network_pipe(
+        command, match_start
+    )
 
 
 def _extract_network_urls(command: str) -> list[str]:

@@ -135,6 +135,48 @@ class TestIsInTextPatternContext:
         m = list(hook.URL_PATTERN.finditer(cmd))[0]
         assert not hook._is_in_text_pattern_context(cmd, m.start())
 
+    def test_sed_cross_segment_semicolon_not_in_context(self, hook):
+        """sed in one statement must not exempt a URL in a later statement."""
+        cmd = "echo sed 's|'; curl https://169.254.169.254/latest/meta-data/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_cross_segment_and_not_in_context(self, hook):
+        """sed in one statement must not exempt a URL after &&."""
+        cmd = "echo sed 's/' && curl https://evil.internal/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_cross_segment_pipe_not_in_context(self, hook):
+        """URL in a curl segment after a pipe from a sed-mentioning segment."""
+        cmd = "echo sed | curl https://169.254.169.254/latest/meta-data/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_pipe_to_xargs_curl_not_in_context(self, hook):
+        """grep -o URL piped to xargs curl is a network target."""
+        cmd = "grep -oP 'https://169.254.169.254/latest/' file | xargs curl"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_pipe_to_wget_not_in_context(self, hook):
+        """grep URL piped to wget is a network target."""
+        cmd = "grep -o 'https://internal.host/path' log | wget -i -"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_pipe_to_sort_still_in_context(self, hook):
+        """grep URL piped to non-network command is still exempt."""
+        cmd = "grep 'https://github.com/owner' src/ | sort"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_no_pipe_still_in_context(self, hook):
+        """grep URL without pipe is still exempt (no downstream sink)."""
+        cmd = "grep 'https://github.com/owner' file.txt"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
 
 # ---------------------------------------------------------------------------
 # _extract_network_urls tests
@@ -185,6 +227,20 @@ class TestExtractNetworkUrls:
         urls = hook._extract_network_urls(cmd)
         assert len(urls) == 1
         assert "evil.com" in urls[0]
+
+    def test_sed_cross_segment_url_included(self, hook):
+        """sed in one statement must not suppress a URL in a later statement."""
+        cmd = "echo sed 's|'; curl https://169.254.169.254/latest/meta-data/"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_grep_pipe_to_xargs_curl_included(self, hook):
+        """grep -o URL piped to xargs curl must not be dropped."""
+        cmd = "grep -oP 'https://169.254.169.254/latest/' file | xargs curl"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +397,42 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "curl --dns-servers=metadata should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_sed_cross_segment_injection_blocked(self, hook):
+        """sed in one statement must not suppress SSRF in a later statement."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "echo sed 's|'; curl http://169.254.169.254/latest/meta-data/",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "cross-segment sed injection should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_sed_cross_segment_and_injection_blocked(self, hook):
+        """sed in one statement must not suppress SSRF after &&."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "echo sed 's/' && curl http://169.254.169.254/latest/meta-data/",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "cross-segment sed && injection should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_grep_pipe_to_xargs_curl_blocked(self, hook):
+        """grep -o URL piped to xargs curl must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ("grep -oP 'http://169.254.169.254/latest/' file | xargs curl"),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "grep -o piped to xargs curl should be blocked"
         assert "169.254.169.254" in result
 
 
