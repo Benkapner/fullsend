@@ -141,17 +141,11 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # Carrying ~770 MB of model + runtime in the highest-frequency sandbox
 # image added no security value.
 #
-# To re-enable: the model belongs in the runner image (images/runner/),
-# which is the host side of `fullsend run` and is not bound by the
-# sandbox filesystem policy — so the Go default MODEL_PATH is fine
-# there. Only a sandbox image would have to avoid /opt (#6504/#6505).
-# The build also needs CGO_ENABLED=1 -tags ORT plus libtokenizers.a
-# (hugot v0.7.7 requirement). Note what that buys: the runner image is
-# used via `podman run`, so the scan would reach local runs only — the
-# release tarball the composite action downloads would still be built
-# without the tag. (A local -tags ORT build with MODEL_PATH set needs
-# no image at all.) See #6506 for the decision context and #6522 for
-# the measured build constraints.
+# It now lives in the runner image (images/runner/Containerfile), which
+# is the host side of `fullsend run` and is where the consuming command
+# actually executes. That image also builds the binary with
+# CGO_ENABLED=1 -tags ORT so the scanner is compiled in. Do not add the
+# model back here: nothing in this image can load it.
 
 # ---------------------------------------------------------------------------
 # gitleaks — secret scanner used by scan-secrets and post-scripts.

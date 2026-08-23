@@ -30,7 +30,12 @@ OpenShell CLI, and every binary the CLI's pre-scripts, validation loop, and
 post-scripts invoke on the machine running fullsend (`gh`, `gitleaks`,
 `pre-commit`, `gitlint`, `python3` + `jsonschema` + `pyyaml`, Go, `git`, `jq`, `tar`).
 It reproduces the environment the composite action assembles in CI so local
-runs behave identically (#5183). It also carries the `gcloud` CLI — not a
+runs behave identically (#5183). It is also the only artifact that ships the
+ML prompt-injection scanner: its `fullsend` binary is built
+`CGO_ENABLED=1 -tags ORT` and the image carries the ProtectAI DeBERTa-v3
+model plus the ONNX Runtime library (#6522). The release tarballs stay
+`CGO_ENABLED=0` and untagged — a ~9 MB static CLI — because the model is
+~740 MB and belongs in an image, not a tarball. It also carries the `gcloud` CLI — not a
 fullsend dependency, but needed for the GCP credential bootstrap in the
 local-run guide.
 
@@ -128,6 +133,9 @@ Every binary downloaded during the build is **version-pinned** and
 | Tool | Pinning | Verification |
 |------|---------|-------------|
 | OpenShell base image | Manifest list digest (`@sha256:...`) | Immutable OCI content hash |
+| ONNX Runtime (runner) | `ORT_VERSION` + `ORT_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
+| ProtectAI DeBERTa model (runner) | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
+| libtokenizers (runner) | `TOKENIZERS_VERSION` + `TOKENIZERS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Gitleaks | `GITLEAKS_VERSION` + `GITLEAKS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Tirith | `TIRITH_VERSION` + `TIRITH_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Go toolchain | `GO_VERSION` + `GO_SHA256_{AMD64,ARM64}` | `sha256sum -c` |

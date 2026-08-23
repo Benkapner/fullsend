@@ -107,8 +107,9 @@ security:                        # Security is enabled by default with fail_mode
     context_injection: true
     ssrf_validator: true
     secret_redactor: true
-    # llm_guard has no effect in shipped builds: the ML scanner is compiled
-    # out (#6522), so these fields are parsed but never used.
+    # llm_guard is parsed and validated but never read (#6522). The scanner
+    # runs only in the runner image, at a hardcoded 0.92/sentence — changing
+    # these values, or setting enabled: false, has no effect anywhere.
     llm_guard:
       enabled: true
       threshold: 0.92
