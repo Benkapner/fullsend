@@ -19,28 +19,44 @@ type RepoState struct {
 }
 
 // ProbeRepoState reads a repo's current per-repo installation state
-// from forge variables and workflow files.
-func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (RepoState, error) {
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
+// by probing all installation components (workflow files, variables,
+// secrets). A repo is considered per-repo installed when at least one
+// required variable is present — a workflow file alone may come from
+// per-org enrollment. Returns a zero RepoState when no required
+// variables are found.
+func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig) (RepoState, error) {
+	components, err := ProbeComponents(ctx, client, owner, repo, forgeName, fc, nil)
 	if err != nil {
-		return RepoState{}, fmt.Errorf("listing variables for %s/%s: %w", owner, repo, err)
+		return RepoState{}, fmt.Errorf("probing components for %s/%s: %w", owner, repo, err)
 	}
 
-	if vars[forge.PerRepoGuardVar] != "true" {
+	// Check required variables — these distinguish per-repo from per-org.
+	hasRequiredVar := false
+	state := RepoState{}
+	for _, c := range components {
+		if !c.Present {
+			continue
+		}
+		switch c.Name {
+		case "var:FULLSEND_MINT_URL":
+			hasRequiredVar = true
+			state.MintURL = c.Actual
+		case "var:FULLSEND_LAST_POLL_AT_FAST", "var:FULLSEND_LAST_POLL_AT_FULL", "var:FULLSEND_LABEL_STATE":
+			hasRequiredVar = true
+		case "workflow":
+			state.FullsendRef = c.Actual
+		}
+	}
+
+	if !hasRequiredVar {
 		return RepoState{}, nil
 	}
+	state.Installed = true
 
-	state := RepoState{
-		Installed:       true,
-		MintURL:         vars["FULLSEND_MINT_URL"],
-		InferenceRegion: vars["FULLSEND_GCP_REGION"],
+	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_GCP_REGION")
+	if regionErr == nil {
+		state.InferenceRegion = region
 	}
-
-	ref, err := readWorkflowRef(ctx, client, owner, repo, fc)
-	if err != nil {
-		return state, fmt.Errorf("reading workflow for %s/%s: %w", owner, repo, err)
-	}
-	state.FullsendRef = ref
 
 	return state, nil
 }
@@ -70,7 +86,7 @@ type RepoStatus struct {
 
 // StatusSummary provides aggregate counts across all repos.
 // Counts are not mutually exclusive: a repo can be both Installed and
-// Errored (e.g. guard variable set but workflow read fails), so
+// Errored (e.g. variables present but workflow read fails), so
 // Installed + NotInstalled + Errored may exceed Total.
 type StatusSummary struct {
 	Total        int `json:"total"`
@@ -185,19 +201,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 		ExpectedMintURL: cfg.MintURL,
 	}
 
-	// Check guard variable to determine if the repo is installed.
-	guardVal, _, guardErr := client.GetRepoVariable(ctx, owner, repo, forge.PerRepoGuardVar)
-	if guardErr != nil {
-		status.Error = fmt.Sprintf("checking guard variable for %s/%s: %v", owner, repo, guardErr)
-		return status
-	}
-	if guardVal != "true" {
-		return status
-	}
-	status.Installed = true
-
-	// Probe all components using the shared function so that status
-	// and install check the same set of components.
+	// Probe all components to determine installation state and drift.
 	expectedVars := map[string]string{}
 	if cfg.MintURL != "" {
 		expectedVars["FULLSEND_MINT_URL"] = cfg.MintURL
@@ -207,6 +211,10 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status
 	}
+	if !anyComponentPresent(components) {
+		return status
+	}
+	status.Installed = true
 
 	// Extract display values from probe results.
 	workflowPresent := false
@@ -306,9 +314,8 @@ func extractWorkflowRef(content []byte, fc ForgeConfig) string {
 // can surface a non-zero exit code.
 //
 // Callers surface unmatched-pattern warnings through two mechanisms:
-// Status, Diff, and Sync collect them into a result struct field;
-// BatchInstall and Upgrade emit them via progress callbacks. This
-// dual-surface design reflects each caller's existing output architecture.
+// Status collects them into a result struct field; Converge and
+// migrateRepo emit them via progress callbacks.
 func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []string, error) {
 	matched := make(map[string]bool)
 	var result []ResolvedRepo

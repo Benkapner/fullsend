@@ -85,11 +85,10 @@ adds the specified repos, and writes the file. The `--forge` flag is
 required in this case. This enables a greenfield setup without running
 `repos migrate` or manually creating the YAML first.
 
-Runs in three phases:
+Runs in two phases:
 
 1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`, `--runtime`) are written to the manifest entry.
-2. **Provision** — repos in the manifest that are not yet provisioned are installed (scaffold files, variables, secrets). Repos with a guard variable set but other components missing are repaired automatically.
-3. **Convergence** — repos that are already installed are checked for component drift (workflow, thin callers, variables, secrets — repaired automatically) and scaffold ref drift (upgraded automatically).
+2. **Converge** — all manifest repos are converged through a unified probe → diff → apply pipeline. Repos with no components are freshly installed (scaffold files, variables, secrets). Repos with existing components are checked for drift (workflow, thin callers, variables, secrets — repaired automatically) and scaffold ref drift (upgraded automatically).
 
 ```bash
 fullsend repos install -f repos.yaml

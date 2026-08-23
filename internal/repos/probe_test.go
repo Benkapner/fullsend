@@ -192,7 +192,9 @@ func TestProbeComponents_SecretCheckError(t *testing.T) {
 func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
+	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FULL"] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"] = "{}"
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 

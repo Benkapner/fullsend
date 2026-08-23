@@ -726,18 +726,14 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 
 	needsWIFProvision := inferenceWIFProvider == ""
 
-	guardVal, guardExists, guardErr := client.GetRepoVariable(ctx, owner, repo, forge.PerRepoGuardVar)
-	if guardErr != nil {
-		printer.StepWarn(fmt.Sprintf("Could not check existing guard variable: %v", guardErr))
+	mintVal, mintExists, mintErr := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_MINT_URL")
+	if mintErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check existing installation: %v", mintErr))
 	}
-	switch {
-	case guardExists && guardVal == "true":
+	alreadyInstalled := mintExists && mintVal != ""
+	if alreadyInstalled {
 		printer.StepInfo(fmt.Sprintf("%s/%s is per-repo mode, updating installation", owner, repo))
-	case guardExists && guardVal == "false":
-		printer.StepWarn(fmt.Sprintf("%s/%s has per-repo guard set to %q — this install will re-enable it", owner, repo, guardVal))
-	case guardExists:
-		printer.StepWarn(fmt.Sprintf("%s/%s has per-repo guard set to unexpected value %q — overwriting with \"true\"", owner, repo, guardVal))
-	default:
+	} else {
 		printer.StepInfo(fmt.Sprintf("Setting up new per-repo installation for %s/%s", owner, repo))
 	}
 
@@ -892,7 +888,6 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		dryRunVars := map[string]string{
 			"FULLSEND_MINT_URL":   mintDisplay,
 			"FULLSEND_GCP_REGION": inferenceRegion,
-			forge.PerRepoGuardVar: "true",
 		}
 		for _, name := range maputil.SortedKeys(dryRunVars) {
 			printer.StepInfo(fmt.Sprintf("  %s = %s", name, dryRunVars[name]))
@@ -1064,7 +1059,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	// Scaffold commit function wrapping layers.CommitScaffoldFiles, which
 	// provides retry on non-fast-forward errors, branch-protection fallback
 	// to PR delivery, and fork-based PR support for non-owner users.
-	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
+	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, _ bool) error {
 		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
 		if repoErr != nil {
 			if gh.IsPATForbiddenError(repoErr) {
@@ -1072,9 +1067,8 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			}
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		guardInstalled := guardErr == nil && guardExists && guardVal == "true"
 		meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, upstreamTag,
-			repos.ScaffoldMetadataOpts{GuardInstalled: &guardInstalled})
+			repos.ScaffoldMetadataOpts{GuardInstalled: &alreadyInstalled})
 		if direct {
 			printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 				owner, repo, targetRepo.DefaultBranch))
@@ -1102,7 +1096,6 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		UpstreamRef:           upstreamRef,
 		UpstreamTag:           upstreamTag,
 		SkipAppSetup:          true,
-		SkipGuardCheck:        true,
 		WIFProvider:           inferenceWIFProvider,
 		ReviewAppClientID:     reviewAppClientID,
 		VendorBinary:          vendor,
@@ -1152,15 +1145,15 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}
 		repoVars := map[string]string{
+			forge.PerRepoGuardVar: "true",
 			"FULLSEND_MINT_URL":   mintURL,
 			"FULLSEND_GCP_REGION": inferenceRegion,
-			forge.PerRepoGuardVar: "true",
 		}
 		repoSecrets := map[string]string{
 			"FULLSEND_GCP_PROJECT_ID":   inferenceProject,
 			"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
 		}
-		if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, vendorFiles, repoVars, repoSecrets, scaffoldOptions{direct: c.Direct}); err != nil {
+		if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, vendorFiles, repoVars, repoSecrets, scaffoldOptions{direct: c.Direct, installed: alreadyInstalled}); err != nil {
 			return err
 		}
 	}
@@ -1246,6 +1239,7 @@ type scaffoldOptions struct {
 	direct         bool   // push directly to the default branch instead of creating a PR
 	signOffTrailer string // e.g. "Signed-off-by: Name <email>"; appended to the commit message when non-empty
 	runtime        string // runtime written to .fullsend/config.yaml ("" = default claude); described in the PR body
+	installed      bool   // true when the repo already has fullsend installed (upgrade path)
 }
 
 // applyPerRepoScaffold commits scaffold files to the repo's default branch
@@ -1261,10 +1255,8 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		}
 		return fmt.Errorf("getting repo info: %w", err)
 	}
-	// No upstreamTag is available in this code path, so
-	// BuildScaffoldPRMetadata will use the guard variable to distinguish
-	// fresh installs from upgrades without version information.
-	meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, "")
+	meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, "",
+		repos.ScaffoldMetadataOpts{GuardInstalled: &opts.installed})
 	meta.PRBody += repos.RuntimeSection(opts.runtime)
 	if opts.signOffTrailer != "" {
 		meta.CommitMsg += "\n\n" + opts.signOffTrailer

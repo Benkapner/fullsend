@@ -82,7 +82,7 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, forgeName string
 				progress(entries[i].Name, "discover", fmt.Sprintf("forge client error: %v", fcErr))
 				continue
 			}
-			state, err := ProbeRepoState(ctx, fc.Client, parts[0], parts[1], fc)
+			state, err := ProbeRepoState(ctx, fc.Client, parts[0], parts[1], forgeName, fc)
 			if err != nil && !state.Installed {
 				progress(entries[i].Name, "discover", fmt.Sprintf("probe failed: %v", err))
 				continue
