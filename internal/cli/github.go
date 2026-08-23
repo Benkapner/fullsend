@@ -290,6 +290,19 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
+	// Runtime: --runtime wins; otherwise ask once on an interactive
+	// terminal (Enter keeps claude). Presets carry their own value.
+	if cfg.runtime == "" && presetData == nil && !cfg.dryRun {
+		choice, err := promptRuntime(printer, os.Stdin, stdinIsInteractive())
+		if err != nil {
+			return err
+		}
+		cfg.runtime = choice
+	}
+	if cfg.runtime == "pi" {
+		printer.StepWarn("runtime pi needs a sandbox image that carries pi (fullsend-sandbox/fullsend-code built from fullsend main after #6467); harnesses pinning an older image will fail at preflight")
+	}
+
 	// --- Build config files ---
 	var cfgYAML []byte
 	if presetData == nil {
@@ -480,7 +493,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer}); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer, runtime: cfg.runtime}); err != nil {
 		return err
 	}
 
