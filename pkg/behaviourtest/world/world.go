@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
@@ -104,6 +105,13 @@ type World struct {
 	// incorrectly on a reused pool slot.
 	AllowedResourcesOverridden bool
 	AllowedResourcesOriginal   []string
+
+	// AgentsOverridden records that this scenario modified the agents
+	// list in config.yaml; AgentsOriginal holds the pre-scenario value.
+	// CleanupScenario restores it so the next scenario on this slot
+	// does not inherit custom agent entries from the previous lessee.
+	AgentsOverridden bool
+	AgentsOriginal   []config.AgentEntry
 
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server

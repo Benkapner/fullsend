@@ -222,6 +222,11 @@ func givenCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) e
 // update boilerplate shared by givenCustomHarnessWithLocalBase and
 // givenCustomHarnessWithURLBase.
 func registerLocalAgentConfig(ctx context.Context, w *world.World, name, commitMsg string) error {
+	// Snapshot agents before modification so CleanupScenario can restore.
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
+	}
+
 	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(ctx, w.Org, w.RepoName, cfgPath)
 	if err != nil {
