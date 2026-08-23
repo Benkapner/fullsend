@@ -24,10 +24,14 @@ import (
 const (
 	piDefaultProvider = "anthropic-vertex"
 	piDefaultModel    = "opus"
-	// piModelEnv replaces the whole model argument (e.g. "anthropic/claude-opus-4-6").
-	piModelEnv = "FULLSEND_PI_MODEL"
 	// piProviderEnv replaces the provider prefix applied to bare model ids.
+	// The model itself is resolved once by the CLI (--model, FULLSEND_MODEL,
+	// or the FULLSEND_PI_MODEL alias on pi; #6526) and arrives in
+	// RunParams.Model — the runtime does not read a model env var.
 	piProviderEnv = "FULLSEND_PI_PROVIDER"
+	// piRuntimeEnv tells skills running inside the sandbox which runtime
+	// they are on, so a skill can take a runtime-specific path deliberately.
+	piRuntimeEnv = "FULLSEND_RUNTIME"
 )
 
 var piModelAliases = map[string]string{
@@ -36,19 +40,14 @@ var piModelAliases = map[string]string{
 	"haiku":  "claude-haiku-4-5",
 }
 
-// translatePiModel resolves the harness/agent model into pi's --model value.
+// translatePiModel resolves the harness/agent model (already overridden by
+// the CLI when --model/FULLSEND_MODEL/FULLSEND_PI_MODEL apply) into pi's
+// --model value: aliases map to catalog ids, bare ids get the provider
+// prefix, provider/id passes through.
 func translatePiModel(model string) string {
 	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
 	if provider == "" {
 		provider = piDefaultProvider
-	}
-	if v := strings.TrimSpace(os.Getenv(piModelEnv)); v != "" {
-		// A bare override still needs a provider, or the Vertex extension
-		// and the credential hygiene would both be skipped.
-		if strings.Contains(v, "/") {
-			return v
-		}
-		return provider + "/" + v
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -134,6 +133,13 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	parts = append(parts,
 		"&& . "+shellQuote(envFile),
 		"&& export "+piManifestEnv+"="+shellQuote(r.piManifestPath()),
+		"&& export "+piRuntimeEnv+"=pi",
+		// pi's built-in google-vertex (Gemini) provider resolves credentials
+		// from GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT +
+		// GOOGLE_CLOUD_LOCATION, all required; the fleet exports the region
+		// as CLOUD_ML_REGION (what the Anthropic-on-Vertex extension reads),
+		// so mirror it and Gemini on Vertex is just a model name.
+		`&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`,
 	)
 	// pi matches the provider prefix case-insensitively, so the gate must
 	// too or "Anthropic-Vertex/..." would run on Vertex with the unset
@@ -242,6 +248,11 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	if _, ok := piThinkingFor(params.Effort); !ok {
 		printer.StepWarn(fmt.Sprintf("effort %q is not a pi thinking level; running at --thinking %s", sanitizeOutput(params.Effort), piDefaultThinking))
+	}
+	if len(params.FallbackModels) > 0 {
+		// pi has no built-in fallback chain; a fullsend extension for it is
+		// tracked on #6527. Say so rather than silently dropping the list.
+		printer.StepWarn(fmt.Sprintf("fallback models %s are not supported on pi yet and are ignored", sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
 	cmd := buildPiRunCommand(params, m)
 
