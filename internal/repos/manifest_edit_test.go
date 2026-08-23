@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -819,4 +822,24 @@ func TestSetDefault_InvalidKey(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid key") {
 		t.Errorf("expected invalid key error, got: %v", err)
 	}
+}
+
+func TestSetDefault_Runtime(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
+
+	require.NoError(t, SetDefault(path, "defaults.runtime", "pi"))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "runtime: pi")
+
+	err = SetDefault(path, "defaults.runtime", "opencode")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid runtime")
+
+	require.NoError(t, SetDefault(path, "defaults.runtime", ""), "empty clears the default")
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "runtime:")
 }

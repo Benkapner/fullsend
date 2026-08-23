@@ -303,6 +303,7 @@ func writeManifest(path string, m *Manifest) error {
 // `repos set-default`. Order matches the help text.
 var ValidDefaultKeys = []string{
 	"defaults.allowed_remote_resources",
+	"defaults.runtime",
 	"github.url",
 	"github.mint_url",
 	"github.mint_mode",
@@ -355,6 +356,8 @@ func SetDefault(manifestPath, key, value string) error {
 
 	// Apply.
 	switch key {
+	case "defaults.runtime":
+		m.Defaults.Runtime = value
 	case "defaults.allowed_remote_resources":
 		if value == "" {
 			m.Defaults.AllowedRemoteResources = nil
@@ -438,6 +441,10 @@ func validateDefaultValue(key, value string) error {
 	case "github.fullsend_ref", "gitlab.fullsend_ref":
 		if !IsValidRef(value) {
 			return fmt.Errorf("%s %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", key, value)
+		}
+	case "defaults.runtime":
+		if err := validateRuntimeValue(key, value); err != nil {
+			return err
 		}
 	case "defaults.allowed_remote_resources":
 		for _, raw := range strings.Split(value, ",") {

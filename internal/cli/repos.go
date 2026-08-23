@@ -432,6 +432,7 @@ type reposInstallConfig struct {
 	fullsendRef            string
 	mintURL                string
 	allowedRemoteResources []string
+	runtime                string
 
 	// Test overrides
 	testClient          forge.Client
@@ -481,6 +482,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
+	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi); repos already in the manifest keep their entry/defaults.runtime")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
 
 	return cmd
@@ -607,6 +609,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if forgeName != repos.ForgeGitHub && opts.mintURL != "" {
 				printer.StepWarn(fmt.Sprintf("--mint-url is only used with GitHub repos; ignored for %s", forgeName))
 			}
+			if opts.runtime != "" {
+				if err := validateRuntimeName(opts.runtime); err != nil {
+					return fmt.Errorf("--runtime: %w", err)
+				}
+			}
 
 			entries := make([]repos.RepoEntry, len(notInManifest))
 			for i, r := range notInManifest {
@@ -622,6 +629,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				if len(opts.allowedRemoteResources) > 0 {
 					entry.AllowedRemoteResources = opts.allowedRemoteResources
+				}
+				if opts.runtime != "" && opts.runtime != manifest.Defaults.Runtime {
+					entry.Runtime = opts.runtime
 				}
 				entries[i] = entry
 			}

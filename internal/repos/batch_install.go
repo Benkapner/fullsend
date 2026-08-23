@@ -447,6 +447,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				RunnerTags:        gitlabRunnerTags(cfg.Manifest),
 				Direct:            cfg.Direct,
 				ReuseSecrets:      dr.secretsExist,
+				Runtime:           dr.resolved.Runtime,
 			}
 
 			// When the manifest pins to a different version than the
