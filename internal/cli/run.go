@@ -162,15 +162,16 @@ type aggregateMetrics struct {
 	// Runtime is the backend that ran the iterations (claude, pi, dummy),
 	// so artifacts record which runtime a per-repo `runtime:` selected.
 	Runtime string `json:"runtime,omitempty"`
-	// RequestedRuntime is the runtime name from the config selection, before
-	// any env override.
+	// RequestedRuntime is the runtime selected for the run (config file or a
+	// --runtime/FULLSEND_RUNTIME override); Runtime is what actually ran.
 	RequestedRuntime string `json:"requested_runtime,omitempty"`
-	// RequestedModel is the model the harness/agent handed to the runtime,
-	// after env overrides like FULLSEND_PI_MODEL are applied.
+	// RequestedModel is the model handed to the runtime after the per-run
+	// overrides (--model, FULLSEND_MODEL, FULLSEND_PI_MODEL on pi) were
+	// applied; Model is what the provider reported.
 	RequestedModel string `json:"requested_model,omitempty"`
-	// OverrideSource records where the model value came from (e.g. "config",
-	// "FULLSEND_PI_MODEL", "harness") so a silent override is visible after
-	// the fact.
+	// OverrideSource records where RequestedModel came from ("--model flag",
+	// "FULLSEND_MODEL", "FULLSEND_PI_MODEL", "harness", "default") so a
+	// silent override is visible after the fact.
 	OverrideSource string `json:"override_source,omitempty"`
 }
 
@@ -268,6 +269,7 @@ func newRunCmd() *cobra.Command {
 	var forgeFlag string
 	var rFlags resolveFlags
 	var sOpts statusOpts
+	var oFlags runOverrideFlags
 
 	cmd := &cobra.Command{
 		Use:   "run <agent-name>",
@@ -277,7 +279,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, rFlags, sOpts, printer, keepSandbox)
+			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
 
@@ -298,13 +300,16 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
+	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi or dummy; also $FULLSEND_RUNTIME)")
+	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi; also $FULLSEND_MODEL)")
+	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
 }
 
-func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool) (runErr error) {
+func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) (runErr error) {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -669,9 +674,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (runner_env + env.runner), not just the declared runner_env entries.
 	h.RunnerEnv = effectiveRunnerEnv
 
-	// Resolve the runtime early so its name appears in the plan block.
-	// The full backend is used later (step 5b) for sandbox setup.
-	runtimeBackend, runtimeConfigSource, runtimeErr := backendFromConfigFile(orgConfigPath)
+	// Resolve the per-run overrides (flag > env) and the runtime early so
+	// both appear in the plan block. The full backend is used later (step
+	// 5b) for sandbox setup. Overrides are resolved once, here; runtimes
+	// never read FULLSEND_* themselves (#6526).
+	overrides, err := resolveRunOverrides(oFlags, os.Getenv, "")
+	if err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
+	if overrides.runtime == "" {
+		// The pi-only FULLSEND_PI_MODEL alias depends on which runtime the
+		// config selects; resolve the config runtime first, then re-run.
+		if b, _, e := backendFromConfigFile(orgConfigPath); e == nil {
+			overrides, err = resolveRunOverrides(oFlags, os.Getenv, b.Runtime.Name())
+			if err != nil {
+				printer.StepFail(err.Error())
+				return err
+			}
+		}
+	}
+	runtimeBackend, runtimeConfigSource, runtimeErr := resolveBackend(overrides, orgConfigPath)
 	if runtimeErr != nil {
 		switch {
 		case errors.Is(runtimeErr, errParsingConfigRuntime):
@@ -682,6 +705,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Failed to load config.yaml")
 		}
 		return runtimeErr
+	}
+
+	// Apply the model/effort overrides to the composed harness so every
+	// consumer (plan, runtime, metrics, status comment) sees one value.
+	if overrides.model != "" {
+		h.Model = overrides.model
+	}
+	if overrides.effort != "" {
+		if !harness.ValidEffort(overrides.effort) {
+			err := fmt.Errorf("%s: invalid effort %q: must be one of %s", overrides.effortSource, overrides.effort, strings.Join(harness.ValidEffortLevels(), ", "))
+			printer.StepFail(err.Error())
+			return err
+		}
+		h.Effort = overrides.effort
 	}
 
 	// Print plan.
@@ -696,10 +733,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.KeyValue("Policy", h.Policy)
 	}
 	if h.Model != "" {
-		printer.KeyValue("Model", h.Model)
+		printer.KeyValue("Model", withSource(h.Model, overrides.modelSource))
 	}
 	if h.Effort != "" {
-		printer.KeyValue("Effort", h.Effort)
+		printer.KeyValue("Effort", withSource(h.Effort, overrides.effortSource))
+	}
+	if len(overrides.fallbackModels) > 0 {
+		printer.KeyValue("Fallback models", withSource(strings.Join(overrides.fallbackModels, ", "), overrides.fallbackSource))
 	}
 	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
 	if h.Image != "" {
@@ -1251,11 +1291,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	backend := runtimeBackend
 	configSource := runtimeConfigSource
 	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
+	if overrides.modelSource != "" {
+		fmt.Fprintf(os.Stderr, "model: requested %q from %s\n", h.Model, overrides.modelSource)
+	}
 	rt := backend.Runtime
 	aggMetrics.Runtime = rt.Name()
 	aggMetrics.RequestedRuntime = rt.Name()
 	aggMetrics.RequestedModel = h.Model
-	aggMetrics.OverrideSource = resolveModelOverrideSource(rt.Name(), h.Model)
+	aggMetrics.OverrideSource = modelOverrideSource(overrides, h.Model)
 	tx := backend.Transcripts
 
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
@@ -1604,6 +1647,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			AgentBaseName:     agentBaseName,
 			Model:             h.Model,
 			Effort:            h.Effort,
+			FallbackModels:    overrides.fallbackModels,
 			RepoDir:           remoteRepositoryDir,
 			FullsendDir:       absFullsendDir,
 			PluginDirs:        pluginDirs,
@@ -2677,20 +2721,6 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	if m.Model != "" {
 		agg.Model = m.Model
 	}
-}
-
-// resolveModelOverrideSource determines the source of the effective model
-// value so a silent FULLSEND_PI_MODEL override is visible after the fact.
-func resolveModelOverrideSource(runtimeName, harnessModel string) string {
-	if runtimeName == "pi" {
-		if v := strings.TrimSpace(os.Getenv("FULLSEND_PI_MODEL")); v != "" {
-			return "FULLSEND_PI_MODEL"
-		}
-	}
-	if harnessModel != "" {
-		return "harness"
-	}
-	return "default"
 }
 
 // resolveWorkItemID returns a stable cross-run correlation key for the work
@@ -4555,4 +4585,13 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 			strings.Join(mismatches, ", "))
 	}
 	return "", nil
+}
+
+// withSource appends the override source to a plan value when the value came
+// from a per-run override rather than the config/harness.
+func withSource(value, source string) string {
+	if source == "" {
+		return value
+	}
+	return fmt.Sprintf("%s (from %s)", value, source)
 }

@@ -194,7 +194,7 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -224,7 +224,7 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -237,7 +237,7 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -269,7 +269,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -299,7 +299,7 @@ func TestRunAgent_PerRepoConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -562,7 +562,7 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -589,7 +589,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -611,7 +611,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -653,7 +653,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -709,7 +709,7 @@ openshell:
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	// The test will fail after the orchestration block (e.g. during
 	// bootstrapCommon or pre-script setup), but it must NOT fail at
 	// the gateway check or provider/profile steps.
@@ -745,7 +745,7 @@ func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
 }
@@ -774,7 +774,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -886,7 +886,7 @@ func TestRunAgent_ConfigAgentLocalPath(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "custom", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "custom", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -922,7 +922,7 @@ func TestRunAgent_ConfigAgentURL(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "triage", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "triage", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -956,7 +956,7 @@ func TestRunAgent_ConfigAgentOverridesScaffold(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -978,7 +978,7 @@ func TestRunAgent_AgentNotInConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
@@ -998,7 +998,7 @@ func TestRunAgent_UnknownAgentName(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
@@ -3521,7 +3521,7 @@ func TestRunAgent_PreflightCheck_Passing(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	// Must pass the preflight guard and reach the openshell check.
 	assert.Contains(t, err.Error(), "openshell")
@@ -3536,7 +3536,7 @@ func TestRunAgent_PreflightCheck_Failing(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preflight_check failed")
 }
@@ -3550,7 +3550,7 @@ func TestRunAgent_PreflightCheck_NoCheckConfigured(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -3582,7 +3582,7 @@ func TestRunAgent_PreflightCheck_NilValidationLoop(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -3603,7 +3603,7 @@ func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
 }
@@ -4353,7 +4353,7 @@ func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid harness: role field is required")
@@ -4998,7 +4998,7 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
@@ -5041,7 +5041,7 @@ func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, buf.String(), "skipping token minting")
@@ -5083,7 +5083,7 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent token minting failed")
@@ -5134,7 +5134,7 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 		statusNum:  42,
 		mintURL:    "https://mint.example.com",
 	}
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, sOpts, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
 
 	// Will error downstream (openshell not available), but status notifier setup should succeed
 	require.Error(t, err)
@@ -5288,25 +5288,6 @@ repos:
 	_, _, err := backendFromConfigFile(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
-}
-
-func TestResolveModelOverrideSource(t *testing.T) {
-	t.Run("pi with env override", func(t *testing.T) {
-		t.Setenv("FULLSEND_PI_MODEL", "claude-haiku-4-5")
-		assert.Equal(t, "FULLSEND_PI_MODEL", resolveModelOverrideSource("pi", "opus"))
-	})
-
-	t.Run("pi without env override uses harness", func(t *testing.T) {
-		assert.Equal(t, "harness", resolveModelOverrideSource("pi", "opus"))
-	})
-
-	t.Run("claude with harness model", func(t *testing.T) {
-		assert.Equal(t, "harness", resolveModelOverrideSource("claude", "sonnet"))
-	})
-
-	t.Run("no model is default", func(t *testing.T) {
-		assert.Equal(t, "default", resolveModelOverrideSource("claude", ""))
-	})
 }
 
 func TestIsOrgConfigData_InvalidYAML(t *testing.T) {
