@@ -271,9 +271,9 @@ full security matrix; per-run overrides are also covered in
   [release download](#download-the-fullsend-cli) above. The
   [container image](#run-from-a-container) tracks releases too, so it has
   the same limitation until a release ships pi.
-- The sandbox image must include pi (it bakes `PI_VERSION`; any
-  `ghcr.io/fullsend-ai/fullsend-sandbox` built from `main` after
-  2026-08-23 does). A stale image fails preflight with
+- The sandbox image must include pi:
+  `ghcr.io/fullsend-ai/fullsend-sandbox` **v0.37.0+** (the image bakes
+  `PI_VERSION`). A stale image fails preflight with
   `pi preflight: pi --version exited 127` — fix with
   `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest`.
 - `review` and `retro` run to schema-valid results but in a **single
