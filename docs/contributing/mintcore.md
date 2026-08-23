@@ -167,10 +167,11 @@ include all transitively reachable types.
 ### `mintEnv` / `mintHTTP` inside verifier constructors
 
 ```go
-// BAD: constructor-time HTTP pulls net/http into the call graph
-// at init, and on WASM the JS callbacks may not be registered yet
-func NewJWKSVerifierFromEnv() (*JWKSVerifier, error) {
+// BAD: constructor-time env/HTTP pulls dependencies into the call
+// graph at init, and on WASM the JS callbacks may not be registered yet
+func NewJWKSVerifier() (*JWKSVerifier, error) {
     issuer := mintEnv("OIDC_ISSUER")  // constructor-time env read
+    resp, _ := mintHTTP(req)           // constructor-time HTTP call
     // ...
 }
 ```
@@ -184,47 +185,6 @@ explicit config.
 The shipped pattern: constructors take plain config structs →
 `mintHTTP(req)` is called at **request time** in verifier and handler
 methods.
-
-### Niladic `*FromEnv` factories
-
-```go
-// BAD: hides which env vars are read, couples to runtime state
-func NewJWKSVerifierFromEnv() (*JWKSVerifier, error) { ... }
-func NewSTSVerifierFromEnv() (*STSVerifier, error) { ... }
-```
-
-These factories were part of the original design in #6304 and were
-**dropped** after the WASM bisect in PR #6308. They hide configuration
-behind runtime state, making it impossible to construct verifiers with
-different configs in tests without mutating the environment.
-
-### Threading `http.Client` through entrypoints
-
-```go
-// BAD: passing http.Client from entrypoint into verifier config
-func NewHandler(pem PEMAccessor, v OIDCVerifier, client *http.Client) { ... }
-```
-
-This pulls `net/http` into the constructor's dependency graph at the
-entrypoint level. Instead, `mintHTTP(req)` is called directly at use
-sites inside mintcore.
-
-### `wire_*.go` / `NewPlatformHandler()`
-
-Deploy-time wiring files (`wire_gcf.go`, `wire_standalone.go`,
-`wire_wasm.go`) and a single `NewPlatformHandler()` factory were part of
-the original design in #6304. **They were not implemented** — #6306 was
-closed as an unnecessary optimization. Each load site constructs
-`NewHandler` directly with explicit arguments.
-
-### `mintPEM` / `RegisterPEM`
-
-A package-internal PEM accessor (`mintPEM`) analogous to `mintEnv` and
-`mintHTTP` was considered but **not implemented**. PEM stays an injected
-`PEMAccessor` interface passed to `NewHandler`. The three PEM
-implementations (`GCPSecretPEMAccessor`, `FilesystemPEMAccessor`,
-`HostPEMAccessor`) are constructed at load sites and are not swappable
-via registration.
 
 ## WASM-safe patterns
 
@@ -281,7 +241,7 @@ serve.
 ## PEM remains injected
 
 PEM access uses the `PEMAccessor` interface at the `NewHandler`
-boundary. There is no `mintPEM` accessor and no `RegisterPEM`.
+boundary.
 
 | PEM implementation | Platform | Storage |
 |-------------------|----------|---------|
@@ -361,23 +321,3 @@ changes can cause large binary size increases. Avoid importing heavy
 packages (`net/http`, `crypto/x509`, cloud SDKs) in files that are
 WASM-compiled. Use build tags (`//go:build js` / `//go:build !js`) to
 isolate platform-specific implementations.
-
-## Rejected patterns
-
-The following were part of the original mintcore design (#6304) and
-are **not part of the shipped architecture**. Do not implement them.
-
-| Pattern | Status | Why |
-|---------|--------|-----|
-| `NewJWKSVerifierFromEnv()` | Rejected | Niladic factory; hides config, couples to runtime state |
-| `NewSTSVerifierFromEnv()` | Rejected | Same as above |
-| `VerifierFactory` interface | Rejected | Unnecessary abstraction layer |
-| `wire_gcf.go` / `wire_standalone.go` / `wire_wasm.go` | Not implemented | #6306 closed as unnecessary; load sites construct directly |
-| `NewPlatformHandler()` | Not implemented | See `wire_*.go` above |
-| `mintPEM` / `RegisterPEM` | Not implemented | PEM stays an injected `PEMAccessor` interface |
-| `func(string) string` in config structs | Rejected | WASM binary size trap; closures capture dependency graphs |
-
-These patterns were evaluated during the WASM bisect (PR #6308) and
-dropped. #6306 was closed without implementation. If you encounter
-references to these patterns in the parent epic (#6304), note that
-the epic body predates the shipped design.
