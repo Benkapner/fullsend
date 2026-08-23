@@ -339,6 +339,13 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
     if _has_substitution(segment):
         return False
 
+    # A network-capable command in the same segment means the segment can make
+    # a request without a pipe or a substitution — awk's ``system()``/command
+    # pipes and sed's GNU ``e`` flag both execute a shell from inside the
+    # pattern argument (``awk '/URL/ {system("curl "$0)}' f``).
+    if _NETWORK_COMMANDS.search(segment):
+        return False
+
     # sed substitution: require 'sed' as a word in the segment prefix,
     # then verify the URL is in the search-pattern field (not the
     # replacement field).

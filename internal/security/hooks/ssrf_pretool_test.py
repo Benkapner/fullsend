@@ -257,6 +257,24 @@ class TestIsInTextPatternContext:
         m = list(hook.URL_PATTERN.finditer(cmd))[0]
         assert hook._is_in_text_pattern_context(cmd, m.start())
 
+    def test_awk_system_call_not_in_context(self, hook):
+        """awk's system() runs a shell from inside the pattern argument."""
+        cmd = "awk '/https://169.254.169.254/latest/ {system(\"curl \"$0)}' f"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_awk_command_pipe_not_in_context(self, hook):
+        """awk can pipe output straight into a command."""
+        cmd = "awk '/https://169.254.169.254/ {print | \"curl -d @- x\"}' f"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_execute_flag_not_in_context(self, hook):
+        """GNU sed's e flag executes the replacement as a shell command."""
+        cmd = "sed 's@x@curl https://169.254.169.254/@e' f"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
     def test_grep_redirect_to_file_not_in_context(self, hook):
         """grep URL with output redirection must not be exempted."""
         cmd = "grep -o 'https://169.254.169.254/' file > /tmp/urls"
@@ -662,6 +680,18 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "& background separator should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_awk_system_call_blocked(self, hook):
+        """awk '/URL/ {system("curl "$0)}' must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "awk '/http://169.254.169.254/latest/ {system(\"curl \"$0)}' f",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "awk system() should be blocked"
         assert "169.254.169.254" in result
 
     def test_grep_redirect_then_curl_blocked(self, hook):
