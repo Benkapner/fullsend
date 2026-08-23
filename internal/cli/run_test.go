@@ -5290,6 +5290,25 @@ repos:
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
 
+func TestResolveModelOverrideSource(t *testing.T) {
+	t.Run("pi with env override", func(t *testing.T) {
+		t.Setenv("FULLSEND_PI_MODEL", "claude-haiku-4-5")
+		assert.Equal(t, "FULLSEND_PI_MODEL", resolveModelOverrideSource("pi", "opus"))
+	})
+
+	t.Run("pi without env override uses harness", func(t *testing.T) {
+		assert.Equal(t, "harness", resolveModelOverrideSource("pi", "opus"))
+	})
+
+	t.Run("claude with harness model", func(t *testing.T) {
+		assert.Equal(t, "harness", resolveModelOverrideSource("claude", "sonnet"))
+	})
+
+	t.Run("no model is default", func(t *testing.T) {
+		assert.Equal(t, "default", resolveModelOverrideSource("claude", ""))
+	})
+}
+
 func TestIsOrgConfigData_InvalidYAML(t *testing.T) {
 	t.Parallel()
 

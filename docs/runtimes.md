@@ -310,6 +310,51 @@ flowchart TB
 - **Not yet exercised** — `runtime: pi` is selectable, but no fleet lifecycle run on Vertex has been recorded yet: the Vertex model ids and the copied `compat` flags have not been exercised against Vertex (smoke an adaptive and a non-adaptive model first; override with `FULLSEND_PI_MODEL` if an id is rejected); parser fixtures are hand-authored to the v0.84.2 wire docs (re-record with `internal/runtime/testdata/pi/regen.sh` once a run exists); `extension_error` events are not mapped; the behaviour scenario `features/runtime/pi.feature` (a real haiku run on Vertex of a minimal tool-using agent, asserting `metrics.json` `runtime: pi`, a `toolCall` in the pi session transcript and token usage) is gated on `BEHAVIOUR_CAPABILITIES=runtime-pi` until `fullsend-sandbox:latest` carries `PI_VERSION`, and `features/triage/triage.feature` asserts the runtime selected from the repo config on every run. Pilot on a disposable org with `triage`/`prioritize` (no sub-agent assumptions) before `code`/`fix`; `review`/`retro` rely on Claude sub-agent rosters and are not supported: pi v0.84.2 has no sub-agent tool or `agents/*.md` concept in core — only the bundled example extension (`examples/extensions/subagent/`, spawns `pi -p --mode json` children without our hook adapter, Vertex provider, `--no-approve` or session dir) and the SDK route (`createAgentSession()` per child; parent extensions do not fire for children) — so a fullsend-owned sub-agent extension with the full child flag set is a follow-up tracked on #6464.
 - **Other clouds** — pi ships native `amazon-bedrock` (SDK default credential chain, incl. `AWS_WEB_IDENTITY_TOKEN_FILE`) and `azure-openai-responses` (`api-key` only, no Entra ID) providers; neither is wired into `Run`'s alias table, credential hygiene or the runner's OIDC refresh yet, and the egress profile allows only Anthropic + Google hosts. Follow-up tracked against #6464.
 
+## Selecting and overriding
+
+### Precedence
+
+The runtime and model are resolved in the following order (first non-empty value wins):
+
+**Runtime:**
+
+1. Per-repo `runtime:` in `.fullsend/config.yaml`
+2. Org-level `defaults.runtime:` in the org config
+3. Built-in default: `claude`
+
+**Model:**
+
+1. `FULLSEND_PI_MODEL` / `FULLSEND_PI_PROVIDER` (pi-only runner env overrides)
+2. Harness `model:` field
+3. Agent frontmatter `model:` field
+4. Runtime default (Claude Code: provider default; pi: `opus` via alias table)
+
+### Where the selection appears
+
+| Surface | What it shows |
+|---------|---------------|
+| **Run plan block** | `Runtime: <name> (from <source>)` next to Model and Effort |
+| **stderr** | `runtime: selected "<name>" from <source>` for script consumers |
+| **Status comment** | Footer on the terminal comment: `Runtime: <name> · Model: <requested → reported> · Effort: <level> · Cost: $<total>` (arrow only when requested differs from reported; unknown fields omitted) |
+| **`::notice::` annotation** | Same format as the status comment footer |
+| **OTel span** | `fullsend.runtime` attribute on the agent span, next to `gen_ai.request.model` |
+| **metrics.json** | `runtime`, `requested_runtime`, `requested_model`, `override_source` |
+
+The `requested_model` field records the model handed to the runtime (after any env override). When `FULLSEND_PI_MODEL` is set, `override_source` reads `FULLSEND_PI_MODEL` so a silent override is visible after the fact. When the harness provides the model, it reads `harness`; when no model is specified, `default`.
+
+### Runtime capability table
+
+| Capability | Claude Code | Pi |
+|------------|-------------|-----|
+| Start-time model selection | `--model` (identity) | Alias table (`opus`/`sonnet`/`haiku` mapped to catalog ids) |
+| Effort / thinking | `--effort` (`low`..`max`) | `--thinking` (superset of effort levels) |
+| Fallback model | Provider default | `opus` via alias table |
+| Mid-run model switch | Not supported | Not supported |
+| Cross-provider | Vertex AI | Vertex AI via vendored extension; Bedrock/Azure not yet wired |
+| Sub-agents | Native (`Agent` tool) | Not yet supported (#6464) |
+
+> **Note:** `review` and `retro` on pi currently run in a single context without per-persona models and are not yet exercised on large PRs.
+
 ## Related docs
 
 - [cli-internals.md](guides/dev/cli-internals.md) — sandbox constants, key sandbox operations

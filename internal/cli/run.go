@@ -162,6 +162,16 @@ type aggregateMetrics struct {
 	// Runtime is the backend that ran the iterations (claude, pi, dummy),
 	// so artifacts record which runtime a per-repo `runtime:` selected.
 	Runtime string `json:"runtime,omitempty"`
+	// RequestedRuntime is the runtime name from the config selection, before
+	// any env override.
+	RequestedRuntime string `json:"requested_runtime,omitempty"`
+	// RequestedModel is the model the harness/agent handed to the runtime,
+	// after env overrides like FULLSEND_PI_MODEL are applied.
+	RequestedModel string `json:"requested_model,omitempty"`
+	// OverrideSource records where the model value came from (e.g. "config",
+	// "FULLSEND_PI_MODEL", "harness") so a silent override is visible after
+	// the fact.
+	OverrideSource string `json:"override_source,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -659,6 +669,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (runner_env + env.runner), not just the declared runner_env entries.
 	h.RunnerEnv = effectiveRunnerEnv
 
+	// Resolve the runtime early so its name appears in the plan block.
+	// The full backend is used later (step 5b) for sandbox setup.
+	runtimeBackend, runtimeConfigSource, runtimeErr := backendFromConfigFile(orgConfigPath)
+	if runtimeErr != nil {
+		switch {
+		case errors.Is(runtimeErr, errParsingConfigRuntime):
+			printer.StepFail("Failed to parse config.yaml")
+		case errors.Is(runtimeErr, errResolvingRuntime):
+			printer.StepFail("Failed to resolve runtime")
+		default:
+			printer.StepFail("Failed to load config.yaml")
+		}
+		return runtimeErr
+	}
+
 	// Print plan.
 	printer.KeyValue("Agent", h.Agent)
 	if h.Role != "" {
@@ -676,6 +701,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.Effort != "" {
 		printer.KeyValue("Effort", h.Effort)
 	}
+	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
 	if h.Image != "" {
 		printer.KeyValue("Image", h.Image)
 	}
@@ -726,6 +752,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var runSkipped bool
 	var runSkipReason string
 
+	// aggMetrics accumulates behavioral metrics across retry iterations.
+	// Declared here so the status-notification defer (below) can read the
+	// final values for the completion comment footer.
+	var aggMetrics aggregateMetrics
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
@@ -752,6 +783,28 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				} else if runSkipped {
 					status = "skipped"
 					detail = runSkipReason
+				}
+				// Set RunInfo for the completion footer. aggMetrics
+				// is fully populated by now (after all iterations).
+				notifier.SetRunInfo(statuscomment.RunInfo{
+					Runtime:        aggMetrics.Runtime,
+					RequestedModel: aggMetrics.RequestedModel,
+					ReportedModel:  aggMetrics.Model,
+					Effort:         h.Effort,
+					CostUSD:        aggMetrics.TotalCostUSD,
+				})
+				// Emit the same metadata as a GHA annotation for
+				// script consumers.
+				if os.Getenv("GITHUB_ACTIONS") == "true" {
+					if footer := statuscomment.BuildRunInfoFooter(&statuscomment.RunInfo{
+						Runtime:        aggMetrics.Runtime,
+						RequestedModel: aggMetrics.RequestedModel,
+						ReportedModel:  aggMetrics.Model,
+						Effort:         h.Effort,
+						CostUSD:        aggMetrics.TotalCostUSD,
+					}); footer != "" {
+						fmt.Fprintf(os.Stderr, "::notice::%s\n", footer)
+					}
 				}
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
@@ -939,7 +992,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var lastExitCode int
 	var transcriptErrorOverride bool
 	var runCount int
-	var aggMetrics aggregateMetrics
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
 		stringAttr("fullsend.agent", agentName),
@@ -1194,26 +1246,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	repoName := filepath.Base(hostRepositoryDir)
 	remoteRepositoryDir := fmt.Sprintf("%s/%s", sandbox.SandboxWorkspace, repoName)
 
-	// 5b. Resolve the agent runtime. Done before the fetch service starts so
-	// runtime-owned paths (skill destination) come from the runtime, not from
-	// Claude-specific constants.
-	var backend agentruntime.Backend
-	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
-	backend, configSource, backendErr := backendFromConfigFile(orgConfigPath)
-	if backendErr != nil {
-		switch {
-		case errors.Is(backendErr, errParsingConfigRuntime):
-			printer.StepFail("Failed to parse config.yaml")
-		case errors.Is(backendErr, errResolvingRuntime):
-			printer.StepFail("Failed to resolve runtime")
-		default:
-			printer.StepFail("Failed to load config.yaml")
-		}
-		return backendErr
-	}
+	// 5b. Resolve the agent runtime. Already resolved before the plan block
+	// for display; reuse the result here. The stderr line stays for scripts.
+	backend := runtimeBackend
+	configSource := runtimeConfigSource
 	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
 	rt := backend.Runtime
 	aggMetrics.Runtime = rt.Name()
+	aggMetrics.RequestedRuntime = rt.Name()
+	aggMetrics.RequestedModel = h.Model
+	aggMetrics.OverrideSource = resolveModelOverrideSource(rt.Name(), h.Model)
 	tx := backend.Transcripts
 
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
@@ -1577,7 +1619,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
 		if runErr != nil {
-			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), &metrics, "")
+			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully
@@ -1614,7 +1656,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), &metrics, transcriptErrMsg)
+		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), rt.Name(), &metrics, transcriptErrMsg)
 
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
@@ -2599,12 +2641,13 @@ func rootSpanEndAttrs(agg aggregateMetrics, runCount int) []attribute.KeyValue {
 	}
 }
 
-func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.RunMetrics) []attribute.KeyValue {
+func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *agentruntime.RunMetrics) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
 		stringAttr("gen_ai.system", system),
 		stringAttr("gen_ai.request.model", m.Model),
+		stringAttr("fullsend.runtime", runtimeName),
 		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
@@ -2634,6 +2677,20 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	if m.Model != "" {
 		agg.Model = m.Model
 	}
+}
+
+// resolveModelOverrideSource determines the source of the effective model
+// value so a silent FULLSEND_PI_MODEL override is visible after the fact.
+func resolveModelOverrideSource(runtimeName, harnessModel string) string {
+	if runtimeName == "pi" {
+		if v := strings.TrimSpace(os.Getenv("FULLSEND_PI_MODEL")); v != "" {
+			return "FULLSEND_PI_MODEL"
+		}
+	}
+	if harnessModel != "" {
+		return "harness"
+	}
+	return "default"
 }
 
 // resolveWorkItemID returns a stable cross-run correlation key for the work
@@ -2808,8 +2865,8 @@ func transcriptErrorMessage(te agentruntime.TranscriptError) string {
 // agent span and ends it. transcriptErr is non-empty when the transcript
 // reported a failure the process exit code did not (#2786): exit_code keeps
 // the raw process exit and fullsend.transcript_error marks the override.
-func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, system string, m *agentruntime.RunMetrics, transcriptErr string) {
-	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, m)...)
+func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, system, runtimeName string, m *agentruntime.RunMetrics, transcriptErr string) {
+	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, runtimeName, m)...)
 	switch {
 	case runErr != nil:
 		recordSanitizedError(span, runErr)
