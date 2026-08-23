@@ -398,11 +398,25 @@ Sandbox-side GCP environment — these variables reach pi inside the
 sandbox:
 
 ```bash
-ANTHROPIC_VERTEX_PROJECT_ID={project-id}
-GOOGLE_CLOUD_PROJECT={project-id}
-CLOUD_ML_REGION=global
-GOOGLE_APPLICATION_CREDENTIALS=/tmp/.gcp-credentials.json
+export ANTHROPIC_VERTEX_PROJECT_ID={project-id}
+export GOOGLE_CLOUD_PROJECT={project-id}
+export CLOUD_ML_REGION=global
+export GOOGLE_APPLICATION_CREDENTIALS=/tmp/.gcp-credentials.json
 ```
+
+Two details this file depends on:
+
+- **`export` is required.** The sandbox sources `.env.d/*.env` with plain `.`
+  and no `set -a` (`internal/cli/run.go`), so a bare `KEY=value` becomes a
+  shell variable that pi — a child process — never sees. The symptom is the
+  Vertex extension disabling itself, or a credentials error, with the file
+  plainly present in the sandbox.
+- **The filename must end in `.env`** — the sourcing loop globs `*.env`, so
+  `gcp-vertex.conf` would be copied and silently ignored.
+- `GOOGLE_APPLICATION_CREDENTIALS` here is the **sandbox** path, matching the
+  `host_files` `dest` above — not the path on your machine. The `host_files`
+  entry uses `${GOOGLE_APPLICATION_CREDENTIALS}` from your *runner* shell to
+  find the key locally.
 
 #### `policies/base.yaml`
 
