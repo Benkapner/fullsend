@@ -51,16 +51,16 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Pattern to detect sed substitution openings immediately before a URL.
-# Matches the trailing 's<delim>' of expressions like:
-#   sed 's|URL|...|'   sed -e 's/URL/.../'   sed 's|foo|bar|; s|URL|...|'
-_SED_SUBST_PREFIX = re.compile(r"s[^\w\s]$")
+# Pattern to find sed substitution openings: s<delim> preceded by a quote,
+# semicolon, or whitespace — anchored so word-internal 's' (e.g. 'items|')
+# cannot match.  Captures the delimiter character.
+_SED_SUBST_OPEN = re.compile(r"(?<=[\s'\";])s([^\w\s])")
 
 # Pattern to detect quoted pattern arguments to grep/awk family commands.
 # Matches: grep [-flags] 'URL   grep -E "URL   awk '/URL   etc.
 # The optional trailing / covers awk regex delimiters: awk '/pattern/'.
 _TEXT_CMD_QUOTED_PREFIX = re.compile(
-    r"(?:grep|egrep|fgrep|awk|gawk|mawk)\s+(?:-\S+\s+)*['\"]/?$",
+    r"\b(?:grep|egrep|fgrep|awk|gawk|mawk)\s+(?:-\S+\s+)*['\"]/?$",
 )
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
@@ -144,37 +144,30 @@ def validate_url(url: str) -> str | None:
 
 
 def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
-    """Return True if the URL at *match_start* is inside a text-manipulation pattern.
-
-    Detects URLs that appear as search/substitution patterns in commands
-    like ``sed``, ``grep``, and ``awk`` — these are string-processing
-    operations, not outbound network requests, and must not trigger SSRF
-    validation.
-
-    Examples that return True::
-
-        sed 's|https://github.com/||'        # URL is the sed search pattern
-        grep 'https://example.com/' file.txt  # URL is the grep pattern
-        awk '/https:\\/\\/example.com/' log   # URL is the awk match pattern
-    """
+    """Return True if the URL at *match_start* is inside a text-manipulation pattern."""
     prefix = command[:match_start]
 
-    # sed substitution: ...s<delim>URL where <delim> is a non-word,
-    # non-whitespace character (the sed command delimiter).
-    if _SED_SUBST_PREFIX.search(prefix):
-        return True
+    # sed substitution: require 'sed' as a word in the prefix, then verify
+    # the URL is in the search-pattern field (not the replacement field).
+    if re.search(r"\bsed\b", prefix):
+        subst_opens = list(_SED_SUBST_OPEN.finditer(prefix))
+        if subst_opens:
+            last = subst_opens[-1]
+            delim = last.group(1)
+            # Content between the s<delim> opening and the URL start.
+            between = prefix[last.end() :]
+            # Search field has zero delimiters before the URL; replacement
+            # or flags field has one or more.
+            if between.count(delim) == 0:
+                return True
+        return False
 
     # Quoted argument to grep/awk family: ...grep [-flags] 'URL  or  "URL
     return bool(_TEXT_CMD_QUOTED_PREFIX.search(prefix))
 
 
 def _extract_network_urls(command: str) -> list[str]:
-    """Return URLs from *command* that could be outbound network targets.
-
-    URL-shaped strings inside text-manipulation patterns (``sed``,
-    ``grep``, ``awk``) are excluded — they are string literals being
-    matched or replaced, not request targets.
-    """
+    """Return URLs from *command* that could be outbound network targets."""
     return [
         m.group()
         for m in URL_PATTERN.finditer(command)

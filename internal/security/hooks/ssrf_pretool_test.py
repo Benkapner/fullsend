@@ -99,6 +99,42 @@ class TestIsInTextPatternContext:
         m = list(hook.URL_PATTERN.finditer(cmd))[0]
         assert not hook._is_in_text_pattern_context(cmd, m.start())
 
+    def test_curl_dns_servers_not_in_context(self, hook):
+        """Prefix ending in 's=' (--dns-servers=) must not trigger sed bypass."""
+        cmd = "curl --dns-servers=https://169.254.169.254/latest/meta-data/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_curl_pass_not_in_context(self, hook):
+        """Prefix ending in 's=' (--pass=) must not trigger sed bypass."""
+        cmd = "curl --pass=https://169.254.169.254/latest/meta-data/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_variable_assignment_not_in_context(self, hook):
+        """Variable assignment like 'process=URL' must not trigger sed bypass."""
+        cmd = "process=https://169.254.169.254/latest/meta-data/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_replacement_url_not_in_context(self, hook):
+        """URL in sed replacement field must not be exempt."""
+        cmd = "sed 's|items|https://evil.com/payload|'"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_notgrep_not_in_context(self, hook):
+        """Binary names ending in 'grep' must not trigger grep bypass."""
+        cmd = "notgrep 'https://169.254.169.254/' file.txt"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_myawk_not_in_context(self, hook):
+        """Binary names ending in 'awk' must not trigger awk bypass."""
+        cmd = "myawk '/https://169.254.169.254/' access.log"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
 
 # ---------------------------------------------------------------------------
 # _extract_network_urls tests
@@ -135,6 +171,20 @@ class TestExtractNetworkUrls:
     def test_grep_url_excluded(self, hook):
         cmd = "grep 'https://github.com/owner' src/"
         assert hook._extract_network_urls(cmd) == []
+
+    def test_curl_dns_servers_url_included(self, hook):
+        """URL after --dns-servers= must not be dropped by sed bypass."""
+        cmd = "curl --dns-servers=https://169.254.169.254/latest/meta-data/"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_sed_replacement_url_included(self, hook):
+        """URL in sed replacement field is still a candidate for validation."""
+        cmd = "sed 's|items|https://evil.com/payload|'"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "evil.com" in urls[0]
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +329,18 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_curl_dns_servers_still_blocked(self, hook):
+        """curl --dns-servers=URL must not be bypassed by sed pattern detection."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "curl --dns-servers=http://169.254.169.254/latest/meta-data/",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "curl --dns-servers=metadata should be blocked"
         assert "169.254.169.254" in result
 
 
