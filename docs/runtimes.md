@@ -252,6 +252,11 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 
 ### Pi-specific known constraints (#6464)
 
+> **Running pi locally?** See [Run a minimal agent on the pi
+> runtime](guides/user/running-agents-locally.md#run-a-minimal-agent-on-the-pi-runtime)
+> in the local-run guide for a step-by-step walkthrough — no fleet repo
+> required.
+
 #### At a glance
 
 | | Status |
