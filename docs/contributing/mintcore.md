@@ -5,9 +5,6 @@ shared token-minting library used by three deploy targets. It covers
 platform accessors, load-site construction, WASM constraints, and the
 patterns that keep the Cloudflare Worker binary within size limits.
 
-Read this when you are changing files under `internal/mintcore/`,
-`cmd/mint-wasm/`, `cmd/mint/`, or `internal/mint/`.
-
 ## Deploy targets
 
 Mintcore is shared by three deploy targets. Each target has its own
@@ -34,7 +31,8 @@ cmd/mint/                 standalone HTTP server load site (has its own go.mod)
 cmd/mint-wasm/            WASM entrypoint for CF Worker (imports mintcore)
 internal/dispatch/cf/
   workersrc/              CF Worker TypeScript adapter (I/O only)
-  gcf/mintsrc/            embedded copies for GCF deployment (.embed files)
+internal/dispatch/gcf/
+  mintsrc/                embedded copies for GCF deployment (.embed files)
 ```
 
 **internal/mintcore/** contains all token-minting logic: request
