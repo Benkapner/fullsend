@@ -107,10 +107,11 @@ security:                        # Security is enabled by default with fail_mode
     context_injection: true
     ssrf_validator: true
     secret_redactor: true
-    llm_guard:
-      enabled: true
-      threshold: 0.92
-      match_type: sentence
+    llm_guard:                 # NOT active: the ML scanner is compiled out of every
+      enabled: true            # shipped build (#6522) and its only call site is
+      threshold: 0.92          # `fullsend scan input`, not `fullsend run`. These three
+      match_type: sentence     # fields are validated but never read — the scanner
+                               # hardcodes 0.92/sentence and ignores `enabled`.
   sandbox_hooks:
     tirith:
       enabled: true

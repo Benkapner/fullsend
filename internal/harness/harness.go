@@ -160,9 +160,12 @@ type HostScanners struct {
 	LLMGuard          *LLMGuardConfig `yaml:"llm_guard,omitempty"`
 }
 
-// LLMGuardConfig configures the LLM Guard ML-based prompt injection scanner.
-// Runs in Path A (GHA workflow pre-step) and Path B (sandbox) when the base
-// sandbox image includes the pre-installed LLM Guard and DeBERTa-v3 model.
+// LLMGuardConfig configures the ML-based prompt injection scanner. The schema
+// is retained for compatibility, but the scanner is compiled out of every
+// shipped build (CGO_ENABLED=0, no -tags ORT) and its model was removed from
+// the sandbox image in #6522. Neither Path A (scanRepoContextFiles) nor Path B
+// (fullsend scan context) ever called it; the sole call site is
+// `fullsend scan input`. These fields are validated but not read. See #6506.
 type LLMGuardConfig struct {
 	Enabled   *bool   `yaml:"enabled,omitempty"`    // default: true
 	Threshold float64 `yaml:"threshold,omitempty"`  // default: 0.92
