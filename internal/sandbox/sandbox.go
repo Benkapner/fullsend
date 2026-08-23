@@ -38,7 +38,7 @@ const (
 	// sandbox image (images/sandbox/Containerfile), root-owned and outside
 	// PI_CODING_AGENT_DIR so pi never auto-loads them; PiRuntime.Run passes
 	// each one explicitly with -e.
-	SandboxPiExtensionsDir = "/opt/pi-extensions"
+	SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"
 
 	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second

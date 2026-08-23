@@ -519,7 +519,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 SandboxWorkspace       = "/sandbox/workspace"
 SandboxClaudeConfig    = "/sandbox/claude-config"
 SandboxPiConfig        = "/sandbox/pi-config"
-SandboxPiExtensionsDir = "/opt/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
+SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
 ```
 
 For sandbox workspace layout, agent rule layering, and security scanning

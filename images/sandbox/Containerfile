@@ -4,7 +4,7 @@
 #   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG)
 #   - pi (npm, version-pinned via PI_VERSION ARG; opt-in runtime, see
 #     #6464) + the pi-anthropic-vertex extension
-#     (tag + SHA256 pinned under /opt/pi-extensions)
+#     (tag + SHA256 pinned under /usr/local/share/pi-extensions)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - acli (Atlassian CLI for Jira issue queries)
@@ -119,7 +119,7 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 #   sha256sum <(curl -fsSL https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
 ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.13
 ARG PI_ANTHROPIC_VERTEX_SHA256=6b465c374734b0ae98e7c48d58f935bcfb12760c509475df2c82785a463c7249
-ARG PI_EXTENSIONS_DIR=/opt/pi-extensions
+ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
       -o /tmp/pi-anthropic-vertex.tar.gz \

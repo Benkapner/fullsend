@@ -26,6 +26,25 @@ func TestPiRuntimeMetadata(t *testing.T) {
 	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/anthropic-vertex", piVertexExtensionPath)
 }
 
+// TestPiExtensionPathWithinSandboxPolicy asserts that piVertexExtensionPath
+// sits under a prefix the sandbox filesystem policy allows (read_only list in
+// /etc/openshell/policy.yaml). This guards against the class of bug in #6504
+// where the extension was installed under /opt, which landlock denied.
+func TestPiExtensionPathWithinSandboxPolicy(t *testing.T) {
+	t.Parallel()
+	allowedPrefixes := []string{"/usr", "/lib", "/app", "/etc", "/var/log"}
+	var matched bool
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(piVertexExtensionPath, prefix) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Errorf("piVertexExtensionPath %q is not under any sandbox policy-allowed read_only prefix %v", piVertexExtensionPath, allowedPrefixes)
+	}
+}
+
 func TestPiRuntimeEnvExports(t *testing.T) {
 	t.Parallel()
 	exports := strings.Join(PiRuntime{}.EnvExports(), "\n")
