@@ -204,6 +204,8 @@ fullsend run code \
 
 ### Choosing the runtime
 
+<a id="run-a-minimal-agent-on-the-pi-runtime"></a><a id="troubleshooting-pi-runtime"></a><a id="platform-notes-pi"></a>
+
 Every example above runs on **Claude Code, the stable default**. The **pi**
 runtime ([pi](https://github.com/earendil-works/pi)) is an experimental,
 opt-in alternative — same commands, one extra flag:
@@ -249,16 +251,29 @@ On pi, the model name is also the provider choice — the same Vertex
 credentials cover Gemini too:
 
 ```bash
-fullsend run triage ... --runtime pi --model google-vertex/gemini-2.5-flash
+fullsend run triage \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-triage.env \
+  --runtime pi \
+  --model google-vertex/gemini-2.5-flash
 ```
 
-**pi-specific notes** (see [Agent runtimes](../../runtimes.md) for the full
-security matrix and known constraints):
+**pi-specific notes** (see [Pi-specific known
+constraints](../../runtimes.md#pi-specific-known-constraints-6464) for the
+full security matrix; per-run overrides are also covered in
+[Choose an agent runtime](../getting-started/choosing-a-runtime.md)):
 
-- **Build the CLI from `main`** — no released fullsend version includes the
-  pi runtime yet (`make go-build`).
-- The sandbox image must carry pi (`ghcr.io/fullsend-ai/fullsend-sandbox`
-  0.37+). A stale image fails preflight with
+- **Build the CLI from `main`** — no released fullsend version includes
+  the pi runtime yet: clone fullsend and `make go-build` (or
+  `go run ./cmd/fullsend run …`) instead of the
+  [release download](#download-the-fullsend-cli) above. The
+  [container image](#run-from-a-container) tracks releases too, so it has
+  the same limitation until a release ships pi.
+- The sandbox image must include pi (it bakes `PI_VERSION`; any
+  `ghcr.io/fullsend-ai/fullsend-sandbox` built from `main` after
+  2026-08-23 does). A stale image fails preflight with
   `pi preflight: pi --version exited 127` — fix with
   `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest`.
 - `review` and `retro` run to schema-valid results but in a **single
@@ -460,6 +475,26 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 **`unable to replace "host-gateway"` on macOS**
 - Set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine
 
+### pi runtime
+
+- **`pi preflight: pi --version exited 127`** — the sandbox image predates
+  pi. `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest`.
+- **`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT …`** — the
+  sandbox environment comes from the harness (`host_files`,
+  `env.sandbox`), not from `--env-file`, which only reaches the runner
+  process (ADR 0055). Files sourced from `.env.d/` need `export` on each
+  line. The fleet harnesses already wire this; a custom harness must too.
+- **Run used Claude instead of pi** — the runtime falls back to `claude`
+  when neither the config's `runtime:` nor `--runtime`/`FULLSEND_RUNTIME`
+  selects pi; the plan block's `Runtime:` line and stderr's
+  `runtime: selected …` show which one ran and why.
+- **`--debug "…"` fails with `accepts 1 arg(s)`** — `--debug` takes an
+  optional value: write `--debug='*'` (with `=`).
+- **Agent fails with nothing in the terminal** — sandbox-side pi failures
+  land in `pi-debug.log` inside the run directory, next to the
+  transcripts; kept sandboxes must be removed manually
+  (`openshell sandbox delete <name>`).
+
 ## Debugging network policies locally
 
 When customizing network policies, running agents locally lets you inspect
@@ -468,6 +503,9 @@ section describes what a local `fullsend run` produces and how to use the
 output to iterate on network policy allowlists.
 
 ### Run directory structure
+
+(On pi runs the directory additionally contains `pi-debug.log` — pi's
+stderr — next to the transcripts.)
 
 Every `fullsend run` creates a run directory. By default this is under
 `/tmp/fullsend/`; override it with `--output-dir`:
