@@ -83,6 +83,30 @@ _NETWORK_COMMANDS = re.compile(
     r"|(?<![.\w])(?:bash|sh|dash|zsh|ksh)\b"
 )
 
+# Commands that only reshape or display text on stdout: they neither execute
+# what they read nor persist it.  Only these may consume a grep/awk stage whose
+# pattern held an exempted URL.
+_PURE_VIEWERS = frozenset(
+    {
+        "sort",
+        "head",
+        "tail",
+        "uniq",
+        "wc",
+        "cat",
+        "nl",
+        "tac",
+        "rev",
+        "column",
+        "fmt",
+        "fold",
+        "expand",
+        "unexpand",
+        "less",
+        "more",
+    }
+)
+
 # Shell-reentry commands that spawn a new shell layer where previously-quoted
 # metacharacters become active operators.  Flags may sit between the shell
 # name and -c (``bash -x -c``, ``sh -l -c``, ``bash --norc -c``).
@@ -229,33 +253,44 @@ def _segment_bounds_at(command: str, pos: int) -> tuple[int, int]:
     return seg_start, seg_end
 
 
-def _has_downstream_network_pipe(command: str, url_start: int) -> bool:
-    """Return True if pipe stages after the URL's segment contain network commands."""
-    seps = _find_unquoted_separators(command)
+def _is_pure_stage(stage: str) -> bool:
+    """Return True if *stage* only reshapes text on stdout."""
+    if _has_substitution(stage) or _has_output_redirection(stage):
+        return False
+    tokens = stage.split()
+    if not tokens:
+        return False
+    return tokens[0].rsplit("/", 1)[-1] in _PURE_VIEWERS
 
-    # Walk separators to find the first one at or after the URL.
-    pipe_end: int | None = None
-    for sep_start, sep_end, sep_str in seps:
+
+def _downstream_stages_are_pure(command: str, url_start: int) -> bool:
+    """Return True if every pipe stage after *url_start* only reshapes text."""
+    # grep/awk print what they match, so their output *is* the URL.  Listing the
+    # consumers that could act on it is a denylist that keeps losing — curl,
+    # xargs, python, bash, tee, dd, cp, split, ... Invert it: a consumer must be
+    # recognised as inert, and anything unrecognised disqualifies the exemption.
+    # Omitting a command from _PURE_VIEWERS therefore costs a needless block,
+    # never a bypass.
+    seps = _find_unquoted_separators(command)
+    first_pipe = None
+    for i, (sep_start, _sep_end, sep_str) in enumerate(seps):
         if sep_start < url_start:
             continue
-        if sep_str == "|":
-            pipe_end = sep_end
-            break
-        # Non-pipe separator (;, &&, ||, \n) ends the pipeline.
-        return False
+        if sep_str != "|":
+            return True  # a non-pipe separator ends the pipeline
+        first_pipe = i
+        break
+    if first_pipe is None:
+        return True  # nothing downstream at all
 
-    if pipe_end is None:
-        return False
-
-    # Collect the downstream pipeline text (up to the next non-pipe separator).
-    downstream_end = len(command)
-    for sep_start, _sep_end, sep_str in seps:
-        if sep_start < pipe_end:
-            continue
-        if sep_str in ("&&", "||", ";", "\n"):
-            downstream_end = sep_start
-            break
-    return bool(_NETWORK_COMMANDS.search(command[pipe_end:downstream_end]))
+    stage_start = seps[first_pipe][1]
+    for sep_start, sep_end, sep_str in seps[first_pipe + 1 :]:
+        if sep_str != "|":
+            return _is_pure_stage(command[stage_start:sep_start])
+        if not _is_pure_stage(command[stage_start:sep_start]):
+            return False
+        stage_start = sep_end
+    return _is_pure_stage(command[stage_start:])
 
 
 def _has_substitution(text: str) -> bool:
@@ -373,14 +408,12 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
         return False
 
     # Quoted argument to grep/awk family: ...grep [-flags] 'URL  or  "URL
-    # Remaining disqualifiers (substitution is handled by the segment guard):
-    # 1. Downstream pipeline contains network-capable commands
-    #    (e.g. ``grep -o 'URL' | xargs curl``).
-    # 2. Output is redirected to a file (``> /tmp/urls``) where a
-    #    subsequent statement could feed it to a network command.
+    # Unlike sed's ``s|URL|...|``, which removes the URL from its output,
+    # grep/awk *emit* what they match.  Exempt only when that output goes
+    # nowhere: no further pipeline stage and no redirection to a file.
     if not _TEXT_CMD_QUOTED_PREFIX.search(prefix):
         return False
-    if _has_downstream_network_pipe(command, match_start):
+    if not _downstream_stages_are_pure(command, match_start):
         return False
     return not _has_output_redirection(segment)
 

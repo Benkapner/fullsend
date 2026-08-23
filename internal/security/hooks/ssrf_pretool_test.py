@@ -299,6 +299,35 @@ class TestIsInTextPatternContext:
             m = list(hook.URL_PATTERN.finditer(cmd))[0]
             assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
 
+    def test_grep_piped_to_persisting_command_not_in_context(self, hook):
+        """Any consumer that persists grep output disqualifies the exemption."""
+        for consumer in ("tee /tmp/u", "dd of=/tmp/u", "cp /dev/stdin /tmp/u", "split - /tmp/u"):
+            cmd = f"grep -o 'https://169.254.169.254/latest/' file | {consumer}"
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_grep_pipe_through_viewer_into_danger_not_in_context(self, hook):
+        """A pure viewer must not launder the output into an unsafe stage."""
+        for cmd in (
+            "grep -o 'https://169.254.169.254/latest/' f | sort | xargs curl",
+            "grep -o 'https://169.254.169.254/latest/' f | tail -1 | tee /tmp/u",
+            "grep -o 'https://169.254.169.254/latest/' f | sort > /tmp/u",
+        ):
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_grep_pipe_to_unknown_command_not_in_context(self, hook):
+        """An unrecognised consumer fails safe rather than exempting."""
+        cmd = "grep -o 'https://169.254.169.254/latest/' f | somenewtool"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_pipe_through_pure_viewers_still_in_context(self, hook):
+        """Chained pure viewers keep the exemption."""
+        cmd = "grep 'https://github.com/owner' src/ | sort | uniq | wc -l"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
     def test_grep_piped_to_shell_not_in_context(self, hook):
         """Piping grep output into a shell hands it arbitrary execution."""
         for shell in ("bash", "sh", "dash", "zsh", "ksh"):
@@ -735,6 +764,21 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "awk system() should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_grep_piped_to_tee_then_curl_blocked(self, hook):
+        """grep -o 'URL' f | tee /tmp/u; xargs curl < /tmp/u must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "grep -o 'http://169.254.169.254/latest/' file "
+                    "| tee /tmp/u; xargs curl < /tmp/u"
+                ),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "tee laundering should be blocked"
         assert "169.254.169.254" in result
 
     def test_grep_piped_to_bash_blocked(self, hook):
