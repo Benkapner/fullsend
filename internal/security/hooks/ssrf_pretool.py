@@ -51,6 +51,9 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# ``sed`` as a whole word, used to anchor the substitution heuristic below.
+_SED_WORD = re.compile(r"\bsed\b")
+
 # Pattern to find sed substitution openings: s<delim> preceded by a quote,
 # semicolon, or whitespace — anchored so word-internal 's' (e.g. 'items|')
 # cannot match.  Captures the delimiter character.
@@ -197,7 +200,7 @@ def _find_unquoted_separators(command: str) -> list[tuple[int, int, str]]:
             results.append((i, i + 2, two))
             i += 2
             continue
-        if ch in ";|\n":
+        if ch in ";|&\n":
             results.append((i, i + 1, ch))
             i += 1
             continue
@@ -248,13 +251,13 @@ def _has_downstream_network_pipe(command: str, url_start: int) -> bool:
     return bool(_NETWORK_COMMANDS.search(command[pipe_end:downstream_end]))
 
 
-def _has_unmatched_cmd_subst(text: str) -> bool:
-    """Return True if *text* contains an unmatched ``$(`` or odd backticks outside single quotes."""
-    paren_depth = 0
-    backtick_count = 0
+def _has_substitution(text: str) -> bool:
+    """Return True if *text* opens a command or process substitution."""
+    # ``$(...)``, backticks and process substitution ``<(...)``/``>(...)`` all
+    # splice the output of a nested command into the surrounding text.  Only
+    # single quotes suppress them; inside double quotes they stay active.
     i = 0
     in_sq = False
-    in_dq = False
     n = len(text)
     while i < n:
         ch = text[i]
@@ -263,50 +266,19 @@ def _has_unmatched_cmd_subst(text: str) -> bool:
                 in_sq = False
             i += 1
             continue
-        if in_dq:
-            if ch == "\\" and i + 1 < n:
-                i += 2
-                continue
-            if ch == '"':
-                in_dq = False
-                i += 1
-                continue
-            # $() and backticks are active inside double quotes.
-            if ch == "$" and i + 1 < n and text[i + 1] == "(":
-                paren_depth += 1
-                i += 2
-                continue
-            if ch == ")" and paren_depth > 0:
-                paren_depth -= 1
-                i += 1
-                continue
-            if ch == "`":
-                backtick_count += 1
-            i += 1
-            continue
         if ch == "'":
             in_sq = True
-            i += 1
-            continue
-        if ch == '"':
-            in_dq = True
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
             i += 2
             continue
-        if ch == "$" and i + 1 < n and text[i + 1] == "(":
-            paren_depth += 1
-            i += 2
-            continue
-        if ch == ")" and paren_depth > 0:
-            paren_depth -= 1
-            i += 1
-            continue
         if ch == "`":
-            backtick_count += 1
+            return True
+        if ch in "$<>" and i + 1 < n and text[i + 1] == "(":
+            return True
         i += 1
-    return paren_depth > 0 or backtick_count % 2 != 0
+    return False
 
 
 def _has_output_redirection(segment: str) -> bool:
@@ -361,10 +333,16 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
     if _SHELL_REENTRY.search(segment):
         return False
 
+    # Command and process substitution splice a nested command's output into
+    # this segment, so a URL here may be fetched rather than matched as text
+    # (``sed "s/$(curl URL)/x/"``, ``curl $(grep 'URL' f)``, ``sed 's@' <(curl URL)``).
+    if _has_substitution(segment):
+        return False
+
     # sed substitution: require 'sed' as a word in the segment prefix,
     # then verify the URL is in the search-pattern field (not the
     # replacement field).
-    if re.search(r"\bsed\b", prefix):
+    if _SED_WORD.search(prefix):
         # Collect openings from both the standard and compact forms.
         all_opens = list(_SED_SUBST_OPEN.finditer(prefix)) + list(
             _SED_COMPACT_OPEN.finditer(prefix)
@@ -374,11 +352,6 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
             delim = last.group(1)
             # Content between the s<delim> opening and the URL start.
             between = prefix[last.end() :]
-            # Command substitution ($() or backticks) in the intervening
-            # text means the shell will evaluate the URL as a subshell
-            # command before sed sees it.
-            if "$(" in between or "`" in between:
-                return False
             # Search field has zero delimiters before the URL; replacement
             # or flags field has one or more.
             if between.count(delim) == 0:
@@ -386,21 +359,12 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
         return False
 
     # Quoted argument to grep/awk family: ...grep [-flags] 'URL  or  "URL
-    # Disqualifiers that prevent exemption:
-    # 1. The grep/awk command is inside a $() or backtick command
-    #    substitution whose output could feed a network command
-    #    (e.g. ``curl $(grep -o 'URL' /some/file)``).
-    # 2. Downstream pipeline contains network-capable commands
+    # Remaining disqualifiers (substitution is handled by the segment guard):
+    # 1. Downstream pipeline contains network-capable commands
     #    (e.g. ``grep -o 'URL' | xargs curl``).
-    # 3. Output is redirected to a file (``> /tmp/urls``) where a
+    # 2. Output is redirected to a file (``> /tmp/urls``) where a
     #    subsequent statement could feed it to a network command.
-    grep_match = _TEXT_CMD_QUOTED_PREFIX.search(prefix)
-    if not grep_match:
-        return False
-    # If the grep/awk command sits inside a $() or backtick substitution,
-    # its output feeds the enclosing command (e.g. curl) — do not exempt.
-    pre_cmd = prefix[: grep_match.start()]
-    if _has_unmatched_cmd_subst(pre_cmd):
+    if not _TEXT_CMD_QUOTED_PREFIX.search(prefix):
         return False
     if _has_downstream_network_pipe(command, match_start):
         return False

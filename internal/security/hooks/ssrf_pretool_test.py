@@ -41,8 +41,8 @@ class TestIsInTextPatternContext:
         # detection should still work for any URL-shaped match that does land.
         cmd = "sed 's/https://example.com//'"
         matches = list(hook.URL_PATTERN.finditer(cmd))
-        if matches:
-            assert hook._is_in_text_pattern_context(cmd, matches[0].start())
+        assert matches, "URL_PATTERN should match"
+        assert hook._is_in_text_pattern_context(cmd, matches[0].start())
 
     def test_sed_with_flags(self, hook):
         cmd = "sed -e 's|https://github.com/||g'"
@@ -209,6 +209,54 @@ class TestIsInTextPatternContext:
         m = list(hook.URL_PATTERN.finditer(cmd))[0]
         assert not hook._is_in_text_pattern_context(cmd, m.start())
 
+    def test_sed_process_substitution_not_in_context(self, hook):
+        """Process substitution <(...) runs curl before sed; URL must not be exempted."""
+        cmd = "sed 's@' <(curl https://169.254.169.254/latest/)"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_output_process_substitution_not_in_context(self, hook):
+        """Output process substitution >(...) also runs a nested command."""
+        cmd = "sed 's@' >(curl https://169.254.169.254/latest/)"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_dash_f_process_substitution_not_in_context(self, hook):
+        """sed -f <(...) reads a script from a nested command."""
+        cmd = "sed -e 's@' -f <(curl https://169.254.169.254/latest/)"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_process_substitution_not_in_context(self, hook):
+        """grep reading from <(...) must not exempt the nested command's URL."""
+        cmd = "grep -o 'x' <(curl https://169.254.169.254/latest/)"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_background_operator_ends_sed_segment(self, hook):
+        """A single & starts a new statement; the following curl URL is not sed context."""
+        cmd = "sed 's@' f & curl https://169.254.169.254/latest/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_background_operator_ends_grep_segment(self, hook):
+        """A single & separates grep from a following network command."""
+        cmd = "grep -o 'x' f & wget https://169.254.169.254/latest/"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_variable_expansion_still_in_context(self, hook):
+        """${var} is expansion, not command substitution — sed pattern stays exempt."""
+        cmd = 'sed "s@${x}https://github.com/@y@" f'
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_literal_substitution_marker_in_context(self, hook):
+        """$( inside single quotes is literal text for sed, not a subshell."""
+        cmd = "sed 's|$(x)https://github.com/|y|' f"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
     def test_grep_redirect_to_file_not_in_context(self, hook):
         """grep URL with output redirection must not be exempted."""
         cmd = "grep -o 'https://169.254.169.254/' file > /tmp/urls"
@@ -231,8 +279,8 @@ class TestIsInTextPatternContext:
         """Compact GNU sed form sed -es#URL## should still be detected."""
         cmd = "sed -es#https://github.com/##"
         matches = list(hook.URL_PATTERN.finditer(cmd))
-        if matches:
-            assert hook._is_in_text_pattern_context(cmd, matches[0].start())
+        assert matches, "URL_PATTERN should match"
+        assert hook._is_in_text_pattern_context(cmd, matches[0].start())
 
     # --- Command substitution wrapping grep/awk bypass tests ---
 
@@ -594,6 +642,26 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "sed $() command substitution should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_sed_process_substitution_blocked(self, hook):
+        """sed with <(curl URL) process substitution must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "sed 's@' <(curl http://169.254.169.254/latest/)"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "sed <() process substitution should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_background_operator_then_curl_blocked(self, hook):
+        """sed backgrounded with & followed by curl must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "sed 's@' f & curl http://169.254.169.254/latest/"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "& background separator should be blocked"
         assert "169.254.169.254" in result
 
     def test_grep_redirect_then_curl_blocked(self, hook):
