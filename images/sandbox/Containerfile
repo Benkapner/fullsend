@@ -10,9 +10,6 @@
 #   - acli (Atlassian CLI for Jira issue queries)
 #   - pre-commit + gitlint (repo hook runner + commit message validator)
 #   - tirith (Rust CLI for terminal security scanning hooks)
-#   - ONNX Runtime + ProtectAI DeBERTa-v3 model for prompt injection
-#     detection (loaded natively by fullsend via Go/hugot — no Python
-#     runtime dependency, no cold-start latency)
 #
 # Must extend the OpenShell base image — the sandbox supervisor is
 # side-loaded at runtime.
@@ -135,54 +132,20 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
     && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}"
 
 # ---------------------------------------------------------------------------
-# ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection
-# scanning. The fullsend binary loads the model directly via Go (hugot +
-# onnxruntime) — no Python, no cold-start latency.
+# ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).
 #
-# Download ProtectAI DeBERTa-v3 ONNX model files directly via curl.
-# The model is loaded at runtime by Go/onnxruntime — no Python dependency.
-ARG PROTECTAI_MODEL_REV=e6535ca4ce3ba852083e75ec585d7c8aeb4be4c5
-ARG PROTECTAI_MODEL_DIR=/opt/fullsend/models/protectai-deberta-v3/onnx
-ARG PROTECTAI_MODEL_ONNX_SHA256=f0ea7f239f765aedbde7c9e163a7cb38a79c5b8853d3f76db5152172047b228c
-ARG PROTECTAI_CONFIG_SHA256=3093743035223c46b1497a72e939e56fa0a50afbd7bafbf7eb8aad060b8d23f8
-ARG PROTECTAI_TOKENIZER_SHA256=752fe5f0d5678ad563e1bd2ecc1ddf7a3ba7e2024d0ac1dba1a72975e26dff2f
-ARG PROTECTAI_SPECIAL_TOKENS_SHA256=b2f1b2f15f29a6b6d9d6ea4eca1675d2c231a71477f151d48f79cc83a625ba21
-ARG PROTECTAI_TOKENIZER_CONFIG_SHA256=77d3dd1a9c30397a06545251ed9274bd92e4a85feb98497eeed50c920f962274
-RUN mkdir -p "${PROTECTAI_MODEL_DIR}" \
-    && for f in model.onnx config.json tokenizer.json special_tokens_map.json tokenizer_config.json; do \
-         curl -fsSL --retry 3 --retry-delay 5 \
-           "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2/resolve/${PROTECTAI_MODEL_REV}/onnx/${f}" \
-           -o "${PROTECTAI_MODEL_DIR}/${f}"; \
-       done \
-    && echo "${PROTECTAI_MODEL_ONNX_SHA256}  ${PROTECTAI_MODEL_DIR}/model.onnx" | sha256sum -c - \
-    && echo "${PROTECTAI_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/config.json" | sha256sum -c - \
-    && echo "${PROTECTAI_TOKENIZER_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer.json" | sha256sum -c - \
-    && echo "${PROTECTAI_SPECIAL_TOKENS_SHA256}  ${PROTECTAI_MODEL_DIR}/special_tokens_map.json" | sha256sum -c - \
-    && echo "${PROTECTAI_TOKENIZER_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer_config.json" | sha256sum -c - \
-    && echo "ProtectAI DeBERTa-v3 model downloaded at rev ${PROTECTAI_MODEL_REV} (all files SHA256-verified)"
-
-# ---------------------------------------------------------------------------
-# ONNX Runtime shared library — loaded by hugot at runtime.
-# Pinned version for supply chain safety.
-# To update: bump ORT_VERSION and ORT_SHA256_{AMD64,ARM64} from:
-#   https://github.com/microsoft/onnxruntime/releases
-ARG ORT_VERSION=1.24.1
-ARG ORT_SHA256_AMD64=9142552248b735920f9390027e4512a2cacf8946a1ffcbe9071a5c210531026f
-ARG ORT_SHA256_ARM64=0f56edd68f7602df790b68b874a46b115add037e88385c6c842bb763b39b9f89
-RUN case "$TARGETARCH" in \
-      amd64) ORT_ARCH="x64";     ORT_SHA="$ORT_SHA256_AMD64" ;; \
-      arm64) ORT_ARCH="aarch64"; ORT_SHA="$ORT_SHA256_ARM64" ;; \
-      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL \
-      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
-      -o /tmp/ort.tgz \
-    && echo "${ORT_SHA}  /tmp/ort.tgz" | sha256sum -c - \
-    && tar xzf /tmp/ort.tgz -C /tmp/ \
-    && cp "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/ \
-    && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so \
-    && /sbin/ldconfig \
-    && rm -rf /tmp/ort.tgz "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}"
+# The model's only consumer is security.RunMLScan, called solely from
+# `fullsend scan input` (internal/cli/scan.go:110) which runs host-side,
+# not in the sandbox. The sandbox-side `fullsend scan context` uses only
+# NewContextInjectionScanner and NewUnicodeNormalizer — no ML pass.
+# Carrying ~770 MB of model + runtime in the highest-frequency sandbox
+# image added no security value.
+#
+# To re-enable: the model belongs in the runner image (images/runner/)
+# under a sandbox-policy-allowed prefix (never /opt — see #6504/#6505),
+# and the build needs CGO_ENABLED=1 -tags ORT plus libtokenizers.a
+# (hugot v0.7.7 requirement). See #6506 for the decision context and
+# #6522 for the measured build constraints.
 
 # ---------------------------------------------------------------------------
 # gitleaks — secret scanner used by scan-secrets and post-scripts.
