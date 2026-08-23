@@ -285,6 +285,27 @@ class TestIsInTextPatternContext:
         m = list(hook.URL_PATTERN.finditer(cmd))[0]
         assert not hook._is_in_text_pattern_context(cmd, m.start())
 
+    def test_script_filename_is_not_an_interpreter(self, hook):
+        """A script's extension must not read as an interpreter and block the URL."""
+        for target in ("install.sh", "deploy.bash", "scripts/setup.sh", "a.zsh", "~/.bashrc"):
+            cmd = f"sed 's|https://github.com/||' {target}"
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_absolute_path_shell_still_detected(self, hook):
+        """/bin/sh and /usr/bin/bash must still count as interpreters."""
+        for shell in ("/bin/sh", "/usr/bin/bash"):
+            cmd = f"grep -o 'https://169.254.169.254/latest/' file | {shell}"
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_grep_piped_to_shell_not_in_context(self, hook):
+        """Piping grep output into a shell hands it arbitrary execution."""
+        for shell in ("bash", "sh", "dash", "zsh", "ksh"):
+            cmd = f"grep -o 'https://169.254.169.254/latest/' file | {shell}"
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
     def test_grep_redirect_to_file_not_in_context(self, hook):
         """grep URL with output redirection must not be exempted."""
         cmd = "grep -o 'https://169.254.169.254/' file > /tmp/urls"
@@ -714,6 +735,16 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "awk system() should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_grep_piped_to_bash_blocked(self, hook):
+        """grep -o 'URL' file | bash must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "grep -o 'http://169.254.169.254/latest/' file | bash"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "grep piped to bash should be blocked"
         assert "169.254.169.254" in result
 
     def test_grep_redirect_then_curl_blocked(self, hook):

@@ -71,10 +71,16 @@ _TEXT_CMD_QUOTED_PREFIX = re.compile(
 
 # Network-capable commands whose presence in a downstream pipe stage means
 # a URL matched in an upstream grep/awk pattern could actually be fetched.
+# Interpreters count: piping into one hands it arbitrary execution, so a
+# shell is no safer here than python or perl.
 _NETWORK_COMMANDS = re.compile(
     r"\b(?:curl|wget|fetch|nc|ncat|xargs"
     r"|python[23]?|ruby|perl|node"
     r"|socat|openssl|lynx|w3m|aria2c)\b"
+    # Shells are matched separately: the lookbehind keeps a script's
+    # extension (``install.sh``, ``deploy.bash``) from reading as an
+    # interpreter, while ``sh``, ``/bin/sh`` and ``bash`` still match.
+    r"|(?<![.\w])(?:bash|sh|dash|zsh|ksh)\b"
 )
 
 # Shell-reentry commands that spawn a new shell layer where previously-quoted
