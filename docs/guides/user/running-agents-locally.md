@@ -208,34 +208,39 @@ fullsend run code \
 
 Every example above runs on **Claude Code, the stable default**. The **pi**
 runtime ([pi](https://github.com/earendil-works/pi)) is an experimental,
-opt-in alternative — same commands, one extra flag:
+opt-in alternative. To run any of the examples on pi:
 
-```bash
-fullsend run triage \
-  --fullsend-dir /tmp/fullsend-agents/ \
-  --target-repo /tmp/target-repo/ \
-  --env-file fullsend-gcp.env \
-  --env-file fullsend-triage.env \
-  --runtime pi
-```
+1. Add `--runtime pi` to the same command:
 
-The plan block confirms the choice, and overridden values carry their
-source (harness defaults print bare):
+   ```bash
+   fullsend run triage \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --env-file fullsend-gcp.env \
+     --env-file fullsend-triage.env \
+     --runtime pi
+   ```
 
-```
-    Model: opus
-    Effort: high
-    Runtime: pi (from --runtime flag)
-...
-runtime: selected "pi" from --runtime flag
-...
-→ Agent: claude-opus-4-6 (v0.84.2)
-→ Result: stop
-  ✓ Agent exited with code 0 (131.9s)
-```
+2. Confirm the selection in the plan block — overridden values carry their
+   source, harness defaults print bare:
 
-`metrics.json` records the same (`runtime`, `requested_runtime`,
-`runtime_source`, `requested_model`, `override_source`).
+   ```
+       Model: opus
+       Effort: high
+       Runtime: pi (from --runtime flag)
+   ...
+   runtime: selected "pi" from --runtime flag
+   ...
+   → Agent: claude-opus-4-6 (v0.84.2)
+   → Result: stop
+     ✓ Agent exited with code 0 (131.9s)
+   ```
+
+   `metrics.json` records the same (`runtime`, `requested_runtime`,
+   `runtime_source`, `requested_model`, `override_source`).
+
+3. Optionally override the model or effort for the run (see the table
+   below) — on pi, the model name is also the provider choice.
 
 **Per-run overrides** work on both runtimes — precedence is
 **flag > environment > config/harness > default**:
@@ -247,8 +252,7 @@ runtime: selected "pi" from --runtime flag
 | Effort (`low`…`max`) | `--effort` | `FULLSEND_EFFORT` |
 | Fallback chain (Claude Code only) | — | `FULLSEND_FALLBACK_MODELS=a,b` |
 
-On pi, the model name is also the provider choice — the same Vertex
-credentials cover Gemini too:
+The same Vertex credentials cover Gemini too:
 
 ```bash
 fullsend run triage \
