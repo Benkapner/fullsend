@@ -102,6 +102,8 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 
 	cfg := PiRuntime{}.ConfigDir()
 	appendSystem := string(storedUpload(t, store, cfg+"/APPEND_SYSTEM.md"))
+	assert.Contains(t, appendSystem, "## Runtime note", "the no-sub-agent note is appended so skills take their single-context path deliberately")
+	assert.Contains(t, appendSystem, "No sub-agent tool (Agent/Task) is available")
 	assert.True(t, strings.HasPrefix(appendSystem, "# Agent: triage\n\nInspect an issue.\n\nYou are the triage agent."), appendSystem)
 
 	var settings map[string]any
@@ -172,7 +174,7 @@ func TestPiRuntimeBootstrap_PreflightFailure(t *testing.T) {
 }
 
 func TestPiRuntimeRun_StreamsFixtureAndReportsMetrics(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
 	work := t.TempDir()
 	store := filepath.Join(work, "store")
@@ -219,7 +221,7 @@ func TestPiRuntimeRun_StreamsFixtureAndReportsMetrics(t *testing.T) {
 }
 
 func TestPiRuntimeRun_ExitZeroWithStreamErrorReturnsOne(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	work := t.TempDir()
 	store := filepath.Join(work, "store")
 	fixture, err := filepath.Abs(filepath.Join("testdata", "pi", "error_run.ndjson"))
@@ -239,7 +241,7 @@ func TestPiRuntimeRun_ExitZeroWithStreamErrorReturnsOne(t *testing.T) {
 }
 
 func TestPiRuntimeRun_MissingHookAdapterFailsClosed(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	work := t.TempDir()
 	store := filepath.Join(work, "store")
 	// Bootstrap with security on (so the manifest carries a hook plan),
@@ -274,7 +276,7 @@ exit 0
 }
 
 func TestPiRuntimeRun_SecurityOnButManifestWithoutHooksFailsFast(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	work := t.TempDir()
 	store := filepath.Join(work, "store")
 	logPath := filepath.Join(work, "openshell.log")

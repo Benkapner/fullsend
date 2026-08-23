@@ -564,6 +564,10 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 #
 # This file configures fullsend for per-repo installation mode.
 # See ADR 0033 for details.
+#
+# The "runtime" key selects which agent runtime runs the agents, claude
+# (default when unset) or pi. For one run, the 'fullsend run --runtime'
+# flag wins, then FULLSEND_RUNTIME, then this file. See docs/runtimes.md.
 `
 
 // NewPerRepoConfig creates a new perRepoConfig with the given roles.

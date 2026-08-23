@@ -34,10 +34,14 @@ type RunParams struct {
 	AgentBaseName string
 	Model         string
 	Effort        string
-	RepoDir       string
-	FullsendDir   string
-	PluginDirs    []string
-	Debug         string
+	// FallbackModels is the ordered overload/retirement fallback chain
+	// (FULLSEND_FALLBACK_MODELS). Claude Code passes it as --fallback-model;
+	// runtimes without the capability ignore it with a warning.
+	FallbackModels []string
+	RepoDir        string
+	FullsendDir    string
+	PluginDirs     []string
+	Debug          string
 	// HooksSettingsPath, if set, is passed as --settings so Claude Code
 	// loads the runner's hook wiring regardless of its working directory.
 	HooksSettingsPath string

@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -177,4 +178,15 @@ func TestDetectExistingVersion(t *testing.T) {
 		v := detectExistingVersion(context.Background(), fc, "acme", "widget")
 		assert.Equal(t, "v1.0.0-alpha-1", v)
 	})
+}
+
+func TestRuntimeSection(t *testing.T) {
+	t.Parallel()
+	def := RuntimeSection("")
+	assert.Contains(t, def, "## Runtime")
+	assert.Contains(t, def, "run on **claude**")
+	assert.Contains(t, RuntimeSection("pi"), "run on **pi**")
+	assert.Contains(t, def, "`runtime:` in `.fullsend/config.yaml`")
+	assert.Contains(t, def, "fullsend run --runtime")
+	assert.True(t, strings.HasPrefix(def, "\n\n"), "section must be appended after the body with a paragraph break")
 }

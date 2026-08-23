@@ -39,6 +39,14 @@ func validEffortLevel(level string) bool {
 	return slices.Contains(validEffortLevels, level)
 }
 
+// ValidEffort reports whether level is an accepted effort value; exported so
+// per-run overrides (--effort, FULLSEND_EFFORT) are validated the same way
+// as the harness field.
+func ValidEffort(level string) bool { return validEffortLevel(level) }
+
+// ValidEffortLevels returns the accepted effort values, in documentation order.
+func ValidEffortLevels() []string { return slices.Clone(validEffortLevels) }
+
 // ValidPluginBasename reports whether name matches the allowed plugin name pattern.
 func ValidPluginBasename(name string) bool {
 	return validPluginName.MatchString(name)

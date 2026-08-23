@@ -1245,6 +1245,7 @@ func (a *gcfProvisionerAdapter) DeleteWIFProvider(ctx context.Context, repo stri
 type scaffoldOptions struct {
 	direct         bool   // push directly to the default branch instead of creating a PR
 	signOffTrailer string // e.g. "Signed-off-by: Name <email>"; appended to the commit message when non-empty
+	runtime        string // runtime written to .fullsend/config.yaml ("" = default claude); described in the PR body
 }
 
 // applyPerRepoScaffold commits scaffold files to the repo's default branch
@@ -1264,6 +1265,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	// BuildScaffoldPRMetadata will use the guard variable to distinguish
 	// fresh installs from upgrades without version information.
 	meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, "")
+	meta.PRBody += repos.RuntimeSection(opts.runtime)
 	if opts.signOffTrailer != "" {
 		meta.CommitMsg += "\n\n" + opts.signOffTrailer
 	}

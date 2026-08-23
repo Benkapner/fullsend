@@ -143,3 +143,17 @@ func detectExistingVersion(ctx context.Context, client forge.Client,
 	}
 	return ""
 }
+
+// RuntimeSection renders the "Runtime" section appended to the scaffold PR
+// body so the reviewer of a setup PR sees which agent runtime the repo will
+// use and how to change it. An empty runtime means the default.
+func RuntimeSection(runtime string) string {
+	if runtime == "" {
+		runtime = "claude"
+	}
+	return "\n\n## Runtime\n\n" +
+		fmt.Sprintf("Agents in this repository run on **%s**", runtime) +
+		" (`runtime:` in `.fullsend/config.yaml`). To change it later, edit that key, " +
+		"re-run `fullsend github setup <owner/repo> --runtime <claude|pi>`, or override a " +
+		"single run with `fullsend run --runtime`. See https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md."
+}

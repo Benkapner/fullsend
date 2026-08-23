@@ -212,8 +212,19 @@ func piAppendSystem(agentName string, def *piAgentDef) []byte {
 	}
 	b.WriteString(def.Body)
 	b.WriteString("\n")
+	b.WriteString(piNoSubagentNote)
 	return []byte(b.String())
 }
+
+// piNoSubagentNote makes the absence of a sub-agent tool explicit so skills
+// written for Claude Code's Agent tool (pr-review, retro) take their
+// single-context path deliberately instead of recording a failed dispatch.
+// A fullsend-owned Agent tool for pi is tracked on #6527.
+const piNoSubagentNote = "\n## Runtime note\n\n" +
+	"This agent runs on the pi runtime (FULLSEND_RUNTIME=pi). No sub-agent tool " +
+	"(Agent/Task) is available. When a skill says to dispatch sub-agents, execute each " +
+	"sub-agent definition yourself, in the listed order, with the same context package, " +
+	"and treat each output as that sub-agent's result.\n"
 
 // piSettingsJSON is the locked-down global settings for the sandbox run.
 // defaultProjectTrust "never" means a repo-owned .pi/ (settings, extensions,

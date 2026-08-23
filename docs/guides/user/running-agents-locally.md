@@ -572,7 +572,9 @@ Stop reasons: toolUse=2, stop=1
 
 | Variable | Description |
 |----------|-------------|
-| `FULLSEND_PI_MODEL` | Override the model id (runner env) |
+| `FULLSEND_MODEL` (or `fullsend run --model`) | Override the model for the run on any runtime; `FULLSEND_PI_MODEL` is kept as a pi-only alias |
+| `FULLSEND_RUNTIME` (or `--runtime`) | Override the runtime selected by `config.yaml` |
+| `FULLSEND_EFFORT` (or `--effort`) | Override the harness effort level |
 | `FULLSEND_PI_PROVIDER` | Override the inference provider (runner env) |
 | `FULLSEND_PI_BASH_ALLOWLIST` | Set to `enforce` to make the Bash first-token allowlist block instead of warn |
 

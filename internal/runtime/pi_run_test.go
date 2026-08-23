@@ -18,7 +18,7 @@ import (
 )
 
 func TestTranslatePiModel(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("opus"))
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translatePiModel("sonnet"))
@@ -30,12 +30,14 @@ func TestTranslatePiModel(t *testing.T) {
 	t.Setenv(piProviderEnv, "anthropic")
 	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus"))
 
-	t.Setenv(piModelEnv, "google-vertex/gemini-2.5-pro")
-	assert.Equal(t, "google-vertex/gemini-2.5-pro", translatePiModel("opus"), "FULLSEND_PI_MODEL overrides everything")
-
+	// The model override is resolved by the CLI (--model, FULLSEND_MODEL,
+	// FULLSEND_PI_MODEL) and arrives as the model argument; the runtime no
+	// longer reads FULLSEND_PI_MODEL itself.
+	t.Setenv("FULLSEND_PI_MODEL", "google-vertex/gemini-2.5-pro")
+	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus"), "runtime ignores FULLSEND_PI_MODEL")
+	assert.Equal(t, "google-vertex/gemini-2.5-pro", translatePiModel("google-vertex/gemini-2.5-pro"))
 	t.Setenv(piProviderEnv, "")
-	t.Setenv(piModelEnv, "claude-opus-4-8")
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("opus"), "a bare override still gets the provider prefix")
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8"), "a bare override still gets the provider prefix")
 }
 
 func TestPiThinkingFor(t *testing.T) {
@@ -63,7 +65,7 @@ func piTestParams() RunParams {
 }
 
 func TestBuildPiRunCommand_Basic(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
 	m := &piManifest{AgentName: "triage", Model: "opus", Tools: []string{"bash"}, BashAllowlist: []string{"gh"}, Hooks: &piHooksManifest{}}
 	params := piTestParams()
@@ -71,7 +73,11 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	cmd := buildPiRunCommand(params, m)
 
 	// The guard runs before the agent-writable .env is sourced.
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && pi --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && pi --print --mode json`), cmd)
+	// Gemini on Vertex needs GOOGLE_CLOUD_LOCATION; the fleet exports the
+	// region as CLOUD_ML_REGION, so it is mirrored after .env is sourced.
+	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
+	assert.Contains(t, cmd, "&& export FULLSEND_RUNTIME=pi")
 	for _, want := range []string{
 		"--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
 		"--session-dir '/sandbox/pi-config/sessions'",
@@ -97,7 +103,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`)
 
 	// pi resolves the provider prefix case-insensitively; so must the gate.
-	t.Setenv(piModelEnv, "Anthropic-Vertex/claude-opus-4-6")
+	params.Model = "Anthropic-Vertex/claude-opus-4-6"
 	cmd = buildPiRunCommand(params, m)
 	assert.Contains(t, cmd, "&& unset ANTHROPIC_API_KEY")
 	assert.Contains(t, cmd, "--model 'Anthropic-Vertex/claude-opus-4-6'")
@@ -168,7 +174,7 @@ func TestPiHooksGuard(t *testing.T) {
 }
 
 func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "anthropic")
 	cmd := buildPiRunCommand(piTestParams(), &piManifest{})
 	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-4-6'")
@@ -178,7 +184,7 @@ func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
 }
 
 func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
 	params := piTestParams()
 	params.Model = "sonnet"
@@ -199,7 +205,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 }
 
 func TestBuildPiRunCommand_EmptyToolRestriction(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	m := &piManifest{Tools: []string{}}
 	cmd := buildPiRunCommand(piTestParams(), m)
 	assert.Contains(t, cmd, "--no-builtin-tools")
@@ -207,7 +213,7 @@ func TestBuildPiRunCommand_EmptyToolRestriction(t *testing.T) {
 }
 
 func TestBuildPiRunCommand_QuotesRepoDirAndModel(t *testing.T) {
-	t.Setenv(piModelEnv, "")
+	t.Setenv("FULLSEND_PI_MODEL", "")
 	params := piTestParams()
 	params.RepoDir = "/sandbox/workspace/it's"
 	params.Model = "anthropic/claude'x"
