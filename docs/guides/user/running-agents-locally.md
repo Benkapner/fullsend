@@ -386,11 +386,20 @@ tools: Bash(ls), Write
 model: haiku
 ---
 
-You are a smoke-test agent. List the files in the current
-directory with `ls -la`, then write a one-line summary to
-`/sandbox/workspace/output/agent-result.json` with
-`{"target_branch": "main"}`. Do nothing else.
+You are a smoke-test agent. Do exactly this, then stop: run `ls .` with the
+bash tool, then use the write tool to create
+`/sandbox/workspace/output/agent-result.json` containing exactly:
+
+{"action": "sufficient", "reasoning": "Smoke run: pi executed a tool call and wrote this file.", "comment": "pi runtime smoke test - no action needed."}
+
+Do not read or modify anything else.
 ```
+
+The payload matches the `triage` result schema (`action`, `reasoning`,
+`comment`) because the harness declares `role: triage`. This example passes
+`--no-post-script`, so nothing validates it — but writing a valid result
+keeps the example composable if you drop that flag or reuse the harness for
+a real agent.
 
 #### `env/gcp-vertex.env`
 
@@ -490,9 +499,9 @@ On a successful run, you see output like:
 runtime: selected "pi" from ./pi-hello/config.yaml
 → Agent: claude-haiku-4-5 (v0.84.2)
 → Result: stop
-    Turns: 3
-    Tokens: in=5485 out=531 reasoning=240 cache_create=0 cache_read=0
-  ✓ Agent exited with code 0 (7.6s)
+    Turns: 2
+    Tokens: in=5169 out=372 reasoning=140 cache_create=0 cache_read=0
+  ✓ Agent exited with code 0 (5.5s)
 ```
 
 The `runtime: selected "pi"` line confirms the pi backend was used.
