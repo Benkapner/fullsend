@@ -2670,6 +2670,34 @@ func TestBuildFeedbackPrompt_SanitizedEmpty(t *testing.T) {
 	assert.NotContains(t, prompt, feedbackDelimiterOpen)
 }
 
+func TestSanitizeFeedbackUnicode_KeepsCompatibilityCharacters(t *testing.T) {
+	t.Parallel()
+
+	// Validator output legitimately carries fullwidth punctuation, ligatures
+	// and vulgar fractions. NFKC would rewrite all three; the agent may then
+	// reproduce the normalized form into the repo, so the bytes must survive
+	// verbatim and the run must not report a sanitization finding (#6502,
+	// mirroring the PostToolUse policy from #6467).
+	in := "検証エラー：ﬁle 「設定」 が不正です ½ ｱｲｳ"
+	out, findings := sanitizeFeedbackUnicode(in)
+	assert.Equal(t, in, out, "compatibility characters must not be rewritten")
+	assert.Zero(t, findings, "compatibility-only input is not a sanitization event")
+
+	prompt, promptFindings := buildFeedbackPrompt(in)
+	assert.Contains(t, prompt, in, "the fenced feedback keeps the original bytes")
+	assert.Zero(t, promptFindings)
+}
+
+func TestSanitizeFeedbackUnicode_StripsDangerousAlongsideCompatibility(t *testing.T) {
+	t.Parallel()
+
+	// A genuinely non-rendering character alongside compatibility text still
+	// gets stripped, and is reported.
+	out, findings := sanitizeFeedbackUnicode("検証\u200bエラー：ok")
+	assert.NotContains(t, out, "\u200b", "zero-width character must be removed")
+	assert.Positive(t, findings)
+}
+
 func TestSanitizeFeedbackUnicode(t *testing.T) {
 	t.Run("clean text unchanged", func(t *testing.T) {
 		text, count := sanitizeFeedbackUnicode("normal validation error")
