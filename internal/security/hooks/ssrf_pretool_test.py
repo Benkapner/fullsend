@@ -177,6 +177,63 @@ class TestIsInTextPatternContext:
         m = list(hook.URL_PATTERN.finditer(cmd))[0]
         assert hook._is_in_text_pattern_context(cmd, m.start())
 
+    # --- Nested shell / command-substitution / redirection bypass tests ---
+
+    def test_bash_c_grep_pipe_not_in_context(self, hook):
+        """bash -c creates a second shell; URL must not be exempted."""
+        cmd = "bash -c \"grep 'https://169.254.169.254/latest/' f | xargs curl\""
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sh_c_grep_not_in_context(self, hook):
+        """sh -c creates a second shell; URL must not be exempted."""
+        cmd = "sh -c \"grep 'https://169.254.169.254/' f\""
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_eval_grep_not_in_context(self, hook):
+        """eval re-parses the string; URL must not be exempted."""
+        cmd = "eval \"grep 'https://169.254.169.254/' f\""
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_command_substitution_not_in_context(self, hook):
+        """Command substitution inside sed pattern executes the URL."""
+        cmd = 'sed "s/$(curl https://169.254.169.254/latest/meta-data/)/replacement/" file'
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_backtick_substitution_not_in_context(self, hook):
+        """Backtick substitution inside sed pattern executes the URL."""
+        cmd = 'sed "s/`curl https://169.254.169.254/latest/`/replacement/" file'
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_redirect_to_file_not_in_context(self, hook):
+        """grep URL with output redirection must not be exempted."""
+        cmd = "grep -o 'https://169.254.169.254/' file > /tmp/urls"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_append_redirect_not_in_context(self, hook):
+        """grep URL with >> redirection must not be exempted."""
+        cmd = "grep -o 'https://169.254.169.254/' file >> /tmp/urls"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_grep_pipe_to_python_not_in_context(self, hook):
+        """grep URL piped to python is a network target."""
+        cmd = "grep -o 'https://169.254.169.254/' file | python3 -c 'import urllib.request'"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_compact_e_flag(self, hook):
+        """Compact GNU sed form sed -es#URL## should still be detected."""
+        cmd = "sed -es#https://github.com/##"
+        matches = list(hook.URL_PATTERN.finditer(cmd))
+        if matches:
+            assert hook._is_in_text_pattern_context(cmd, matches[0].start())
+
 
 # ---------------------------------------------------------------------------
 # _extract_network_urls tests
@@ -238,6 +295,34 @@ class TestExtractNetworkUrls:
     def test_grep_pipe_to_xargs_curl_included(self, hook):
         """grep -o URL piped to xargs curl must not be dropped."""
         cmd = "grep -oP 'https://169.254.169.254/latest/' file | xargs curl"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_bash_c_grep_url_included(self, hook):
+        """URL inside bash -c must not be dropped."""
+        cmd = "bash -c \"grep 'https://169.254.169.254/latest/' f | xargs curl\""
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_sed_command_substitution_url_included(self, hook):
+        """URL inside $() in sed pattern must not be dropped."""
+        cmd = 'sed "s/$(curl https://169.254.169.254/latest/meta-data/)/replacement/" file'
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_grep_redirect_url_included(self, hook):
+        """grep URL with output redirection must not be dropped."""
+        cmd = "grep -o 'https://169.254.169.254/' file > /tmp/urls"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_grep_pipe_to_python_url_included(self, hook):
+        """grep URL piped to python must not be dropped."""
+        cmd = "grep -o 'https://169.254.169.254/' file | python3 -c 'import urllib.request'"
         urls = hook._extract_network_urls(cmd)
         assert len(urls) == 1
         assert "169.254.169.254" in urls[0]
@@ -433,6 +518,70 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "grep -o piped to xargs curl should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_bash_c_nested_shell_blocked(self, hook):
+        """bash -c with grep piped to curl must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ("bash -c \"grep 'http://169.254.169.254/latest/' f | xargs curl\""),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "bash -c nested shell should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_sed_command_substitution_blocked(self, hook):
+        """sed with $() command substitution containing curl must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ('sed "s/$(curl http://169.254.169.254/latest/meta-data/)/repl/" file'),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "sed $() command substitution should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_grep_redirect_then_curl_blocked(self, hook):
+        """grep URL redirected to file then fed to curl must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "grep -o 'http://169.254.169.254/' file > /tmp/u && xargs curl < /tmp/u"
+                ),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "grep redirect then curl should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_grep_pipe_to_python_blocked(self, hook):
+        """grep URL piped to python must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "grep -o 'http://169.254.169.254/' file | python3 -c 'import urllib.request'"
+                ),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "grep piped to python should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_eval_grep_blocked(self, hook):
+        """eval with grep URL must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "eval \"grep 'http://169.254.169.254/' f\"",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "eval grep should be blocked"
         assert "169.254.169.254" in result
 
 
