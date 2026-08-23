@@ -829,26 +829,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				}
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
-				notifier.SetRunInfo(statuscomment.RunInfo{
-					Runtime:        aggMetrics.Runtime,
-					RequestedModel: aggMetrics.RequestedModel,
-					ReportedModel:  aggMetrics.Model,
-					Effort:         h.Effort,
-					CostUSD:        aggMetrics.TotalCostUSD,
-				})
-				// Emit the same metadata as a GHA annotation for
-				// script consumers.
-				if os.Getenv("GITHUB_ACTIONS") == "true" {
-					if footer := statuscomment.BuildRunInfoFooter(&statuscomment.RunInfo{
-						Runtime:        aggMetrics.Runtime,
-						RequestedModel: aggMetrics.RequestedModel,
-						ReportedModel:  aggMetrics.Model,
-						Effort:         h.Effort,
-						CostUSD:        aggMetrics.TotalCostUSD,
-					}); footer != "" {
-						fmt.Fprintf(os.Stderr, "::notice::%s\n", footer)
-					}
-				}
+				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
 				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
@@ -1859,6 +1840,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
 		printer.StepWarn("Failed to write metrics.json: " + err.Error())
 	}
+	// Same runtime/model/effort/cost line as the status-comment footer, as a
+	// workflow annotation — emitted whether or not status comments are on.
+	emitRunInfoNotice(os.Stderr, os.Getenv("GITHUB_ACTIONS") == "true", runInfoFor(aggMetrics, h.Effort))
 
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
 	// Parse transcript JSONL files and emit ::error:: annotations so operators
@@ -4598,4 +4582,28 @@ func withSource(value, source string) string {
 		return value
 	}
 	return fmt.Sprintf("%s (from %s)", value, source)
+}
+
+// runInfoFor builds the status-comment/annotation footer input from the
+// aggregated metrics and the effective effort.
+func runInfoFor(m aggregateMetrics, effort string) statuscomment.RunInfo {
+	return statuscomment.RunInfo{
+		Runtime:        m.Runtime,
+		RequestedModel: m.RequestedModel,
+		ReportedModel:  m.Model,
+		Effort:         effort,
+		CostUSD:        m.TotalCostUSD,
+	}
+}
+
+// emitRunInfoNotice writes the run-info footer as a GitHub Actions
+// `::notice::` annotation when running in CI; a no-op elsewhere or when
+// nothing is known.
+func emitRunInfoNotice(w io.Writer, inCI bool, info statuscomment.RunInfo) {
+	if !inCI {
+		return
+	}
+	if footer := statuscomment.BuildRunInfoFooter(&info); footer != "" {
+		fmt.Fprintf(w, "::notice::%s\n", footer)
+	}
 }

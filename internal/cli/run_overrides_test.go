@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -117,4 +118,20 @@ func TestWithSource(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "opus", withSource("opus", ""))
 	assert.Equal(t, "haiku (from FULLSEND_MODEL)", withSource("haiku", envModel))
+}
+
+func TestEmitRunInfoNotice(t *testing.T) {
+	t.Parallel()
+	info := runInfoFor(aggregateMetrics{Runtime: "pi", RequestedModel: "haiku", Model: "claude-haiku-4-5", TotalCostUSD: 0.42}, "medium")
+
+	var out strings.Builder
+	emitRunInfoNotice(&out, false, info)
+	assert.Empty(t, out.String(), "no annotation outside CI")
+
+	emitRunInfoNotice(&out, true, info)
+	assert.Equal(t, "::notice::Runtime: pi · Model: haiku → claude-haiku-4-5 · Effort: medium · Cost: $0.42\n", out.String())
+
+	out.Reset()
+	emitRunInfoNotice(&out, true, runInfoFor(aggregateMetrics{}, ""))
+	assert.Empty(t, out.String(), "nothing known, nothing emitted")
 }
