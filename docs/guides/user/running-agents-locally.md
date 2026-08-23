@@ -649,6 +649,10 @@ approach.
 
 ## Platform notes
 
+> Running the **pi runtime**? Its platform-specific notes live with the rest
+> of the pi walkthrough: [Platform notes
+> (pi)](#platform-notes-pi).
+
 ### macOS
 
 - **Podman machine**: ensure the Podman machine is running (`podman machine start`) before invoking fullsend. The CLI does not start it automatically.
