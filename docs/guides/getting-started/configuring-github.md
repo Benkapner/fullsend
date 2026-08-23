@@ -112,7 +112,7 @@ fetched content before committing.
 > because the preset provides its own configuration. `--config` is only
 > valid for per-repo mode.
 
-The `--runtime` flag selects which agent runtime to use (e.g. `claude` or `pi`); see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
+This is where the agent runtime is selected: on a terminal, `fullsend github setup` asks once (press Enter to keep `claude`, the stable default); `--runtime` sets it explicitly. `pi` is experimental and meant for the enablement pilot — see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
 
 ## Testing Fullsend
 
