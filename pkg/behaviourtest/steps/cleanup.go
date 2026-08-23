@@ -231,6 +231,19 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Agents cleanup ---
+	// Restore the pre-scenario agents list so a later scenario on this
+	// slot does not inherit custom agent entries (local or URL-sourced)
+	// from the previous lessee. Without this, harness registrations
+	// accumulate on the config overlay for the rest of the run.
+	if w.AgentsOverridden {
+		if err := cleanupRetry(w.Logf, "restore agents", func() error {
+			return RestoreAgents(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore agents: %v", err)
+		}
+	}
+
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		if w.Org == "" || w.RepoName == "" {

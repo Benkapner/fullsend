@@ -899,6 +899,122 @@ func TestGivenURLSourcedCustomHarness_SnapshotsAllowlist(t *testing.T) {
 		"snapshot should not contain the newly added prefix")
 }
 
+// --- snapshotAgents / RestoreAgents tests ---
+
+func TestSnapshotAgents_CapturesOriginal(t *testing.T) {
+	t.Parallel()
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents:\n  - name: triage\n    source: harness/triage.yaml\n"),
+	}}
+	w := &world.World{
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
+	}
+	err := snapshotAgents(w)
+	require.NoError(t, err)
+	assert.True(t, w.AgentsOverridden)
+	require.Len(t, w.AgentsOriginal, 1)
+	assert.Equal(t, "triage", w.AgentsOriginal[0].Name)
+	assert.Equal(t, "harness/triage.yaml", w.AgentsOriginal[0].Source)
+}
+
+func TestSnapshotAgents_OnlySnapshotsOnce(t *testing.T) {
+	t.Parallel()
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents:\n  - name: triage\n    source: harness/triage.yaml\n"),
+	}}
+	w := &world.World{
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
+	}
+	err := snapshotAgents(w)
+	require.NoError(t, err)
+	require.Len(t, w.AgentsOriginal, 1)
+
+	// Mutate the stored snapshot to verify it isn't overwritten on second call.
+	w.AgentsOriginal = nil
+	err = snapshotAgents(w)
+	require.NoError(t, err)
+	assert.Nil(t, w.AgentsOriginal,
+		"second call should not re-snapshot")
+}
+
+func TestSnapshotAgents_EmptyAgentsList(t *testing.T) {
+	t.Parallel()
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scm,
+	}
+	err := snapshotAgents(w)
+	require.NoError(t, err)
+	assert.True(t, w.AgentsOverridden)
+	assert.Empty(t, w.AgentsOriginal)
+}
+
+func TestRestoreAgents_RestoresOriginal(t *testing.T) {
+	t.Parallel()
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"org/repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents:\n  - name: custom\n    source: harness/custom.yaml\n"),
+	}}
+	original := []config.AgentEntry{{Name: "triage", Source: "harness/triage.yaml"}}
+	w := &world.World{
+		Org:            "org",
+		RepoName:       "repo",
+		SCM:            scm,
+		AgentsOriginal: original,
+	}
+	err := RestoreAgents(w)
+	require.NoError(t, err)
+
+	// Parse the committed config and verify agents were restored.
+	cfgData := scm.files["org/repo/.fullsend/config.yaml"]
+	require.NotNil(t, cfgData)
+	assert.Contains(t, string(cfgData), "triage")
+	assert.NotContains(t, string(cfgData), "custom")
+}
+
+func TestRestoreAgents_EmptyOrg(t *testing.T) {
+	t.Parallel()
+	w := &world.World{
+		RepoName: "repo",
+		SCM:      &fakeURLSCM{files: map[string][]byte{}},
+	}
+	err := RestoreAgents(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestGivenURLSourcedCustomHarness_SnapshotsAgents(t *testing.T) {
+	stubRawHTTPClient(t)
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"my-org/my-repo/.fullsend/config.yaml": []byte(
+			"version: \"1\"\nagents:\n  - name: existing\n    source: harness/existing.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+	}}
+	w := &world.World{
+		Org:                 "my-org",
+		RepoName:            "my-repo",
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+
+	err := givenURLSourcedCustomHarness(w, "url-test",
+		"agent: agents/triage.md\nrole: triage\nslug: url-test", urlHarnessOpts{})
+	require.NoError(t, err)
+
+	assert.True(t, w.AgentsOverridden,
+		"AgentsOverridden should be set after URL harness step")
+	require.Len(t, w.AgentsOriginal, 1)
+	assert.Equal(t, "existing", w.AgentsOriginal[0].Name,
+		"original agents should be preserved in snapshot")
+}
+
 // --- fakes ---
 
 // fakeURLSCM keys files by "owner/repo/path" so multi-repo tests

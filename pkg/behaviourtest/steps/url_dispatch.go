@@ -68,6 +68,35 @@ func snapshotAllowedResources(w *world.World) error {
 	return nil
 }
 
+// snapshotAgents captures the current agents list from config.yaml into
+// w.AgentsOriginal — but only on the first call per scenario, so that
+// multiple harness steps in the same scenario do not overwrite the
+// original value with an already-modified copy.
+//
+// Called before any cfg.SetAgents() call (dispatch.go, url_dispatch.go,
+// base_dispatch.go). CleanupScenario uses the snapshot to restore the
+// original agents when the scenario is done.
+func snapshotAgents(w *world.World) error {
+	if w.AgentsOverridden {
+		return nil // already snapshotted this scenario
+	}
+	cfgPath := path.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config for agents snapshot: %w", err)
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing config for agents snapshot: %w", err)
+	}
+	orig := cfg.AgentEntries()
+	// Store a copy so later mutations do not alias the snapshot.
+	w.AgentsOriginal = make([]config.AgentEntry, len(orig))
+	copy(w.AgentsOriginal, orig)
+	w.AgentsOverridden = true
+	return nil
+}
+
 // RestoreAllowedResources sets allowed_remote_resources back to the
 // pre-scenario value captured by snapshotAllowedResources. Exported so
 // CleanupScenario can call it during scenario teardown.
@@ -90,6 +119,33 @@ func RestoreAllowedResources(w *world.World) error {
 		return err
 	}
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore allowed_remote_resources", merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
+}
+
+// RestoreAgents sets the agents list back to the pre-scenario value
+// captured by snapshotAgents. Exported so CleanupScenario can call it
+// during scenario teardown.
+func RestoreAgents(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")
+	}
+	cfgPath := path.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	cfg.SetAgents(w.AgentsOriginal)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore agents", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -248,10 +304,14 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	// Build the URL prefix for the allowlist.
 	urlPrefix := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", hostOwner, hostRepo)
 
-	// Snapshot the current allowed_remote_resources before any modification
-	// so CleanupScenario can restore it when the slot is reused.
+	// Snapshot the current allowed_remote_resources and agents before any
+	// modification so CleanupScenario can restore them when the slot is
+	// reused.
 	if err := snapshotAllowedResources(w); err != nil {
 		return fmt.Errorf("snapshotting allowed_remote_resources: %w", err)
+	}
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
 	}
 
 	// Update config.yaml on the enrolled test repo: register agent with URL

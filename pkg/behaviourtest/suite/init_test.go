@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
@@ -149,6 +150,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		URLHarnessRepoName:         "harness-host",
 		AllowedResourcesOverridden: true,
 		AllowedResourcesOriginal:   []string{"https://example.com/"},
+		AgentsOverridden:           true,
+		AgentsOriginal:             []config.AgentEntry{{Name: "test", Source: "harness/test.yaml"}},
 	}
 	resetScenarioWorld(w)
 	assert.Equal(t, 0, w.PRNumber)
@@ -164,6 +167,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Equal(t, "", w.URLHarnessRepoName)
 	assert.False(t, w.AllowedResourcesOverridden)
 	assert.Nil(t, w.AllowedResourcesOriginal)
+	assert.False(t, w.AgentsOverridden)
+	assert.Nil(t, w.AgentsOriginal)
 }
 
 func TestSkipErrorForTagNames(t *testing.T) {
