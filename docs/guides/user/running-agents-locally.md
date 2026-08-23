@@ -318,11 +318,9 @@ pi-hello/
     └── gcp-vertex.env           # sandbox-side GCP env vars (expand: true)
 ```
 
-The quickest way to assemble these supporting files is to copy the
-`policies/`, `profiles/`, `providers/`, and `env/` directories from a
-`fullsend-ai/agents` clone. If you want a fully self-contained example
-without cloning the fleet repo, create the files with the minimal
-content described below.
+You can copy `policies/`, `profiles/`, `providers/` and `env/` from a
+`fullsend-ai/agents` clone, or write them yourself — all four are short,
+and their contents are given below so this example stays fleet-free.
 
 #### `config.yaml`
 
@@ -373,9 +371,9 @@ A minimal agent definition with a deterministic task:
 
 ```markdown
 ---
-tools:
-  - Bash(ls)
-  - Write
+name: pi-smoke
+description: Minimal smoke-test agent for the pi runtime.
+tools: Bash(ls), Write
 model: haiku
 ---
 
@@ -397,6 +395,61 @@ CLOUD_ML_REGION=global
 GOOGLE_APPLICATION_CREDENTIALS=/tmp/.gcp-credentials.json
 ```
 
+#### `policies/base.yaml`
+
+The sandbox policy. Note the `read_only`/`read_write` prefixes — anything the
+agent must read has to sit under one of them, which is why the pi Vertex
+extension lives under `/usr/local/share` and not `/opt` (fullsend#6504):
+
+```yaml
+---
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+```
+
+#### `profiles/fullsend-vertex-ai.yaml`
+
+The egress allowlist. Without it the sandbox blocks the inference call and pi
+reports a model-not-found error rather than a network error. `**/node` is the
+entry that matters for pi; `**/claude` serves the Claude Code runtime:
+
+```yaml
+---
+id: fullsend-vertex-ai
+display_name: Fullsend Vertex AI
+description: Google Cloud APIs for Vertex AI inference
+category: inference
+endpoints:
+  - host: "*.googleapis.com"
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - "**/claude"
+  - "**/node"
+```
+
+#### `providers/vertex-ai.yaml`
+
+Binds that profile to the sandbox as an OpenShell provider:
+
+```yaml
+---
+name: vertex-ai
+type: fullsend-vertex-ai
+credentials:
+  _NOOP_VERTEX_AI: ""
+```
+
 ### Running the agent
 
 ```bash
@@ -405,7 +458,6 @@ fullsend run pi-smoke \
   --target-repo /tmp/target-repo \
   --env-file fullsend-gcp.env \
   --no-post-script \
-  --keep-sandbox \
   --output-dir /tmp/fullsend-out
 ```
 
@@ -420,6 +472,10 @@ runtime: selected "pi" from ./pi-hello/config.yaml
 ```
 
 The `runtime: selected "pi"` line confirms the pi backend was used.
+
+Add `--keep-sandbox` when a run fails and you want to inspect the sandbox
+afterwards — but delete it when you are done (`openshell sandbox delete
+<name>`), since kept sandboxes are not cleaned up for you.
 
 ### Run artifacts
 
