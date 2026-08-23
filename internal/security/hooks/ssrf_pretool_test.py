@@ -299,6 +299,48 @@ class TestIsInTextPatternContext:
             m = list(hook.URL_PATTERN.finditer(cmd))[0]
             assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
 
+    def test_compound_grouping_does_not_end_pipeline(self, hook):
+        """A ';' inside { }, ( ), do/done or then/fi is not a real pipeline end."""
+        for cmd in (
+            "{ grep 'https://169.254.169.254/latest/' file; } | xargs curl",
+            "( grep 'https://169.254.169.254/latest/' file; ) | xargs curl",
+            "for i in 1; do grep 'https://169.254.169.254/latest/' file; done | xargs curl",
+            "if true; then grep 'https://169.254.169.254/latest/' file; fi | xargs curl",
+            "{ grep -o 'https://169.254.169.254/latest/' file; } | tee /tmp/x",
+        ):
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_loop_without_downstream_pipe_still_in_context(self, hook):
+        """A loop that pipes nowhere keeps the exemption."""
+        cmd = "for f in *; do sed 's|https://github.com/||' $f; done"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_sed_replacement_reproducing_match_not_in_context(self, hook):
+        """sed's & and \\1 put the URL back on stdout, so downstream matters."""
+        for cmd in (
+            "sed 's,https://169.254.169.254/latest/,&,' file | xargs curl",
+            "sed 's,\\(https://169.254.169.254/latest/\\),\\1,' file | xargs curl",
+            "sed 's,https://169.254.169.254/latest/,&,' file > /tmp/x",
+            "sed 's,https://169.254.169.254/latest/,&,' file | tee /tmp/x",
+        ):
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_allowlisted_command_with_output_flag_not_in_context(self, hook):
+        """An allowlisted binary's own -o/--output still persists the URL."""
+        for consumer in ("sort -o /tmp/x", "sort --output=/tmp/x"):
+            cmd = f"grep -o 'https://169.254.169.254/latest/' file | {consumer}"
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_sed_piped_to_pure_filter_still_in_context(self, hook):
+        """An ordinary sed pipeline into a pure filter keeps the exemption."""
+        cmd = "echo \"$U\" | sed 's|https://github.com/||' | tr -d ' '"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
     def test_grep_piped_to_persisting_command_not_in_context(self, hook):
         """Any consumer that persists grep output disqualifies the exemption."""
         for consumer in ("tee /tmp/u", "dd of=/tmp/u", "cp /dev/stdin /tmp/u", "split - /tmp/u"):
@@ -764,6 +806,30 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "awk system() should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_sed_ampersand_replacement_piped_to_curl_blocked(self, hook):
+        """sed 's,URL,&,' file | xargs curl must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "sed 's,http://169.254.169.254/latest/,&,' file | xargs curl",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "sed & replacement laundering should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_brace_group_piped_to_curl_blocked(self, hook):
+        """{ grep 'URL' file; } | xargs curl must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "{ grep 'http://169.254.169.254/latest/' file; } | xargs curl",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "compound grouping should be blocked"
         assert "169.254.169.254" in result
 
     def test_grep_piped_to_tee_then_curl_blocked(self, hook):

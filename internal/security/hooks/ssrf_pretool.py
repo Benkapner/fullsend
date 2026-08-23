@@ -102,6 +102,8 @@ _PURE_VIEWERS = frozenset(
         "fold",
         "expand",
         "unexpand",
+        "tr",
+        "cut",
         "less",
         "more",
     }
@@ -260,7 +262,11 @@ def _is_pure_stage(stage: str) -> bool:
     tokens = stage.split()
     if not tokens:
         return False
-    return tokens[0].rsplit("/", 1)[-1] in _PURE_VIEWERS
+    if tokens[0].rsplit("/", 1)[-1] not in _PURE_VIEWERS:
+        return False
+    # Purity is a property of the invocation, not the binary: ``sort -o FILE``
+    # and ``--output=FILE`` persist without any shell redirection.
+    return not any(t == "-o" or t.startswith("--output") for t in tokens[1:])
 
 
 def _downstream_stages_are_pure(command: str, url_start: int) -> bool:
@@ -277,7 +283,11 @@ def _downstream_stages_are_pure(command: str, url_start: int) -> bool:
         if sep_start < url_start:
             continue
         if sep_str != "|":
-            return True  # a non-pipe separator ends the pipeline
+            # The separator scanner tracks quoting but not compound-command
+            # nesting, so a ';' inside ``{ ...; } | consumer`` or
+            # ``do ...; done | consumer`` looks like a statement end.  If any
+            # pipe still follows, we cannot prove the pipeline ended here.
+            return not any(t == "|" for _, _, t in seps[i + 1 :])
         first_pipe = i
         break
     if first_pipe is None:
@@ -404,7 +414,12 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
             # Search field has zero delimiters before the URL; replacement
             # or flags field has one or more.
             if between.count(delim) == 0:
-                return True
+                # ``s|URL|...|`` usually removes the URL, but ``&`` and ``\1``
+                # reproduce the match verbatim, so sed's stdout can carry it
+                # onward just like grep's.  Apply the same downstream rules.
+                if not _downstream_stages_are_pure(command, match_start):
+                    return False
+                return not _has_output_redirection(segment)
         return False
 
     # Quoted argument to grep/awk family: ...grep [-flags] 'URL  or  "URL
