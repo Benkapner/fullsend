@@ -364,7 +364,7 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
 )
 _DB_PASSWORD_RE = re.compile(
-    r"(?:postgres|mysql|mongodb|redis)(?:ql)?://[^:/\s]+:([^\s]{4,})@[^@\s/]+",
+    r"(?:postgres|mysql|mongodb|redis)(?:ql)?://[^:/\s]+:([^\s\"'}\]),;]{4,})@[^@\s/]+",
     re.IGNORECASE,
 )
 
