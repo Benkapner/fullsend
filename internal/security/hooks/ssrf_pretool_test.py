@@ -234,6 +234,44 @@ class TestIsInTextPatternContext:
         if matches:
             assert hook._is_in_text_pattern_context(cmd, matches[0].start())
 
+    # --- Command substitution wrapping grep/awk bypass tests ---
+
+    def test_curl_dollar_paren_grep_not_in_context(self, hook):
+        """grep inside $() feeding curl — URL must not be exempted."""
+        cmd = "curl $(grep -o 'https://example.com/path' /some/file)"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_curl_backtick_grep_not_in_context(self, hook):
+        """grep inside backticks feeding curl — URL must not be exempted."""
+        cmd = "curl `grep -o 'https://example.com/path' /some/file`"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_wget_dollar_paren_awk_not_in_context(self, hook):
+        """awk inside $() feeding wget — URL must not be exempted."""
+        cmd = "wget $(awk '/https://example.com/' access.log)"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_nested_dollar_paren_grep_not_in_context(self, hook):
+        """Nested $() around grep — URL must not be exempted."""
+        cmd = "echo $(curl $(grep -o 'https://example.com/' file))"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_dollar_paren_grep_in_dquotes_not_in_context(self, hook):
+        """$() inside double quotes is still active — URL must not be exempted."""
+        cmd = "curl \"$(grep -o 'https://example.com/path' file)\""
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert not hook._is_in_text_pattern_context(cmd, m.start())
+
+    def test_literal_dollar_paren_in_squotes_still_in_context(self, hook):
+        """$( inside single quotes is literal — grep should still be exempt."""
+        cmd = "echo '$(not_a_subshell)' && grep 'https://github.com/owner' file.txt"
+        m = list(hook.URL_PATTERN.finditer(cmd))[0]
+        assert hook._is_in_text_pattern_context(cmd, m.start())
+
 
 # ---------------------------------------------------------------------------
 # _extract_network_urls tests
@@ -323,6 +361,20 @@ class TestExtractNetworkUrls:
     def test_grep_pipe_to_python_url_included(self, hook):
         """grep URL piped to python must not be dropped."""
         cmd = "grep -o 'https://169.254.169.254/' file | python3 -c 'import urllib.request'"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_curl_dollar_paren_grep_url_included(self, hook):
+        """grep inside $() feeding curl — URL must not be dropped."""
+        cmd = "curl $(grep -o 'https://169.254.169.254/latest/meta-data/' /some/file)"
+        urls = hook._extract_network_urls(cmd)
+        assert len(urls) == 1
+        assert "169.254.169.254" in urls[0]
+
+    def test_curl_backtick_grep_url_included(self, hook):
+        """grep inside backticks feeding curl — URL must not be dropped."""
+        cmd = "curl `grep -o 'https://169.254.169.254/latest/meta-data/' /some/file`"
         urls = hook._extract_network_urls(cmd)
         assert len(urls) == 1
         assert "169.254.169.254" in urls[0]
@@ -582,6 +634,32 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "eval grep should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_curl_dollar_paren_grep_blocked(self, hook):
+        """curl $(grep -o 'URL' file) — command substitution bypass must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "curl $(grep -o 'http://169.254.169.254/latest/meta-data/' /some/file)"
+                ),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "curl $() grep should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_curl_backtick_grep_blocked(self, hook):
+        """curl `grep -o 'URL' file` — backtick substitution bypass must be blocked."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ("curl `grep -o 'http://169.254.169.254/latest/meta-data/' /some/file`"),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "curl backtick grep should be blocked"
         assert "169.254.169.254" in result
 
 

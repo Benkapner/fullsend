@@ -248,6 +248,67 @@ def _has_downstream_network_pipe(command: str, url_start: int) -> bool:
     return bool(_NETWORK_COMMANDS.search(command[pipe_end:downstream_end]))
 
 
+def _has_unmatched_cmd_subst(text: str) -> bool:
+    """Return True if *text* contains an unmatched ``$(`` or odd backticks outside single quotes."""
+    paren_depth = 0
+    backtick_count = 0
+    i = 0
+    in_sq = False
+    in_dq = False
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_sq:
+            if ch == "'":
+                in_sq = False
+            i += 1
+            continue
+        if in_dq:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                in_dq = False
+                i += 1
+                continue
+            # $() and backticks are active inside double quotes.
+            if ch == "$" and i + 1 < n and text[i + 1] == "(":
+                paren_depth += 1
+                i += 2
+                continue
+            if ch == ")" and paren_depth > 0:
+                paren_depth -= 1
+                i += 1
+                continue
+            if ch == "`":
+                backtick_count += 1
+            i += 1
+            continue
+        if ch == "'":
+            in_sq = True
+            i += 1
+            continue
+        if ch == '"':
+            in_dq = True
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "(":
+            paren_depth += 1
+            i += 2
+            continue
+        if ch == ")" and paren_depth > 0:
+            paren_depth -= 1
+            i += 1
+            continue
+        if ch == "`":
+            backtick_count += 1
+        i += 1
+    return paren_depth > 0 or backtick_count % 2 != 0
+
+
 def _has_output_redirection(segment: str) -> bool:
     """Return True if *segment* contains an unquoted ``>`` or ``>>`` redirection."""
     i = 0
@@ -325,12 +386,21 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
         return False
 
     # Quoted argument to grep/awk family: ...grep [-flags] 'URL  or  "URL
-    # Three disqualifiers prevent exemption:
-    # 1. Downstream pipeline contains network-capable commands
+    # Disqualifiers that prevent exemption:
+    # 1. The grep/awk command is inside a $() or backtick command
+    #    substitution whose output could feed a network command
+    #    (e.g. ``curl $(grep -o 'URL' /some/file)``).
+    # 2. Downstream pipeline contains network-capable commands
     #    (e.g. ``grep -o 'URL' | xargs curl``).
-    # 2. Output is redirected to a file (``> /tmp/urls``) where a
+    # 3. Output is redirected to a file (``> /tmp/urls``) where a
     #    subsequent statement could feed it to a network command.
-    if not _TEXT_CMD_QUOTED_PREFIX.search(prefix):
+    grep_match = _TEXT_CMD_QUOTED_PREFIX.search(prefix)
+    if not grep_match:
+        return False
+    # If the grep/awk command sits inside a $() or backtick substitution,
+    # its output feeds the enclosing command (e.g. curl) — do not exempt.
+    pre_cmd = prefix[: grep_match.start()]
+    if _has_unmatched_cmd_subst(pre_cmd):
         return False
     if _has_downstream_network_pipe(command, match_start):
         return False
