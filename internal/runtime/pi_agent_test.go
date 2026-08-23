@@ -3,6 +3,7 @@ package runtime
 import (
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -158,8 +159,31 @@ func TestPiToolNameMapsAreInverse(t *testing.T) {
 	t.Parallel()
 	for claude, pi := range piToolForClaude {
 		if claude == "MultiEdit" {
+			// MultiEdit and Edit both map onto pi's single edit tool, so the
+			// adapter reports every pi edit as "Edit". An agent allowlisted
+			// only for MultiEdit is therefore blocked under pi as a plain
+			// tool_blocked — a renaming gap the hook's case-variant diagnostic
+			// (#608) cannot see. Documented in docs/runtimes.md; not a bug in
+			// the maps.
 			continue
 		}
 		assert.Equal(t, claude, claudeToolForPi[pi], "pi tool %q must map back to %q", pi, claude)
+	}
+	for pi, claude := range claudeToolForPi {
+		assert.Equal(t, pi, piToolForClaude[claude], "Claude tool %q must map back to %q", claude, pi)
+	}
+}
+
+// The hook scripts only recognise canonical (or legacy) Claude names, so the
+// adapter's translation table must stay inside that vocabulary (#608).
+func TestPiToolNameMapsUseClaudeVocabulary(t *testing.T) {
+	t.Parallel()
+	for pi, claude := range claudeToolForPi {
+		assert.True(t, security.KnownClaudeTool(claude),
+			"claudeToolForPi[%q] = %q is not a canonical or legacy Claude tool name", pi, claude)
+	}
+	for claude := range piToolForClaude {
+		assert.True(t, security.KnownClaudeTool(claude),
+			"piToolForClaude key %q is not a canonical or legacy Claude tool name", claude)
 	}
 }
