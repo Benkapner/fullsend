@@ -74,9 +74,10 @@ Each run produces artifacts in the output directory:
 |-------|-------------|
 | `runtime` | Runtime that executed the run (e.g. `claude`, `pi`) |
 | `model` | Model the provider reported using |
-| `requested_runtime` | Runtime selected from config |
+| `requested_runtime` | Runtime selected for the run (config file, or a `--runtime`/`FULLSEND_RUNTIME` override) |
 | `requested_model` | Model the harness/agent requested |
 | `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `harness`, `default`) |
+| `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path, or `default (config not found)`) |
 | `total_cost_usd` | Total inference cost |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of retry iterations |

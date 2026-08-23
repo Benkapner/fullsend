@@ -350,7 +350,7 @@ In CI, the `FULLSEND_*` variables are runner-process environment: the dispatch w
 | **Status comment** | Footer on the terminal comment: `Runtime: <name> · Model: <requested → reported> · Effort: <level> · Cost: $<total>` (arrow only when requested differs from reported; unknown fields omitted) |
 | **`::notice::` annotation** | Same format as the status comment footer |
 | **OTel span** | `fullsend.runtime` attribute on the agent span, next to `gen_ai.request.model` |
-| **metrics.json** | `runtime`, `requested_runtime`, `requested_model`, `override_source` |
+| **metrics.json** | `runtime`, `requested_runtime`, `runtime_source`, `requested_model`, `override_source` |
 
 The `requested_model` field records the model handed to the runtime after the per-run overrides were applied, and `override_source` says where it came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `harness`, `default`) so a silent override is visible after the fact; `requested_runtime` likewise records the selected runtime (the plan block and stderr line show its source: the flag, `FULLSEND_RUNTIME`, or the config path). The run plan prints `Model: <value> (from <source>)` and `Effort: … (from …)` whenever a per-run override applied.
 

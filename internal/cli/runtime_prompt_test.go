@@ -27,6 +27,7 @@ func TestPromptRuntime(t *testing.T) {
 		{name: "claude is written explicitly when chosen", input: "claude\n", interactive: true, want: "claude"},
 		{name: "invalid then valid", input: "opencode\npi\n", interactive: true, want: "pi", warns: true},
 		{name: "invalid then EOF keeps the default", input: "opencode\n", interactive: true, want: "", warns: true},
+		{name: "dummy is not a human choice", input: "dummy\npi\n", interactive: true, want: "pi", warns: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -42,7 +43,7 @@ func TestPromptRuntime(t *testing.T) {
 			}
 			if tc.warns {
 				assert.Contains(t, out.String(), "Invalid runtime")
-				assert.NotContains(t, out.String(), "dummy", "dummy is not offered to people")
+				assert.Contains(t, out.String(), "(expected one of claude, pi)", "dummy is not offered to people")
 			}
 		})
 	}

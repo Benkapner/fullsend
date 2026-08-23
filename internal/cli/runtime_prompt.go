@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"golang.org/x/term"
@@ -46,7 +47,7 @@ func promptRuntime(printer *ui.Printer, in io.Reader, interactive bool) (string,
 		if choice == "" {
 			return "", nil // keep the default (not written to the overlay)
 		}
-		if err := validateRuntimeName(choice); err == nil {
+		if slices.Contains(userRuntimeChoices(), choice) {
 			return choice, nil
 		}
 		printer.StepWarn(fmt.Sprintf("Invalid runtime: %q (expected one of %s)", choice, strings.Join(userRuntimeChoices(), ", ")))
