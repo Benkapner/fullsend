@@ -205,24 +205,7 @@ func acquireAndVendor(ctx context.Context, client forge.Client, printer *ui.Prin
 	}
 	defer cleanup()
 
-	// Prune files a previous vendor install committed that are no longer
-	// part of the vendored set — otherwise the new manifest stops tracking
-	// them and they persist in the consumer repo as undeletable orphans.
-	oldManifest, found, manifestErr := scaffold.ReadVendorManifest(ctx, client, owner, repo, vendorPathPrefix(owner, repo))
-	if manifestErr != nil {
-		printer.StepInfo(fmt.Sprintf("Skipping vendored-content pruning (unreadable manifest): %v", manifestErr))
-	} else if found {
-		newPaths := make([]string, 0, len(bundle.files))
-		for _, f := range bundle.files {
-			newPaths = append(newPaths, f.Path)
-		}
-		if stale := scaffold.StaleVendoredPaths(oldManifest, newPaths); len(stale) > 0 {
-			for _, p := range stale {
-				bundle.files = append(bundle.files, forge.TreeFile{Path: p, Delete: true})
-			}
-			printer.StepInfo(fmt.Sprintf("Pruning %d vendored file(s) no longer shipped: %s", len(stale), strings.Join(stale, ", ")))
-		}
-	}
+	bundle.files = appendStaleVendoredDeletes(ctx, client, printer, owner, repo, bundle.files)
 
 	printer.StepStart(fmt.Sprintf("Uploading vendored binary and %d content files", bundle.assetCount+1))
 	contentMsg := layers.VendorContentCommitMessage(version, vendorPathPrefix(owner, repo), len(bundle.files))
@@ -238,6 +221,34 @@ func acquireAndVendor(ctx context.Context, client forge.Client, printer *ui.Prin
 	}
 
 	return nil
+}
+
+// appendStaleVendoredDeletes prunes files a previous vendor install
+// committed that are no longer part of the vendored set — otherwise the
+// new manifest stops tracking them and they persist in the consumer repo
+// as untracked orphans that even uninstall cannot remove.
+func appendStaleVendoredDeletes(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, files []forge.TreeFile) []forge.TreeFile {
+	oldManifest, found, err := scaffold.ReadVendorManifest(ctx, client, owner, repo, vendorPathPrefix(owner, repo))
+	if err != nil {
+		printer.StepInfo(fmt.Sprintf("Skipping vendored-content pruning (unreadable manifest): %v", err))
+		return files
+	}
+	if !found {
+		return files
+	}
+	newPaths := make([]string, 0, len(files))
+	for _, f := range files {
+		newPaths = append(newPaths, f.Path)
+	}
+	stale := scaffold.StaleVendoredPaths(oldManifest, newPaths)
+	if len(stale) == 0 {
+		return files
+	}
+	for _, p := range stale {
+		files = append(files, forge.TreeFile{Path: p, Delete: true})
+	}
+	printer.StepInfo(fmt.Sprintf("Pruning %d vendored file(s) no longer shipped: %s", len(stale), strings.Join(stale, ", ")))
+	return files
 }
 
 func vendorPathPrefix(owner, repo string) string {
