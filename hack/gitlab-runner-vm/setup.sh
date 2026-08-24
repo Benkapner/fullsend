@@ -74,7 +74,7 @@ if ! [[ "${GITLAB_RUNNER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# 0pre. Fix Fedora repo config for egress-restricted environments
+# 0. Fix Fedora repo config for egress-restricted environments
 # --------------------------------------------------------------------------
 fix_fedora_repos() {
   info "Checking Fedora repo config for metalink usage"
@@ -91,8 +91,7 @@ fix_fedora_repos() {
   for repo_file in /etc/yum.repos.d/fedora*.repo; do
     [ -f "${repo_file}" ] || continue
     if grep -q '^metalink=' "${repo_file}"; then
-      sudo sed -i 's/^metalink=/#metalink=/' "${repo_file}"
-      sudo sed -i 's/^#baseurl=/baseurl=/' "${repo_file}"
+      sudo sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' "${repo_file}"
       changed=1
     fi
   done

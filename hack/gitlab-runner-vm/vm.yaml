@@ -89,8 +89,7 @@ spec:
               ssh_authorized_keys:
                 - __SSH_PUBLIC_KEY__
               bootcmd:
-                - "sed -i 's/^metalink=/#metalink=/' /etc/yum.repos.d/fedora*.repo"
-                - "sed -i 's/^#baseurl=/baseurl=/' /etc/yum.repos.d/fedora*.repo"
+                - "sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' /etc/yum.repos.d/fedora*.repo"
               packages:
                 - podman
                 - curl
