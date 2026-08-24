@@ -212,8 +212,8 @@ fullsend repos status -f repos.yaml --json
 ### Detecting and reconciling configuration drift
 
 Run `repos install` to detect and fix component drift (workflow, thin
-callers, variables, secrets) and scaffold ref drift across all manifest
-repos:
+callers, variables, secrets), scaffold ref drift, and scaffold content
+drift across all manifest repos:
 
 ```bash
 fullsend repos install -f repos.yaml

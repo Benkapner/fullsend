@@ -278,7 +278,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 	// Content drift: compare installed scaffold content against expected
 	// template output. This catches template changes (new jobs, permissions,
 	// restructured thin callers) that are invisible to the ref-string and
-	// presence checks above. Refs are normalised before comparison so that
+	// presence checks above. Refs are normalized before comparison so that
 	// ref-format differences do not produce false content-drift reports —
 	// ref drift is already detected separately.
 	checkScaffoldContentDrift(ctx, client, cfg, &status)
@@ -366,18 +366,21 @@ func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []strin
 
 // checkScaffoldContentDrift compares installed scaffold file content
 // against expected template output and appends content drift entries to
-// status.Drifts for any mismatches. Refs are normalised with
+// status.Drifts for any mismatches. Refs are normalized with
 // replaceShimRef before comparison so that ref-format differences
 // (tag vs SHA, annotation presence) do not produce false positives —
 // ref drift is detected separately by the fullsend_ref check.
 func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
 	expectedFiles, err := ExpectedScaffoldContent(cfg)
-	if err != nil || expectedFiles == nil {
+	if err != nil {
+		status.Error = fmt.Sprintf("rendering expected scaffold for %s/%s: %v", cfg.Owner, cfg.Repo, err)
+		return
+	}
+	if expectedFiles == nil {
 		return
 	}
 
 	fc := cfg.ForgeConfig
-	forgeName := cfg.Forge
 
 	for _, ef := range expectedFiles {
 		// Skip config.yaml — role configuration is not tracked by status.
@@ -397,12 +400,21 @@ func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg Res
 					installedPath = path
 					break
 				}
+				if !forge.IsNotFound(readErr) {
+					// Propagate unexpected errors (rate limiting, server
+					// errors) instead of silently skipping the file.
+					status.Error = fmt.Sprintf("reading scaffold file %s for %s/%s: %v", path, cfg.Owner, cfg.Repo, readErr)
+					return
+				}
 			}
 		} else {
 			content, readErr := client.GetFileContent(ctx, cfg.Owner, cfg.Repo, ef.Path)
 			if readErr == nil {
 				installed = content
 				installedPath = ef.Path
+			} else if !forge.IsNotFound(readErr) {
+				status.Error = fmt.Sprintf("reading scaffold file %s for %s/%s: %v", ef.Path, cfg.Owner, cfg.Repo, readErr)
+				return
 			}
 		}
 
@@ -412,10 +424,10 @@ func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg Res
 			continue
 		}
 
-		// Normalise refs to a placeholder so that ref-string differences
+		// Normalize refs to a placeholder so that ref-string differences
 		// do not cause false content drift.
-		installedNorm, _ := replaceShimRef(installed, "NORMALISED_REF", "", fc, forgeName)
-		expectedNorm, _ := replaceShimRef(ef.Content, "NORMALISED_REF", "", fc, forgeName)
+		installedNorm, _ := replaceShimRef(installed, "NORMALIZED_REF", "", fc, cfg.Forge)
+		expectedNorm, _ := replaceShimRef(ef.Content, "NORMALIZED_REF", "", fc, cfg.Forge)
 
 		if !bytes.Equal(installedNorm, expectedNorm) {
 			status.Drifts = append(status.Drifts, Drift{

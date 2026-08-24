@@ -251,6 +251,11 @@ func Install(ctx context.Context, cfg InstallConfig,
 // runner tags). Both paths share BuildScaffoldFiles as the underlying
 // renderer.
 //
+// Limitation: this function omits InstallConfig fields that the converge
+// path populates at runtime (RunnerTags, PrebuiltScaffoldFiles). Currently
+// only GitHub is wired, so the omission has no effect. When GitLab status
+// support is added, these fields will need to be resolved here as well.
+//
 // Returns (nil, nil) when FullsendRef is empty — there is no expected
 // ref to compare against.
 func ExpectedScaffoldContent(resolved ResolvedConfig) ([]forge.TreeFile, error) {

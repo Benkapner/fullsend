@@ -31,7 +31,8 @@ jobs:
     uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0
 `
 
-func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, region string) {
+func populateInstalledRepo(t testing.TB, fc *forge.FakeClient, owner, repo, ref, mintURL, region string) {
+	t.Helper()
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_MINT_URL"] = mintURL
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_GCP_REGION"] = region
 
@@ -53,7 +54,7 @@ func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, regi
 		UpstreamTag: ref,
 	})
 	if err != nil {
-		panic(fmt.Sprintf("populateInstalledRepo: BuildScaffoldFiles: %v", err))
+		t.Fatalf("populateInstalledRepo: BuildScaffoldFiles: %v", err)
 	}
 
 	fullName := owner + "/" + repo
@@ -64,7 +65,7 @@ func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, regi
 
 func TestProbeRepoState_Installed(t *testing.T) {
 	fc := forge.NewFakeClient()
-	populateInstalledRepo(fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
+	populateInstalledRepo(t, fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
 
 	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
 	if err != nil {
@@ -115,9 +116,9 @@ func TestStatus_AllInstalled_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -152,7 +153,7 @@ func TestStatus_RepoNotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 	// web-frontend has no variables — not installed.
 
@@ -181,9 +182,9 @@ func TestStatus_MintURLDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -217,9 +218,9 @@ func TestStatus_RefDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.1.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.1.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -249,7 +250,7 @@ func TestStatus_RegionDrift_NoLongerReported(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-west1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -274,7 +275,7 @@ func TestStatus_MultipleDrifts(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.1.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.1.0",
 		"https://old.example.com", "us-west1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -355,9 +356,9 @@ func TestStatus_RepoFilter(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
@@ -377,7 +378,7 @@ func TestStatus_RepoFilterCaseInsensitive(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"ACME-CORP/API-SERVER"})
@@ -436,7 +437,7 @@ func TestStatus_GlobExpansion(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -469,9 +470,9 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "legacy", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "legacy", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -825,8 +826,8 @@ func TestStatus_MultiOrg(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org-a", "repo1", "v2.3.0", "https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "org-b", "repo2", "v2.3.0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org-a", "repo1", "v2.3.0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org-b", "repo2", "v2.3.0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -869,7 +870,7 @@ func TestStatus_DefaultMintURL_NoDrift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0", DefaultPublicMintURL, "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0", DefaultPublicMintURL, "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -891,7 +892,7 @@ func TestStatus_EmptyExpectedRef_NoDrift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -921,7 +922,7 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 			},
 		}
 
-		populateInstalledRepo(fc, "org", "repo", sha, "https://mint.example.com", "us-central1")
+		populateInstalledRepo(t, fc, "org", "repo", sha, "https://mint.example.com", "us-central1")
 
 		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 		if err != nil {
@@ -948,7 +949,7 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 			},
 		}
 
-		populateInstalledRepo(fc, "org", "repo", "oldsha000000000000000000000000000000000",
+		populateInstalledRepo(t, fc, "org", "repo", "oldsha000000000000000000000000000000000",
 			"https://mint.example.com", "us-central1")
 
 		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -974,7 +975,7 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 			},
 		}
 
-		populateInstalledRepo(fc, "org", "repo", "stalesha000000000000000000000000000000",
+		populateInstalledRepo(t, fc, "org", "repo", "stalesha000000000000000000000000000000",
 			"https://mint.example.com", "us-central1")
 
 		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -1004,7 +1005,7 @@ func TestStatus_SymbolicRefMatch_NoDrift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -1033,7 +1034,7 @@ func TestStatus_DifferentSymbolicRefs_Drift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -1066,7 +1067,7 @@ func TestStatus_Concurrency(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		repo := fmt.Sprintf("repo-%d", i)
 		m.GitHub.Repos = append(m.GitHub.Repos, RepoEntry{Name: "org/" + repo})
-		populateInstalledRepo(fc, "org", repo, "v2.3.0", "https://mint.example.com", "us-central1")
+		populateInstalledRepo(t, fc, "org", repo, "v2.3.0", "https://mint.example.com", "us-central1")
 	}
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 2, nil)
@@ -1086,7 +1087,7 @@ func TestStatus_RepoFilterAllUnmatched(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"org/nonexistent"})
@@ -1099,7 +1100,7 @@ func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
@@ -1209,7 +1210,7 @@ func TestStatus_DetectsContentDrift_ThinCaller(t *testing.T) {
 
 	// Install correct scaffold content first, then overwrite one
 	// thin caller with stale content.
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	// Overwrite thin caller with outdated content.
@@ -1238,9 +1239,9 @@ func TestStatus_NoContentDrift_WhenContentMatches(t *testing.T) {
 
 	// populateInstalledRepo uses BuildScaffoldFiles, so content
 	// should match exactly — no content drift expected.
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -1344,7 +1345,7 @@ func TestStatus_ContentDrift_RefDifference_NoFalsePositive(t *testing.T) {
 	}
 
 	// Install with v2.3.0 — same template, different ref.
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
