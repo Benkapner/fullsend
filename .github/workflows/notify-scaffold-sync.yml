@@ -14,6 +14,8 @@
 name: Notify Scaffold Sync
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch: {}
 
 concurrency:
