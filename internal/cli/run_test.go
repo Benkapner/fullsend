@@ -5208,7 +5208,7 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 		statusNum:  42,
 		mintURL:    "https://mint.example.com",
 	}
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
 
 	// Will error downstream (openshell not available), but status notifier setup should succeed
 	require.Error(t, err)
