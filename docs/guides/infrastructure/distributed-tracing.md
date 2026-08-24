@@ -90,8 +90,10 @@ summary) — including any sub-agent activity, unattributed — as the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
 with a `finish_reason` of `stop` or `error`.
 
-**Not captured:** model input (`gen_ai.input.messages` — the CLI passes a
-constant literal) and pre/post-script content.
+**Not captured:** model input (`gen_ai.input.messages`) and
+pre/post-script content. First-iteration runs have no meaningful
+runner-side input; retry iterations carry the injected validation
+feedback, a natural input-capture follow-up.
 
 > **Planned:** Tool results, once a parser extension adds them to the
 > normalized event stream — the next change after

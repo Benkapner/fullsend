@@ -1008,7 +1008,7 @@ func TestAgentSpanEndAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
 	// output (untrusted, bounded only by the 1 MiB line buffer); it must
 	// not depend on the SDK cap the content gate lifts.
 	m := agentruntime.RunMetrics{Model: strings.Repeat("m", telemetry.MaxSpanAttrValueLen*2)}
-	for _, kv := range agentSpanEndAttrs(1, 0, "claude", &m) {
+	for _, kv := range agentSpanEndAttrs(1, 0, "claude", "claude", &m) {
 		if kv.Key == "gen_ai.request.model" {
 			assert.LessOrEqual(t, len(kv.Value.AsString()), telemetry.MaxSpanAttrValueLen)
 			return
