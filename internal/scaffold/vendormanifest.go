@@ -146,7 +146,6 @@ var vendoredReusableWorkflows = []string{
 
 var vendoredDefaultsInfraPaths = []string{
 	"action.yml",
-	".github/actions/check-e2e-authorization/action.yml",
 	".github/actions/install-fullsend-cli/action.yml",
 	".github/actions/mint-token/action.yml",
 	".github/actions/prepare-workspace/action.yml",

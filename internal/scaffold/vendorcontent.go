@@ -136,6 +136,9 @@ func walkLayeredFromRoot(layeredRoot string, fn func(path string, content []byte
 		if !IsLayeredPath(rel) && rel != ".github/scripts/setup-agent-env.sh" {
 			return nil
 		}
+		if isLayeredRepoTestFile(rel) {
+			return nil
+		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return fmt.Errorf("reading %s: %w", rel, readErr)
@@ -174,14 +177,38 @@ var vendoredDefaultsScripts = map[string]bool{
 	".github/scripts/openshell-version.sh":     true,
 }
 
+// vendoredDefaultsActions is the explicit allowlist of .github/actions/
+// directories that ship to consumer repos — each is executed from
+// ./.defaults/ by the vendored reusable workflows. Like the scripts list,
+// the directory prefix alone is deliberately not sufficient:
+// check-e2e-authorization lives beside these but is repo-CI only (e2e and
+// functional-tests) and runs scripts/check-e2e-authorization.sh, which
+// does not ship — vendoring it gave consumers a broken, unused action.
+var vendoredDefaultsActions = map[string]bool{
+	".github/actions/install-fullsend-cli/": true,
+	".github/actions/mint-token/":           true,
+	".github/actions/prepare-workspace/":    true,
+	".github/actions/setup-gcp/":            true,
+	".github/actions/validate-enrollment/":  true,
+}
+
 func isVendoredDefaultsInfra(path string) bool {
 	if path == "action.yml" {
 		return true
 	}
-	if strings.HasPrefix(path, ".github/actions/") {
-		return true
+	for prefix := range vendoredDefaultsActions {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
 	}
 	return vendoredDefaultsScripts[path]
+}
+
+// isLayeredRepoTestFile reports whether a layered-content path is a
+// *-test.sh / *-test.py self-test. Those run in fullsend CI
+// (make script-test) and must not ship to consumer repos with the layer.
+func isLayeredRepoTestFile(path string) bool {
+	return strings.HasSuffix(path, "-test.sh") || strings.HasSuffix(path, "-test.py")
 }
 
 func vendoredInfraFileMode(path string) string {
