@@ -1142,6 +1142,10 @@ func (f *fakeRetryCleanupSCM) ListComments(context.Context, string, string, int)
 	return nil, nil
 }
 
+func (f *fakeRetryCleanupSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
+	return nil, nil
+}
+
 func (f *fakeRetryCleanupSCM) EnsureRepoPublic(context.Context, string, string) error {
 	return nil
 }
