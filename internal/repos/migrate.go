@@ -357,15 +357,10 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	// Step B: Install per-repo.
 	progress(fullName, "install", "installing per-repo")
 
-	ref := dr.FullsendRef
-	if ref == "" && cfg.UpstreamRef != "" {
-		ref = cfg.UpstreamRef
-	}
+	rref := resolveTargetRef(ctx, dr.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, nil)
+	ref := rref.ref
 
-	roles := cfg.Roles
-	if len(roles) == 0 {
-		roles = config.PerRepoDefaultRoles()
-	}
+	roles := defaultRoles(cfg.Roles)
 
 	mintURL := canonicalMintURL
 	inferenceRegion := dr.InferenceRegion
@@ -392,7 +387,6 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 		InferenceRegion:   inferenceRegion,
 		UpstreamRef:       ref,
 		UpstreamTag:       cfg.UpstreamTag,
-		SkipGuardCheck:    true,
 		WIFProvider:       wifProvider,
 		ReviewAppClientID: cfg.ReviewAppClientID,
 		Direct:            cfg.Direct,

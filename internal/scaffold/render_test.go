@@ -84,7 +84,7 @@ func TestRenderPrioritizeThinCallerPerRepo(t *testing.T) {
 	assert.Contains(t, out, "install_mode: per-repo",
 		"per-repo prioritize thin caller must use install_mode: per-repo")
 	assert.NotContains(t, out, "install_mode: per-org")
-	assert.Contains(t, out, "project_number: ${{ vars.FULLSEND_PROJECT_NUMBER }}")
+	assert.Contains(t, out, "project_number: ${{ inputs.project_number || vars.FULLSEND_PROJECT_NUMBER }}")
 	assertFreeOfRenderPlaceholders(t, out)
 }
 
@@ -99,7 +99,7 @@ func TestRenderPrioritizeThinCallerVendored(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "uses: ./.github/workflows/reusable-prioritize.yml")
 	assert.NotContains(t, out, "distribution_mode")
-	assert.Contains(t, out, "project_number: ${{ vars.FULLSEND_PROJECT_NUMBER }}")
+	assert.Contains(t, out, "project_number: ${{ inputs.project_number || vars.FULLSEND_PROJECT_NUMBER }}")
 }
 
 func TestWalkUpstreamIncludesReusableWorkflows(t *testing.T) {

@@ -9,7 +9,7 @@ spec:
 "$[[ inputs.schedule_name | expand_vars ]]":
   stage: poll
   image:
-    name: ghcr.io/fullsend-ai/fullsend-runner:latest
+    name: ghcr.io/fullsend-ai/fullsend-runner:dev
     entrypoint: [""]
   tags: __RUNNER_TAGS__
   resource_group: "fullsend-poll-$FULLSEND_POLL_MODE"

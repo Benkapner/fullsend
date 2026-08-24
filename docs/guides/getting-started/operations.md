@@ -58,7 +58,7 @@ For manifest-managed installations (including GitLab repos), use `repos install`
 fullsend repos install -f repos.yaml
 ```
 
-This is idempotent — it provisions new repos, syncs variable drift, and upgrades workflow refs.
+This is idempotent — it provisions new repos, repairs missing or drifted components (workflow, thin callers, variables, secrets), and upgrades workflow refs. Variables with manifest-specified values (e.g. mint URL) are checked for value drift; secrets and one-time-set variables are checked for presence only.
 
 ## Uninstalling
 
@@ -106,9 +106,9 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
 | Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |
-| Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, sync variables, upgrade refs |
+| Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, repair component drift (workflow, thin callers, variables, secrets), upgrade refs |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
-| Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
+| Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components and ref drift |
 | Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in the manifest |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |

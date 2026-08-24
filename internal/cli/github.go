@@ -188,7 +188,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
-	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (e.g. claude, dummy)")
+	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (claude or pi; dummy is for behaviour-test installs only). Prompted on a terminal when omitted")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
@@ -288,6 +288,19 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			printer.StepFail("Preset YAML validation failed")
 			return yamlErr
 		}
+	}
+
+	// Runtime: --runtime wins; otherwise ask once on an interactive
+	// terminal (Enter keeps claude). Presets carry their own value.
+	if cfg.runtime == "" && presetData == nil && !cfg.dryRun {
+		choice, err := promptRuntime(printer, os.Stdin, stdinIsInteractive())
+		if err != nil {
+			return err
+		}
+		cfg.runtime = choice
+	}
+	if cfg.runtime == "pi" {
+		printer.StepWarn("runtime pi needs a sandbox image that carries pi (fullsend-sandbox/fullsend-code built from fullsend main after #6467); harnesses pinning an older image will fail at preflight")
 	}
 
 	// --- Build config files ---
@@ -480,7 +493,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer}); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer, runtime: cfg.runtime}); err != nil {
 		return err
 	}
 

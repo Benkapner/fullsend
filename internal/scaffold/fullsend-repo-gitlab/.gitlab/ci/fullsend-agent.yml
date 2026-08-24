@@ -15,7 +15,7 @@ stages:
 "fullsend $[[ inputs.stage | expand_vars ]] agent":
   stage: agent
   image:
-    name: ghcr.io/fullsend-ai/fullsend-runner:latest
+    name: ghcr.io/fullsend-ai/fullsend-runner:dev
     entrypoint: [""]
   tags: __RUNNER_TAGS__
   id_tokens:

@@ -90,3 +90,26 @@ feature:
   column per runtime and become part of a runtime PR's definition of done.
 - ACP proxies (#587) or tool proxies (#5243) can later supersede per-runtime
   adapters without changing the scripts or the plan.
+
+> **Done ([#6357](https://github.com/fullsend-ai/fullsend/issues/6357)):**
+> PostToolUse contract v2 — scripts read `tool_response` (fallback
+> `tool_result`), replace via `hookSpecificOutput.updatedToolOutput`, and
+> enforce unicode → canary → suppress → redact in `posttool_chain.py`. See
+> [runtimes.md](../runtimes.md#sandbox-hook-contract).
+
+> **Done ([#608](https://github.com/fullsend-ai/fullsend/issues/608)):**
+> The canonical Claude tool-name vocabulary is recorded once in
+> `security.CanonicalClaudeTools` (with `security.LegacyClaudeTools` for
+> names agents and adapters still use), mirrored into
+> `tool_allowlist_pretool.py` and kept identical by a Go test; `HookPlan`
+> tools and the pi adapter's maps are tested against it. The allowlist hook
+> stays exact-match and fail-closed — no case-insensitive allowing — but a
+> blocked name that is a case variant of an allowlisted entry is reported as
+> a normalization gap (`tool_name_unnormalized` when the adapter did not
+> translate, `allowlist_entry_unnormalized` when the allowlist is the
+> non-canonical side, `tool_name_case_collision` when neither spelling is
+> a Claude tool; all `ALLOWLIST_HOOK_ERROR`, severity `high`) rather than
+> as a forbidden tool (`tool_blocked`, `critical`). MCP names are matched
+> verbatim. The pi adapter's maps are held to canonical-or-legacy names
+> (`ls` → `LS`), a deliberate relaxation of "canonical only". See
+> [runtimes.md](../runtimes.md#sandbox-hook-contract).

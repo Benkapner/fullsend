@@ -329,14 +329,24 @@ func buildRunCommand(params RunParams) string {
 		parts = append(parts, fmt.Sprintf("--effort '%s'", strings.ReplaceAll(params.Effort, "'", "'\\''")))
 	}
 
+	if len(params.FallbackModels) > 0 {
+		// Claude Code accepts a comma-separated chain tried in order when the
+		// primary model is overloaded or retired.
+		parts = append(parts, fmt.Sprintf("--fallback-model '%s'", strings.ReplaceAll(strings.Join(params.FallbackModels, ","), "'", "'\\''")))
+	}
+
 	for _, pd := range params.PluginDirs {
 		parts = append(parts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
 	}
 
+	prompt := DefaultAgentPrompt
+	if params.Prompt != "" {
+		prompt = params.Prompt
+	}
 	parts = append(parts,
 		fmt.Sprintf("--agent '%s'", safe),
 		"--dangerously-skip-permissions",
-		"'Run the agent task'",
+		fmt.Sprintf("'%s'", strings.ReplaceAll(prompt, "'", "'\\''")),
 	)
 
 	return strings.Join(parts, " ")

@@ -48,7 +48,7 @@ fullsend
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --concurrency <int>              #   Parallel limit (1-32, default: 4)
 │   │   └── -f, --manifest <path>            #   Output path for repos.yaml (default: repos.yaml)
-│   ├── install      [repos...]              # Converge repos to desired state (provision, sync, upgrade)
+│   ├── install      [repos...]              # Converge repos to desired state (provision, repair drift, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
@@ -516,8 +516,10 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 ### Sandbox Constants
 
 ```go
-SandboxWorkspace    = "/sandbox/workspace"
-SandboxClaudeConfig = "/sandbox/claude-config"
+SandboxWorkspace       = "/sandbox/workspace"
+SandboxClaudeConfig    = "/sandbox/claude-config"
+SandboxPiConfig        = "/sandbox/pi-config"
+SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
 ```
 
 For sandbox workspace layout, agent rule layering, and security scanning
