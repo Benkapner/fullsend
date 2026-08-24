@@ -151,6 +151,10 @@ jobs:
           AGENTS_SHA: ${{ needs.resolve-agents.outputs.agents_sha }}
         run: |
           set -euo pipefail
+          if [[ ! "${AGENTS_SHA}" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::resolve-agents output is not a commit SHA: ${AGENTS_SHA//::/}"
+            exit 1
+          fi
           TAG="${GITHUB_REF_NAME}"
 
           HTTP_CODE=$(gh api "repos/fullsend-ai/agents/git/ref/tags/${TAG}" \
