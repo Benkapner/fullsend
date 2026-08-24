@@ -299,6 +299,30 @@ class TestIsInTextPatternContext:
             m = list(hook.URL_PATTERN.finditer(cmd))[0]
             assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
 
+    def test_sed_write_and_execute_flags_not_in_context(self, hook):
+        """sed can write a file or run a command with no pipe or redirection."""
+        for cmd in (
+            "sed -n 's|http://169.254.169.254/|&|w /tmp/u' file",
+            "sed -n 's|http://169.254.169.254/|&|W /tmp/u' file",
+            "sed 's|http://169.254.169.254/||e' file",
+            "sed -n '/http://169.254.169.254//w /tmp/u' file",
+            "sed 's|http://169.254.169.254/|&|gw /tmp/u' file",
+            "sed 's|http://169.254.169.254/|&|; w /tmp/u' file",
+        ):
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert not hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
+    def test_ordinary_sed_flags_still_in_context(self, hook):
+        """Harmless substitution flags and paths must keep the exemption."""
+        for cmd in (
+            "sed 's|https://github.com/||g' f",
+            "sed -n 's|https://github.com/||p' f",
+            "sed 's|https://github.com/||I' f",
+            "sed 's|https://web.example/||' f",
+        ):
+            m = list(hook.URL_PATTERN.finditer(cmd))[0]
+            assert hook._is_in_text_pattern_context(cmd, m.start()), cmd
+
     def test_compound_grouping_does_not_end_pipeline(self, hook):
         """A ';' inside { }, ( ), do/done or then/fi is not a real pipeline end."""
         for cmd in (
@@ -806,6 +830,28 @@ class TestProcessToolCallSSRFStillBlocked:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None, "awk system() should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_sed_write_flag_blocked(self, hook):
+        """sed's w flag persists the URL with no shell redirection."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "sed -n 's|http://169.254.169.254/|&|w /tmp/u' file",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "sed w flag should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_sed_execute_flag_blocked(self, hook):
+        """sed's e flag executes the pattern space as a shell command."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "sed 's|http://169.254.169.254/||e' file"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "sed e flag should be blocked"
         assert "169.254.169.254" in result
 
     def test_sed_ampersand_replacement_piped_to_curl_blocked(self, hook):

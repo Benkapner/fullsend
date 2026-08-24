@@ -62,6 +62,7 @@ _SED_SUBST_OPEN = re.compile(r"(?<=[\s'\";])s([^\w\s])")
 # Compact GNU sed form: ``sed -es/…`` (no space between ``-e`` and ``s``).
 _SED_COMPACT_OPEN = re.compile(r"-es([^\w\s])")
 
+
 # Pattern to detect quoted pattern arguments to grep/awk family commands.
 # Matches: grep [-flags] 'URL   grep -E "URL   awk '/URL   etc.
 # The optional trailing / covers awk regex delimiters: awk '/pattern/'.
@@ -371,6 +372,33 @@ def _has_output_redirection(segment: str) -> bool:
     return False
 
 
+def _sed_script_writes_or_executes(segment: str, delim: str) -> bool:
+    """Return True if the sed script can write a file or run a command."""
+    # sed is not only a filter.  ``w``/``W`` write the pattern space to a file
+    # and ``e`` executes it as a shell command, either as flags on a
+    # substitution (``s/x/y/w out``, ``s/x/y/e``) or attached to an address
+    # (``/addr/w out``).  None involve a pipe, a redirection or an external
+    # binary, so nothing else here would notice them.
+    #
+    # Match on shape rather than counting delimiter fields: a URL containing
+    # the delimiter (``s/https://x//``) makes any field count unreliable.  A
+    # real write/execute is a closing delimiter, optional harmless flags, then
+    # the command letter — ``w``/``W`` followed by a filename, or ``e`` at the
+    # end of the script.
+    # Standalone command after a previous one: ``s/x/y/; w out`` or ``;e``.
+    if re.search(r"(?<!\\)[;}]\s*[wW]\s+\S", segment):
+        return True
+    if re.search(r"(?<!\\)[;}]\s*e(?=[\s;}'\"]|$)", segment):
+        return True
+    for d in {delim, "/"}:
+        esc = re.escape(d)
+        if re.search(rf"(?<!\\){esc}[gpiImM0-9]*[wW]\s+\S", segment):
+            return True
+        if re.search(rf"(?<!\\){esc}[gpiImM0-9]*e(?=[\s;}}'\"]|$)", segment):
+            return True
+    return False
+
+
 def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
     """Return True if the URL at *match_start* is inside a text-manipulation pattern."""
     # Restrict analysis to the shell segment containing the URL so that
@@ -414,6 +442,10 @@ def _is_in_text_pattern_context(command: str, match_start: int) -> bool:
             # Search field has zero delimiters before the URL; replacement
             # or flags field has one or more.
             if between.count(delim) == 0:
+                # A sed script that can write a file or run a command launders
+                # the URL without any pipe or redirection to notice.
+                if _sed_script_writes_or_executes(segment, delim):
+                    return False
                 # ``s|URL|...|`` usually removes the URL, but ``&`` and ``\1``
                 # reproduce the match verbatim, so sed's stdout can carry it
                 # onward just like grep's.  Apply the same downstream rules.
