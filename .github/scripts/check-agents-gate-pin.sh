@@ -21,12 +21,20 @@ if [[ ! -f "${RELEASE_YML}" ]]; then
 fi
 
 # Extract the pinned SHA from the uses: directive.
+grep_rc=0
 PINNED_SHA=$(
   grep -oE \
     'fullsend-ai/agents/\.github/workflows/functional-tests\.yml@[a-f0-9]+' \
     "${RELEASE_YML}" \
   | sed 's/.*@//'
-) || true
+) || grep_rc=$?
+
+# Exit code 1 = no match (handled by the empty-check below).
+# Exit code ≥ 2 = file-read or internal grep error — surface it.
+if [[ "${grep_rc}" -gt 1 ]]; then
+  echo "::error::Failed to read ${RELEASE_YML} (grep exit code ${grep_rc})" >&2
+  exit 1
+fi
 
 if [[ -z "${PINNED_SHA}" ]]; then
   echo "::error::Could not find fullsend-ai/agents workflow pin in ${RELEASE_YML}" >&2
