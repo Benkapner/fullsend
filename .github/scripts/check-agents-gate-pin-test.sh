@@ -122,6 +122,7 @@ run_test() {
   output=$(
     PATH="${mock_bin}:${PATH}" \
     RELEASE_YML="${release_yml}" \
+    GH_TOKEN="fake" \
     bash "${SCRIPT}" 2>&1
   ) || actual_exit=$?
 
@@ -168,11 +169,55 @@ run_test "gh api failure" 1 \
   "does-not-matter" \
   0 "Failed to fetch" "fail"
 
+# Multiple pins in release.yml — exits 1 (ambiguous)
+run_test_multi_pin() {
+  local dir="${TMPDIR}/workflow"
+  rm -rf "${dir}"
+  mkdir -p "${dir}"
+
+  cat > "${dir}/release.yml" <<'EOF'
+name: Release
+jobs:
+  validate-agents-a:
+    uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@aaa111bbb222ccc333ddd444eee555fff666aaa1
+  validate-agents-b:
+    uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@fff666eee555ddd444ccc333bbb222aaa111fff6
+EOF
+
+  local mock_bin
+  mock_bin=$(build_mock "does-not-matter" 0)
+
+  local actual_exit=0 output
+  output=$(
+    PATH="${mock_bin}:${PATH}" \
+    RELEASE_YML="${dir}/release.yml" \
+    GH_TOKEN="fake" \
+    bash "${SCRIPT}" 2>&1
+  ) || actual_exit=$?
+
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    echo "FAIL: multi-pin ambiguity — expected exit 1, got ${actual_exit}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${output}" != *"Ambiguous"* ]]; then
+    echo "FAIL: multi-pin ambiguity — expected 'Ambiguous' in output"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: multi-pin ambiguity"
+}
+run_test_multi_pin
+
 # release.yml does not exist — exits 1
 run_test_missing_file() {
   local actual_exit=0 output
   output=$(
     RELEASE_YML="${TMPDIR}/nonexistent/release.yml" \
+    GH_TOKEN="fake" \
     bash "${SCRIPT}" 2>&1
   ) || actual_exit=$?
 

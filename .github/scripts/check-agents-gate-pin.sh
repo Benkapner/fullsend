@@ -16,13 +16,13 @@ set -euo pipefail
 RELEASE_YML="${RELEASE_YML:-.github/workflows/release.yml}"
 
 if [[ ! -f "${RELEASE_YML}" ]]; then
-  echo "::error::Release workflow not found: ${RELEASE_YML}" >&2
+  echo "::error::Release workflow not found: ${RELEASE_YML//::/}"
   exit 1
 fi
 
 # Extract the pinned SHA from the uses: directive.
 grep_rc=0
-PINNED_SHA=$(
+PINNED_SHAS=$(
   grep -oE \
     'fullsend-ai/agents/\.github/workflows/functional-tests\.yml@[a-f0-9]+' \
     "${RELEASE_YML}" \
@@ -32,25 +32,33 @@ PINNED_SHA=$(
 # Exit code 1 = no match (handled by the empty-check below).
 # Exit code ≥ 2 = file-read or internal grep error — surface it.
 if [[ "${grep_rc}" -gt 1 ]]; then
-  echo "::error::Failed to read ${RELEASE_YML} (grep exit code ${grep_rc})" >&2
+  echo "::error::Failed to read ${RELEASE_YML//::/} (grep exit code ${grep_rc})"
   exit 1
 fi
 
-if [[ -z "${PINNED_SHA}" ]]; then
-  echo "::error::Could not find fullsend-ai/agents workflow pin in ${RELEASE_YML}" >&2
+if [[ -z "${PINNED_SHAS}" ]]; then
+  echo "::error::Could not find fullsend-ai/agents workflow pin in ${RELEASE_YML//::/}"
   exit 1
 fi
+
+# Reject ambiguous multi-pin configs.
+SHA_COUNT=$(echo "${PINNED_SHAS}" | wc -l)
+if [[ "${SHA_COUNT}" -gt 1 ]]; then
+  echo "::error::Ambiguous: found ${SHA_COUNT} fullsend-ai/agents workflow pins in ${RELEASE_YML//::/}"
+  exit 1
+fi
+PINNED_SHA="${PINNED_SHAS}"
 
 # Fetch agents main HEAD SHA.
 AGENTS_MAIN_SHA=$(
   gh api repos/fullsend-ai/agents/commits/main --jq '.sha'
 ) || {
-  echo "::error::Failed to fetch fullsend-ai/agents main SHA" >&2
+  echo "::error::Failed to fetch fullsend-ai/agents main SHA"
   exit 1
 }
 
 if [[ -z "${AGENTS_MAIN_SHA}" ]]; then
-  echo "::error::Empty SHA returned for fullsend-ai/agents main" >&2
+  echo "::error::Empty SHA returned for fullsend-ai/agents main"
   exit 1
 fi
 
@@ -66,5 +74,5 @@ BEHIND_COUNT=$(
     --jq '.ahead_by'
 ) || BEHIND_COUNT="unknown"
 
-echo "::error::validate-agents gate pin is stale: pinned ${PINNED_SHA} is ${BEHIND_COUNT} commit(s) behind agents main ${AGENTS_MAIN_SHA}" >&2
+echo "::error::validate-agents gate pin is stale: pinned ${PINNED_SHA} is ${BEHIND_COUNT} commit(s) behind agents main ${AGENTS_MAIN_SHA}"
 exit 1
