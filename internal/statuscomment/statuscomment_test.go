@@ -1568,7 +1568,6 @@ func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
 	})
 }
 
-
 func TestBuildRunInfoFooter_DifferentModels(t *testing.T) {
 	// When requested != reported, show arrow format.
 	info := &RunInfo{
