@@ -152,6 +152,28 @@ func isVendoredReusableWorkflow(path string) bool {
 	return strings.HasPrefix(base, "reusable-") && strings.HasSuffix(base, ".yml")
 }
 
+// vendoredDefaultsScripts is the explicit allowlist of .github/scripts/
+// files that ship to consumer repos. Everything here is executed in user
+// repos: check-fix-eligibility.sh directly by the vendored reusable
+// workflows, the other three by the root composite action (action.yml,
+// invoked as ./.defaults/ with GITHUB_ACTION_PATH resolving into the
+// vendored tree).
+//
+// .github/scripts/ also hosts repo-local CI tooling and *-test.sh files
+// that must NOT ship to consumers. The directory prefix alone is
+// deliberately not sufficient for vendoring — add new user-facing scripts
+// here explicitly. Scripts whose path is a cross-repo contract
+// (openshell-version.sh and install-openshell.sh are read from a fullsend
+// checkout by the agents functional-tests gate, hack/gitlab-runner-vm,
+// and scripts/renovate/update-openshell-sha.sh) must stay at their
+// current path regardless of whether they are listed.
+var vendoredDefaultsScripts = map[string]bool{
+	".github/scripts/check-fix-eligibility.sh": true,
+	".github/scripts/install-openshell.sh":     true,
+	".github/scripts/install-podman.sh":        true,
+	".github/scripts/openshell-version.sh":     true,
+}
+
 func isVendoredDefaultsInfra(path string) bool {
 	if path == "action.yml" {
 		return true
@@ -159,10 +181,7 @@ func isVendoredDefaultsInfra(path string) bool {
 	if strings.HasPrefix(path, ".github/actions/") {
 		return true
 	}
-	if strings.HasPrefix(path, ".github/scripts/") {
-		return true
-	}
-	return false
+	return vendoredDefaultsScripts[path]
 }
 
 func vendoredInfraFileMode(path string) string {

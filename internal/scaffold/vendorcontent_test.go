@@ -70,7 +70,12 @@ func TestIsVendoredReusableWorkflow(t *testing.T) {
 func TestIsVendoredDefaultsInfra(t *testing.T) {
 	assert.True(t, isVendoredDefaultsInfra("action.yml"))
 	assert.True(t, isVendoredDefaultsInfra(".github/actions/foo/action.yml"))
-	assert.True(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
+	// Scripts ship only via the explicit allowlist — an arbitrary file
+	// under .github/scripts/ must NOT be vendored to consumer repos.
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-podman.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/workflows/reusable-triage.yml"))
 }
 

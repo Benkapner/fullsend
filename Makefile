@@ -189,7 +189,7 @@ endef
 
 script-test:
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
-	$(call run-timed,bash .github/scripts/redact-behaviour-artifacts-test.sh)
+	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
