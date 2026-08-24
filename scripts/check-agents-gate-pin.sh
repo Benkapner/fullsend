@@ -24,7 +24,7 @@ fi
 grep_rc=0
 PINNED_SHAS=$(
   grep -oE \
-    'fullsend-ai/agents/\.github/workflows/functional-tests\.yml@[a-f0-9]+' \
+    'fullsend-ai/agents/\.github/workflows/functional-tests\.yml@[a-f0-9]{40}' \
     "${RELEASE_YML}" \
   | sed 's/.*@//'
 ) || grep_rc=$?
@@ -74,5 +74,5 @@ BEHIND_COUNT=$(
     --jq '.ahead_by'
 ) || BEHIND_COUNT="unknown"
 
-echo "::error::validate-agents gate pin is stale: pinned ${PINNED_SHA} is ${BEHIND_COUNT} commit(s) behind agents main ${AGENTS_MAIN_SHA}"
+echo "::error::validate-agents gate pin ${PINNED_SHA} does not match agents main ${AGENTS_MAIN_SHA} (pin is ${BEHIND_COUNT} commit(s) behind; 0/unknown means the pin is not an ancestor of main)"
 exit 1
