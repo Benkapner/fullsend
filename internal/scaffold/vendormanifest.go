@@ -152,8 +152,6 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/actions/prepare-workspace/action.yml",
 	".github/actions/setup-gcp/action.yml",
 	".github/actions/validate-enrollment/action.yml",
-	".github/scripts/check-agents-gate-pin-test.sh",
-	".github/scripts/check-agents-gate-pin.sh",
 	".github/scripts/check-fix-eligibility-test.sh",
 	".github/scripts/check-fix-eligibility.sh",
 	".github/scripts/install-openshell.sh",
