@@ -330,9 +330,11 @@ fullsend repos install -f repos.yaml --direct
 ```
 
 Repos that are already SHA-pinned (`@<sha> # <ref>`) preserve their
-pinning style during upgrades — the target ref is resolved to a commit
-SHA and written as `@<sha> # <ref>`. Non-SHA-pinned repos keep their
-string ref format (e.g., `@v2.3.0`).
+pinning style during upgrades when the target ref is a semver tag — the
+tag is resolved to a commit SHA and written as `@<sha> # <ref>`. When
+the target ref is a branch name (e.g., `main`), the branch name is
+written directly (`@main`) to ensure idempotent convergence. Non-SHA-pinned
+repos keep their string ref format (e.g., `@v2.3.0`).
 
 Downgrades are blocked unless `--force` is set. When both the current
 and target refs are semver tags, the guard uses version comparison. When
