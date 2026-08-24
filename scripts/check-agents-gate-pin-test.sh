@@ -2,7 +2,7 @@
 # check-agents-gate-pin-test.sh — Tests for check-agents-gate-pin.sh
 #
 # Run from the repo root:
-#   bash .github/scripts/check-agents-gate-pin-test.sh
+#   bash scripts/check-agents-gate-pin-test.sh
 
 set -euo pipefail
 

@@ -57,8 +57,8 @@ AGENTS_MAIN_SHA=$(
   exit 1
 }
 
-if [[ -z "${AGENTS_MAIN_SHA}" ]]; then
-  echo "::error::Empty SHA returned for fullsend-ai/agents main"
+if [[ ! "${AGENTS_MAIN_SHA}" =~ ^[a-f0-9]{40}$ ]]; then
+  echo "::error::Unexpected SHA returned for fullsend-ai/agents main: ${AGENTS_MAIN_SHA//::/}"
   exit 1
 fi
 
