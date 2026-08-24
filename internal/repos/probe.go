@@ -55,9 +55,8 @@ func DriftFieldName(componentName string) string {
 	return componentName
 }
 
-// ProbeComponents checks all per-repo installation components beyond the
-// guard variable and returns their status. The caller has already
-// confirmed the guard variable is set (or is checking independently).
+// ProbeComponents checks all per-repo installation components and
+// returns their status.
 //
 // Components checked:
 //   - Shim workflow file (presence)
