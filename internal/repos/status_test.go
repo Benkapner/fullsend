@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -40,15 +41,25 @@ func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, regi
 	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 
-	workflow := fmt.Sprintf(`name: fullsend
-on:
-  workflow_dispatch:
-jobs:
-  dispatch:
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@%s
-`, ref)
-	fc.FileContents[owner+"/"+repo+"/.github/workflows/fullsend.yml"] = []byte(workflow)
-	addThinCallerFiles(fc, owner, repo)
+	// Generate scaffold files from the same templates that status
+	// compares against, so content-drift detection is accurate.
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       owner,
+		Repo:        repo,
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     mintURL,
+		UpstreamRef: ref,
+		UpstreamTag: ref,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("populateInstalledRepo: BuildScaffoldFiles: %v", err))
+	}
+
+	fullName := owner + "/" + repo
+	for _, f := range files {
+		fc.FileContents[fullName+"/"+f.Path] = f.Content
+	}
 }
 
 func TestProbeRepoState_Installed(t *testing.T) {
@@ -1104,5 +1115,259 @@ func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
 	}
 	if result.Warnings[0] != `--repo filter "org/nonexistent" matched no manifest entries` {
 		t.Errorf("warning = %q, want match message", result.Warnings[0])
+	}
+}
+
+func TestStatus_DetectsContentDrift_Workflow(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	// Populate with correct variables and secrets, but write a stale
+	// workflow whose template content differs from what BuildScaffoldFiles
+	// would produce. The ref matches the manifest — only the template
+	// body is outdated.
+	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets["org/repo/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["org/repo/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	staleWorkflow := fmt.Sprintf(`name: fullsend
+on:
+  workflow_dispatch:
+jobs:
+  dispatch:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@%s
+`, "v2.3.0")
+	fc.FileContents["org/repo/.github/workflows/fullsend.yml"] = []byte(staleWorkflow)
+
+	// Also add a correct thin caller so only the workflow drifts.
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       "org",
+		Repo:        "repo",
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     "https://mint.example.com",
+		UpstreamRef: "v2.3.0",
+		UpstreamTag: "v2.3.0",
+	})
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			fc.FileContents["org/repo/"+f.Path] = f.Content
+			continue
+		}
+		// Only install non-workflow scaffold files (thin callers).
+		if f.Path != ".github/workflows/fullsend.yaml" {
+			fc.FileContents["org/repo/"+f.Path] = f.Content
+		}
+	}
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Repos[0].Installed {
+		t.Fatal("repo should be installed")
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == ".github/workflows/fullsend.yml" &&
+			d.Expected == "current template" &&
+			d.Actual == "installed content differs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected content drift for workflow, got drifts: %v", result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_DetectsContentDrift_ThinCaller(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	// Install correct scaffold content first, then overwrite one
+	// thin caller with stale content.
+	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	// Overwrite thin caller with outdated content.
+	fc.FileContents["org/repo/.github/workflows/prioritize.yml"] = []byte("name: outdated-thin-caller\n")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == ".github/workflows/prioritize.yml" &&
+			d.Expected == "current template" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected content drift for thin caller, got drifts: %v", result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_NoContentDrift_WhenContentMatches(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	// populateInstalledRepo uses BuildScaffoldFiles, so content
+	// should match exactly — no content drift expected.
+	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Drifted != 0 {
+		t.Errorf("drifted = %d, want 0", result.Summary.Drifted)
+	}
+
+	for _, s := range result.Repos {
+		for _, d := range s.Drifts {
+			if d.Expected == "current template" {
+				t.Errorf("%s/%s: unexpected content drift: %+v", s.Owner, s.Repo, d)
+			}
+		}
+	}
+}
+
+func TestStatus_ContentDrift_BranchRef(t *testing.T) {
+	// For branch-ref targets like fullsend_ref: main, template changes
+	// are the primary signal (the ref string never changes). Verify
+	// that content drift is detected even when the ref matches.
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "main",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets["org/repo/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["org/repo/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	// Write a workflow with the correct ref but outdated template body.
+	staleWorkflow := `name: fullsend
+on:
+  workflow_dispatch:
+jobs:
+  dispatch:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
+`
+	fc.FileContents["org/repo/.github/workflows/fullsend.yml"] = []byte(staleWorkflow)
+
+	// Add correct thin callers from templates.
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       "org",
+		Repo:        "repo",
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     "https://mint.example.com",
+		UpstreamRef: "main",
+		UpstreamTag: "main",
+	})
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == ".github/workflows/fullsend.yaml" || f.Path == ".fullsend/config.yaml" {
+			continue
+		}
+		fc.FileContents["org/repo/"+f.Path] = f.Content
+	}
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Expected == "current template" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected content drift for branch-ref target, got drifts: %v", result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_ContentDrift_RefDifference_NoFalsePositive(t *testing.T) {
+	// When the ref differs between manifest and installed, ref drift
+	// is reported separately. Content drift should NOT be reported if
+	// the template structure is the same (only the ref differs).
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.4.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	// Install with v2.3.0 — same template, different ref.
+	populateInstalledRepo(fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Ref drift should be reported.
+	hasRefDrift := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "fullsend_ref" {
+			hasRefDrift = true
+		}
+	}
+	if !hasRefDrift {
+		t.Error("expected fullsend_ref drift when refs differ")
+	}
+
+	// Content drift should NOT be reported because the template
+	// structure is the same — only the ref string differs.
+	for _, d := range result.Repos[0].Drifts {
+		if d.Expected == "current template" {
+			t.Errorf("unexpected content drift when only ref differs: %+v", d)
+		}
 	}
 }

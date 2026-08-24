@@ -240,6 +240,39 @@ func Install(ctx context.Context, cfg InstallConfig,
 	return result, nil
 }
 
+// ExpectedScaffoldContent renders the scaffold files that a fresh install
+// would produce for the given resolved config. The status path uses this
+// to compare against installed files for content drift detection — when
+// the rendered template differs from the installed file, the repo's
+// scaffold is stale even if the ref string matches.
+//
+// The converge path builds equivalent files via BuildScaffoldFiles with
+// additional context (upstream SHA resolution, remote scaffold fetch,
+// runner tags). Both paths share BuildScaffoldFiles as the underlying
+// renderer.
+//
+// Returns (nil, nil) when FullsendRef is empty — there is no expected
+// ref to compare against.
+func ExpectedScaffoldContent(resolved ResolvedConfig) ([]forge.TreeFile, error) {
+	ref := resolved.FullsendRef
+	if ref == "" {
+		return nil, nil
+	}
+
+	installCfg := InstallConfig{
+		Owner:       resolved.Owner,
+		Repo:        resolved.Repo,
+		Forge:       resolved.Forge,
+		Roles:       defaultRoles(nil),
+		MintURL:     resolved.MintURL,
+		UpstreamRef: ref,
+		UpstreamTag: ref,
+		Runtime:     resolved.Runtime,
+	}
+
+	return BuildScaffoldFiles(installCfg)
+}
+
 // BuildScaffoldFiles generates the scaffold tree files for a per-repo install.
 // Exported so the CLI dry-run path can display the file list without running
 // the full install.

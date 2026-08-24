@@ -1,8 +1,10 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -273,6 +275,14 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 		}
 	}
 
+	// Content drift: compare installed scaffold content against expected
+	// template output. This catches template changes (new jobs, permissions,
+	// restructured thin callers) that are invisible to the ref-string and
+	// presence checks above. Refs are normalised before comparison so that
+	// ref-format differences do not produce false content-drift reports —
+	// ref drift is already detected separately.
+	checkScaffoldContentDrift(ctx, client, cfg, &status)
+
 	// Read display-only variable not covered by required vars.
 	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_GCP_REGION")
 	if regionErr != nil {
@@ -352,4 +362,67 @@ func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []strin
 	}
 
 	return result, unmatched, nil
+}
+
+// checkScaffoldContentDrift compares installed scaffold file content
+// against expected template output and appends content drift entries to
+// status.Drifts for any mismatches. Refs are normalised with
+// replaceShimRef before comparison so that ref-format differences
+// (tag vs SHA, annotation presence) do not produce false positives —
+// ref drift is detected separately by the fullsend_ref check.
+func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
+	expectedFiles, err := ExpectedScaffoldContent(cfg)
+	if err != nil || expectedFiles == nil {
+		return
+	}
+
+	fc := cfg.ForgeConfig
+	forgeName := cfg.Forge
+
+	for _, ef := range expectedFiles {
+		// Skip config.yaml — role configuration is not tracked by status.
+		if ef.Path == ".fullsend/config.yaml" {
+			continue
+		}
+
+		// For workflow files the installed copy may use a different
+		// extension (.yml vs .yaml), so try all known workflow paths.
+		var installed []byte
+		var installedPath string
+		if slices.Contains(fc.WorkflowPaths, ef.Path) {
+			for _, path := range fc.WorkflowPaths {
+				content, readErr := client.GetFileContent(ctx, cfg.Owner, cfg.Repo, path)
+				if readErr == nil {
+					installed = content
+					installedPath = path
+					break
+				}
+			}
+		} else {
+			content, readErr := client.GetFileContent(ctx, cfg.Owner, cfg.Repo, ef.Path)
+			if readErr == nil {
+				installed = content
+				installedPath = ef.Path
+			}
+		}
+
+		if installed == nil {
+			// File not found — presence drift is already reported by
+			// the component probe; content comparison is not applicable.
+			continue
+		}
+
+		// Normalise refs to a placeholder so that ref-string differences
+		// do not cause false content drift.
+		installedNorm, _ := replaceShimRef(installed, "NORMALISED_REF", "", fc, forgeName)
+		expectedNorm, _ := replaceShimRef(ef.Content, "NORMALISED_REF", "", fc, forgeName)
+
+		if !bytes.Equal(installedNorm, expectedNorm) {
+			status.Drifts = append(status.Drifts, Drift{
+				Field:    installedPath,
+				Expected: "current template",
+				Actual:   "installed content differs",
+			})
+		}
+	}
 }
