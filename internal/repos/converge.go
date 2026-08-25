@@ -866,7 +866,10 @@ func convergeRefFiles(ctx context.Context,
 	if cfg.DryRun {
 		dryRef := targetRef
 		dryTag := ""
-		if !isSHARef(targetRef) && isSHARef(currentRef) {
+		// Only resolve to SHA for semver tags. Branch refs are used
+		// directly to match resolveTargetRef and avoid non-idempotent
+		// SHA pinning. See #6553.
+		if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
 			if resolver != nil {
 				if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
 					dryRef = sha
@@ -929,10 +932,16 @@ func convergeRefFiles(ctx context.Context,
 	}
 
 	// Determine new ref based on pinning style.
+	//
+	// SHA pinning is preserved only for semver tag targets (e.g.
+	// v1.0.0 → v2.0.0). For branch targets like "main", the branch
+	// ref is written directly — resolving a branch to its HEAD SHA
+	// makes the write non-idempotent because each convergence commit
+	// shifts the branch HEAD. See #6553.
 	var newRef, newTag string
 	if isSHARef(targetRef) {
 		newRef = targetRef
-	} else if isSHARef(currentRef) {
+	} else if isSHARef(currentRef) && isSemver(targetRef) {
 		var sha string
 		if resolver != nil {
 			sha = resolver.Resolve(ctx, targetRef)
@@ -1181,6 +1190,12 @@ type resolvedRef struct {
 // resolveTargetRef resolves the target ref for scaffold generation.
 // It centralises the ref-resolution logic shared by convergeRepo,
 // convergeScaffoldFiles, and migrateRepo.
+//
+// Only semver tag refs (vX.Y.Z) are resolved to SHAs for pinning.
+// Branch refs like "main" are used as-is because their HEAD moves
+// with each commit, making SHA resolution non-idempotent — each
+// convergence commit shifts the branch, causing the next run to
+// resolve a different SHA and re-converge. See #6553.
 func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag string, resolver *RefResolver) resolvedRef {
 	ref := fullsendRef
 	tag := upstreamTag
@@ -1190,10 +1205,16 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 		ref = upstreamRef
 	} else if ref != "" {
 		manifestRef = ref
-		tag = ref
-		if resolver != nil {
-			if sha := resolver.Resolve(ctx, ref); sha != ref {
-				ref = sha
+		// Only SHA-pin semver tags. Branch names are used directly
+		// so that both convergeScaffoldFiles (new components) and
+		// convergeRefFiles (existing components) produce the same
+		// ref form, and repeated runs are idempotent.
+		if isSemver(ref) {
+			tag = ref
+			if resolver != nil {
+				if sha := resolver.Resolve(ctx, ref); sha != ref {
+					ref = sha
+				}
 			}
 		}
 	}
