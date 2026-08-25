@@ -206,98 +206,9 @@ fullsend run code \
 
 <a id="run-a-minimal-agent-on-the-pi-runtime"></a><a id="troubleshooting-pi-runtime"></a><a id="platform-notes-pi"></a>
 
-Every example above runs on **Claude Code, the stable default**. The **pi**
-runtime ([pi](https://github.com/earendil-works/pi)) is an experimental,
-opt-in alternative. To run any of the examples on pi:
-
-1. Add `--runtime pi` to the same command:
-
-   ```bash
-   fullsend run triage \
-     --fullsend-dir /tmp/fullsend-agents/ \
-     --target-repo /tmp/target-repo/ \
-     --env-file fullsend-gcp.env \
-     --env-file fullsend-triage.env \
-     --runtime pi
-   ```
-
-2. Confirm the selection in the plan block — overridden values carry their
-   source, harness defaults print bare:
-
-   ```
-       Model: opus
-       Effort: high
-       Runtime: pi (from --runtime flag)
-   ...
-   runtime: selected "pi" from --runtime flag
-   ...
-   → Agent: claude-opus-4-6 (v0.84.2)
-   → Result: stop
-     ✓ Agent exited with code 0 (131.9s)
-   ```
-
-   `metrics.json` records the same (`runtime`, `requested_runtime`,
-   `runtime_source`, `requested_model`, `override_source`).
-
-3. Optionally override the model or effort for the run (see the table
-   below) — on pi, the model name is also the provider choice.
-
-**Per-run overrides** work on both runtimes — precedence is
-**flag > environment > the agent's `agents:` entry > repo-wide
-config/harness > default**:
-
-| Override | Flag | Environment | Per-agent config |
-|----------|------|-------------|------------------|
-| Runtime (`claude`, `pi`) | `--runtime` | `FULLSEND_RUNTIME` | `runtime:` on the agent's `agents:` entry |
-| Model (alias, id, or `provider/id` on pi) | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` is a pi-only alias) | `model:` on the agent's `agents:` entry |
-| Effort (`low`…`max`) | `--effort` | `FULLSEND_EFFORT` | `effort:` on the agent's `agents:` entry |
-| Fallback chain (Claude Code only) | — | `FULLSEND_FALLBACK_MODELS=a,b` | — |
-
-**Make it stick per agent.** Flags are for trying things out. To keep a
-choice for one agent, put it on that agent's `agents:` entry in the
-`config.yaml` the run reads — here the fleet clone, in CI the repo's
-`.fullsend/config.yaml` — where it is reviewed with the repo and applies
-to every run:
-
-1. Set it. The entry is validated before anything is written:
-
-   ```bash
-   fullsend agent set code --fullsend-dir /tmp/fullsend-agents/ \
-     --runtime claude --model sonnet
-   ```
-
-   Or edit the file by hand. A built-in agent needs only its name; a
-   custom agent carries the settings on its `source:` entry:
-
-   ```yaml
-   runtime: pi              # repo default for agents that set none
-   agents:
-     - name: code
-       runtime: claude
-       model: sonnet
-   ```
-
-2. Check it — `fullsend agent list --fullsend-dir /tmp/fullsend-agents/`
-   shows the settings next to each agent, e.g.
-   `code  harness/code.yaml  [runtime=claude model=sonnet]`.
-
-3. Run as before. The plan block names the entry as the source, and the
-   per-run flags above still win when you pass them:
-
-   ```
-       Runtime: claude (from /tmp/fullsend-agents/config.yaml agents.code)
-       Model: sonnet (from /tmp/fullsend-agents/config.yaml agents.code)
-   ```
-
-Typos are caught early: `agent set` refuses an invalid value, and
-`fullsend run` exits 1 before starting a sandbox (`invalid effort
-"turbo": must be one of low, medium, high, xhigh, max`; `"coder" is not
-one (did you mean "code"?)`). Names are the agent names you pass to
-`fullsend run <agent>`, matched case-insensitively. Precedence and how
-entries layer over `config.base.yaml`: [Per-agent runtime, model and
-effort](../../runtimes.md#per-agent-runtime-model-and-effort-in-configyaml).
-
-The same Vertex credentials cover Gemini too:
+Every example above runs on **Claude Code**, the default runtime. Fullsend
+also has an opt-in **pi** runtime, and any example on this page runs on it
+by adding one flag to the same command:
 
 ```bash
 fullsend run triage \
@@ -305,36 +216,14 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
-  --runtime pi \
-  --model google-vertex/gemini-2.5-flash
+  --runtime pi
 ```
 
-**pi-specific notes** (see the [Pi runtime page](../../runtimes/pi.md)
-for models, behaviour differences and troubleshooting, the [security
-feature matrix](../../contributing/runtime-implementation.md#security-feature-matrix)
-for what each hook covers on pi, and [Choose an agent
-runtime](../getting-started/choosing-a-runtime.md) for the same overrides
-in the setup flow):
-
-- **fullsend v0.37.0+** is the first release that carries the pi runtime,
-  so the [release download](#download-the-fullsend-cli) and the
-  [container image](#run-from-a-container) above both work as-is; an
-  older binary has no pi runtime to select.
-- The sandbox image must include pi:
-  `ghcr.io/fullsend-ai/fullsend-sandbox` **v0.37.0+** (the image bakes
-  `PI_VERSION`). A stale image fails preflight with
-  `pi preflight: pi --version exited 127` — fix with
-  `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest`.
-- `review` and `retro` run to schema-valid results but in a **single
-  context** — pi has no sub-agent tool, so the parallel reviewer roster is
-  not exercised.
-- `FULLSEND_PI_PROVIDER` sets the provider prefix for bare model ids
-  (default `anthropic-vertex`); `FULLSEND_PI_BASH_ALLOWLIST=enforce` makes
-  the Bash first-token allowlist block instead of warn.
-- Security hooks are fail-closed: a missing or modified hook adapter stops
-  the run with exit 97 by design; repo-owned `.pi/` content is never loaded.
-- Debugging: `--debug='*'` (the `=` is required); sandbox-side failures land
-  in `pi-debug.log` inside the run directory, not the runner's output.
+Everything else about runtimes lives in one place: [Agent
+runtimes](../../runtimes.md) for selecting and overriding the runtime,
+model and effort — per run, or per agent in `config.yaml` — and
+[Pi › Running it locally](../../runtimes/pi.md#running-it-locally) for
+what a local pi run needs, its models and its troubleshooting.
 
 ### Remote resource flags
 
@@ -486,7 +375,6 @@ approach.
 - **Podman host-gateway**: if sandbox creation fails with `unable to replace "host-gateway"`, set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine.
 - **Architecture mismatch**: if your sandbox image uses a different CPU architecture than the host (e.g. amd64 image on an arm64 Mac via QEMU emulation), set `FULLSEND_SANDBOX_ARCH=amd64` so the CLI downloads the correct binary. This is not needed in the typical setup where the Podman VM matches the host arch.
 - **Container image**: `--network=host` shares the Podman VM's network namespace, not the Mac's, so a gateway configured at `127.0.0.1` is unreachable from inside the container. Fullsend detects this automatically and redirects the containerized CLI to whichever of `host.containers.internal` (Podman) or `host.docker.internal` (Docker) is actually reachable (fullsend-ai/fullsend#5261) — no manual steps needed. This depends on one of those names resolving inside the container; if neither does, see the **Podman host-gateway** note above. To override the detection yourself, set `OPENSHELL_GATEWAY_ENDPOINT` (e.g. `https://host.containers.internal:17670`) before running the container — an explicit value here is never overwritten. Always use `https://`: check `openshell gateway list`'s `AUTH` column, and if it says `mtls`, OpenShell will present your client certificate to whatever host this points at, so only point it at a gateway you trust.
-- **pi runtime**: verified end-to-end on Apple Silicon (podman machine, Homebrew `openshell`); the notes above apply unchanged — use `/private/tmp/...` paths, and `FULLSEND_SANDBOX_ARCH` only if the image arch differs from the host.
 - **Container image mounts**: bind-mounting `/tmp/...` paths fails with `statfs: no such file or directory` on macOS — Podman Desktop's VM shares `/Users`, `/private`, and `/var/folders` via virtiofs, but not the literal `/tmp` path, and Podman does not resolve the `/tmp` → `/private/tmp` symlink before mounting. Use `/private/tmp/...` (and `$(pwd -P)` instead of `$PWD`). The [container example](#run-from-a-container) above already accounts for this.
 
 ### Linux
@@ -497,7 +385,6 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 `OPENSHELL_BIND_ADDRESS` on `$HOME/.config/openshell/gateway.env` and restart the
 `openshell-gateway` service.
 - **SELinux**: on Fedora/RHEL, bind-mounted volumes may need the `:z` suffix for standalone `podman run`. OpenShell handles this automatically.
-- **pi runtime**: verified end-to-end on Fedora with rootless Podman; the notes above apply unchanged.
 
 ## Troubleshooting
 
@@ -524,26 +411,6 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 **`unable to replace "host-gateway"` on macOS**
 - Set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine
 
-### pi runtime
-
-- **`pi preflight: pi --version exited 127`** — the sandbox image predates
-  pi. `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest`.
-- **`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT …`** — the
-  sandbox environment comes from the harness (`host_files`,
-  `env.sandbox`), not from `--env-file`, which only reaches the runner
-  process (ADR 0055). Files sourced from `.env.d/` need `export` on each
-  line. The fleet harnesses already wire this; a custom harness must too.
-- **Run used Claude instead of pi** — the runtime falls back to `claude`
-  when neither the config's `runtime:` nor `--runtime`/`FULLSEND_RUNTIME`
-  selects pi; the plan block's `Runtime:` line and stderr's
-  `runtime: selected …` show which one ran and why.
-- **`--debug "…"` fails with `accepts 1 arg(s)`** — `--debug` takes an
-  optional value: write `--debug='*'` (with `=`).
-- **Agent fails with nothing in the terminal** — sandbox-side pi failures
-  land in `pi-debug.log` inside the run directory, next to the
-  transcripts; kept sandboxes must be removed manually
-  (`openshell sandbox delete <name>`).
-
 ## Debugging network policies locally
 
 When customizing network policies, running agents locally lets you inspect
@@ -552,9 +419,6 @@ section describes what a local `fullsend run` produces and how to use the
 output to iterate on network policy allowlists.
 
 ### Run directory structure
-
-(On pi runs the directory additionally contains `pi-debug.log` — pi's
-stderr — next to the transcripts.)
 
 Every `fullsend run` creates a run directory. By default this is under
 `/tmp/fullsend/`; override it with `--output-dir`:
@@ -689,3 +553,10 @@ curl -sf https://api.example.com/healthz
   diff <(grep DENIED run-1/logs/openshell-sandbox.log) \
        <(grep DENIED run-2/logs/openshell-sandbox.log)
   ```
+
+## See also
+
+- [Agent runtimes](../../runtimes.md) — choosing a runtime and overriding runtime, model and effort per run or per agent
+- [Pi › Running it locally](../../runtimes/pi.md#running-it-locally) — what a local pi run needs, its models and troubleshooting
+- [fullsend run](../../cli/run.md) — the full flag reference
+- [Configuring agent behavior](customizing-agents.md) — harness configuration and `base:` composition

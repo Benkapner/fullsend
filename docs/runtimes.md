@@ -111,7 +111,18 @@ agents:
     model: haiku
 ```
 
-Or from the CLI: `fullsend agent set code --runtime claude --model sonnet --effort high`.
+Or from the CLI, which validates the entry before writing it:
+
+1. `fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high`
+2. `fullsend agent list --fullsend-dir .fullsend` shows the settings next to each agent —
+   `code  (built-in)  [runtime=claude model=sonnet effort=high]`, or the `source:` path for a custom
+   agent.
+3. The next `fullsend run code` names the entry as the source: `Runtime: claude (from <config path>
+   agents.code)` — and a `--runtime`/`--model` flag on that run still wins.
+
+An invalid value is refused before the write — `invalid effort "turbo": must be one of low, medium,
+high, xhigh, max` — and the same check runs on every `fullsend run`, so a hand-edited entry fails the
+run before a sandbox starts rather than being skipped.
 
 A `source:` entry needs no `name:` — the agent's name is derived from the source file
 (`harness/lint.yaml` → `lint`, ADR 0058), and that is the name the settings, `fullsend run lint`
