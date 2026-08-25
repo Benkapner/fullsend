@@ -113,6 +113,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |
+| Developer | `fullsend agent set <name>` | Set an agent's runtime, model or effort |
 | Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
 | Developer | `fullsend agent remove <name>` | Unregister an agent from config |
 

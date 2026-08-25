@@ -332,7 +332,9 @@ The two are checked in different places and fail differently:
   nothing, fails with `resolving agent "pi-smoke": no config and agents-repo
   fallback unavailable`.
 - **No `defaults.runtime: pi`** — the run *succeeds* and silently uses the
-  default `claude` runtime (`backendFromConfigFile` → `ResolveFromConfig`).
+  default `claude` runtime (`backendFromConfigFile` → `ResolveFromConfig`
+  for this org-style config; a per-repo config resolves through
+  `ResolveForAgent`, which also honours `runtime:` on the agent's `agents:` entry).
   The give-away is the `runtime: selected "claude"` line; pi is never
   started.
 

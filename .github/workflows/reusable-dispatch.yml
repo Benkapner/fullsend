@@ -457,9 +457,11 @@ jobs:
             echo "::error::config.yaml: disabled agent entry without a name field — add 'name:' to identify which agent to disable"
             exit 1
           fi
-          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "")) | line' .fullsend/config.yaml 2>/dev/null || echo "")
+          # An enabled entry may omit source when it only tunes a built-in
+          # agent by name (runtime/model/effort; ADR 0091).
+          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null)) | line' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$BAD_SOURCE" ]]; then
-            echo "::error::config.yaml: enabled agent entry without a source field"
+            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model or effort to tune a built-in agent)"
             exit 1
           fi
           DUPES_ENABLED=$(yq '.agents[] | select(type == "!!map" and .enabled != false) | (.name // "") | select(. != "") | downcase' .fullsend/config.yaml 2>/dev/null | sort | uniq -d)
