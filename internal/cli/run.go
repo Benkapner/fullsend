@@ -40,6 +40,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -139,10 +140,11 @@ type resolveFlags struct {
 
 // statusOpts holds the optional status notification parameters for a run.
 type statusOpts struct {
-	runURL     string
-	statusRepo string
-	statusNum  int
-	mintURL    string
+	runURL        string
+	statusRepo    string
+	statusNum     int
+	statusComment int
+	mintURL       string
 }
 
 // aggregateMetrics holds accumulated behavioral metrics across retry iterations.
@@ -270,6 +272,7 @@ func newRunCmd() *cobra.Command {
 	var debugFilter string
 	var keepSandbox bool
 	var forgeFlag string
+	var eventFile string
 	var rFlags resolveFlags
 	var sOpts statusOpts
 	var oFlags runOverrideFlags
@@ -282,7 +285,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, rFlags, sOpts, printer, keepSandbox, oFlags)
+			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
 
@@ -296,12 +299,14 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable agent runtime debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
+	cmd.Flags().StringVar(&eventFile, "event-file", "", "path to a normalized event JSON file for CEL overlay resolution (ADR 0088)")
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
 	cmd.Flags().StringVar(&sOpts.runURL, "run-url", "", "URL of the CI/CD run for status comments")
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
+	cmd.Flags().IntVar(&sOpts.statusComment, "status-comment-id", 0, "ID of the triggering comment, for comment-scoped reactions on slash-command runs (optional)")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi or dummy; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi; also $FULLSEND_MODEL)")
@@ -312,7 +317,7 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) (runErr error) {
+func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, eventFile string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) (runErr error) {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -340,12 +345,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 1. Resolve and load harness.
 	harnessStart := time.Now()
 
-	forgePlatform, err := detectForgePlatform(forgeFlag)
-	if err != nil {
-		printer.StepFail("Invalid --forge flag")
-		return err
-	}
-
 	policy := fetch.DefaultPolicy
 	policy.Offline = rFlags.offline
 
@@ -356,6 +355,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+
+	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).
+	forgePlatform, err := detectForgePlatform(forgeFlag, orgCfg)
+	if err != nil {
+		printer.StepFail("Invalid --forge flag")
+		return err
+	}
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
 	// handles the omitted-field case when a config is present.
 	orgAllowlist := config.DefaultAllowedRemoteResources()
@@ -372,6 +378,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Load normalized event for CEL overlay resolution (ADR 0088).
+	// When --event-file is provided, the event is passed to ComposeOpts.Event
+	// so ResolveOverlays can evaluate overlay when expressions.
+	var eventMap map[string]any
+	if eventFile != "" {
+		eventData, readErr := os.ReadFile(eventFile)
+		if readErr != nil {
+			return fmt.Errorf("reading event file %s: %w", eventFile, readErr)
+		}
+		ev, parseErr := normevent.ParseJSON(eventData)
+		if parseErr != nil {
+			return fmt.Errorf("parsing event file %s: %w", eventFile, parseErr)
+		}
+		var mapErr error
+		eventMap, mapErr = ev.ToMap()
+		if mapErr != nil {
+			return fmt.Errorf("converting event to map: %w", mapErr)
+		}
+	}
+
 	composeOpts := harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
@@ -380,6 +406,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		OrgAllowlist:  orgAllowlist,
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
+		Event:         eventMap,
+		Config:        harness.BuildConfigMap(orgCfg),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -3758,15 +3786,29 @@ func sandboxArch() string {
 	return runtime.GOARCH
 }
 
-// detectForgePlatform determines the forge platform from the CLI flag or CI
-// environment variables. Precedence: explicit flag > GITHUB_ACTIONS > GITLAB_CI.
+// detectForgePlatform determines the forge platform from the CLI flag, config,
+// or CI environment variables. Precedence (per ADR 0088):
+//  1. explicit --forge flag
+//  2. config.forge (from config.yaml)
+//  3. CI environment variables (GITHUB_ACTIONS > GITLAB_CI)
+//
 // Returns an error if the flag value is not a recognized forge key.
-func detectForgePlatform(flag string) (string, error) {
+func detectForgePlatform(flag string, cfg config.ConfigReader) (string, error) {
 	if flag != "" {
 		if !harness.ValidForgePlatform(flag) {
 			return "", fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s)", flag, harness.ForgeKeyList())
 		}
 		return flag, nil
+	}
+	if cfg != nil {
+		if pr, ok := cfg.(config.PerRepoConfigReader); ok {
+			if forge := pr.ConfigForge(); forge != "" {
+				if !harness.ValidForgePlatform(forge) {
+					return "", fmt.Errorf("config.forge: %q is not a valid forge platform (valid: %s)", forge, harness.ForgeKeyList())
+				}
+				return forge, nil
+			}
+		}
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		return "github", nil
@@ -3849,6 +3891,9 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 	n.SetWarnFunc(func(format string, args ...any) {
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
+	if sOpts.statusComment != 0 {
+		n.SetTriggerCommentID(sOpts.statusComment)
+	}
 
 	canonRole := resolveRole(role)
 	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {

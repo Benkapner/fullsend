@@ -108,7 +108,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, repair component drift (workflow, thin callers, variables, secrets), upgrade refs |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
-| Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components and ref drift |
+| Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components, ref drift, and scaffold content drift |
 | Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in the manifest |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
@@ -171,15 +171,16 @@ gcloud services enable \
 
 ## Status notifications
 
-See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start and completion comments.
+See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start/completion comments and reactions.
 
-The composite action accepts four optional inputs for status notifications:
+The composite action accepts five optional inputs for status notifications:
 
 | Input | Description |
 |-------|-------------|
 | `run-url` | URL of the CI/CD run shown in the status comment |
 | `status-repo` | Repository (`owner/repo`) to post status comments on |
 | `status-number` | Issue or PR number for status comments |
+| `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 
 All reusable workflows pass these inputs automatically.
