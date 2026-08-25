@@ -851,6 +851,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					status = "cancelled"
 				} else if runErr != nil {
 					status = "failure"
+					detail = runErr.Error()
 				} else if runSkipped {
 					status = "skipped"
 					detail = runSkipReason
