@@ -109,7 +109,7 @@ fullsend run triage ... --runtime pi --model google-vertex/gemini-3.7-flash
 ```
 
 To keep an agent on pi (or off it) without passing flags every time, set `runtime:`/`model:` on
-its `agents:` entry in `config.yaml` — see [per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort-in-configyaml).
+its `agents:` entry in `config.yaml` — see [per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort).
 
 What a local pi run needs, beyond the guide:
 

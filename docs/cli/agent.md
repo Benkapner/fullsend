@@ -99,7 +99,7 @@ fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4
 | `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
 
-See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort-in-configyaml) for precedence.
+See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
 
 ## `agent remove`
 

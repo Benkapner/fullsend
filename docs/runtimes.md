@@ -91,7 +91,7 @@ In CI these are repository variables of the same name, plain or role-prefixed
 the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.runner` does **not** reach the
 `fullsend` process.
 
-### Per-agent runtime, model and effort in config.yaml
+### Per-agent runtime, model and effort
 
 The `agents:` list is the per-agent place in `config.yaml`: an entry names an agent and can set
 its `runtime`, `model` and `effort`. A built-in agent (`triage`, `code`, `review`, `fix`, `retro`,
