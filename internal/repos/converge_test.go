@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -865,6 +866,47 @@ func TestResolveTargetRef(t *testing.T) {
 		rr := resolveTargetRef(context.Background(), "", "", "v1.0.0", nil)
 		if rr.ref != "" {
 			t.Errorf("ref = %q, want empty", rr.ref)
+		}
+	})
+
+	t.Run("branch ref not SHA-pinned", func(t *testing.T) {
+		// When fullsendRef is a branch name (not semver), the ref
+		// should be used as-is — not resolved to a SHA. Resolving
+		// branch refs creates a non-idempotent convergence loop
+		// because each commit shifts the branch HEAD. See #6553.
+		sha := "abc123def456789012345678901234567890abcd"
+		fc := forge.NewFakeClient()
+		fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
+		resolver := NewRefResolver(fc)
+
+		rr := resolveTargetRef(context.Background(), "main", "", "", resolver)
+		if rr.ref != "main" {
+			t.Errorf("ref = %q, want %q (branch should not be SHA-pinned)", rr.ref, "main")
+		}
+		if rr.tag != "" {
+			t.Errorf("tag = %q, want empty (branch refs have no tag annotation)", rr.tag)
+		}
+		if rr.manifestRef != "main" {
+			t.Errorf("manifestRef = %q, want %q", rr.manifestRef, "main")
+		}
+	})
+
+	t.Run("semver ref SHA-pinned via resolver", func(t *testing.T) {
+		// Semver tags should still be resolved to SHA for pinning.
+		sha := "abc123def456789012345678901234567890abcd"
+		fc := forge.NewFakeClient()
+		fc.Refs["fullsend-ai/fullsend/tags/v2.0.0"] = sha
+		resolver := NewRefResolver(fc)
+
+		rr := resolveTargetRef(context.Background(), "v2.0.0", "", "", resolver)
+		if rr.ref != sha {
+			t.Errorf("ref = %q, want %q (semver tag should be SHA-pinned)", rr.ref, sha)
+		}
+		if rr.tag != "v2.0.0" {
+			t.Errorf("tag = %q, want %q", rr.tag, "v2.0.0")
+		}
+		if rr.manifestRef != "v2.0.0" {
+			t.Errorf("manifestRef = %q, want %q", rr.manifestRef, "v2.0.0")
 		}
 	})
 }
@@ -1851,5 +1893,165 @@ func TestConverge_GitLab_SeedsMissingPollVariables(t *testing.T) {
 	}
 	if val := fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"]; val != "{}" {
 		t.Errorf("FULLSEND_LABEL_STATE = %q, want %q", val, "{}")
+	}
+}
+
+// TestConverge_BranchRefIdempotent verifies that convergence with a
+// branch fullsend_ref (e.g. "main") is idempotent: the second run
+// reports "already current" with zero scaffold writes. This is the
+// core regression test for #6553.
+func TestConverge_BranchRefIdempotent(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Workflow and thin callers at "main" — matching manifest.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("main")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("main")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.FullsendRef = "main"
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+	cfg.Force = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	current := result.AlreadyCurrent()
+	if len(current) != 1 {
+		t.Errorf("expected 1 already current, got %d", len(current))
+		for _, r := range result.Results {
+			for _, a := range r.Actions {
+				t.Logf("  action: %s %s: %s", a.Component, a.Action, a.Detail)
+			}
+		}
+	}
+	if committed {
+		t.Error("should not commit when branch ref already matches")
+	}
+}
+
+// TestConverge_BranchRefSHAPinnedIsUpgraded verifies that when a repo
+// has files SHA-pinned to a branch (e.g. @SHA # main from a previous
+// install), converging with fullsend_ref="main" upgrades them to the
+// plain branch ref (@main). This tests the transition path from the
+// old SHA-pinning behaviour to the idempotent branch-ref form.
+func TestConverge_BranchRefSHAPinnedIsUpgraded(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Files are SHA-pinned with a "main" tag annotation.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflowSHAPinned(sha, "main")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflowSHAPinned(sha, "main")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.FullsendRef = "main"
+
+	var committedFiles []forge.TreeFile
+	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+	cfg.Force = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo, got %d", len(convergedRepos))
+	}
+
+	// Verify committed files contain "main" (not SHA-pinned).
+	for _, f := range committedFiles {
+		content := string(f.Content)
+		if strings.Contains(content, sha) {
+			t.Errorf("file %s should not contain old SHA %s after branch-ref upgrade", f.Path, sha[:12])
+		}
+		if !strings.Contains(content, "@main") {
+			t.Errorf("file %s should contain @main after branch-ref upgrade", f.Path)
+		}
+	}
+}
+
+// TestConverge_BranchRefConsistentAcrossBatch verifies that all repos
+// in a batch with fullsend_ref="main" receive the same ref form —
+// not a mix of @SHA and @main. This is validation criterion 2 from
+// #6553.
+func TestConverge_BranchRefConsistentAcrossBatch(t *testing.T) {
+	repoNames := []string{"acme/api", "acme/web", "acme/docs", "acme/infra"}
+	fc := newFakeClientForBatch(repoNames...)
+
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "main",
+			Repos: []RepoEntry{
+				{Name: "acme/api"},
+				{Name: "acme/web"},
+				{Name: "acme/docs"},
+				{Name: "acme/infra"},
+			},
+		},
+	}
+
+	// Track all committed scaffold files per repo.
+	type commitRecord struct {
+		owner string
+		repo  string
+		files []forge.TreeFile
+	}
+	var commits []commitRecord
+	var commitMu sync.Mutex
+	commitFn := func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool, _ bool) error {
+		commitMu.Lock()
+		commits = append(commits, commitRecord{owner: owner, repo: repo, files: files})
+		commitMu.Unlock()
+		return nil
+	}
+
+	cfg := convergeCfgWithDefaults(m)
+	cfg.Force = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	installed := result.Installed()
+	if len(installed) != 4 {
+		t.Fatalf("expected 4 installed, got %d", len(installed))
+	}
+
+	// Verify all committed files use branch ref "main", not SHA-pinned.
+	for _, c := range commits {
+		for _, f := range c.files {
+			content := string(f.Content)
+			if strings.Contains(content, "fullsend-ai/fullsend/") && strings.Contains(content, "@") {
+				// Check that the ref is @main, not @SHA.
+				if !strings.Contains(content, "@main") {
+					t.Errorf("%s/%s file %s uses a non-main ref — expected @main for branch-ref install",
+						c.owner, c.repo, f.Path)
+				}
+			}
+		}
 	}
 }
