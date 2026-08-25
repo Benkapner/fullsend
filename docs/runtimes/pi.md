@@ -148,9 +148,10 @@ What a local pi run needs, beyond the guide:
 ## Not yet exercised
 
 `runtime: pi` is selectable and has been run end to end, but no **fleet lifecycle** run on Vertex is
-recorded yet. Pilot on a disposable org with `triage`/`prioritize` before `code`/`fix`. `review` and
-`retro` are unsupported — they need sub-agents, and would run in a single context without per-persona
-models. `extension_error` events are not mapped.
+recorded yet. Pilot on a disposable repo with `triage`/`prioritize` before `code`/`fix`. `review` and
+`retro` run to schema-valid results, but in a **single context**: pi has no sub-agent tool, so the
+parallel persona roster and its per-persona models are never exercised — treat them as unsupported
+for that purpose. `extension_error` events are not mapped.
 
 ## Troubleshooting
 
