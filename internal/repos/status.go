@@ -282,6 +282,9 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 	// ref-format differences do not produce false content-drift reports —
 	// ref drift is already detected separately.
 	checkScaffoldContentDrift(ctx, client, cfg, &status)
+	if status.Error != "" {
+		return status
+	}
 
 	// Read display-only variable not covered by required vars.
 	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_GCP_REGION")

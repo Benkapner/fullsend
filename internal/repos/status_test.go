@@ -1,8 +1,10 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -1369,6 +1371,82 @@ func TestStatus_ContentDrift_RefDifference_NoFalsePositive(t *testing.T) {
 	for _, d := range result.Repos[0].Drifts {
 		if d.Expected == "current template" {
 			t.Errorf("unexpected content drift when only ref differs: %+v", d)
+		}
+	}
+}
+
+func TestStatus_NoContentDrift_IndependentInstalledContent(t *testing.T) {
+	// This test constructs installed scaffold content independently
+	// (NOT via a second BuildScaffoldFiles call) to verify that the
+	// ref normalization and content comparison in
+	// checkScaffoldContentDrift work correctly end-to-end.
+	//
+	// The other no-drift tests use populateInstalledRepo which calls
+	// BuildScaffoldFiles for both installed and expected sides, making
+	// them tautological for content-drift verification.
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets["org/repo/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["org/repo/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	// Render expected scaffold files (this is what ExpectedScaffoldContent
+	// calls internally).
+	expectedFiles, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       "org",
+		Repo:        "repo",
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     "https://mint.example.com",
+		UpstreamRef: "v2.3.0",
+		UpstreamTag: "v2.3.0",
+	})
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles: %v", err)
+	}
+
+	// Independently construct installed content by taking the rendered
+	// bytes and replacing @v2.3.0 in uses: lines with a SHA-annotated
+	// format. This simulates a repo installed with a resolved SHA while
+	// the manifest still references the tag. The replaceShimRef
+	// normalization should make both sides equivalent.
+	shaRef := "abc1234567890def1234567890abc1234567890de # v2.3.0"
+	usesRefPattern := regexp.MustCompile(`(@)v2\.3\.0([ \t]*(?:#.*)?)?\b`)
+
+	for _, f := range expectedFiles {
+		content := usesRefPattern.ReplaceAll(f.Content, []byte("@"+shaRef))
+		// Verify we actually changed something for non-config files
+		// that contain uses: lines (workflow + thin callers).
+		if f.Path != ".fullsend/config.yaml" && bytes.Equal(content, f.Content) {
+			// Not all scaffold files contain uses: lines; skip the
+			// assertion for those.
+			if bytes.Contains(f.Content, []byte("uses:")) {
+				t.Errorf("regex did not modify %s — test may be vacuous", f.Path)
+			}
+		}
+		fc.FileContents["org/repo/"+f.Path] = content
+	}
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, d := range result.Repos[0].Drifts {
+		if d.Expected == "current template" {
+			t.Errorf("unexpected content drift with independently constructed content: %+v", d)
 		}
 	}
 }
