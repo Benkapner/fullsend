@@ -243,14 +243,59 @@ opt-in alternative. To run any of the examples on pi:
    below) — on pi, the model name is also the provider choice.
 
 **Per-run overrides** work on both runtimes — precedence is
-**flag > environment > config/harness > default**:
+**flag > environment > the agent's `agents:` entry > repo-wide
+config/harness > default**:
 
-| Override | Flag | Environment |
-|----------|------|-------------|
-| Runtime (`claude`, `pi`) | `--runtime` | `FULLSEND_RUNTIME` |
-| Model (alias, id, or `provider/id` on pi) | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` is a pi-only alias) |
-| Effort (`low`…`max`) | `--effort` | `FULLSEND_EFFORT` |
-| Fallback chain (Claude Code only) | — | `FULLSEND_FALLBACK_MODELS=a,b` |
+| Override | Flag | Environment | Per-agent config |
+|----------|------|-------------|------------------|
+| Runtime (`claude`, `pi`) | `--runtime` | `FULLSEND_RUNTIME` | `runtime:` on the agent's `agents:` entry |
+| Model (alias, id, or `provider/id` on pi) | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` is a pi-only alias) | `model:` on the agent's `agents:` entry |
+| Effort (`low`…`max`) | `--effort` | `FULLSEND_EFFORT` | `effort:` on the agent's `agents:` entry |
+| Fallback chain (Claude Code only) | — | `FULLSEND_FALLBACK_MODELS=a,b` | — |
+
+**Make it stick per agent.** Flags are for trying things out. To keep a
+choice for one agent, put it on that agent's `agents:` entry in the
+`config.yaml` the run reads — here the fleet clone, in CI the repo's
+`.fullsend/config.yaml` — where it is reviewed with the repo and applies
+to every run:
+
+1. Set it. The entry is validated before anything is written:
+
+   ```bash
+   fullsend agent set code --fullsend-dir /tmp/fullsend-agents/ \
+     --runtime claude --model sonnet
+   ```
+
+   Or edit the file by hand. A built-in agent needs only its name; a
+   custom agent carries the settings on its `source:` entry:
+
+   ```yaml
+   runtime: pi              # repo default for agents that set none
+   agents:
+     - name: code
+       runtime: claude
+       model: sonnet
+   ```
+
+2. Check it — `fullsend agent list --fullsend-dir /tmp/fullsend-agents/`
+   shows the settings next to each agent, e.g.
+   `code  harness/code.yaml  [runtime=claude model=sonnet]`.
+
+3. Run as before. The plan block names the entry as the source, and the
+   per-run flags above still win when you pass them:
+
+   ```
+       Runtime: claude (from /tmp/fullsend-agents/config.yaml agents.code)
+       Model: sonnet (from /tmp/fullsend-agents/config.yaml agents.code)
+   ```
+
+Typos are caught early: `agent set` refuses an invalid value, and
+`fullsend run` exits 1 before starting a sandbox (`invalid effort
+"turbo": must be one of low, medium, high, xhigh, max`; `"coder" is not
+one (did you mean "code"?)`). Names are the agent names you pass to
+`fullsend run <agent>`, matched case-insensitively. Precedence and how
+entries layer over `config.base.yaml`: [Per-agent runtime, model and
+effort](../../runtimes.md#per-agent-runtime-model-and-effort-in-configyaml).
 
 The same Vertex credentials cover Gemini too:
 
@@ -264,17 +309,17 @@ fullsend run triage \
   --model google-vertex/gemini-2.5-flash
 ```
 
-**pi-specific notes** (see [Pi-specific known
-constraints](../../runtimes.md#pi-specific-known-constraints-6464) for the
-full security matrix; per-run overrides are also covered in
-[Choose an agent runtime](../getting-started/choosing-a-runtime.md)):
+**pi-specific notes** (see the [Pi runtime page](../../runtimes/pi.md)
+for models, behaviour differences and troubleshooting, the [security
+feature matrix](../../contributing/runtime-implementation.md#security-feature-matrix)
+for what each hook covers on pi, and [Choose an agent
+runtime](../getting-started/choosing-a-runtime.md) for the same overrides
+in the setup flow):
 
-- **Build the CLI from `main`** — no released fullsend version includes
-  the pi runtime yet: clone fullsend and `make go-build` (or
-  `go run ./cmd/fullsend run …`) instead of the
-  [release download](#download-the-fullsend-cli) above. The
-  [container image](#run-from-a-container) tracks releases too, so it has
-  the same limitation until a release ships pi.
+- **fullsend v0.37.0+** is the first release that carries the pi runtime,
+  so the [release download](#download-the-fullsend-cli) and the
+  [container image](#run-from-a-container) above both work as-is; an
+  older binary has no pi runtime to select.
 - The sandbox image must include pi:
   `ghcr.io/fullsend-ai/fullsend-sandbox` **v0.37.0+** (the image bakes
   `PI_VERSION`). A stale image fails preflight with

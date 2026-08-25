@@ -34,7 +34,7 @@ Advanced guides for platform operators who deploy and manage the GCP-side infras
 Guides for developers working in repositories where fullsend is active.
 
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
-- [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine (macOS + Linux; released binaries for Claude Code, a `main` build for the experimental pi runtime)
+- [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux; Claude Code by default, `--runtime pi` for the experimental pi runtime)
 - [Configuring agent behavior](user/customizing-agents.md) — Harness configurations and `base:` composition for your org and repos
 - [Configuring with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Configuring with skills](user/customizing-with-skills.md) — Extend built-in agent skills; [authoring augmentations](user/customizing-with-skills.md#authoring-skills-that-augment-defaults)

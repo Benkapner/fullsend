@@ -70,9 +70,9 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce` |
 | Not supported | Sub-agents, fallback chains, `plugins:`, Bedrock/Azure providers |
 
-**Running it locally?** See [Run a minimal agent on the pi
-runtime](../guides/user/running-agents-locally.md#run-a-minimal-agent-on-the-pi-runtime) — no fleet repo
-required.
+**Running it locally?** The local-run guide's standard fleet examples take `--runtime pi` — see
+[Choosing the runtime](../guides/user/running-agents-locally.md#choosing-the-runtime) for the command,
+the per-run and per-agent overrides and the pi-specific notes.
 
 ## Behaviour differences worth knowing
 
@@ -117,5 +117,5 @@ provider and model per message.
 ## See also
 
 - [Agent runtimes](../runtimes.md) — choosing and selecting a runtime
-- [Running agents locally](../guides/user/running-agents-locally.md#run-a-minimal-agent-on-the-pi-runtime) — a local pi run, no fleet repo required
+- [Running agents locally — Choosing the runtime](../guides/user/running-agents-locally.md#choosing-the-runtime) — `--runtime pi` on the standard local-run examples
 - [pi runtime internals](../contributing/runtime-implementation.md#pi-runtime-internals-6464) — verification provenance and what to re-check on a version bump
