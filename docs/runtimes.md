@@ -117,8 +117,9 @@ Or from the CLI, which validates the entry before writing it:
 2. `fullsend agent list --fullsend-dir .fullsend` shows the settings next to each agent —
    `code  (built-in)  [runtime=claude model=sonnet effort=high]`, or the `source:` path for a custom
    agent.
-3. The next `fullsend run code` names the entry as the source: `Runtime: claude (from <config path>
-   agents.code)` — and a `--runtime`/`--model` flag on that run still wins.
+3. The next `fullsend run code` names the entry as the source —
+   `Runtime: claude (from <config path> agents.code)` — and a `--runtime`/`--model` flag on that
+   run still wins.
 
 An invalid value is refused before the write — `invalid effort "turbo": must be one of low, medium,
 high, xhigh, max` — and the same check runs on every `fullsend run`, so a hand-edited entry fails the
