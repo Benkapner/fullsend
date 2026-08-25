@@ -108,7 +108,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, repair component drift (workflow, thin callers, variables, secrets), upgrade refs |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos and remove from manifest |
-| Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components and ref drift |
+| Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components, ref drift, and scaffold content drift |
 | Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in the manifest |
 
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
