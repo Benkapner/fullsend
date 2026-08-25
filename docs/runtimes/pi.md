@@ -30,8 +30,9 @@ through fullsend's table, and a bare id gets the provider from `FULLSEND_PI_PROV
 > and a bare id under `FULLSEND_PI_PROVIDER=xai-vertex`, case-insensitively, so both land on the
 > canonical spec.
 
-Because harness `model:` cannot contain `/` (`validModelName` is `^[a-zA-Z0-9_.@-]+$`), a harness
-selects a pi provider with a bare `model:` plus `FULLSEND_PI_PROVIDER`.
+Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
+(`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus
+`FULLSEND_PI_PROVIDER`.
 
 ### Each provider has its own GCP project
 
