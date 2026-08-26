@@ -126,6 +126,17 @@ This is not a replacement for existing security hooks. The Tirith scanner, SSRF 
 
 The tool allowlist hook (`tool_allowlist_pretool.py`) is the closest existing mechanism. It is currently disabled by default and operates on tool names only, not arguments or context. A risk assessment layer would subsume and extend its functionality.
 
+## Enforcement boundary: advisory inside the agent runtime, hard only at the sandbox boundary
+
+All four approaches above run inside the agent runtime, which bounds what any of them can guarantee. Per [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md), the sandbox is the sole enforcement layer and tool-level restrictions are *always bypassable*: an agent that can run a shell can rewrite arguments, shell out around a pattern check, or reach a capability by another path. Restricting tool calls at the runtime layer serves **steering** (focusing the agent, saving tokens, surfacing intent), not **security**. Security lives at or below the sandbox boundary: the OpenShell L7 egress policy for network access, and the host-side credential capability reducer ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md)).
+
+That reframes what a tool-call risk layer is *for*:
+
+- **Inside the agent runtime, a "block" is advisory.** Approaches 1, 3, and 4 evaluate a verdict in the same process as the agent. The intercepted call is genuinely blocked, but an equivalent capability reached by a different path is not: shelling out around the check, rewriting arguments, or a nested runtime that never fires the hook at all (an agent can invoke a nested `pi` from Bash with none of the runtime's tool hooks). A compromised or jailbroken agent takes that path. Treating an in-runtime block as a security guarantee is the trap, because it produces a false sense of containment against the exact adversary (external prompt injection, the top-priority threat in the [threat model](security-threat-model.md)) it is meant to stop.
+- **For a verdict to be a real boundary, enforcement must sit where the agent cannot reach it.** The deterministic, argument-aware policy of Approach 3 becomes load-bearing only when it is evaluated at or below the sandbox boundary, which the agent already cannot bypass: the OpenShell L7 egress policy for `WebFetch` and domain rules, and the host-side credential capability reducer for privileged operations, rather than a PreToolUse hook in the same process.
+
+So the value of the risk layer is twofold and worth keeping distinct. As **steering, defense in depth, and an observability signal** it is useful in-runtime today: a run that trips many high-risk verdicts is itself a trust signal (see the open questions below). As a **security control** it only counts when the same declarative policy is enforced at or below the sandbox boundary. Conflating the two is how an advisory hook gets mistaken for containment.
+
 ## Relationship to reasoning monitoring
 
 Issue [#174](https://github.com/fullsend-ai/fullsend/issues/174) proposes a reasoning monitor that watches the agent's internal thought process for signs of compromise. Tool call risk assessment is complementary: the reasoning monitor detects *intent drift* in the agent's thinking; risk assessment catches *dangerous actions* regardless of intent. An agent with benign reasoning can still make a dangerous tool call due to a misunderstanding, and a compromised agent may produce clean-looking reasoning while crafting a dangerous call.
@@ -142,3 +153,4 @@ Both layers are needed. Neither subsumes the other.
 - Should risk assessment verdicts feed into a broader risk score that influences approval routing? A run that triggered multiple high-risk tool call blocks is itself a signal, even if the blocks succeeded.
 - How do we measure the effectiveness of risk assessment? What metrics distinguish "caught a real threat" from "blocked legitimate work"?
 - If a blocked tool call returns the block reason to the agent, a compromised agent could use that feedback to reformulate the call and evade the judge on retry. How much information should a block verdict expose to the agent, and is there a way to limit retries or detect reformulation attempts?
+- Which parts of a declarative tool-call policy can be pushed down to the sandbox boundary (L7 egress policy, credential capability reducer) where they become enforceable, and which are inherently in-runtime only and therefore advisory?
