@@ -2271,9 +2271,12 @@ func TestConverge_OrphanProgressWarnings(t *testing.T) {
 		t.Fatalf("Converge() error: %v", err)
 	}
 
+	// Collect all results once for reuse below.
+	allResults := append(result.Converged(), append(result.AlreadyCurrent(), result.Failed()...)...)
+
 	// Orphan actions should be recorded.
 	var orphanActions []ComponentAction
-	for _, r := range append(result.Converged(), append(result.AlreadyCurrent(), result.Failed()...)...) {
+	for _, r := range allResults {
 		for _, a := range r.Actions {
 			if a.Action == "orphan" {
 				orphanActions = append(orphanActions, a)
@@ -2317,7 +2320,6 @@ func TestConverge_OrphanProgressWarnings(t *testing.T) {
 	// with only orphan (and "none") actions should be "already current".
 	// This test has content drift too, so we check through the actions
 	// of whatever bucket the repo lands in.
-	allResults := append(result.Converged(), append(result.AlreadyCurrent(), result.Failed()...)...)
 	var orphanCountsAsConverge bool
 	for _, r := range allResults {
 		onlyOrphansAndNone := true
