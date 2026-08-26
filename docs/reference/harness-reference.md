@@ -1,6 +1,6 @@
 # Harness Field Reference
 
-Complete reference for all fields available in a fullsend harness YAML file. For a guide-oriented introduction to harnesses, see [Bring Your Own Agent](bring-your-own-agent.md).
+Complete reference for all fields available in a fullsend harness YAML file. For a guide-oriented introduction to harnesses, see [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
 
 ```yaml
 # ── Required ──────────────────────────────────────────────────
@@ -44,7 +44,9 @@ agent_input: inputs/my-input.md     # File passed as initial input to the agent
 validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
-  feedback_mode: stderr              # How validation feedback reaches the agent
+  feedback_mode: append              # "none" (default) or "append" — append the
+                                     # previous iteration's validation failure to
+                                     # the agent prompt on retry
 
 # ── Host files ────────────────────────────────────────────────
 host_files:
@@ -82,23 +84,30 @@ api_servers:                         # Host-side REST proxies exposed to sandbox
     env:                             # Env vars for the server process
       API_KEY: "${API_KEY}"
 
-# ── Forge-specific overrides ──────────────────────────────────
-forge:
-  github:
-    pre_script: scripts/pre-gh.sh
-    post_script: scripts/post-gh.sh
-    skills: [skills/github-specific]  # Concatenated with top-level
-    providers: [providers/github.yaml] # Concatenated with top-level
-    openshell:
-      profiles: [profiles/github.yaml] # Concatenated with top-level
-    host_files:                        # Forge-specific host files
-      - src: env/github.env
-        dest: /run/secrets/forge.env
-    env:
-      runner:
-        GH_TOKEN: "${GH_TOKEN}"
-  gitlab:
-    pre_script: scripts/pre-gl.sh
+# ── Conditional overrides (CEL-guarded, first-match-wins) ────
+overlays:
+- when: 'event.source.system == "jira" && runtime.forge == "github"'
+  pre_script: scripts/pre-jira-on-gh.sh
+  skills: [skills/jira-read]          # Merged with top-level
+  env:
+    runner:
+      GH_TOKEN: "${GH_TOKEN}"
+      JIRA_TOKEN: "${JIRA_TOKEN}"
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/pre-gh.sh
+  post_script: scripts/post-gh.sh
+  skills: [skills/github-specific]    # Merged with top-level
+  providers: [providers/github.yaml]  # Concatenated with top-level
+  openshell:
+    profiles: [profiles/github.yaml]  # Concatenated with top-level
+  host_files:                         # Overlay-specific host files
+    - src: env/github.env
+      dest: /run/secrets/forge.env
+  env:
+    runner:
+      GH_TOKEN: "${GH_TOKEN}"
+- when: 'event.source.system == "jira"'
+  pre_script: scripts/pre-jira.sh
 
 # ── Security ──────────────────────────────────────────────────
 security:
@@ -113,20 +122,56 @@ security:
 > `roles` or `create_issues.allow_targets`) belongs in `config.yaml`
 > instead, not as an env var.
 
+## Field details
+
+Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
+
+**`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials the mint service issues.
+
+**`slug`** — Maps to a GitHub App installation. The `<org>-<role>` convention keeps slugs unique when multiple orgs share a mint. For custom GitHub App identity, see [Custom Agent Identity](../guides/user/custom-agent-identity.md).
+
+**`doc`** — Path to a human-readable document describing the agent's purpose and design. Resolved in the source repo only; the runtime ignores it. Useful for documentation indexes and discoverability.
+
+**`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
+
+**`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
+
+**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
+
+**`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
+
+**`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
+
 ## Deprecated fields
+
+> **Deprecated:** `forge` is deprecated. Use `overlays` with CEL `when`
+> expressions instead (see [ADR 0088](../ADRs/0088-cel-guarded-overlays.md)).
+> The `forge` field still works but emits a deprecation warning at lint time.
+> Migration: each forge key becomes an overlay entry -- e.g. `forge: github:`
+> becomes `overlays: - when: 'runtime.forge == "github"'`. Note the conditioning
+> axis: `runtime.forge` reflects the effective forge platform (from `--forge`
+> flag, `config.forge`, or CI env vars), while `event.source.system` identifies
+> the event origin. These diverge for cross-system events (e.g. a JIRA issue
+> triggering work on GitHub). `forge` and `overlays` cannot coexist in the
+> same harness.
 
 > **Deprecated:** `runner_env` is deprecated. Use `env.runner`
 > instead. The `runner_env` field still works but emits a deprecation warning
 > at runtime. Migration: move `runner_env:` entries under `env: runner:` and
 > delete the `runner_env:` block.
 
-## Field merge rules (for `base` and `forge`)
+## Field merge rules (for `base` and `overlays`)
+
+Overlays use first-match-wins: exactly one overlay (or none) applies to any
+given event. When an agent needs config from multiple concerns (e.g.
+JIRA-specific scripts *and* GitHub-specific runner env), create a combined
+entry. More-specific entries go first; broader fallbacks go last.
 
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
 | `skills` | Merged with deduplication by basename (child overrides base) |
-| `providers`, `openshell.profiles` | Concatenated (base + child); also applies per-forge |
+| `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
 | `plugins`, `api_servers` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
@@ -149,6 +194,6 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 
 ## See also
 
-- [Bring Your Own Agent](bring-your-own-agent.md) — end-to-end guide for building and registering agents
-- [Configuring agent behavior](customizing-agents.md) — harness configurations and `base:` composition
-- [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow and trigger patterns
+- [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) — end-to-end guide for building and registering agents
+- [Configuring agent behavior](../guides/user/customizing-agents.md) — harness configurations and `base:` composition
+- [CEL Triggers Reference](../guides/user/cel-triggers-reference.md) — dispatch flow and trigger patterns

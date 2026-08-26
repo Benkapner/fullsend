@@ -17,6 +17,13 @@ Building and deploying a custom agent takes four steps:
 
 To configure an _existing_ agent instead, see [Configuring existing agents](#configuring-existing-agents).
 
+## Before you begin
+
+- **fullsend CLI** installed and available on your PATH.
+- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first -- it creates the `.fullsend/` directory with `policies/`, `providers/`, and `profiles/` from the scaffold. For a standalone agent repo, you can create these files manually (see [Minimum viable agent](#minimum-viable-agent)).
+- **GCP inference provisioned (CI only).** For agents running in GitHub Actions, run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation.
+- **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps -- see [Configuring GitHub](../getting-started/configuring-github.md).
+
 ## How agents work
 
 A fullsend agent has two parts:
@@ -115,7 +122,7 @@ binaries:
   - "**/node"
 ```
 
-> **Prerequisite (CI only):** for agents running in GitHub Actions, your org or repo must be provisioned for GCP Workload Identity Federation — run [`fullsend inference provision`](../../cli/inference.md) first. The provider profile above controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)).
+> **Note (CI only):** the provider profile above controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)). Make sure you've completed the GCP prerequisites in [Before you begin](#before-you-begin).
 
 **`agents/my-agent.md`:**
 ````markdown
@@ -217,9 +224,9 @@ The agent definition is Markdown with YAML frontmatter:
 | `skills` | Skill names to mount |
 | `disallowedTools` | Forbidden Bash patterns |
 
-**Design principles:**
-- Agent writes a JSON result file; scripts do all mutations.
-- Be specific — define scoring dimensions, thresholds, output schemas.
+When writing the agent body:
+- The agent writes a JSON result file; scripts handle all mutations.
+- Be specific -- define scoring dimensions, thresholds, output schemas.
 - Include decision points (branch on confidence, clarity scores, etc.).
 
 ## Skills
@@ -233,7 +240,7 @@ skills/issue-labels/
   references/         # Optional: reference data
 ```
 
-Reference in the agent frontmatter by name (`skills: [issue-labels]`) and in the harness by path (`skills: [skills/issue-labels]`). Skills can also be URLs with integrity hashes.
+Reference in the agent frontmatter by name (`skills: [issue-labels]`) and in the harness by path (`skills: [skills/issue-labels]`). Skills can also be URLs with integrity hashes. See [Configuring with Skills](customizing-with-skills.md) for details on creating and managing skills.
 
 ## Scripts
 
@@ -401,7 +408,9 @@ Authentication for CLI commands uses the `gh` CLI or `GH_TOKEN` environment vari
 
 The examples above show customizing built-in agents via `base`. If you've built an entirely new agent from scratch, register it the same way — just point to a local harness instead of a URL.
 
-> **Routing label convention:** Per-repo installs have no prefix constraint; harness agents route via CEL triggers on arbitrary labels. Per-org installs use a managed `dispatch.yml` that routes only through a fixed stage table — custom harness agents are not routed by per-org dispatch regardless of trigger type. If your agent needs custom routing, use a per-repo install. On per-org installs, the workflow-call shim `if:` guard admits every `ready-`-prefixed label, of which only `ready-for-triage`, `ready-to-code`, and `ready-for-review` route to a stage — others such as `ready-for-merge` still reach `dispatch.yml` and exit early.
+> **Routing label convention:**
+> - **Per-repo installs** have no prefix constraint -- harness agents route via CEL triggers on arbitrary labels.
+> - **Per-org installs** use a managed `dispatch.yml` that routes through a fixed stage table. Custom harness agents are not routed by per-org dispatch. If your agent needs custom routing, use a per-repo install.
 
 ### CLI
 
@@ -480,7 +489,7 @@ repos:
 ## See also
 
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
-- [Harness Field Reference](harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
+- [Harness Field Reference](../../reference/harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
 - [Custom Agent Identity](custom-agent-identity.md) — using a standalone mint for custom GitHub App identity
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Configuring with Skills](customizing-with-skills.md) — creating and managing skills; [authoring augmentations](customizing-with-skills.md#authoring-skills-that-augment-defaults)
