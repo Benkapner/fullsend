@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2272,7 +2273,7 @@ func TestConverge_OrphanProgressWarnings(t *testing.T) {
 	}
 
 	// Collect all results once for reuse below.
-	allResults := append(result.Converged(), append(result.AlreadyCurrent(), result.Failed()...)...)
+	allResults := slices.Concat(result.Converged(), result.AlreadyCurrent(), result.Failed())
 
 	// Orphan actions should be recorded.
 	var orphanActions []ComponentAction
