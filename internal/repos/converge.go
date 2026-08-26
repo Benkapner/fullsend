@@ -1367,6 +1367,8 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "orphan",
 			Detail:    fmt.Sprintf("orphan file %s exists on forge but is no longer in template", o.Path),
 		})
+		progress(repoFullName, "warning",
+			fmt.Sprintf("Orphan file %s (not in current template)", o.Path))
 	}
 
 	// Orphan variable detection: check for FULLSEND_-prefixed variables
@@ -1391,6 +1393,8 @@ func convergeContentDriftFiles(ctx context.Context,
 			Action:    "orphan",
 			Detail:    fmt.Sprintf("orphan variable %s exists on forge but is not in managed set", o.Name),
 		})
+		progress(repoFullName, "warning",
+			fmt.Sprintf("Orphan variable %s (not in managed set)", o.Name))
 	}
 
 	return repairFiles, actions
