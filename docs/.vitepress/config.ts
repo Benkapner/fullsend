@@ -233,6 +233,7 @@ export default defineConfig({
           link: "/guides/",
           items: [
             { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+            { text: "Custom Agent Identity", link: "/guides/user/custom-agent-identity" },
             { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },
@@ -256,6 +257,13 @@ export default defineConfig({
             { text: "Vision", link: "/vision" },
             { text: "Architecture", link: "/architecture" },
             { text: "Glossary", link: "/glossary" },
+          ],
+        },
+        {
+          text: "Reference",
+          collapsed: true,
+          items: [
+            { text: "Harness Field Reference", link: "/reference/harness-reference" },
           ],
         },
         {
