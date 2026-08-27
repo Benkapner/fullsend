@@ -143,3 +143,28 @@ jobs:
 
       - name: Run svelte-check
         run: npm run check
+
+  harness-eval:
+    # Lint agent configurations with harness-eval (advisory, not required for merge).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install harness-eval
+        run: pip install -q "harness-eval==7.12.0"
+
+      # harness-gate runs only the validated gating-tier rules (>=97% precision,
+      # zero corpus false positives) and never loads LLM extras. The root baseline
+      # suppresses one pre-existing true positive so the job runs clean today and
+      # flags only new drift; the scaffold is clean and needs no baseline.
+      - name: Gate repo root
+        run: harness-eval harness-gate . --baseline .harness-eval-baseline.json
+
+      - name: Gate scaffold
+        if: always()
+        run: harness-eval harness-gate internal/scaffold/fullsend-repo

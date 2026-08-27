@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "findings": [
+    {
+      "rule_id": "frontmatter/format-valid",
+      "file": "skills/filing-issues/SKILL.md",
+      "message_hash": "df3375eb05be64c3"
+    }
+  ]
+}
