@@ -112,7 +112,14 @@ When should the system stop retrying and ask a human?
 
 ### Expressing escalation thresholds as config
 
-The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Making them tunable per repo and per agent role, rather than baked into the harness as constants, means expressing them as declarative config. That is a common shape elsewhere: Kubernetes Jobs cap retries with `backoffLimit`, GitLab CI uses `retry: max:`, and Argo Workflows use a `retryStrategy` with a `limit`. As an illustration, the same idea applied to agent escalation reads roughly like:
+The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Making them tunable per repo and per agent role, rather than baked into the harness as constants, needs somewhere to put the values. Several shapes could carry them, each with a different trade-off:
+
+- **Harness constants (what happens today).** Simplest, but not tunable without a code change and not inspectable per run.
+- **Existing per-run budget fields, extended.** `max_turns` / `max_cost_usd` already exist per run (PR #1682); a cross-run budget could reuse that vocabulary. Cheap to adopt, but it conflates a single-attempt cap with a cumulative one unless the names are kept distinct (see below).
+- **A dedicated declarative config block (illustrated below).** Inspectable and tunable per repo/role without a code change, at the cost of a new schema to define and validate.
+- **CEL-expressed conditions** ([cel-triggers.md](../contributing/cel-triggers.md)). Most expressive (arbitrary predicates over run signals), but the hardest to author and reason about, and it does not by itself model the identical-vs-distinct failure-signature distinction.
+
+Declarative config is a common shape elsewhere: Kubernetes Jobs cap retries with `backoffLimit`, GitLab CI uses `retry: max:`, and Argo Workflows use a `retryStrategy` with a `limit`, though none of them models identical-vs-distinct failure signatures, so they inform the budget cap, not the whole shape. As an illustration of the dedicated-block option, one such config applied to agent escalation reads roughly like:
 
 ```yaml
 escalation:
@@ -121,8 +128,11 @@ escalation:
   distinct_failure_limit: 3    # distinct failure types before the task is deemed out of scope
   regression_policy: stop      # stop | continue when a retry introduces new failures
   budget:
-    max_attempts: 3            # cumulative across runs for the same task
-    max_cost_usd: 10           # cumulative across all attempts
+    # Cross-run budget. Names are deliberately distinct from the per-run
+    # `max_turns` / `max_cost_usd` (PR #1682): those cap a single attempt,
+    # these accumulate across attempts for the same task.
+    total_attempts: 3          # cumulative across runs for the same task
+    cumulative_cost_usd: 10    # cumulative across all attempts
   overrides:
     # Per-role tuning: a role tightens below the repo default, so config
     # cannot silently grant an agent more retries than the repo allows.
@@ -135,7 +145,7 @@ Two things a shape like this has to pin down:
 - **Each threshold is a named, overridable value**, so a repo or role can tune it without a code change and the effective value for any run is inspectable rather than implicit.
 - **"Same failure" needs a definition, not just a count.** Counting identical failures requires a stable failure signature (for example, the failing check name plus a normalized error line), otherwise cosmetically different messages for the same root cause never reach the limit. That signature is the part most likely to need iteration.
 
-This is illustrative and inert: it describes what such thresholds could look like, not a change to how the system behaves. Where the thresholds are enforced belongs to whatever component owns the retry loop, and absent any such config the retry and escalation behavior is whatever the harness already does.
+This is illustrative and inert: it describes what such thresholds could look like, not a change to how the system behaves. The concrete numbers (`3`, `3`, `$10`) are placeholders, not calibrated defaults; real values depend on measured recovery outcomes. Where the thresholds are enforced belongs to whatever component owns the retry loop, and absent any such config the retry and escalation behavior is whatever the harness already does.
 
 ### Interaction with cross-run memory
 
