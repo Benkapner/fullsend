@@ -1099,11 +1099,12 @@ func TestScaffoldGitHubROProfile_GraphQLEndpoint(t *testing.T) {
 
 	var profile struct {
 		Endpoints []struct {
-			Host     string `yaml:"host"`
-			Port     int    `yaml:"port"`
-			Protocol string `yaml:"protocol"`
-			Access   string `yaml:"access"`
-			Path     string `yaml:"path"`
+			Host        string `yaml:"host"`
+			Port        int    `yaml:"port"`
+			Protocol    string `yaml:"protocol"`
+			Access      string `yaml:"access"`
+			Enforcement string `yaml:"enforcement"`
+			Path        string `yaml:"path"`
 		} `yaml:"endpoints"`
 	}
 	require.NoError(t, yaml.Unmarshal(data, &profile))
@@ -1121,6 +1122,8 @@ func TestScaffoldGitHubROProfile_GraphQLEndpoint(t *testing.T) {
 				"GraphQL endpoint path must be /graphql")
 			assert.Equal(t, "read-only", ep.Access,
 				"GraphQL endpoint access must be read-only")
+			assert.Equal(t, "enforce", ep.Enforcement,
+				"GraphQL endpoint enforcement must be enforce")
 			break
 		}
 	}
