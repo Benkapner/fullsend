@@ -266,6 +266,45 @@ func TestGitHubSetupCmd_FullsendRefAcceptedForPerRepo(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunGitHubSetupPerRepo_FullsendRefPropagatesIntoScaffold(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		fullsendRef:          "custom-branch-ref",
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify the custom ref propagates into the scaffold workflow file.
+	var shimContent []byte
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == ".github/workflows/fullsend.yaml" {
+				shimContent = f.Content
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, shimContent, "expected .github/workflows/fullsend.yaml in committed files")
+	shimStr := string(shimContent)
+	assert.Contains(t, shimStr, "custom-branch-ref",
+		"expected the custom --fullsend-ref to appear in the rendered scaffold workflow")
+}
+
 // --- Enroll command tests ---
 
 func TestGitHubEnrollCmd_RequiresOrg(t *testing.T) {
