@@ -352,6 +352,8 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 		"prioritize job should thread project_number to PRIORITIZE_PROJECT_NUMBER env var")
 }
 
+// TestReusableDispatchFixInstructionNormalizesCRLF validates that CRLF line endings
+// in a comment body are stripped before the fix instruction is written to GITHUB_OUTPUT.
 func TestReusableDispatchFixInstructionNormalizesCRLF(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
 	require.NoError(t, err)
