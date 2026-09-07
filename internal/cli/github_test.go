@@ -113,6 +113,10 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 	signoffFlag := cmd.Flags().Lookup("signoff")
 	require.NotNil(t, signoffFlag, "expected --signoff flag")
 	assert.Equal(t, "false", signoffFlag.DefValue)
+
+	fullsendRefFlag := cmd.Flags().Lookup("fullsend-ref")
+	require.NotNil(t, fullsendRefFlag, "expected --fullsend-ref flag")
+	assert.Equal(t, "", fullsendRefFlag.DefValue)
 }
 
 func TestGitHubSetupCmd_UsesDefaultMintURL(t *testing.T) {
@@ -218,6 +222,48 @@ func TestGitHubSetupCmd_PerRepoRequiresWIFProvider(t *testing.T) {
 	assert.True(t, strings.Contains(errMsg, "--inference-wif-provider") ||
 		strings.Contains(errMsg, "FULLSEND_GCP_WIF_PROVIDER"),
 		"expected error to mention --inference-wif-provider or FULLSEND_GCP_WIF_PROVIDER, got: %s", errMsg)
+}
+
+func TestGitHubSetupCmd_FullsendRefConflictsWithVendor(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--fullsend-ref", "main",
+		"--vendor"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--fullsend-ref conflicts with --vendor")
+}
+
+func TestGitHubSetupCmd_FullsendRefRejectsInvalidChars(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--fullsend-ref", "v1.0.0; rm -rf /"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--fullsend-ref")
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestGitHubSetupCmd_FullsendRefRejectedForPerOrg(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme",
+		"--fullsend-ref", "main"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only valid for per-repo setup")
+}
+
+func TestGitHubSetupCmd_FullsendRefAcceptedForPerRepo(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--fullsend-ref", "main",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
 }
 
 // --- Enroll command tests ---
