@@ -317,10 +317,7 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		return nil
 	}
 
-	var (
-		user         string
-		priorReviews []forge.PullRequestReview
-	)
+	var priorReviews []forge.PullRequestReview
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
 		printer.StepInfo("Could not determine authenticated user, skipping stale review cleanup")
