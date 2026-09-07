@@ -54,6 +54,26 @@ func TestStageMintDeployArgs_WithAppSet(t *testing.T) {
 	}
 }
 
+func TestStageMintDeployArgs_AllowedWorkflowFiles(t *testing.T) {
+	cfg := stageMintConfig{
+		pemDir:            "/tmp/pems",
+		perRepoWIFRepos:   "halfsend/repo-01",
+		workflowHostRepos: "halfsend/repo-01",
+	}
+	args := StageMintDeployArgs(cfg)
+
+	found := false
+	for i, a := range args {
+		if a == "--allowed-workflow-files" && i+1 < len(args) && args[i+1] == "*" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --allowed-workflow-files '*' in args: %v", args)
+	}
+}
+
 func TestStageMintDeployArgs_WithoutAppSet(t *testing.T) {
 	cfg := stageMintConfig{
 		pemDir:            "/tmp/pems",

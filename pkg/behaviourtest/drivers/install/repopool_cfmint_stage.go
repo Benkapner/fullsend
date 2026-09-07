@@ -202,6 +202,7 @@ func StageMintDeployArgs(cfg stageMintConfig) []string {
 		"--allowed-orgs", cfg.allowedOrgs,
 		"--per-repo-wif-repos", cfg.perRepoWIFRepos,
 		"--workflow-host-repos", cfg.workflowHostRepos,
+		"--allowed-workflow-files", "*",
 	}
 	if cfg.appSet != "" {
 		args = append(args, "--app-set", cfg.appSet)
