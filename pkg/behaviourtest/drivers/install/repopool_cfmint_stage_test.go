@@ -62,16 +62,14 @@ func TestStageMintDeployArgs_AllowedWorkflowFiles(t *testing.T) {
 	}
 	args := StageMintDeployArgs(cfg)
 
-	found := false
 	for i, a := range args {
-		if a == "--allowed-workflow-files" && i+1 < len(args) && args[i+1] == "*" {
-			found = true
-			break
+		if a == "--allowed-workflow-files" {
+			require.Less(t, i+1, len(args), "--allowed-workflow-files must have a value")
+			assert.Equal(t, "*", args[i+1])
+			return
 		}
 	}
-	if !found {
-		t.Errorf("expected --allowed-workflow-files '*' in args: %v", args)
-	}
+	t.Fatal("--allowed-workflow-files flag not found in args")
 }
 
 func TestStageMintDeployArgs_WithoutAppSet(t *testing.T) {

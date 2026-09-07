@@ -202,6 +202,9 @@ func StageMintDeployArgs(cfg stageMintConfig) []string {
 		"--allowed-orgs", cfg.allowedOrgs,
 		"--per-repo-wif-repos", cfg.perRepoWIFRepos,
 		"--workflow-host-repos", cfg.workflowHostRepos,
+		// Hardcoded: stage BT mint allows all workflow basenames.
+		// Unlike the other flags, this is not configurable per-caller —
+		// stage always permits any workflow file.
 		"--allowed-workflow-files", "*",
 	}
 	if cfg.appSet != "" {
