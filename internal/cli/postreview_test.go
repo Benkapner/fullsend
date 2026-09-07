@@ -241,7 +241,9 @@ func TestSubmitFormalReview_CreatesAndMinimizesStale(t *testing.T) {
 	assert.Equal(t, "PRR_300", fc.MinimizedComments[1].NodeID)
 	assert.Equal(t, "OUTDATED", fc.MinimizedComments[1].Reason)
 
-	assert.Empty(t, fc.DismissedReviews, "no CHANGES_REQUESTED reviews to dismiss")
+	require.Len(t, fc.DismissedReviews, 1, "the bot's stale approval should be dismissed")
+	assert.Equal(t, 300, fc.DismissedReviews[0].ReviewID)
+	assert.Equal(t, "Superseded by updated review", fc.DismissedReviews[0].Message)
 }
 
 func TestSubmitFormalReview_DismissesStaleRequestChanges(t *testing.T) {
@@ -279,6 +281,39 @@ func TestSubmitFormalReview_DismissesOnCommentVerdict(t *testing.T) {
 	require.Len(t, fc.DismissedReviews, 1, "COMMENT verdict must still dismiss stale CHANGES_REQUESTED")
 	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
 	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings skips formal review")
+}
+
+func TestSubmitFormalReview_DismissesStaleApproval(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "APPROVED", Body: "old approval"},
+			{ID: 200, NodeID: "PRR_200", User: "someone-else", State: "APPROVED", Body: "human approval"},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", "", nil, false, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.DismissedReviews, 1, "COMMENT verdict must dismiss the bot's stale approval")
+	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
+	assert.Equal(t, "Superseded by updated review", fc.DismissedReviews[0].Message)
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings skips formal review")
+}
+
+func TestDismissStaleApprovals_ErrorTolerance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["DismissPullRequestReview"] = fmt.Errorf("API error")
+	reviews := []forge.PullRequestReview{
+		{ID: 100, User: "fullsend-bot", State: "APPROVED"},
+	}
+
+	printer := ui.New(io.Discard)
+	dismissStaleApprovals(context.Background(), fc, "acme", "repo", 1, "fullsend-bot", reviews, printer)
+
+	assert.Empty(t, fc.DismissedReviews, "dismissal errors should be non-fatal")
 }
 
 func TestSubmitFormalReview_DryRun(t *testing.T) {
