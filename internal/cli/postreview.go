@@ -317,14 +317,18 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		return nil
 	}
 
+	var (
+		user         string
+		priorReviews []forge.PullRequestReview
+	)
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
 		printer.StepInfo("Could not determine authenticated user, skipping stale review cleanup")
 	} else if reviews, err := client.ListPullRequestReviews(ctx, owner, repo, pr); err != nil {
 		printer.StepInfo("Could not list reviews, skipping stale review cleanup")
 	} else {
+		priorReviews = reviews
 		dismissStaleRequestChanges(ctx, client, owner, repo, pr, event, user, reviews, printer)
-		dismissStaleApprovals(ctx, client, owner, repo, pr, user, reviews, printer)
 		minimizeStaleReviews(ctx, client, user, reviews, printer)
 	}
 
@@ -373,6 +377,9 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// a COMMENT review is submitted so the findings appear on the
 	// relevant code lines.
 	if event == "COMMENT" && len(inlineComments) == 0 {
+		// There is no replacement formal review to succeed, so remove stale
+		// approvals after the sticky verdict has been prepared.
+		dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
 		return nil
 	}
@@ -402,12 +409,14 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 				logAPIErrorDetails(retryErr, printer)
 				return fmt.Errorf("submitting review (fallback without inline comments also failed): %w", retryErr)
 			}
+			dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 			printer.StepDone("Review submitted (inline comments omitted due to 422)")
 			return nil
 		}
 		logAPIErrorDetails(err, printer)
 		return fmt.Errorf("submitting review: %w", err)
 	}
+	dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 	printer.StepDone("Review submitted")
 	return nil
 }

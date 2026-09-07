@@ -316,6 +316,47 @@ func TestDismissStaleApprovals_ErrorTolerance(t *testing.T) {
 	assert.Empty(t, fc.DismissedReviews, "dismissal errors should be non-fatal")
 }
 
+func TestSubmitFormalReview_PreservesApprovalWhenReplacementFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("API error")
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "APPROVED", Body: "old approval"},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "approve", "", "", nil, false, printer)
+
+	assert.Error(t, err)
+	assert.Empty(t, fc.DismissedReviews, "the old approval must remain when replacement review creation fails")
+}
+
+func TestSubmitFormalReview_PreservesApprovalWhenFallbackFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.Errors["CreatePullRequestReview"] = &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "validation failed"}
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "APPROVED", Body: "old approval"},
+		},
+	}
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -1,1 +1,1 @@"},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", []ReviewFinding{{
+		File: "internal/service.go", Line: 1, Description: "invalid change",
+	}}, false, printer)
+
+	assert.Error(t, err)
+	assert.Empty(t, fc.DismissedReviews, "the old approval must remain when the fallback review also fails")
+}
+
 func TestSubmitFormalReview_DryRun(t *testing.T) {
 	fc := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
