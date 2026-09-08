@@ -19,15 +19,15 @@ When referencing bot identities in code (e.g., trusted actor lists, dispatch fil
 
 The `fullsend-ai-sync[bot]` App has a broader write path than the agent Apps listed above. Three properties are load-bearing and must be considered when building trusted-actor lists, dispatch filters, or security assessments:
 
-### 1. Ruleset bypass
+### Ruleset bypass
 
 The sync App holds `bypass_mode: always` on the `fullsend-ai/fullsend` `main` ruleset. Its commits are direct pushes to `main` — no PR, no review, no status checks. This is intentional: scaffold convergence is a cross-repo reconciliation that runs unattended after every push to `main`.
 
-### 2. Workflow-write scope
+### Workflow-write scope
 
 The sync App has workflow-write permission. Combined with the ruleset bypass, `.github/workflows/` on `main` is writable by the sync path with no human in the loop. This is distinct from the coder token path: the `coder` token has no `workflows` permission (`internal/mintcore/github.go`), so code agents cannot push workflow files (see #6512). The sync App can. Both facts are correct — read in isolation, the #6512 statement about the coder token is easy to take as covering every bot, but it applies only to the coder token, not the sync path.
 
-### 3. App-token push recursion
+### App-token push recursion
 
 GitHub's "events triggered by `GITHUB_TOKEN` will not create a new workflow run" suppression is scoped to `GITHUB_TOKEN` and does not apply to GitHub App installation tokens. A sync commit to `main` therefore re-triggers `notify-scaffold-sync`, which dispatches again. Observed 2026-08-24: merge `cfdbf2ff` at 14:29 → dispatch → sync commit 14:51 → dispatch → sync commit 14:52 → dispatch → stop. Each scaffold-touching merge costs ≥2 dispatch rounds. This is by design — the second round converges any files that depend on the first sync — but it interacts with the convergence non-idempotence tracked in #6553. See also [CI Workflows § Scaffold-sync dispatch recursion](ci-workflows.md#scaffold-sync-dispatch-recursion).
 

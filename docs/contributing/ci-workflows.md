@@ -206,7 +206,7 @@ Redaction covers:
 
 Because the sync App authenticates with an App installation token (not `GITHUB_TOKEN`), GitHub's workflow-suppression rule does not apply — a sync commit pushed to `main` re-triggers `notify-scaffold-sync`, which dispatches again. Each scaffold-touching merge therefore costs ≥2 dispatch rounds: the first sync converges files, the second re-enters and converges any state that depends on the first sync's output. The chain terminates when a sync round produces no diff.
 
-This recursion is by design but interacts with the convergence non-idempotence tracked in #6553. See also [Bot Identities § App-token push recursion](bot-identities.md#3-app-token-push-recursion) for the observed dispatch chain and the security-relevant distinction between the coder token (no `workflows` permission) and the sync App (has `workflows` permission plus `bypass_mode: always` on the `main` ruleset).
+This recursion is by design but interacts with the convergence non-idempotence tracked in #6553. See also [Bot Identities § App-token push recursion](bot-identities.md#app-token-push-recursion) for the observed dispatch chain and the security-relevant distinction between the coder token (no `workflows` permission) and the sync App (has `workflows` permission plus `bypass_mode: always` on the `main` ruleset).
 
 ## Additional conventions
 
