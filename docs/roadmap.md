@@ -143,6 +143,12 @@ updating docs. That is real capacity, not a dated deliverable, so it does not
 get a numbered backlog dump. It still sits last on this page so Auto-merge,
 GitLab, and the other feature themes remain the planning focus.
 
+Concrete September docs item from planning feedback: land the scheduled /
+nightly agent example so users are not left guessing how to run a recurring
+agent.
+
+- [fullsend#6601 — docs(#6599): add scheduled agent example guide](https://github.com/fullsend-ai/fullsend/pull/6601)
+
 ## Next
 
 Parked or dependency-bound in this planning session. Not dated.
