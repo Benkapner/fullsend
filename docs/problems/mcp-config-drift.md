@@ -6,7 +6,7 @@ Detecting and responding to unauthorized changes in MCP (Model Context Protocol)
 - [security-threat-model.md](security-threat-model.md) — Threat 1 (persistent injection via externally editable resources), cross-cutting security principles
 - [agent-architecture.md](agent-architecture.md) — agent roles and trust model
 - [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md) — credential isolation
-- [landscape.md](../landscape.md#safe-mcp) — SAFE-MCP framework's SAFE-T1201 (Rug Pull Attack) catalogs the same delayed-modification threat as Scenario 2 below, with a structured TTP taxonomy
+- [landscape.md](../landscape.md#safe-mcp) — SAFE-MCP framework's SAFE-T1201 (Rug Pull Attack) catalogs a related delayed-modification threat — server-side tool behavior changes after gaining user trust — complementing Scenario 2's config-level endpoint replacement, with a structured TTP taxonomy
 
 ## The problem
 

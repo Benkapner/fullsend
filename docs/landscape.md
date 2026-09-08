@@ -322,6 +322,8 @@ Open-source proxy built around AI-native protocols — [MCP](https://modelcontex
 
 It does **not** substitute for fullsend's intent tiering, zero-trust review composition, or **repo-as-coordinator** semantics. In particular, adopting an A2A gateway does not mean agents should coordinate merge decisions or trust through a side channel; see [agent-architecture.md](problems/agent-architecture.md#how-agents-communicate). A gateway is one way to implement **controlled egress** and **edge guardrails** for the traffic agents generate while still using GitHub-visible mechanisms for coordination.
 
+## Security frameworks and threat taxonomies
+
 ### SAFE-MCP
 
 [GitHub](https://github.com/safe-agentic-framework/safe-mcp) | [Website](https://www.safemcp.org/) | [Parent project](https://www.secureagenticframework.org/)
@@ -358,7 +360,7 @@ The framework separates a **Control Plane** (signed policy distribution, authori
 |---|---|---|
 | SAFE-T1001 Tool Poisoning | [tool-call-risk-assessment.md](problems/tool-call-risk-assessment.md) (semantic risk beyond pattern matching) | Partial — fullsend identifies the gap between pattern matching and semantic understanding but has not shipped an LLM-as-judge pre-tool hook |
 | SAFE-T1102 Prompt Injection | [security-threat-model.md](problems/security-threat-model.md#threat-1-external-prompt-injection) (Threat 1, including steganographic variants) | Strong — fullsend's threat model covers visible injection, invisible Unicode payloads, indirect disclosure, and social pressure vectors |
-| SAFE-T1201 Rug Pull / dynamic tool modification | [mcp-config-drift.md](problems/mcp-config-drift.md) (Scenario 2: endpoint replacement, Approach 1: baseline and diff) | Strong — fullsend treats MCP config drift as a first-class attack surface with three defense approaches |
+| SAFE-T1201 Rug Pull / dynamic tool modification | [mcp-config-drift.md](problems/mcp-config-drift.md) (Scenario 2: endpoint replacement, Approach 1: baseline and diff) | Partial — fullsend's mcp-config-drift.md addresses config-level endpoint replacement (Scenario 2), but SAFE-T1201 describes server-side behavioral changes (tools that modify their own definitions after gaining trust); Approach 1 explicitly acknowledges it "does not detect changes to what the MCP server *serves*" |
 | SAFE-T1002 Supply Chain Compromise | [security-threat-model.md](problems/security-threat-model.md#threat-4-supply-chain-attacks) (Threat 4, model-as-toolchain) | Strong — fullsend extends supply chain analysis beyond dependencies to the model itself as a Thompson-analog trust boundary |
 | Control/Data Plane separation | [ADR 0016](ADRs/0016-unidirectional-control-flow.md) (unidirectional control flow), [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) (credential isolation) | Strong — fullsend enforces this structurally: the harness (control plane) validates and constrains agent output (data plane) without the agent being able to influence the harness |
 | SAFE-M-1 Control/Data Flow Separation | Cross-cutting principle 6 (immutable agent policy), [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) (output schema enforcement) | Strong — fullsend's architecture enforces this at the sandbox boundary, not just as guidance |
