@@ -105,6 +105,10 @@ func (f *fakeBranchCI) WaitForFailedHarnessAgent(context.Context, string, string
 	return f.run, f.err
 }
 
+func (f *fakeBranchCI) GetRunLogs(context.Context, string, string, int) (string, error) {
+	return "", nil
+}
+
 func branchTestWorld(scmDriver scm.Driver) *world.World {
 	return &world.World{
 		SCM:       scmDriver,
