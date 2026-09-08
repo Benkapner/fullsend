@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -988,7 +989,7 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	if err := s.waitForAppReady(ctx, ghExt, slug); err != nil {
 		// waitForAppReady returns ctx.Err() for parent cancellation, so
 		// context errors propagate directly without a separate guard.
-		if err == context.Canceled || err == context.DeadlineExceeded {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 		s.ui.StepWarn(fmt.Sprintf("App readiness check failed: %v", err))
