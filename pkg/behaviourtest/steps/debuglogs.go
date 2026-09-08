@@ -29,7 +29,7 @@ const logFetchTimeout = 30 * time.Second
 // Logs are fetched before the debug directory is created so that a
 // failed API call does not leave an empty directory behind.
 //
-// Errors are logged but not returned -- log collection is best-effort
+// Errors are logged but not returned — log collection is best-effort
 // and must not fail the scenario.
 func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run *forge.WorkflowRun) {
 	if run == nil {

@@ -147,6 +147,6 @@ type fakeDebugCI struct {
 	logsErr error
 }
 
-func (f *fakeDebugCI) GetRunLogs(_ context.Context, _, _ string, _ int) (string, error) {
+func (f *fakeDebugCI) GetRunLogs(context.Context, string, string, int) (string, error) {
 	return f.logs, f.logsErr
 }
