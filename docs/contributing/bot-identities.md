@@ -33,8 +33,14 @@ GitHub's "events triggered by `GITHUB_TOKEN` will not create a new workflow run"
 
 ## General identity notes
 
-**Shared vendor identity:** The default deployment model uses a shared, vendor-owned App (per ADR 0029/0059/0068). For adopting orgs other than `fullsend-ai`, the review bot's login is `fullsend-ai-review[bot]`, not `${ORG_NAME}-review[bot]`. Any code that gates on the review bot's identity must match **both** the org-specific form (`${ORG_NAME}-review[bot]`) and the shared vendor form (`fullsend-ai-review[bot]`). See #5550 for the bug this caused.
+### Shared vendor identity
 
-**REST vs. GraphQL login format:** the `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits it — a bot author's `login` field comes back as `fullsend-ai-coder`, not `fullsend-ai-coder[bot]`, with `__typename: "Bot"`. Comparing a GraphQL-sourced login against a literal `"...[bot]"` string never matches (see #5575) — match on `__typename == "Bot"` plus the un-suffixed login instead.
+The default deployment model uses a shared, vendor-owned App (per ADR 0029/0059/0068). For adopting orgs other than `fullsend-ai`, the review bot's login is `fullsend-ai-review[bot]`, not `${ORG_NAME}-review[bot]`. Any code that gates on the review bot's identity must match **both** the org-specific form (`${ORG_NAME}-review[bot]`) and the shared vendor form (`fullsend-ai-review[bot]`). See #5550 for the bug this caused.
 
-**`gh pr view --json` format:** the `gh pr view --json author` CLI command uses a different schema than raw GraphQL — it exposes `.author.is_bot` (boolean) and `.author.login` (with an `app/` prefix, e.g. `app/fullsend-ai-coder`), but does **not** expose `__typename`. When using `gh pr view --json`, check `.author.is_bot == true` plus `.author.login` against the `app/`-prefixed name (see #5536).
+### REST vs. GraphQL login format
+
+The `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits it — a bot author's `login` field comes back as `fullsend-ai-coder`, not `fullsend-ai-coder[bot]`, with `__typename: "Bot"`. Comparing a GraphQL-sourced login against a literal `"...[bot]"` string never matches (see #5575) — match on `__typename == "Bot"` plus the un-suffixed login instead.
+
+### `gh pr view --json` format
+
+The `gh pr view --json author` CLI command uses a different schema than raw GraphQL — it exposes `.author.is_bot` (boolean) and `.author.login` (with an `app/` prefix, e.g. `app/fullsend-ai-coder`), but does **not** expose `__typename`. When using `gh pr view --json`, check `.author.is_bot == true` plus `.author.login` against the `app/`-prefixed name (see #5536).
