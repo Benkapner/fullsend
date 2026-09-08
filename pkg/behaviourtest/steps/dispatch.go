@@ -300,7 +300,7 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 		return err
 	}
 	w.WorkflowRun = run
-	saveWorkflowRunLogs(w, agent, run)
+	saveWorkflowRunLogs(ctx, w, agent, run)
 	return ensureHarnessArtifacts(w, agent)
 }
 

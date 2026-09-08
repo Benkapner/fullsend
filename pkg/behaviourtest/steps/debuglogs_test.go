@@ -6,12 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -22,7 +22,7 @@ func TestSaveWorkflowRunLogs_NilRun(t *testing.T) {
 		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
 	// Should be a no-op — no panic, no log.
-	saveWorkflowRunLogs(w, "triage", nil)
+	saveWorkflowRunLogs(context.Background(), w, "triage", nil)
 	assert.Empty(t, logged)
 }
 
@@ -40,7 +40,7 @@ func TestSaveWorkflowRunLogs_WritesLogs(t *testing.T) {
 	}
 
 	run := &forge.WorkflowRun{ID: 42}
-	saveWorkflowRunLogs(w, "triage", run)
+	saveWorkflowRunLogs(context.Background(), w, "triage", run)
 
 	// Verify the log file was written.
 	logPath := filepath.Join(artifactDir, "debug-triage-run-42", "workflow-logs.txt")
@@ -67,7 +67,7 @@ func TestSaveWorkflowRunLogs_GetRunLogsError(t *testing.T) {
 	}
 
 	run := &forge.WorkflowRun{ID: 99}
-	saveWorkflowRunLogs(w, "agent", run)
+	saveWorkflowRunLogs(context.Background(), w, "agent", run)
 
 	// Should log the error, not panic or fail.
 	require.Len(t, logged, 1)
@@ -94,7 +94,7 @@ func TestSaveWorkflowRunLogs_NilLogf(t *testing.T) {
 
 	run := &forge.WorkflowRun{ID: 1}
 	// Should not panic even with nil Logf.
-	saveWorkflowRunLogs(w, "triage", run)
+	saveWorkflowRunLogs(context.Background(), w, "triage", run)
 
 	logPath := filepath.Join(artifactDir, "debug-triage-run-1", "workflow-logs.txt")
 	data, err := os.ReadFile(logPath)
@@ -125,52 +125,15 @@ func TestPrepareDebugDir_WithoutArtifactDir(t *testing.T) {
 	assert.Contains(t, filepath.Base(dir), "debug-agent-run-456")
 }
 
-// fakeDebugCI implements ci.Driver for debug log tests.
+// fakeDebugCI implements ci.Driver for debug log tests. Unused methods
+// come from the embedded interface and panic when called.
 type fakeDebugCI struct {
+	ci.Driver
+
 	logs    string
 	logsErr error
 }
 
 func (f *fakeDebugCI) GetRunLogs(_ context.Context, _, _ string, _ int) (string, error) {
 	return f.logs, f.logsErr
-}
-
-func (f *fakeDebugCI) WaitForWorkflow(_ context.Context, _, _, _ string, _ time.Time, _ string) (*forge.WorkflowRun, error) {
-	return nil, nil
-}
-
-func (f *fakeDebugCI) FindCompletedWorkflowRun(_ context.Context, _, _, _ string, _ time.Time) (*forge.WorkflowRun, error) {
-	return nil, nil
-}
-
-func (f *fakeDebugCI) AssertNoWorkflow(_ context.Context, _, _, _ string, _ time.Time) error {
-	return nil
-}
-
-func (f *fakeDebugCI) DownloadArtifacts(_ context.Context, _, _ string, _ int, _ string) error {
-	return nil
-}
-
-func (f *fakeDebugCI) DownloadNamedArtifactFromRun(_ context.Context, _, _ string, _ int, _, _ string) error {
-	return nil
-}
-
-func (f *fakeDebugCI) DownloadNamedArtifactAfter(_ context.Context, _, _, _ string, _ time.Time, _ string) error {
-	return nil
-}
-
-func (f *fakeDebugCI) WaitForHarnessAgent(_ context.Context, _, _, _ string, _ time.Time) (*forge.WorkflowRun, error) {
-	return nil, nil
-}
-
-func (f *fakeDebugCI) WaitForFailedHarnessAgent(_ context.Context, _, _, _ string, _ time.Time) (*forge.WorkflowRun, error) {
-	return nil, nil
-}
-
-func (f *fakeDebugCI) AssertNoHarnessAgentArtifact(_ context.Context, _, _, _ string, _ time.Time) error {
-	return nil
-}
-
-func (f *fakeDebugCI) CountHarnessDispatches(_ context.Context, _, _, _ string, _ time.Time) (int, error) {
-	return 0, nil
 }

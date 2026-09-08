@@ -249,7 +249,7 @@ func thenHarnessWorkflowFailsReporting(ctx context.Context, w *world.World, agen
 		return err
 	}
 	w.WorkflowRun = run
-	saveWorkflowRunLogs(w, agent, run)
+	saveWorkflowRunLogs(ctx, w, agent, run)
 
 	deadline := time.Now().Add(failureCommentPollWindow)
 	var lastErr error

@@ -6,10 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
+
+// logFetchTimeout bounds the GetRunLogs API call so a hanging request
+// does not block the scenario step indefinitely.
+const logFetchTimeout = 30 * time.Second
 
 // saveWorkflowRunLogs fetches the logs for a workflow run and writes
 // them into a debug subdirectory under BEHAVIOUR_ARTIFACT_DIR. Called
@@ -17,23 +22,28 @@ import (
 // successful runs leave a log trail for diagnosing dispatch, harness,
 // or skip behaviour.
 //
+// Logs are fetched before the debug directory is created so that a
+// failed API call does not leave an empty temp directory behind.
+//
 // Errors are logged but not returned -- log collection is best-effort
 // and must not fail the scenario.
-func saveWorkflowRunLogs(w *world.World, label string, run *forge.WorkflowRun) {
+func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run *forge.WorkflowRun) {
 	if run == nil {
 		return
 	}
-	ctx := context.Background()
+
+	fetchCtx, cancel := context.WithTimeout(ctx, logFetchTimeout)
+	defer cancel()
+
+	logs, err := w.CI.GetRunLogs(fetchCtx, w.Org, w.RepoName, run.ID)
+	if err != nil {
+		worldLogf(w, "save workflow run logs: fetch logs for %s run %d: %v", label, run.ID, err)
+		return
+	}
 
 	debugDir, err := prepareDebugDir(label, run.ID)
 	if err != nil {
 		worldLogf(w, "save workflow run logs: create debug dir: %v", err)
-		return
-	}
-
-	logs, err := w.CI.GetRunLogs(ctx, w.Org, w.RepoName, run.ID)
-	if err != nil {
-		worldLogf(w, "save workflow run logs: fetch logs for %s run %d: %v", label, run.ID, err)
 		return
 	}
 
