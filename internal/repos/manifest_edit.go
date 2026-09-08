@@ -10,7 +10,12 @@ import (
 	"strings"
 )
 
+// repoNamePattern matches the GitHub two-segment owner/repo format.
 var repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+
+// gitlabRepoNamePattern matches GitLab project paths which may include
+// arbitrarily nested group/subgroup segments (e.g. "group/subgroup/project").
+var gitlabRepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+){1,}$`)
 
 // ManifestEditConfig holds inputs for manifest add/remove operations.
 type ManifestEditConfig struct {
@@ -62,7 +67,7 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, forgeName string
 	}
 
 	for _, entry := range entries {
-		if !isGlob(entry.Name) && !repoNamePattern.MatchString(entry.Name) {
+		if !isGlob(entry.Name) && !isValidRepoName(forgeName, entry.Name) {
 			return nil, nil, fmt.Errorf("invalid repo name %q: expected owner/repo format", entry.Name)
 		}
 	}
@@ -286,6 +291,16 @@ func matchesPattern(pattern, name string) (bool, error) {
 
 func isGlob(s string) bool {
 	return strings.ContainsAny(s, "*?[")
+}
+
+// isValidRepoName validates a repo name against the appropriate pattern
+// for the given forge. GitHub requires exactly two segments (owner/repo),
+// while GitLab allows nested group paths (group/subgroup/project).
+func isValidRepoName(forgeName, name string) bool {
+	if forgeName == ForgeGitLab {
+		return gitlabRepoNamePattern.MatchString(name)
+	}
+	return repoNamePattern.MatchString(name)
 }
 
 func writeManifest(path string, m *Manifest) error {
