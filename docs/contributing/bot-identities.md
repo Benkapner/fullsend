@@ -31,6 +31,8 @@ The sync App has workflow-write permission. Combined with the ruleset bypass, `.
 
 GitHub's "events triggered by `GITHUB_TOKEN` will not create a new workflow run" suppression is scoped to `GITHUB_TOKEN` and does not apply to GitHub App installation tokens. A sync commit to `main` therefore re-triggers `notify-scaffold-sync`, which dispatches again. Observed 2026-08-24: merge `cfdbf2ff` at 14:29 → dispatch → sync commit 14:51 → dispatch → sync commit 14:52 → dispatch → stop. Each scaffold-touching merge costs ≥2 dispatch rounds. This is by design — the second round converges any files that depend on the first sync — but it interacts with the convergence non-idempotence tracked in #6553. See also [CI Workflows § Scaffold-sync dispatch recursion](ci-workflows.md#scaffold-sync-dispatch-recursion).
 
+## General identity notes
+
 **Shared vendor identity:** The default deployment model uses a shared, vendor-owned App (per ADR 0029/0059/0068). For adopting orgs other than `fullsend-ai`, the review bot's login is `fullsend-ai-review[bot]`, not `${ORG_NAME}-review[bot]`. Any code that gates on the review bot's identity must match **both** the org-specific form (`${ORG_NAME}-review[bot]`) and the shared vendor form (`fullsend-ai-review[bot]`). See #5550 for the bug this caused.
 
 **REST vs. GraphQL login format:** the `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits it — a bot author's `login` field comes back as `fullsend-ai-coder`, not `fullsend-ai-coder[bot]`, with `__typename: "Bot"`. Comparing a GraphQL-sourced login against a literal `"...[bot]"` string never matches (see #5575) — match on `__typename == "Bot"` plus the un-suffixed login instead.
