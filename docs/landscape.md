@@ -166,6 +166,28 @@ Fullsend has design commitments that Forge does not appear to cover:
 
 **Cautions:** Jira label approval is too weak for high-intent-authorization-tier intent. A workflow engine can dispatch work, but should not become merge authority. Forge's Podman runner is a productivity sandbox, not a full zero-trust boundary. A single AI review stage is not enough for autonomous merge confidence. CI skip mechanisms need permission checks, policy, and auditability from day one.
 
+### OpenHands
+
+[GitHub](https://github.com/all-hands-ai/openhands) | [Website](https://www.all-hands.dev/) | [Docs](https://docs.all-hands.dev/)
+
+A model-agnostic AI coding agent platform (70k+ stars, $18.8M Series A from Oss Capital) that can take GitHub issues and produce draft PRs. OpenHands provides a web interface, a CLI, and a GitHub Actions resolver for autonomous issue-to-PR workflows. It also has a PR review capability. The platform supports multiple LLM backends (Claude, GPT, Gemini, local models via Ollama).
+
+**Architecture:** OpenHands runs agents inside sandboxed Docker containers with a runtime that provides shell access, a code editor, and a web browser. The agent operates in an event-driven loop — it receives an observation (file content, command output, browser state), plans an action, executes it, and repeats. The event stream is the primary audit surface. The GitHub Actions resolver packages this loop for CI: given an issue, it clones the repo into a container, runs the agent, and opens a PR with the result.
+
+**Licensing:** The core platform and the GitHub Actions resolver are MIT-licensed. However, the enterprise directory (`enterprise/`) is licensed under PolyForm Free Trial — it is source-available but requires a paid license for use beyond one month. Enterprise features include self-hosted cloud deployment via Kubernetes and additional governance controls. For organizations evaluating open-source options, only the MIT-licensed resolver and local CLI are viable without a commercial agreement.
+
+**Security history:** OpenHands has disclosed prompt injection vulnerabilities. In 2025, security researcher Johann Rehberger demonstrated zero-click token exfiltration and remote code execution via injection in issue text processed by the agent. OpenHands describes its LLM security analyzer as "a soft block, not a hard one" — it flags suspicious content but does not hard-reject it. The vulnerabilities are representative of the broader class of injection attacks that any agent processing untrusted user input faces; see [security-threat-model.md](problems/security-threat-model.md) for the fullsend threat model and why external injection is the highest-priority threat.
+
+**What it doesn't address:** No zero-trust review decomposition — the agent trusts its own output without independent verification. No formal intent verification or intent-authorization tiering. No governance framework for controlling agent policies at the org level. No merge authority — PRs are opened as drafts for human review. The security analyzer is a single-pass check, not a layered defense.
+
+**Relevance to fullsend:** OpenHands' problem space overlaps with fullsend's on code generation and agent sandboxing, but it does not address the problems fullsend considers hard: review decomposition, governance, trust boundaries, and prompt injection defense. Three specific observations:
+
+- *Sandboxing model.* OpenHands' Docker-based sandbox provides process isolation and filesystem separation but does not implement credential isolation, egress filtering, or the kind of defense-in-depth that fullsend's [agent-infrastructure.md](problems/agent-infrastructure.md) and the credential isolation design ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)) require. The sandbox is a productivity boundary, not a zero-trust boundary.
+- *Injection surface.* The disclosed injection vulnerabilities confirm that agents processing untrusted issue text are vulnerable to the attacks fullsend's threat model prioritizes. OpenHands' "soft block" analyzer is not sufficient for autonomous merge — where a successful injection could land malicious code in production without human review. This is a concrete data point for the fullsend position that injection defense must be layered and that review agents must treat code-agent output as untrusted.
+- *Event stream as audit trail.* The resolver produces a structured event stream that could serve as an observability substrate, relevant to [operational-observability.md](problems/operational-observability.md). Whether it meets enterprise audit trail requirements is an open question — see [#260](https://github.com/fullsend-ai/fullsend/issues/260) for planned experiments evaluating the event stream against fullsend's observability needs.
+
+Concrete experiments against the MIT-licensed resolver are tracked in [#260](https://github.com/fullsend-ai/fullsend/issues/260), covering prompt injection red-teaming, event stream audit evaluation, review quality scoring, and tiered intent experiments.
+
 ### Stripe Minions
 
 [Architecture blog post](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents) | [Part 2](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents-part-2)
