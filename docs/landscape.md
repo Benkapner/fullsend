@@ -112,37 +112,6 @@ An open-source personal AI assistant framework that runs on your own hardware an
 
 OpenClaw's scale (389K+ stars, 3M+ active users) validates broad interest in AI agent frameworks, and its multi-channel routing and persistent memory are well-executed for the personal-assistant use case. But its architectural decisions — local-first deployment, host-trust inheritance, messaging-channel orientation — serve a different problem than forge-native autonomous merge. The two projects share terminology (agents, tools, skills, memory) while operating with incompatible trust models.
 
-### PatchPatrol
-
-[GitHub](https://github.com/4383/patchpatrol) | [Red Hat Developer article](https://developers.redhat.com/articles/2026/03/11/improve-code-quality-and-security-patchpatrol)
-
-An AI-powered commit review system that integrates with pre-commit hooks to analyze staged changes before they enter the repository. MIT-licensed, community-driven, and explicitly not supported by Red Hat despite being featured on Red Hat Developer. Published by a Red Hat-affiliated maintainer (Hervé Beraud, `4383`). Install via `pip install patchpatrol[all]`.
-
-**Architecture:** PatchPatrol's distinguishing design choice is backend plurality — three inference backends selectable per hook invocation:
-
-- **ONNX** — custom fine-tuned models with high accuracy, runs locally.
-- **llama.cpp** — runs code-optimized models (IBM Granite 3B/8B, Meta CodeLlama 7B) directly on local infrastructure. Zero network calls — code never leaves the environment.
-- **Gemini** — cloud API (Gemini 2.0 Flash) for teams that prioritize performance over data residency.
-
-A built-in model registry maps tasks to specialized models. Teams can also register custom, organization-specific models.
-
-**Two modes:** Each mode uses domain-specific prompts rather than generic LLM instructions:
-
-- **Code Quality** (default) — examines code structure, naming conventions, test coverage, documentation completeness, potential bugs, and performance issues. Evaluates consistency with project standards.
-- **Security** — OWASP Top 10 vulnerability detection, hardcoded secret scanning, injection vulnerability identification (SQL injection, XSS, command injection), authentication and authorization logic review. Findings are mapped to CWE categories and compliance frameworks with severity scores.
-
-**Integration model:** Pre-commit hooks, not PR-level review. PatchPatrol reviews staged changes and commit messages at `git commit` time, producing structured JSON output with line-by-line feedback, file references, and severity scores. A `--soft` flag provides warnings without blocking commits for gradual adoption; `--hard` blocks on threshold violations. Dual-hook configurations can run quality analysis locally with strict enforcement while running security analysis via cloud models with a lower threshold.
-
-**Enterprise deployment:** Containerizable for OpenShift clusters, providing consistent analysis across development teams. The local-backend model is pitched at enterprise teams where data sovereignty requirements prohibit sending code to external APIs.
-
-**Relevance to fullsend:** PatchPatrol occupies a different architectural niche from the PR-level review tools that dominate this landscape. Three observations:
-
-- *Pre-commit vs. PR-level.* PatchPatrol's integration point is the developer's local commit workflow, not the PR event. This maps to the Phase 1 (pre-PR, shift-left) review described in [code-review.md](problems/code-review.md), where the code agent invokes review before opening a PR. However, PatchPatrol runs as a single monolithic reviewer per mode, not as decomposed sub-agents — it does not address the context window, defense-in-depth, or specialization arguments for review decomposition that [code-review.md](problems/code-review.md) makes.
-- *Local-first inference.* The zero-network-call backend option is relevant to [agent-infrastructure.md](problems/agent-infrastructure.md) and the credential isolation design ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)). Running inference locally eliminates the data exfiltration risk of sending diffs to external APIs — but also limits model capability to what fits on local hardware (3B–8B parameter models), which is substantially less capable than the cloud models fullsend's review sub-agents use.
-- *No merge authority or trust model.* PatchPatrol is a developer productivity tool — it provides feedback at commit time, not a merge gate. It has no concept of inter-agent trust, intent verification, or autonomous merge confidence. It does not participate in the judgment problem that defines fullsend's novel scope. The OWASP-based security scanning is useful but single-pass — it does not implement the layered, zero-trust review decomposition that fullsend requires for autonomous merge.
-
-PatchPatrol is best understood as a lightweight, privacy-conscious complement to heavier PR-level review tools. For fullsend's purposes, it validates the value of shift-left review (catching issues before PR creation) but does not advance the harder problems of review decomposition, trust boundaries, or merge authority.
-
 ### Others
 
 - **Cursor Bugbot** — AI code review in the Cursor IDE and GitHub. Optimizes for catching hard-to-find bugs with low false positive rate.
@@ -151,6 +120,7 @@ PatchPatrol is best understood as a lightweight, privacy-conscious complement to
 - **OpenAI Codex** — Triggered by `@codex review` in GitHub PRs. Behaves as an additional reviewer focused on high-severity issues.
 - **Bito** — Uses Claude Sonnet for human-like review. GitHub, GitLab, Bitbucket integration.
 - **Caveman** — Output token compression via prompt engineering (~65% savings). Constrains agent output to terse, technical language while preserving reasoning depth. The `caveman-review` format (single-line, emoji-coded comments) is a concrete output format for review sub-agents. [GitHub](https://github.com/juliusbrussee/caveman)
+- **PatchPatrol** — AI-powered commit review via pre-commit hooks with three inference backends (ONNX, llama.cpp, Gemini), offering code quality and OWASP-based security modes. MIT-licensed, community-driven. Validates shift-left review value (Phase 1 per [code-review.md](problems/code-review.md)) and local-inference data sovereignty relevant to [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), but does not address review decomposition, trust boundaries, or merge authority. [GitHub](https://github.com/4383/patchpatrol)
 
 ## Production agent orchestration systems
 
