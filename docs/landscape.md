@@ -450,6 +450,69 @@ Its integrity filtering system is particularly interesting — it implements a f
 
 The comparison raises a structural question for fullsend: which problems in our implementation are inherent to the goal of autonomous development, and which are artifacts of building externally to the platform we're automating? See [platform-nativeness.md](problems/platform-nativeness.md) for the full analysis.
 
+## Security frameworks and threat taxonomies
+
+### SAFE-MCP
+
+[GitHub](https://github.com/safe-agentic-framework/safe-mcp) | [Website](https://www.safemcp.org/) | [Parent project](https://www.secureagenticframework.org/)
+
+A **threat knowledge framework** — not a runtime security tool — that catalogs adversary tactics, techniques, and procedures (TTPs) targeting MCP implementations and AI agent ecosystems. Initiated by [Astha.ai](https://www.astha.ai/) and now governed under the **Linux Foundation** and the **OpenID Foundation** via the OpenSSF SIG-SAFE-MCP working group, with contributions from engineers at Meta, Microsoft, Google, Red Hat, Intel, eBay, Okta, American Express, and others. Think of it as "MITRE ATT&CK for MCP."
+
+**Structure:** The framework defines **14 tactic categories** (mirroring ATT&CK: Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Discovery, Lateral Movement, Collection, Exfiltration, Impact, Command and Control, Resource Development, Reconnaissance) and **80+ documented techniques** (SAFE-T identifiers). Each technique includes severity ratings, detection strategies, and compliance crosswalks to NIST SP 800-53 and the EU AI Act. Mitigations (SAFE-M identifiers) are categorized as Architectural, Preventive, or Detective.
+
+**Notable techniques:**
+
+- **SAFE-T1001 — Tool Poisoning Attack.** Malicious instructions embedded in MCP tool descriptions that are invisible to users but parsed by LLMs. The MCPTox benchmark measured a 36.5% average attack success rate across 20 LLMs. Sub-techniques include full-schema poisoning and cross-tool poisoning.
+- **SAFE-T1102 — Prompt Injection.** Multi-vector exploitation of LLMs' inability to distinguish instructions from data across tool outputs, file contents, database queries, and API responses.
+- **SAFE-T1201 — MCP Rug Pull Attack.** Legitimate-appearing tools that undergo delayed malicious modification after gaining user trust, exploiting MCP's dynamic tool definitions.
+- **SAFE-T1002 — Supply Chain Compromise.** Distribution of backdoored MCP server packages through compromised repositories.
+
+**Architecture (three pillars):**
+
+1. **Identification and Intent** — OpenID Connect–backed identity, scoped tokens, least-privilege access.
+2. **Screening** — detection of prompt manipulation, suspicious tool behavior, poisoned responses.
+3. **Policy Enforcement** — context-aware authorization with real-time rule evaluation.
+
+The framework separates a **Control Plane** (signed policy distribution, authorization, sampling budgets) from a **Data Plane** (runtime enforcement of tool execution and resource access). All external inputs — tool descriptions, API responses — are treated as pure data in the Data Plane.
+
+**Notable mitigations:**
+
+- **SAFE-M-1 — Control/Data Flow Separation.** Architectural defense that separates trusted control flow from untrusted data flow. References Google's CaMeL system (77% task completion with provable security guarantees).
+- **SAFE-M-7 — Content Rendering Parity.** Ensures what users see matches what the LLM processes — addressing the same class of invisible-payload attacks as [steganographic injection](problems/security-threat-model.md#steganographic-injection-invisible-unicode-payloads), but framed as a general mitigation rather than a Unicode-specific defense.
+- **SAFE-M-21 — Output Context Isolation.** Delimiter-based separation preventing data interpretation as instructions.
+- **SAFE-M-23 — Tool Output Truncation.** Limiting output size to constrain injection surface area.
+
+**Mapping to fullsend's existing controls:**
+
+| SAFE-MCP concept | Fullsend equivalent | Coverage |
+|---|---|---|
+| SAFE-T1001 Tool Poisoning | [tool-call-risk-assessment.md](problems/tool-call-risk-assessment.md) (semantic risk beyond pattern matching) | Partial — fullsend identifies the gap between pattern matching and semantic understanding but has not shipped an LLM-as-judge pre-tool hook |
+| SAFE-T1102 Prompt Injection | [security-threat-model.md](problems/security-threat-model.md#threat-1-external-prompt-injection) (Threat 1, including steganographic variants) | Strong — fullsend's threat model covers visible injection, invisible Unicode payloads, indirect disclosure, and social pressure vectors |
+| SAFE-T1201 Rug Pull / dynamic tool modification | [mcp-config-drift.md](problems/mcp-config-drift.md) (Scenario 2: endpoint replacement, Approach 1: baseline and diff) | Partial — fullsend's mcp-config-drift.md addresses config-level endpoint replacement (Scenario 2), but SAFE-T1201 describes server-side behavioral changes (tools that modify their own definitions after gaining trust); Approach 1 explicitly acknowledges it "does not detect changes to what the MCP server *serves*" |
+| SAFE-T1002 Supply Chain Compromise | [security-threat-model.md](problems/security-threat-model.md#threat-4-supply-chain-attacks) (Threat 4, model-as-toolchain) | Strong — fullsend extends supply chain analysis beyond dependencies to the model itself as a Thompson-analog trust boundary |
+| Control/Data Plane separation | [ADR 0016](ADRs/0016-unidirectional-control-flow.md) (unidirectional control flow), [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) (credential isolation) | Strong — fullsend enforces this structurally: the harness (control plane) validates and constrains agent output (data plane) without the agent being able to influence the harness |
+| SAFE-M-1 Control/Data Flow Separation | [Cross-cutting principle 6 (immutable agent policy)](problems/security-threat-model.md#cross-cutting-security-principles), [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) (output schema enforcement) | Strong — fullsend's architecture enforces this at the sandbox boundary, not just as guidance |
+| Content Rendering Parity (SAFE-M-7) | [security-threat-model.md](problems/security-threat-model.md#steganographic-injection-invisible-unicode-payloads) (input sanitization for non-rendering Unicode) | Partial — fullsend addresses the Unicode-specific case but does not frame rendering parity as a general mitigation class |
+| 5-level privilege hierarchy | [intent-representation.md](problems/intent-representation.md) (intent authorization tiering) | Different framing — SAFE-MCP's levels (READ-ONLY through SYSTEM ADMIN) are static per-tool ACLs; fullsend's intent authorization tiers are per-change risk classifications that determine autonomy level |
+| Compliance crosswalks (NIST, EU AI Act) | Not addressed | Gap — fullsend has no explicit compliance mapping |
+
+**What SAFE-MCP offers that fullsend does not have:**
+
+- *A shared taxonomy for MCP threats.* Fullsend's [security-threat-model.md](problems/security-threat-model.md) is a thorough problem document, but it uses narrative descriptions rather than a structured, cross-referenceable taxonomy. SAFE-MCP's SAFE-T/SAFE-M identifier scheme gives security teams a common vocabulary for discussing and tracking MCP-specific threats.
+- *Compliance crosswalks.* Mapping specific attack techniques to NIST SP 800-53 controls and the EU AI Act is useful for organizations that need to demonstrate regulatory compliance of their agent infrastructure. Fullsend does not currently address regulatory framing.
+- *Quantified attack benchmarks.* The MCPTox benchmark's 36.5% average attack success rate across 20 LLMs provides an empirical baseline that fullsend's threat model does not have — its discussion of prompt injection effectiveness is qualitative ("fundamentally hard" to detect) rather than quantitative.
+
+**What fullsend covers that SAFE-MCP does not:**
+
+- *Zero-trust inter-agent composition.* SAFE-MCP catalogs threats to individual MCP sessions; fullsend's [Threat 5](problems/security-threat-model.md#threat-5-agent-to-agent-prompt-injection) addresses how agents in a multi-agent pipeline can compromise each other through their outputs.
+- *Autonomous merge authority.* SAFE-MCP's scope is the agent–tool boundary (what an agent can access and execute). Fullsend's security model extends past execution to the judgment layer: should the agent's output be merged without human review? This is the domain of [intent authorization tiering](problems/intent-representation.md), [review autonomy evidence](problems/review-autonomy-evidence.md), and [governance](problems/governance.md) — none of which SAFE-MCP attempts.
+- *Temporal attack patterns.* Fullsend's [temporal split-payload test poisoning](problems/security-threat-model.md#cross-cutting-attack-pattern-temporal-split-payload-test-poisoning) and [agent drift](problems/security-threat-model.md#threat-3-agent-drift) address threats that unfold across multiple sessions and PRs. SAFE-MCP's per-session threat model does not capture multi-session attack chains.
+- *Agent self-report unreliability.* Fullsend's [cross-cutting concern](problems/security-threat-model.md#cross-cutting-concern-agent-self-report-unreliability) about agents misrepresenting their own actions is not in SAFE-MCP's scope.
+
+**Relevance to fullsend:** SAFE-MCP is a useful **reference taxonomy**, not an adoption candidate. Its structured TTP catalog validates fullsend's threat model coverage — the core MCP attack vectors (tool poisoning, prompt injection, rug pulls, supply chain compromise) are already identified and addressed in fullsend's problem documents, in most cases with deeper treatment. The main gaps it surfaces are presentation-level, not architectural: fullsend could benefit from a structured identifier scheme for its own threats (enabling cross-referencing and compliance mapping) and from quantitative benchmarks for attack success rates. The compliance crosswalks to NIST SP 800-53 and the EU AI Act are relevant for organizations using fullsend that need to demonstrate regulatory compliance — this is something fullsend's documentation does not currently address and could reference SAFE-MCP's crosswalks for.
+
+The framework does not address fullsend's core differentiators (zero-trust agent composition, autonomous merge judgment, intent authorization tiering), so it is complementary rather than competing. The recommended action is to reference SAFE-MCP's taxonomy when discussing MCP-specific threats in fullsend documentation, and to evaluate whether its compliance crosswalks are useful for the applied docs of organizations with regulatory requirements.
+
 ## Architectural patterns in the field
 
 Five distinct approaches:
