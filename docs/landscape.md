@@ -186,7 +186,7 @@ One-shot coding agents that merge over 1,300 pull requests per week at Stripe. A
 
 [Gas Town GitHub](https://github.com/steveyegge/gastown) | [Gas City GitHub](https://github.com/gastownhall/gascity) | [Architecture overview](https://cloudnativenow.com/features/gas-town-what-kubernetes-for-ai-coding-agents-actually-looks-like/)
 
-Steve Yegge's multi-agent orchestration system, evolved from Gas Town (the original monolith) to Gas City (an orchestration-builder SDK, v1.4, Go, 5,900+ commits). Gas Town coordinates 20-30 parallel coding agents working on feature branches simultaneously. Gas City extracts the reusable infrastructure into composable primitives.
+Steve Yegge's multi-agent orchestration system, evolved from Gas Town (the original monolith) to Gas City (an orchestration-builder SDK, v1.4, Go, 5,900+ commits as of September 2026). Gas Town coordinates 20-30 parallel coding agents working on feature branches simultaneously. Gas City extracts the reusable infrastructure into composable primitives.
 
 **Architecture:** Gas Town uses a "Mayor" agent as coordinator, dispatching work to parallel coding agents ("Polecats"). A "Refinery" manages the merge queue. Git is the persistence layer — if the system crashes, it reads git history and resumes.
 
@@ -219,7 +219,7 @@ A multi-agent orchestration layer built on Block's [Goose](https://github.com/bl
 
 **Architecture:** An orchestrator session decomposes a request into phases (research → build → review) and dispatches parallel delegates. Twelve role-specific skills ship out of the box: an orchestrator, eight specialized researchers (arxiv, beads, GitHub, Jira, local files, Reddit, Slack, Stack Overflow), a reviewer, a worker, and a writer. Each delegate receives its role-specific skill at spawn time. Communication happens through two mechanisms:
 
-- **gtwall (Town Wall):** A broadcast channel backed by a position-tracked log file. Per-session walls allow multiple Goosetown instances to run simultaneously without interference. Delegates post discoveries, warnings, and progress; siblings read the wall to avoid duplicate work and conflicting edits. A tiered wrap-up protocol (⏰ 5 min → 🚨 60 sec → force-cancel) gives delegates structured deadlines for completing and summarizing work.
+- **gtwall (Town Wall):** A broadcast channel backed by a position-tracked log file. Per-session walls allow multiple Goosetown instances to run simultaneously without interference. Delegates post discoveries, warnings, and progress; siblings read the wall to avoid duplicate work and conflicting edits. A tiered wrap-up protocol (5-min warning → 60-sec warning → force-cancel) gives delegates structured deadlines for completing and summarizing work.
 - **Telepathy:** Orchestrator → delegate push messages for urgent paging. The orchestrator writes to a shared file; delegates check their `<info-msg>` for pings. Scoped addressing (`@all`, `@name`) lets the orchestrator page specific delegates or the entire flock.
 
 A real-time dashboard (Python/uv, per-instance, port-isolated) visualizes flock activity by querying Goose's session database and the wall file. Knowledge management follows a structured local-first pattern: GUIDES/, PLANS/, RESEARCH/, and WORK_LOGS/ directories with YAML frontmatter, canonical tags, supersession tracking, and a catalog index.
