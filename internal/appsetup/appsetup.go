@@ -982,6 +982,12 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	// After the manifest flow, GitHub may take a few seconds to make the
 	// app page available — opening the install URL before that returns 404.
 	if err := s.waitForAppReady(ctx, ghExt, slug); err != nil {
+		// If the parent context was cancelled (e.g. user Ctrl+C), propagate
+		// that instead of degrading gracefully — opening a browser after an
+		// explicit cancellation is wrong.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		s.ui.StepWarn(fmt.Sprintf("App readiness check failed: %v", err))
 		s.ui.StepInfo("Proceeding to open browser anyway — the page may require a manual refresh.")
 	}

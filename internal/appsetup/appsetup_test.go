@@ -1570,6 +1570,45 @@ func TestEnsureInstalled_ProceedsWhenReadinessTimesOut(t *testing.T) {
 	assert.Contains(t, output.String(), "readiness check failed")
 }
 
+func TestEnsureInstalled_ReturnsEarlyOnContextCancel(t *testing.T) {
+	// When the parent context is cancelled, ensureInstalled should return
+	// the context error immediately instead of opening the browser.
+	innerClient := &forge.FakeClient{
+		Installations: []forge.Installation{},
+		// No AppClientIDs — GetAppClientID always returns ErrNotFound,
+		// so waitForAppReady will keep polling until the context is cancelled.
+	}
+	browser := &installOnOpenBrowser{
+		client: innerClient,
+		inst:   forge.Installation{ID: 1, AppID: 42, AppSlug: "test-app"},
+		urlCh:  make(chan string, 1),
+	}
+	printer := ui.New(&discardWriter{})
+	s := &Setup{
+		client:           innerClient,
+		browser:          browser,
+		ui:               printer,
+		readinessTimeout: 5 * time.Second,
+	}
+
+	// Cancel the context immediately so waitForAppReady exits via
+	// the parent context rather than its own readiness timeout.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.ensureInstalled(ctx, "myorg", "test-app")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	// Verify the browser was NOT opened.
+	select {
+	case <-browser.urlCh:
+		t.Error("browser.Open should not be called when context is cancelled")
+	default:
+		// expected — no browser opened
+	}
+}
+
 // discardWriter implements io.Writer, discarding all output.
 type discardWriter struct{}
 
