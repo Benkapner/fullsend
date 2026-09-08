@@ -308,7 +308,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 // is resolved; forge-specific validation already occurs at install time.
 func splitOwnerRepo(fullName string) (string, string, error) {
 	if !gitlabRepoNamePattern.MatchString(fullName) {
-		return "", "", fmt.Errorf("invalid repo format %q: expected owner/repo with alphanumeric, dash, dot, or underscore characters", fullName)
+		return "", "", fmt.Errorf("invalid repo format %q: expected owner/repo[/subgroup/...] using alphanumeric, dash, dot, or underscore characters", fullName)
 	}
 	parts := strings.SplitN(fullName, "/", 2)
 	return parts[0], parts[1], nil

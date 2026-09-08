@@ -226,6 +226,12 @@ fullsend repos uninstall acme/old-api --manifest-only
 fullsend repos uninstall acme/old-api --uninstall-only
 ```
 
+For GitLab repos with nested group paths, use the full path:
+
+```bash
+fullsend repos uninstall group/subgroup/project
+```
+
 ### Modes
 
 | Flag | Teardown | Manifest removal |
