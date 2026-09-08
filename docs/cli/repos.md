@@ -195,7 +195,7 @@ fullsend repos status --repo "acme/*" --json
 
 **Table output** (default) shows per-repo status with columns:
 
-- **REPO** — `owner/repo` name
+- **REPO** — `owner/repo` name (GitLab repos with nested groups display as `group/subgroup/project`)
 - **REF** — Current workflow ref. Named refs (tags, branches) display as-is (e.g., `v2.3.0`, `main`). When the ref is a commit SHA, shows a truncated 7-character SHA with the expected ref in parentheses (e.g., `6f8b968 (main)`).
 - **STATUS** — `installed`, `not installed`, or `error`
 - **DRIFT** — Fields that differ from the manifest, scaffold files whose template content has changed, orphan files or variables no longer in the managed set, or `none`

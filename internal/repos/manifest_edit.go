@@ -69,11 +69,10 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, forgeName string
 	}
 
 	for _, entry := range entries {
-		if !isGlob(entry.Name) && !isValidRepoName(forgeName, entry.Name) {
-			if forgeName == ForgeGitLab {
-				return nil, nil, fmt.Errorf("invalid repo name %q: expected group[/subgroup]/project format", entry.Name)
+		if !isGlob(entry.Name) {
+			if err := validateRepoName(forgeName, entry.Name); err != nil {
+				return nil, nil, err
 			}
-			return nil, nil, fmt.Errorf("invalid repo name %q: expected owner/repo format", entry.Name)
 		}
 	}
 
@@ -298,14 +297,21 @@ func isGlob(s string) bool {
 	return strings.ContainsAny(s, "*?[")
 }
 
-// isValidRepoName validates a repo name against the appropriate pattern
-// for the given forge. GitHub requires exactly two segments (owner/repo),
-// while GitLab allows nested group paths (group/subgroup/project).
-func isValidRepoName(forgeName, name string) bool {
+// validateRepoName checks that a repo name matches the appropriate pattern
+// for the given forge, returning a forge-specific error if it does not.
+// GitHub requires exactly two segments (owner/repo), while GitLab allows
+// nested group paths (group/subgroup/project).
+func validateRepoName(forgeName, name string) error {
 	if forgeName == ForgeGitLab {
-		return gitlabRepoNamePattern.MatchString(name)
+		if !gitlabRepoNamePattern.MatchString(name) {
+			return fmt.Errorf("invalid repo name %q: expected group[/subgroup]/project format", name)
+		}
+		return nil
 	}
-	return repoNamePattern.MatchString(name)
+	if !repoNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid repo name %q: expected owner/repo format", name)
+	}
+	return nil
 }
 
 func writeManifest(path string, m *Manifest) error {

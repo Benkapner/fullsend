@@ -309,7 +309,7 @@ func TestUninstall_InvalidRepoFormat(t *testing.T) {
 }
 
 func TestUninstall_NestedGitLabPath(t *testing.T) {
-	client := newInstalledFakeClient("group/subgroup/project")
+	client := newInstalledFakeGitLabClient("group/subgroup/project")
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testGitLabManifest("group/subgroup/project"),
 		Repos:          []string{"group/subgroup/project"},
@@ -322,11 +322,18 @@ func TestUninstall_NestedGitLabPath(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	if results[0].Owner != "group" {
-		t.Errorf("Owner = %q, want %q", results[0].Owner, "group")
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
 	}
-	if results[0].Repo != "subgroup/project" {
-		t.Errorf("Repo = %q, want %q", results[0].Repo, "subgroup/project")
+	if r.Error != nil {
+		t.Errorf("Error = %v, want nil", r.Error)
+	}
+	if r.Owner != "group" {
+		t.Errorf("Owner = %q, want %q", r.Owner, "group")
+	}
+	if r.Repo != "subgroup/project" {
+		t.Errorf("Repo = %q, want %q", r.Repo, "subgroup/project")
 	}
 }
 
