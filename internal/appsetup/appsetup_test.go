@@ -1479,13 +1479,9 @@ func TestWaitForAppReady_Timeout(t *testing.T) {
 		// No AppClientIDs — GetAppClientID always returns ErrNotFound.
 	}
 	printer := ui.New(&discardWriter{})
-	s := &Setup{client: client, ui: printer}
+	s := &Setup{client: client, ui: printer, readinessTimeout: 200 * time.Millisecond}
 
-	// Use a short context timeout to avoid a 30-second wait.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := s.waitForAppReady(ctx, client, "nonexistent-app")
+	err := s.waitForAppReady(context.Background(), client, "nonexistent-app")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out waiting for app nonexistent-app")
 }
