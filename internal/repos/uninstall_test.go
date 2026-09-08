@@ -308,6 +308,28 @@ func TestUninstall_InvalidRepoFormat(t *testing.T) {
 	}
 }
 
+func TestUninstall_NestedGitLabPath(t *testing.T) {
+	client := newInstalledFakeClient("group/subgroup/project")
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("group/subgroup/project"),
+		Repos:          []string{"group/subgroup/project"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v, want nil for nested GitLab path", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if results[0].Owner != "group" {
+		t.Errorf("Owner = %q, want %q", results[0].Owner, "group")
+	}
+	if results[0].Repo != "subgroup/project" {
+		t.Errorf("Repo = %q, want %q", results[0].Repo, "subgroup/project")
+	}
+}
+
 func TestUninstall_InvalidConcurrency(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"acme/api"},

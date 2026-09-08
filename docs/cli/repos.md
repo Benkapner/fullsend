@@ -133,6 +133,12 @@ On free-tier or Community Edition instances where project access tokens are not 
 fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
 ```
 
+Project paths can include nested groups (e.g., `group/subgroup/project`):
+
+```bash
+fullsend repos install group/subgroup/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
+```
+
 ### Common workflows
 
 Converge all repos from a manifest (provision new, repair component drift, repair scaffold content drift, upgrade refs):

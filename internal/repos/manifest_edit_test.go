@@ -218,14 +218,14 @@ func TestAddToManifest_GitLabNestedPaths(t *testing.T) {
 			forge:     ForgeGitLab,
 			repoName:  "project",
 			wantErr:   true,
-			errSubstr: "invalid repo name",
+			errSubstr: "group[/subgroup]/project format",
 		},
 		{
 			name:      "github rejects 3-segment path",
 			forge:     ForgeGitHub,
 			repoName:  "a/b/c",
 			wantErr:   true,
-			errSubstr: "invalid repo name",
+			errSubstr: "owner/repo format",
 		},
 		{
 			name:     "github 2-segment path accepted",

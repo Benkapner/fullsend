@@ -10,12 +10,14 @@ import (
 	"strings"
 )
 
-// repoNamePattern matches the GitHub two-segment owner/repo format.
-var repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+var (
+	// repoNamePattern matches the GitHub two-segment owner/repo format.
+	repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
 
-// gitlabRepoNamePattern matches GitLab project paths which may include
-// arbitrarily nested group/subgroup segments (e.g. "group/subgroup/project").
-var gitlabRepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+){1,}$`)
+	// gitlabRepoNamePattern matches GitLab project paths which may include
+	// arbitrarily nested group/subgroup segments (e.g. "group/subgroup/project").
+	gitlabRepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)+$`)
+)
 
 // ManifestEditConfig holds inputs for manifest add/remove operations.
 type ManifestEditConfig struct {
@@ -68,6 +70,9 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, forgeName string
 
 	for _, entry := range entries {
 		if !isGlob(entry.Name) && !isValidRepoName(forgeName, entry.Name) {
+			if forgeName == ForgeGitLab {
+				return nil, nil, fmt.Errorf("invalid repo name %q: expected group[/subgroup]/project format", entry.Name)
+			}
 			return nil, nil, fmt.Errorf("invalid repo name %q: expected owner/repo format", entry.Name)
 		}
 	}

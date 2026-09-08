@@ -84,6 +84,7 @@ gitlab:
   fullsend_ref: v2.5.0
   repos:
     - name: gitlab-group/project
+    - name: gitlab-group/subgroup/nested-project
 ```
 
 GitHub repos use a token mint for authentication. The
