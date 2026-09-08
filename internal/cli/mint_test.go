@@ -2420,6 +2420,8 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "rate limit")
 			assert.Contains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN")
+			assert.Contains(t, err.Error(), "gh auth login",
+				"unauthenticated rate limit error should suggest gh auth login")
 		})
 	}
 }
