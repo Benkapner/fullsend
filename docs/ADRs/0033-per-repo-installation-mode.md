@@ -66,6 +66,8 @@ Use one GitHub App for triage, code, review, and fix roles to simplify per-repo 
 
 **Rejected**: GitHub suppresses events triggered by pushes made with any `GITHUB_TOKEN` or GitHub App installation token, to prevent infinite loops. Two separate Apps work because a push made with App-A's token _does_ generate events that trigger workflows authenticated as App-B. The fix→review loop requires the coder/fix agent to push commits that trigger review — if both roles share one App, the push token matches the workflow's App and the event is silently suppressed, breaking the feedback cycle. At minimum, coder and review must be separate Apps.
 
+> **Note (2026-09):** The first sentence overstates the suppression scope. GitHub's event suppression applies only to `GITHUB_TOKEN` pushes; GitHub App installation token pushes _do_ trigger new workflow runs regardless of App identity — the observed [scaffold-sync dispatch recursion](../contributing/bot-identities.md#app-token-push-recursion) confirms this. The separate-Apps conclusion still holds for permission isolation ([ADR 0007](0007-per-role-github-apps.md)), but the suppression-based rationale above was incorrect. See also [`platform-nativeness.md`](../problems/platform-nativeness.md), which notes this overstatement.
+
 ### Alternative 3: Per-repo as a separate codebase
 
 Build a standalone per-repo tool or action that does not share infrastructure with per-org fullsend.
