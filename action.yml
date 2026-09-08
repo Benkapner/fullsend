@@ -299,11 +299,12 @@ runs:
           local output
           while true; do
             if output=$(git "$@" 2>&1); then
+              printf '%s\n' "${output}" >&2
               return 0
             fi
             # Don't retry permanent failures (bad ref, wrong credentials).
             if printf '%s' "${output}" | grep -qE \
-                'not our ref|no such remote ref|does not appear to be a git repository|Authentication failed'; then
+                "not our ref|no such remote ref|couldn't find remote ref|does not appear to be a git repository|Authentication failed"; then
               printf '%s\n' "${output}" >&2
               return 1
             fi
@@ -313,6 +314,7 @@ runs:
               return 1
             fi
             echo "::warning::git attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
+            printf '%s\n' "${output}" >&2
             sleep "${delay}"
             (( attempt++ ))
             (( delay *= 3 ))
