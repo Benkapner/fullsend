@@ -22,13 +22,22 @@ const logFetchTimeout = 30 * time.Second
 // successful runs leave a log trail for diagnosing dispatch, harness,
 // or skip behaviour.
 //
+// When BEHAVIOUR_ARTIFACT_DIR is not set (local development), log
+// collection is skipped entirely to avoid leaking orphaned temp
+// directories that no one will inspect.
+//
 // Logs are fetched before the debug directory is created so that a
-// failed API call does not leave an empty temp directory behind.
+// failed API call does not leave an empty directory behind.
 //
 // Errors are logged but not returned -- log collection is best-effort
 // and must not fail the scenario.
 func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run *forge.WorkflowRun) {
 	if run == nil {
+		return
+	}
+
+	if strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) == "" {
+		worldLogf(w, "save workflow run logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for %s run %d", label, run.ID)
 		return
 	}
 
@@ -57,20 +66,21 @@ func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run 
 }
 
 // prepareDebugDir creates a debug subdirectory for a workflow run's
-// logs. When BEHAVIOUR_ARTIFACT_DIR is set, the directory is created
-// under that root so CI's upload-artifact ships the logs automatically.
-// Otherwise a system temp directory is used.
+// logs under BEHAVIOUR_ARTIFACT_DIR so CI's upload-artifact ships the
+// logs automatically. Returns an error when BEHAVIOUR_ARTIFACT_DIR is
+// not set — callers should skip log collection in that case to avoid
+// leaking orphaned temp directories.
 func prepareDebugDir(label string, runID int) (string, error) {
 	dirName := fmt.Sprintf("debug-%s-run-%d", label, runID)
 
 	ciArtifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
-	if ciArtifactDir != "" {
-		debugDir := filepath.Join(ciArtifactDir, dirName)
-		if err := os.MkdirAll(debugDir, 0o755); err != nil {
-			return "", fmt.Errorf("creating debug dir: %w", err)
-		}
-		return debugDir, nil
+	if ciArtifactDir == "" {
+		return "", fmt.Errorf("BEHAVIOUR_ARTIFACT_DIR is not set")
 	}
 
-	return os.MkdirTemp("", dirName+"-*")
+	debugDir := filepath.Join(ciArtifactDir, dirName)
+	if err := os.MkdirAll(debugDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating debug dir: %w", err)
+	}
+	return debugDir, nil
 }

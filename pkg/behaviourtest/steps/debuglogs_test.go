@@ -26,16 +26,32 @@ func TestSaveWorkflowRunLogs_NilRun(t *testing.T) {
 	assert.Empty(t, logged)
 }
 
+func TestSaveWorkflowRunLogs_SkipsWhenArtifactDirUnset(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", "")
+
+	var logged []string
+	w := &world.World{
+		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+
+	run := &forge.WorkflowRun{ID: 10}
+	saveWorkflowRunLogs(context.Background(), w, "triage", run)
+
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "BEHAVIOUR_ARTIFACT_DIR unset")
+	assert.Contains(t, logged[0], "skipping log collection")
+}
+
 func TestSaveWorkflowRunLogs_WritesLogs(t *testing.T) {
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
 	var logged []string
-	ci := &fakeDebugCI{logs: "=== triage run logs ==="}
+	fakeCI := &fakeDebugCI{logs: "=== triage run logs ==="}
 	w := &world.World{
 		Org:      "org",
 		RepoName: "repo",
-		CI:       ci,
+		CI:       fakeCI,
 		Logf:     func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
 
@@ -58,11 +74,11 @@ func TestSaveWorkflowRunLogs_GetRunLogsError(t *testing.T) {
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
 	var logged []string
-	ci := &fakeDebugCI{logsErr: fmt.Errorf("API error")}
+	fakeCI := &fakeDebugCI{logsErr: fmt.Errorf("API error")}
 	w := &world.World{
 		Org:      "org",
 		RepoName: "repo",
-		CI:       ci,
+		CI:       fakeCI,
 		Logf:     func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
 
@@ -84,11 +100,11 @@ func TestSaveWorkflowRunLogs_NilLogf(t *testing.T) {
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
-	ci := &fakeDebugCI{logs: "log content"}
+	fakeCI := &fakeDebugCI{logs: "log content"}
 	w := &world.World{
 		Org:      "org",
 		RepoName: "repo",
-		CI:       ci,
+		CI:       fakeCI,
 		// Logf deliberately nil — worldLogf guards it.
 	}
 
@@ -117,12 +133,9 @@ func TestPrepareDebugDir_WithArtifactDir(t *testing.T) {
 func TestPrepareDebugDir_WithoutArtifactDir(t *testing.T) {
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", "")
 
-	dir, err := prepareDebugDir("agent", 456)
-	require.NoError(t, err)
-	defer os.RemoveAll(dir)
-
-	assert.DirExists(t, dir)
-	assert.Contains(t, filepath.Base(dir), "debug-agent-run-456")
+	_, err := prepareDebugDir("agent", 456)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BEHAVIOUR_ARTIFACT_DIR is not set")
 }
 
 // fakeDebugCI implements ci.Driver for debug log tests. Unused methods

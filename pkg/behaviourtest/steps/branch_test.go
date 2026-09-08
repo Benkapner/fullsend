@@ -235,6 +235,8 @@ func TestWhenCommentPostedOnPullRequest(t *testing.T) {
 }
 
 func TestThenHarnessWorkflowFailsReporting(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
+
 	origWindow, origInterval := failureCommentPollWindow, failureCommentPollInterval
 	failureCommentPollWindow, failureCommentPollInterval = 50*time.Millisecond, 10*time.Millisecond
 	t.Cleanup(func() {
