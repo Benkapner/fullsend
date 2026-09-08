@@ -411,6 +411,8 @@ compiled-in defaults apply:
 
 ## Related
 
+- [Config Reference](../../reference/config-reference.md) — canonical
+  user-facing reference for every `.fullsend/config.yaml` field.
 - [ADR 0069 — Ready-made configuration presets](../../ADRs/0069-ready-made-configuration-presets.md)
   — the architectural decision that introduced layered configuration.
 - [ADR 0033 — Per-repo installation mode](../../ADRs/0033-per-repo-installation-mode.md)

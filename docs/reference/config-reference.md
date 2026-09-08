@@ -264,12 +264,8 @@ Model configuration, currently containing only `aliases`.
 This reference documents the **per-repo** config format (stored in
 `.fullsend/config.yaml` within the target repository). Per-repo is the sole
 supported installation model going forward — per-org installation mode is
-deprecated ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)).
-
-The org-mode config format shares several fields but adds org-specific keys
-(`dispatch`, `defaults`, `repos`) and omits per-repo-only keys (`forge`,
-`tracker`, `mint_url`, `inference`, `models`, `keep_history`). Installations
-still on org mode should migrate to per-repo mode.
+deprecated ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md))
+and installations still on org mode should migrate.
 
 ## Layered configuration
 
