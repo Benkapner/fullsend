@@ -2513,7 +2513,7 @@ func TestLookupAppID_UsesResolveTokenFallback(t *testing.T) {
 	// gh auth login has been run).
 	orig := lookupTokenFn
 	lookupTokenFn = func() (string, error) { return "ghp_from_gh_auth", nil }
-	defer func() { lookupTokenFn = orig }()
+	t.Cleanup(func() { lookupTokenFn = orig })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer ghp_from_gh_auth", r.Header.Get("Authorization"),
