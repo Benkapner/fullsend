@@ -91,6 +91,27 @@ Launched November 2025. The closest thing in the industry to autonomous merging.
 
 **Relevance to fullsend:** GitLab is solving the *mechanical* merge problem (conflict resolution, CI gating) but not the *judgment* problem (should this change exist?). Our problem is harder — we need the judgment layer. But GitLab's approach to adhering to existing branch protection rules while automating within them is a pattern worth studying.
 
+### OpenClaw
+
+[Website](https://openclaw.ai/) | [GitHub](https://github.com/openclaw/openclaw)
+
+An open-source personal AI assistant framework that runs on your own hardware and connects to 20+ messaging channels (Discord, Slack, Telegram, WhatsApp, iMessage, and others), plus native apps for macOS, iOS, Android, Windows, and Linux. Originally published as Warelay in November 2025, renamed to OpenClaw in January 2026. The fastest-growing open-source project in GitHub history: ~389K stars by mid-2026, surpassing React's 10-year record in roughly 60 days. Developed by the OpenClaw Foundation, an independent 501(c)(3), with infrastructure support from GitHub, NVIDIA, Vercel, and others.
+
+**Architecture:** A long-running Node.js service organized around a local-first Gateway — a WebSocket control plane managing sessions, presence, cron jobs, and webhooks through a single local port. A multi-channel inbox routes inbound messages to isolated agent workspaces, each with its own session history and tools. Skills are compiled to WebAssembly modules for sandboxed execution. Agents maintain persistent memory via a directed graph of memory nodes, allowing context to survive across sessions without context-window overflow. Model-agnostic: supports Anthropic, OpenAI, local models, and others.
+
+**Multi-agent model:** Multiple specialized agents can run within a single deployment, isolated by workspace (a security agent does not share tools with a help desk agent). This is *operational* isolation — reducing blast radius — not *trust* isolation; agents share the host machine's credentials and file system. The agent runtime uses a continuous ReAct (Reason + Act) loop, not a one-shot pipeline.
+
+**Security track record:** Rapid growth brought significant security challenges. The ClawHavoc supply-chain attack (January 2026) planted malware in hundreds of skills in the ClawHub registry, including credential-stealing payloads that persisted by writing to the agent's memory files. Between January and April 2026, 470 security advisories were filed across three disclosure waves. The project responded with mandatory cryptographic skill verification (v2026.4.12) and ongoing hardening. Academic analyses ([arXiv](https://arxiv.org/html/2603.12644v1)) have noted that self-hosted deployment inherits the host machine's full trust surface, making credential isolation a persistent architectural challenge.
+
+**Relevance to fullsend:** OpenClaw and fullsend occupy fundamentally different niches despite both involving AI agents. OpenClaw is a *personal assistant* platform — it connects LLMs to messaging channels and local tools so an individual user can automate tasks across their digital life. Fullsend is a *forge-native autonomous development* system — it connects agents to Git forge events (PRs, issues, merges) so an organization can automate software delivery with structured authority. The architectural differences follow from this purpose gap:
+
+- *Authority model:* OpenClaw agents act with the permissions of the host machine's user account — "whatever the OS account can do." Fullsend agents act through per-role forge identities constrained by CODEOWNERS, branch protection, and required checks, with explicit intent-authorization tiers.
+- *Coordination:* OpenClaw uses a centralized Gateway as the control plane. Fullsend uses the repository itself as coordinator — branch protection rules, status checks, and PR state drive agent behavior without a separate coordination service.
+- *Review and merge:* OpenClaw has no concept of code review, merge authority, or CI integration — it is not a software development tool. Fullsend's entire problem domain is the judgment layer: deciding whether agent-produced code should ship, with zero-trust review decomposition across independent sub-agents.
+- *Security posture:* OpenClaw inherits host-machine trust and has faced supply-chain attacks on its skill registry. Fullsend isolates agents in ephemeral sandboxes with controlled egress, credential isolation via L7 REST proxies, and pre-merge threat detection — treating the agent itself as an untrusted workload.
+
+OpenClaw's scale (389K+ stars, 3M+ active users) validates broad interest in AI agent frameworks, and its multi-channel routing and persistent memory are well-executed for the personal-assistant use case. But its architectural decisions — local-first deployment, host-trust inheritance, messaging-channel orientation — serve a different problem than forge-native autonomous merge. The two projects share terminology (agents, tools, skills, memory) while operating with incompatible trust models.
+
 ### Others
 
 - **Cursor Bugbot** — AI code review in the Cursor IDE and GitHub. Optimizes for catching hard-to-find bugs with low false positive rate.
