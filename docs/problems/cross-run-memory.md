@@ -114,10 +114,10 @@ When should the system stop retrying and ask a human?
 
 The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Making them tunable per repo and per agent role, rather than baked into the harness as constants, needs somewhere to put the values. Several shapes could carry them, each with a different trade-off:
 
-- **Harness constants (what happens today).** Simplest, but not tunable without a code change and not inspectable per run.
-- **Existing per-run budget fields, extended.** `max_turns` / `max_cost_usd` already exist per run (PR #1682); a cross-run budget could reuse that vocabulary. Cheap to adopt, but it conflates a single-attempt cap with a cumulative one unless the names are kept distinct (see below).
-- **A dedicated declarative config block (illustrated below).** Inspectable and tunable per repo/role without a code change, at the cost of a new schema to define and validate.
-- **CEL-expressed conditions** ([cel-triggers.md](../contributing/cel-triggers.md)). Most expressive (arbitrary predicates over run signals), but the hardest to author and reason about, and it does not by itself model the identical-vs-distinct failure-signature distinction.
+- **Per-agent harness config (what happens today).** Iteration caps and a strategy-escalation threshold already live in the fix agent's harness file (`ITERATION_CAP`, `ITERATION_CAP_HUMAN`, `STRATEGY_ESCALATION_THRESHOLD` under `env.sandbox`, plus `validation_loop.max_iterations`), the effective cap is printed each run, and exhaustion surfaces via the `needs-human` label. Tunable per agent and inspectable per run already, but it counts attempts only: nothing distinguishes identical from distinct failures, and nothing accumulates cost across runs.
+- **Existing per-run budget fields, extended.** `max_turns` / `max_cost_usd` already exist per run in the functional test framework (PR #1682); a cross-run budget could reuse that vocabulary. It conflates a single-attempt cap with a cumulative one unless the names are kept distinct (see below). Reusing that vocabulary for a runtime cap would first require the harness to enforce them at all, which it does not today.
+- **A dedicated declarative config block (illustrated below).** Inspectable and tunable per repo/role without a code change, extending the existing per-agent harness surface with failure-signature and cumulative-budget fields.
+- **CEL-expressed conditions** ([cel-triggers.md](../contributing/cel-triggers.md)). Most expressive in principle, but the normalized event CEL evaluates (`repo`, `entity`, `transition`, `actor`, `state`, `source`) carries no prior-run outcomes, cost, or failure history, so none of the four triggers above can be written as a CEL trigger today — a new run-history signal or a different evaluation context would be required first. It also does not by itself model the identical-vs-distinct failure-signature distinction.
 
 Declarative config is a common shape elsewhere: Kubernetes Jobs cap retries with `backoffLimit`, GitLab CI uses `retry: max:`, and Argo Workflows use a `retryStrategy` with a `limit`, though none of them models identical-vs-distinct failure signatures, so they inform the budget cap, not the whole shape. As an illustration of the dedicated-block option, one such config applied to agent escalation reads roughly like:
 
@@ -128,9 +128,10 @@ escalation:
   distinct_failure_limit: 3    # distinct failure types before the task is deemed out of scope
   regression_policy: stop      # stop | continue when a retry introduces new failures
   budget:
-    # Cross-run budget. Names are deliberately distinct from the per-run
-    # `max_turns` / `max_cost_usd` (PR #1682): those cap a single attempt,
-    # these accumulate across attempts for the same task.
+    # Cross-run budget. Names are deliberately distinct from the
+    # functional-test-framework `max_turns` / `max_cost_usd` (PR #1682):
+    # those are per-case judge annotations for a single attempt, these
+    # accumulate across attempts for the same task.
     total_attempts: 3          # cumulative across runs for the same task
     cumulative_cost_usd: 10    # cumulative across all attempts
   overrides:
