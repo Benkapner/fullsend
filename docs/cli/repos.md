@@ -257,7 +257,7 @@ fullsend repos set-default github.mint_url ""   # removes the key
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
+| `defaults.allowed_remote_resources` | comma-separated URLs | URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition) |
 | `defaults.runtime` | `claude`, `pi` or `codex` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
 | `defaults.vendor` | `true` or `false` | Vendor fullsend binary and content into each repo for offline CI; per-entry `vendor` overrides it. Currently GitHub-only; GitLab CI templates do not yet reference the vendored binary. |
 | `github.url` | URL | GitHub instance URL (default: `https://github.com`) |
