@@ -154,7 +154,7 @@ agent.
 Parked or dependency-bound in this planning session. Not dated.
 
 - Isolated sandboxes per subagent (host APIs come first): [fullsend#3978 — harness: subagents share the parent sandbox instead of running in isolated sandboxes](https://github.com/fullsend-ai/fullsend/issues/3978)
-- Red Hat AI inference routing — waiting on an inference proxy from another team: [fullsend#6464](https://github.com/fullsend-ai/fullsend/issues/6464)
+- Red Hat AI inference routing — waiting on an inference proxy from another team (no public tracking issue yet)
 - Growing eval-measurements past the first review/cost slice: more stages, model experiments, and outcome evals — [fullsend#3413 — Design large-scale evaluation experiment for new inference models](https://github.com/fullsend-ai/fullsend/issues/3413) · [fullsend#6384 — Track agents@v0 release cut for eval measurement manifests](https://github.com/fullsend-ai/fullsend/issues/6384)
 - Tool proxies after host APIs land: [fullsend#5242 — Tool proxies: transparent CLI interception for sandboxed agents](https://github.com/fullsend-ai/fullsend/issues/5242)
 

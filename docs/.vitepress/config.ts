@@ -245,6 +245,7 @@ export default defineConfig({
           items: [
             { text: "Claude Code", link: "/runtimes/claude" },
             { text: "Pi", link: "/runtimes/pi" },
+            { text: "Codex", link: "/runtimes/codex" },
           ],
         },
         {
@@ -267,6 +268,7 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
+            { text: "Adopting Fullsend Incrementally", link: "/guides/user/adoption" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Issue Commands", link: "/guides/user/issues-commands" },
             {
@@ -288,6 +290,7 @@ export default defineConfig({
                   text: "Custom Agent Identity",
                   link: "/guides/user/custom-agent-identity",
                 },
+                { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
                 {
@@ -314,7 +317,10 @@ export default defineConfig({
         {
           text: "Reference",
           collapsed: true,
-          items: [{ text: "Harness Field Reference", link: "/reference/harness-reference" }],
+          items: [
+            { text: "Config Reference", link: "/reference/config-reference" },
+            { text: "Harness Field Reference", link: "/reference/harness-reference" },
+          ],
         },
         {
           text: "Infrastructure",
@@ -329,6 +335,7 @@ export default defineConfig({
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
+            { text: "Gate Binaries", link: "/guides/infrastructure/gate-binaries" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
             {
               text: "OpenAI Workload Identity",
@@ -431,7 +438,13 @@ export default defineConfig({
         scopes: [
           {
             label: "Guides",
-            prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/", "/docs/runtimes"],
+            prefixes: [
+              "/docs/guides/",
+              "/docs/agents/",
+              "/docs/cli/",
+              "/docs/runtimes",
+              "/docs/reference/",
+            ],
           },
           {
             label: "Design Docs",
