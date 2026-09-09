@@ -90,10 +90,10 @@ runs:
               return 0
             fi
             if (( attempt >= max_attempts )); then
-              echo "::error::API request failed after ${max_attempts} attempts"
+              echo "::error::API request failed after ${max_attempts} attempts" >&2
               return 1
             fi
-            echo "::warning::API attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
+            echo "::warning::API attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
             sleep "${delay}"
             (( attempt++ ))
             (( delay *= 3 ))
