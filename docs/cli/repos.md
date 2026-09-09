@@ -133,6 +133,12 @@ On free-tier or Community Edition instances where project access tokens are not 
 fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
 ```
 
+Project paths can include nested groups (e.g., `group/subgroup/project`):
+
+```bash
+fullsend repos install group/subgroup/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
+```
+
 ### Common workflows
 
 Converge all repos from a manifest (provision new, repair component drift, repair scaffold content drift, upgrade refs):
@@ -189,7 +195,7 @@ fullsend repos status --repo "acme/*" --json
 
 **Table output** (default) shows per-repo status with columns:
 
-- **REPO** — `owner/repo` name
+- **REPO** — `owner/repo` name (GitLab repos with nested groups display as `group/subgroup/project`)
 - **REF** — Current workflow ref. Named refs (tags, branches) display as-is (e.g., `v2.3.0`, `main`). When the ref is a commit SHA, shows a truncated 7-character SHA with the expected ref in parentheses (e.g., `6f8b968 (main)`).
 - **STATUS** — `installed`, `not installed`, or `error`
 - **DRIFT** — Fields that differ from the manifest, scaffold files whose template content has changed, orphan files or variables no longer in the managed set, or `none`
@@ -218,6 +224,12 @@ fullsend repos uninstall "acme/*" --yes
 fullsend repos uninstall acme/old-api --dry-run
 fullsend repos uninstall acme/old-api --manifest-only
 fullsend repos uninstall acme/old-api --uninstall-only
+```
+
+For GitLab repos with nested group paths, use the full path:
+
+```bash
+fullsend repos uninstall group/subgroup/project
 ```
 
 ### Modes
