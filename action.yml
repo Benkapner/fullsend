@@ -90,10 +90,10 @@ runs:
               return 0
             fi
             if (( attempt >= max_attempts )); then
-              echo "::error::API request failed after ${max_attempts} attempts" >&2
+              echo "::error::API request failed after ${max_attempts} attempts"
               return 1
             fi
-            echo "::warning::API attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
+            echo "::warning::API attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
             sleep "${delay}"
             (( attempt++ ))
             (( delay *= 3 ))
@@ -243,10 +243,10 @@ runs:
               return 0
             fi
             if (( attempt >= max_attempts )); then
-              echo "::error::Download failed after ${max_attempts} attempts" >&2
+              echo "::error::Download failed after ${max_attempts} attempts"
               return 1
             fi
-            echo "::warning::Download attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
+            echo "::warning::Download attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
             sleep "${delay}"
             (( attempt++ ))
             (( delay *= 3 ))
@@ -309,11 +309,11 @@ runs:
               return 1
             fi
             if (( attempt >= max_attempts )); then
-              echo "::error::git command failed after ${max_attempts} attempts" >&2
+              echo "::error::git command failed after ${max_attempts} attempts"
               printf '%s\n' "${output}" >&2
               return 1
             fi
-            echo "::warning::git attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
+            echo "::warning::git attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..."
             printf '%s\n' "${output}" >&2
             sleep "${delay}"
             (( attempt++ ))
