@@ -253,35 +253,41 @@ Valid keys:
 	return cmd
 }
 
+// reposStatusConfig holds flags and test overrides for repos status.
+type reposStatusConfig struct {
+	manifest    string
+	jsonOutput  bool
+	repoFilter  []string
+	concurrency int
+
+	// Test overrides
+	testClient forge.Client
+}
+
 func newReposStatusCmd() *cobra.Command {
-	var (
-		manifest    string
-		jsonOutput  bool
-		repoFilter  []string
-		concurrency int
-	)
+	opts := &reposStatusConfig{}
 
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Compare manifest against actual repo state",
 		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml and managed configuration drift against .fullsend/config.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runReposStatus(cmd, manifest, jsonOutput, repoFilter, concurrency, nil)
+			return runReposStatus(cmd, opts)
 		},
 	}
 
-	cmd.Flags().StringVarP(&manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON output instead of table")
-	cmd.Flags().StringArrayVar(&repoFilter, "repo", nil, "filter to specific repos (repeatable)")
-	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max parallel API calls")
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
+	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit JSON output instead of table")
+	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "filter to specific repos (repeatable)")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 8, "max parallel API calls")
 
 	return cmd
 }
 
-func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, repoFilter []string, concurrency int, testClient forge.Client) error {
+func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 	ctx := cmd.Context()
 
-	m, err := repos.LoadManifest(ctx, manifestPath)
+	m, err := repos.LoadManifest(ctx, opts.manifest)
 	if err != nil {
 		return err
 	}
@@ -290,19 +296,19 @@ func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, re
 	}
 
 	var clients repos.ForgeClientFactory
-	if testClient != nil {
-		clients = newSingleClientFactory(testClient)
+	if opts.testClient != nil {
+		clients = newSingleClientFactory(opts.testClient)
 	} else {
 		clients = newForgeClientFactory(getGitLabToken(cmd), m)
 	}
 
-	result, err := repos.Status(ctx, m, clients, concurrency, repoFilter)
+	result, err := repos.Status(ctx, m, clients, opts.concurrency, opts.repoFilter)
 	if err != nil {
 		return err
 	}
 	annotateGitLabRoleLifecycle(ctx, clients, result)
 
-	return renderStatusResult(cmd, result, jsonOutput)
+	return renderStatusResult(cmd, result, opts.jsonOutput)
 }
 
 func renderStatusResult(cmd *cobra.Command, result *repos.StatusResult, jsonOutput bool) error {

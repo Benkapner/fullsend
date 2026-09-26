@@ -76,19 +76,24 @@ func githubManagedInstallOpts(manifestPath string, fc *forge.FakeClient) *reposI
 	}
 }
 
-func statusJSON(t *testing.T, manifestPath string, fc *forge.FakeClient) (repos.StatusResult, string, error) {
+func statusJSON(t *testing.T, manifestPath string, fc *forge.FakeClient) (repos.StatusResult, error) {
 	t.Helper()
 	cmd := newReposStatusCmd()
 	cmd.SetContext(context.Background())
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	err := runReposStatus(cmd, manifestPath, true, nil, 4, fc)
+	err := runReposStatus(cmd, &reposStatusConfig{
+		manifest:    manifestPath,
+		jsonOutput:  true,
+		concurrency: 4,
+		testClient:  fc,
+	})
 	var result repos.StatusResult
 	out := buf.String()
 	if out != "" {
 		require.NoError(t, json.Unmarshal([]byte(out), &result), "status JSON: %s", out)
 	}
-	return result, out, err
+	return result, err
 }
 
 func overlayDrift(t *testing.T, result repos.StatusResult, repo string) (repos.Drift, bool) {
@@ -118,10 +123,8 @@ func TestRunRepos_ManagedConfigPublicContract(t *testing.T) {
 	assert.Contains(t, string(overlay), "kill_switch: true")
 	assert.NotContains(t, string(overlay), "roles:", "managed configuration must stay sparse")
 
-	result, _, err := statusJSON(t, manifestPath, fc)
-	if err != nil {
-		assert.NotContains(t, err.Error(), "errored", "status errored after install: %v\n%s", err, mustEncode(t, result))
-	}
+	result, err := statusJSON(t, manifestPath, fc)
+	require.NoError(t, err)
 	if d, found := overlayDrift(t, result, "acme/api"); found {
 		t.Fatalf("status reported managed-configuration drift immediately after install: %+v", d)
 	}
@@ -129,7 +132,7 @@ func TestRunRepos_ManagedConfigPublicContract(t *testing.T) {
 	drifted := []byte(managedConfigMarker + "kill_switch: false\n")
 	fc.FileContents[overlayPath("acme/api")] = drifted
 
-	result, _, err = statusJSON(t, manifestPath, fc)
+	result, err = statusJSON(t, manifestPath, fc)
 	require.Error(t, err, "status must be non-zero when managed configuration drifted")
 	d, found := overlayDrift(t, result, "acme/api")
 	require.True(t, found, "status must report .fullsend/config.yaml drift, got %s", mustEncode(t, result))
@@ -147,10 +150,8 @@ func TestRunRepos_ManagedConfigPublicContract(t *testing.T) {
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 	assert.Equal(t, overlay, fc.FileContents[overlayPath("acme/api")], "converge must restore the canonical managed file")
 
-	result, _, err = statusJSON(t, manifestPath, fc)
-	if err != nil {
-		assert.NotContains(t, err.Error(), "errored")
-	}
+	result, err = statusJSON(t, manifestPath, fc)
+	require.NoError(t, err)
 	if d, found := overlayDrift(t, result, "acme/api"); found {
 		t.Fatalf("status still reports managed-configuration drift after converge: %+v", d)
 	}
@@ -203,7 +204,7 @@ func TestRunReposInstall_ManagedConfigAdoptionRequired(t *testing.T) {
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 	assert.Equal(t, original, fc.FileContents[overlayPath("acme/api")], "adoption-required install must leave the unmarked file untouched")
 
-	result, _, err := statusJSON(t, manifestPath, fc)
+	result, err := statusJSON(t, manifestPath, fc)
 	require.Error(t, err)
 	d, found := overlayDrift(t, result, "acme/api")
 	require.True(t, found, "status must report adoption required, got %s", mustEncode(t, result))
@@ -216,7 +217,7 @@ func TestRunReposStatus_UnmanagedDoesNotCompare(t *testing.T) {
 	fc := newInstalledFakeClientCLI("acme/api")
 	fc.FileContents[overlayPath("acme/api")] = []byte("kill_switch: true\n# local\n")
 
-	result, _, _ := statusJSON(t, manifestPath, fc)
+	result, _ := statusJSON(t, manifestPath, fc)
 	if d, found := overlayDrift(t, result, "acme/api"); found {
 		t.Fatalf("unmanaged configuration must not be compared, got %+v", d)
 	}
@@ -277,7 +278,7 @@ github:
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 
-			_, _, statusErr := statusJSON(t, manifestPath, fc)
+			_, statusErr := statusJSON(t, manifestPath, fc)
 			require.Error(t, statusErr)
 			assert.Contains(t, statusErr.Error(), tt.wantErr)
 		})
@@ -290,7 +291,7 @@ func TestRunRepos_GitLabManagedConfigStatusAndDryRun(t *testing.T) {
 	drifted := []byte(managedConfigMarker + "kill_switch: false\n")
 	fc.FileContents[overlayPath("group/project")] = drifted
 
-	result, _, err := statusJSON(t, manifestPath, fc)
+	result, err := statusJSON(t, manifestPath, fc)
 	require.Error(t, err)
 	d, found := overlayDrift(t, result, "group/project")
 	require.True(t, found, "GitLab status must report managed-configuration drift, got %s", mustEncode(t, result))
