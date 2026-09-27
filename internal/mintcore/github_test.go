@@ -637,7 +637,7 @@ func TestReadForeignAllowlistFromRepo_Empty(t *testing.T) {
 func TestFindInstallation_ContextDeadline(t *testing.T) {
 	// Verify that FindInstallation respects the request context deadline.
 	// On native platforms, http.Client.Do honors the context. On WASM,
-	// the context-aware awaitPromiseWithContext serves the same role.
+	// the context-aware awaitPromise serves the same role.
 	// This test validates the pattern on the native platform.
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Delay longer than the context deadline.

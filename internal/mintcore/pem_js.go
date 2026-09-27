@@ -41,7 +41,7 @@ func (h *HostPEMAccessor) AccessPEM(ctx context.Context, role string) ([]byte, e
 		return nil, err
 	}
 
-	result, err := awaitPromiseWithContext(ctx, h.pemFn.Invoke(secretRole))
+	result, err := awaitPromise(ctx, h.pemFn.Invoke(secretRole))
 	if err != nil {
 		return nil, fmt.Errorf("host PEM accessor failed for role %q: %w", role, err)
 	}

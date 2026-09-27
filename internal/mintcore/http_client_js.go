@@ -68,7 +68,7 @@ func mintHTTP(req *http.Request) (*http.Response, error) {
 	// ensures that a per-request deadline (e.g., the 20s timeout set
 	// by the WASM handler) aborts the wait before the JS-side
 	// HANDLE_FETCH_TIMEOUT_MS fires, preventing isolate poisoning.
-	result, err := awaitPromiseWithContext(req.Context(), registeredFetchFn.Invoke(
+	result, err := awaitPromise(req.Context(), registeredFetchFn.Invoke(
 		req.Method,
 		req.URL.String(),
 		string(headersJSON),
