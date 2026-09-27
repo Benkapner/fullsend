@@ -954,13 +954,6 @@ type OrgMembership struct {
 	Role  string // "admin" or "member"
 }
 
-// OrganizationRole is a GitHub organization role (predefined or custom),
-// such as the all-repository write/triage roles.
-type OrganizationRole struct {
-	ID   int64
-	Name string
-}
-
 // GitHubExtensions provides GitHub-specific operations that are not
 // part of the cross-forge Client interface. Callers should type-assert
 // to this interface when they need GitHub App installation features.
@@ -985,15 +978,4 @@ type GitHubExtensions interface {
 	// Returns forge.ErrNotFound when the user is not a member and has
 	// no pending invitation.
 	GetOrgMembership(ctx context.Context, org, username string) (OrgMembership, error)
-
-	// ListUserOrganizationRoles returns the organization roles assigned
-	// to username in org, including predefined all-repository roles.
-	// Returns forge.ErrForbidden when the caller lacks the GitHub App
-	// "Organization custom roles" permission this endpoint requires —
-	// distinct from an unmet role prerequisite, which callers should not
-	// treat as fixable by re-running org setup. GitHub has been observed
-	// to deny this specific request with 404 rather than 403 for a
-	// missing-permission installation; implementations should treat both
-	// as forge.ErrForbidden.
-	ListUserOrganizationRoles(ctx context.Context, org, username string) ([]OrganizationRole, error)
 }

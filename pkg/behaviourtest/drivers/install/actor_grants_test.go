@@ -3,7 +3,6 @@ package install
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,31 +13,11 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
-func TestVerifyActors_AcceptsDisplayNameRole(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.OrgMemberships = map[string]forge.OrgMembership{
-		"org/fstest-write": {State: "active", Role: "member"},
-	}
-	fc.UserOrganizationRoles = map[string][]forge.OrganizationRole{
-		"org/fstest-write": {{ID: 1, Name: "All-repository write"}},
-	}
-	e := &repoEnsurer{
-		client:      fc,
-		logf:        t.Logf,
-		actorGrants: []actorGrant{{login: "fstest-write", permission: "write"}},
-	}
-	require.NoError(t, e.verifyActors(context.Background(), "org"))
-}
-
-func TestVerifyActors_AcceptsOrgLevelRoles(t *testing.T) {
+func TestVerifyActors_AcceptsActiveMembers(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.OrgMemberships = map[string]forge.OrgMembership{
 		"org/fstest-write":  {State: "active", Role: "member"},
 		"org/fstest-triage": {State: "active", Role: "member"},
-	}
-	fc.UserOrganizationRoles = map[string][]forge.OrganizationRole{
-		"org/fstest-write":  {{ID: 1, Name: "all_repo_write"}},
-		"org/fstest-triage": {{ID: 2, Name: "all_repo_triage"}},
 	}
 	e := &repoEnsurer{
 		client: fc,
@@ -109,52 +88,6 @@ func TestVerifyActors_MembershipLookupError(t *testing.T) {
 	require.ErrorContains(t, err, "checking membership of fstest-write in org")
 }
 
-func TestVerifyActors_MissingRole(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.OrgMemberships = map[string]forge.OrgMembership{
-		"org/fstest-write": {State: "active", Role: "member"},
-	}
-	e := &repoEnsurer{
-		client:      fc,
-		logf:        t.Logf,
-		actorGrants: []actorGrant{{login: "fstest-write", permission: "write"}},
-	}
-	err := e.verifyActors(context.Background(), "org")
-	require.ErrorContains(t, err, "missing the all-repository write role")
-	require.ErrorContains(t, err, "hack/setup-new-e2e-org.sh")
-}
-
-func TestVerifyActors_RoleLookupError(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.OrgMemberships = map[string]forge.OrgMembership{
-		"org/fstest-write": {State: "active", Role: "member"},
-	}
-	fc.Errors["ListUserOrganizationRoles"] = errors.New("forbidden")
-	e := &repoEnsurer{
-		client:      fc,
-		logf:        t.Logf,
-		actorGrants: []actorGrant{{login: "fstest-write", permission: "write"}},
-	}
-	err := e.verifyActors(context.Background(), "org")
-	require.ErrorContains(t, err, "checking organization roles for fstest-write in org")
-}
-
-func TestVerifyActors_RoleLookupForbiddenPointsAtAppPermission(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.OrgMemberships = map[string]forge.OrgMembership{
-		"org/fstest-write": {State: "active", Role: "member"},
-	}
-	fc.Errors["ListUserOrganizationRoles"] = fmt.Errorf("%w: 403", forge.ErrForbidden)
-	e := &repoEnsurer{
-		client:      fc,
-		logf:        t.Logf,
-		actorGrants: []actorGrant{{login: "fstest-write", permission: "write"}},
-	}
-	err := e.verifyActors(context.Background(), "org")
-	require.ErrorContains(t, err, "organization_custom_roles")
-	require.NotContains(t, err.Error(), "run hack/setup-new-e2e-org.sh")
-}
-
 func TestVerifyActors_OutsiderMustNotBeMember(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.OrgMemberships = map[string]forge.OrgMembership{
@@ -184,9 +117,6 @@ func TestVerifyActors_CachesPerOrg(t *testing.T) {
 		memberships: map[string]forge.OrgMembership{
 			"fstest-write": {State: "active", Role: "member"},
 		},
-		roles: map[string][]forge.OrganizationRole{
-			"fstest-write": {{ID: 1, Name: "all_repo_write"}},
-		},
 	}
 	e := &repoEnsurer{
 		client:      sc,
@@ -197,7 +127,6 @@ func TestVerifyActors_CachesPerOrg(t *testing.T) {
 	require.NoError(t, e.verifyActors(context.Background(), "org"))
 	require.NoError(t, e.verifyActors(context.Background(), "org"))
 	assert.Equal(t, 1, sc.memberCalls)
-	assert.Equal(t, 1, sc.roleCalls)
 	assert.Equal(t, 0, sc.addCalls)
 
 	require.NoError(t, e.verifyActors(context.Background(), "other-org"))
@@ -218,36 +147,12 @@ func TestOutsiderLoginFromEnv_UnsetPATYieldsEmpty(t *testing.T) {
 	assert.Empty(t, login)
 }
 
-func TestMatchesAllRepoRole(t *testing.T) {
-	tests := []struct {
-		name, permission string
-		want             bool
-	}{
-		{"all_repo_write", "write", true},
-		{"all_repo_triage", "triage", true},
-		{"all_repository_write", "write", true},
-		{"All-repository write", "write", true},
-		{"All-repository triage", "triage", true},
-		{"all_repo_write", "push", true},
-		{"all_repo_admin", "write", false},
-		{"all_repo_triage", "write", false},
-		{"write", "write", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name+"/"+tt.permission, func(t *testing.T) {
-			assert.Equal(t, tt.want, matchesAllRepoRole(tt.name, tt.permission))
-		})
-	}
-}
-
 // stubClientWithOrgAccess adds the organization membership API to stubClient.
 type stubClientWithOrgAccess struct {
 	stubClient
 	forge.GitHubExtensions
 	memberships map[string]forge.OrgMembership
-	roles       map[string][]forge.OrganizationRole
 	memberCalls int
-	roleCalls   int
 	addCalls    int
 }
 
@@ -261,16 +166,6 @@ func (s *stubClientWithOrgAccess) GetOrgMembership(_ context.Context, _, usernam
 	return forge.OrgMembership{}, forge.ErrNotFound
 }
 
-func (s *stubClientWithOrgAccess) ListUserOrganizationRoles(_ context.Context, _, username string) ([]forge.OrganizationRole, error) {
-	s.roleCalls++
-	if s.roles != nil {
-		if r, ok := s.roles[username]; ok {
-			return r, nil
-		}
-	}
-	return nil, nil
-}
-
 func (s *stubClientWithOrgAccess) AddCollaborator(_ context.Context, _, _, _, _ string) error {
 	s.addCalls++
 	return errors.New("AddCollaborator must not be called")
@@ -282,9 +177,6 @@ func TestEnsurer_VerifiesActorsOnRecreatedRepo(t *testing.T) {
 		stubClient: stubClient{installed: true},
 		memberships: map[string]forge.OrgMembership{
 			"fstest-write": {State: "active", Role: "member"},
-		},
-		roles: map[string][]forge.OrganizationRole{
-			"fstest-write": {{ID: 1, Name: "all_repo_write"}},
 		},
 	}
 	e := &repoEnsurer{
@@ -303,6 +195,5 @@ func TestEnsurer_VerifiesActorsOnRecreatedRepo(t *testing.T) {
 	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-03"))
 	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
 	assert.Equal(t, 1, sc.memberCalls)
-	assert.Equal(t, 1, sc.roleCalls)
 	assert.Equal(t, 0, sc.addCalls)
 }

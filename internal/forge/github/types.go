@@ -20,11 +20,6 @@ type AppPermissions struct {
 	OrganizationActionsVariables string `json:"organization_actions_variables,omitempty"`
 	Packages                     string `json:"packages,omitempty"`
 	Secrets                      string `json:"secrets,omitempty"`
-	// OrganizationCustomRoles gates the organization-roles REST endpoints
-	// (list/assign predefined and custom org roles, list a user's org
-	// roles). Required for GetOrgMembership/ListUserOrganizationRoles-style
-	// lookups; distinct from OrganizationAdministration.
-	OrganizationCustomRoles string `json:"organization_custom_roles,omitempty"`
 }
 
 // HookAttributes configures the webhook for a GitHub App.
@@ -172,7 +167,6 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 			Issues:                       "write",
 			Members:                      "write",
 			OrganizationAdministration:   "write",
-			OrganizationCustomRoles:      "write",
 			PullRequests:                 "write",
 			Secrets:                      "write",
 			Workflows:                    "write",

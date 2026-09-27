@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -29,12 +28,6 @@ var actorGrantEnv = []struct{ patEnv, permission string }{
 const outsiderPATEnv = "TEST_ACTOR_OUTSIDER_PAT"
 
 const setupOrgHint = "run hack/setup-new-e2e-org.sh to grant organization membership and the all-repository role"
-
-// missingOrgRolesPermissionHint is used instead of setupOrgHint when the
-// organization-roles API itself returns 403. Re-running the setup script
-// cannot fix a missing GitHub App permission (docs/guides/dev/e2e-testing.md,
-// "Permission rollout for the e2e App").
-const missingOrgRolesPermissionHint = "the e2e App installation on this org may be missing the organization_custom_roles permission; accept the pending permission update, see docs/guides/dev/e2e-testing.md"
 
 // actorGrantsFromEnv resolves the login behind each actor PAT that is set.
 // An actor whose login cannot be resolved is logged and skipped.
@@ -73,10 +66,20 @@ func outsiderLoginFromEnv(ctx context.Context) (string, error) {
 	return login, nil
 }
 
-// verifyActors checks that test actors inherit access from organization
-// membership and all-repository roles. Direct collaborator grants are
-// not applied: resetRepo deletes the repo, which would drop those
-// grants and re-adding them creates pending invitations (#7777).
+// verifyActors checks that test actors are active organization members.
+// Direct collaborator grants are not applied: resetRepo deletes the
+// repo, which would drop those grants and re-adding them creates
+// pending invitations (#7777).
+//
+// The all-repository role itself (write/triage) is verified only by
+// hack/setup-new-e2e-org.sh, which runs with an org-admin-authenticated
+// gh session — not here. Checking it at ensure time would require the
+// e2e GitHub App installation on every pool org to hold the
+// "Organization custom roles" (organization_custom_roles) permission
+// purely so ListUserOrganizationRoles can be called; membership is a
+// reliable proxy because the setup script is the only thing that grants
+// or revokes the org-level role, and that role is independent of the
+// per-repo delete/recreate cycle this ensurer drives.
 //
 // The check is cached per org for the ensurer's lifetime so delete+
 // recreate cycles do not repeat the org-level lookup.
@@ -131,21 +134,8 @@ func (e *repoEnsurer) verifyActorOrgAccess(ctx context.Context, gh forge.GitHubE
 		return fmt.Errorf("%s is not an active member of %s (state=%s); org-level %s access is required (%s)",
 			g.login, org, membership.State, g.permission, setupOrgHint)
 	}
-
-	roles, err := gh.ListUserOrganizationRoles(ctx, org, g.login)
-	if err != nil {
-		if forge.IsForbidden(err) {
-			return fmt.Errorf("checking organization roles for %s in %s: %w (%s)",
-				g.login, org, err, missingOrgRolesPermissionHint)
-		}
-		return fmt.Errorf("checking organization roles for %s in %s: %w (%s)",
-			g.login, org, err, setupOrgHint)
-	}
-	if !hasAllRepoRole(roles, g.permission) {
-		return fmt.Errorf("%s is a member of %s but is missing the all-repository %s role (%s)",
-			g.login, org, g.permission, setupOrgHint)
-	}
-	e.logf("[ensure] %s has all-repository %s on %s", g.login, g.permission, org)
+	e.logf("[ensure] %s is an active member of %s; all-repository %s role verified by hack/setup-new-e2e-org.sh",
+		g.login, org, g.permission)
 	return nil
 }
 
@@ -160,29 +150,4 @@ func (e *repoEnsurer) verifyOutsider(ctx context.Context, gh forge.GitHubExtensi
 	}
 	return fmt.Errorf("%s has org membership in %s (state=%s); outsider must remain outside the organization",
 		e.outsiderLogin, org, membership.State)
-}
-
-func hasAllRepoRole(roles []forge.OrganizationRole, permission string) bool {
-	for _, r := range roles {
-		if matchesAllRepoRole(r.Name, permission) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchesAllRepoRole(roleName, permission string) bool {
-	n := normalizeRoleName(roleName)
-	want := normalizeRoleName(permission)
-	if want == "push" {
-		want = "write"
-	}
-	return n == "all_repo_"+want || n == "all_repository_"+want
-}
-
-func normalizeRoleName(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.ReplaceAll(s, " ", "_")
-	s = strings.ReplaceAll(s, "-", "_")
-	return s
 }

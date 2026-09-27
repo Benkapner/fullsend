@@ -499,34 +499,6 @@ func TestFakeClient_GetOrgMembership(t *testing.T) {
 	})
 }
 
-func TestFakeClient_ListUserOrganizationRoles(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("found", func(t *testing.T) {
-		fc := &FakeClient{
-			UserOrganizationRoles: map[string][]OrganizationRole{
-				"org/fstest-write": {{ID: 8132, Name: "all_repo_write"}},
-			},
-		}
-		got, err := fc.ListUserOrganizationRoles(ctx, "org", "fstest-write")
-		require.NoError(t, err)
-		assert.Equal(t, []OrganizationRole{{ID: 8132, Name: "all_repo_write"}}, got)
-	})
-
-	t.Run("empty", func(t *testing.T) {
-		fc := &FakeClient{}
-		got, err := fc.ListUserOrganizationRoles(ctx, "org", "alice")
-		require.NoError(t, err)
-		assert.Empty(t, got)
-	})
-
-	t.Run("error injection", func(t *testing.T) {
-		fc := &FakeClient{Errors: map[string]error{"ListUserOrganizationRoles": errors.New("forbidden")}}
-		_, err := fc.ListUserOrganizationRoles(ctx, "org", "alice")
-		require.ErrorContains(t, err, "forbidden")
-	})
-}
-
 func TestFakeClient_OrgSecretExists(t *testing.T) {
 	ctx := context.Background()
 

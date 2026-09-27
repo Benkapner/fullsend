@@ -124,15 +124,13 @@ var canonicalRolePermissions = map[string]map[string]map[string]string{
 			"actions": "write", "actions_variables": "write", "administration": "write",
 			"contents": "write", "issues": "write", "members": "write", "metadata": "read",
 			"organization_actions_variables": "write", "organization_administration": "write",
-			"organization_custom_roles": "write",
-			"pull_requests":             "write", "secrets": "write", "workflows": "write",
+			"pull_requests": "write", "secrets": "write", "workflows": "write",
 		},
 		LevelRead: {
 			"actions": "read", "actions_variables": "read", "administration": "read",
 			"contents": "read", "issues": "read", "members": "read", "metadata": "read",
 			"organization_actions_variables": "read", "organization_administration": "read",
-			"organization_custom_roles": "read",
-			"pull_requests":             "read", "secrets": "read",
+			"pull_requests": "read", "secrets": "read",
 		},
 	},
 }

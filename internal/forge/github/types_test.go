@@ -130,7 +130,6 @@ func TestAgentAppConfig_E2e(t *testing.T) {
 	assert.Equal(t, "write", cfg.Permissions.Issues)
 	assert.Equal(t, "write", cfg.Permissions.Members)
 	assert.Equal(t, "write", cfg.Permissions.OrganizationAdministration)
-	assert.Equal(t, "write", cfg.Permissions.OrganizationCustomRoles)
 	assert.Equal(t, "write", cfg.Permissions.PullRequests)
 	assert.Equal(t, "write", cfg.Permissions.Secrets)
 	assert.Equal(t, "write", cfg.Permissions.Workflows)
@@ -181,9 +180,6 @@ func appPermissionsAsMap(p AppPermissions) map[string]string {
 	}
 	if p.Secrets != "" {
 		out["secrets"] = p.Secrets
-	}
-	if p.OrganizationCustomRoles != "" {
-		out["organization_custom_roles"] = p.OrganizationCustomRoles
 	}
 	return out
 }

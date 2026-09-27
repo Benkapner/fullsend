@@ -208,8 +208,6 @@ type FakeClient struct {
 	AddedCollaborators map[string]string
 	// OrgMemberships maps "org/username" → membership for GetOrgMembership.
 	OrgMemberships map[string]OrgMembership
-	// UserOrganizationRoles maps "org/username" → roles for ListUserOrganizationRoles.
-	UserOrganizationRoles map[string][]OrganizationRole
 
 	// Org-level secret state
 	OrgSecrets       map[string]bool    // key: "org/name"
@@ -2005,23 +2003,6 @@ func (f *FakeClient) GetOrgMembership(_ context.Context, org, username string) (
 		}
 	}
 	return OrgMembership{}, ErrNotFound
-}
-
-func (f *FakeClient) ListUserOrganizationRoles(_ context.Context, org, username string) ([]OrganizationRole, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("ListUserOrganizationRoles"); e != nil {
-		return nil, e
-	}
-
-	key := org + "/" + username
-	if f.UserOrganizationRoles != nil {
-		if roles, ok := f.UserOrganizationRoles[key]; ok {
-			return append([]OrganizationRole(nil), roles...), nil
-		}
-	}
-	return nil, nil
 }
 
 func (f *FakeClient) CreateOrgSecret(_ context.Context, org, name, value string, selectedRepoIDs []int64) error {

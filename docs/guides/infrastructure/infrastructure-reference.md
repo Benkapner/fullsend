@@ -118,7 +118,7 @@ Each role defines named privilege levels as keys. Built-in roles define **write*
 | **prioritize** | read | — | — | write | — | — | — | — | write | read |
 | **e2e** | write | — | write | write | write | — | write | write | — | read |
 
-The **e2e** role also grants: `administration` (write), `members` (write), `secrets` (write), `organization_actions_variables` (write), `organization_administration` (write), `organization_custom_roles` (write). These permissions are omitted from the table above because no other role uses them.
+The **e2e** role also grants: `administration` (write), `members` (write), `secrets` (write), `organization_actions_variables` (write), `organization_administration` (write). These permissions are omitted from the table above because no other role uses them.
 
 The `fix` row is retained for direct callers that request the canonical `fix`
 role. The built-in fix dispatch stage uses `coder`, so the `coder` row and coder

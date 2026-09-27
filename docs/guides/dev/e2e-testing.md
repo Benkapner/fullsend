@@ -134,7 +134,7 @@ Each pool org must be provisioned before e2e can use it:
 1. Org exists with `botsend` as owner
 2. `test-repo` and `e2e-lock` repos (lock created at runtime)
 3. Test actor permissions granted (see [Test actor permissions](#test-actor-permissions) below)
-4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`), **Organization → Variables: Read and write** (`organization_actions_variables`), and **Organization → Custom organization roles: Read and write** (`organization_custom_roles`, required for the org membership/all-repository-role checks in [Test actor permissions](#test-actor-permissions)). Existing pool-org installations must accept this permission update — see [Operator notes](#operator-notes).
+4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
 5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
 6. Mint enrolled: org in `ALLOWED_ORGS`, `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
 
@@ -187,11 +187,16 @@ and re-adding them creates pending invitations. Org-level roles survive
 that delete/recreate cycle and apply to any future `test-repo*` name,
 including numbered pool slots that do not exist yet.
 
-The behaviour suite verifies membership and the matching all-repository
-role once per org at ensure time. It does **not** call `AddCollaborator`.
-Missing membership or role fails with a message to run
-`hack/setup-new-e2e-org.sh`. The outsider must remain outside the
-organization and must not receive an all-repository role.
+The behaviour suite verifies org membership once per org at ensure time.
+It does **not** call `AddCollaborator`, and it does not re-verify the
+all-repository role itself at runtime — that would require the e2e App
+installation on every pool org to hold the `organization_custom_roles`
+permission solely to call the organization-roles API. The all-repository
+role is verified once, at setup time, by `hack/setup-new-e2e-org.sh`
+(which runs with an org-admin `gh` session, not the e2e App). Missing
+membership fails with a message to run `hack/setup-new-e2e-org.sh`. The
+outsider must remain outside the organization and must not receive an
+all-repository role.
 
 The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies this
 model idempotently on `halfsend-NN` and on the STAGE org `halfsend`. To
@@ -346,16 +351,6 @@ have the installation owner for each existing pool org (`halfsend-01` through
 `halfsend-12`) Accept the pending permission update. New pool-org installs
 receive the permission during installation; existing installs may otherwise
 continue using the mint's rollout warning path.
-
-**Permission rollout for the e2e App (`organization_custom_roles`):** This
-permission gates the organization-roles endpoints the suite uses to verify
-`fstest-write`/`fstest-triage` all-repository roles. Update the
-`fullsend-ai-e2e` App registration first, then have the installation owner
-for each existing pool org (`halfsend-01` through `halfsend-12`, and
-`halfsend` for STAGE) accept the pending permission update at
-`https://github.com/organizations/<org>/settings/installations`. Until
-accepted, `verifyActors` calls against that org fail with a 403 from
-`ListUserOrganizationRoles`.
 
 **PEM rotation:** Generate a new private key on the app's settings page
 (`https://github.com/apps/<slug>/settings`), then update the corresponding

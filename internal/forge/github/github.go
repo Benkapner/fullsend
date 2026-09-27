@@ -3709,43 +3709,6 @@ func (c *LiveClient) GetOrgMembership(ctx context.Context, org, username string)
 	return forge.OrgMembership{State: body.State, Role: body.Role}, nil
 }
 
-// ListUserOrganizationRoles lists username's organization roles in org.
-// A member with zero roles is not an error: GitHub returns 200 with an
-// empty roles list for that case, so there is no legitimate 404 response
-// from this endpoint once membership is established. Returns
-// forge.ErrForbidden when GitHub denies the request with 403 or 404 —
-// typically because the calling installation lacks the "Organization
-// custom roles" (organization_custom_roles) App permission that gates
-// this endpoint (distinct from organization_administration). GitHub
-// returns 404 rather than 403 for some org-scoped App-permission denials
-// on this endpoint family, so both statuses are treated the same way.
-func (c *LiveClient) ListUserOrganizationRoles(ctx context.Context, org, username string) ([]forge.OrganizationRole, error) {
-	path := fmt.Sprintf("/orgs/%s/organization-roles/users/%s",
-		url.PathEscape(org), url.PathEscape(username))
-	resp, err := c.get(ctx, path)
-	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusNotFound) {
-			return nil, fmt.Errorf("list organization roles for %s in %s: %w: %w", username, org, forge.ErrForbidden, err)
-		}
-		return nil, fmt.Errorf("list organization roles for %s in %s: %w", username, org, err)
-	}
-	var body struct {
-		Roles []struct {
-			ID   int64  `json:"id"`
-			Name string `json:"name"`
-		} `json:"roles"`
-	}
-	if err := decodeJSON(resp, &body); err != nil {
-		return nil, fmt.Errorf("decode organization roles for %s in %s: %w", username, org, err)
-	}
-	roles := make([]forge.OrganizationRole, 0, len(body.Roles))
-	for _, r := range body.Roles {
-		roles = append(roles, forge.OrganizationRole{ID: r.ID, Name: r.Name})
-	}
-	return roles, nil
-}
-
 // CreateOrgSecret creates or updates an encrypted organization-level secret
 // scoped to the given repository IDs.
 // The value is trimmed of whitespace before encryption to prevent corruption
