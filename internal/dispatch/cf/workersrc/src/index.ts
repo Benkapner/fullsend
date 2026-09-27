@@ -182,6 +182,25 @@ function createPemCallback(
 }
 
 /**
+ * Wall-clock budget (ms) for the outbound host `fetch()` issued by
+ * createFetchCallback. Mirrors the Go-side per-request context
+ * deadline (`requestTimeout` in cmd/mint-wasm/main.go, 20 s).
+ *
+ * Without this, `fetch()` has no abort mechanism: if the Go-side
+ * `awaitPromise` gives up waiting because its context deadline expired
+ * (see internal/mintcore/fetch_js.go), the underlying host `fetch()`
+ * keeps running to completion. For a slow upstream call (e.g. GitHub's
+ * CreateInstallationToken), that means the response — potentially
+ * containing a freshly-minted installation token — still gets read via
+ * `resp.text()` and briefly retained in isolate memory, well after the
+ * Go waiter and its caller have moved on. Aborting the fetch itself
+ * once this budget elapses closes that window: an aborted `fetch()`
+ * rejects before `resp.text()` ever runs, so no orphaned response body
+ * is materialized.
+ */
+const HOST_FETCH_TIMEOUT_MS = 20_000;
+
+/**
  * Create a fetch callback for the WASM module.
  *
  * The Go side (HostFetchDoer.Do) calls this with
@@ -217,6 +236,10 @@ function createFetchCallback(): (
         method,
         headers,
         body: method !== "GET" && method !== "HEAD" ? body : undefined,
+        // Bound the outbound call so a slow upstream cannot leave an
+        // un-abortable fetch running after the Go-side deadline has
+        // already given up on it. See HOST_FETCH_TIMEOUT_MS.
+        signal: AbortSignal.timeout(HOST_FETCH_TIMEOUT_MS),
       });
       const respBody = await resp.text();
       const respHeaders = JSON.stringify(
@@ -315,10 +338,41 @@ class GoWasm {
   private _initDone = true;
 
   /**
-   * Maximum number of consecutive timeout recoveries before the
+   * Monotonic counter identifying the current `doInit()` boot.
+   * Incremented each time `init()` kicks off a fresh `doInit()` call
+   * (i.e. whenever `initPromise` was null). Callers capture the
+   * generation active when their `init()` call resolved (via the
+   * `generation` getter) and pass it back to `markTimedOut()` so a
+   * timeout can be attributed to the boot that produced it — see
+   * `markTimedOut()` for why this matters.
+   */
+  private _generation = 0;
+
+  /**
+   * The generation of the `doInit()` boot currently registered as
+   * `initPromise` (in flight or, once settled, still the active
+   * runtime). Callers should read this only after `init()` has
+   * resolved, so it reflects the runtime they are about to call
+   * `handleFetch()` against.
+   */
+  get generation(): number {
+    return this._generation;
+  }
+
+  /**
+   * Maximum number of *consecutive* timeout recoveries — recoveries
+   * not separated by a successfully-completed request — before the
    * instance reverts to permanent 503. Each recovery leaks one Go
-   * WASM runtime (blocked goroutine + memory); capping the count
-   * bounds leaked runtimes per isolate lifetime.
+   * WASM runtime (blocked goroutine + memory).
+   *
+   * This is a consecutive-failure circuit breaker, not a lifetime cap
+   * on leaked runtimes: `resetTimeoutCounter()` zeroes the counter
+   * after every request that completes without timing out (including
+   * cheap requests like `GET /health`), so a wedged-scheduler timeout
+   * -> reinit -> cheap-success loop never trips this cap and can leak
+   * runtimes for as long as the isolate stays warm. Cloudflare's
+   * eviction of idle warm isolates (see the class comment) remains
+   * the actual bound on total leaked runtimes per isolate lifetime.
    */
   static readonly MAX_CONSECUTIVE_RECOVERIES = 3;
 
@@ -353,27 +407,54 @@ class GoWasm {
   }
 
   /**
-   * Mark this instance as needing recovery. Called when handleFetch
-   * times out so that the next request re-initializes the Go WASM
-   * runtime instead of permanently refusing all traffic.
+   * Mark this instance as needing recovery after a handleFetch timeout
+   * so that the next request re-initializes the Go WASM runtime
+   * instead of permanently refusing all traffic.
    *
-   * Increments the consecutive timeout counter. After
-   * MAX_CONSECUTIVE_RECOVERIES consecutive timeouts, the instance
-   * is considered exhausted and reverts to permanent 503.
+   * `generation` must be the value of the `generation` getter that the
+   * caller captured right after its own `init()` call resolved — i.e.
+   * the boot that its timed-out `handleFetch()` call actually ran
+   * against. This is compared against the *current* `_generation` to
+   * guard two races that a plain "always count, always clear"
+   * implementation gets wrong:
    *
-   * Only clears the cached initPromise when the current init has
-   * actually settled (`_initDone`). If a recovery doInit() triggered
-   * by an earlier timeout is still in flight (e.g. still awaiting
-   * WebAssembly.instantiate), clearing initPromise here would orphan
-   * it: the next caller would see `initPromise === null` and start a
-   * *second*, concurrent doInit(), racing two Go runtimes to
-   * register mintcoreInitMint/mintcoreHandleFetch on globalThis. When
-   * the in-flight init is still pending, leave initPromise in place
-   * so later callers await that same recovery instead of starting a
-   * duplicate one; the counter/flag bookkeeping above still happens
-   * so recovery accounting and the exhaustion cap stay accurate.
+   * 1. Stale timeout after a newer boot. If a newer `doInit()` has
+   *    already started (or finished) by the time this timeout is
+   *    reported, `generation !== this._generation` and the event is
+   *    ignored entirely — it says nothing about the runtime that is
+   *    now current, so it must not increment the counter or clear a
+   *    healthy `initPromise`.
+   * 2. Same-generation burst. Several concurrent `handleFetch()` calls
+   *    can share one runtime and all time out together (the exact
+   *    "wedged scheduler" case this recovery path exists for). Only
+   *    the *first* timeout of a generation should count: once
+   *    `_needsRecovery` is already true for the current generation,
+   *    later timeouts of that same generation are no-ops. Otherwise
+   *    `MAX_CONSECUTIVE_RECOVERIES` would bound timed-out *requests*
+   *    rather than recovery attempts, and a single wedged generation
+   *    could exhaust the budget without a second `doInit()` ever
+   *    running.
+   *
+   * On the first timeout of the current generation, also clears the
+   * cached `initPromise` — but only when the current init has actually
+   * settled (`_initDone`). If a recovery `doInit()` is still in flight
+   * (e.g. still awaiting `WebAssembly.instantiate`), clearing
+   * `initPromise` here would orphan it: the next caller would see
+   * `initPromise === null` and start a *second*, concurrent `doInit()`,
+   * racing two Go runtimes to register
+   * mintcoreInitMint/mintcoreHandleFetch on globalThis.
    */
-  markTimedOut(): void {
+  markTimedOut(generation: number): void {
+    if (generation !== this._generation) {
+      // Stale: a newer boot is already current. This timeout does not
+      // describe it.
+      return;
+    }
+    if (this._needsRecovery) {
+      // Already recorded a timeout for this generation; a concurrent
+      // burst of timeouts on the same runtime counts as one recovery.
+      return;
+    }
     this._needsRecovery = true;
     this._consecutiveTimeouts++;
     if (this._initDone) {
@@ -398,12 +479,18 @@ class GoWasm {
    *
    * Transient errors (WASM load failures, runtime panics) clear the
    * cached promise so a subsequent request can retry.
+   *
+   * Bumps `_generation` each time a fresh `doInit()` is kicked off, so
+   * callers can capture (via the `generation` getter, once this
+   * resolves) which boot their subsequent `handleFetch()` call runs
+   * against — see `markTimedOut()`.
    */
   async init(wasmModule: WebAssembly.Module, env: Env): Promise<void> {
     if (!this.initPromise) {
       // Clear recovery flag — we are about to boot a fresh runtime.
       this._needsRecovery = false;
       this._initDone = false;
+      this._generation++;
       this.initPromise = this.doInit(wasmModule, env)
         .then((result) => {
           this._initDone = true;
@@ -612,9 +699,12 @@ export default {
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<Response> {
-    // After MAX_CONSECUTIVE_RECOVERIES consecutive timeouts, stop
-    // attempting recovery to bound leaked Go WASM runtimes. The
-    // Workers runtime must recycle the isolate to recover.
+    // After MAX_CONSECUTIVE_RECOVERIES *consecutive* timeouts (not
+    // separated by a successful request — see the constant's comment),
+    // stop attempting recovery. This bounds back-to-back reinit
+    // thrashing, not total leaked runtimes over the isolate's
+    // lifetime; the Workers runtime must recycle the isolate to
+    // recover.
     if (goWasm.exhausted) {
       return errorResponse(
         503,
@@ -656,8 +746,16 @@ export default {
       }
     }
 
+    // Captured once init() resolves, this identifies the specific
+    // doInit() boot that the handleFetch() call below runs against.
+    // Passed to markTimedOut() on timeout so a stale timeout (from a
+    // runtime that a later request has already replaced) cannot be
+    // mistaken for a timeout of the current runtime — see
+    // GoWasm.markTimedOut() for why that distinction matters.
+    let generation: number;
     try {
       await goWasm.init(mintcoreWasm, env);
+      generation = goWasm.generation;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("WASM init failed:", msg);
@@ -727,7 +825,7 @@ export default {
           "Marking GoWasm instance for recovery after timeout — " +
             "next request will re-initialize",
         );
-        goWasm.markTimedOut();
+        goWasm.markTimedOut(generation);
       }
 
       return errorResponse(500, "internal error");
