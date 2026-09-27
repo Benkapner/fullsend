@@ -293,7 +293,7 @@
     "actor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "role", "is_entity_author"],
+      "required": ["id", "kind", "role", "bot_role", "is_entity_author"],
       "properties": {
         "id": {
           "type": "string",
@@ -306,7 +306,7 @@
           "enum": ["human", "bot"]
         },
         "role": {
-          "type": "string",
+          "type": ["string", "null"],
           "enum": [
             "admin",
             "maintain",
@@ -314,15 +314,44 @@
             "triage",
             "read",
             "none",
-            "external"
+            "external",
+            null
           ],
-          "description": "Effective repository permission level (ADR 0054). Adapters populate from the forge collaborator permission API when available."
+          "description": "Effective repository permission level (ADR 0054) for human actors; null for bot actors under ADR 0107."
+        },
+        "bot_role": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Provider-resolved canonical Fullsend bot role; null for humans and unrecognized bots."
         },
         "is_entity_author": {
           "type": "boolean",
           "description": "True when actor.id is the author of the work item, change proposal, or conversation."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "bot" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "role": { "const": null } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "human" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "role": { "type": "string" },
+              "bot_role": { "const": null }
+            }
+          }
+        }
+      ]
     },
     "state": {
       "type": "object",

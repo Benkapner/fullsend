@@ -56,7 +56,8 @@ The `event` variable has the following top-level fields:
 | `event.transition.review` | object | Present only when `kind == "review_submitted"` |
 | `event.actor.id` | string | Forge login of the user or bot that triggered the event |
 | `event.actor.kind` | string | `"human"` or `"bot"` |
-| `event.actor.role` | string | Repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external` |
+| `event.actor.role` | string or null | Human repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external`; always `null` for bots |
+| `event.actor.bot_role` | string or null | Provider-resolved canonical bot role such as `review`; `null` for humans and unrecognized bots |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
 | `event.state.labels` | list | Label names on the entity at event time |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |

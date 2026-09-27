@@ -1,0 +1,127 @@
+---
+title: "107. Resolve bot identity before dispatch authorization"
+status: Accepted
+relates_to:
+  - agent-architecture
+  - security-threat-model
+topics:
+  - authorization
+  - identity
+  - dispatch
+  - bots
+---
+
+# 107. Resolve bot identity before dispatch authorization
+
+Date: 2026-09-27
+
+## Status
+
+Accepted
+
+Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
+and supersedes its generic bot-specific authorization exceptions once the
+provider migration described here is complete.
+
+## Context
+
+ADR 0054 authorizes human event actors from current repository permissions. It
+also preserves bot-to-bot dispatch through labels and later implementation
+exceptions for bot-authored reviews and pull requests. Those exceptions are
+necessary because a forge collaborator-permission lookup often cannot resolve
+an installed App bot. The source system's bot identity signal and Fullsend's
+registered role lookup are separate concerns.
+
+The mint already knows the GitHub Apps and roles it serves. Authorization needs
+to use that identity knowledge rather than making each forge adapter infer bot
+authority independently. Forges and deployments without the hosted mint need
+the same contract from their replacement identity provider.
+
+The historical drift and remaining contract gap are tracked in issue
+[#7764](https://github.com/fullsend-ai/fullsend/issues/7764), which motivates
+this decision.
+
+## Decision
+
+Fullsend introduces a provider-backed bot-role resolution step before event
+authorization. The resolver receives the verified source system, target
+repository or project, and actor identity from the forge adapter. It returns
+one of:
+
+- a recognized bot role;
+- no recognized bot role; or
+- an error resolving the identity.
+
+The resolver MUST match the verified actor name/identity against an exact
+registered bot identity. It MUST NOT accept a
+bot role, role name, or authorization result supplied by the event payload or
+by a CEL expression. Where the mint is used, it performs this lookup from its
+registered role-to-App knowledge and, where the forge exposes it, verifies the
+relevant installation on the target. A non-mint deployment MUST provide an
+equivalent trusted lookup.
+
+The provider MUST determine whether the verified actor is a bot using the
+source system's authoritative actor metadata. This MAY include the provider's
+actor name when that forge gives the name bot-specific semantics, as GitHub
+does for `[bot]` logins. Labels, review types, and arbitrary event-content
+strings are not bot-identity signals. The normalized actor MUST carry the
+result in `actor.kind`.
+
+The returned bot role is the canonical registered role name, such as `review`.
+It is carried in a separate field, so it does not share a namespace with forge
+permission roles and does not require a special suffix. For a recognized bot,
+`actor.kind` is `bot`, `actor.bot_role` contains the canonical role name, and
+`actor.role` MUST be `null`. For an unrecognized bot, `actor.kind` is `bot`,
+both role fields are `null`, and authorization fails. For a human,
+`actor.kind` is `human`, `actor.bot_role` is `null`, and `actor.role` contains
+the resolved forge permission role. A bot role identifies the registered agent
+identity; it is not a claim that the bot's content is trustworthy.
+
+Authorization then follows these rules:
+
+1. A recognized bot is authorized at the platform dispatch gate for events it
+   emits. Harness CEL and other routing layers MAY narrow this by requiring a
+   particular `actor.bot_role`, transition, label, review state, fork state, or
+   other policy condition; they MUST NOT broaden authorization to an
+   unrecognized bot.
+2. A bot with no recognized role, or a bot whose lookup fails, is denied before
+   CEL evaluation. Bot classification without a recognized role, a label
+   transition, or a bot-authored review is not by itself sufficient
+   authorization evidence.
+3. Human actors continue to use ADR 0054's current permission thresholds and
+   configured permission providers, including `OWNERS` where enabled.
+4. The normalized event and audit record retain the resolution result and
+   resolved bot role when present. Unknown and failed resolutions remain
+   distinguishable for diagnostics, but neither may trigger an agent.
+
+Adapters MUST resolve the actor that actually caused the transition. For an
+edited comment or other mutable content, authorization uses the editor rather
+than the original author. All event content remains untrusted after bot
+authorization; identity authorization does not authorize instructions in the
+event.
+
+## Options
+
+Inferring the Fullsend role from a username suffix or forge `actor.kind` is
+rejected because it cannot distinguish a registered Fullsend role from an
+unrelated or spoofed automation identity. Source-native bot classification is
+still allowed where the forge defines an authoritative signal, such as GitHub's
+`[bot]` login convention. Repeating App-to-role mapping in every forge adapter
+is also rejected because it creates inconsistent trust decisions and cannot
+share the mint's authoritative installation knowledge. A provider-backed lookup
+centralizes identity resolution while keeping the authorization contract
+portable to non-mint deployments.
+
+## Consequences
+
+- Bot dispatch authorization becomes based on a registered role identity rather
+  than a naming convention or a broad event-specific exception.
+- CEL gains a separate canonical bot-role value that can distinguish `review`
+  from other recognized agent roles without becoming the authorization boundary.
+- Mint and non-mint deployments must maintain an exact bot-identity registry and
+  fail closed when it is unavailable or incomplete.
+- Existing `[bot]` regex carve-outs and generic label/review exceptions require
+  migration to the resolver; until then they remain compatibility behavior and
+  must not be mistaken for the target contract.
+- Human authorization, least-privilege thresholds, and zero-trust treatment of
+  bot-produced content remain unchanged.

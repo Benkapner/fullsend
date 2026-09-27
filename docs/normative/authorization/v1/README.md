@@ -5,8 +5,10 @@ Normative rules governing which actors may trigger agent dispatch.
 This document is the single living contract for authorization policy.
 The historical decision and rationale are recorded in
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
-The [NormalizedEvent v1](../../normalized-event/v1/) specification defines
-the `actor.role` field consumed by this contract.
+The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
+`actor.role`, `actor.kind`, and `actor.bot_role` fields consumed by this
+contract. Bot identity and role resolution are specified by
+[ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
 ## Role ordering
 
@@ -86,6 +88,19 @@ or whose issue belongs to a different project — are mapped to `external`
 [Jira integration guide](../../../guides/user/jira-integration.md) for
 details on the name-based matching limitation.
 
+### Bot identity fields
+
+The adapter/provider MUST classify the verified actor using authoritative
+source-system metadata before authorization. This may include a provider actor
+name when that forge gives it bot-specific semantics, such as GitHub's `[bot]`
+logins; labels, review types, and arbitrary event-content strings are not bot
+identity signals. For `actor.kind: bot`, `actor.role` MUST be `null`, and
+`actor.bot_role` is either the exact provider-resolved Fullsend bot role or
+`null` when the bot is not recognized. For `actor.kind: human`,
+`actor.bot_role` MUST be `null`, and `actor.role` contains the forge permission
+role. Only a non-null, provider-resolved `actor.bot_role` can pass the bot
+dispatch gate; CEL may further restrict it but cannot create or broaden it.
+
 ## Default thresholds
 
 | Category | Minimum role | Rationale |
@@ -123,7 +138,9 @@ describe behavior currently implemented by `fullsend dispatch` or
 | Collaborator API returns an unrecognized `role_name` | Mapped to `none`; denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
-| `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.role` is empty or missing for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.bot_role` is non-null for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
 | Username contains characters outside `[A-Za-z0-9-]` (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
@@ -157,13 +174,12 @@ its installation token.
 
 ### Bot-submitted reviews (GitHub)
 
-When `source.system` is `github`, `transition.kind` is
-`review_submitted`, and `actor.kind` is `bot`, the event is authorized
-regardless of `actor.role`. This exception applies only when
-`source.system` is `github`. This allows the review agent's bot identity
-to trigger downstream stages (e.g., the fix agent) without a
-collaborator role lookup. The downstream harness CEL trigger constrains
-which bot and review state are accepted.
+This compatibility exception is superseded by
+[ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
+After migration, a GitHub review event is authorized only when the provider
+classifies the actor as a bot and resolves its exact registered `actor.bot_role`;
+`actor.role` is `null`. The downstream harness CEL trigger may further constrain
+which bot role and review state are accepted.
 
 ### Lifecycle close (pull\_request\_target.closed)
 
@@ -178,10 +194,10 @@ handling for closed transitions and applies the standard `write+` gate.
 
 When `source.system` is `schedule` or `manual`, the actor is the
 configured service identity (GitHub App bot or workflow `GITHUB_ACTOR`).
-Adapters set `actor.kind` to `bot` and `actor.role` to the effective
-permission of that identity on the target repository (typically `write`
-for installed apps). The standard authorization gate applies; the
-platform does not default schedule or manual actors to `role: none`.
+Adapters set `actor.kind` to `bot`, resolve the configured identity through the
+provider, set `actor.bot_role` when recognized, and leave `actor.role` as
+`null`. The standard identity authorization gate applies; an unrecognized or
+unresolved service identity is denied.
 
 ### Fullsend-originated entity discovery
 

@@ -100,10 +100,11 @@ not emit events with a missing or synthetic entity.
 treats schedule and manual dispatch as **trusted operator actions**, not
 end-user webhook events.
 Adapters set `actor.id` to the configured service identity (e.g. the GitHub App
-bot or workflow `GITHUB_ACTOR`), `actor.kind` to `bot`, and `actor.role` to the
-effective permission of that identity on the target repo (typically `write` for
-installed apps). `fullsend dispatch` applies the same permission check as
-webhook paths; it does not default schedule/manual actors to `role: none`.
+bot or workflow `GITHUB_ACTOR`) and classify it as `actor.kind: bot` using the
+provider's authoritative actor metadata. Under [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md),
+the provider resolves `actor.bot_role` and `actor.role` is `null`; authorization
+comes from the recognized bot identity rather than the forge permission role.
+`fullsend dispatch` applies the same identity lookup as webhook paths.
 
 ### Transition sub-objects
 
@@ -147,7 +148,7 @@ This moves instruction extraction from downstream workflow steps (e.g.
 
 ### Actor role mapping (GitHub)
 
-`actor.role` uses permission levels aligned with
+For human actors, `actor.role` uses permission levels aligned with
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
 and the GitHub collaborator permission API:
 
@@ -162,10 +163,10 @@ and the GitHub collaborator permission API:
 | `external` | — | Actor outside the repository (fork PR author, drive-by commenter) |
 
 Adapters populate `role` from the GitHub collaborator permission API for human
-actors. For **GitHub App bots**, use the installation's effective permission on
-the repository (typically `write`), not `none` — the collaborator API often
-returns 404 for `[bot]` accounts even when the app has write access via
-installation token.
+actors. For **GitHub App bots**, adapters MUST use the provider's authoritative
+bot classification and the provider-backed `bot_role` lookup; `role` and `bot_role` are mutually
+exclusive as specified by ADR 0107. A bot's forge installation permission is
+not copied into `actor.role`.
 
 ### Fork security (`state.change_proposal.is_fork`)
 
