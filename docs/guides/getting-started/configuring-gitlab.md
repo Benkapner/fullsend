@@ -107,9 +107,9 @@ then converges the project:
   for the role-credential options, emergency rollback, and how install
   grants the poller merge access on a protected default branch when
   Developer-class merge/push is not already allowed. Missing role
-  credentials are drift while the migration gate is `enforced`.
-  `repos status` reports `protected-ref-pipeline` drift if that pipeline
-  permission is later removed.
+  credentials are drift while the role-identity gate is `migrating` or
+  `enforced`. `repos status` reports `protected-ref-pipeline` drift if
+  that pipeline permission is later removed.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
   and `fullsend event poll` (at minutes 2, 17, 32, 47). Re-running install
   reports either schedule as drift if it exists but has been disabled,
@@ -725,7 +725,7 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Topic | GitHub | GitLab |
 |---|---|---|
 | Install command | `fullsend github setup` | `fullsend repos install --forge gitlab` |
-| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); `fullsend-bot` or a dedicated PAT username on Free/shared-token fallback |
+| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); `fullsend-bot` or a dedicated PAT username on Free/shared-token path |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
 | Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--inference-project` |
