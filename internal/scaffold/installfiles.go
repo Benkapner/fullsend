@@ -119,11 +119,13 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 // existing file (or creates a minimal one) instead of overwriting it.
 // See MergeGitLabCI in internal/repos/gitlabci.go.
 //
-// runnerTags specifies GitLab runner tags to inject into CI job definitions.
+// agentRunnerTags and controlRunnerTags specify GitLab runner tags to
+// inject into agent (data-plane) and control-plane CI job definitions.
 // upstreamRef and upstreamTag control the version marker embedded in the
 // pipeline wrapper for upgrade/status drift detection.
-func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstreamTag string) (InstallFiles, error) {
-	tagYAML := FormatRunnerTags(runnerTags)
+func CollectGitLabPerRepoInstallFiles(agentRunnerTags, controlRunnerTags []string, upstreamRef, upstreamTag string) (InstallFiles, error) {
+	agentTagYAML := FormatRunnerTags(agentRunnerTags)
+	controlTagYAML := FormatRunnerTags(controlRunnerTags)
 	versionMarker := FormatVersionMarker(upstreamRef, upstreamTag)
 	fullsendVersion := ResolveFullsendVersion(upstreamRef, upstreamTag)
 	var files InstallFiles
@@ -131,7 +133,8 @@ func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstream
 		if path == ".fullsend/config.yaml" || path == ".gitignore" || path == ".gitlab-ci.yml" {
 			return nil
 		}
-		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
+		rendered := strings.ReplaceAll(string(content), "__AGENT_RUNNER_TAGS__", agentTagYAML)
+		rendered = strings.ReplaceAll(rendered, "__CONTROL_RUNNER_TAGS__", controlTagYAML)
 		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
 		// Embed a version marker in the pipeline wrapper so that
 		// extractWorkflowRef (via glWorkflowRefPattern) can detect

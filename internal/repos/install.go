@@ -84,9 +84,14 @@ type InstallConfig struct {
 	// provenance of prior review comments.
 	ReviewAppClientID string
 
-	// RunnerTags is a list of GitLab CI runner tags to embed in scaffold
-	// pipeline YAML so that agent jobs are routed to specific runners.
-	RunnerTags []string
+	// AgentRunnerTags is a list of GitLab CI runner tags embedded in the
+	// agent job so sandbox work is routed to the data-plane fleet.
+	AgentRunnerTags []string
+
+	// ControlRunnerTags is a list of GitLab CI runner tags embedded in
+	// control-plane jobs (poll today). Independent of AgentRunnerTags:
+	// unset renders an empty (untagged) tag list, not the agent tags.
+	ControlRunnerTags []string
 
 	// Direct controls scaffold delivery: true pushes directly to the default
 	// branch; false creates a PR.
@@ -352,9 +357,15 @@ type DriftConfig struct {
 	// GitHub App. Only available from CLI flags on repos install.
 	ReviewAppClientID string
 
-	// RunnerTags is a list of GitLab CI runner tags from the manifest's
-	// GitLab platform section.
-	RunnerTags []string
+	// AgentRunnerTags is a list of GitLab CI runner tags from the
+	// manifest's GitLab platform section for agent (data-plane) jobs.
+	AgentRunnerTags []string
+
+	// ControlRunnerTags is a list of GitLab CI runner tags from the
+	// manifest's GitLab platform section for control-plane jobs. Already
+	// resolved through gitlabControlRunnerTags; independent of
+	// AgentRunnerTags, so an unset control_runner_tags stays empty here.
+	ControlRunnerTags []string
 }
 
 // driftInstallConfig constructs the InstallConfig used by both the
@@ -376,7 +387,8 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		VendorBinary:      resolved.Vendor,
 		InferenceRegion:   dcfg.InferenceRegion,
 		ReviewAppClientID: dcfg.ReviewAppClientID,
-		RunnerTags:        dcfg.RunnerTags,
+		AgentRunnerTags:   dcfg.AgentRunnerTags,
+		ControlRunnerTags: dcfg.ControlRunnerTags,
 	}
 }
 
@@ -420,7 +432,7 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
-			dcfg.RunnerTags,
+			dcfg.AgentRunnerTags, dcfg.ControlRunnerTags,
 			installCfg.VendorBinary,
 		)
 		if fetchErr == nil {
@@ -491,7 +503,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 		case ForgeGitHub:
 			installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
 		case ForgeGitLab:
-			installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
+			installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.AgentRunnerTags, cfg.ControlRunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
 		default:
 			return nil, fmt.Errorf("unsupported forge %q for scaffold generation", cfg.Forge)
 		}

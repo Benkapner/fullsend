@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -2350,4 +2351,199 @@ github:
 		require.NotNil(t, roundTripped.GitHub.Repos[1].Vendor)
 		assert.False(t, *roundTripped.GitHub.Repos[1].Vendor)
 	})
+}
+
+func TestParseManifest_DeprecatedRunnerTagsAlias(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  runner_tags:
+    - fullsend-agent
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.AgentRunnerTags,
+		"runner_tags alias must populate agent_runner_tags")
+	assert.Nil(t, m.GitLab.DeprecatedRunnerTags)
+	assert.Equal(t, []string{"fullsend-agent"}, gitlabAgentRunnerTags(&m))
+	assert.Empty(t, m.GitLab.ControlRunnerTags,
+		"runner_tags alias must not populate the ControlRunnerTags field directly")
+	assert.Empty(t, gitlabControlRunnerTags(&m),
+		"unset control_runner_tags must not inherit the migrated agent_runner_tags")
+}
+
+func TestGitLabControlRunnerTags_UnsetDoesNotInheritAgentTags(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:             "https://gitlab.example.com",
+			AgentRunnerTags: []string{"fullsend-agent"},
+			Repos:           []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	assert.Equal(t, []string{"fullsend-agent"}, gitlabAgentRunnerTags(m))
+	assert.Empty(t, gitlabControlRunnerTags(m),
+		"unset control_runner_tags must not inherit agent_runner_tags (independent fields, no cross-fallback)")
+	assert.Equal(t, "[]", scaffold.FormatRunnerTags(gitlabControlRunnerTags(m)),
+		"unset control_runner_tags renders tags: [], not the agent tags")
+}
+
+func TestGitLabAgentRunnerTags_UnsetRendersEmpty(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	assert.Nil(t, gitlabAgentRunnerTags(m))
+	assert.Equal(t, "[]", scaffold.FormatRunnerTags(gitlabAgentRunnerTags(m)),
+		"unset agent_runner_tags renders tags: []")
+}
+
+func TestParseManifest_AgentRunnerTagsWinsOverDeprecated(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  agent_runner_tags:
+    - agent-fleet
+  runner_tags:
+    - old-fleet
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"agent-fleet"}, m.GitLab.AgentRunnerTags)
+	assert.Nil(t, m.GitLab.DeprecatedRunnerTags)
+}
+
+func TestParseManifest_ControlRunnerTagsIndependentOfAgentTags(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  agent_runner_tags:
+    - agent-fleet
+  control_runner_tags:
+    - api-fleet
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"agent-fleet"}, gitlabAgentRunnerTags(&m))
+	assert.Equal(t, []string{"api-fleet"}, gitlabControlRunnerTags(&m))
+}
+
+func TestMarshal_DropsDeprecatedRunnerTags(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:                  "https://gitlab.example.com",
+			DeprecatedRunnerTags: []string{"fullsend-agent"},
+			Repos:                []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	data, err := m.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "agent_runner_tags:")
+	assert.NotRegexp(t, `(?m)^\s*runner_tags:`, string(data),
+		"deprecated runner_tags key must not be marshaled")
+	assert.Contains(t, string(data), "fullsend-agent")
+}
+
+func TestMarshal_DoesNotMutateReceiver(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:                  "https://gitlab.example.com",
+			DeprecatedRunnerTags: []string{"fullsend-agent"},
+			Repos:                []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+
+	_, err := m.Marshal()
+	require.NoError(t, err)
+
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.DeprecatedRunnerTags,
+		"Marshal must not clear the caller's DeprecatedRunnerTags")
+	assert.Empty(t, m.GitLab.AgentRunnerTags,
+		"Marshal must not migrate the caller's AgentRunnerTags in place")
+
+	_, err = MarshalWithHeader(m)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.DeprecatedRunnerTags,
+		"MarshalWithHeader must not clear the caller's DeprecatedRunnerTags")
+	assert.Empty(t, m.GitLab.AgentRunnerTags,
+		"MarshalWithHeader must not migrate the caller's AgentRunnerTags in place")
+}
+
+func TestLoadManifest_GitHubRunnerTags_RejectedByOperatorKey(t *testing.T) {
+	// github.runner_tags is never a legitimate key (runner_tags is a
+	// GitLab-only alias), but parsing must not silently migrate it onto
+	// agent_runner_tags before Validate runs — the error must name the
+	// key the operator actually wrote.
+	manifest := `
+version: 1
+github:
+  runner_tags:
+    - some-tag
+  repos:
+    - name: acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	m, err := LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+
+	err = m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github.runner_tags is not supported")
+	assert.NotContains(t, err.Error(), "agent_runner_tags")
+}
+
+func TestValidate_GitHubRejectsRunnerTagFields(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  PlatformConfig
+		want string
+	}{
+		{
+			name: "agent_runner_tags",
+			cfg:  PlatformConfig{AgentRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.agent_runner_tags is not supported",
+		},
+		{
+			name: "control_runner_tags",
+			cfg:  PlatformConfig{ControlRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.control_runner_tags is not supported",
+		},
+		{
+			name: "runner_tags",
+			cfg:  PlatformConfig{DeprecatedRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.runner_tags is not supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			m := Manifest{Version: 1, GitHub: &cfg}
+			err := m.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+func TestGitLabControlRunnerTags_NilManifest(t *testing.T) {
+	assert.Nil(t, gitlabAgentRunnerTags(nil))
+	assert.Nil(t, gitlabControlRunnerTags(nil))
+	assert.Nil(t, gitlabAgentRunnerTags(&Manifest{}))
+	assert.Nil(t, gitlabControlRunnerTags(&Manifest{}))
+	migrateDeprecatedRunnerTags(nil)
 }

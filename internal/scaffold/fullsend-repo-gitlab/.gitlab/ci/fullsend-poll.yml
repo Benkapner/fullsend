@@ -11,7 +11,7 @@ spec:
   image:
     name: ghcr.io/fullsend-ai/fullsend-runner:dev
     entrypoint: [""]
-  tags: __RUNNER_TAGS__
+  tags: __CONTROL_RUNNER_TAGS__
   resource_group: "fullsend-poll-$FULLSEND_POLL_MODE"
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"

@@ -827,7 +827,8 @@ func convergeRepo(ctx context.Context,
 			UpstreamTag:                   tag,
 			WIFProvider:                   wifProvider,
 			ReviewAppClientID:             cfg.ReviewAppClientID,
-			RunnerTags:                    gitlabRunnerTags(cfg.Manifest),
+			AgentRunnerTags:               gitlabAgentRunnerTags(cfg.Manifest),
+			ControlRunnerTags:             gitlabControlRunnerTags(cfg.Manifest),
 			Runtime:                       resolved.Runtime,
 			Direct:                        cfg.Direct,
 			ReuseSecrets:                  hasSecrets,
@@ -845,7 +846,7 @@ func convergeRepo(ctx context.Context,
 			scaffoldFiles, fetchErr := FetchRemoteScaffold(
 				ctx, refResolver.client,
 				manifestRef, ref, resolved.Forge,
-				gitlabRunnerTags(cfg.Manifest),
+				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
 				vendor,
 			)
 			if fetchErr == nil {
@@ -1021,7 +1022,8 @@ func convergeRepo(ctx context.Context,
 		DriftConfig{
 			InferenceRegion:   cfg.InferenceRegion,
 			ReviewAppClientID: cfg.ReviewAppClientID,
-			RunnerTags:        gitlabRunnerTags(cfg.Manifest),
+			AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
+			ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 		},
 		progress,
 	)
@@ -1859,7 +1861,7 @@ func convergeRefFiles(ctx context.Context,
 	// Unchanged-ref structural drift is repaired by convergeContentDriftFiles.
 	if changed && resolved.Forge == ForgeGitLab {
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabRunnerTags(cfg.Manifest), newRef, newTag,
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), newRef, newTag,
 		)
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
@@ -1967,16 +1969,17 @@ func convergeScaffoldFiles(ctx context.Context,
 	}
 
 	installCfg := InstallConfig{
-		Owner:        resolved.Owner,
-		Repo:         resolved.Repo,
-		Forge:        resolved.Forge,
-		Roles:        defaultRoles(cfg.Roles),
-		MintURL:      resolved.MintURL,
-		UpstreamRef:  ref,
-		UpstreamTag:  tag,
-		RunnerTags:   gitlabRunnerTags(cfg.Manifest),
-		Runtime:      resolved.Runtime,
-		VendorBinary: repairVendor,
+		Owner:             resolved.Owner,
+		Repo:              resolved.Repo,
+		Forge:             resolved.Forge,
+		Roles:             defaultRoles(cfg.Roles),
+		MintURL:           resolved.MintURL,
+		UpstreamRef:       ref,
+		UpstreamTag:       tag,
+		AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
+		ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
+		Runtime:           resolved.Runtime,
+		VendorBinary:      repairVendor,
 	}
 
 	// When vendored, the running binary's embedded templates match the
@@ -1986,7 +1989,7 @@ func convergeScaffoldFiles(ctx context.Context,
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
-			gitlabRunnerTags(cfg.Manifest),
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
 			repairVendor,
 		)
 		if fetchErr == nil {
@@ -2038,7 +2041,7 @@ func convergeScaffoldFiles(ctx context.Context,
 			templateRef = rref.ref
 		}
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabRunnerTags(cfg.Manifest), templateRef, "",
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), templateRef, "",
 		)
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
@@ -2114,7 +2117,7 @@ func convergeContentDriftFiles(ctx context.Context,
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
-			gitlabRunnerTags(cfg.Manifest),
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
 			installCfg.VendorBinary,
 		)
 		if fetchErr == nil {

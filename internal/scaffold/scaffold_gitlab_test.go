@@ -91,7 +91,7 @@ func TestGitLabGitignoreExcludesOutput(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	for _, f := range files {
 		assert.NotEqual(t, ".gitignore", f.Path,
@@ -100,7 +100,7 @@ func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsRootPipeline(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	for _, f := range files {
 		assert.NotEqual(t, ".gitlab-ci.yml", f.Path,
@@ -737,46 +737,58 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 }
 
 func TestGitLabRunnerTagsPlaceholder(t *testing.T) {
-	taggedFiles := []string{
-		".gitlab/ci/fullsend-poll.yml",
-		".gitlab/ci/fullsend-agent.yml",
-	}
-	for _, path := range taggedFiles {
-		content, err := GitLabPerRepoFile(path)
-		require.NoError(t, err, path)
-		assert.Contains(t, string(content), "__RUNNER_TAGS__", "%s must contain __RUNNER_TAGS__ placeholder", path)
-	}
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "__AGENT_RUNNER_TAGS__",
+		"agent job must contain __AGENT_RUNNER_TAGS__ placeholder")
+	assert.NotContains(t, string(content), "__CONTROL_RUNNER_TAGS__")
+
+	content, err = GitLabPerRepoFile(".gitlab/ci/fullsend-poll.yml")
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "__CONTROL_RUNNER_TAGS__",
+		"poll job must contain __CONTROL_RUNNER_TAGS__ placeholder")
+	assert.NotContains(t, string(content), "__AGENT_RUNNER_TAGS__")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_WithTags(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles([]string{"docker", "linux"}, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(
+		[]string{"docker", "linux"}, []string{"api"}, "", "",
+	)
 	require.NoError(t, err)
 
+	var sawAgent, sawPoll bool
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, ".yml") {
-			s := string(f.Content)
-			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
-			if strings.Contains(s, "tags:") {
-				assert.Contains(t, s, `["docker", "linux"]`, "%s should contain formatted tags", f.Path)
-			}
+		s := string(f.Content)
+		assert.NotContains(t, s, "__AGENT_RUNNER_TAGS__", "%s should have agent tags substituted", f.Path)
+		assert.NotContains(t, s, "__CONTROL_RUNNER_TAGS__", "%s should have control tags substituted", f.Path)
+		switch f.Path {
+		case ".gitlab/ci/fullsend-agent.yml":
+			sawAgent = true
+			assert.Contains(t, s, `["docker", "linux"]`)
+			assert.NotContains(t, s, `["api"]`)
+		case ".gitlab/ci/fullsend-poll.yml":
+			sawPoll = true
+			assert.Contains(t, s, `["api"]`)
+			assert.NotContains(t, s, `["docker", "linux"]`)
 		}
 	}
+	assert.True(t, sawAgent, "agent job missing from install files")
+	assert.True(t, sawPoll, "poll job missing from install files")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_NoTags(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, ".yml") {
-			s := string(f.Content)
-			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
-		}
+		s := string(f.Content)
+		assert.NotContains(t, s, "__AGENT_RUNNER_TAGS__", "%s should have agent tags substituted", f.Path)
+		assert.NotContains(t, s, "__CONTROL_RUNNER_TAGS__", "%s should have control tags substituted", f.Path)
 	}
 }
 
 func TestCollectGitLabPerRepoInstallFiles_VersionMarker(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "v0.34.0", "v0.34.0")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "v0.34.0", "v0.34.0")
 	require.NoError(t, err)
 
 	var pipelineContent string
@@ -808,7 +820,7 @@ func TestCollectGitLabPerRepoInstallFiles_VersionMarker(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_NoVersionMarkerWhenEmpty(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -819,7 +831,7 @@ func TestCollectGitLabPerRepoInstallFiles_NoVersionMarkerWhenEmpty(t *testing.T)
 
 func TestCollectGitLabPerRepoInstallFiles_SHAWithTagAnnotation(t *testing.T) {
 	// When both ref (SHA) and tag differ, marker includes both
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.35.0")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "abc123def", "v0.35.0")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -834,7 +846,7 @@ func TestCollectGitLabPerRepoInstallFiles_SHAWithTagAnnotation(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_RefUsedWhenNoTag(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "v0.34.0", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "v0.34.0", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -870,7 +882,7 @@ func TestResolveFullsendVersion(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.42.0")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "abc123def", "v0.42.0")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -890,7 +902,7 @@ func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SHAFallbackWhenNoTag(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "abc123def", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -903,7 +915,7 @@ func TestCollectGitLabPerRepoInstallFiles_SHAFallbackWhenNoTag(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_LatestWhenNoVersion(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -982,7 +994,7 @@ func TestGitLabTemplatesSourceRoleTokenHelper(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_IncludesRoleTokenScript(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	var found bool
 	for _, f := range files {
@@ -1042,7 +1054,7 @@ func TestGitLabJobsSourceExtractedScripts(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_IncludesExtractedJobScripts(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	found := map[string]bool{}
 	for _, f := range files {
