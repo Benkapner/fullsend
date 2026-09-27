@@ -4082,6 +4082,41 @@ func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ str
 	return forge.ErrNotSupported
 }
 
+// CreatePipelineTriggerToken is not supported on GitHub.
+func (c *LiveClient) CreatePipelineTriggerToken(_ context.Context, _, _, _ string) (*forge.PipelineTriggerToken, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// ListPipelineTriggerTokens is not supported on GitHub.
+func (c *LiveClient) ListPipelineTriggerTokens(_ context.Context, _, _ string) ([]forge.PipelineTriggerToken, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// RevokePipelineTriggerToken is not supported on GitHub.
+func (c *LiveClient) RevokePipelineTriggerToken(_ context.Context, _, _ string, _ int64) error {
+	return forge.ErrNotSupported
+}
+
+// CreateProjectHook is not supported on GitHub.
+func (c *LiveClient) CreateProjectHook(_ context.Context, _, _ string, _ forge.ProjectHook) (*forge.ProjectHook, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// ListProjectHooks is not supported on GitHub.
+func (c *LiveClient) ListProjectHooks(_ context.Context, _, _ string) ([]forge.ProjectHook, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// UpdateProjectHook is not supported on GitHub.
+func (c *LiveClient) UpdateProjectHook(_ context.Context, _, _ string, _ int64, _ forge.ProjectHook) (*forge.ProjectHook, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// DeleteProjectHook is not supported on GitHub.
+func (c *LiveClient) DeleteProjectHook(_ context.Context, _, _ string, _ int64) error {
+	return forge.ErrNotSupported
+}
+
 // ForceCommitFileToBranch is not supported on GitHub.
 func (c *LiveClient) ForceCommitFileToBranch(_ context.Context, _, _, _, _, _ string, _ []byte) error {
 	return forge.ErrNotSupported

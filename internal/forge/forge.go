@@ -74,6 +74,16 @@ const (
 	// signing is on by default; see poll.EnsureDispatchSecret.
 	SecretDispatch = "FULLSEND_DISPATCH_SECRET"
 
+	// SecretTriggerToken is the GitLab pipeline trigger token used by
+	// the webhook fast-path dispatcher. Provisioned as a masked,
+	// protected CI/CD variable. Never logged.
+	SecretTriggerToken = "FULLSEND_TRIGGER_TOKEN"
+
+	// SecretWebhookSecret is the GitLab project-webhook secret
+	// (X-Gitlab-Token) used by the webhook fast-path. Provisioned as a
+	// masked, protected CI/CD variable. Never logged.
+	SecretWebhookSecret = "FULLSEND_WEBHOOK_SECRET"
+
 	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
 	// of requiredSecrets/requiredSecretsForForge — a repository with no
 	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
@@ -904,6 +914,32 @@ type Client interface {
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
 	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
 
+	// GitLab pipeline trigger tokens and project webhooks power the
+	// webhook fast-path dispatcher. GitHub returns ErrNotSupported.
+
+	// CreatePipelineTriggerToken mints a pipeline trigger token on
+	// owner/repo. The token value is only returned at creation time.
+	CreatePipelineTriggerToken(ctx context.Context, owner, repo, description string) (*PipelineTriggerToken, error)
+	// ListPipelineTriggerTokens lists pipeline trigger tokens.
+	// Token values are omitted after creation.
+	ListPipelineTriggerTokens(ctx context.Context, owner, repo string) ([]PipelineTriggerToken, error)
+	// RevokePipelineTriggerToken deletes a trigger token by ID.
+	// Returns ErrNotFound if the token does not exist.
+	RevokePipelineTriggerToken(ctx context.Context, owner, repo string, tokenID int64) error
+
+	// CreateProjectHook creates a project webhook with the given URL,
+	// secret token, and event filters.
+	CreateProjectHook(ctx context.Context, owner, repo string, hook ProjectHook) (*ProjectHook, error)
+	// ListProjectHooks lists project webhooks. The secret token is
+	// never returned.
+	ListProjectHooks(ctx context.Context, owner, repo string) ([]ProjectHook, error)
+	// UpdateProjectHook updates an existing project webhook.
+	// Returns ErrNotFound if the hook does not exist.
+	UpdateProjectHook(ctx context.Context, owner, repo string, hookID int64, hook ProjectHook) (*ProjectHook, error)
+	// DeleteProjectHook deletes a project webhook by ID.
+	// Returns ErrNotFound if the hook does not exist.
+	DeleteProjectHook(ctx context.Context, owner, repo string, hookID int64) error
+
 	// Commit comparison
 	// CompareCommits compares two commits and returns their relationship
 	// status: "ahead" (head is ahead of base), "behind" (head is behind
@@ -946,6 +982,40 @@ type PipelineSchedule struct {
 	CronTimezone string
 	Active       bool
 	Variables    map[string]string // schedule-level pipeline variables
+}
+
+// PipelineTriggerToken is a GitLab pipeline trigger token.
+// Token is populated only in the CreatePipelineTriggerToken response;
+// list responses omit it.
+type PipelineTriggerToken struct {
+	ID          int64
+	Description string
+	Token       string
+}
+
+// ProjectHook is a GitLab project webhook. Token is write-only:
+// GitLab never returns the secret on list or update responses.
+// URL is the destination, typically a pipeline-trigger URL of the
+// form /api/v4/projects/:id/ref/:ref/trigger/pipeline.
+type ProjectHook struct {
+	ID                       int64
+	URL                      string
+	Name                     string
+	Description              string
+	Token                    string
+	PushEvents               bool
+	IssuesEvents             bool
+	ConfidentialIssuesEvents bool
+	MergeRequestsEvents      bool
+	TagPushEvents            bool
+	NoteEvents               bool
+	ConfidentialNoteEvents   bool
+	JobEvents                bool
+	PipelineEvents           bool
+	WikiPageEvents           bool
+	DeploymentEvents         bool
+	ReleasesEvents           bool
+	EnableSSLVerification    bool
 }
 
 // OrgMembership is a user's membership in a GitHub organization.

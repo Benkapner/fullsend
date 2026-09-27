@@ -4559,6 +4559,34 @@ func TestUnsupportedMethods(t *testing.T) {
 		err := client.CreateProtectedCIVariable(ctx, "o", "r", "KEY", "val")
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineTriggerToken", func(t *testing.T) {
+		_, err := client.CreatePipelineTriggerToken(ctx, "o", "r", "desc")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("ListPipelineTriggerTokens", func(t *testing.T) {
+		_, err := client.ListPipelineTriggerTokens(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("RevokePipelineTriggerToken", func(t *testing.T) {
+		err := client.RevokePipelineTriggerToken(ctx, "o", "r", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("CreateProjectHook", func(t *testing.T) {
+		_, err := client.CreateProjectHook(ctx, "o", "r", forge.ProjectHook{})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("ListProjectHooks", func(t *testing.T) {
+		_, err := client.ListProjectHooks(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("UpdateProjectHook", func(t *testing.T) {
+		_, err := client.UpdateProjectHook(ctx, "o", "r", 1, forge.ProjectHook{})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("DeleteProjectHook", func(t *testing.T) {
+		err := client.DeleteProjectHook(ctx, "o", "r", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("ForceCommitFileToBranch", func(t *testing.T) {
 		err := client.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
 		assert.ErrorIs(t, err, forge.ErrNotSupported)

@@ -918,6 +918,32 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.ListWorkflowRunJobs(ctx, "o", "r", 1)
 			return err
 		}},
+		{"CreatePipelineTriggerToken", func(fc *FakeClient) error {
+			_, err := fc.CreatePipelineTriggerToken(ctx, "o", "r", "d")
+			return err
+		}},
+		{"ListPipelineTriggerTokens", func(fc *FakeClient) error {
+			_, err := fc.ListPipelineTriggerTokens(ctx, "o", "r")
+			return err
+		}},
+		{"RevokePipelineTriggerToken", func(fc *FakeClient) error {
+			return fc.RevokePipelineTriggerToken(ctx, "o", "r", 1)
+		}},
+		{"CreateProjectHook", func(fc *FakeClient) error {
+			_, err := fc.CreateProjectHook(ctx, "o", "r", ProjectHook{URL: "https://example.test"})
+			return err
+		}},
+		{"ListProjectHooks", func(fc *FakeClient) error {
+			_, err := fc.ListProjectHooks(ctx, "o", "r")
+			return err
+		}},
+		{"UpdateProjectHook", func(fc *FakeClient) error {
+			_, err := fc.UpdateProjectHook(ctx, "o", "r", 1, ProjectHook{})
+			return err
+		}},
+		{"DeleteProjectHook", func(fc *FakeClient) error {
+			return fc.DeleteProjectHook(ctx, "o", "r", 1)
+		}},
 	}
 
 	for _, m := range methods {
@@ -999,6 +1025,13 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.DeleteRepoSecret(ctx, "o", "r", "n")
 			_, _ = fc.ListRepoVariables(ctx, "o", "r")
 			_, _ = fc.ListWorkflowRunJobs(ctx, "o", "r", 1)
+			_, _ = fc.CreatePipelineTriggerToken(ctx, "o", "r", "d")
+			_, _ = fc.ListPipelineTriggerTokens(ctx, "o", "r")
+			_ = fc.RevokePipelineTriggerToken(ctx, "o", "r", 1)
+			_, _ = fc.CreateProjectHook(ctx, "o", "r", ProjectHook{URL: "https://example.test"})
+			_, _ = fc.ListProjectHooks(ctx, "o", "r")
+			_, _ = fc.UpdateProjectHook(ctx, "o", "r", 1, ProjectHook{})
+			_ = fc.DeleteProjectHook(ctx, "o", "r", 1)
 		}(i)
 	}
 
@@ -1591,6 +1624,8 @@ func TestNewFakeClient_MapsInitialized(t *testing.T) {
 	assert.NotNil(t, fc.ProtectedBranches)
 	assert.NotNil(t, fc.ProtectedBranchRules)
 	assert.NotNil(t, fc.PipelineSchedules)
+	assert.NotNil(t, fc.PipelineTriggerTokens)
+	assert.NotNil(t, fc.ProjectHooks)
 }
 
 func TestFakeClient_PipelineScheduleRoundTrip(t *testing.T) {
@@ -1661,6 +1696,105 @@ func TestFakeClient_CreatePipeline_Error(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, p)
 	assert.Empty(t, fc.CreatedPipelines)
+}
+
+func TestFakeClient_PipelineTriggerTokenRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	tok, err := fc.CreatePipelineTriggerToken(ctx, "org", "repo", "fullsend-dispatcher")
+	require.NoError(t, err)
+	require.NotNil(t, tok)
+	assert.Equal(t, int64(1), tok.ID)
+	assert.Equal(t, "fullsend-dispatcher", tok.Description)
+	assert.NotEmpty(t, tok.Token)
+
+	listed, err := fc.ListPipelineTriggerTokens(ctx, "org", "repo")
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, tok.ID, listed[0].ID)
+	assert.Empty(t, listed[0].Token, "list must not return the secret")
+
+	err = fc.RevokePipelineTriggerToken(ctx, "org", "repo", tok.ID)
+	require.NoError(t, err)
+	listed, err = fc.ListPipelineTriggerTokens(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Empty(t, listed)
+	assert.Equal(t, []int64{tok.ID}, fc.RevokedTriggerTokenIDs)
+}
+
+func TestFakeClient_RevokePipelineTriggerToken_NotFound(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	err := fc.RevokePipelineTriggerToken(ctx, "org", "repo", 99)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_ProjectHookRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	hook := ProjectHook{
+		URL:                   "https://gitlab.example.com/api/v4/projects/org%2F.fullsend/ref/main/trigger/pipeline",
+		Name:                  "fullsend-dispatcher",
+		Token:                 "webhook-secret",
+		IssuesEvents:          true,
+		MergeRequestsEvents:   true,
+		NoteEvents:            true,
+		EnableSSLVerification: true,
+	}
+	created, err := fc.CreateProjectHook(ctx, "org", "repo", hook)
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	assert.Equal(t, int64(1), created.ID)
+	assert.Equal(t, hook.URL, created.URL)
+	assert.Empty(t, created.Token, "GitLab never returns the webhook secret")
+	require.Len(t, fc.CreatedProjectHooks, 1)
+	assert.Equal(t, "webhook-secret", fc.CreatedProjectHooks[0].Token)
+
+	listed, err := fc.ListProjectHooks(ctx, "org", "repo")
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, created.ID, listed[0].ID)
+	assert.Empty(t, listed[0].Token, "list must not return the secret")
+	assert.True(t, listed[0].IssuesEvents)
+
+	updated, err := fc.UpdateProjectHook(ctx, "org", "repo", created.ID, ProjectHook{
+		URL:          hook.URL,
+		IssuesEvents: false,
+		NoteEvents:   true,
+	})
+	require.NoError(t, err)
+	assert.False(t, updated.IssuesEvents)
+	assert.True(t, updated.NoteEvents)
+	assert.Empty(t, updated.Token)
+
+	err = fc.DeleteProjectHook(ctx, "org", "repo", created.ID)
+	require.NoError(t, err)
+	listed, err = fc.ListProjectHooks(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Empty(t, listed)
+	assert.Equal(t, []int64{created.ID}, fc.DeletedProjectHookIDs)
+}
+
+func TestFakeClient_UpdateProjectHook_NotFound(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	_, err := fc.UpdateProjectHook(ctx, "org", "repo", 99, ProjectHook{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_DeleteProjectHook_NotFound(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	err := fc.DeleteProjectHook(ctx, "org", "repo", 99)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestFakeClient_UpdateCIVariable_RecordsProtected(t *testing.T) {
