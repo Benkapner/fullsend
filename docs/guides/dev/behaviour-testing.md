@@ -273,9 +273,9 @@ The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider
 | fullsend-ai org member | No | No | No |
 | Permission on `fullsend-ai/fullsend` | Read | Read | Read |
 | Permission on `fullsend-ai/agents` | Read | Read | Read |
-| Write access | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | None (outsider) |
+| Write access | Pool-org repos via all-repository write (DEV `halfsend-NN`, STAGE `halfsend`) | Pool-org repos via all-repository triage (DEV `halfsend-NN`, STAGE `halfsend`) | None (outsider) |
 
-**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the DEV pool orgs and the `halfsend` STAGE org — the STAGE organisation/mint itself is durable, but its `test-repo-NN` repos now follow the same ephemeral per-lease lifecycle as DEV (deleted and recreated on each lease). No write access extends beyond these test-only organisations.
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write and triage capability comes from all-repository organization roles on the DEV pool orgs (`halfsend-NN`) and the `halfsend` STAGE org, so it survives the ephemeral `test-repo-NN` delete/recreate lifecycle. No write access extends beyond these test-only organisations. The outsider account is not an org member and has no all-repository role.
 
 **Re-verification guidance:** Re-verify account permissions whenever:
 

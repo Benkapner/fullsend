@@ -75,24 +75,30 @@ type repoEnsurer struct {
 	runCLI    CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
 	settle    SettleFunc    // injectable; defaults to awaitWorkflowReady
 	setupOpts common.GitHubSetupOpts
-	// actorGrants are re-applied to every recreated repo.
-	actorGrants []actorGrant
+	// actorGrants are verified once per org (membership + all-repository roles).
+	actorGrants   []actorGrant
+	outsiderLogin string
 
-	mu       sync.Mutex
-	ensured  map[string]struct{} // keyed by org/repo; only successful results cached
-	inflight singleflight.Group
+	mu           sync.Mutex
+	ensured      map[string]struct{} // keyed by org/repo; only successful results cached
+	verifiedOrgs map[string]struct{} // keyed by org; org-level actor access already checked
+	inflight     singleflight.Group
 }
 
 // newRepoEnsurer returns an ensurer backed by the given forge client
 // and CLI binary. The ensurer shares the same credentials and
 // configuration as the per-repo install driver. BEHAVIOUR_CONFIG_PRESET
 // is applied onto the vendored-mode defaults when set.
+//
+// Returns an error if TEST_ACTOR_OUTSIDER_PAT is set but its login cannot
+// be resolved — outsider exclusion is a security invariant (#7777) and
+// must not silently fall back to skipping the check.
 func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
 	token, binary string,
 	logf func(string, ...any),
-) ensurer {
+) (ensurer, error) {
 	opts := common.DefaultGitHubSetupOpts()
 	opts.ConfigPreset = envConfigPreset()
 	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, opts, logf)
@@ -107,19 +113,25 @@ func newRepoEnsurerWithOpts(
 	token, binary string,
 	opts common.GitHubSetupOpts,
 	logf func(string, ...any),
-) ensurer {
-	return &repoEnsurer{
-		e2eCfg:      e2eCfg,
-		client:      client,
-		token:       token,
-		binary:      binary,
-		logf:        logf,
-		runCLI:      e2etest.TryRunCLI,
-		settle:      awaitWorkflowReady,
-		setupOpts:   opts,
-		actorGrants: actorGrantsFromEnv(context.Background(), logf),
-		ensured:     make(map[string]struct{}),
+) (ensurer, error) {
+	outsiderLogin, err := outsiderLoginFromEnv(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("resolving outsider actor: %w", err)
 	}
+	return &repoEnsurer{
+		e2eCfg:        e2eCfg,
+		client:        client,
+		token:         token,
+		binary:        binary,
+		logf:          logf,
+		runCLI:        e2etest.TryRunCLI,
+		settle:        awaitWorkflowReady,
+		setupOpts:     opts,
+		actorGrants:   actorGrantsFromEnv(context.Background(), logf),
+		outsiderLogin: outsiderLogin,
+		ensured:       make(map[string]struct{}),
+		verifiedOrgs:  make(map[string]struct{}),
+	}, nil
 }
 
 func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) error {
@@ -199,9 +211,10 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 		return err
 	}
 
-	// Grant before install so the grants have the install and settle time
-	// to reach the dispatch side (see doc.go).
-	if err := e.grantActors(ctx, org, repoName); err != nil {
+	// Verify org-level actor access before install. Direct collaborator
+	// grants are not used: they vanish when resetRepo deletes the repo
+	// and re-adding them creates pending invitations (#7777).
+	if err := e.verifyActors(ctx, org); err != nil {
 		return err
 	}
 

@@ -233,7 +233,8 @@ func (s *stubClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Work
 
 func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 	sc := &stubClient{}
-	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NoError(t, err)
 	require.NotNil(t, e, "newRepoEnsurer should return a non-nil ensurer")
 
 	// Verify the returned value implements the interface.
@@ -243,7 +244,8 @@ func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {
 	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
 	sc := &stubClient{}
-	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NoError(t, err)
 	re, ok := e.(*repoEnsurer)
 	require.True(t, ok)
 	assert.Equal(t, "https://example.com/preset.yaml", re.setupOpts.ConfigPreset)
@@ -252,7 +254,8 @@ func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {
 func TestNewRepoEnsurer_ConfigPresetUnset(t *testing.T) {
 	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "")
 	sc := &stubClient{}
-	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NoError(t, err)
 	re, ok := e.(*repoEnsurer)
 	require.True(t, ok)
 	assert.Empty(t, re.setupOpts.ConfigPreset)
