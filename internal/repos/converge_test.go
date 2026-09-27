@@ -2357,7 +2357,7 @@ func TestConverge_GitLab_RepairsStalePollTokenUsage(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 
-	files, err := scaffold.CollectGitLabPerRepoInstallFiles(nil, "v2.5.0", "v2.5.0")
+	files, err := scaffold.CollectGitLabPerRepoInstallFiles(nil, nil, "v2.5.0", "v2.5.0")
 	if err != nil {
 		t.Fatalf("CollectGitLabPerRepoInstallFiles: %v", err)
 	}

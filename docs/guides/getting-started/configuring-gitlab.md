@@ -63,7 +63,7 @@ GitHub repositories use a different command (`fullsend github setup`). See
 > install` skip repairing schedules, so on a repo where
 > schedules were never created, expect any such re-run to fail even when
 > it's otherwise applying an unrelated change. Set manifest options like
-> `gitlab.runner_tags` (see [Runner Configuration](#runner-configuration)
+> `gitlab.agent_runner_tags` (see [Runner Configuration](#runner-configuration)
 > below) with `repos set-default` *before* your first install so they're
 > captured by that first, non-converge run instead of requiring a
 > converge-path re-run later. Rely on [Off-system
@@ -550,15 +550,54 @@ tagged jobs only match runners that carry those tags.
 The runner VM scripts default to tag `fullsend-gitlab-runner`. Set that
 tag in the manifest **before your first `repos install`** so the initial
 install already embeds it in the scaffold, with no second install
-needed:
+needed. `gitlab.agent_runner_tags` routes sandbox agent jobs;
+`gitlab.control_runner_tags` routes the poll job (and, later, the
+webhook dispatcher). The two fields are fully independent — there is no
+cross-fallback. An unset `gitlab.control_runner_tags` renders `tags: []`
+(untagged), **not** the agent tags; an unset `gitlab.agent_runner_tags`
+likewise renders `tags: []`. If your runner fleet is entirely
+tag-restricted with no untagged pool, set `gitlab.control_runner_tags`
+explicitly or the poll job will sit pending indefinitely:
 
 ```bash
-fullsend repos set-default gitlab.runner_tags fullsend-gitlab-runner
+fullsend repos set-default gitlab.agent_runner_tags fullsend-gitlab-runner
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
   --inference-project "<gcp-project>"
 ```
+
+To route the poll job to a different fleet than the sandbox agents (for
+example, a cheaper high-concurrency runner without sandbox capacity),
+set `gitlab.control_runner_tags` explicitly:
+
+```bash
+fullsend repos set-default gitlab.control_runner_tags fullsend-api
+```
+
+> **Migration note.** Upgrading an existing install that only had the
+> legacy `gitlab.runner_tags` key changes the poll job's default: the
+> value still resolves to `gitlab.agent_runner_tags` for rendering the
+> agent job, but the control-plane (poll) job is untagged unless
+> `gitlab.control_runner_tags` is set explicitly — an unset
+> `gitlab.control_runner_tags` renders `tags: []`, it does not inherit
+> the old fleet tag. This is an intentional, documented default, not a
+> behavior-preserving fallback: an instance whose runner fleet is
+> entirely tag-restricted with no untagged pool must set
+> `gitlab.control_runner_tags` explicitly before or immediately after
+> upgrading, or the poll job sits pending. `fullsend repos converge`
+> auto-remediates the rendered `fullsend-poll.yml` with a repair commit
+> for unpinned, vendored, or post-split-pinned installs; a
+> `gitlab.fullsend_ref` still pinned to a pre-split ref keeps the
+> leftover `__RUNNER_TAGS__` placeholder stamped with the agent tags, so
+> no drift is detected and no repair commit runs there — that install
+> keeps its old rendered tag until it moves past the pre-split pin. The
+> on-disk `gitlab.runner_tags` key is separately rewritten to
+> `gitlab.agent_runner_tags` the next time a manifest-writing command
+> runs (see [`repos
+> set-default`](../../cli/repos.md#repos-set-default) for exactly which
+> commands persist the rewrite); that key rewrite is unrelated to the
+> poll job's tag default described above.
 
 If the repo is already installed, setting the tag with `repos
 set-default` and re-running `fullsend repos install -f repos.yaml`
@@ -572,7 +611,11 @@ polling](#off-system-polling) for pickup instead of re-running install
 just to add the tag in that case.
 
 The target project (or its group) must have a runner registered with
-that tag — see [Assigning runners](#assigning-runners). For provisioning
+that tag — see [Assigning runners](#assigning-runners). If
+`gitlab.control_runner_tags` is set to a different value than
+`gitlab.agent_runner_tags` (as in the example above), the project also
+needs a runner registered for the control tag, or the poll job sits
+pending indefinitely. For provisioning
 your own runner VMs on OpenShift Virtualization or GCE instead of joining
 a hub, see the
 [GitLab Runner VM](https://github.com/fullsend-ai/fullsend/blob/main/hack/gitlab-runner-vm/README.md)
@@ -580,7 +623,8 @@ README.
 
 ### Assigning runners
 
-Setting `gitlab.runner_tags` only chooses which tag the scaffold embeds.
+Setting `gitlab.agent_runner_tags` / `gitlab.control_runner_tags` only
+chooses which tags the scaffold embeds.
 GitLab still has to **assign** a runner that carries that tag to the
 target project or a parent group, or the job never gets a runner.
 
@@ -602,8 +646,11 @@ Use the Fullsend runner hub on the **same GitLab instance** you pass to
   will not work.
 
 After the hub assigns a runner, confirm the project (or its group) lists
-a runner with the tag you set in `gitlab.runner_tags` (Settings → CI/CD
-→ Runners).
+a runner with the tag you set in `gitlab.agent_runner_tags` (Settings → CI/CD
+→ Runners). When `gitlab.control_runner_tags` differs from
+`gitlab.agent_runner_tags`, repeat this check for the control tag too —
+both tag sets need their own registered runner under Settings → CI/CD →
+Runners.
 
 ## Verifying the Installation
 
@@ -629,7 +676,11 @@ Confirm:
   `fullsend slash poll` and `fullsend event poll`, both active. On
   GitLab.com Free, the schedules may run at most 24 times per day; verify
   the observed cadence is acceptable, or use off-system `fullsend poll`
-  instead when five-minute pickup is required.
+  instead when five-minute pickup is required. If these schedules never
+  run, confirm a runner carrying `gitlab.control_runner_tags` is
+  registered under Settings → CI/CD → Runners — when that tag differs
+  from `gitlab.agent_runner_tags`, both need their own registered runner
+  (see [Assigning runners](#assigning-runners)).
 * **Access tokens** — On Premium/Ultimate or self-managed instances where
   project access tokens are available, Settings → Access Tokens shows
   `fullsend-bot`, `fullsend-poller`, `fullsend-analyst`, and

@@ -84,8 +84,8 @@ func formatRefAnnotation(ref, tag, forgeName string) string {
 // convergeGitLabRootCIFiles / StripObsoleteGitLabWorkflowRules /
 // StripObsoleteGitLabStages. Leftover fullsend-dispatch.yml from
 // installs predating #7707 is deleted by convergeContentDriftFiles.
-func collectGitLabUpgradeTemplates(runnerTags []string, targetRef, targetTag string) ([]forge.TreeFile, error) {
-	installFiles, err := scaffold.CollectGitLabPerRepoInstallFiles(runnerTags, targetRef, targetTag)
+func collectGitLabUpgradeTemplates(agentRunnerTags, controlRunnerTags []string, targetRef, targetTag string) ([]forge.TreeFile, error) {
+	installFiles, err := scaffold.CollectGitLabPerRepoInstallFiles(agentRunnerTags, controlRunnerTags, targetRef, targetTag)
 	if err != nil {
 		return nil, err
 	}

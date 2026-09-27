@@ -374,7 +374,9 @@ fullsend repos set-default github.mint_url ""   # removes the key
 | `github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
 | `gitlab.url` | URL | GitLab instance URL |
 | `gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold CI template files |
-| `gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
+| `gitlab.agent_runner_tags` | comma-separated tags | CI runner tags for routing agent (data-plane) jobs |
+| `gitlab.control_runner_tags` | comma-separated tags | CI runner tags for routing control-plane jobs (poll today). Independent of `gitlab.agent_runner_tags`; unset renders `tags: []` (untagged) |
+| `gitlab.runner_tags` | comma-separated tags | Deprecated alias for `gitlab.agent_runner_tags`. Still accepted; rewrites persist `agent_runner_tags`. On-disk persistence happens on `repos set-default`, `repos install` (only when it appends new manifest entries), and `repos uninstall` (only when it removes entries) — not `repos converge`, which resolves the alias in memory for rendering but does not rewrite `repos.yaml` |
 
 ### Flags
 
@@ -384,23 +386,50 @@ fullsend repos set-default github.mint_url ""   # removes the key
 
 ### Examples
 
-Set the GitLab runner tags:
+Set GitLab agent runner tags:
+
+```bash
+fullsend repos set-default gitlab.agent_runner_tags fullsend-agent
+```
+
+Set multiple agent runner tags:
+
+```bash
+fullsend repos set-default gitlab.agent_runner_tags "fullsend-agent,gpu-runner"
+```
+
+Route control-plane jobs (poll) onto a cheaper runner fleet.
+`gitlab.control_runner_tags` is independent of `gitlab.agent_runner_tags`;
+left unset, control-plane jobs render `tags: []` (untagged):
+
+```bash
+fullsend repos set-default gitlab.control_runner_tags fullsend-api
+```
+
+Remove agent runner tags:
+
+```bash
+fullsend repos set-default gitlab.agent_runner_tags ""
+```
+
+`gitlab.runner_tags` remains a deprecated alias that writes
+`gitlab.agent_runner_tags`:
 
 ```bash
 fullsend repos set-default gitlab.runner_tags fullsend-agent
 ```
 
-Set multiple runner tags:
-
-```bash
-fullsend repos set-default gitlab.runner_tags "fullsend-agent,gpu-runner"
-```
-
-Remove runner tags:
-
-```bash
-fullsend repos set-default gitlab.runner_tags ""
-```
+This alias rewrite is not scoped to `set-default`: `repos install` (only
+when it appends new manifest entries) and `repos uninstall` (only when it
+removes entries) also drop the deprecated `gitlab.runner_tags` key and
+persist `gitlab.agent_runner_tags`, even if you never ran `set-default`
+yourself. `repos converge` resolves the alias in memory for rendering
+scaffold files on every run, but it does not rewrite `repos.yaml` — a
+manifest that still has `gitlab.runner_tags` on disk keeps parsing
+correctly until a command that actually writes the manifest runs.
+Tooling that parses `repos.yaml` directly outside `fullsend`'s own
+commands should prefer `gitlab.agent_runner_tags` when present and treat
+`gitlab.runner_tags` as deprecated.
 
 Set the GitLab instance URL:
 

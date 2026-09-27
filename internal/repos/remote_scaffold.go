@@ -42,14 +42,14 @@ var scaffoldGitLabPaths = []struct {
 // templates — cross-version compatibility is best-effort.
 func FetchRemoteScaffold(ctx context.Context, ghClient forge.Client,
 	manifestRef, resolvedSHA, forgeName string,
-	runnerTags []string,
+	agentRunnerTags, controlRunnerTags []string,
 	vendored bool,
 ) (scaffold.InstallFiles, error) {
 	switch forgeName {
 	case ForgeGitHub:
 		return fetchRemoteGitHubScaffold(ctx, ghClient, manifestRef, resolvedSHA, vendored)
 	case ForgeGitLab:
-		return fetchRemoteGitLabScaffold(ctx, ghClient, manifestRef, resolvedSHA, runnerTags)
+		return fetchRemoteGitLabScaffold(ctx, ghClient, manifestRef, resolvedSHA, agentRunnerTags, controlRunnerTags)
 	default:
 		return nil, fmt.Errorf("unsupported forge %q for remote scaffold fetch", forgeName)
 	}
@@ -99,9 +99,10 @@ func fetchRemoteGitHubScaffold(ctx context.Context, client forge.Client,
 }
 
 func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
-	manifestRef, resolvedSHA string, runnerTags []string,
+	manifestRef, resolvedSHA string, agentRunnerTags, controlRunnerTags []string,
 ) (scaffold.InstallFiles, error) {
-	tagYAML := scaffold.FormatRunnerTags(runnerTags)
+	agentTagYAML := scaffold.FormatRunnerTags(agentRunnerTags)
+	controlTagYAML := scaffold.FormatRunnerTags(controlRunnerTags)
 	versionMarker := scaffold.FormatVersionMarker(resolvedSHA, manifestRef)
 	fullsendVersion := scaffold.ResolveFullsendVersion(resolvedSHA, manifestRef)
 
@@ -112,7 +113,12 @@ func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
 			return nil, fmt.Errorf("fetching GitLab template %s at %s: %w", sp.repoPath, manifestRef, err)
 		}
 
-		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
+		rendered := strings.ReplaceAll(string(content), "__AGENT_RUNNER_TAGS__", agentTagYAML)
+		rendered = strings.ReplaceAll(rendered, "__CONTROL_RUNNER_TAGS__", controlTagYAML)
+		// Older pinned refs still ship the pre-split placeholder; stamp
+		// remaining occurrences with agent tags so fetch does not leave
+		// a literal __RUNNER_TAGS__ in generated CI.
+		rendered = strings.ReplaceAll(rendered, "__RUNNER_TAGS__", agentTagYAML)
 		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
 		if sp.outPath == fullsendPipelineInclude && versionMarker != "" {
 			rendered = scaffold.InsertAfterDocStart(rendered, versionMarker)

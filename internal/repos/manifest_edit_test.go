@@ -923,7 +923,55 @@ func TestSetDefault_InvalidRef_GitLab(t *testing.T) {
 	}
 }
 
-func TestSetDefault_RunnerTags(t *testing.T) {
+func TestSetDefault_AgentRunnerTags(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	if err := SetDefault(manifestPath, "gitlab.agent_runner_tags", "fullsend-agent,gpu-runner"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "agent_runner_tags:") {
+		t.Error("expected agent_runner_tags in output")
+	}
+	if strings.Contains(content, "\n  runner_tags:") || strings.Contains(content, "\nrunner_tags:") {
+		t.Error("deprecated runner_tags should not be written")
+	}
+	if !strings.Contains(content, "fullsend-agent") {
+		t.Error("expected fullsend-agent in output")
+	}
+	if !strings.Contains(content, "gpu-runner") {
+		t.Error("expected gpu-runner in output")
+	}
+}
+
+func TestSetDefault_ControlRunnerTags(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	if err := SetDefault(manifestPath, "gitlab.control_runner_tags", "fullsend-api"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "control_runner_tags:") {
+		t.Error("expected control_runner_tags in output")
+	}
+	if !strings.Contains(content, "fullsend-api") {
+		t.Error("expected fullsend-api in output")
+	}
+}
+
+func TestSetDefault_RunnerTagsAliasWritesAgentKey(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
@@ -936,26 +984,23 @@ func TestSetDefault_RunnerTags(t *testing.T) {
 		t.Fatalf("reading manifest: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "runner_tags:") {
-		t.Error("expected runner_tags in output")
+	if !strings.Contains(content, "agent_runner_tags:") {
+		t.Error("alias should write agent_runner_tags")
 	}
-	if !strings.Contains(content, "fullsend-agent") {
-		t.Error("expected fullsend-agent in output")
-	}
-	if !strings.Contains(content, "gpu-runner") {
-		t.Error("expected gpu-runner in output")
+	if strings.Contains(content, "\n  runner_tags:") || strings.Contains(content, "\nrunner_tags:") {
+		t.Error("alias should not persist deprecated runner_tags key")
 	}
 }
 
-func TestSetDefault_RunnerTags_Remove(t *testing.T) {
+func TestSetDefault_AgentRunnerTags_Remove(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	if err := SetDefault(manifestPath, "gitlab.runner_tags", "fullsend-agent"); err != nil {
+	if err := SetDefault(manifestPath, "gitlab.agent_runner_tags", "fullsend-agent"); err != nil {
 		t.Fatalf("unexpected error setting tags: %v", err)
 	}
 
-	if err := SetDefault(manifestPath, "gitlab.runner_tags", ""); err != nil {
+	if err := SetDefault(manifestPath, "gitlab.agent_runner_tags", ""); err != nil {
 		t.Fatalf("unexpected error removing tags: %v", err)
 	}
 
@@ -963,8 +1008,54 @@ func TestSetDefault_RunnerTags_Remove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading manifest: %v", err)
 	}
-	if strings.Contains(string(data), "runner_tags") {
-		t.Error("expected runner_tags to be removed")
+	if strings.Contains(string(data), "agent_runner_tags") {
+		t.Error("expected agent_runner_tags to be removed")
+	}
+}
+
+func TestSetDefault_ControlRunnerTags_Remove(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	if err := SetDefault(manifestPath, "gitlab.control_runner_tags", "fullsend-api"); err != nil {
+		t.Fatalf("unexpected error setting tags: %v", err)
+	}
+
+	if err := SetDefault(manifestPath, "gitlab.control_runner_tags", ""); err != nil {
+		t.Fatalf("unexpected error removing tags: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+	if strings.Contains(string(data), "control_runner_tags") {
+		t.Error("expected control_runner_tags to be removed")
+	}
+}
+
+func TestSetDefault_AgentRunnerTags_RemoveOnEmptyManifest_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	// Clearing a key that was never set, on a manifest with no GitLab
+	// platform at all, must not create a spurious `gitlab:` block.
+	for _, key := range []string{
+		"gitlab.agent_runner_tags",
+		"gitlab.control_runner_tags",
+		"gitlab.runner_tags",
+	} {
+		if err := SetDefault(manifestPath, key, ""); err != nil {
+			t.Fatalf("%s: unexpected error clearing unset key: %v", key, err)
+		}
+
+		data, err := os.ReadFile(manifestPath)
+		if err != nil {
+			t.Fatalf("reading manifest: %v", err)
+		}
+		if strings.Contains(string(data), "gitlab:") {
+			t.Errorf("%s: clearing an unset key should not create a gitlab: block, got:\n%s", key, data)
+		}
 	}
 }
 
@@ -972,12 +1063,18 @@ func TestSetDefault_RunnerTags_RejectsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "gitlab.runner_tags", "tag1,,tag2")
-	if err == nil {
-		t.Fatal("expected error for empty tag segment")
-	}
-	if !strings.Contains(err.Error(), "must not be empty") {
-		t.Errorf("expected 'must not be empty' error, got: %v", err)
+	for _, key := range []string{
+		"gitlab.agent_runner_tags",
+		"gitlab.control_runner_tags",
+		"gitlab.runner_tags",
+	} {
+		err := SetDefault(manifestPath, key, "tag1,,tag2")
+		if err == nil {
+			t.Fatalf("expected error for empty tag segment on %s", key)
+		}
+		if !strings.Contains(err.Error(), "must not be empty") {
+			t.Errorf("%s: expected 'must not be empty' error, got: %v", key, err)
+		}
 	}
 }
 

@@ -165,10 +165,11 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 	// ReviewAppClientID are CLI flags on the install command and are
 	// not available in the status path, so value drift for
 	// GCP region and review client ID can only be
-	// detected by repos install, not repos status. RunnerTags come
-	// from the manifest's GitLab platform section.
+	// detected by repos install, not repos status. Agent/control
+	// runner tags come from the manifest's GitLab platform section.
 	dcfg := DriftConfig{
-		RunnerTags: gitlabRunnerTags(manifest),
+		AgentRunnerTags:   gitlabAgentRunnerTags(manifest),
+		ControlRunnerTags: gitlabControlRunnerTags(manifest),
 	}
 
 	results := make([]RepoStatus, len(resolved))

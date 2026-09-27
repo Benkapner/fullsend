@@ -239,7 +239,7 @@ func TestGitLabPerRepoFile_TrustCIServerCAScript(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_IncludesTrustScript(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	var found bool
 	for _, f := range files {
