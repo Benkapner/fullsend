@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -138,6 +139,22 @@ func TestVerifyActors_RoleLookupError(t *testing.T) {
 	require.ErrorContains(t, err, "checking organization roles for fstest-write in org")
 }
 
+func TestVerifyActors_RoleLookupForbiddenPointsAtAppPermission(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.OrgMemberships = map[string]forge.OrgMembership{
+		"org/fstest-write": {State: "active", Role: "member"},
+	}
+	fc.Errors["ListUserOrganizationRoles"] = fmt.Errorf("%w: 403", forge.ErrForbidden)
+	e := &repoEnsurer{
+		client:      fc,
+		logf:        t.Logf,
+		actorGrants: []actorGrant{{login: "fstest-write", permission: "write"}},
+	}
+	err := e.verifyActors(context.Background(), "org")
+	require.ErrorContains(t, err, "organization_custom_roles")
+	require.NotContains(t, err.Error(), "run hack/setup-new-e2e-org.sh")
+}
+
 func TestVerifyActors_OutsiderMustNotBeMember(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.OrgMemberships = map[string]forge.OrgMembership{
@@ -196,7 +213,9 @@ func TestActorGrantsFromEnv_UnsetPATsYieldNoGrants(t *testing.T) {
 
 func TestOutsiderLoginFromEnv_UnsetPATYieldsEmpty(t *testing.T) {
 	t.Setenv(outsiderPATEnv, "")
-	assert.Empty(t, outsiderLoginFromEnv(context.Background(), t.Logf))
+	login, err := outsiderLoginFromEnv(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, login)
 }
 
 func TestMatchesAllRepoRole(t *testing.T) {

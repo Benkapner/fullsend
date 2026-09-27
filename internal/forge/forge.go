@@ -988,5 +988,12 @@ type GitHubExtensions interface {
 
 	// ListUserOrganizationRoles returns the organization roles assigned
 	// to username in org, including predefined all-repository roles.
+	// Returns forge.ErrForbidden when the caller lacks the GitHub App
+	// "Organization custom roles" permission this endpoint requires —
+	// distinct from an unmet role prerequisite, which callers should not
+	// treat as fixable by re-running org setup. GitHub has been observed
+	// to deny this specific request with 404 rather than 403 for a
+	// missing-permission installation; implementations should treat both
+	// as forge.ErrForbidden.
 	ListUserOrganizationRoles(ctx context.Context, org, username string) ([]OrganizationRole, error)
 }

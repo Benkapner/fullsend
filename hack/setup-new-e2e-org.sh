@@ -130,6 +130,16 @@ else
   ORG="$1"
 fi
 
+# Validate against the known pool/STAGE org names. This script invites
+# fstest-write/fstest-triage and assigns them all-repository write/triage
+# roles; a mistyped or copy-pasted argument must not silently do that to
+# an unintended org.
+if ! [[ "${ORG}" =~ ^halfsend(-[0-9]+)?$ ]]; then
+  echo "Error: '${ORG}' is not a recognized pool/STAGE org name." >&2
+  echo "  Expected halfsend-NN (DEV pool) or halfsend (STAGE)." >&2
+  exit 1
+fi
+
 echo "==> Setting up e2e org: ${ORG}"
 echo
 
@@ -265,13 +275,21 @@ for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}
   echo "    OK: ${actor} is now an active org member"
 done
 
-# Verify outsider has no org membership.
-outsider_state=$(gh api "/orgs/${ORG}/memberships/${TEST_OUTSIDER_USER}" --jq '.state' 2>/dev/null || echo "none")
-if [[ "${outsider_state}" == "none" ]]; then
+# Verify outsider has no org membership. Fail closed: this is a security
+# invariant (#7777), not an advisory check. Any API response other than
+# the documented "not a member" 404 aborts the script — an auth error or
+# rate limit must not be silently reinterpreted as "none", and a real
+# membership (active or pending) must not fall through as just a WARNING.
+if outsider_membership_body=$(gh api "/orgs/${ORG}/memberships/${TEST_OUTSIDER_USER}" 2>&1); then
+  outsider_state=$(echo "${outsider_membership_body}" | jq -r '.state')
+  echo "    ERROR: ${TEST_OUTSIDER_USER} has org membership (state: ${outsider_state})." >&2
+  echo "    Remove from ${ORG} to preserve the outsider test model." >&2
+  exit 1
+elif echo "${outsider_membership_body}" | grep -q "HTTP 404"; then
   echo "    OK: ${TEST_OUTSIDER_USER} has no org membership"
 else
-  echo "    WARNING: ${TEST_OUTSIDER_USER} has org membership (state: ${outsider_state})."
-  echo "    Remove from ${ORG} to preserve the outsider test model."
+  echo "    ERROR: could not verify ${TEST_OUTSIDER_USER} membership status: ${outsider_membership_body}" >&2
+  exit 1
 fi
 echo
 
@@ -286,13 +304,36 @@ if ! assign_all_repo_role "${ORG}" "${TEST_TRIAGE_USER}" "triage"; then
   exit 1
 fi
 
-# Confirm outsider was not granted an all-repository role.
-outsider_roles=$(gh api "/orgs/${ORG}/organization-roles/users/${TEST_OUTSIDER_USER}" \
-  --jq '.roles[]?.name' 2>/dev/null || true)
-if echo "${outsider_roles}" | grep -Eq 'all_repo_(write|triage)|all.repository.(write|triage)'; then
-  echo "    WARNING: ${TEST_OUTSIDER_USER} has an all-repository role:"
-  echo "${outsider_roles}" | sed 's/^/      /'
-  echo "    Remove to preserve the outsider test model."
+# Confirm outsider was not granted an all-repository role. Fail closed,
+# same rationale as the membership check above: an API error must abort
+# rather than silently reporting an empty (and therefore "OK") role list.
+if outsider_roles_body=$(gh api "/orgs/${ORG}/organization-roles/users/${TEST_OUTSIDER_USER}" 2>&1); then
+  outsider_role_names=$(echo "${outsider_roles_body}" | jq -r '.roles[]?.name')
+elif echo "${outsider_roles_body}" | grep -q "HTTP 404"; then
+  outsider_role_names=""
+else
+  echo "    ERROR: could not check ${TEST_OUTSIDER_USER} organization roles: ${outsider_roles_body}" >&2
+  exit 1
+fi
+
+# Route names through normalize_role_name so a display-name variant (e.g.
+# "All-repository write") is caught the same way resolve_all_repo_role_id
+# already recognizes it for the assignment path above.
+outsider_has_all_repo_role=false
+while IFS= read -r role_name; do
+  [[ -z "${role_name}" ]] && continue
+  case "$(normalize_role_name "${role_name}")" in
+    all_repo_write | all_repo_triage | all_repository_write | all_repository_triage)
+      outsider_has_all_repo_role=true
+      ;;
+  esac
+done <<< "${outsider_role_names}"
+
+if "${outsider_has_all_repo_role}"; then
+  echo "    ERROR: ${TEST_OUTSIDER_USER} has an all-repository role:" >&2
+  echo "${outsider_role_names}" | sed 's/^/      /' >&2
+  echo "    Remove to preserve the outsider test model." >&2
+  exit 1
 else
   echo "    OK: ${TEST_OUTSIDER_USER} has no all-repository write/triage role"
 fi

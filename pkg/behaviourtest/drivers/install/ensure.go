@@ -89,12 +89,16 @@ type repoEnsurer struct {
 // and CLI binary. The ensurer shares the same credentials and
 // configuration as the per-repo install driver. BEHAVIOUR_CONFIG_PRESET
 // is applied onto the vendored-mode defaults when set.
+//
+// Returns an error if TEST_ACTOR_OUTSIDER_PAT is set but its login cannot
+// be resolved — outsider exclusion is a security invariant (#7777) and
+// must not silently fall back to skipping the check.
 func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
 	token, binary string,
 	logf func(string, ...any),
-) ensurer {
+) (ensurer, error) {
 	opts := common.DefaultGitHubSetupOpts()
 	opts.ConfigPreset = envConfigPreset()
 	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, opts, logf)
@@ -109,7 +113,11 @@ func newRepoEnsurerWithOpts(
 	token, binary string,
 	opts common.GitHubSetupOpts,
 	logf func(string, ...any),
-) ensurer {
+) (ensurer, error) {
+	outsiderLogin, err := outsiderLoginFromEnv(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("resolving outsider actor: %w", err)
+	}
 	return &repoEnsurer{
 		e2eCfg:        e2eCfg,
 		client:        client,
@@ -120,10 +128,10 @@ func newRepoEnsurerWithOpts(
 		settle:        awaitWorkflowReady,
 		setupOpts:     opts,
 		actorGrants:   actorGrantsFromEnv(context.Background(), logf),
-		outsiderLogin: outsiderLoginFromEnv(context.Background(), logf),
+		outsiderLogin: outsiderLogin,
 		ensured:       make(map[string]struct{}),
 		verifiedOrgs:  make(map[string]struct{}),
-	}
+	}, nil
 }
 
 func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) error {

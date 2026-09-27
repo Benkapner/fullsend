@@ -644,6 +644,7 @@ func TestRolePermissionsForLevel_E2e(t *testing.T) {
 	assert.Equal(t, "write", perms["members"])
 	assert.Equal(t, "read", perms["metadata"])
 	assert.Equal(t, "write", perms["organization_administration"])
+	assert.Equal(t, "write", perms["organization_custom_roles"])
 	assert.Equal(t, "write", perms["pull_requests"])
 	assert.Equal(t, "write", perms["secrets"])
 	assert.Equal(t, "write", perms["workflows"])

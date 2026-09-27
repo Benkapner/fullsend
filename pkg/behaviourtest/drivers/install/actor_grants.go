@@ -30,6 +30,12 @@ const outsiderPATEnv = "TEST_ACTOR_OUTSIDER_PAT"
 
 const setupOrgHint = "run hack/setup-new-e2e-org.sh to grant organization membership and the all-repository role"
 
+// missingOrgRolesPermissionHint is used instead of setupOrgHint when the
+// organization-roles API itself returns 403. Re-running the setup script
+// cannot fix a missing GitHub App permission (docs/guides/dev/e2e-testing.md,
+// "Permission rollout for the e2e App").
+const missingOrgRolesPermissionHint = "the e2e App installation on this org may be missing the organization_custom_roles permission; accept the pending permission update, see docs/guides/dev/e2e-testing.md"
+
 // actorGrantsFromEnv resolves the login behind each actor PAT that is set.
 // An actor whose login cannot be resolved is logged and skipped.
 func actorGrantsFromEnv(ctx context.Context, logf func(string, ...any)) []actorGrant {
@@ -49,18 +55,22 @@ func actorGrantsFromEnv(ctx context.Context, logf func(string, ...any)) []actorG
 	return grants
 }
 
-// outsiderLoginFromEnv resolves the outsider actor login when its PAT is set.
-func outsiderLoginFromEnv(ctx context.Context, logf func(string, ...any)) string {
+// outsiderLoginFromEnv resolves the outsider actor login when its PAT is
+// set. Unlike actorGrantsFromEnv, a resolution failure here is not
+// silently skipped: outsider exclusion is a security invariant (#7777),
+// and treating a transient lookup failure as "no outsider to check" would
+// disable that check for the whole ensurer lifetime (the org gets cached
+// as verified in verifyActors). The caller must fail closed instead.
+func outsiderLoginFromEnv(ctx context.Context) (string, error) {
 	pat := os.Getenv(outsiderPATEnv)
 	if pat == "" {
-		return ""
+		return "", nil
 	}
 	login, err := e2etest.NewLiveClient(pat).GetAuthenticatedUser(ctx)
 	if err != nil {
-		logf("[ensure] skipping outsider access check: resolving login: %v", err)
-		return ""
+		return "", fmt.Errorf("%s is set but resolving the outsider login failed: %w", outsiderPATEnv, err)
 	}
-	return login
+	return login, nil
 }
 
 // verifyActors checks that test actors inherit access from organization
@@ -124,6 +134,10 @@ func (e *repoEnsurer) verifyActorOrgAccess(ctx context.Context, gh forge.GitHubE
 
 	roles, err := gh.ListUserOrganizationRoles(ctx, org, g.login)
 	if err != nil {
+		if forge.IsForbidden(err) {
+			return fmt.Errorf("checking organization roles for %s in %s: %w (%s)",
+				g.login, org, err, missingOrgRolesPermissionHint)
+		}
 		return fmt.Errorf("checking organization roles for %s in %s: %w (%s)",
 			g.login, org, err, setupOrgHint)
 	}

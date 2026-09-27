@@ -4362,6 +4362,27 @@ func TestListUserOrganizationRoles(t *testing.T) {
 		client := newTestClient(t, srv)
 		_, err := client.ListUserOrganizationRoles(context.Background(), "org", "alice")
 		require.ErrorContains(t, err, "list organization roles for alice in org")
+		// A 403 here typically means the installation lacks the
+		// organization_custom_roles App permission, not a missing role —
+		// callers must be able to tell the two apart (forge.IsForbidden).
+		assert.True(t, forge.IsForbidden(err))
+	})
+
+	t.Run("not found is treated as forbidden", func(t *testing.T) {
+		// Observed in production (PR #7778 CI): GitHub returns 404, not
+		// 403, when the calling installation lacks organization_custom_roles
+		// on this endpoint family. Since callers only reach this method
+		// after confirming org membership, a 404 here is not a legitimate
+		// "user has no roles" response (that is 200 with an empty list).
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.ListUserOrganizationRoles(context.Background(), "org", "alice")
+		require.ErrorContains(t, err, "list organization roles for alice in org")
+		assert.True(t, forge.IsForbidden(err))
 	})
 
 	t.Run("decode error", func(t *testing.T) {
