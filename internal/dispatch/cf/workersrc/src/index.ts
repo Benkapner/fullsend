@@ -305,6 +305,16 @@ class GoWasm {
   private _consecutiveTimeouts = 0;
 
   /**
+   * Whether the currently-tracked `initPromise` has settled (resolved
+   * or rejected), as opposed to still being in flight. Starts `true`
+   * because there is no init in progress until the first `init()`
+   * call. Set `false` the moment a new `doInit()` is kicked off, and
+   * back to `true` once it settles. `markTimedOut()` consults this
+   * flag before clearing `initPromise` — see its comment for why.
+   */
+  private _initDone = true;
+
+  /**
    * Maximum number of consecutive timeout recoveries before the
    * instance reverts to permanent 503. Each recovery leaks one Go
    * WASM runtime (blocked goroutine + memory); capping the count
@@ -351,19 +361,32 @@ class GoWasm {
    * MAX_CONSECUTIVE_RECOVERIES consecutive timeouts, the instance
    * is considered exhausted and reverts to permanent 503.
    *
-   * Clears the cached initPromise so that init() re-runs doInit on
-   * the next call, booting a fresh Go runtime.
+   * Only clears the cached initPromise when the current init has
+   * actually settled (`_initDone`). If a recovery doInit() triggered
+   * by an earlier timeout is still in flight (e.g. still awaiting
+   * WebAssembly.instantiate), clearing initPromise here would orphan
+   * it: the next caller would see `initPromise === null` and start a
+   * *second*, concurrent doInit(), racing two Go runtimes to
+   * register mintcoreInitMint/mintcoreHandleFetch on globalThis. When
+   * the in-flight init is still pending, leave initPromise in place
+   * so later callers await that same recovery instead of starting a
+   * duplicate one; the counter/flag bookkeeping above still happens
+   * so recovery accounting and the exhaustion cap stay accurate.
    */
   markTimedOut(): void {
     this._needsRecovery = true;
     this._consecutiveTimeouts++;
-    this.initPromise = null;
+    if (this._initDone) {
+      this.initPromise = null;
+    }
   }
 
   /**
    * Initialize the Go WASM runtime with the given module and env.
    * Idempotent and concurrency-safe — concurrent callers share the
-   * same initialization Promise.
+   * same initialization Promise, and `_initDone` tracks whether that
+   * shared promise has settled so a timeout on some other in-flight
+   * request (see markTimedOut()) cannot orphan this one mid-boot.
    *
    * If the instance was previously marked as needing recovery (after
    * a timeout), init() re-runs doInit to boot a fresh Go runtime.
@@ -380,14 +403,21 @@ class GoWasm {
     if (!this.initPromise) {
       // Clear recovery flag — we are about to boot a fresh runtime.
       this._needsRecovery = false;
-      this.initPromise = this.doInit(wasmModule, env).catch((err) => {
-        // Only allow retry for non-config errors. Config errors are
-        // deterministic — retrying won't help until the env changes.
-        if (!(err instanceof ConfigError)) {
-          this.initPromise = null;
-        }
-        throw err;
-      });
+      this._initDone = false;
+      this.initPromise = this.doInit(wasmModule, env)
+        .then((result) => {
+          this._initDone = true;
+          return result;
+        })
+        .catch((err) => {
+          this._initDone = true;
+          // Only allow retry for non-config errors. Config errors are
+          // deterministic — retrying won't help until the env changes.
+          if (!(err instanceof ConfigError)) {
+            this.initPromise = null;
+          }
+          throw err;
+        });
     }
     return this.initPromise;
   }
