@@ -1,6 +1,7 @@
 # OpenAI Workload Identity
 
-Run GPT models on the [pi runtime](../../runtimes/pi.md) without storing an OpenAI API key
+Run GPT models on the [pi](../../runtimes/pi.md) or [codex](../../runtimes/codex.md) runtime
+without storing an OpenAI API key
 anywhere. Your GitHub Actions job proves who it is with its OIDC token, OpenAI hands back a
 short-lived token (minutes — it never outlives the GitHub token it came from, and an hour at most),
 fullsend renews it for as long as the run lasts, and the agent sandbox never sees any of it — it only
@@ -9,8 +10,10 @@ ever holds a placeholder that the OpenShell gateway swaps for the real token on 
 Setting it up is one visit to the OpenAI console — yours, or your IT administrator's — and one
 command per repository. No key is created, downloaded or rotated.
 
-> **GitHub Actions only.** The exchange needs the job's OIDC endpoint. For GitLab CI and for runs
-> on your own machine, use an API key in the runner environment — see [Run it locally](#run-it-locally).
+> **GitHub Actions only** for Workload Identity Federation. The exchange needs the job's OIDC
+> endpoint. If you cannot enrol a WIF provider, [Route C](#c-static-key-as-a-repository-secret) uses
+> a repository secret. For GitLab CI and for runs on your own machine, use an API key in the runner
+> environment — see [Run it locally](#run-it-locally).
 
 ## What you end up with
 
@@ -25,7 +28,8 @@ They are not secrets: on their own they grant nothing.
 
 You also need an OpenAI **project** to bill the runs to (ideally a dedicated one with a budget
 alert), and the repository must be enrolled per-repo on a fullsend release that includes this
-feature (one that includes fullsend PR #6695; check the release notes).
+feature — PR #6695 for pi, or the release that carries the codex runtime and `CODEX_VERSION`
+(#6920) if you are putting an agent on codex; check the release notes.
 
 ## Which route are you on?
 
@@ -45,8 +49,13 @@ route A; if the page or the setting is not there, you are on route B and someone
   (Organization → Projects). You send one request per repository and receive the three
   identifiers back. Do [step 1](#1-see-what-your-repository-actually-claims-both-routes), then
   [B2](#b2-send-the-request-route-b) and [B3](#b3-record-what-you-get-back-route-b).
+- **Route C — static key as a repository secret.** Use this when you cannot create or request an
+  OpenAI WIF identity provider (no admin route, no ETA). Skip steps 1–4 and follow
+  [C. Static key as a repository secret](#c-static-key-as-a-repository-secret), then
+  [step 5](#5-pick-a-gpt-model-for-an-agent). WIF stays the recommended route; this one stores a
+  long-lived key.
 
-Either way, steps 4 and onwards are the same, and
+On routes A and B, steps 4 and onwards are the same.
 [`fullsend inference openai`](../../cli/inference.md#inference-openai) does the paperwork on both:
 `request` computes the provider and mapping values from the repository name (route A: what to type
 into the console; route B: the ticket to send), and `import` records the identifiers you end up with.
@@ -254,6 +263,38 @@ first run's exchange still returns 4xx, the assertions and the claims differ som
 character for character with the administrator); a `repository` that is not in any mapping is the
 usual cause when a second repository is enrolled.
 
+## C. Static key as a repository secret
+
+Use this only when routes A and B are unavailable. It stores a long-lived OpenAI API key as a GitHub
+Actions secret named `FULLSEND_OPENAI_API_KEY` (not `OPENAI_API_KEY`, so an unrelated repository
+secret is never picked up by accident). Workflows export it to the runner as `OPENAI_API_KEY`; the
+runner uses it only when the three `FULLSEND_OPENAI_*` WIF identifiers are unset. A partial trio still
+errors — a typo cannot fall through to the key. When the trio and the secret are both set, WIF wins
+and the secret is unused.
+
+1. If the repository was installed or its workflow files were last synced before this feature shipped,
+   re-run `fullsend github setup <owner/repo>` (or `fullsend repos install` for a manifest-managed
+   repository) first — the reusable workflow's caller shim has to forward the secret before setting it
+   does anything.
+2. Create an API key in the OpenAI project the runs should be billed to.
+3. Set it on the repository:
+   ```bash
+   fullsend github set <owner/repo> FULLSEND_OPENAI_API_KEY <value>
+   ```
+   Or paste it in Settings → Secrets and variables → Actions → Secrets as `FULLSEND_OPENAI_API_KEY`.
+4. Pick `openai/<model>` for an agent ([step 5](#5-pick-a-gpt-model-for-an-agent)) and trigger a run.
+5. Expect the warning `static OPENAI_API_KEY in CI; prefer Workload Identity Federation` in the run
+   log. `fullsend inference openai status <owner/repo>` reports the same source and that WIF remains
+   preferred.
+
+What this trades away: a long-lived key stored as a GitHub secret, no per-repository trust boundary
+(any workflow in the repository with access to secrets can read it), and manual rotation. What does
+not change: the key never enters the sandbox, only the endpoint-bound placeholder does; egress stays
+`POST /v1/responses` on `api.openai.com`; the value is masked and reserved through `oidcDenyKeys`.
+
+**GitLab CI.** A masked `OPENAI_API_KEY` CI/CD variable already works on the same runner path — GitLab
+injects CI variables into the job environment, so no extra forwarding is required.
+
 ## 4. Tell fullsend the three identifiers
 
 > **Shortcut.** `fullsend inference openai import` writes the same block from a reply JSON file or
@@ -305,16 +346,22 @@ workflows pass them to every agent run, and when any of them is set they replace
 
 ## 5. Pick a GPT model for an agent
 
-In `.fullsend/config.yaml`, put the agent on pi with an OpenAI model — or run
-`fullsend agent set code --fullsend-dir .fullsend --runtime pi --model openai/gpt-5.6-luna`, which
-writes the same entry after validating it:
+In `.fullsend/config.yaml`, put the agent on a runtime that serves OpenAI models — `pi` or
+`codex` — with an OpenAI model, or run
+`fullsend agent set code --fullsend-dir .fullsend --runtime pi --model openai/gpt-5.6-luna`
+(swap in `--runtime codex` for codex), which writes the same entry after validating it:
 
 ```yaml
 agents:
   - name: code
-    runtime: pi
+    runtime: pi # or codex
     model: openai/gpt-5.6-luna
 ```
+
+The credential path below is identical either way: the same run-scoped provider carries the token,
+and only how the agent process reads it differs. On codex the model must be an OpenAI id — the
+Claude aliases are refused — and a repo-wide default can be set once with `FULLSEND_CODEX_MODEL`
+([Codex › Models](../../runtimes/codex.md#models)).
 
 The agent's harness must also declare the provider:
 
@@ -323,12 +370,17 @@ providers:
   - openai
 ```
 
-A custom agent (a `source:` entry) declares it on its own harness; the built-in fleet agents gain
-it with the GPT pilot in the fullsend-ai/agents repository. `providers/openai.yaml` arrives with
+Declaring it costs nothing on runs that do not use it: the run-scoped provider is created only
+when the selected runtime will actually call OpenAI (codex, or pi on an `openai/` model), so the
+same harness can carry the provider for every runtime — a Vertex run notes that the declared
+provider was skipped and needs no OpenAI credential.
+
+A custom agent (a `source:` entry) declares it on its own harness; the built-in fleet agents declare
+it from the first fullsend release after v0.43.0. `providers/openai.yaml` arrives with
 the other upstream defaults when a run prepares its workspace, and both it and the matching profile
 are built into fullsend — a local run needs nothing on disk, and you commit neither. The profile lets the sandbox reach `api.openai.com` for the Responses API and
-nothing else. Use a model id from pi's OpenAI catalog
-(`pi --list-models openai` in the sandbox image prints it); `gpt-5.6-luna` is the inexpensive
+nothing else. Use a model id from OpenAI's catalog — on pi, `pi --list-models openai` in the sandbox image
+prints the ones it knows; `gpt-5.6-luna` is the inexpensive
 reasoning model and `gpt-5.6-sol` the capable one, and a model the mapping's project cannot use is
 refused at the first call, not at setup. A sensible starting point is to put GPT on the agents that
 execute work (for example `code`, `fix` or `triage`) and keep the stages that decide what happens
@@ -351,14 +403,16 @@ OPENAI_API_KEY=sk-...
 
 ```bash
 fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
-  --env-file fullsend-openai.env --env-file fullsend-triage.env ...
+  --forge github --env-file fullsend-openai.env --env-file fullsend-triage.env ...
 ```
+
+`--runtime codex` takes the same key and the same harness requirements.
 
 The key still goes through the gateway placeholder, so the sandbox does not see it, and the
 provider it lands in expires an hour after the run ends at the latest. A committed `inference.openai`
 block (step 4) is not used on your machine while `OPENAI_API_KEY` is set — there is no GitHub OIDC
 endpoint to exchange with — so the same checkout works in CI and locally. See
-[Running agents locally](../user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-only).
+[Running agents locally](../user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex).
 
 The fleet's agents already declare a sandbox policy. If you run a **custom harness**, give it one
 too — `policy: policies/base.yaml`, the fleet's base policy from the agents repository (it sets
@@ -392,7 +446,7 @@ agent starts and names the rule.
 
 | What you see | What to do |
 |---|---|
-| `no OpenAI credential: set FULLSEND_OPENAI_AUDIENCE, …` | Run step 4 (or add the three variables), or bump the workflow pin to a release that includes this feature. |
+| `no OpenAI credential: set FULLSEND_OPENAI_AUDIENCE, …` | Run step 4 (or add the three variables), or set the `FULLSEND_OPENAI_API_KEY` repository secret ([Route C](#c-static-key-as-a-repository-secret)), or bump the workflow pin to a release that includes this feature. |
 | `OpenAI WIF is partially configured: missing …` / `inference.openai in config.yaml is partially configured` | One value is empty in the place you chose (variables, or `config.yaml`). Fill it in — fullsend will not silently fall back to an API key, and it does not mix the two sources. |
 | `… the job has no GitHub OIDC endpoint` | This is not a GitHub Actions job, or `permissions: id-token: write` is missing from the workflow. On GitLab CI or locally, use an API key. |
 | `OpenAI WIF exchange failed: … token endpoint returned 4xx` | The mapping does not match this run. Check the audience first (one character off is enough), then compare the claims from step 1 with the mapping's assertions (route B: with the administrator). Works in one repository but not another → that repository has no mapping yet. |
@@ -409,6 +463,7 @@ agent starts and names the rule.
 ## Related
 
 - [pi runtime](../../runtimes/pi.md) — models, providers and behaviour differences
+- [codex runtime](../../runtimes/codex.md) — the other runtime that serves OpenAI models
 - [Running agents locally](../user/running-agents-locally.md)
 - [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md) — design and accepted risks
 - [OpenAI: Workload identity federation for GitHub Actions](https://developers.openai.com/api/docs/guides/workload-identity-federation/github-actions)

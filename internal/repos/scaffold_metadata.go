@@ -18,13 +18,38 @@ type ScaffoldPRMetadata struct {
 }
 
 const (
+	// gettingStartedCatalog documents the primary /fs-* slash commands so users
+	// discover them at their first touchpoint — the fresh-install PR. It mirrors
+	// the per-org onboarding catalog (GETTING_STARTED_SECTION in
+	// scripts/reconcile-repos.sh); both surfaces are independently pinned to
+	// dispatch.yml's routing (per-repo by TestPerRepoOnboardingCatalog, per-org by
+	// TestReconcileReposSlashCommandCatalog) so they cannot drift apart. See #2165.
+	gettingStartedCatalog = "\n\n## Getting started\n\n" +
+		"Once this PR is merged, interact with fullsend by commenting one of these " +
+		"slash commands. The supported target (issue and/or pull request) is shown for each:\n\n" +
+		"- `/fs-triage` (issue or PR) — Invoke the [triage](https://fullsend.sh/docs/agents/triage) agent to categorize, label, and assess an issue.\n" +
+		"- `/fs-code` (issue only) — Invoke the [code](https://fullsend.sh/docs/agents/code) agent to implement a fix for an issue and open a PR.\n" +
+		"- `/fs-review` (PR only) — Invoke the [review](https://fullsend.sh/docs/agents/review) agent to review a pull request.\n" +
+		"- `/fs-fix` (PR only) — Invoke the [fix](https://fullsend.sh/docs/agents/fix) agent to address review feedback on a pull request.\n" +
+		"- `/fs-retro` (issue or PR) — Invoke the [retro](https://fullsend.sh/docs/agents/retro) agent to analyze completed work and propose improvements.\n" +
+		"- `/fs-prioritize` (issue or PR) — Invoke the [prioritize](https://fullsend.sh/docs/agents/prioritize) agent to score an issue for project board ranking."
+
 	// defaultScaffoldPRBody is the PR body for fresh installations.
 	// Only used within this package.
 	defaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
-		"Merge this PR to activate fullsend workflows."
+		"Merge this PR to activate fullsend workflows." + gettingStartedCatalog
 
-	// DefaultScaffoldBranch is the branch name for fresh installations.
+	// DefaultScaffoldBranch is the branch name for fresh installations. It
+	// is also reused for uninstall PR delivery (see UninstallPRMetadata)
+	// since already-deployed per-repo shims only exclude this branch name
+	// from triggering the fullsend dispatch job.
 	DefaultScaffoldBranch = "fullsend/scaffold-install"
+
+	// defaultUninstallPRBody is the PR body for uninstall file removals.
+	defaultUninstallPRBody = "This PR removes the fullsend scaffold files from this repository.\n\n" +
+		"Merge this PR to complete the workflow teardown. Repository variables " +
+		"and secrets are removed separately by `repos uninstall` and do not " +
+		"require this PR to merge first."
 
 	// ScaffoldBumpBranchPrefix is the branch prefix for version upgrades.
 	ScaffoldBumpBranchPrefix = "fullsend/bump-"
@@ -70,6 +95,37 @@ func BuildScaffoldPRMetadata(ctx context.Context, client forge.Client,
 		oldVersion = detectExistingVersion(ctx, client, owner, repo)
 	}
 	return upgradeMetadata(oldVersion, upstreamTag)
+}
+
+// UninstallPRMetadata returns commit/PR metadata for scaffold file removal.
+//
+// Branch intentionally reuses DefaultScaffoldBranch rather than a distinct
+// uninstall branch name: already-deployed per-repo shims (see
+// internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml and
+// shim-workflow-call.yaml) only skip dispatch for
+// head.ref == "fullsend/scaffold-install". A separate uninstall branch name
+// would fail open and let the teardown PR trigger the fullsend dispatch job
+// (with live WIF/mint credentials) against itself.
+//
+// Known limitation: because install and uninstall share a branch, an
+// in-flight PR from one operation is not closed or relabeled when the other
+// operation runs against the same repo (closeStaleScaffoldPRs in
+// internal/layers/commit.go skips the current branch, and
+// commitBranchAndPR treats an "already exists" PR as success without
+// updating its title or body). If `repos install`/`converge` and
+// `repos uninstall` race on the same repo, the surviving PR's title and body
+// can describe the opposite of what its diff now does (e.g., an
+// "initialize fullsend" PR whose diff deletes the workflow files, or vice
+// versa). This is accepted for now — see docs/cli/repos.md's `repos
+// uninstall` section — rather than adding branch-content detection or a
+// forge "update PR title/body" call.
+func UninstallPRMetadata() ScaffoldPRMetadata {
+	return ScaffoldPRMetadata{
+		CommitMsg: "chore: remove fullsend workflow",
+		PRTitle:   "chore: remove fullsend workflow",
+		PRBody:    defaultUninstallPRBody,
+		Branch:    DefaultScaffoldBranch,
+	}
 }
 
 // freshInstallMetadata returns metadata for a fresh per-repo installation.
@@ -140,7 +196,7 @@ func RuntimeSection(runtime string) string {
 	return "\n\n## Runtime\n\n" +
 		fmt.Sprintf("Agents in this repository run on **%s**", runtime) +
 		" (`runtime:` in `.fullsend/config.yaml`). To change it later, edit that key, " +
-		"re-run `fullsend github setup <owner/repo> --runtime <claude|pi>`, or override a " +
+		"re-run `fullsend github setup <owner/repo> --runtime <claude|pi|codex>`, or override a " +
 		"single run with `fullsend run --runtime`. To put one agent on another runtime or model, " +
 		"set runtime/model/effort on its `agents:` entry in the same file (`fullsend agent set <name> --runtime pi`). " +
 		"See https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md."

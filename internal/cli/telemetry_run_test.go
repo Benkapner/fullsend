@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -21,9 +23,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
+	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func TestTelemetryExitCode(t *testing.T) {
@@ -282,6 +287,33 @@ func TestChildScriptEnv_StripsOIDCVars(t *testing.T) {
 	assert.True(t, hasRunner, "RunnerEnv var must survive")
 }
 
+func TestChildScriptEnv_StripsWorkflowToken(t *testing.T) {
+	t.Setenv(workflowTokenEnv, "ghs_workflow_token_value_xx")
+	t.Setenv("SAFE_VAR", "should-survive")
+
+	env := childScriptEnv(map[string]string{"RUNNER_VAR": "present"}, "")
+
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key = e[:i]
+		}
+		assert.NotEqual(t, workflowTokenEnv, key, "GH_WORKFLOW_TOKEN must be stripped from child script env")
+	}
+
+	hasSafe, hasRunner := false, false
+	for _, e := range env {
+		if e == "SAFE_VAR=should-survive" {
+			hasSafe = true
+		}
+		if e == "RUNNER_VAR=present" {
+			hasRunner = true
+		}
+	}
+	assert.True(t, hasSafe, "non-denied process env var must survive")
+	assert.True(t, hasRunner, "RunnerEnv var must survive")
+}
+
 // TestChildScriptEnv_StripsOIDCFromRunnerEnv verifies that OIDC credential
 // vars injected via RunnerEnv are also stripped (#5832).
 func TestChildScriptEnv_StripsOIDCFromRunnerEnv(t *testing.T) {
@@ -313,6 +345,43 @@ func TestChildScriptEnv_StripsOIDCFromRunnerEnv(t *testing.T) {
 		}
 	}
 	assert.True(t, hasLegit, "non-OIDC RunnerEnv var must survive")
+}
+
+// TestChildScriptEnv_PinsGitLabRoleRoutingKeys verifies the auth-bypass fix
+// from the review on PR #7510: a harness runner_env/env.runner entry for a
+// GitLab role-routing key must not shadow the value
+// applyGitLabRoleSelection already set in the process environment, since
+// exec.Cmd resolves duplicate env keys last-wins.
+func TestChildScriptEnv_PinsGitLabRoleRoutingKeys(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "process-selected-token")
+	t.Setenv(forge.SecretForgeToken, "process-shared-token")
+	t.Setenv(forge.SecretGitLabAnalystToken, "process-analyst-token")
+
+	runnerEnv := map[string]string{
+		"GITLAB_TOKEN":                 "runner-env-override",
+		forge.SecretForgeToken:         "runner-env-override",
+		forge.SecretGitLabAnalystToken: "runner-env-override",
+		"LEGIT_VAR":                    "allowed",
+	}
+
+	env := childScriptEnv(runnerEnv, "")
+
+	assert.Equal(t, "process-selected-token", envLast(env, "GITLAB_TOKEN"), "runner_env must not override GITLAB_TOKEN")
+	assert.Equal(t, "process-shared-token", envLast(env, forge.SecretForgeToken), "runner_env must not override FULLSEND_FORGE_TOKEN")
+	assert.Equal(t, "process-analyst-token", envLast(env, forge.SecretGitLabAnalystToken), "runner_env must not override a FULLSEND_GITLAB_* secret")
+	assert.Equal(t, "allowed", envLast(env, "LEGIT_VAR"), "non-pinned runner_env entries still apply")
+}
+
+// TestChildScriptEnv_DoesNotPinPushToken verifies the GitHub coder-remint
+// path (syncRunnerEnvTokens, #7231) still works: PUSH_TOKEN is deliberately
+// excluded from the GitLab role-routing pin because runner_env must be able
+// to override a stale process-env PUSH_TOKEN after a remint.
+func TestChildScriptEnv_DoesNotPinPushToken(t *testing.T) {
+	t.Setenv("PUSH_TOKEN", "stale-process-token")
+
+	env := childScriptEnv(map[string]string{"PUSH_TOKEN": "reminted-token"}, "")
+
+	assert.Equal(t, "reminted-token", envLast(env, "PUSH_TOKEN"), "runner_env must still be able to override PUSH_TOKEN (#7231)")
 }
 
 func TestAgentSpanStartAttrs(t *testing.T) {
@@ -356,6 +425,7 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.Int("iteration", 2))
 	assert.Contains(t, a, attribute.Int("exit_code", 0))
 	assert.Contains(t, a, attribute.String("gen_ai.system", "anthropic"))
+	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
 	assert.Contains(t, a, attribute.String("fullsend.runtime", "claude"))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
@@ -378,8 +448,60 @@ func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
 	m.ReasoningTokens = 42
 
 	a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
+	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 42),
 		"reasoning_tokens attribute should be present when non-zero")
+}
+
+func TestAgentSpanEndAttrs_IdentityTuple(t *testing.T) {
+	// The identity tuple is (fullsend.runtime, provider, gen_ai.request.model).
+	// Claude and Pi on the same Anthropic model share the request model and
+	// differ in runtime; Pi's provider is the Vertex serving endpoint, not
+	// the runtime name. Other Pi endpoints must report that endpoint (#7245).
+	for _, tc := range []struct {
+		runtime  string
+		provider string
+		model    string
+	}{
+		{runtime: "claude", provider: "anthropic", model: "claude-sonnet-5"},
+		{runtime: "pi", provider: "anthropic-vertex", model: "claude-sonnet-5"},
+		{runtime: "pi", provider: "xai-vertex", model: "xai/grok-4.6"},
+		{runtime: "pi", provider: "google-vertex", model: "gemini-3.8-flash"},
+		{runtime: "pi", provider: "openai", model: "gpt-5.6-luna"},
+	} {
+		t.Run(tc.runtime+"/"+tc.provider+"/"+tc.model, func(t *testing.T) {
+			m := agentruntime.RunMetrics{Model: tc.model}
+			a := agentSpanEndAttrs(1, 0, tc.provider, tc.runtime, &m)
+			assert.Contains(t, a, attribute.String("fullsend.runtime", tc.runtime))
+			assert.Contains(t, a, attribute.String("gen_ai.system", tc.provider))
+			assert.Contains(t, a, attribute.String("gen_ai.provider.name", tc.provider))
+			assert.Contains(t, a, attribute.String("gen_ai.request.model", tc.model))
+			assert.NotContains(t, a, attribute.String("gen_ai.system", "pi"))
+		})
+	}
+}
+
+// TestAgentSpanEndAttrs_GenAISystemForWiring exercises the producer-to-
+// consumer path run.go actually uses: GenAISystemFor resolves the provider,
+// and that value (not rt.System()) is what agentSpanEndAttrs stamps onto
+// gen_ai.system / gen_ai.provider.name. TestAgentSpanEndAttrs_IdentityTuple
+// only checks agentSpanEndAttrs in isolation with hand-picked provider
+// strings, so it would not catch a regression where run.go goes back to
+// passing rt.System() ("pi") instead of calling GenAISystemFor (#7245).
+func TestAgentSpanEndAttrs_GenAISystemForWiring(t *testing.T) {
+	t.Setenv("FULLSEND_PI_PROVIDER", "")
+
+	rt := agentruntime.PiRuntime{}
+	genAISystem := agentruntime.GenAISystemFor(rt, "claude-sonnet-5", "", nil)
+	require.Equal(t, "anthropic-vertex", genAISystem,
+		"GenAISystemFor must resolve the serving endpoint via ProviderFor, not fall back to System()")
+
+	m := agentruntime.RunMetrics{Model: "claude-sonnet-5"}
+	a := agentSpanEndAttrs(1, 0, genAISystem, rt.Name(), &m)
+	assert.Contains(t, a, attribute.String("gen_ai.system", "anthropic-vertex"))
+	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic-vertex"))
+	assert.NotContains(t, a, attribute.String("gen_ai.system", "pi"),
+		"a regression to rt.System() would stamp the runtime name instead of the resolved provider")
 }
 
 func TestAggregateRunMetrics(t *testing.T) {
@@ -392,6 +514,10 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m1.CacheCreationInputTokens, m1.CacheReadInputTokens = 1000, 5000
 	m1.ToolCalls.Store(3)
 	m1.Model = "claude-opus-4-6"
+	m1.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6":   {Requests: 1, InputTokens: 10, CostUSD: 0.06},
+		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 4, CostUSD: 0.04},
+	}
 	aggregateRunMetrics(&agg, &m1, 1)
 
 	var m2 agentruntime.RunMetrics
@@ -400,6 +526,9 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m2.ReasoningTokens = 15
 	m2.CacheCreationInputTokens, m2.CacheReadInputTokens = 200, 900
 	m2.ToolCalls.Store(2)
+	m2.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6": {Requests: 1, InputTokens: 4, CostUSD: 0.05},
+	}
 	aggregateRunMetrics(&agg, &m2, 2)
 
 	assert.Equal(t, 7, agg.NumTurns)
@@ -412,6 +541,55 @@ func TestAggregateRunMetrics(t *testing.T) {
 	assert.Equal(t, 5, agg.ToolCalls)
 	assert.Equal(t, 2, agg.Iterations)
 	assert.Equal(t, "claude-opus-4-6", agg.Model, "last non-empty model is retained")
+	assert.Equal(t, map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6":   {Requests: 2, InputTokens: 14, CostUSD: 0.11},
+		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 4, CostUSD: 0.04},
+	}, agg.PerModelUsage, "sub-agent usage accumulates across retry iterations like the totals")
+
+	var noSubagents aggregateMetrics
+	var m3 agentruntime.RunMetrics
+	m3.TotalCostUSD = 0.01
+	aggregateRunMetrics(&noSubagents, &m3, 1)
+	assert.Nil(t, noSubagents.PerModelUsage, "runtimes without sub-agents add no breakdown key to metrics.json")
+}
+
+// TestAggregateRunMetrics_MixedIterations is the invariant that makes
+// per_model_usage readable: it must sum to the run totals. A retry run
+// where only one iteration dispatched sub-agents is the case that breaks
+// if an iteration reports totals without also reporting its own entry, so
+// the pi runtime folds the parent entry on every iteration.
+func TestAggregateRunMetrics_MixedIterations(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Iteration 1 dispatched two children.
+	var m1 agentruntime.RunMetrics
+	m1.TotalCostUSD = 0.30
+	m1.InputTokens, m1.OutputTokens = 300, 30
+	m1.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6":   {Requests: 1, InputTokens: 100, OutputTokens: 10, CostUSD: 0.10},
+		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 200, OutputTokens: 20, CostUSD: 0.20},
+	}
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2 is a retry that dispatched nothing — but its own tokens
+	// are still in the totals, so they must be in the breakdown too.
+	var m2 agentruntime.RunMetrics
+	m2.TotalCostUSD = 0.07
+	m2.InputTokens, m2.OutputTokens = 70, 7
+	m2.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6": {Requests: 1, InputTokens: 70, OutputTokens: 7, CostUSD: 0.07},
+	}
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	var sum agentruntime.ModelUsage
+	for _, u := range agg.PerModelUsage {
+		sum.Add(u)
+	}
+	assert.InDelta(t, agg.TotalCostUSD, sum.CostUSD, 1e-9, "the breakdown sums to the run cost")
+	assert.Equal(t, agg.TokenUsage.Input, sum.InputTokens, "and to the run's input tokens")
+	assert.Equal(t, agg.TokenUsage.Output, sum.OutputTokens)
+	assert.Equal(t, 2, agg.PerModelUsage["anthropic-vertex/claude-opus-4-6"].Requests,
+		"the parent contributes one entry per iteration, dispatching or not")
 }
 
 func testTracer() trace.Tracer {
@@ -432,6 +610,7 @@ func TestResolveTraceIdentity_AdoptsSampledParent(t *testing.T) {
 	assert.Equal(t, trace.SpanKindConsumer, tid.SpanKind, "remote parent → Consumer kind")
 	assert.True(t, strings.HasSuffix(tid.Traceparent, "-01"), "sampled flag preserved")
 	assert.True(t, strings.HasPrefix(tid.Traceparent, "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-"), "trace ID in propagated traceparent")
+	assert.True(t, tid.PropagatedFlags.IsSampled(), "sampled inbound keeps sampled flags")
 }
 
 func TestResolveTraceIdentity_PreservesUnsampledFlag(t *testing.T) {
@@ -445,6 +624,7 @@ func TestResolveTraceIdentity_PreservesUnsampledFlag(t *testing.T) {
 	assert.True(t, sc.IsSampled(), "local span still sampled for file exporter")
 	assert.True(t, strings.HasSuffix(tid.Traceparent, "-00"), "propagated traceparent must preserve unsampled flag")
 	assert.Equal(t, trace.SpanKindConsumer, tid.SpanKind)
+	assert.False(t, tid.PropagatedFlags.IsSampled(), "unsampled inbound must not re-advertise sampled")
 }
 
 func TestResolveTraceIdentity_NoInbound(t *testing.T) {
@@ -455,6 +635,65 @@ func TestResolveTraceIdentity_NoInbound(t *testing.T) {
 	require.True(t, sc.IsValid(), "root span must be valid")
 	assert.True(t, strings.HasSuffix(tid.Traceparent, "-01"), "fresh trace is sampled")
 	assert.Equal(t, trace.SpanKindInternal, tid.SpanKind, "no remote parent → Internal kind")
+	assert.True(t, tid.PropagatedFlags.IsSampled(), "fresh local trace is sampled")
+}
+
+func TestIterationTraceparent_PreservesUnsampledFlag(t *testing.T) {
+	const inbound = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-00"
+	tracer := testTracer()
+	tid := resolveTraceIdentity(context.Background(), tracer, inbound, "", nil)
+	defer tid.RootSpan.End()
+
+	_, agentSpan := tracer.Start(tid.Ctx, "agent")
+	defer agentSpan.End()
+
+	got := iterationTraceparent(agentSpan, tid.PropagatedFlags)
+	require.NotEmpty(t, got)
+	assert.True(t, strings.HasSuffix(got, "-00"), "runtime TRACEPARENT must keep the inbound unsampled flag, not AlwaysSample")
+	parts := strings.Split(got, "-")
+	require.Len(t, parts, 4)
+	assert.Equal(t, "4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d", parts[1], "same trace ID")
+	agentID := agentSpan.SpanContext().SpanID().String()
+	rootID := tid.RootSpan.SpanContext().SpanID().String()
+	assert.Equal(t, agentID, parts[2], "span ID must be the agent span, not the run root")
+	assert.NotEqual(t, agentID, rootID)
+}
+
+func TestIterationTraceparent_SampledParent(t *testing.T) {
+	const inbound = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+	tracer := testTracer()
+	tid := resolveTraceIdentity(context.Background(), tracer, inbound, "", nil)
+	defer tid.RootSpan.End()
+
+	_, agentSpan := tracer.Start(tid.Ctx, "agent")
+	defer agentSpan.End()
+
+	got := iterationTraceparent(agentSpan, tid.PropagatedFlags)
+	require.NotEmpty(t, got)
+	assert.True(t, strings.HasSuffix(got, "-01"))
+	assert.Contains(t, got, agentSpan.SpanContext().SpanID().String())
+}
+
+func TestEndAgentSpanOnSetupError(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	_, span := tp.Tracer("test").Start(context.Background(), "agent")
+	endAgentSpanOnSetupError(span, errors.New("clearing stale iteration deadline"))
+
+	ended := sr.Ended()
+	require.Len(t, ended, 1)
+	assert.Equal(t, codes.Error, ended[0].Status().Code)
+	assert.Contains(t, ended[0].Status().Description, "clearing stale iteration deadline")
+}
+
+func TestSanitizeTraceparent(t *testing.T) {
+	const valid = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+	assert.Equal(t, valid, sanitizeTraceparent(valid))
+	assert.Equal(t, "", sanitizeTraceparent(""))
+	assert.Equal(t, "", sanitizeTraceparent("abc"))
+	assert.Equal(t, "", sanitizeTraceparent("00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-aaaaaaaaaaaaaaaa-01"))
+	assert.Equal(t, "", sanitizeTraceparent("'; rm -rf /; echo '"))
 }
 
 func TestResolveTraceIdentity_MalformedInput(t *testing.T) {
@@ -602,7 +841,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		_, span := tp.Tracer("test").Start(context.Background(), "agent")
 		m := &agentruntime.RunMetrics{Model: "claude-opus-4-6"}
-		finalizeAgentSpan(span, runErr, 1, exitCode, "gcp.vertex_ai", "claude", m, transcriptErr)
+		finalizeAgentSpan(span, runErr, 1, exitCode, "gcp.vertex_ai", "claude", m, transcriptErr, nil)
 		ended := rec.Ended()
 		require.Len(t, ended, 1, "span must be ended exactly once")
 		return tracetest.SpanStubFromReadOnlySpan(ended[0])
@@ -680,7 +919,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		_, span := tp.Tracer("test").Start(context.Background(), "agent")
 		m := &agentruntime.RunMetrics{Model: "claude-\xff\xfeopus"}
-		finalizeAgentSpan(span, nil, 1, 0, "gcp.vertex_ai", "claude", m, "")
+		finalizeAgentSpan(span, nil, 1, 0, "gcp.vertex_ai", "claude", m, "", nil)
 		ended := rec.Ended()
 		require.Len(t, ended, 1)
 		s := tracetest.SpanStubFromReadOnlySpan(ended[0])
@@ -693,6 +932,191 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		s := newRecorded(nil, 1, "")
 		assert.Equal(t, codes.Error, s.Status.Code)
 		assert.Equal(t, "agent exited with code 1", s.Status.Description)
+	})
+	t.Run("finishes the tracker before ending the span", func(t *testing.T) {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		tracer := tp.Tracer("test")
+		agentCtx, agentSpan := tracer.Start(context.Background(), "agent")
+		tr := newToolSpanTracker(tracer, agentCtx)
+		for i := 0; i <= maxToolSpansPerIteration; i++ { // one past the cap: dropped == 1
+			tr.Handle(agentruntime.ToolUseEvent{ID: fmt.Sprintf("toolu_%05d", i), Name: "Bash"})
+		}
+
+		finalizeAgentSpan(agentSpan, nil, 1, 0, "anthropic", "claude", &agentruntime.RunMetrics{}, "", tr)
+
+		ended := rec.Ended()
+		require.Len(t, ended, maxToolSpansPerIteration+1, "every open tool span and the agent span end")
+		var agent sdktrace.ReadOnlySpan
+		for _, sp := range ended {
+			if sp.Name() == "agent" {
+				agent = sp
+			} else {
+				assert.False(t, sp.EndTime().After(agent0(ended).EndTime()), "tool spans end before their parent")
+				assert.Contains(t, sp.Attributes(), attribute.String("error.type", "unanswered"))
+			}
+		}
+		require.NotNil(t, agent)
+		assert.Contains(t, agent.Attributes(), attribute.Int("fullsend.tool_spans.dropped", 1), "overflow recorded on the agent span")
+	})
+}
+
+// agent0 returns the ended span named "agent" from rec.Ended().
+func agent0(spans []sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
+	for _, sp := range spans {
+		if sp.Name() == "agent" {
+			return sp
+		}
+	}
+	return nil
+}
+
+// TestHandleRunCancellation exercises the cancellation short-circuit
+// extracted from runAgent's per-iteration loop: the production path that
+// persists partial metrics and finalizes the agent span when the run
+// context is cancelled, before extraction and validation would otherwise
+// run on a dead sandbox (#6936). This is the load-bearing branch a prior
+// review iteration found untested — TestAggregateRunMetrics_* and
+// TestWriteMetricsJSON_* only cover the helpers it calls, not the branch
+// itself.
+func TestHandleRunCancellation(t *testing.T) {
+	pinSpanLimitEnv(t)
+
+	buildAgg := func() aggregateMetrics {
+		agg := aggregateMetrics{Iterations: 1, ToolCalls: 3, Model: "claude-opus-4-6"}
+		agg.TokenUsage.Input = 599
+		agg.TokenUsage.Output = 119
+		agg.TokenUsage.CacheCreation = 148_943
+		agg.TokenUsage.CacheRead = 583_298
+		return agg
+	}
+
+	t.Run("cancelled context persists metrics, finalizes span, skips downstream", func(t *testing.T) {
+		runDir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+
+		metrics := &agentruntime.RunMetrics{Model: "claude-opus-4-6"}
+		var attachedReasons []string
+		attach := func(reason string) { attachedReasons = append(attachedReasons, reason) }
+		printer := ui.New(io.Discard)
+
+		cancelled, lastExitCode, err := handleRunCancellation(
+			ctx, nil, 2, 0, "anthropic", "claude",
+			metrics, buildAgg(), runDir, span, nil, attach, printer, 1500*time.Millisecond,
+		)
+
+		require.True(t, cancelled, "ctx.Err() is non-nil: the short-circuit must fire")
+		assert.Equal(t, 0, lastExitCode)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled, "the returned error must wrap the cancellation cause")
+		assert.Contains(t, err.Error(), "run cancelled (iteration 2)")
+
+		assert.Equal(t, []string{"error"}, attachedReasons, "content must be attached with finish_reason=error before extraction/validation")
+
+		ended := rec.Ended()
+		require.Len(t, ended, 1, "the agent span must be finalized (ended) on this path")
+		s := tracetest.SpanStubFromReadOnlySpan(ended[0])
+		assert.Equal(t, codes.Error, s.Status.Code, "a cancelled iteration finalizes as an error status")
+
+		data, readErr := os.ReadFile(filepath.Join(runDir, metricsFile))
+		require.NoError(t, readErr, "metrics.json must be written before extraction/validation runs")
+		var got aggregateMetrics
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, 599, got.TokenUsage.Input, "partial token counts must survive the write")
+		assert.Equal(t, 119, got.TokenUsage.Output)
+		assert.Equal(t, 148_943, got.TokenUsage.CacheCreation)
+		assert.Equal(t, 583_298, got.TokenUsage.CacheRead)
+		assert.Equal(t, float64(0), got.TotalCostUSD, "dollar cost is unavailable on cancellation")
+	})
+
+	t.Run("runErr already set is preserved as the wrapped cause", func(t *testing.T) {
+		runDir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+
+		metrics := &agentruntime.RunMetrics{}
+		attach := func(string) {}
+		printer := ui.New(io.Discard)
+		runErr := errors.New("sandbox killed")
+
+		cancelled, _, err := handleRunCancellation(
+			ctx, runErr, 1, -1, "anthropic", "claude",
+			metrics, buildAgg(), runDir, span, nil, attach, printer, 0,
+		)
+
+		require.True(t, cancelled)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sandbox killed", "a non-nil runErr from rt.Run must not be discarded")
+	})
+
+	t.Run("live context does not short-circuit", func(t *testing.T) {
+		runDir := t.TempDir()
+		ctx := context.Background() // never cancelled
+
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+
+		metrics := &agentruntime.RunMetrics{}
+		attachCalled := false
+		attach := func(string) { attachCalled = true }
+		printer := ui.New(io.Discard)
+
+		cancelled, _, err := handleRunCancellation(
+			ctx, nil, 1, 0, "anthropic", "claude",
+			metrics, buildAgg(), runDir, span, nil, attach, printer, 0,
+		)
+
+		assert.False(t, cancelled, "a live context must not trigger the short-circuit")
+		assert.NoError(t, err)
+		assert.False(t, attachCalled, "content must not be attached when the run was not cancelled")
+		assert.Empty(t, rec.Ended(), "the span must not be finalized when the run was not cancelled")
+		_, statErr := os.Stat(filepath.Join(runDir, metricsFile))
+		assert.True(t, os.IsNotExist(statErr), "metrics.json must not be written when the run was not cancelled")
+	})
+	t.Run("cancellation ends open tool spans as unanswered in the file sink", func(t *testing.T) {
+		// The stop path is the one where a call has no result by design;
+		// finalizeAgentSpan ends the tracker's open spans before the agent
+		// span, and the SimpleSpanProcessor file sink writes them on End,
+		// so they land even when SIGTERM kills the process before flush.
+		t.Setenv("OTEL_SDK_DISABLED", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		dir := t.TempDir()
+		tracer, cleanup := telemetry.Setup(dir, "test")
+		agentCtx, agentSpan := tracer.Start(context.Background(), "agent")
+		tr := newToolSpanTracker(tracer, agentCtx)
+		tr.Handle(agentruntime.ToolUseEvent{ID: "toolu_open", Name: "Bash"})
+		tr.dropped = 3 // an overflow must land on the agent span before it ends
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		cancelled, _, err := handleRunCancellation(
+			ctx, nil, 1, 0, "anthropic", "claude",
+			&agentruntime.RunMetrics{}, aggregateMetrics{}, t.TempDir(), agentSpan, tr, func(string) {}, ui.New(io.Discard), time.Second,
+		)
+		require.True(t, cancelled)
+		require.Error(t, err)
+		cleanup(context.Background())
+
+		raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+		require.NoError(t, err)
+		content := string(raw)
+		assert.Contains(t, content, `"execute_tool Bash"`, "the open call's span must be ended and written")
+		assert.Contains(t, content, `"unanswered"`, "a call with no result at cancellation closes as error.type=unanswered")
+		parent, err := json.Marshal(agentSpan.SpanContext().SpanID().String())
+		require.NoError(t, err)
+		assert.Contains(t, content, `"parentSpanId":`+string(parent))
+		assert.Contains(t, content, `"fullsend.tool_spans.dropped"`, "the overflow is recorded before the agent span ends; an ended span drops attributes silently")
 	})
 }
 
@@ -1017,15 +1441,10 @@ func TestAgentSpanEndAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
 	t.Fatal("gen_ai.request.model attribute not found")
 }
 
-func TestContentEventHandler_NilCollectorKeepsDefaultRenderer(t *testing.T) {
-	assert.Nil(t, contentEventHandler(func(agentruntime.AgentEvent) {}, nil),
-		"gate off must leave OnEvent nil so the runtime's default renderer runs")
-}
-
-func TestContentEventHandler_TeesToRendererAndCollector(t *testing.T) {
+func TestIterationEventHandler_TeesToRendererAndCollector(t *testing.T) {
 	var rendered []agentruntime.AgentEvent
 	c := newContentCollector(4096)
-	handler := contentEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, c)
+	handler := iterationEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, c, nil)
 	require.NotNil(t, handler)
 
 	handler(agentruntime.TextEvent{Text: "hello"})
@@ -1091,8 +1510,8 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 }
 
 // TestContentCapture_GateOffProducesNoContent is the negative control: with
-// the gate off the collector is nil, OnEvent stays nil (default renderer),
-// and nothing content-shaped reaches the file sink.
+// the gate off the collector is nil and nothing content-shaped reaches the
+// file sink (tool spans are metadata and are emitted regardless).
 func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
@@ -1131,4 +1550,49 @@ func TestAgentSpanStartAttrs_AgentNameBoundedWithoutSDKCap(t *testing.T) {
 		}
 	}
 	t.Fatal("gen_ai.agent.name attribute not found")
+}
+
+func TestHarnessIdentityAttrs_URLPathAndSHA(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.yaml")
+	body := []byte("role: triage\nmodel: opus\n")
+	require.NoError(t, os.WriteFile(path, body, 0o644))
+
+	sourceURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/harness/triage.yaml"
+	attrs := harnessIdentityAttrs(path, sourceURL)
+	require.Len(t, attrs, 3)
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.url", sourceURL))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.path", path))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.content_sha", fetch.ComputeSHA256(body)))
+}
+
+func TestHarnessIdentityAttrs_OmitsEmptyURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "local.yaml")
+	body := []byte("role: code\n")
+	require.NoError(t, os.WriteFile(path, body, 0o644))
+
+	attrs := harnessIdentityAttrs(path, "")
+	require.Len(t, attrs, 2)
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.path", path))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.content_sha", fetch.ComputeSHA256(body)))
+	for _, kv := range attrs {
+		assert.NotEqual(t, attribute.Key("fullsend.harness.url"), kv.Key)
+	}
+}
+
+func TestHarnessIdentityAttrs_OmitsSHAWhenUnreadable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	sourceURL := "https://example.com/harness.yaml"
+	attrs := harnessIdentityAttrs(missing, sourceURL)
+	require.Len(t, attrs, 2)
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.url", sourceURL))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.path", missing))
+	for _, kv := range attrs {
+		assert.NotEqual(t, attribute.Key("fullsend.harness.content_sha"), kv.Key)
+	}
+}
+
+func TestHarnessIdentityAttrs_Empty(t *testing.T) {
+	assert.Empty(t, harnessIdentityAttrs("", ""))
 }

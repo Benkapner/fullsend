@@ -12,6 +12,7 @@ import (
 )
 
 const issueOpenEvent = "issues"
+const issueCommentEvent = "issue_comment"
 
 func triageWorkflowEvent(w *world.World) string {
 	if w.TriageTriggerEvent != "" {
@@ -33,6 +34,7 @@ func ensureTriageWorkflowComplete(w *world.World) error {
 		return err
 	}
 	w.WorkflowRun = run
+	saveWorkflowRunLogs(ctx, w, "triage", run)
 	return nil
 }
 

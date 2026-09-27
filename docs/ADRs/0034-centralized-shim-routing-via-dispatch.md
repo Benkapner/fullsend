@@ -101,7 +101,7 @@ a stage name:
 
 - `issue_comment` with `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
   commands → corresponding stage
-- `issue_comment` on `needs-info` issue from non-bot → `triage`
+- ~~`issue_comment` on `needs-info` issue from non-bot → `triage`~~ Removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — use `/fs-triage` instead
 - `issues` + `labeled` with `ready-to-code` → `code`
 - `pull_request_target` opened/synchronize/ready_for_review → `review`
 - `pull_request_target` closed → `retro`
@@ -145,6 +145,10 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
   independently: a new dispatch now cancels any in-progress run for the
   same issue/PR. In practice, only one agent should run per issue/PR at a
   time, and the latest event takes priority.
+
+> **Update (2026-09):** [ADR 0106](0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
+> replaces automatic cancellation with serialized runs and platform-native
+> pending-run coalescing.
 
 > **Note (2026-07, [#2452](https://github.com/fullsend-ai/fullsend/issues/2452)):** Per-org
 > workflow-call shims now use label-aware concurrency groups with

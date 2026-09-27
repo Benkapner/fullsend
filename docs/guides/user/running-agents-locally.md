@@ -97,10 +97,12 @@ instead of the native binary, keep the key file and env file in your
 working directory — the container mounts it as `/work` and resolves
 `GOOGLE_APPLICATION_CREDENTIALS` relative to it.
 
-## Get an OpenAI key (GPT on pi only)
+## Get an OpenAI key (GPT on pi or codex)
 
-GPT models run on the [pi runtime](../../runtimes/pi.md) with the credential kept out of the
-sandbox by an OpenShell provider. In CI the runner obtains it from OpenAI with the job's GitHub
+<a id="get-an-openai-key-gpt-on-pi-only"></a>
+
+GPT models run on the [pi](../../runtimes/pi.md) and [codex](../../runtimes/codex.md) runtimes,
+with the credential kept out of the sandbox by an OpenShell provider. In CI the runner obtains it from OpenAI with the job's GitHub
 identity ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)); on your
 machine there is no such identity, so use an API key from the same OpenAI project. Put it in an
 environment file, like the GCP settings above — never in the harness YAML and never under
@@ -115,15 +117,19 @@ Then pick a GPT model when you run:
 
 ```bash
 fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
-  --env-file fullsend-openai.env --env-file fullsend-triage.env ...
+  --forge github --env-file fullsend-openai.env --env-file fullsend-triage.env ...
 ```
+
+Codex takes the same key and the same harness requirements — swap `--runtime pi` for
+`--runtime codex`.
 
 A committed `inference.openai` block in the repository's `config.yaml` is ignored here while
 `OPENAI_API_KEY` is set (there is no GitHub OIDC endpoint to exchange with), so the same checkout
 works in CI and on your machine.
 
 The agent's harness must declare the provider (`providers: [openai]`; both the definition and the
-`fullsend-openai` profile are built into fullsend, nothing needs to be on disk) and a sandbox policy
+`fullsend-openai` profile are built into fullsend, nothing needs to be on disk; the fleet's agents
+declare it) and a sandbox policy
 (`policy: policies/base.yaml` — the fleet's agents already have it; a custom harness needs it because
 the sandbox image's default policy leaves an uninspected route to `api.openai.com`, which the gateway
 refuses to carry the credential over). The sandbox only ever sees a placeholder; the provider holding
@@ -158,6 +164,13 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
+**Note**: the fleet-clone examples below need `--forge github` (or `--forge gitlab`),
+because the clone's `config.yaml` sets no `forge:`. Without a forge, the harness's
+GitHub settings (`ISSUE_URL`, the GitHub provider) never apply and the pre-script
+stops with `ISSUE_URL must be set`. `fullsend run` takes the forge from `--forge`, then
+`forge:` in the `config.yaml` at the root of `--fullsend-dir`, then CI environment
+variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
+
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
@@ -183,7 +196,8 @@ fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-triage.env
+  --env-file fullsend-triage.env \
+  --forge github
 ```
 
 ### Review agent
@@ -195,9 +209,13 @@ Add to an env file:
 # In CI, REVIEW_TOKEN is auto-minted by the binary when --mint-url is provided.
 # For local runs, supply a GitHub PAT manually:
 REVIEW_TOKEN={github-pat}
+GH_TOKEN={github-pat}
 GITHUB_PR_URL="https://github.com/{org}/{repo}/pull/{pr_number}"
 PR_NUMBER="{pr_number}"
 REPO_FULL_NAME="{org}/{repo}"
+# Set by CI on a re-review; leave empty for a first review.
+PRIOR_REVIEW_SHA=
+PRIOR_REVIEW_PROVENANCE=
 ```
 
 ```bash
@@ -205,7 +223,8 @@ fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-review.env
+  --env-file fullsend-review.env \
+  --forge github
 ```
 
 ### Code agent
@@ -225,6 +244,8 @@ ISSUE_NUMBER={issue_num}
 CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
+# Author and committer email for the agent's commits.
+GIT_BOT_EMAIL={bot-or-your-email}
 ```
 
 ```bash
@@ -232,7 +253,8 @@ fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-code.env
+  --env-file fullsend-code.env \
+  --forge github
 ```
 
 ### Choosing the runtime
@@ -240,8 +262,8 @@ fullsend run code \
 <a id="run-a-minimal-agent-on-the-pi-runtime"></a><a id="troubleshooting-pi-runtime"></a><a id="platform-notes-pi"></a>
 
 Every example above runs on **Claude Code**, the default runtime. Fullsend
-also has an opt-in **pi** runtime, and any example on this page runs on it
-by adding one flag to the same command:
+also has two opt-in runtimes — **pi** and **codex** — and any example on
+this page runs on either by adding one flag to the same command:
 
 ```bash
 fullsend run triage \
@@ -249,14 +271,20 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime pi
 ```
+
+Codex is selected the same way (`--runtime codex`); it runs OpenAI models
+only, so pair it with `--model openai/gpt-5.6-luna` and the OpenAI key
+above.
 
 Everything else about runtimes lives in one place: [Agent
 runtimes](../../runtimes.md) for selecting and overriding the runtime,
 model and effort — per run, or per agent in `config.yaml` — and
-[Pi › Running it locally](../../runtimes/pi.md#running-it-locally) for
-what a local pi run needs, its models and its troubleshooting.
+[Pi › Running it locally](../../runtimes/pi.md#running-it-locally) or
+[Codex › Running it locally](../../runtimes/codex.md#running-it-locally)
+for what a local run on either needs, its models and its troubleshooting.
 
 ### Remote resource flags
 
@@ -265,7 +293,7 @@ you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). Auto-detected from CI env vars (`GITHUB_ACTIONS`, `GITLAB_CI`) when omitted |
+| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources |
@@ -308,7 +336,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
-| `--forge` | Forge platform (`github` or `gitlab`); auto-detected from CI env vars when omitted |
+| `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
 
@@ -318,12 +346,13 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --status-repo myorg/myrepo \
   --status-number 42 \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
 
-For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent reads `GITLAB_TOKEN` from the environment and does not require the mint service. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables.
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. While the migration gate is unset, `disabled`, or `rollback`, `FULLSEND_FORGE_TOKEN` is preferred and exported to `GITLAB_TOKEN`; if it is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged). Once the gate is `migrating`, the matching per-role secret (Poller/Analyst/Coder, or a registered custom role) is used when configured; an unconfigured role still falls back to `FULLSEND_FORGE_TOKEN` (this shared-token fallback only ceases once the gate is `enforced`, where the per-role secret is strictly required). In both `migrating` and `enforced` mode, though, the unmanaged fallback to a directly-set `GITLAB_TOKEN` (used above when `FULLSEND_FORGE_TOKEN` itself is absent) no longer applies. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
@@ -357,7 +386,8 @@ podman run --rm -it --network=host \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
     --env-file fullsend-gcp.env \
-    --env-file fullsend-triage.env
+    --env-file fullsend-triage.env \
+    --forge github
 ```
 
 The image's working directory is `/work`, so relative paths in `--env-file`
@@ -434,6 +464,10 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 **`Syntax error: "(" unexpected` inside sandbox**
 - The macOS Mach-O binary was injected instead of a Linux ELF. Update to fullsend 0.4.0+ which auto-resolves the correct binary, or provide one explicitly with `--fullsend-binary`
 
+**`API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens)**
+- The gateway denied the agent's binary, not the model. Run `grep DENIED <run-dir>/logs/openshell-sandbox.log`; a line ending in `binary '…/claude.exe' not allowed in policy '_provider_vertex_ai'` means the Vertex profile lacks `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`, even on Linux)
+- Only profiles listed in `openshell.profiles` are imported. If `--fullsend-dir` contains a `profiles/` directory, files there are **not** imported unless explicitly listed on the harness. To override a harness profile locally, add it to `openshell.profiles` (e.g., `profiles/fullsend-vertex-ai.yaml`)
+
 **Agent fails with missing environment variable**
 - Check your env file contains all variables listed in the agent's harness YAML (`harness/{agent}.yaml` in the `.fullsend` config directory)
 
@@ -454,7 +488,9 @@ output to iterate on network policy allowlists.
 ### Run directory structure
 
 Every `fullsend run` creates a run directory. By default this is under
-`/tmp/fullsend/`; override it with `--output-dir`:
+`/tmp/fullsend/`; override it with `--output-dir`. Relative `--output-dir`
+values are resolved to an absolute path so post-script env vars such as
+`FULLSEND_VALIDATED_ITERATION_DIR` do not depend on the process cwd:
 
 ```bash
 fullsend run triage \
@@ -462,6 +498,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --output-dir /tmp/my-debug-output
 ```
 
@@ -518,6 +555,7 @@ or gateway routing issues).
      --target-repo /tmp/target-repo/ \
      --env-file fullsend-gcp.env \
      --env-file fullsend-<agent>.env \
+     --forge github \
      --keep-sandbox \
      --no-post-script
    ```

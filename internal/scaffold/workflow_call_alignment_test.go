@@ -3,6 +3,7 @@ package scaffold
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -184,6 +185,15 @@ type callerPair struct {
 	jobName      string // job key in the caller workflow
 }
 
+var workflowCallPairs = []callerPair{
+	{"scaffold/triage.yml", loadRenderedScaffoldCaller(".github/workflows/triage.yml"), "triage"},
+	{"scaffold/code.yml", loadRenderedScaffoldCaller(".github/workflows/code.yml"), "code"},
+	{"scaffold/review.yml", loadRenderedScaffoldCaller(".github/workflows/review.yml"), "review"},
+	{"scaffold/fix.yml", loadRenderedScaffoldCaller(".github/workflows/fix.yml"), "fix"},
+	{"scaffold/retro.yml", loadRenderedScaffoldCaller(".github/workflows/retro.yml"), "retro"},
+	{"scaffold/prioritize.yml", loadRenderedScaffoldCaller(".github/workflows/prioritize.yml"), "prioritize"},
+}
+
 func loadRenderedScaffoldCaller(path string) func(t *testing.T) []byte {
 	return func(t *testing.T) []byte {
 		t.Helper()
@@ -217,20 +227,10 @@ func loadRepoFile(relPath string) func(t *testing.T) []byte {
 // inputs and secrets declared by the reusable workflow it calls, and does not
 // pass any inputs/secrets the reusable workflow doesn't declare.
 func TestWorkflowCallInputAlignment(t *testing.T) {
-	// All thin callers in the scaffold that reference reusable workflows.
-	pairs := []callerPair{
-		{"scaffold/triage.yml", loadRenderedScaffoldCaller(".github/workflows/triage.yml"), "triage"},
-		{"scaffold/code.yml", loadRenderedScaffoldCaller(".github/workflows/code.yml"), "code"},
-		{"scaffold/review.yml", loadRenderedScaffoldCaller(".github/workflows/review.yml"), "review"},
-		{"scaffold/fix.yml", loadRenderedScaffoldCaller(".github/workflows/fix.yml"), "fix"},
-		{"scaffold/retro.yml", loadRenderedScaffoldCaller(".github/workflows/retro.yml"), "retro"},
-		{"scaffold/prioritize.yml", loadRenderedScaffoldCaller(".github/workflows/prioritize.yml"), "prioritize"},
-	}
-
 	// Note: reusable-dispatch.yml stage jobs are no longer validated here
 	// (ADR 62: stages inlined, no external uses:)
 
-	for _, pair := range pairs {
+	for _, pair := range workflowCallPairs {
 		t.Run(pair.callerName, func(t *testing.T) {
 			callerContent := pair.callerSource(t)
 
@@ -284,6 +284,63 @@ func TestWorkflowCallInputAlignment(t *testing.T) {
 	}
 }
 
+// TestReusableWorkflowInputContractAlignment validates required/default/type
+// alignment for every input shared by reusable-dispatch.yml and each
+// standalone reusable stage workflow. The project_number contract is covered
+// by the same generic comparison as every other shared input.
+func TestReusableWorkflowInputContractAlignment(t *testing.T) {
+	dispatchContent, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var dispatch reusableWorkflow
+	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
+
+	for _, pair := range workflowCallPairs {
+		t.Run(pair.callerName, func(t *testing.T) {
+			callerContent := pair.callerSource(t)
+			var caller callerWorkflow
+			require.NoError(t, yaml.Unmarshal(callerContent, &caller))
+
+			job, ok := caller.Jobs[pair.jobName]
+			require.True(t, ok, "job %q not found in caller workflow", pair.jobName)
+			match := reusableWorkflowRef.FindString(job.Uses)
+			require.NotEmpty(t, match, "could not extract reusable workflow filename from uses: %q", job.Uses)
+
+			stageContent, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", match))
+			require.NoError(t, err, "could not read reusable workflow %s", match)
+
+			var stage reusableWorkflow
+			require.NoError(t, yaml.Unmarshal(stageContent, &stage))
+
+			for name, dispatchInput := range dispatch.On.WorkflowCall.Inputs {
+				stageInput, shared := stage.On.WorkflowCall.Inputs[name]
+				if !shared {
+					continue
+				}
+				if name == "install_mode" {
+					// Dispatch defaults to per-repo; standalone stage workflows
+					// default to per-org until that deprecated chain is removed.
+					assert.False(t, dispatchInput.Required,
+						"reusable-dispatch.yml install_mode must remain optional")
+					assert.Equal(t, "per-repo", dispatchInput.Default,
+						"reusable-dispatch.yml install_mode default changed")
+					assert.False(t, stageInput.Required,
+						"%s install_mode must remain optional", match)
+					assert.Equal(t, "per-org", stageInput.Default,
+						"%s install_mode default changed", match)
+					continue
+				}
+				assert.Equal(t, dispatchInput.Required, stageInput.Required,
+					"%s input %q required flag must match reusable-dispatch.yml", match, name)
+				assert.Equal(t, dispatchInput.Default, stageInput.Default,
+					"%s input %q default must match reusable-dispatch.yml", match, name)
+				assert.Equal(t, dispatchInput.Type, stageInput.Type,
+					"%s input %q type must match reusable-dispatch.yml", match, name)
+			}
+		})
+	}
+}
+
 // TestReusableWorkflowsShareCommonInputs validates that all reusable stage
 // workflows declare the same base set of inputs and secrets, catching drift
 // when a new input is added to some workflows but not others.
@@ -304,6 +361,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 	commonSecrets := []string{
 		"FULLSEND_GCP_WIF_PROVIDER",
 		"FULLSEND_GCP_PROJECT_ID",
+		"FULLSEND_OPENAI_API_KEY",
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 		"OTEL_EXPORTER_OTLP_HEADERS",
 	}
@@ -332,23 +390,159 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 	}
 }
 
-// TestReusableDispatchProjectNumberInput validates that reusable-dispatch.yml
-// declares project_number as an input and threads it to the prioritize job.
-func TestReusableDispatchProjectNumberInput(t *testing.T) {
+// TestProjectNumberInputsAreOptional validates that workflows accepting an
+// optional project board consistently allow comment-only prioritization.
+func TestProjectNumberInputsAreOptional(t *testing.T) {
+	for _, name := range []string{"reusable-dispatch.yml", "reusable-prioritize.yml"} {
+		t.Run(name, func(t *testing.T) {
+			content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+			require.NoError(t, err)
+
+			var wf reusableWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+
+			input, ok := wf.On.WorkflowCall.Inputs["project_number"]
+			require.True(t, ok, "%s should declare project_number input", name)
+			assert.False(t, input.Required, "%s project_number should allow comment-only prioritization", name)
+			assert.Empty(t, input.Default, "%s project_number should default to empty", name)
+		})
+	}
+
 	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
 	require.NoError(t, err)
 
-	var wf reusableWorkflow
-	require.NoError(t, yaml.Unmarshal(content, &wf))
-
-	input, ok := wf.On.WorkflowCall.Inputs["project_number"]
-	require.True(t, ok, "reusable-dispatch.yml should declare project_number input")
-	assert.False(t, input.Required, "project_number should be optional (not all orgs use prioritize)")
-
 	// Verify the prioritize job uses it (ADR 62: env var, not with:).
 	s := string(content)
-	assert.True(t, strings.Contains(s, "PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}"),
+	assert.Contains(t, s, "PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}",
 		"prioritize job should thread project_number to PRIORITIZE_PROJECT_NUMBER env var")
+}
+
+// TestReusableDispatchFixInstructionNormalizesCRLF validates that CRLF line endings
+// in a comment body are stripped before the fix instruction is written to GITHUB_OUTPUT.
+func TestReusableDispatchFixInstructionNormalizesCRLF(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	var script string
+	for _, step := range workflow.Jobs["fix"].Steps {
+		if step.Name == "Extract PR number and context" {
+			script = step.Run
+			break
+		}
+	}
+	require.NotEmpty(t, script)
+
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"gh":      "#!/bin/sh\nprintf '[]\\n'\n",
+		"openssl": "#!/bin/sh\nprintf 'fixed-delimiter\\n'\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755))
+	}
+	outputPath := filepath.Join(dir, "github-output")
+	payload := `{"pull_request":{"number":42,"head":{"ref":"fix-branch"},"base":{"ref":"main"}},"comment":{"body":"/fs-fix\r\nChange A\r\nChange B"}}`
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"EVENT_PAYLOAD="+payload,
+		"INPUT_PR_NUMBER=",
+		"INPUT_INSTRUCTION=",
+		"TRIGGER_SOURCE=contributor",
+		"SOURCE_REPO=fullsend-ai/fullsend",
+		"GITHUB_OUTPUT="+outputPath,
+	)
+	result, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", result)
+
+	output, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(output), "instruction<<INSTRUCTION_fixed-delimiter\nChange A\nChange B\nINSTRUCTION_fixed-delimiter\n")
+	assert.NotContains(t, string(output), "\r")
+}
+
+// TestOpenAIAPIKeySecretThreading validates that the opt-in static OpenAI
+// key (#7295) is forwarded by every scaffold shim that already forwards
+// FULLSEND_GCP_PROJECT_ID, and that every reusable-*.yml callee it calls
+// declares the secret and exports it as OPENAI_API_KEY (#7295, 333ad967e).
+func TestOpenAIAPIKeySecretThreading(t *testing.T) {
+	forward := "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
+		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml")},
+		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml")},
+		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml")},
+		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		// This repo's own installed shims (not just the scaffold templates
+		// new installs get) must forward the secret too, or fullsend's own
+		// runs could never use it.
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"prioritize.yml", loadRepoFile(".github/workflows/prioritize.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Contains(t, string(tc.content(t)), forward,
+				"%s must forward %s", tc.name, "FULLSEND_OPENAI_API_KEY")
+		})
+	}
+
+	declaration := "FULLSEND_OPENAI_API_KEY:\n        required: false"
+	export := "OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+
+	// Standalone reusable-{stage}.yml files have exactly one job/one agent
+	// step each, so a whole-file substring check is unambiguous.
+	standaloneStages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range standaloneStages {
+		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
+			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
+			assert.Contains(t, content, declaration,
+				"reusable-%s.yml must declare FULLSEND_OPENAI_API_KEY (required: false) under on.workflow_call.secrets", stage)
+			assert.Contains(t, content, export,
+				"reusable-%s.yml must export FULLSEND_OPENAI_API_KEY as OPENAI_API_KEY", stage)
+		})
+	}
+
+	// reusable-dispatch.yml inlines seven jobs in one file (TestOpenAIVariableForwarding
+	// above uses the same step markers): a whole-file substring check would still pass
+	// if any single step's export were dropped or mistyped, since the other six would
+	// remain. Scope the export check to each step's own section.
+	t.Run("reusable-dispatch.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		assert.Contains(t, content, declaration,
+			"reusable-dispatch.yml must declare FULLSEND_OPENAI_API_KEY (required: false) under on.workflow_call.secrets")
+
+		stepMarkers := []string{
+			"Run triage agent",
+			"Run code agent",
+			"Run review agent",
+			"Run fix agent",
+			"Run retro agent",
+			"Run prioritize agent",
+			"Run harness agent",
+		}
+		for _, marker := range stepMarkers {
+			t.Run(marker, func(t *testing.T) {
+				section := extractStepSection(t, content, marker)
+				assert.Contains(t, section, export,
+					"%q step must export FULLSEND_OPENAI_API_KEY as OPENAI_API_KEY", marker)
+			})
+		}
+	})
 }
 
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
@@ -645,6 +839,64 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 
 			// Retro on PR close remains intentionally ungated (documented)
 			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
+
+			// OWNERS role→permission mapping: approvers in write|triage arm,
+			// reviewers in triage-only arm, connected by ;;&  (pattern-retest).
+			// A ;& (unconditional fallthrough) would silently give reviewers
+			// write-level access — this assertion catches that.
+			assert.Regexp(t, `(?s)write\|triage\).*_owners_has_user approvers`, s,
+				"OWNERS approvers must be checked in the write|triage case arm")
+			assert.Regexp(t, `(?s);;&\s*\n\s+triage\).*_owners_has_user reviewers`, s,
+				"OWNERS reviewers must be in the triage-only arm after ;;&  (not ;&)")
+			assert.Contains(t, s, `[.authorization[]? | select(.provider == "owners_file")] | length`,
+				"OWNERS auth must be gated on the owners_file provider in config.yaml")
+			assert.Contains(t, s, `lc_user="${username,,}"`,
+				"OWNERS username comparison must be case-insensitive")
+			assert.Contains(t, s, `_owners_has_user approvers "${lc_user}"`,
+				"OWNERS approver check must use lowercased lc_user, not original username")
+			assert.Contains(t, s, `_owners_has_user reviewers "${lc_user}"`,
+				"OWNERS reviewer check must use lowercased lc_user, not original username")
+			assert.Regexp(t, `::notice::OWNERS file resolved user '\$\{username\}'`, s,
+				"OWNERS audit log must use original username casing, not lc_user")
+		})
+	}
+}
+
+// TestOwnersCheckoutRefPin validates that every checkout step whose
+// sparse-checkout includes OWNERS files pins to base branch SHA for
+// pull_request_review events. Without this, a PR author can add
+// themselves to OWNERS in their branch and self-authorize on the
+// pull_request_review dispatch path.
+func TestOwnersCheckoutRefPin(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			// Split into sections by checkout step boundary. Each section
+			// starting with "uses: actions/checkout@" contains one step's
+			// with: block up to the next step or job boundary.
+			sections := regexp.MustCompile(`(?m)^[ \t]*- name:`).Split(s, -1)
+
+			var ownersCheckouts int
+			for _, section := range sections {
+				if !strings.Contains(section, "actions/checkout@") {
+					continue
+				}
+				if !strings.Contains(section, "OWNERS") {
+					continue
+				}
+				ownersCheckouts++
+				assert.Contains(t, section, "pull_request_review",
+					"checkout that sparse-checks-out OWNERS must pin ref for pull_request_review events")
+			}
+			require.NotZero(t, ownersCheckouts,
+				"should find at least one checkout step with OWNERS in sparse-checkout")
 		})
 	}
 }
@@ -667,6 +919,64 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 				"%s dispatch job must filter scaffold branch PRs to prevent self-dispatch noise", tc.name)
 		})
 	}
+}
+
+// TestShimPerRepoSlashCommandFilter validates that the per-repo shim template
+// filters issue_comment events with both a /fs- prefix check and a bot-type
+// guard, preserving defense-in-depth while short-circuiting non-slash-command
+// comments at the workflow level (#6738).
+func TestShimPerRepoSlashCommandFilter(t *testing.T) {
+	content := loadScaffoldFile("templates/shim-per-repo.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "per-repo shim must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"per-repo shim dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"per-repo shim must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+}
+
+// TestShimPerRepoNoFullsendAlias validates that the per-repo dispatch
+// workflow does not route on the removed /fullsend alias (#6738).
+func TestShimPerRepoNoFullsendAlias(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+	cases := []workflowCase{
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+	}
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+			assert.NotContains(t, s, `/fullsend)`,
+				"%s must not route on the /fullsend alias (removed in #6738)", wc.name)
+			assert.NotContains(t, s, `SECOND_WORD`,
+				"%s must not parse SECOND_WORD for the removed /fullsend alias", wc.name)
+		})
+	}
+}
+
+// TestLiveShimSlashCommandFilter validates that the live fullsend.yaml workflow
+// uses both a /fs- prefix filter and bot-type guard for defense-in-depth (#6738).
+func TestLiveShimSlashCommandFilter(t *testing.T) {
+	content := loadRepoFile(".github/workflows/fullsend.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "fullsend.yaml must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"fullsend.yaml dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
 }
 
 // TestDispatchPRHeadResolution validates that both dispatch workflows contain
@@ -1202,6 +1512,20 @@ func TestHarnessRunResolvesBotIdentity(t *testing.T) {
 	assert.Less(t, identityIndex, setupIndex, "harness-run must resolve identity before agent environment setup")
 }
 
+// TestHarnessRunMapsHyphensInRoleIdentifiers pins the custom-harness env-prefix
+// mapping so a hyphenated role (ci-check) becomes a valid bash identifier
+// (CI_CHECK_), matching mintcore.RoleIdentifier (#7140).
+func TestHarnessRunMapsHyphensInRoleIdentifiers(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	harnessStart := strings.Index(content, "  harness-run:\n")
+	require.NotEqual(t, -1, harnessStart, "reusable-dispatch.yml must define harness-run")
+	harnessJob := content[harnessStart:]
+
+	setup := extractStepSection(t, harnessJob, "Setup agent environment")
+	assert.Contains(t, setup, `ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')`,
+		"Setup agent environment must uppercase the role and map hyphens to underscores")
+}
+
 // TestLayeredDirsMatchWorkspacePreparation pins the LAYERED_DIRS list in
 // every workspace-preparation step to scaffold.layeredDirs. The scaffold
 // skips these directories at install time on the promise that workspace
@@ -1213,7 +1537,8 @@ func TestHarnessRunResolvesBotIdentity(t *testing.T) {
 // replace the canonical profiles the fleet resolves from fullsend-ai/agents
 // (fullsend-github-ro, fullsend-vertex-ai, ...). A profile a runner needs
 // for its own provider type — fullsend-openai — is imported from the
-// embedded scaffold by `fullsend run` instead.
+// embedded scaffold by `fullsend run` instead. policies/ is on neither list:
+// the scaffold ships no policy (#6834).
 func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 	notLayered := map[string]bool{"profiles": true}
 	want := make([]string, 0, len(layeredDirs))

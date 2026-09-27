@@ -62,6 +62,9 @@ func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { retu
 // IsOrgMode returns false — per-repo configs are never org mode.
 func (d *perRepoDefaults) IsOrgMode() bool { return false }
 
+// IsOwnersFileAuthEnabled returns false — OWNERS auth is off by default.
+func (d *perRepoDefaults) IsOwnersFileAuthEnabled() bool { return false }
+
 // ConfigMintURL returns the default mint URL (hosted public mint).
 func (d *perRepoDefaults) ConfigMintURL() string { return DefaultPerRepoMintURL }
 
@@ -79,7 +82,16 @@ func (d *perRepoDefaults) ConfigInferenceRegion() string { return DefaultPerRepo
 // must be provided by the installer or existing secret).
 func (d *perRepoDefaults) ConfigInferenceWIFProvider() string { return "" }
 
+// ConfigKeepHistory returns the default keep-history state (true —
+// sticky comment updates append previous content as "Previous run"
+// blocks, preserving the pre-existing behavior).
+func (d *perRepoDefaults) ConfigKeepHistory() bool { return true }
+
 // ConfigInferenceOpenAI returns the default OpenAI WIF identifiers (none —
 // set by `fullsend github setup --openai-*` or the FULLSEND_OPENAI_*
 // runner variables).
 func (d *perRepoDefaults) ConfigInferenceOpenAI() OpenAIWIFConfig { return OpenAIWIFConfig{} }
+
+// ConfigModelAliases returns the default model aliases (none — fleet
+// defaults are compiled into the runtimes).
+func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }

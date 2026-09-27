@@ -6,11 +6,15 @@
 
 When changing **any** non-test `.go` file in `internal/mint/`, copy it to the corresponding `.embed` file in `internal/dispatch/gcf/mintsrc/`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too. The `lint-mint-embed-sync` pre-commit hook checks all files — not just `main.go`.
 
+**Build metadata stamping:** The mint Cloud Function receives version and commit metadata via deploy-time source stamping, not runtime environment variables. The provisioner writes `mintcore/version.go` into the function source zip at bundle time. Never use environment variables for values that must stay in lockstep with the deployed source. See [Mintcore Architecture](mintcore.md#build-metadata-stamping).
+
 **Standalone mint:** `cmd/mint/` is a standalone HTTP server variant of the token mint that serves the same purpose as the GCF mint (`internal/mint/`) but runs without GCP infrastructure. Both use the shared `internal/mintcore/` library for token minting logic; they differ only in deployment model (filesystem PEM vs Secret Manager, JWKS vs STS verification). It supports custom role permissions via `CUSTOM_ROLE_PERMISSIONS` and a fallback proxy to an upstream mint. It has its own `go.mod` and tests run from `cmd/mint/`.
 
 **CF Worker adapter:** `internal/dispatch/cf/workersrc/` is a thin TypeScript Cloudflare Worker adapter that consumes mintcore via WASM (`cmd/mint-wasm`). The adapter handles I/O only (Worker secrets, host fetch, Fetch Request/Response mapping); all mint logic stays in Go. The Go WASM bridge registers `mintcoreInitMint` and `mintcoreHandleFetch` on `globalThis` via `syscall/js`; changes to these entry points in `cmd/mint-wasm` or to the contracts they consume in `internal/mintcore/` require updating `workersrc/src/index.ts` to match.
 
-**Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements.
+**Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements. It must not import `internal/mintcore` or `internal/mintcore/mintconsts` — `mintconsts` lives in the nested mintcore module even though it has no mintcore imports of its own.
+
+**Public behaviourtest graph must not import mintcore.** `internal/mintcore` is a nested module resolved in this repository by a local `replace` that downstream modules do not inherit. Packages reachable from `pkg/behaviourtest`'s public build must not import `internal/mintcore` or `internal/mintcore/mintconsts`, and must not import other in-module packages whose production graph includes mintcore (`internal/cli`, `internal/layers`, `internal/repos`). Duplicate a string or helper locally instead (see `pkg/e2etest/auth.go`, `internal/mintclient/mintclient.go`, `pkg/behaviourtest/drivers/install/validate.go`). `TestBehaviourtestDepsExcludeMintcore` asserts `go list -deps` (with and without `-tags behaviour`) never lists the nested module.
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
 
@@ -58,15 +62,15 @@ The `make wasm-build` target enforces these limits automatically — run it afte
 When making changes to Go code under `cmd/`, `internal/`, or `pkg/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
-2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines must meet **80%** (with a 5% tolerance). **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
+2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines has an **80% target** and a **75% enforced floor** (5% threshold). Codecov PR comments mark ✗ below 80% even when the `codecov/patch` status check is green. **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
 3. **Vet:** Run `make go-vet` to catch common issues.
 4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against live GitHub pool orgs using mint/OIDC authentication.
 
 ## Verifying patch coverage locally
 
 `make go-test` runs tests with `-cover` but does not check whether your
-changed lines meet the **80% patch coverage** threshold from
-[`.codecov.yml`](../../.codecov.yml). You must approximate this check
+changed lines meet the **80% patch coverage** target (75% enforced floor)
+from [`.codecov.yml`](../../.codecov.yml). You must approximate this check
 yourself before committing. Skipping this step is the most common cause
 of `codecov/patch` failures on first push.
 
@@ -89,6 +93,13 @@ of `codecov/patch` failures on first push.
      | sed 's|^|./|'
    ```
 
+   Before running coverage, check each affected package for `_test.go`
+   files; if none exist, add direct unit tests for the changed code
+   first, since missing or zero coverage cannot satisfy the patch
+   coverage threshold. See the
+   [check-patch-coverage skill](../../skills/check-patch-coverage/SKILL.md#3-check-for-packages-with-no-test-files)
+   for the detection script.
+
 3. **Run tests with a cover profile** for the affected packages:
 
    ```bash
@@ -108,17 +119,20 @@ of `codecov/patch` failures on first push.
    you added or modified — these approximate Codecov's line-level patch
    metric.
 
-5. **Assess against the threshold.** If the functions you changed or
-   added show coverage well below 80%, add or extend `_test.go` files
-   to cover the missing lines. Then re-run from step 3.
+5. **Assess against the 80% target (75% floor).** If the functions you
+   changed or added show coverage well below 80%, add or extend
+   `_test.go` files to cover the missing lines. Then re-run from step 3.
 
 ### What counts as covered
 
 Codecov measures line-level coverage on the diff. Locally, `go tool
 cover -func` reports function-level coverage, which is a coarser
-approximation. Target **≥ 80%** on the functions you touched. If a
-function has complex branching, use `go tool cover -html=coverage.out`
-to visually inspect which lines are covered.
+approximation. The `codecov/patch` status check passes at **≥ 75%**
+(80% target minus 5% threshold); PR comments still mark ✗ below 80%.
+Target **≥ 80%** on the functions you touched so both signals agree and
+to leave margin for the function-vs-line approximation. If a function
+has complex branching, use `go tool cover -html=coverage.out` to
+visually inspect which lines are covered.
 
 ### When to skip
 
@@ -192,6 +206,88 @@ This applies to all `require` functions (`require.NoError`, `require.Equal`, `re
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
 
+## Concurrent error handling
+
+When goroutines fan out to perform **independent** operations that can each
+fail on their own (e.g., a `sync.WaitGroup` + `go func` loop creating
+providers), collect **every** failure and surface them together with
+`errors.Join`. Do not keep a single error variable (e.g., `firstErr`) that
+discards all failures after the first — that forces the user into
+fix-and-rerun cycles: they fix the one error shown, rerun, and only then
+discover the next.
+
+The canonical pattern — a mutex-guarded `[]error` accumulated across
+goroutines and joined after `wg.Wait()` — is in `internal/cli/run.go`
+(provider fan-out):
+
+```go
+var (
+    mu   sync.Mutex
+    wg   sync.WaitGroup
+    errs []error
+)
+for _, pd := range allDefs {
+    wg.Add(1)
+    go func(pd harness.ProviderDef) {
+        defer wg.Done()
+        if err := sandbox.EnsureProvider(ctx, /* … */); err != nil {
+            mu.Lock()
+            errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
+            mu.Unlock()
+            return
+        }
+    }(pd)
+}
+wg.Wait()
+if err := errors.Join(errs...); err != nil {
+    return err
+}
+```
+
+The `sync.Mutex` is the idiom used here; writing each goroutine's result into
+its own pre-sized slice slot (one index per goroutine, no lock) is equally
+acceptable. The requirement is that no failure is dropped — not the specific
+synchronization mechanism.
+
+**This applies only to independent fan-out.** When goroutines are *not*
+independent — you deliberately want the first failure to cancel the rest
+(e.g., an `errgroup.Group` sharing a `context.Context`) — fail-fast is
+correct and must not be forced into error collection.
+
+**When reviewing PRs:** Flag a fan-out that captures only the first error (a
+single `firstErr`/`err` variable, or break-on-first) across independent
+goroutines as a **medium-severity** finding, and recommend collecting a
+`[]error` and returning `errors.Join`. Do not flag intentional fail-fast
+cancellation patterns.
+
+## httptest handler-invocation assertions
+
+When writing tests that use `httptest.NewServer` with a custom `http.ServeMux`, always assert that the registered handler was actually invoked. Without this assertion, a test can silently pass when the handler path does not match the code's actual request path — an unmatched route on the `http.ServeMux` returns 404, and if the test expects a "not found" or error outcome, the wrong path produces the right status code by coincidence.
+
+### Pattern: `handlerCalled` boolean
+
+Declare a `handlerCalled` boolean before the handler, set it to `true` inside the handler, and assert it after the test action:
+
+```go
+handlerCalled := false
+mux.HandleFunc("/expected/path", func(w http.ResponseWriter, r *http.Request) {
+    handlerCalled = true
+    assert.Equal(t, http.MethodGet, r.Method)
+    writeJSON(t, w, http.StatusOK, response)
+})
+
+result, err := client.DoSomething(ctx, "arg")
+require.NoError(t, err)
+assert.Equal(t, expected, result)
+assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+```
+
+This applies to every handler registration in httptest-based tests — not just error cases. A handler that is never called means the test is not exercising the code path it claims to test.
+
+### Why this matters
+
+The coincidental-pass bug class is well-understood in Go httptest usage. A real instance occurred in this repo: `TestGetCommentProperty_NotFound` registered its handler at `/rest/api/3/issue/PROJ-1/comment/10001/properties/missing`, but the production code constructed the path `/rest/api/3/comment/10001/properties/missing` (no issue prefix). The handler was never invoked, yet the test passed because the default 404 matched the expected `forge.ErrNotFound`. The fix was a one-line `handlerCalled` assertion — see [`internal/forge/jira/client_test.go`](../../internal/forge/jira/client_test.go) for the canonical example.
+
 ## Context-aware blocking
 
 Functions that accept `context.Context` must not use `time.Sleep` or other
@@ -255,7 +351,7 @@ if errors.Is(err, errGitLabTokenMissing) {
 
 **Do not** match errors by substring: `strings.Contains(err.Error(), "token")` couples error handling to message wording and breaks when messages change. Use `errors.Is` or `errors.As` for all programmatic error checks.
 
-See `internal/cli/forge_client.go` (`errGitLabTokenMissing`), `internal/cli/admin.go` (`errMintNotFound`), and `internal/cli/lock.go` (`errHarnessNotFound`) for examples of this pattern in the codebase.
+See `internal/cli/github_client.go` (`errGitHubTokenMissing`), `internal/cli/forge_client.go` (`errGitLabTokenMissing`), `internal/cli/admin.go` (`errMintNotFound`), and `internal/cli/lock.go` (`errHarnessNotFound`) for examples of this pattern in the codebase.
 
 ### Use `%q` for values in error messages
 
@@ -309,6 +405,21 @@ See [`forge.IsTransient`](../../internal/forge/forge.go) for the canonical examp
 
 **When reviewing PRs:** Flag any `Timeout() bool` interface assertion without a preceding `errors.Is(err, context.DeadlineExceeded)` guard as a medium-severity finding. The fix is to add the context-error check before the `Timeout()` check.
 
+### Template map iteration
+
+Go's `text/template` `range` action visits map keys of basic types (string,
+int, uint, float) in **sorted order** — unlike bare `range` over a map in Go code.
+Do **not** flag `{{ range $k, $v := .SomeMap }}` in templates as
+non-deterministic when the key type is a basic type. See
+[text/template documentation](https://pkg.go.dev/text/template) (search
+"sorted key order").
+
+**When reviewing PRs:** Do not flag `range` over a basic-type-keyed map
+inside a `text/template` as non-deterministic output. The `text/template`
+package guarantees sorted iteration for string, int, uint, and float keys. This
+is a well-documented exception to Go's general rule that map iteration
+order is unspecified.
+
 ## Injectable function variables (test seams)
 
 Package-level variables that hold function values for test overriding must:
@@ -329,7 +440,7 @@ Examples: `internal/sandbox/sandbox.go` (`RetrySleepFn`), `internal/dispatch/cf/
 `FetchURL` has a deliberately narrow envelope — reach for it only when all of these hold, otherwise it will reject the request or can't express what you need:
 
 - **The legitimate host set is known up front.** `FetchURL` requires a non-empty `AllowedDomains` allowlist — an empty allowlist rejects *every* URL (`isAllowedDomain` returns false), so the allowlist is mandatory, not optional.
-- **GET, HTTP 200, no custom headers.** It issues a `GET`, accepts only a 200 response, and sends no request headers — so it cannot carry authentication, use another method, or handle non-200 status codes.
+- **GET, HTTP 200, no custom headers.** It issues a `GET` and sends no request headers — so it cannot carry authentication or use another method. Transient HTTP status codes (429, 502, 503) are retried with exponential backoff, but the function ultimately requires a 200 response.
 - **Whole body buffered, port 443.** It reads the entire body into memory and defaults `AllowedPorts` to `{"443"}`.
 
 When the fetch falls outside that envelope you must build a custom client. Common reasons: **the legitimate host set is not knowable up front** (e.g. `internal/repos/manifest.go`'s `LoadManifest` accepts any user-supplied `https://` host, so no allowlist covers it — this is why `fetchManifestURL`/`safeDialContext` exist and deliberately do *not* use `FetchURL`), authenticated requests, non-GET methods, non-200 handling, streaming, or a client reused across many calls. The complete worked pattern is `LoadManifest`'s initial HTTPS-only gate together with `fetchManifestURL`/`safeDialContext`; the fetch functions enforce the remaining controls and HTTPS-only redirects, but do not independently reject a non-HTTPS initial URL. A custom in-scope client **must** apply all of these properties:
@@ -343,6 +454,91 @@ When the fetch falls outside that envelope you must build a custom client. Commo
 - **Constrain redirects.** Block them (as `fetch.FetchURL` does) or cap the hop count; and if you allow any hop, re-run the checks above against each redirect target — both the scheme check and, via per-connection dialing, the internal-IP check — not just the scheme.
 
 When the set of legitimate hosts *is* known, add a domain allowlist too, even on the custom path.
+
+
+## Credential redaction for external content
+
+Any runner feature that processes external content — validation script
+output, CI logs, script stdout/stderr — for injection into LLM prompts,
+logging, or file storage **must** redact credentials before that content
+leaves the runner boundary. The validation loop's `redactFeedback`
+function in `internal/cli/run.go` is the canonical implementation.
+
+### Invariants
+
+1. **Scan `RunnerEnv` for credential literal values.** Iterate the
+   runner environment map and replace every value whose key is
+   classified as sensitive by `sensitiveEnvKey` (explicit names like
+   `PUSH_TOKEN`, `GH_TOKEN`, plus suffix matches on `_TOKEN`,
+   `_SECRET`, `_PASSWORD`, `_KEY`, `_CREDENTIALS`) with
+   `[REDACTED:<key>]`. Skip values shorter than
+   `minRedactableSecretLen` (currently 8) — short values like `"main"`
+   or `"true"` cause false-positive mangling.
+
+2. **Scan `providerOnlyKeys` from the process environment
+   (`os.Getenv`) for credential literal values.** Provider-only
+   credentials such as `GH_WORKFLOW_TOKEN` are intentionally kept
+   out of `RunnerEnv` (see #6649) so harness-controlled `${}` expansion
+   can't reach them, which means the `RunnerEnv` scan in invariant 1
+   never sees them. Iterate `providerOnlyKeys`, read each value with
+   `os.Getenv`, and replace it the same way (skipping values shorter
+   than `minRedactableSecretLen`). A future credential class kept out
+   of `RunnerEnv` for the same reason needs the same treatment here.
+
+3. **Apply `security.SecretRedactor` as a fallback pass.**
+   The `RunnerEnv` and `providerOnlyKeys` scans only catch credentials
+   the runner explicitly declared. A
+   `security.NewSecretRedactor().Scan(content)` call catches
+   credentials with recognizable shapes (known-prefix tokens such as
+   `ghp_`, `sk-ant-`, `AKIA`, PEM blocks, connection strings) that
+   never passed through either source — for example, a key baked into
+   a test fixture or a pre-commit hook printing its own secrets.
+
+4. **Use `truncateUTF8` when enforcing size limits on external
+   content.** Naive byte slicing (`s[:max]`) can split a multi-byte
+   UTF-8 rune, producing invalid text that breaks downstream JSON
+   serialization or LLM tokenization. Use `truncateUTF8(s, max)`
+   (defined in `internal/cli/run.go`), which backs up to the last
+   valid rune boundary before appending a `[truncated]` marker.
+
+5. **Write files containing potential secrets with mode `0600`.**
+   Feedback files, redacted logs, and any file derived from external
+   content must use `os.WriteFile(path, data, 0o600)` — not `0644`.
+   The run directory is uploaded as a CI artifact; restrictive
+   permissions limit exposure if the artifact is downloaded to a
+   shared filesystem.
+
+### Why all three passes are needed
+
+No single pass is sufficient. Opaque tokens declared in `RunnerEnv`
+(e.g., a GitHub installation token with no recognizable prefix) have no
+pattern for the `SecretRedactor` to match — only the literal `RunnerEnv`
+scan catches those. Provider-only credentials such as
+`GH_WORKFLOW_TOKEN` are deliberately excluded from `RunnerEnv`, so
+neither the `RunnerEnv` scan nor an unrelated `SecretRedactor` pattern
+match is guaranteed to catch them — only the `providerOnlyKeys` scan of
+the process environment does, though `SecretRedactor` may also match
+this token's shape as a fallback. Conversely, credentials that never
+entered either the runner environment or `providerOnlyKeys` (a PEM key
+printed by a repo hook, a fixture secret) are invisible to both env
+scans — only the pattern-based `SecretRedactor` catches those.
+
+### When this applies
+
+Apply these invariants whenever external content crosses a trust
+boundary in the runner:
+
+- Validation script output injected into the next iteration's LLM
+  prompt (`feedback_mode`)
+- Pre-commit or post-script output routed back to the agent
+- CI log fragments stored in the run directory
+- Any new feature that captures subprocess output for prompt injection,
+  storage, or logging
+
+See also [#2107](https://github.com/fullsend-ai/fullsend/issues/2107)
+(replicate existing security patterns) and
+[#2872](https://github.com/fullsend-ai/fullsend/issues/2872)
+(post-script security invariants) for related guidance in other layers.
 
 ## Running the fullsend CLI
 
@@ -376,3 +572,63 @@ The e2e tests mint short-lived GitHub App installation tokens via the central to
 **When reviewing PRs:** Flag unauthorized suite-timeout increases as an **important-severity** finding (policy violation). Explicit human authorization in the linked issue or a PR comment is the only exception.
 
 See [`docs/guides/dev/e2e-testing.md`](../guides/dev/e2e-testing.md) and `make help` for pool org setup and troubleshooting.
+
+## Per-repo config field checklist
+
+When adding a new field to `perRepoConfig` (`internal/config/config.go`)
+that needs validation, you must wire validation into **both** the write
+path and the run path. The two paths use different validation entry
+points, and missing either one creates a gap.
+
+### Why two validation paths exist
+
+`perRepoConfig.Validate()` runs on **write paths** — for example, when
+`fullsend config set` persists a config file. However, `fullsend run`
+loads config via `loadPerRepoLayers()` (in `internal/config/interfaces.go`),
+which **does not call `Validate()`**. This means validation logic that
+only lives in `Validate()` never fires when the config is consumed at
+runtime. Invalid entries (unknown keys, bad references) are silently
+accepted.
+
+The codebase solves this with a dual-validation pattern: `Validate()`
+covers write paths, and inline validation in `runAgent()`
+(`internal/cli/run.go`) covers the run path.
+
+### Canonical examples
+
+- **`agentSettings()`** (`internal/cli/run.go`) — validates agent
+  entries loaded from config before applying them. The function's doc
+  comment explicitly states: "`fullsend run` never calls `Validate()` on
+  the config it loads, so this is where those values get checked."
+- **`ValidateModelAliases()`** (`internal/config/config.go`) — exported
+  validation function called both in `Validate()` (write path) and
+  directly in `runAgent()` (run path) to reject unknown alias keys and
+  invalid model references before the sandbox is created.
+- **`run_models_aliases_test.go`** (`internal/cli/`) — run-path
+  integration test verifying that invalid `models.aliases` values are
+  rejected by `runAgent()` before sandbox creation.
+
+### Checklist
+
+When adding a new validated field to `perRepoConfig`:
+
+1. **Add validation in `Validate()`** — this covers write paths (e.g.,
+   `fullsend config set`).
+2. **Add inline validation in `runAgent()`** — follow the
+   `agentSettings()` / `ValidateModelAliases()` pattern: validate the
+   effective (merged) value before the sandbox is created, not after.
+   If the validation logic is non-trivial, export it as a standalone
+   function (like `ValidateModelAliases`) so both call sites use the
+   same logic.
+3. **Add a run-path integration test** — follow the pattern in
+   `run_models_aliases_test.go`: write an invalid config, call
+   `runAgent()`, and assert that it fails with the expected error
+   before any sandbox is created.
+
+### When reviewing PRs
+
+When reviewing a PR that adds a new validated field to `perRepoConfig`,
+check that validation fires on the run path — not only in `Validate()`.
+Flag a missing run-path validation call as a **medium-severity** finding.
+The fix is to add inline validation in `runAgent()` and a corresponding
+integration test.

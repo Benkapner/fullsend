@@ -30,6 +30,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -194,6 +196,9 @@ func useFakeOpenshell(t *testing.T) {
 func useFakeOpenshellProviders(t *testing.T) {
 	t.Helper()
 	neutralizeAgentsRepoFallback(t)
+	// ImportProfileVerified keeps a per-id content cache under os.TempDir()
+	// and the providers-stub records imported ids there; isolate both.
+	t.Setenv("TMPDIR", t.TempDir())
 	stubDir, err := filepath.Abs(filepath.Join("testdata", "providers-stub"))
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
@@ -696,7 +701,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 func TestRunAgent_ProviderProfileOrchestration(t *testing.T) {
 	// Exercises the provider/profile orchestration block in runAgent
 	// (steps 2a-2c): CheckGateway, checkProviderProfileIntegrity,
-	// EnableProvidersV2, ImportProfile, EnsureProvider, CreateWithRetry.
+	// EnableProvidersV2, ImportProfileVerified, EnsureProvider, CreateWithRetry.
 	// Uses the providers-stub that passes all openshell commands.
 	useFakeOpenshellProviders(t)
 
@@ -754,6 +759,72 @@ openshell:
 	assert.NotContains(t, err.Error(), "importing profile")
 	assert.NotContains(t, err.Error(), "ensuring provider")
 	assert.NotContains(t, err.Error(), "creating sandbox")
+}
+
+// TestRunAgent_UnlistedProfileDirectoryFileIsNotImported guards the #7095
+// fix: an unlisted file under the fullsend dir's profiles/ directory must
+// never be scanned or imported, even when it shares an id with a profile
+// the harness does resolve via openshell.profiles. Before #7095, the
+// now-removed sandbox.ImportProfiles(profilesDir) call imported every file
+// in profiles/ regardless of harness listing, so a stale unlisted copy
+// could become the live gateway profile for a shared id. This test uses
+// recordingProvidersStub to record every openshell invocation and asserts
+// the unlisted file's path is never referenced.
+func TestRunAgent_UnlistedProfileDirectoryFileIsNotImported(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "profiles"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// listed.yaml is the only profile the harness references; unlisted.yaml
+	// shares its id but sits in profiles/ without being named anywhere on
+	// the harness, so it must be inert.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "profiles", "listed.yaml"),
+		[]byte("id: shared-profile\ndisplay_name: Listed\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "profiles", "unlisted.yaml"),
+		[]byte("id: shared-profile\ndisplay_name: Unlisted-Poison\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nopenshell:\n  profiles:\n    - profiles/listed.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nagents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	// The stub cannot bootstrap an agent past sandbox creation, but the run
+	// must get past the profile-import step without error.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "importing profile")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	listedPath := filepath.Join(dir, "profiles", "listed.yaml")
+	unlistedPath := filepath.Join(dir, "profiles", "unlisted.yaml")
+	assert.Contains(t, log, "provider profile import --file "+listedPath, "the harness-listed profile must be imported")
+	assert.NotContains(t, log, unlistedPath, "the unlisted directory file must never be referenced")
+	assert.NotContains(t, log, "unlisted.yaml", "the unlisted directory file must never be referenced")
+	assert.NotContains(t, log, "provider profile import --from", "the removed directory-wide import must never be invoked")
 }
 
 func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
@@ -2301,6 +2372,97 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
 	}
 	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
+	assert.False(t, oidcDenyKeys[workflowTokenEnv], "GH_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
+}
+
+func TestProviderOnlyKeys_WorkflowToken(t *testing.T) {
+	assert.True(t, providerOnlyKeys[workflowTokenEnv])
+	assert.True(t, reservedSandboxKeys[workflowTokenEnv], "env.sandbox must not inject GH_WORKFLOW_TOKEN")
+	assert.True(t, harnessExpansionDenied(workflowTokenEnv))
+	assert.False(t, oidcDenyKeys[workflowTokenEnv])
+
+	t.Setenv("SAFE_VAR", "ok")
+	val, ok := harnessEnvLookup("SAFE_VAR")
+	assert.True(t, ok)
+	assert.Equal(t, "ok", val)
+	assert.Equal(t, "ok", harnessEnvExpand("SAFE_VAR"))
+
+	_, ok = harnessEnvLookup(workflowTokenEnv)
+	assert.False(t, ok, "lookup must fail closed so harness validation rejects the reference")
+}
+
+func TestHarnessExpansion_RefusesWorkflowTokenAtEachSite(t *testing.T) {
+	const token = "ghs_workflow_token_value_xx"
+	t.Setenv(workflowTokenEnv, token)
+
+	t.Run("runner_env validation", func(t *testing.T) {
+		h := &harness.Harness{RunnerEnv: map[string]string{"X": "${" + workflowTokenEnv + "}"}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("env.runner validation", func(t *testing.T) {
+		h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"X": "${" + workflowTokenEnv + "}"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("env.sandbox validation", func(t *testing.T) {
+		h := &harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"X": "${" + workflowTokenEnv + "}"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("host_files src validation", func(t *testing.T) {
+		h := &harness.Harness{HostFiles: []harness.HostFile{{Src: "${" + workflowTokenEnv + "}", Dest: "/tmp/x"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("validation_loop.schema validation", func(t *testing.T) {
+		h := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Schema: "${" + workflowTokenEnv + "}/schema.json"}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("runner_env env.runner env.sandbox schema expansion", func(t *testing.T) {
+		assert.Empty(t, harnessEnvExpand(workflowTokenEnv))
+		assert.NotContains(t, os.Expand("${"+workflowTokenEnv+"}", harnessEnvExpand), token)
+	})
+	t.Run("host_files src expansion", func(t *testing.T) {
+		assert.Empty(t, safeExpandEnv("${"+workflowTokenEnv+"}"))
+		assert.NotContains(t, safeExpandEnv("${"+workflowTokenEnv+"}"), token)
+	})
+	t.Run("host_files content expansion", func(t *testing.T) {
+		got := shellSafeExpandEnv("token=${" + workflowTokenEnv + "}")
+		assert.NotContains(t, got, token)
+	})
+}
+
+func TestBuildSandboxEnvLines_SkipsWorkflowToken(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "coder",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":     "allowed",
+				workflowTokenEnv: "ghs_should_not_land_in_sandbox",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+func TestStripOIDCEnv_StripsWorkflowToken(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		workflowTokenEnv + "=ghs_workflow_token_value_xx",
+		"SAFE_VAR=value",
+	}
+	result := stripOIDCEnv(env)
+	assert.Equal(t, []string{"PATH=/usr/bin", "SAFE_VAR=value"}, result)
 }
 
 func TestNeedsCrossCompilation(t *testing.T) {
@@ -2869,8 +3031,18 @@ func TestWriteValidationFeedback_RedactsBeforeWritingFile(t *testing.T) {
 	assert.Contains(t, string(data), "[REDACTED:PUSH_TOKEN]")
 }
 
+func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
+	const token = "ghs_workflow_redact_me_xx"
+	t.Setenv(workflowTokenEnv, token)
+	out := redactFeedback("leaked "+token+" here", nil)
+	assert.NotContains(t, out, token)
+	assert.Contains(t, out, "[REDACTED:"+workflowTokenEnv+"]")
+	assert.Contains(t, out, "leaked ")
+	assert.Contains(t, out, " here")
+}
+
 func TestSensitiveEnvKey(t *testing.T) {
-	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS"} {
+	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS", "GH_WORKFLOW_TOKEN"} {
 		assert.True(t, sensitiveEnvKey(k), "%s should be treated as sensitive", k)
 	}
 	for _, k := range []string{"TARGET_BRANCH", "REPO_FULL_NAME", "ISSUE_NUMBER", "KEYCHAIN"} {
@@ -3209,8 +3381,103 @@ func TestPostScriptRepoEnv(t *testing.T) {
 			repoDir, iterDir := postScriptRepoEnv(tt.h, runDir, hostRepoDir, tt.repoExtractedOK, tt.validatedIterNum)
 			assert.Equal(t, tt.wantRepoDir, repoDir, "REPO_DIR")
 			assert.Equal(t, tt.wantIterDir, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR")
+			if repoDir != "" {
+				assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
+			}
+			if iterDir != "" {
+				assert.True(t, filepath.IsAbs(iterDir), "FULLSEND_VALIDATED_ITERATION_DIR must be absolute, got %q", iterDir)
+			}
 		})
 	}
+}
+
+func TestResolveOutputBase(t *testing.T) {
+	t.Run("empty uses temp dir and is absolute", func(t *testing.T) {
+		got, err := resolveOutputBase("")
+		require.NoError(t, err)
+		assert.True(t, filepath.IsAbs(got))
+		assert.Equal(t, filepath.Join(os.TempDir(), "fullsend"), got)
+	})
+
+	t.Run("relative becomes absolute against cwd", func(t *testing.T) {
+		cwd := t.TempDir()
+		t.Chdir(cwd)
+		got, err := resolveOutputBase("rel-output")
+		require.NoError(t, err)
+		assert.True(t, filepath.IsAbs(got))
+		assert.Equal(t, filepath.Join(cwd, "rel-output"), got)
+	})
+
+	t.Run("absolute is unchanged", func(t *testing.T) {
+		abs := filepath.Join(t.TempDir(), "out")
+		got, err := resolveOutputBase(abs)
+		require.NoError(t, err)
+		assert.Equal(t, abs, got)
+	})
+}
+
+func TestPostScriptRepoEnv_RelativeOutputBaseYieldsAbsoluteIterDir(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	absBase, err := resolveOutputBase("rel-output")
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(absBase))
+
+	runDir := filepath.Join(absBase, "fs-test-sandbox")
+	hostRepoDir := filepath.Join(t.TempDir(), "host-repo")
+	withLoop := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Script: "validate.sh"}}
+	noLoop := &harness.Harness{}
+
+	t.Run("validation loop", func(t *testing.T) {
+		repoDir, iterDir := postScriptRepoEnv(withLoop, runDir, hostRepoDir, true, 2)
+		assert.Equal(t, hostRepoDir, repoDir)
+		assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
+		assert.True(t, filepath.IsAbs(iterDir), "FULLSEND_VALIDATED_ITERATION_DIR must be absolute, got %q", iterDir)
+		assert.Equal(t, filepath.Join(runDir, "iteration-2/output"), iterDir)
+	})
+
+	t.Run("no validation loop", func(t *testing.T) {
+		repoDir, iterDir := postScriptRepoEnv(noLoop, runDir, hostRepoDir, true, 3)
+		assert.Equal(t, hostRepoDir, repoDir)
+		assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
+		assert.Empty(t, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR is unset without a validation loop")
+	})
+}
+
+func TestRunAgent_RelativeOutputDirResolvesBeforeGateway(t *testing.T) {
+	// Fails at CheckGateway (fake openshell) after resolveOutputBase, so a
+	// relative --output-dir is exercised without waiting on sandbox create.
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "rel-out", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.NotContains(t, err.Error(), "resolving output dir")
 }
 
 func TestOpenTeeReader_EmptyPath(t *testing.T) {
@@ -3860,6 +4127,179 @@ func TestBuildSandboxEnvLines_SkipsReservedKeys(t *testing.T) {
 	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
 }
 
+func TestReservedSandboxKeys_IncludesTimeoutKeys(t *testing.T) {
+	t.Parallel()
+	assert.True(t, reservedSandboxKeys["FULLSEND_TIMEOUT_MINUTES"])
+	assert.True(t, reservedSandboxKeys["FULLSEND_ITERATION_DEADLINE"])
+	assert.True(t, reservedSandboxKeys["TRACEPARENT"])
+}
+
+// TestBuildSandboxEnvLines_SkipsTimeoutKeys verifies that FULLSEND_TIMEOUT_MINUTES,
+// FULLSEND_ITERATION_DEADLINE, and TRACEPARENT in env.sandbox are rejected as
+// reserved (#7042, #7593).
+func TestBuildSandboxEnvLines_SkipsTimeoutKeys(t *testing.T) {
+	t.Parallel()
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":                  "allowed",
+				"FULLSEND_TIMEOUT_MINUTES":    "999",
+				"FULLSEND_ITERATION_DEADLINE": "1234567890",
+				"TRACEPARENT":                 "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+func TestEffectiveTimeoutMinutes(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 20, effectiveTimeoutMinutes(&harness.Harness{TimeoutMinutes: 20}))
+	assert.Equal(t, defaultTimeoutMinutes, effectiveTimeoutMinutes(&harness.Harness{}))
+}
+
+// TestIterationTimedOut pins the kill test (#7042, same rule as #5075): a
+// failed iteration (the runner's lastExitCode, which already folds in a
+// transcript-reported error) at or past 90 % of the budget.
+func TestIterationTimedOut(t *testing.T) {
+	t.Parallel()
+	const timeout = 20 * time.Minute
+	assert.False(t, iterationTimedOut(0, timeout, timeout), "finished cleanly at 100 %")
+	assert.False(t, iterationTimedOut(1, 17*time.Minute+59*time.Second, timeout), "failed at 89 %")
+	assert.True(t, iterationTimedOut(1, 18*time.Minute, timeout), "failed at 90 %")
+	assert.True(t, iterationTimedOut(-1, timeout, timeout), "killed at 100 %")
+	assert.False(t, iterationTimedOut(1, 3*time.Minute, timeout), "early exit with bad output")
+}
+
+// TestIterationEnvSourceLine pins the last line of .env: sourcing an absent
+// file must not turn .env's exit status non-zero.
+func TestIterationEnvSourceLine(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t,
+		"if [ -f /sandbox/workspace/.fullsend/iteration.env ]; then . /sandbox/workspace/.fullsend/iteration.env; fi",
+		iterationEnvSourceLine())
+}
+
+// TestIterationEnvCommand pins the shell the runner executes before every
+// iteration: it rewrites (not appends to) the runner-owned file with the
+// budget, the kill time as Unix seconds (#7042), and TRACEPARENT (#7593).
+func TestIterationEnvCommand(t *testing.T) {
+	t.Parallel()
+	deadline := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
+	const tp = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+	want := func(traceparent string) string {
+		return fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix(), traceparent)
+	}
+	assert.Equal(t, want(tp), iterationEnvCommand(20, deadline, tp))
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, ""),
+		"empty TRACEPARENT is still exported so a harness value cannot linger")
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "abc"),
+		"non-W3C TRACEPARENT is dropped rather than interpolated")
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "'; rm -rf /; echo '"),
+		"shell metacharacters must not reach the printf")
+}
+
+// TestWriteIterationEnv checks the exit code is not swallowed: sandbox.Exec
+// returns a nil error for an ordinary command failure.
+func TestWriteIterationEnv(t *testing.T) {
+	t.Parallel()
+	deadline := time.Unix(1788717600, 0)
+	t.Run("ok", func(t *testing.T) {
+		t.Parallel()
+		var got string
+		exec := func(name, cmd string, _ time.Duration) (string, string, int, error) {
+			assert.Equal(t, "fs-test", name)
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, ""))
+		assert.Equal(t, iterationEnvCommand(20, deadline, ""), got)
+	})
+	t.Run("with traceparent", func(t *testing.T) {
+		t.Parallel()
+		const tp = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+		var got string
+		exec := func(_, cmd string, _ time.Duration) (string, string, int, error) {
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, tp))
+		assert.Equal(t, iterationEnvCommand(20, deadline, tp), got)
+		assert.Contains(t, got, "export TRACEPARENT="+tp)
+	})
+	t.Run("non-zero exit", func(t *testing.T) {
+		t.Parallel()
+		exec := func(string, string, time.Duration) (string, string, int, error) {
+			return "", "sh: read-only file system\n", 1, nil
+		}
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, "")
+		require.Error(t, err)
+		assert.Equal(t, "exit 1: sh: read-only file system", err.Error())
+	})
+	t.Run("exec error", func(t *testing.T) {
+		t.Parallel()
+		exec := func(string, string, time.Duration) (string, string, int, error) {
+			return "", "", 124, fmt.Errorf("command timed out after 10s")
+		}
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, "")
+		require.EqualError(t, err, "command timed out after 10s")
+	})
+	t.Run("clear", func(t *testing.T) {
+		t.Parallel()
+		var got string
+		exec := func(_, cmd string, _ time.Duration) (string, string, int, error) {
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, clearIterationEnv(exec, "fs-test"))
+		assert.Equal(t, "rm -f /sandbox/workspace/.fullsend/iteration.env", got)
+	})
+}
+
+func TestTimeoutNoRetryMessage(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "Agent timed out (used 20m0s of 20m0s budget) — not retrying",
+		timeoutNoRetryMessage(20*time.Minute+400*time.Millisecond, 20*time.Minute))
+}
+
+// TestRunTerminalError covers the retry contract of #7042: a killed
+// iteration ends the run with the timeout error, a valid result still wins,
+// and an early exit with invalid output stays a validation failure.
+func TestRunTerminalError(t *testing.T) {
+	t.Parallel()
+	const timeout = 20 * time.Minute
+	cases := []struct {
+		name            string
+		hasLoop, passed bool
+		timedOut        bool
+		runCount        int
+		elapsed         time.Duration
+		wantErrMsg      string // empty = no error
+	}{
+		{name: "loop, killed at budget, nothing valid", hasLoop: true, timedOut: true, runCount: 1, elapsed: timeout, wantErrMsg: "agent timed out after 20m0s without completing (timeout: 20m0s)"},
+		{name: "loop, killed at budget, output validated", hasLoop: true, passed: true, timedOut: true, runCount: 1, elapsed: timeout},
+		{name: "loop, early exit with invalid output", hasLoop: true, runCount: 2, elapsed: 3 * time.Minute, wantErrMsg: "validation failed after 2 iteration(s)"},
+		{name: "loop, validation passed", hasLoop: true, passed: true, runCount: 1, elapsed: 3 * time.Minute},
+		{name: "no loop, killed at budget", timedOut: true, runCount: 1, elapsed: 19 * time.Minute, wantErrMsg: "agent timed out after 19m0s without completing (timeout: 20m0s)"},
+		{name: "no loop, exited in time", runCount: 1, elapsed: 3 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := runTerminalError(tc.hasLoop, tc.passed, tc.timedOut, tc.runCount, tc.elapsed, timeout)
+			if tc.wantErrMsg == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tc.wantErrMsg)
+		})
+	}
+}
+
 func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "agents/test.md",
@@ -4415,6 +4855,160 @@ func TestSetupStatusNotifier_GitLab_NoMintURLNeeded(t *testing.T) {
 	assert.NotNil(t, n)
 }
 
+func TestSetupStatusNotifier_Jira(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// Simulate a Jira-originated event: trackerSource and trackerProject
+	// are extracted from the normalized event by runAgent and threaded
+	// through statusOpts.
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	// Jira uses a static client (like GitLab), not a factory.
+	assert.False(t, n.HasClientFactory(), "Jira should use a static client, not a factory")
+}
+
+func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+}
+
+func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+}
+
+func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_USER_EMAIL required")
+}
+
+func TestParseJiraKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		proj string
+		num  int
+		ok   bool
+	}{
+		{"PROJ-123", "PROJ", 123, true},
+		{"MY-PROJECT-1", "MY-PROJECT", 1, true},
+		{"A-999", "A", 999, true},
+		{"", "", 0, false},
+		{"PROJ", "", 0, false},
+		{"PROJ-", "", 0, false},
+		{"-123", "", 0, false},
+		{"PROJ-0", "", 0, false},
+		{"PROJ-abc", "", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			proj, num, ok := parseJiraKey(tt.key)
+			assert.Equal(t, tt.ok, ok)
+			if ok {
+				assert.Equal(t, tt.proj, proj)
+				assert.Equal(t, tt.num, num)
+			}
+		})
+	}
+}
+
+func TestSetupStatusNotifier_Jira_UsesGitHubRunID(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("GITHUB_RUN_ID", "98765")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_Jira_FallsBackToSyntheticRunID(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("GITHUB_RUN_ID", "") // unset
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
 func TestEmitDiagnostic_Warning(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
@@ -4549,6 +5143,241 @@ func TestWriteMetricsJSON(t *testing.T) {
 	}
 }
 
+// TestAggregateRunMetrics_PartialCancelledRun verifies that partial token
+// metrics from a cancelled run (no ResultEvent, only TokensEvent) are folded
+// into the aggregate correctly. This is the core data-flow assertion for #6936:
+// the cancellation short-circuit writes metrics using the aggregate, so the
+// aggregate must contain the partial tokens.
+func TestAggregateRunMetrics_PartialCancelledRun(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Simulate a cancelled run: metrics populated via TokensEvent (no
+	// ResultEvent, so NumTurns/TotalCostUSD stay zero).
+	m := agentruntime.RunMetrics{
+		InputTokens:              599,
+		OutputTokens:             119,
+		CacheCreationInputTokens: 148_943,
+		CacheReadInputTokens:     583_298,
+		Model:                    "claude-opus-4-6",
+	}
+	m.ToolCalls.Store(10)
+
+	aggregateRunMetrics(&agg, &m, 1)
+
+	if agg.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", agg.TokenUsage.Input)
+	}
+	if agg.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", agg.TokenUsage.Output)
+	}
+	if agg.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", agg.TokenUsage.CacheCreation)
+	}
+	if agg.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", agg.TokenUsage.CacheRead)
+	}
+	if agg.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", agg.ToolCalls)
+	}
+	if agg.Model != "claude-opus-4-6" {
+		t.Errorf("model = %q, want claude-opus-4-6", agg.Model)
+	}
+	if agg.NumTurns != 0 {
+		t.Errorf("num_turns = %d, want 0 (cancelled run has no ResultEvent)", agg.NumTurns)
+	}
+	if agg.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (cancelled run has no ResultEvent)", agg.TotalCostUSD)
+	}
+}
+
+// TestAggregateRunMetrics_MultiIterationCancel verifies that when a first
+// iteration completes normally and the second is cancelled (partial tokens,
+// no ResultEvent), the aggregate reflects both iterations' tokens and the
+// cost from the successful iteration. This exercises the real-world
+// cancellation scenario from #6936: the cleanup path writes the aggregate,
+// so it must combine all iterations faithfully.
+func TestAggregateRunMetrics_MultiIterationCancel(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Iteration 1: normal completion with a ResultEvent.
+	m1 := agentruntime.RunMetrics{
+		InputTokens:              10_000,
+		OutputTokens:             2_000,
+		CacheCreationInputTokens: 50_000,
+		CacheReadInputTokens:     100_000,
+		NumTurns:                 5,
+		TotalCostUSD:             0.42,
+		Model:                    "claude-opus-4-6",
+	}
+	m1.ToolCalls.Store(8)
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2: cancelled — TokensEvent only (no ResultEvent).
+	m2 := agentruntime.RunMetrics{
+		InputTokens:              599,
+		OutputTokens:             119,
+		CacheCreationInputTokens: 148_943,
+		CacheReadInputTokens:     583_298,
+		Model:                    "claude-opus-4-6",
+	}
+	m2.ToolCalls.Store(3)
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	// Token usage must reflect both iterations.
+	if agg.TokenUsage.Input != 10_599 {
+		t.Errorf("token_usage.input = %d, want 10599", agg.TokenUsage.Input)
+	}
+	if agg.TokenUsage.Output != 2_119 {
+		t.Errorf("token_usage.output = %d, want 2119", agg.TokenUsage.Output)
+	}
+	if agg.TokenUsage.CacheCreation != 198_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 198943", agg.TokenUsage.CacheCreation)
+	}
+	if agg.TokenUsage.CacheRead != 683_298 {
+		t.Errorf("token_usage.cache_read = %d, want 683298", agg.TokenUsage.CacheRead)
+	}
+
+	// Cost comes only from the successful iteration (cancelled run has zero cost).
+	if agg.TotalCostUSD != 0.42 {
+		t.Errorf("total_cost_usd = %f, want 0.42", agg.TotalCostUSD)
+	}
+	if agg.NumTurns != 5 {
+		t.Errorf("num_turns = %d, want 5 (cancelled iteration contributes zero turns)", agg.NumTurns)
+	}
+	if agg.ToolCalls != 11 {
+		t.Errorf("tool_calls = %d, want 11", agg.ToolCalls)
+	}
+	if agg.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", agg.Iterations)
+	}
+}
+
+// TestWriteMetricsJSON_CancelledRunPartialTokens verifies that partial
+// metrics from a cancelled run round-trip through writeMetricsJSON and
+// contain the expected token values but zero cost. This is the persistence
+// assertion for #6936: the artifact must contain non-zero token usage even
+// when TotalCostUSD is unavailable.
+func TestWriteMetricsJSON_CancelledRunPartialTokens(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build aggregate matching the cancelled-run evidence from #6936.
+	m := aggregateMetrics{
+		Iterations: 1,
+		ToolCalls:  10,
+		Model:      "claude-opus-4-6",
+	}
+	m.TokenUsage.Input = 599
+	m.TokenUsage.Output = 119
+	m.TokenUsage.CacheCreation = 148_943
+	m.TokenUsage.CacheRead = 583_298
+
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	// Token usage must be non-zero — the primary assertion for #6936.
+	if got.TokenUsage.Input == 0 {
+		t.Error("expected non-zero token_usage.input in cancelled-run metrics")
+	}
+	if got.TokenUsage.Output == 0 {
+		t.Error("expected non-zero token_usage.output in cancelled-run metrics")
+	}
+	if got.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", got.TokenUsage.Output)
+	}
+	if got.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", got.TokenUsage.CacheCreation)
+	}
+	if got.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", got.TokenUsage.CacheRead)
+	}
+	if got.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (dollar cost unavailable on cancellation)", got.TotalCostUSD)
+	}
+	if got.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", got.ToolCalls)
+	}
+}
+
+// TestWriteMetricsJSON_MultiIterationCancelRoundTrip verifies the full
+// data path for #6936: aggregate two iterations (one complete, one
+// cancelled), write metrics.json, read it back, and verify the combined
+// values survive serialization. This is the integration assertion — the
+// cancellation short-circuit calls aggregateRunMetrics then writeMetricsJSON,
+// so the round-trip must preserve both iterations' data.
+func TestWriteMetricsJSON_MultiIterationCancelRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	var agg aggregateMetrics
+
+	// Iteration 1: complete.
+	m1 := agentruntime.RunMetrics{
+		InputTokens:              10_000,
+		OutputTokens:             2_000,
+		CacheCreationInputTokens: 50_000,
+		CacheReadInputTokens:     100_000,
+		NumTurns:                 5,
+		TotalCostUSD:             0.42,
+		Model:                    "claude-opus-4-6",
+	}
+	m1.ToolCalls.Store(8)
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2: cancelled (partial tokens only).
+	m2 := agentruntime.RunMetrics{
+		InputTokens:  599,
+		OutputTokens: 119,
+		Model:        "claude-opus-4-6",
+	}
+	m2.ToolCalls.Store(3)
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	if err := writeMetricsJSON(dir, agg); err != nil {
+		t.Fatalf("writeMetricsJSON: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	// Combined token usage from both iterations.
+	if got.TokenUsage.Input != 10_599 {
+		t.Errorf("token_usage.input = %d, want 10599", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 2_119 {
+		t.Errorf("token_usage.output = %d, want 2119", got.TokenUsage.Output)
+	}
+	// Cost from completed iteration only.
+	if got.TotalCostUSD != 0.42 {
+		t.Errorf("total_cost_usd = %f, want 0.42", got.TotalCostUSD)
+	}
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.ToolCalls != 11 {
+		t.Errorf("tool_calls = %d, want 11", got.ToolCalls)
+	}
+}
+
 // --- mintAgentToken tests ---
 
 // useZeroMintTokenBackoff overrides mintTokenBackoff to skip real sleeps so
@@ -4581,6 +5410,7 @@ func TestMintAgentToken_CoderRole(t *testing.T) {
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		assert.Equal(t, "https://mint.example.com", req.MintURL)
 		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, "write", req.Level)
 		assert.Equal(t, []string{"my-repo"}, req.Repos)
 		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
 	}
@@ -4608,8 +5438,59 @@ func TestMintAgentToken_CoderRole(t *testing.T) {
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE to original empty value")
 
 	output := buf.String()
-	assert.Contains(t, output, "Minting agent token (role: coder)")
+	assert.Contains(t, output, "Minting agent token")
+	assert.Contains(t, output, "role: coder")
+	assert.Contains(t, output, "level: write")
 	assert.Contains(t, output, "Agent token minted")
+}
+
+func TestMintAgentTokenAtLevel_PassesLevel(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var gotLevel string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		gotLevel = req.Level
+		return &mintclient.MintResult{Token: "ghs_read_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "read", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	assert.Equal(t, "read", gotLevel)
+	assert.Equal(t, "ghs_read_token", os.Getenv("GH_TOKEN"))
+}
+
+func TestMintAgentTokenAtLevel_EmptyLevelDefaultsToWrite(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var gotLevel string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		gotLevel = req.Level
+		return &mintclient.MintResult{Token: "ghs_write_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	_, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.Equal(t, "write", gotLevel)
+}
+
+func TestMintAgentTokenAtLevel_RejectsInvalidLevel(t *testing.T) {
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "WRITE", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid privilege level")
 }
 
 func TestMintAgentToken_ReviewRole(t *testing.T) {
@@ -5050,6 +5931,7 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	}
 
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("GH_TOKEN", "ghp_original_pat")
 	t.Setenv("PUSH_TOKEN", "ghp_original_push")
 	t.Setenv("PUSH_TOKEN_SOURCE", "manual")
@@ -5067,6 +5949,237 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	assert.Equal(t, "ghp_original_pat", os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
 	assert.Equal(t, "ghp_original_push", os.Getenv("PUSH_TOKEN"), "cleanup should restore original PUSH_TOKEN")
 	assert.Equal(t, "manual", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore original PUSH_TOKEN_SOURCE")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "non-Actions mint must not derive GH_WORKFLOW_TOKEN from a local PAT")
+}
+
+func TestMintAgentToken_PreservesWorkflowTokenInActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const workflowToken = "ghs_workflow_token_aaa"
+	const mintedToken = "ghs_minted_token_bbb"
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role)
+		return &mintclient.MintResult{Token: mintedToken, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", workflowToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Equal(t, mintedToken, os.Getenv("GH_TOKEN"), "minted token still lands in GH_TOKEN")
+	assert.Equal(t, mintedToken, os.Getenv("PUSH_TOKEN"), "minted token still lands in PUSH_TOKEN")
+	assert.Equal(t, "github-app", os.Getenv("PUSH_TOKEN_SOURCE"))
+	assert.Equal(t, workflowToken, os.Getenv(workflowTokenEnv), "pre-mint GH_TOKEN is preserved for provider credentials")
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	assert.Contains(t, buf.String(), "::add-mask::"+mintedToken)
+	assert.Contains(t, buf.String(), "::add-mask::"+workflowToken)
+
+	// Post-agent output scan uses SecretRedactor; the preserved value is
+	// registered so it is stripped from artifacts even without a prefix match.
+	scan := security.NewSecretRedactor().Scan("log " + workflowToken + " here")
+	assert.NotContains(t, scan.Sanitized, workflowToken)
+
+	cleanup()
+	assert.Equal(t, workflowToken, os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup should unset GH_WORKFLOW_TOKEN when it was not preset")
+}
+
+func TestMintAgentToken_DoesNotDeriveWorkflowTokenOutsideActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_local_pat_not_copied")
+	t.Setenv(workflowTokenEnv, "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not copy a local PAT into GH_WORKFLOW_TOKEN")
+}
+
+func TestMintAgentToken_HonoursPresetWorkflowTokenOutsideActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const preset = "ghs_caller_set_workflow_token_xx"
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_local_pat_not_copied")
+	t.Setenv(workflowTokenEnv, preset)
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	assert.True(t, minted)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "caller-set GH_WORKFLOW_TOKEN is left alone outside Actions")
+
+	cleanup()
+	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "cleanup must not unset a caller-set token outside Actions")
+}
+
+// TestMintAgentToken_WarnsWhenNoPreMintTokenInActions covers the case a
+// future caller overrides the workflow's github_token input to empty: the
+// preserve step must skip loudly (a StepWarn), not silently, so the #6649
+// failure mode is diagnosable (review finding: logic-error, run.go:5137).
+func TestMintAgentToken_WarnsWhenNoPreMintTokenInActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Contains(t, buf.String(), "no pre-mint GH_TOKEN was found")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not preserve a workflow token when none was found")
+}
+
+// TestMintAgentToken_WarnsWhenPreMintTokenMalformed covers an operator- or
+// caller-controlled GH_TOKEN override that doesn't match mintTokenPattern:
+// the preserve step must fail closed (skip Setenv/add-mask/RegisterRuntimeSecret)
+// the same way result.Token is gated, and warn rather than fail silently
+// (review finding: injection, run.go:5144).
+func TestMintAgentToken_WarnsWhenPreMintTokenMalformed(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "not a valid token\nwith control chars")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+	var stderrBuf bytes.Buffer
+	_, _ = io.Copy(&stderrBuf, r)
+
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Contains(t, buf.String(), "unexpected format")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "malformed pre-mint token must not be preserved")
+	assert.NotContains(t, stderrBuf.String(), "::add-mask::not a valid token", "malformed token must not reach add-mask")
+}
+
+// TestMintAgentToken_RemintDoesNotClobberWorkflowToken covers the remint
+// path: remintAgentTokenForPostScript calls mintAgentToken a second time
+// after the first mint already replaced GH_TOKEN with the App installation
+// token. Before the fix, the second call's Actions preserve branch copied
+// that App token (mistaken for a fresh pre-mint value) over the workflow
+// token the first call had already preserved, since childScriptEnv strips
+// the var this wasn't user-visible in shipped code paths, but any reader of
+// the raw process env between remint and remintCleanup would observe the
+// wrong token (review finding: logic-error, run.go:5357).
+func TestMintAgentToken_RemintDoesNotClobberWorkflowToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const realWorkflowToken = "ghs_real_workflow_token_ccc"
+	const firstAppToken = "ghs_first_app_token_ddd"
+	const secondAppToken = "ghs_second_app_token_eee"
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: firstAppToken, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: secondAppToken, ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", realWorkflowToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+	require.Equal(t, 1, calls)
+	require.Equal(t, firstAppToken, os.Getenv("GH_TOKEN"))
+	require.Equal(t, realWorkflowToken, os.Getenv(workflowTokenEnv), "first mint preserves the real pre-mint token")
+
+	h := &harness.Harness{Role: "coder"}
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, secondAppToken, os.Getenv("GH_TOKEN"), "remint replaces GH_TOKEN with the freshly minted token")
+	assert.Equal(t, realWorkflowToken, os.Getenv(workflowTokenEnv), "remint must not clobber the already-preserved workflow token with the just-replaced App token")
+
+	// Under LIFO, remintCleanup runs before the first mint's own cleanup.
+	remintCleanup()
+	assert.Equal(t, firstAppToken, os.Getenv("GH_TOKEN"), "remintCleanup restores the first-mint token")
+	assert.Equal(t, realWorkflowToken, os.Getenv(workflowTokenEnv), "remintCleanup must leave the preserved workflow token untouched")
+
+	cleanup()
+	assert.Equal(t, realWorkflowToken, os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint value set by the test")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup unsets the workflow token that was empty before the first mint")
 }
 
 func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
@@ -5095,6 +6208,532 @@ func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
 
 	cleanup()
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE")
+}
+
+// envLast returns the last-wins value of key in an exec env slice, matching
+// os/exec's duplicate-key rule used by postScriptEnv.
+func envLast(env []string, key string) string {
+	prefix := key + "="
+	val := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			val = e[len(prefix):]
+		}
+	}
+	return val
+}
+
+func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	// Simulate runner_env expansion at the start of the run, which snapshots
+	// the first minted token into h.RunnerEnv (last-wins in postScriptEnv).
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+		},
+	}
+	assert.Equal(t, "ghs_original_token", h.RunnerEnv["PUSH_TOKEN"])
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+
+	env := postScriptEnv(h, "")
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"))
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+
+	// In runAgent, remintCleanup is deferred after the first mint's own
+	// cleanup, so under LIFO it runs first. At that point the first
+	// mint's cleanup has not fired yet, so remintCleanup must restore the
+	// process env to the first-mint token, not the pre-mint value.
+	remintCleanup()
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "remintCleanup must restore the first-mint token")
+	assert.Equal(t, "ghs_original_token", os.Getenv("GH_TOKEN"), "remintCleanup must restore the first-mint token")
+
+	// cleanup (the first mint's own cleanup) runs next under LIFO and must
+	// restore the pre-mint value the test set with t.Setenv above.
+	cleanup()
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+	assert.Equal(t, "", os.Getenv("GH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+}
+
+func TestRemintAgentTokenForPostScript_UsesPostScriptPrivilegeLevel(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var levels []string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		levels = append(levels, req.Level)
+		return &mintclient.MintResult{Token: "ghs_" + req.Level + "_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	_, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "read", printer)
+	require.NoError(t, err)
+	defer cleanup()
+
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:    "read",
+			harness.PrivilegeStagePostScript: "write",
+		},
+		RunnerEnv: map[string]string{
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "read", printer)
+	require.NoError(t, remintErr)
+	defer remintCleanup()
+
+	require.Equal(t, []string{"read", "write"}, levels)
+	assert.Equal(t, "ghs_write_token", os.Getenv("GH_TOKEN"))
+}
+
+func TestMaybeRemintAgentTokenForStage_SkipsWhenLevelsMatch(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	h := &harness.Harness{Role: "coder"} // omitted privilege_levels → write everywhere
+	printer := ui.New(io.Discard)
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "write", printer)
+	require.NoError(t, err)
+	restore()
+	assert.Equal(t, 0, calls)
+}
+
+func TestMaybeRemintAgentTokenForStage_RemintsAndRestores(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var levels []string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		levels = append(levels, req.Level)
+		return &mintclient.MintResult{Token: "ghs_" + req.Level + "_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	_, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "read", printer)
+	require.NoError(t, err)
+	defer cleanup()
+
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:   "read",
+			harness.PrivilegeStagePreScript: "write",
+		},
+		RunnerEnv: map[string]string{
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+	assert.Equal(t, "ghs_read_token", h.RunnerEnv["GH_TOKEN"])
+
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"read", "write"}, levels)
+	assert.Equal(t, "ghs_write_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_write_token", h.RunnerEnv["GH_TOKEN"])
+
+	restore()
+	assert.Equal(t, "ghs_read_token", os.Getenv("GH_TOKEN"), "restore must put the runtime token back")
+	assert.Equal(t, "ghs_read_token", h.RunnerEnv["GH_TOKEN"])
+}
+
+func TestMaybeRemintAgentTokenForStage_ErrorIsFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("mint rejected write level")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:   "read",
+			harness.PrivilegeStagePreScript: "write",
+		},
+	}
+	printer := ui.New(io.Discard)
+	_, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint rejected write level")
+}
+
+func TestMaybeRemintAgentTokenForStage_EmptyMintURLOrNilHarness(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called")
+		return nil, nil
+	}
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{Role: "coder", PrivilegeLevels: map[string]string{harness.PrivilegeStagePreScript: "write"}}
+
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	restore()
+
+	restore, err = maybeRemintAgentTokenForStage(context.Background(), nil, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	restore()
+}
+
+func TestMaybeRemintAgentTokenForStage_SkipsGitLab(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called on GitLab")
+		return nil, nil
+	}
+	h := &harness.Harness{
+		Role:            "coder",
+		PrivilegeLevels: map[string]string{harness.PrivilegeStagePreScript: "write"},
+	}
+	printer := ui.New(io.Discard)
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "gitlab", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	restore()
+}
+
+// TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx exercises the
+// context.WithoutCancel wrapping inside remintAgentTokenForPostScript: a
+// parent ctx cancelled before remint even starts (a CI job-level timeout
+// landing at exactly this moment is the failure mode #7231 fixes) must not
+// prevent the mint call. The wrapping now lives inside the helper itself
+// (rather than at the runAgent call site) specifically so a test can pass
+// an already-cancelled ctx directly, as done here.
+func TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_after_cancel", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": "",
+			"GH_TOKEN":   "",
+		},
+	}
+
+	printer := ui.New(io.Discard)
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(cancelledCtx, h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	defer remintCleanup()
+
+	assert.Equal(t, 1, calls, "remint must still call mint despite an already-cancelled parent ctx")
+	env := postScriptEnv(h, "")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "PUSH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "GH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+}
+
+// TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning
+// proves a remint truncated by remintForPostScriptTimeout is reported
+// differently from a genuine mint rejection, so operators can tell a
+// timeout apart from a real failure.
+func TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning(t *testing.T) {
+	origTimeout := remintForPostScriptTimeout
+	remintForPostScriptTimeout = 10 * time.Millisecond
+	defer func() { remintForPostScriptTimeout = origTimeout }()
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(ctx context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{Role: "coder", RunnerEnv: map[string]string{"PUSH_TOKEN": "existing_token"}}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	defer cleanup()
+
+	assert.Contains(t, buf.String(), "timed out", "a context.DeadlineExceeded must produce a distinct message from a generic mint failure")
+	assert.NotContains(t, buf.String(), "Failed to refresh agent token for post-script:", "must not also emit the generic failure message")
+	assert.Equal(t, "existing_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when remint times out")
+}
+
+func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return nil, fmt.Errorf("OIDC exchange failed")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	require.True(t, minted)
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr, "a same-level remint failure must stay non-fatal")
+	defer remintCleanup()
+
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "failed remint must leave the existing token")
+	assert.Contains(t, buf.String(), "Failed to refresh agent token for post-script")
+
+	// The post-script still runs with the existing token.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "post.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$PUSH_TOKEN\" > \""+marker+"\"\n"), 0o755))
+
+	cmd := exec.Command(script)
+	cmd.Env = postScriptEnv(h, "")
+	require.NoError(t, cmd.Run(), "post-script must still run after a remint error")
+	got, readErr := os.ReadFile(marker)
+	require.NoError(t, readErr)
+	assert.Equal(t, "ghs_original_token\n", string(got))
+}
+
+// TestRemintAgentTokenForPostScript_DowngradeErrorIsFatal covers the
+// privilege-escalation case a plain non-fatal remint failure would allow: a
+// harness author configuring the post-script stage at a strictly lower
+// privilege level than the runtime stage (runtime: write, post_script:
+// read). A remint failure there must not silently leave the more-privileged
+// runtime-stage token active for the post-script — it must be reported as
+// an error so the caller can fail the run instead of running the
+// post-script at all.
+func TestRemintAgentTokenForPostScript_DowngradeErrorIsFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("mint rejected read level")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:    "write",
+			harness.PrivilegeStagePostScript: "read",
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.Error(t, remintErr, "a remint failure that would leave a more-privileged leftover token active must be fatal")
+	assert.Contains(t, remintErr.Error(), "mint rejected read level")
+	cleanup()
+}
+
+// TestRemintAgentTokenForPostScript_UnrankedCustomLevelMismatchIsFatal
+// covers a custom privilege level name (neither read, write, nor admin):
+// its relative rank against the active level cannot be determined by
+// mintcore.PermissionLevelAtLeast, but the configured post-script level
+// still differs from the active level, so a remint failure must be fatal
+// rather than silently leaving the leftover token active — ranking is not
+// required to detect the mismatch.
+func TestRemintAgentTokenForPostScript_UnrankedCustomLevelMismatchIsFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("mint rejected custom level")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:    "write",
+			harness.PrivilegeStagePostScript: "custom-level",
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.Error(t, remintErr, "a level mismatch must be fatal even when the levels involved cannot be ranked")
+	assert.Contains(t, remintErr.Error(), "mint rejected custom level")
+	cleanup()
+}
+
+// TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL covers
+// the early-return branch in remintAgentTokenForPostScript: GitLab has no
+// App mint, and an empty mintURL means minting was never configured. Both
+// must skip mint entirely (and therefore skip syncRunnerEnvTokens too),
+// leaving RunnerEnv exactly as it was.
+func TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_should_not_be_minted", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	printer := ui.New(io.Discard)
+
+	for _, tc := range []struct {
+		name          string
+		mintURL       string
+		forgePlatform string
+	}{
+		{name: "gitlab", mintURL: "https://mint.example.com", forgePlatform: "gitlab"},
+		{name: "empty mint URL", mintURL: "", forgePlatform: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &harness.Harness{
+				Role: "coder",
+				RunnerEnv: map[string]string{
+					"PUSH_TOKEN": "unchanged_token",
+				},
+			}
+
+			cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, tc.mintURL, tc.forgePlatform, "write", printer)
+			require.NoError(t, remintErr)
+			cleanup()
+
+			assert.Equal(t, 0, calls, "gitlab/empty mint URL must not call mint")
+			assert.Equal(t, "unchanged_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when mint is skipped")
+		})
+	}
+}
+
+// TestRemintAgentTokenForPostScript_RunnerEnvMissingTokenKeys covers the
+// !ok continue branch in syncRunnerEnvTokens: a harness whose RunnerEnv
+// never included the token keys at all (as opposed to including them with
+// a stale value). syncRunnerEnvTokens must not add keys RunnerEnv never
+// had, and postScriptEnv must still resolve the reminted token because
+// childScriptEnv appends os.Environ() before RunnerEnv and exec's
+// duplicate-key rule is last-wins — an absent RunnerEnv entry never
+// shadows the freshly reminted process-env value.
+func TestRemintAgentTokenForPostScript_RunnerEnvMissingTokenKeys(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+
+	h := &harness.Harness{
+		Role:      "coder",
+		RunnerEnv: map[string]string{"UNRELATED_VAR": "keep-me"},
+	}
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	defer remintCleanup()
+
+	assert.Equal(t, 1, calls)
+	_, hasPushToken := h.RunnerEnv["PUSH_TOKEN"]
+	assert.False(t, hasPushToken, "syncRunnerEnvTokens must not add keys RunnerEnv never had")
+	assert.Equal(t, "keep-me", h.RunnerEnv["UNRELATED_VAR"], "unrelated RunnerEnv entries must be left alone")
+
+	env := postScriptEnv(h, "")
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"), "postScriptEnv must resolve the reminted token from process env")
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+}
+
+// TestSyncRunnerEnvTokens_NilGuards exercises the h == nil and
+// h.RunnerEnv == nil guards directly: remintAgentTokenForPostScript always
+// calls syncRunnerEnvTokens with the harness it was given, but that
+// harness (or its RunnerEnv map, for a harness whose runner_env never set
+// any vars) can be nil, so the guards must not panic.
+func TestSyncRunnerEnvTokens_NilGuards(t *testing.T) {
+	assert.NotPanics(t, func() { syncRunnerEnvTokens(nil) })
+
+	h := &harness.Harness{Role: "coder"}
+	assert.NotPanics(t, func() { syncRunnerEnvTokens(h) })
+	assert.Nil(t, h.RunnerEnv, "a nil RunnerEnv must be left nil, not initialized")
 }
 
 func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
@@ -5126,6 +6765,7 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		mintCalled = true
 		assert.Equal(t, "https://mint-from-env.example.com", req.MintURL)
+		assert.Equal(t, "write", req.Level, "omitted privilege_levels must mint write")
 		return &mintclient.MintResult{Token: "ghs_env_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
 	}
 
@@ -5144,6 +6784,52 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 	assert.True(t, mintCalled, "should have used FULLSEND_MINT_URL env var fallback")
+}
+
+func TestRunAgent_MintsRuntimePrivilegeLevel(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\nprivilege_levels:\n  runtime: read\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var gotLevel string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		gotLevel = req.Level
+		return &mintclient.MintResult{Token: "ghs_read_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.Equal(t, "read", gotLevel, "initial mint must request the runtime privilege level")
 }
 
 func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
@@ -5228,6 +6914,161 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent token minting failed")
+}
+
+// TestRunAgent_GitLabSkipsMint verifies that mintAgentToken is not called
+// when --forge=gitlab. Minting is GitHub-only; on GitLab the registered
+// role credential (shared token while the migration gate is disabled)
+// serves as the push/API token. #6865 #7499.
+func TestRunAgent_GitLabSkipsMint(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called on GitLab")
+		return nil, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv(forge.SecretForgeToken, "glpat-test-shared")
+	t.Setenv(forge.VarGitLabRoleMigration, "")
+	t.Setenv(forge.VarGitLabRoleRegistry, "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "gitlab", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	// Expect error from openshell, not from minting
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	// No "skipping token minting" warning on GitLab
+	assert.NotContains(t, buf.String(), "skipping token minting")
+	assert.NotContains(t, buf.String(), "glpat-")
+}
+
+// TestRunAgent_GitLabMissingSharedFallsBackWhenDisabled verifies the
+// backward-compatibility fix from the review on PR #7510: before this PR,
+// `fullsend run --forge gitlab` was a no-op when migration is
+// disabled/rollback, leaving a directly-set GITLAB_TOKEN untouched. This
+// PR made GitLab credential routing unconditional, which broke that case
+// by hard-failing when FULLSEND_FORGE_TOKEN is absent even though
+// GITLAB_TOKEN is already set (the documented local-run workflow). The
+// fallback must restore the no-op so this keeps working.
+func TestRunAgent_GitLabMissingSharedFallsBackWhenDisabled(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv(forge.SecretForgeToken, "")
+	t.Setenv(forge.VarGitLabRoleMigration, "")
+	t.Setenv(forge.VarGitLabRoleRegistry, "")
+	t.Setenv("GITLAB_TOKEN", "glpat-preset-by-user")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "gitlab", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	// Expect error from openshell (later in the run), not from GitLab
+	// credential resolution.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.Contains(t, buf.String(), "FULLSEND_FORGE_TOKEN is not set")
+	assert.Equal(t, "glpat-preset-by-user", os.Getenv("GITLAB_TOKEN"), "a directly-set GITLAB_TOKEN must survive the fallback")
+}
+
+// TestRunAgent_SetsEnvFromFlags verifies that run.go exports TARGET_REPO_DIR,
+// REPO_FULL_NAME, and ISSUE_NUMBER from their CLI flag values before harness
+// env validation runs. #6865.
+func TestRunAgent_SetsEnvFromFlags(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\nrunner_env:\n  MY_REPO: ${REPO_FULL_NAME}\n  MY_TARGET: ${TARGET_REPO_DIR}\n  MY_ISSUE: ${ISSUE_NUMBER}\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, nil
+	}
+
+	// Clear any existing values
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("TARGET_REPO_DIR", "")
+	t.Setenv("ISSUE_NUMBER", "")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{statusRepo: "myorg/myrepo", statusNum: 42}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
+
+	// Expect error from openshell (we get past env validation)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	// Env validation should not have failed
+	assert.NotContains(t, err.Error(), "validating env")
 }
 
 func TestRunAgent_StatusNotifierSetup(t *testing.T) {
@@ -5781,12 +7622,10 @@ func TestSandboxProviderNames_ExcludesUndeclaredDirectoryProviders(t *testing.T)
 
 func TestCheckProviderProfileIntegrity(t *testing.T) {
 	tests := []struct {
-		name          string
-		providers     []resolve.ResolvedProvider
-		profiles      []resolve.ResolvedProfile
-		dirProfileIDs []string
-		wantWarn      bool
-		wantErr       bool
+		name      string
+		providers []resolve.ResolvedProvider
+		profiles  []resolve.ResolvedProfile
+		wantErr   bool
 	}{
 		{
 			name:      "no providers",
@@ -5794,12 +7633,12 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			profiles:  nil,
 		},
 		{
-			name: "providers without profiles warns",
+			name: "providers without profiles errors",
 			providers: []resolve.ResolvedProvider{
 				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}, FromURL: true},
 			},
 			profiles: nil,
-			wantWarn: true,
+			wantErr:  true,
 		},
 		{
 			name: "all providers match profiles",
@@ -5835,12 +7674,12 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "local provider matched by directory profile",
+			name: "local provider unmatched without harness profile errors",
 			providers: []resolve.ResolvedProvider{
 				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
 			},
-			profiles:      nil,
-			dirProfileIDs: []string{"jira-oauth"},
+			profiles: nil,
+			wantErr:  true,
 		},
 		{
 			name: "local provider unmatched errors",
@@ -5860,8 +7699,19 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			},
 			profiles: []resolve.ResolvedProfile{
 				{ID: "anthropic", FromURL: true},
+				{ID: "jira-oauth", FromURL: false},
 			},
-			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "directory-only profile not considered",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "url-p", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			wantErr: true,
 		},
 		{
 			name: "local provider matched by harness profile",
@@ -5875,7 +7725,7 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles, tt.dirProfileIDs)
+			err := checkProviderProfileIntegrity(tt.providers, tt.profiles)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "unknown profile types")
@@ -5886,11 +7736,6 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
-			}
-			if tt.wantWarn {
-				assert.NotEmpty(t, warn)
-			} else if !tt.wantErr {
-				assert.Empty(t, warn)
 			}
 		})
 	}
@@ -6147,7 +7992,9 @@ func TestExtractNormalizedEventFromDispatch_NeitherSource(t *testing.T) {
 }
 
 func TestResolveAgentSource_OverrideOnlyEntryUsesAgentsRepoFallback(t *testing.T) {
-	dir := t.TempDir()
+	// canonTempDir, not t.TempDir: the sourced-entry assertion below compares
+	// against containedLocalPath's symlink-resolved output.
+	dir := canonTempDir(t)
 	printer := ui.New(io.Discard)
 	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
 version: "1"
@@ -6183,4 +8030,198 @@ agents:
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(dir, "harness", "lint.yaml"), path)
 	assert.Nil(t, deps)
+}
+
+// The token upload must wait for a between-iteration sweep in progress: the
+// in-sandbox tar truncates .gcp-oidc-token on open, so a kill mid-write
+// would leave an empty token until the next 4-minute tick. The iteration
+// loop side has no seam short of running the whole command, so it is
+// covered by the lock's documented contract rather than a test.
+func TestRefreshOIDCToken_WaitsForSandboxLock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"value":"fresh-oidc-token-content"}`)
+	}))
+	defer srv.Close()
+	stubOpenshell(t, "exit 0")
+
+	sandboxMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- refreshOIDCToken(context.Background(), "sb", srv.URL, "bearer test-auth")
+	}()
+	select {
+	case err := <-done:
+		sandboxMu.Unlock()
+		t.Fatalf("upload ran while the sweep held the lock (err=%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	sandboxMu.Unlock()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("upload did not proceed once the lock was released")
+	}
+}
+
+// The lock must be released even when the critical section panics: the run's
+// deferred oidcWg/refreshWg waits would otherwise block on a refresher that
+// can never acquire it, hanging the process instead of surfacing the panic.
+func TestWithSandboxLock_ReleasesTheLockOnPanic(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = withSandboxLock(context.Background(), nil, func() error { panic("boom") })
+	})
+	require.True(t, sandboxMu.TryLock(), "the sandbox lock is still held after a panic")
+	sandboxMu.Unlock()
+}
+
+// A sweep waiting on a credential refresher must say so: nothing else prints
+// between iterations, so an unreported wait looks like a stalled run.
+func TestWithSandboxLock_ReportsALongWait(t *testing.T) {
+	original := sandboxLockWarnAfter
+	sandboxLockWarnAfter = 50 * time.Millisecond
+	t.Cleanup(func() { sandboxLockWarnAfter = original })
+
+	waited := make(chan time.Duration, 4)
+	ran := make(chan struct{})
+	done := make(chan error, 1)
+
+	sandboxMu.Lock()
+	go func() {
+		done <- withSandboxLock(
+			context.Background(),
+			func(d time.Duration) { waited <- d },
+			func() error { close(ran); return nil },
+		)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		sandboxMu.Unlock()
+		t.Fatal("no report while the lock was held")
+	}
+	select {
+	case <-ran:
+		sandboxMu.Unlock()
+		t.Fatal("the critical section ran while the lock was held")
+	default:
+	}
+
+	sandboxMu.Unlock()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the critical section did not run once the lock was released")
+	}
+	<-ran
+	assert.Empty(t, waited, "the wait is reported once, not once per poll")
+}
+
+// The common case says nothing: a refresher waiting on a sweep is routine,
+// and every refresher passes a nil notify.
+func TestWithSandboxLock_UncontendedRunsWithoutReporting(t *testing.T) {
+	notified := 0
+	require.NoError(t, withSandboxLock(context.Background(), func(time.Duration) { notified++ }, func() error { return nil }))
+	assert.Equal(t, 0, notified)
+	require.True(t, sandboxMu.TryLock(), "the sandbox lock is still held after the call returned")
+	sandboxMu.Unlock()
+}
+
+// A waiter whose run is shutting down must not sit behind the holder's
+// in-flight sandbox exec (up to the documented ~45s hold): a cancelled
+// context abandons the wait, and the critical section never runs.
+func TestWithSandboxLock_AbandonsTheWaitWhenCancelled(t *testing.T) {
+	sandboxMu.Lock()
+	defer sandboxMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := false
+	done := make(chan error, 1)
+	go func() {
+		done <- withSandboxLock(ctx, nil, func() error { ran = true; return nil })
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("returned while the lock was held (err=%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait did not stop on cancellation")
+	}
+	assert.False(t, ran, "the critical section ran without the lock")
+}
+
+// runBridgeInShell runs the bridge's command under /bin/sh against real
+// directories, so the quoting, the symlink refusal and the size bound are
+// what is tested rather than the command's spelling.
+func runBridgeInShell(t *testing.T, repoDir, dest string) {
+	t.Helper()
+	execFn := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		out, err := exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
+		if ee, ok := err.(*exec.ExitError); ok {
+			return "", string(out), ee.ExitCode(), err
+		}
+		return string(out), "", 0, err
+	}
+	doBridgeAgentsMDToHome("sb", repoDir, dest, ui.New(io.Discard), execFn)
+}
+
+func TestDoBridgeAgentsMDToHome(t *testing.T) {
+	t.Run("copies the repo's AGENTS.md", func(t *testing.T) {
+		repo := filepath.Join(t.TempDir(), "re'po dir")
+		require.NoError(t, os.MkdirAll(repo, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("rules\n"), 0o644))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		got, err := os.ReadFile(dest)
+		require.NoError(t, err)
+		assert.Equal(t, "rules\n", string(got))
+	})
+	t.Run("accepts the other casings", func(t *testing.T) {
+		repo := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "agents.md"), []byte("lower\n"), 0o644))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		got, err := os.ReadFile(dest)
+		require.NoError(t, err)
+		assert.Equal(t, "lower\n", string(got))
+	})
+	t.Run("refuses a symlink", func(t *testing.T) {
+		repo := t.TempDir()
+		secret := filepath.Join(t.TempDir(), "secret")
+		require.NoError(t, os.WriteFile(secret, []byte("do not copy"), 0o644))
+		require.NoError(t, os.Symlink(secret, filepath.Join(repo, "AGENTS.md")))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		assert.NoFileExists(t, dest)
+	})
+	t.Run("bounds the size", func(t *testing.T) {
+		repo := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "AGENTS.md"), bytes.Repeat([]byte("a"), agentsMDHomeMaxBytes+100), 0o644))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		info, err := os.Stat(dest)
+		require.NoError(t, err)
+		assert.Equal(t, int64(agentsMDHomeMaxBytes), info.Size())
+	})
+	t.Run("writes nothing without an AGENTS.md", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, t.TempDir(), dest)
+		assert.NoFileExists(t, dest)
+	})
+}
+
+func TestDoBridgeAgentsMDToHome_ReportsExitAndStderr(t *testing.T) {
+	var buf bytes.Buffer
+	execFn := func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "head: write error: No space left on device\n", 1, nil
+	}
+	doBridgeAgentsMDToHome("sb", "/sandbox/workspace/repo", "/sandbox/codex-config/AGENTS.md", ui.New(&buf), execFn)
+	assert.Contains(t, buf.String(), "exit 1: head: write error: No space left on device")
+	assert.NotContains(t, buf.String(), "<nil>")
 }

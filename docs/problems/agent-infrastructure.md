@@ -75,6 +75,8 @@ Agents are often discussed as if they run on a developer workstation: fast local
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) demonstrates one practical pause/resume pattern: LangGraph checkpoints workflow state, then later Jira or GitHub webhooks resume the graph while implementation work happens in ephemeral Podman containers. That separation is directionally useful for fullsend, even though Forge's sandbox is a productivity boundary rather than the stricter credential and egress isolation boundary fullsend needs.
 
+[OpenAI Symphony](../landscape.md#openai-symphony)'s optional SSH worker extension is another concrete answer to remote execution: the orchestrator stays central, each run is pinned to one host that becomes part of the run identity, and failover happens only on startup failure. It is a daemon-plus-remote-workers pattern rather than Kubernetes Jobs; useful as a scheduling data point, not as a containment story — Symphony's isolation is cwd discipline, with OS-level hardening recommended rather than required.
+
 ## Ambient Code Platform (ACP)
 
 [Ambient Code Platform](https://github.com/ambient-code/platform) is a Kubernetes-native stack (API, operator, runner pods) for agentic sessions—aligned in spirit with “ambient,” CR-driven agent workloads on a cluster.
@@ -119,7 +121,7 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 ## Open questions
 
 - What is the right level of isolation per agent (process, container, microVM, separate cluster)?
-- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md), with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first inference credential delivered entirely through a gateway provider; tool access restrictions decided in [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md); other resource access remains open.)
+- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md), with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first inference credential delivered entirely through a gateway provider; tool access restrictions decided in [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md); cross-org public GitHub Packages access decided in [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md); other resource access remains open.)
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?

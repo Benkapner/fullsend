@@ -9,6 +9,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
 func newTestManifest() *Manifest {
@@ -111,6 +112,111 @@ func TestProbeRepoState_ProbeError(t *testing.T) {
 	}
 	if state.Installed {
 		t.Fatal("Installed = true, want false when probe fails")
+	}
+}
+
+func TestProbeRepoState_GitLab_InstalledViaForgeToken(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true (GitLab forge token)")
+	}
+	if state.FullsendRef != "v2.5.0" {
+		t.Errorf("FullsendRef = %q, want v2.5.0", state.FullsendRef)
+	}
+}
+
+func TestProbeRepoState_GitLab_InstalledViaSchedule(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+	}
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true (GitLab schedule)")
+	}
+}
+
+func TestProbeRepoState_GitLab_PollStateBranchAlone_NotInstalled(t *testing.T) {
+	// Poll-state branch presence alone must not be treated as install
+	// evidence: uninstall does not yet delete these branches (#7381), so
+	// branch-only evidence would misclassify an uninstalled repo.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	if err := fc.ForceCommitFileToBranch(context.Background(), "acme", "api", poll.PollStateBranchSlash, poll.PollStateFileName, "seed", []byte(`{"hmac":"x"}`)); err != nil {
+		t.Fatalf("seed slash: %v", err)
+	}
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if state.Installed {
+		t.Fatal("Installed = true, want false (poll-state branch alone is not sufficient evidence)")
+	}
+}
+
+func TestProbeRepoState_GitLab_PostUninstall_NotInstalled(t *testing.T) {
+	// Simulates the state immediately after uninstall: the bot token and
+	// pipeline schedules are gone (uninstall deletes them), but the
+	// poll-state branches remain (branch deletion deferred to #7381).
+	// This must not be classified as installed.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	for _, branch := range gitlabPollStateBranches {
+		if err := fc.ForceCommitFileToBranch(context.Background(), "acme", "api", branch, poll.PollStateFileName, "seed", []byte(`{"hmac":"x"}`)); err != nil {
+			t.Fatalf("seed %s: %v", branch, err)
+		}
+	}
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if state.Installed {
+		t.Fatal("Installed = true, want false (post-uninstall: token and schedules gone, only leftover branches remain)")
+	}
+}
+
+func TestProbeRepoState_GitLab_LegacyDispatchMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
+	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("  ref: v2.4.0\n")
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true")
+	}
+	if state.FullsendRef != "v2.4.0" {
+		t.Errorf("FullsendRef = %q, want v2.4.0 from leftover dispatch stub", state.FullsendRef)
+	}
+}
+
+func TestProbeRepoState_GitLab_NotInstalled(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if state.Installed {
+		t.Fatal("Installed = true, want false when GitLab has only a workflow file")
 	}
 }
 
@@ -1547,5 +1653,161 @@ func TestStatus_NoContentDrift_IndependentInstalledContent(t *testing.T) {
 		if d.Expected == "current template" {
 			t.Errorf("unexpected content drift with independently constructed content: %+v", d)
 		}
+	}
+}
+
+func TestStatus_GitLab_MissingSchedules_ReportsDrift(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+
+	// Fully installed GitLab repo (workflow, variables, secrets) but
+	// no pipeline schedules — simulates a partial install failure.
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+
+	if result.Summary.Drifted != 1 {
+		t.Errorf("drifted = %d, want 1", result.Summary.Drifted)
+	}
+	if !result.Repos[0].Installed {
+		t.Error("repo should be installed")
+	}
+
+	// Verify schedule drift entries.
+	slashDrift, eventDrift := false, false
+	for _, d := range result.Repos[0].Drifts {
+		switch d.Field {
+		case "slash-poll":
+			slashDrift = true
+			if d.Expected != "active" || d.Actual != "missing" {
+				t.Errorf("slash-poll drift: Expected=%q Actual=%q, want active/missing",
+					d.Expected, d.Actual)
+			}
+		case "event-poll":
+			eventDrift = true
+			if d.Expected != "active" || d.Actual != "missing" {
+				t.Errorf("event-poll drift: Expected=%q Actual=%q, want active/missing",
+					d.Expected, d.Actual)
+			}
+		}
+	}
+	if !slashDrift {
+		t.Errorf("expected slash-poll drift in status, got drifts: %v", result.Repos[0].Drifts)
+	}
+	if !eventDrift {
+		t.Errorf("expected event-poll drift in status, got drifts: %v", result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_ConfigPresetDrift(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+	m.Defaults.ConfigBase.Source = presetPath
+
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	fc.FileContents["acme-corp/api-server/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+	fc.FileContents["acme-corp/web-frontend/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Summary.Drifted != 1 {
+		t.Errorf("drifted = %d, want 1", result.Summary.Drifted)
+	}
+
+	for _, s := range result.Repos {
+		switch s.Repo {
+		case "api-server":
+			if len(s.Drifts) != 0 {
+				t.Errorf("api-server: want no drifts, got %v", s.Drifts)
+			}
+		case "web-frontend":
+			var found bool
+			for _, d := range s.Drifts {
+				if d.Field == ".fullsend/config.base.yaml" {
+					found = true
+					if d.Expected != "declared preset" {
+						t.Errorf("expected declared preset, got %q", d.Expected)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("web-frontend: expected config.base.yaml drift, got %v", s.Drifts)
+			}
+		}
+	}
+}
+
+func TestStatus_NoPresetDoesNotCompareBase(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	fc.FileContents["acme-corp/api-server/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Summary.Drifted != 0 {
+		t.Errorf("drifted = %d, want 0 when no preset is declared", result.Summary.Drifted)
+	}
+}
+
+func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: presetPath}},
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	populateGitLabInstalled(fc, "acme", "api")
+	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var found bool
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == ".fullsend/config.base.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("GitLab status must report config.base.yaml drift, got %v", result.Repos[0].Drifts)
 	}
 }

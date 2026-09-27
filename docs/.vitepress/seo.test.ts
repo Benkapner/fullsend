@@ -6,6 +6,7 @@ import {
   isIndexablePage,
   isNonContentPath,
   isSitemapUrl,
+  markdownUrl,
   pageOutputPath,
   pageRobotsHead,
   pageSeoHead,
@@ -48,6 +49,10 @@ describe("canonicalUrl", () => {
     expect(canonicalUrl("index.md")).toBe("https://fullsend.sh/docs/guides/getting-started/");
   });
 
+  it("resolves the old archived-roadmap URL to the dated archive index", () => {
+    expect(canonicalUrl("archived-roadmap.md")).toBe("https://fullsend.sh/docs/archived-roadmaps/");
+  });
+
   it("resolves a directory index to a trailing-slash URL", () => {
     expect(canonicalUrl("agents/index.md")).toBe("https://fullsend.sh/docs/agents/");
   });
@@ -61,6 +66,34 @@ describe("canonicalUrl", () => {
   it("resolves a content page to the URL shape served by Cloudflare", () => {
     expect(canonicalUrl("guides/user/jira-integration.md", true)).toBe(
       "https://fullsend.sh/docs/guides/user/jira-integration",
+    );
+  });
+});
+
+describe("markdownUrl", () => {
+  it("keeps the .md filename of a content page", () => {
+    expect(markdownUrl("agents/triage.md")).toBe("https://fullsend.sh/docs/agents/triage.md");
+  });
+
+  it("uses index.md for a directory page, not the trailing-slash HTML URL", () => {
+    expect(markdownUrl("agents/index.md")).toBe("https://fullsend.sh/docs/agents/index.md");
+  });
+
+  it("follows the root HTML redirect to the getting-started source", () => {
+    expect(markdownUrl("index.md")).toBe(
+      "https://fullsend.sh/docs/guides/getting-started/index.md",
+    );
+    expect(markdownUrl("index.md", "/docs/v/dev/")).toBe(
+      "https://fullsend.sh/docs/v/dev/guides/getting-started/index.md",
+    );
+  });
+
+  it("resolves against a versioned VitePress base", () => {
+    expect(markdownUrl("agents/triage.md", "/docs/v/dev/")).toBe(
+      "https://fullsend.sh/docs/v/dev/agents/triage.md",
+    );
+    expect(markdownUrl("agents/index.md", "/docs/v/v0.39.0")).toBe(
+      "https://fullsend.sh/docs/v/v0.39.0/agents/index.md",
     );
   });
 });
@@ -79,6 +112,64 @@ describe("pageSeoHead", () => {
     expect(head).toContainEqual(["meta", { property: "og:url", content: url }]);
   });
 
+  it("emits an alternate link to the published markdown source", () => {
+    expect(head).toContainEqual([
+      "link",
+      {
+        rel: "alternate",
+        type: "text/markdown",
+        href: "https://fullsend.sh/docs/agents/triage.md",
+      },
+    ]);
+  });
+
+  it("points the root markdown alternate at the getting-started source", () => {
+    const root = pageSeoHead({
+      page: "index.md",
+      title: "Fullsend Docs",
+      description: "Docs home",
+      cleanUrls: true,
+    });
+    expect(root).toContainEqual([
+      "link",
+      { rel: "canonical", href: "https://fullsend.sh/docs/guides/getting-started/" },
+    ]);
+    expect(root).toContainEqual([
+      "link",
+      {
+        rel: "alternate",
+        type: "text/markdown",
+        href: "https://fullsend.sh/docs/guides/getting-started/index.md",
+      },
+    ]);
+  });
+
+  it("points the markdown alternate at the versioned base, not the canonical root", () => {
+    const versioned = pageSeoHead({
+      page: "agents/triage.md",
+      title: "Triage Agent | Fullsend",
+      description: "How the triage agent works",
+      base: "/docs/v/dev/",
+      cleanUrls: true,
+    });
+    expect(versioned).toContainEqual([
+      "link",
+      { rel: "canonical", href: "https://fullsend.sh/docs/agents/triage" },
+    ]);
+    expect(versioned).toContainEqual([
+      "meta",
+      { property: "og:url", content: "https://fullsend.sh/docs/agents/triage" },
+    ]);
+    expect(versioned).toContainEqual([
+      "link",
+      {
+        rel: "alternate",
+        type: "text/markdown",
+        href: "https://fullsend.sh/docs/v/dev/agents/triage.md",
+      },
+    ]);
+  });
+
   it("emits page-specific og:title and og:description", () => {
     expect(head).toContainEqual([
       "meta",
@@ -94,6 +185,10 @@ describe("pageSeoHead", () => {
 describe("isIndexablePage", () => {
   it("excludes the 404 page from self-canonical / OG tags", () => {
     expect(isIndexablePage("404.md")).toBe(false);
+  });
+
+  it("excludes the archived-roadmap redirect stub from indexing", () => {
+    expect(isIndexablePage("archived-roadmap.md")).toBe(false);
   });
 
   it("treats content pages as indexable", () => {
@@ -128,6 +223,8 @@ describe("isSitemapUrl", () => {
   it("excludes the redirecting root and non-content URLs", () => {
     expect(isSitemapUrl("")).toBe(false);
     expect(isSitemapUrl("/")).toBe(false);
+    expect(isSitemapUrl("archived-roadmap")).toBe(false);
+    expect(isSitemapUrl("archived-roadmap.html")).toBe(false);
     expect(isSitemapUrl("experiments/0000-experiment-template/")).toBe(false);
     expect(isSitemapUrl("experiments/example/SKILL")).toBe(false);
   });
@@ -139,10 +236,14 @@ describe("isSitemapUrl", () => {
 
 describe("pageRobotsHead", () => {
   it("marks the directly reachable 404 asset noindex", () => {
-    expect(pageRobotsHead("404.md")).toEqual([
+    expect(pageRobotsHead("404.md")).toEqual([["meta", { name: "robots", content: "noindex" }]]);
+    expect(pageRobotsHead("agents/triage.md")).toEqual([]);
+  });
+
+  it("marks the archived-roadmap redirect stub noindex", () => {
+    expect(pageRobotsHead("archived-roadmap.md")).toEqual([
       ["meta", { name: "robots", content: "noindex" }],
     ]);
-    expect(pageRobotsHead("agents/triage.md")).toEqual([]);
   });
 });
 

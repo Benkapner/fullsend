@@ -18,6 +18,7 @@ func TestDebugLogNameFor(t *testing.T) {
 	assert.Equal(t, "claude-debug.log", DebugLogNameFor(ClaudeRuntime{}))
 	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor(OpenCodeRuntime{}))
 	assert.Equal(t, piDebugLogFile, DebugLogNameFor(PiRuntime{}))
+	assert.Equal(t, codexDebugLogFile, DebugLogNameFor(CodexRuntime{}))
 	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor(DummyRuntime{}))
 	assert.Equal(t, "other.log", DebugLogNameFor(namedDebugLog{name: "other.log"}))
 	// An empty name falls back to the default rather than producing "".
@@ -39,5 +40,16 @@ func TestWantsClaudeMDBridge(t *testing.T) {
 	assert.True(t, WantsClaudeMDBridge(ClaudeRuntime{}))
 	assert.False(t, WantsClaudeMDBridge(OpenCodeRuntime{}))
 	assert.False(t, WantsClaudeMDBridge(PiRuntime{}))
+	// codex reads AGENTS.md natively, so it needs no CLAUDE.md bridge.
+	assert.False(t, WantsClaudeMDBridge(CodexRuntime{}))
 	assert.False(t, WantsClaudeMDBridge(DummyRuntime{}))
+}
+
+func TestGenAISystemFor_FallsBackToSystem(t *testing.T) {
+	t.Parallel()
+	// Single-vendor runtimes omit ProviderResolver; the vendor is System().
+	assert.Equal(t, "anthropic", GenAISystemFor(ClaudeRuntime{}, "claude-sonnet-5", "", nil))
+	assert.Equal(t, "openai", GenAISystemFor(CodexRuntime{}, "openai/gpt-5.6-luna", "", nil))
+	assert.Equal(t, "opencode", GenAISystemFor(OpenCodeRuntime{}, "anthropic/claude-sonnet-5", "", nil))
+	assert.Equal(t, "fullsend.dummy", GenAISystemFor(DummyRuntime{}, "anything", "", nil))
 }

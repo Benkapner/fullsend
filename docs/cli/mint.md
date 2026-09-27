@@ -105,7 +105,7 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--region` | `us-central1` | Cloud region for the function (GCP only) |
 | `--pem-dir` | | Directory containing `{role}.pem` files for PEM bootstrap |
 | `--app-set` | `fullsend-ai` | App set name for PEM bootstrap |
-| `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir`. Overrides the default set. Example: `--roles=fullsend,triage,coder,review,retro,prioritize,e2e` |
+| `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir`. Overrides the default set. Example: `--roles=fullsend,triage,coder,review,retro,prioritize`. The `e2e` role is internal-only and not intended for user configuration |
 | `--public` | `false` | Deploy public mint (`PER_REPO_WIF_REPOS=*`). Mutually exclusive with `--per-repo-wif-repos` on Cloudflare |
 | `--status-auth` | `oidc` | Comma-separated status auth modes. Each non-oidc mode selects a Go build tag. Modes: `oidc`, `github`. `oidc` is always compiled in; `github` requires `--status-github-group` |
 | `--status-github-group` | | `ORG/TEAM` slug for GitHub status auth (required when `github` mode enabled). Example: `--status-github-group=acme/platform-team` |
@@ -296,7 +296,32 @@ Read-only — makes no changes.
 
 ## `mint status`
 
-Inspects the mint's current state: deployed function, registered roles, enrolled orgs, and PEM health.
+Inspects the mint's current state. Two modes of operation:
+
+### API-based mode (`--mint-url`)
+
+Queries GET `/v1/status` on the mint service using auto-discovered GitHub
+credentials. Tries GitHub Actions OIDC first, then falls back to
+`GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`. No cloud IAM required.
+
+The `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token` fallback only works
+against a mint that was deployed with `--status-auth=github
+--status-github-group=ORG/TEAM` (see [Enabling optional
+validators](../guides/infrastructure/infrastructure-reference.md#status-endpoint)).
+A default mint (OIDC-only) always rejects it with HTTP 401 — only GitHub
+Actions OIDC succeeds against a default deployment.
+
+```bash
+fullsend mint status --mint-url "https://mint.example.com"
+```
+
+When `FULLSEND_MINT_URL` is set and `--mint-url` is not provided,
+the API-based mode is used automatically.
+
+### GCP-based mode (`--project`)
+
+Reads mint state directly from GCP infrastructure (Cloud Function metadata,
+Secret Manager). Requires GCP viewer IAM roles.
 
 ```bash
 fullsend mint status \
@@ -304,7 +329,7 @@ fullsend mint status \
   --region "us-central1"
 ```
 
-Optionally filter to a specific org:
+Optionally filter to a specific org (GCP-based mode only):
 
 ```bash
 fullsend mint status <org> \
@@ -312,7 +337,21 @@ fullsend mint status <org> \
   --region "us-central1"
 ```
 
+When `--mint-url` is provided, `--project` is ignored and the API-based path
+is used. When `FULLSEND_MINT_URL` is set and `--project` is also provided,
+the command returns an error to prevent silent mode ambiguity — either unset
+the env var or pass `--mint-url=` (empty) to force GCP-based mode. Omitting
+`--project` does not select GCP-based mode; it leaves API-based mode as the
+active path whenever `FULLSEND_MINT_URL` is set. The `[org]` argument is not
+supported in API-based mode.
+
 Read-only — makes no changes.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mint-url` | `$FULLSEND_MINT_URL` | Mint service URL for API-based status |
+| `--project` | | GCP project ID (for direct infrastructure queries) |
+| `--region` | `us-central1` | GCP region (GCP-based mode only) |
 
 ## `mint token`
 
@@ -331,6 +370,7 @@ fullsend mint token \
 | `--repos` | | Comma-separated repository names |
 | `--mint-url` | `$FULLSEND_MINT_URL` | Mint service URL |
 | `--audience` | `fullsend-mint` | OIDC audience |
+| `--level` | `write` | Privilege level name (e.g. `read`, `write`). Both the CLI and server default to `write` when omitted (temporary compatibility default). The value is passed through to the mint — if the role does not define the requested level, the mint returns an error |
 
 ## See also
 

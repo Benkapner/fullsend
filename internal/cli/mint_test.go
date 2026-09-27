@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -2320,9 +2321,17 @@ func TestMintDeployCmd_NoWarningForCorrectPlatformFlags(t *testing.T) {
 
 // --- lookupAppID tests ---
 
+// withNoToken overrides lookupTokenFn to return no token, simulating an
+// environment with no GitHub credentials. Restores the original on cleanup.
+func withNoToken(t *testing.T) {
+	t.Helper()
+	orig := lookupTokenFn
+	lookupTokenFn = func() (string, error) { return "", fmt.Errorf("no token") }
+	t.Cleanup(func() { lookupTokenFn = orig })
+}
+
 func TestLookupAppID_Success(t *testing.T) {
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("GITHUB_TOKEN", "")
+	withNoToken(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/apps/fullsend-ai-coder", r.URL.Path)
@@ -2397,8 +2406,7 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 		{"TooManyRequests", http.StatusTooManyRequests},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("GH_TOKEN", "")
-			t.Setenv("GITHUB_TOKEN", "")
+			withNoToken(t)
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.code)
@@ -2413,6 +2421,8 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "rate limit")
 			assert.Contains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN")
+			assert.Contains(t, err.Error(), "gh auth login",
+				"unauthenticated rate limit error should suggest gh auth login")
 		})
 	}
 }
@@ -2496,6 +2506,31 @@ func TestLookupAppID_RateLimitAuthenticated(t *testing.T) {
 	assert.Contains(t, err.Error(), "rate limit")
 	assert.NotContains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN",
 		"authenticated rate limit error should not suggest setting a token")
+}
+
+func TestLookupAppID_UsesResolveTokenFallback(t *testing.T) {
+	// Simulate the gh auth token fallback: both env vars are unset, but
+	// the token resolver returns a token (as resolveToken would when
+	// gh auth login has been run).
+	orig := lookupTokenFn
+	lookupTokenFn = func() (string, error) { return "ghp_from_gh_auth", nil }
+	t.Cleanup(func() { lookupTokenFn = orig })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghp_from_gh_auth", r.Header.Get("Authorization"),
+			"lookupAppID should authenticate using the token from the resolution chain")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 88}`)
+	}))
+	defer srv.Close()
+
+	origBase := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = origBase }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 88, appID)
 }
 
 // --- verifyPEMMatchesApp tests ---
@@ -3398,14 +3433,20 @@ func TestMintStatusCmd_Flags(t *testing.T) {
 
 	regionFlag := cmd.Flags().Lookup("region")
 	require.NotNil(t, regionFlag, "expected --region flag")
+
+	mintURLFlag := cmd.Flags().Lookup("mint-url")
+	require.NotNil(t, mintURLFlag, "expected --mint-url flag")
 }
 
-func TestMintStatusCmd_RequiresProject(t *testing.T) {
+func TestMintStatusCmd_RequiresProjectOrMintURL(t *testing.T) {
+	t.Setenv("FULLSEND_MINT_URL", "")
+
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "status"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--project is required")
+	assert.Contains(t, err.Error(), "--mint-url")
+	assert.Contains(t, err.Error(), "--project")
 }
 
 func TestMintStatusCmd_InvalidOrg(t *testing.T) {
@@ -3930,6 +3971,236 @@ func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "")
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "diverges")
+}
+
+func TestRunMintStatusAPI_Success(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"allowed_orgs":        []string{"acme", "bigcorp"},
+			"roles":               []string{"coder", "triage", "review"},
+			"workflow_host_repos": []string{"fullsend-ai/fullsend"},
+			"version":             "2.0.0",
+			"commit":              "def456",
+		})
+	}))
+	defer statusSrv.Close()
+
+	oldResolve := mintStatusResolveToken
+	mintStatusResolveToken = func() (string, error) {
+		return "test-token", nil
+	}
+	defer func() { mintStatusResolveToken = oldResolve }()
+
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatusAPI(context.Background(), printer, statusSrv.URL)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "GitHub")
+	assert.Contains(t, output, "acme")
+	assert.Contains(t, output, "bigcorp")
+	assert.Contains(t, output, "coder")
+	assert.Contains(t, output, "triage")
+	assert.Contains(t, output, "review")
+	assert.Contains(t, output, "2.0.0")
+	assert.Contains(t, output, "def456")
+	assert.Contains(t, output, "fullsend-ai/fullsend")
+}
+
+func TestRunMintStatusAPI_OIDCPath(t *testing.T) {
+	oidcSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"value": "oidc-jwt"})
+	}))
+	defer oidcSrv.Close()
+
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/status" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer oidc-jwt" {
+			t.Errorf("Authorization = %q, want Bearer oidc-jwt", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"org":     "acme",
+			"roles":   []string{"coder"},
+			"version": "2.0.0",
+		})
+	}))
+	defer statusSrv.Close()
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", oidcSrv.URL)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request-token")
+
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatusAPI(context.Background(), printer, statusSrv.URL)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "OIDC")
+	assert.Contains(t, output, "acme")
+	assert.Contains(t, output, "coder")
+	assert.Contains(t, output, "2.0.0")
+}
+
+func TestRunMintStatusAPI_AuthFailure(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "auth failed"})
+	}))
+	defer statusSrv.Close()
+
+	oldResolve := mintStatusResolveToken
+	mintStatusResolveToken = func() (string, error) {
+		return "bad-token", nil
+	}
+	defer func() { mintStatusResolveToken = oldResolve }()
+
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatusAPI(context.Background(), printer, statusSrv.URL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+	assert.Contains(t, out.String(), "Authentication failed")
+}
+
+func TestRunMintStatusAPI_NonAuthFailure(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	// A 403 is a terminal, non-401 error: QueryStatus returns it directly
+	// instead of exhausting the auth-fallback chain, so runMintStatusAPI
+	// must not label it "Authentication failed".
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+	}))
+	defer statusSrv.Close()
+
+	oldResolve := mintStatusResolveToken
+	mintStatusResolveToken = func() (string, error) {
+		return "test-token", nil
+	}
+	defer func() { mintStatusResolveToken = oldResolve }()
+
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatusAPI(context.Background(), printer, statusSrv.URL)
+	require.Error(t, err)
+	assert.Contains(t, out.String(), "Status query failed")
+	assert.NotContains(t, out.String(), "Authentication failed")
+}
+
+func TestMintStatusCmd_MintURLFromEnv(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"roles": []string{"coder"},
+		})
+	}))
+	defer statusSrv.Close()
+
+	t.Setenv("FULLSEND_MINT_URL", statusSrv.URL)
+
+	oldResolve := mintStatusResolveToken
+	mintStatusResolveToken = func() (string, error) {
+		return "test-token", nil
+	}
+	defer func() { mintStatusResolveToken = oldResolve }()
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "status"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintStatusCmd_MintURLFlagOverridesProject(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"roles": []string{"coder"},
+		})
+	}))
+	defer statusSrv.Close()
+
+	oldResolve := mintStatusResolveToken
+	mintStatusResolveToken = func() (string, error) {
+		return "test-token", nil
+	}
+	defer func() { mintStatusResolveToken = oldResolve }()
+
+	// When both --mint-url and --project are provided, --mint-url wins.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "status", "--mint-url=" + statusSrv.URL, "--project=fake-project"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintStatusCmd_EnvURLRejectsExplicitProject(t *testing.T) {
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+
+	// When FULLSEND_MINT_URL is set and --project is explicitly provided,
+	// the command should return an error to prevent silent mode ambiguity.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "status", "--project=fake-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ambiguous mode")
+	assert.Contains(t, err.Error(), "FULLSEND_MINT_URL")
+	assert.Contains(t, err.Error(), "--project")
+}
+
+func TestMintStatusCmd_MintURLEmptyEscapeHatch(t *testing.T) {
+	// When FULLSEND_MINT_URL is set but --mint-url="" is explicitly passed,
+	// the command should route to the GCP-based path, not the API-based path.
+	t.Setenv("FULLSEND_MINT_URL", "https://should-be-ignored.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	client := mintDiscoveryClient()
+	withMintGCFClient(t, client)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "status", "--mint-url=", "--project=test-project"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintStatusCmd_OrgNotSupportedWithMintURL(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "status", "acme-org", "--mint-url=https://mint.example.com"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported")
 }
 
 func TestRunMintEnrollRepo_Success(t *testing.T) {

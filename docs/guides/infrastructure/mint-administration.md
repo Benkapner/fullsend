@@ -60,9 +60,9 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
   | `roles/resourcemanager.projectIamAdmin` | \* | | | | | | |
   | `roles/secretmanager.admin` | \* | x | \*\* | \*\*\* | | | |
   | `roles/cloudfunctions.developer` | x | x | | | | | |
-  | `roles/cloudfunctions.viewer` | | | x | x | x | x | x |
+  | `roles/cloudfunctions.viewer` | | | x | x | x | x | x‡ |
   | `roles/run.admin` | x | | x | x | x | x | |
-  | `roles/secretmanager.viewer` | | | § | | | | x |
+  | `roles/secretmanager.viewer` | | | § | | | | x‡ |
 
   \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
@@ -72,11 +72,13 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
 
+  ‡ `roles/cloudfunctions.viewer` and `roles/secretmanager.viewer` are required for `mint status` only when using `--project` (GCP-based) mode. The API-based mode (`--mint-url` / `FULLSEND_MINT_URL`) requires only valid GitHub credentials and no GCP IAM roles.
+
   Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -230,7 +232,7 @@ Opens the GitHub App manifest flow in your browser, stores the PEM in Secret Man
 | `--force` | `false` | Overwrite existing `ROLE_APP_IDS` entry for this role |
 | `--dry-run` | `false` | Preview changes without making them |
 
-The `fix` and `code` roles reuse the `coder` app — add role `coder` instead.
+The `fix` and `code` dispatch stages both mint the `coder` role and reuse the `coder` app — add role `coder` instead; there is no separate `fix` app or mint role to add.
 
 ### Removing a role
 
@@ -381,17 +383,70 @@ Read-only — makes no changes.
 
 ## Checking mint status
 
-`fullsend mint status` inspects the deployed mint function, Cloud Run revision state, enrolled orgs, and PEM health. This is a read-only operation requiring only viewer-level access.
+`fullsend mint status` inspects the mint's state and PEM health. Two modes are available:
+
+### API-based mode (recommended)
+
+When `--mint-url` (or `FULLSEND_MINT_URL`) is provided, the command queries
+the mint's `/v1/status` endpoint using auto-discovered GitHub credentials.
+No GCP IAM roles are required.
+
+Authentication is attempted in order: GitHub Actions OIDC first, then
+`GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`.
+
+> The `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token` fallback only succeeds
+> against a mint deployed with `--status-auth=github
+> --status-github-group=ORG/TEAM` (see
+> [infrastructure-reference.md](infrastructure-reference.md#status-endpoint)).
+> A default (OIDC-only) mint rejects it with HTTP 401 — only GitHub Actions
+> OIDC works there.
+
+```bash
+# Query via the mint API
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+
+# Or set the env var and omit the flag
+export FULLSEND_MINT_URL="https://mint.example.com"
+fullsend mint status
+```
+
+API-based mode returns the following fields:
+
+- **version** — the mint's build version
+- **commit** — the mint's build commit hash
+- **org** — the calling workflow's organization (OIDC auth only)
+- **allowed_orgs** — all configured allowed organizations (non-OIDC auth)
+- **roles** — configured role names
+- **workflow_host_repos** — repositories allowed as workflow hosts
+
+### GCP-based mode
+
+When `--project` is provided (and `--mint-url` is not), the command reads
+mint state directly from GCP infrastructure. This requires GCP viewer IAM
+roles (see the [IAM table above](#prerequisites)).
 
 ```bash
 # Overview of all enrolled orgs
-fullsend mint status --project="$GCP_PROJECT"
+fullsend mint status --mint-url= --project="$GCP_PROJECT"
 
 # Drill into a specific org's PEM status
-fullsend mint status acme-corp --project="$GCP_PROJECT"
+fullsend mint status acme-corp --mint-url= --project="$GCP_PROJECT"
 ```
 
+When `FULLSEND_MINT_URL` is set and `--project` is also provided, the
+command returns an error to prevent silent mode ambiguity — either unset
+the env var or pass `--mint-url=` to force GCP-based mode, as in the
+examples above.
+
+> **Note:** The IAM roles listed in the [table above](#prerequisites) apply
+> only to `--project` (GCP-based) mode. API-based mode requires only valid
+> GitHub credentials.
+
 ### What status reports
+
+> The fields below are reported by `--project` (GCP-based) mode.
+> API-based mode (`--mint-url`) returns a different payload — see the
+> field listing in the [API-based mode](#api-based-mode-recommended) section above.
 
 **Cloud Run revision section:**
 
@@ -430,7 +485,12 @@ fullsend mint token --role triage --repos my-repo --mint-url "$FULLSEND_MINT_URL
 
 # Mint a token scoped to multiple repos
 fullsend mint token --role coder --repos repo-a,repo-b --mint-url "$FULLSEND_MINT_URL"
+
+# Mint a read-only token (explicit level)
+fullsend mint token --role triage --repos my-repo --level read --mint-url "$FULLSEND_MINT_URL"
 ```
+
+The `--level` flag selects the privilege level for the minted token: `read` returns read-only permissions, `write` returns the full permission set. Both the CLI and the server default to `write` when omitted (temporary compatibility default — a future release will change the server default to `read`).
 
 The command prints the token to stdout for shell capture. When running in GitHub Actions (`GITHUB_ACTIONS=true`), it also emits `::add-mask::` to stderr to prevent the token from appearing in logs.
 
@@ -456,9 +516,13 @@ fullsend mint enroll "$FIRST_ORG" --project="$GCP_PROJECT"
 fullsend inference provision "$FIRST_ORG" --project="$GCP_PROJECT"
 
 # 4. Configure GitHub with public apps (installable by other orgs)
+# $MINT_URL: the "Mint deployed at ..." URL printed by step 1.
+# $WIF_PROVIDER: the FULLSEND_GCP_WIF_PROVIDER value from step 3 — run
+#   `fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" --format=env`
+#   and copy it, or parse it from `--format=json`.
 fullsend github setup "$FIRST_ORG" \
-  --mint-url "$(fullsend mint status --project="$GCP_PROJECT" -o url)" \
-  --inference-wif-provider "$(fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" -o provider)" \
+  --mint-url "$MINT_URL" \
+  --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \
   --public
 ```
@@ -532,7 +596,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
 2. Re-run `fullsend mint enroll` for any org — this triggers a new revision and routes traffic to it
 3. If no enrollment is needed, manually route traffic with:
 
@@ -550,7 +614,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status --project="$GCP_PROJECT"` to check revision state
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to check revision state
 2. If the template diverges from traffic, re-run the enrollment command — the CLI will detect the org is already in the template and route traffic to the new revision
 3. Check the CLI output for partial failure messages — if the traffic PATCH failed, the new revision name is reported for manual recovery
 
@@ -570,7 +634,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status` to confirm which org is missing
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which org is missing
 2. Re-run `fullsend mint enroll` for the missing org
 3. Always enroll orgs serially — one at a time
 
@@ -687,5 +751,5 @@ If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs
 - [Standalone Mint](standalone-mint.md) — Running the mint without GCP, with custom agent roles
 - [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details
-- [Cross-org authorization (ADR 0060)](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) — Org-level FOREIGN authorization via `FULLSEND_FOREIGN_<role>_REPOS` org variables
+- [Cross-org authorization (ADR 0060)](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) — Org-level FOREIGN authorization via `FULLSEND_FOREIGN_<ROLE>_REPOS` org variables
 - [Repo-level foreign grants (ADR 0083)](../../ADRs/0083-repo-level-foreign-allow-list.md) — Per-repo FOREIGN authorization grants; manage with `fullsend admin foreign` commands

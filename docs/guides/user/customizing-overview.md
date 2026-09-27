@@ -96,15 +96,16 @@ adding skills via harness, extending the sandbox image, disabling agents.
 
 **Guides:**
 - [Configuring Agent Behavior](customizing-agents.md) — harness
-  composition, status notifications, disabling agents
+  composition, status notifications, disabling agents, [GitHub Packages](customizing-agents.md#private-registries-and-github-packages)
 - [Harness Field Reference](../../reference/harness-reference.md) — complete field reference,
   merge rules, and advanced configuration
 
 ## Bring Your Own Agent
 
-When you need a completely new agent — with its own trigger, scripts,
-output schema, and possibly its own GitHub App identity — build one from
-scratch:
+When you need a completely new agent — with its own trigger, scripts, and
+output schema — build one from scratch. It still runs on the hosted mint if it
+assumes a built-in `role:`; a distinct GitHub App identity requires your own
+mint (see [Custom Agent Identity](custom-agent-identity.md)):
 
 ```
 .fullsend/

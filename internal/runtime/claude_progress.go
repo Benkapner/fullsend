@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -39,6 +41,7 @@ type innerEvent struct {
 
 type contentBlock struct {
 	Type string `json:"type"`
+	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
@@ -56,7 +59,8 @@ type streamError struct {
 
 // assistantMessage contains tool_use blocks from complete assistant messages.
 // Claude Code's stream-json nests the content array (and model) under "message";
-// older/flat shapes put content at the top level. We accept both.
+// a top-level content key is accepted as a defensive fallback (no observed
+// version emits it).
 type assistantMessage struct {
 	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content"`
@@ -64,6 +68,28 @@ type assistantMessage struct {
 		Content json.RawMessage `json:"content"`
 		Model   string          `json:"model"`
 	} `json:"message"`
+}
+
+// userMessage contains tool_result blocks from user messages. Claude
+// Code's stream-json nests the content array under "message"; a
+// top-level content key is accepted as a defensive fallback (no observed
+// version emits it).
+type userMessage struct {
+	Type    string          `json:"type"`
+	Content json.RawMessage `json:"content"`
+	Message struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// userContentItem is one content block within a user message. Only
+// tool_result blocks are consumed; the block's content arrives either as
+// a plain string or as an array of text blocks.
+type userContentItem struct {
+	Type      string          `json:"type"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
 }
 
 // systemEvent is Claude Code's initial "system"/"init" event, which carries the
@@ -81,6 +107,7 @@ type systemEvent struct {
 
 type contentItem struct {
 	Type     string          `json:"type"`
+	ID       string          `json:"id"`
 	Name     string          `json:"name"`
 	Text     string          `json:"text"`
 	Thinking string          `json:"thinking"`
@@ -113,15 +140,51 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 
 	var (
 		seenStreamEvent bool
+		// Single-slot: correct only because buildRunCommand never passes
+		// --include-partial-messages, so no stream_event blocks interleave;
+		// interleaved events would need keying by index.
 		currentToolName string
+		currentToolID   string
 		toolInputJSON   strings.Builder
-		// token tracking for throttled TokensEvent
+		// per-message token tracking for throttled TokensEvent
 		totalInput       int
 		totalOutput      int
+		msgReasoning     int // per-message thinking tokens (reset on message_start)
 		totalCacheRead   int
 		totalCacheWrite  int
 		lastEmittedTotal int
+		// cumulative token tracking across all API calls so cancelled
+		// runs retain the best-effort total instead of zeros (#6905).
+		cumulativeInput      int
+		cumulativeOutput     int
+		cumulativeCacheRead  int
+		cumulativeCacheWrite int
+		seenResult           bool
+		totalReasoning       int // accumulated thinking tokens across all messages (for ResultEvent)
 	)
+
+	// Emit a final cumulative TokensEvent when the stream ends without
+	// a ResultEvent (cancelled/killed run) and the cumulative total
+	// exceeds the last emitted snapshot. The deferred call covers
+	// every exit path: EOF, read error, and normal return.
+	defer func() {
+		if seenResult {
+			return
+		}
+		finalInput := cumulativeInput + totalInput
+		finalOutput := cumulativeOutput + totalOutput
+		finalCacheRead := cumulativeCacheRead + totalCacheRead
+		finalCacheWrite := cumulativeCacheWrite + totalCacheWrite
+		total := finalInput + finalOutput + finalCacheRead + finalCacheWrite
+		if total > lastEmittedTotal {
+			onEvent(TokensEvent{
+				InputTokens:  finalInput,
+				OutputTokens: finalOutput,
+				CacheRead:    finalCacheRead,
+				CacheWrite:   finalCacheWrite,
+			})
+		}
+	}()
 
 	for {
 		line, isPrefix, err := br.ReadLine()
@@ -132,8 +195,23 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			return err
 		}
 		if isPrefix {
+			// A line beyond streamBufSize is never decoded: the stream is
+			// written inside the sandbox, and the bound keeps one line from
+			// growing the runner's memory without limit. The skip is whole,
+			// but for a tool_result line it is not silent — the retained
+			// prefix carries the call id, so the result is reported as
+			// answered with its content lost (ToolResultEvent.Oversized).
+			// Text alone can trip the bound, not only base64 image blocks:
+			// Claude Code can repeat a result in a trailing tool_use_result
+			// key (close to half the line on the largest captured ones), so
+			// about half a MiB of output is enough. Raising the bound means
+			// raising streamBufSize, which every stream parser shares.
+			lostID := oversizedToolResultID(line)
 			for isPrefix && err == nil {
 				_, isPrefix, err = br.ReadLine()
+			}
+			if lostID != "" {
+				onEvent(ToolResultEvent{ID: lostID, Oversized: true})
 			}
 			continue
 		}
@@ -186,6 +264,13 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				}
 				if cb.Type == "tool_use" || cb.Type == "server_tool_use" {
 					currentToolName = cb.Name
+					// A server-side tool's result arrives inside the assistant
+					// message, never as a user tool_result, so an id could never
+					// be matched: leave it empty.
+					currentToolID = ""
+					if cb.Type == "tool_use" {
+						currentToolID = cb.ID
+					}
 					toolInputJSON.Reset()
 				}
 
@@ -208,10 +293,12 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			case "content_block_stop":
 				if currentToolName != "" {
 					onEvent(ToolUseEvent{
+						ID:      currentToolID,
 						Name:    currentToolName,
 						Summary: extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
 					})
 					currentToolName = ""
+					currentToolID = ""
 					toolInputJSON.Reset()
 				}
 
@@ -236,8 +323,16 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					} `json:"message"`
 				}
 				if err := json.Unmarshal(wrapper.Event, &msg); err == nil {
+					// Fold the previous message's final tokens into the
+					// cumulative counters before resetting for the new message.
+					cumulativeInput += totalInput
+					cumulativeOutput += totalOutput
+					cumulativeCacheRead += totalCacheRead
+					cumulativeCacheWrite += totalCacheWrite
+
 					totalInput = msg.Message.Usage.InputTokens
 					totalOutput = 0
+					msgReasoning = 0
 					totalCacheRead = msg.Message.Usage.CacheReadInputTokens
 					totalCacheWrite = msg.Message.Usage.CacheCreationInputTokens
 				}
@@ -245,19 +340,26 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			case "message_delta":
 				var md struct {
 					Usage struct {
-						OutputTokens int `json:"output_tokens"`
+						OutputTokens        int `json:"output_tokens"`
+						OutputTokensDetails struct {
+							ThinkingTokens int `json:"thinking_tokens"`
+						} `json:"output_tokens_details"`
 					} `json:"usage"`
 				}
 				if err := json.Unmarshal(wrapper.Event, &md); err == nil && md.Usage.OutputTokens > 0 {
 					totalOutput = md.Usage.OutputTokens
-					total := totalInput + totalOutput + totalCacheRead + totalCacheWrite
+					msgReasoning = md.Usage.OutputTokensDetails.ThinkingTokens
+					totalReasoning += msgReasoning
+					total := cumulativeInput + totalInput + cumulativeOutput + totalOutput +
+						msgReasoning + cumulativeCacheRead + totalCacheRead + cumulativeCacheWrite + totalCacheWrite
 					if total-lastEmittedTotal >= tokenThreshold {
 						lastEmittedTotal = total
 						onEvent(TokensEvent{
-							InputTokens:  totalInput,
-							OutputTokens: totalOutput,
-							CacheRead:    totalCacheRead,
-							CacheWrite:   totalCacheWrite,
+							InputTokens:     cumulativeInput + totalInput,
+							OutputTokens:    cumulativeOutput + totalOutput,
+							ReasoningTokens: msgReasoning,
+							CacheRead:       cumulativeCacheRead + totalCacheRead,
+							CacheWrite:      cumulativeCacheWrite + totalCacheWrite,
 						})
 					}
 				}
@@ -268,6 +370,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			if err := json.Unmarshal(line, &re); err != nil {
 				continue
 			}
+			seenResult = true
 			onEvent(ResultEvent{
 				NumTurns:                 re.NumTurns,
 				TotalCostUSD:             re.TotalCostUSD,
@@ -276,6 +379,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				Subtype:                  re.Subtype,
 				InputTokens:              re.Usage.InputTokens,
 				OutputTokens:             re.Usage.OutputTokens,
+				ReasoningTokens:          totalReasoning,
 				CacheCreationInputTokens: re.Usage.CacheCreationInputTokens,
 				CacheReadInputTokens:     re.Usage.CacheReadInputTokens,
 			})
@@ -297,7 +401,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			}
 
 			// Real Claude Code output nests content under "message";
-			// fall back to the top-level "content" for older/flat shapes.
+			// the top-level "content" is a defensive fallback.
 			content := msg.Message.Content
 			if len(content) == 0 {
 				content = msg.Content
@@ -320,13 +424,107 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					}
 				case "tool_use":
 					onEvent(ToolUseEvent{
+						ID:      item.ID,
 						Name:    item.Name,
 						Summary: extractSafeContext(item.Name, item.Input),
 					})
 				}
 			}
+
+		case "user":
+			var msg userMessage
+			if err := json.Unmarshal(line, &msg); err != nil {
+				continue
+			}
+			content := msg.Message.Content
+			if len(content) == 0 {
+				content = msg.Content
+			}
+			var items []userContentItem
+			if err := json.Unmarshal(content, &items); err != nil {
+				continue
+			}
+			for _, item := range items {
+				if item.Type != "tool_result" {
+					continue
+				}
+				text, partial := toolResultText(item.Content)
+				onEvent(ToolResultEvent{
+					ID:      item.ToolUseID,
+					Result:  text,
+					IsError: item.IsError,
+					Partial: partial,
+				})
+			}
 		}
 	}
+}
+
+// toolUseIDKey opens a tool_result block's id as Claude Code serializes
+// it. The leading quote keeps parent_tool_use_id out, and an id copied
+// into a JSON string cannot match: its quotes are escaped there.
+var toolUseIDKey = []byte(`"tool_use_id":"`)
+
+// toolUseIDValueRe matches the id that follows toolUseIDKey: 1 to 256
+// bytes with no escape, closed by its quote — so an id the prefix
+// boundary cut short never matches.
+var toolUseIDValueRe = regexp.MustCompile(`^([^"\\]{1,256})"`)
+
+// oversizedToolResultID salvages the call id from the retained prefix of
+// an over-long stream line, or returns "" when the line is not a user
+// line or its first id is unusable. Only the line's first id is ever
+// considered: one result per user line is the shape Claude Code writes,
+// and answering a later block's call on the strength of a line that was
+// never decoded would end a span whose result may still be on its way.
+// An id serialized after the content lies beyond the prefix and is not
+// recovered; that call stays unanswered. The result is a copy — the
+// prefix dies at the next read.
+func oversizedToolResultID(prefix []byte) string {
+	if !bytes.HasPrefix(prefix, []byte(`{"type":"user"`)) {
+		return ""
+	}
+	i := bytes.Index(prefix, toolUseIDKey)
+	if i < 0 {
+		return ""
+	}
+	m := toolUseIDValueRe.FindSubmatch(prefix[i+len(toolUseIDKey):])
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+// toolResultText flattens a tool_result block's content. The wire
+// carries it either as a plain JSON string or as an array of content
+// blocks, of which only text blocks contribute; they are joined with
+// newlines. partial reports that non-text blocks (or undecodable
+// content) were skipped — the returned text is a fragment of what the
+// wire carried.
+func toolResultText(raw json.RawMessage) (text string, partial bool) {
+	if len(raw) == 0 {
+		// An absent content key carried nothing to skip.
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, false
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return "", true
+	}
+	var texts []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			texts = append(texts, b.Text)
+		} else {
+			partial = true
+		}
+	}
+	return strings.Join(texts, "\n"), partial
 }
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
@@ -340,6 +538,11 @@ func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error
 			if metrics.Model == "" {
 				metrics.Model = e.Model
 			}
+		case TokensEvent:
+			metrics.InputTokens = e.InputTokens
+			metrics.OutputTokens = e.OutputTokens
+			metrics.CacheReadInputTokens = e.CacheRead
+			metrics.CacheCreationInputTokens = e.CacheWrite
 		case ResultEvent:
 			metrics.NumTurns = e.NumTurns
 			metrics.TotalCostUSD = e.TotalCostUSD

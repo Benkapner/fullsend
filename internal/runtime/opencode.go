@@ -14,15 +14,25 @@ import (
 // interfaces for the OpenCode agent runtime. All methods are no-ops or return
 // not-implemented errors. Subsequent PRs will fill in stream parsing, bootstrap,
 // run execution, and transcript extraction.
+//
+// Egress note for whoever lands it: opencode is exec'd directly, like Claude
+// Code, not wrapped by node. The opencode-ai npm package ships bin/opencode.exe
+// as a shell stub that postinstall.mjs replaces (link or copy) with the
+// platform binary opencode-linux-x64/bin/opencode; with --ignore-scripts the
+// stub stays. Whichever file the Containerfile ends up exec'ing is the name
+// the inference profiles' binaries: globs must carry (**/opencode.exe or
+// **/opencode), and runtimeEgressBinaries in internal/cli must list it, or
+// every run dies on its first model call with policy_denied (fullsend#6971).
 type OpenCodeRuntime struct{}
 
 func (OpenCodeRuntime) Name() string { return "opencode" }
 
-// System returns the OTEL GenAI gen_ai.system value. OpenCode is multi-provider
-// (Anthropic, OpenAI, Google, etc.), so the system is the runtime itself rather
-// than a single model vendor. The actual model vendor may be capturable from
-// opencode's stream/export events in a future PR once the event schema is
-// confirmed (see #1935).
+// System returns the fallback OTEL GenAI provider identity. OpenCode is
+// multi-provider (Anthropic, OpenAI, Google, etc.) and does not yet implement
+// ProviderResolver, so the system is the runtime itself rather than a model
+// vendor. The actual serving endpoint may be capturable from opencode's
+// stream/export events in a future PR once the event schema is confirmed
+// (see #1935).
 func (OpenCodeRuntime) System() string { return "opencode" }
 
 // ConfigDir returns the opencode config directory inside the sandbox.
@@ -44,6 +54,11 @@ func (OpenCodeRuntime) Run(_ context.Context, _ RunParams, _ *ui.Printer, _ time
 	return -1, fmt.Errorf("opencode runtime is not yet implemented")
 }
 
+// ClearIterationArtifacts is a no-op while Run is a stub: nothing has run in
+// the sandbox, so there is nothing to clear. When Run is implemented this
+// must sweep stray sandbox processes (clearStrayProcesses, see
+// killStrayProcesses) before removing the iteration's files, like the other
+// runtimes — the Runtime interface documents that as part of the contract.
 func (OpenCodeRuntime) ClearIterationArtifacts(_ string) error { return nil }
 
 // TranscriptHandler stub methods — return not-implemented errors for extract

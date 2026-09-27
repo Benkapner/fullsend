@@ -27,7 +27,8 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  ┌──────────────────────────────────────────────────┐           │
 │  │ POST /v1/token                                   │           │
 │  │ Authorization: Bearer <OIDC JWT>                 │           │
-│  │ Body: { "role": "coder", "repos": ["my-repo"] }  │           │
+│  │ Body: { "role": "coder", "repos": ["my-repo"],   │           │
+│  │        "level": "write" }                        │           │
 │  └──────────┬───────────────────────────────────────┘           │
 │             │                                                   │
 │             ▼                                                   │
@@ -59,13 +60,17 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  │     └─ 10-minute expiry                                  │   │
 │  │                                                          │   │
 │  │  5. Find Installation                                    │   │
-│  │     ├─ GET /app/installations                            │   │
-│  │     └─ Match by org login                                │   │
+│  │     ├─ GET /repos/{org}/{repo}/installation              │   │
+│  │     │  or GET /orgs/{org}/installation                   │   │
+│  │     ├─ Verify the installation account matches the org   │   │
+│  │     └─ Read the granted permissions map                  │   │
 │  │                                                          │   │
 │  │  6. Create Scoped Installation Token                     │   │
-│  │     ├─ POST /installations/{id}/access_tokens            │   │
+│  │     ├─ POST /app/installations/{id}/access_tokens        │   │
 │  │     ├─ Scope to requested repos[]                        │   │
-│  │     └─ Apply RolePermissions() minimum set               │   │
+│  │     ├─ Apply RolePermissionsForLevel() minimum set        │   │
+│  │     ├─ Intersect with granted permissions                │   │
+│  │     └─ Drop only explicitly optional rollout scopes      │   │
 │  │                                                          │   │
 │  └──────────┬───────────────────────────────────────────────┘   │
 │             │                                                   │
@@ -77,9 +82,15 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 
 ### Agent → Mint Role Mapping
 
-Each dispatch stage mints a token for a specific **mint role**. The `code` and `fix` agents both use the **coder** role (same GitHub App, same PEM, same permissions). All other built-in agents use the role matching their name. `scribe` is a mint role without a built-in dispatch stage.
+Each dispatch stage mints a token for a specific **mint role**. The `code` and
+`fix` agents both mint the `coder` role and share the same GitHub App and PEM
+(the **coder** App). `fix` is not a separate dispatch-time role. All other
+built-in agents use the role matching their name. `scribe` is a mint role
+without a built-in dispatch stage.
 
-To change permissions for the `code` or `fix` agent, update the `coder` role.
+To change App-level permissions for the `code` or `fix` agent, update the coder
+App registration. To change token-level permissions for dispatch, update the
+`coder` entry in `canonicalRolePermissions`.
 
 | Agent | Mint Role |
 |-------|-----------|
@@ -93,20 +104,93 @@ To change permissions for the `code` or `fix` agent, update the `coder` role.
 ### Role Permissions Matrix
 
 The mint enforces minimum permission sets per role. Tokens cannot exceed these scopes.
-Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSIONS` env var — see the [standalone mint guide](standalone-mint.md#custom-role-permissions) for details.
+Each role defines named privilege levels as keys. Built-in roles define **write** (the full permission set shown below) and **read** (same keys, all values `"read"`) as static table entries. Token requests accept an optional `level` field; omitting it defaults to `write` (temporary compatibility default — a future release will change to `read`). Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSIONS` env var — see the [standalone mint guide](standalone-mint.md#custom-role-permissions) for details.
 
-| Role | contents | pull_requests | issues | actions | checks | workflows | actions_variables | organization_projects | metadata |
-|------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|
-| **fullsend** | write | write | — | write | — | write | read | — | read |
-| **triage** | read | — | write | — | — | — | — | — | read |
-| **scribe** | read | — | write | — | — | — | — | — | read |
-| **coder** | write | write | write | — | read | — | — | — | read |
-| **review** | read | write | write | — | read | — | — | — | read |
-| **retro** | read | write | write | read | — | — | — | — | read |
-| **prioritize** | read | — | write | — | — | — | — | write | read |
-| **e2e** | write | write | write | write | — | write | write | — | read |
+| Role | contents | packages | pull_requests | issues | actions | checks | workflows | actions_variables | organization_projects | metadata |
+|------|----------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|
+| **fullsend** | write | — | write | — | write | — | write | read | — | read |
+| **triage** | read | — | — | write | — | — | — | — | — | read |
+| **scribe** | read | — | — | write | — | — | — | — | — | read |
+| **coder** | write | read | write | write | — | read | — | — | — | read |
+| **fix** *(direct callers only)* | write | read | write | write | — | — | — | — | — | read |
+| **review** | read | — | write | write | — | read | — | — | — | read |
+| **retro** | read | — | write | write | read | — | — | — | — | read |
+| **prioritize** | read | — | — | write | — | — | — | — | write | read |
+| **e2e** | write | — | write | write | write | — | write | write | — | read |
 
 The **e2e** role also grants: `administration` (write), `members` (write), `secrets` (write), `organization_actions_variables` (write), `organization_administration` (write). These permissions are omitted from the table above because no other role uses them.
+
+The `fix` row is retained for direct callers that request the canonical `fix`
+role. The built-in fix dispatch stage uses `coder`, so the `coder` row and coder
+App registration control the code/fix rollout for normal dispatches.
+
+### Roll Out a GitHub App Permission
+
+Use this sequence for any new role permission; the current example is
+`packages:read` for the `coder` role (which covers both code and fix stages).
+Changing the mint's role map does not update existing GitHub App installations.
+GitHub rejects the entire installation-token request (`422`) when mint asks for a
+permission the installation has not approved yet — there is no partial downscope.
+
+For shared hosted Apps (for example `fullsend-ai-coder`), the App owner adds the
+permission once on the App registration; each installing org's owners must then
+[Accept the update](https://docs.github.com/en/apps/using-github-apps/approving-updated-permissions-for-a-github-app).
+New installations of an already-updated App receive the new permission at install
+time. Self-managed App owners update their own App registration, then Accept on
+their installation.
+
+The implementation sequence is: update `canonicalRolePermissions`, the GCF
+embedded mint source, and `AgentAppConfig` together; have mint intersect the
+requested role map with the installation's granted `permissions`; and have CLI
+`checkPermissions` warn with the installing org's Accept URL instead of failing
+**for optional permissions only**. Only permissions explicitly listed in `optionalRolePermissions`
+(currently `packages` for `coder` and direct `fix`-role callers) may be omitted when ungranted — all
+other permissions remain required and fail before the token POST, preserving
+the pre-existing behavior where GitHub's `422` surfaced immediately. Dropped
+optional permissions are logged with `org=` and `installation_id=`. The
+preflight avoids the two token-creation POSTs that the earlier
+packages-specific retry would incur for each lagging installation.
+
+When an installation lookup omits the `permissions` field, mint preserves the
+requested map for compatibility with older or incomplete GitHub responses and
+lets GitHub validate it at token creation time; the granted-set preflight
+applies only when that map is present.
+
+This opt-in degradation means a caller that needs the omitted optional
+permission may receive a later GitHub `403`; it does not silently drop any
+other permission. Missing non-optional permissions fail once with a `422`, the
+missing scopes, and guidance covering both App registration and installation
+approval.
+
+Recommended operator order for adding **`packages:read`** to `coder` (code / fix):
+
+1. Add **Packages: Read-only** on the GitHub App's **Permissions & events** page
+   (hosted: `https://github.com/organizations/fullsend-ai/settings/apps/<app-slug>/permissions`).
+   Optionally include a short note to users explaining why.
+2. Update the App used by the pool installations as well, and have each
+   `halfsend-01` … `halfsend-12` and `halfsend` installation owner Accept its pending update.
+   For the test-app setup, that is `fullsend-test-coder`; for pools using the
+   shared hosted App, update `fullsend-ai-coder`. Neither app set should be
+   left permanently on permission-drop warnings.
+3. Deploy mint. Lagging installations keep authenticating; they simply omit
+   `packages:read` until they Accept. The preflight avoids the two-POST retry
+   volume that the old rollout path incurred.
+4. Release the CLI after the App registration and mint change. `fullsend github setup` reports
+   pending **optional** permissions — those listed in `optionalRolePermissions`,
+   currently `packages:read` — as warnings with the installing org's Accept URL
+   and does not block, so a CLI release is not blocked on every installation
+   accepting at once. Any other missing permission is still a setup error,
+   exactly as before the rollout mechanism existed.
+5. Tell installation owners to Accept the pending permission update (GitHub also
+   emails org owners), and use the mint permission logs to find lagging installs.
+
+Do **not** block mint or CLI deploy on every installation reporting
+`packages:read` — inactive or unreachable installs would stall the platform.
+Permission-drop logs and setup warnings are outreach signals during rollout,
+not deploy gates. To add another permission in the future, add it to
+`canonicalRolePermissions`, the matching App config and GCF embed; add it to
+`optionalRolePermissions` only when it is explicitly safe to omit during
+rollout. Remove that optional entry once all installations have accepted.
 
 ### Mint Security Controls
 
@@ -153,11 +237,11 @@ A single mint instance can serve multiple orgs:
 - **Authorization:** Any valid credential from the auth pipeline — no role restriction.
 - **OIDC response:** Scoped to the authenticating workflow's org.
   ```json
-  {"org": "my-org", "roles": ["coder", "review", "triage"]}
+  {"org": "my-org", "roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
 - **Non-OIDC response** (e.g. GitHub user token): Reports all configured allowed orgs.
   ```json
-  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"]}
+  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token. Non-OIDC auth enables status checks from outside GitHub Actions (e.g. `gh` CLI, OAuth login).
 - **Security:** OIDC returns only the requesting org. Non-OIDC returns allowed orgs (not individual role app IDs).
@@ -262,6 +346,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
+- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`)
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
@@ -271,20 +356,65 @@ Secrets and variables are deployed at different scopes depending on the installa
 #### GitLab
 
 **Target repo CI/CD variables (protected):**
-- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity (stored as protected CI/CD variable)
-- `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last slash poll run (name predates the slash/events terminology split; used by the slash-command schedule)
-- `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last event poll run (name predates the slash/events terminology split; used by the event-discovery schedule)
+- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).
+
+Ordinary unflagged `repos install` retires the shared token once role credentials are ready; after successful cutover, `FULLSEND_FORGE_TOKEN` is deleted and missing role credentials are drift while the gate is `enforced`. [`--gitlab-role-cutover --gitlab-role-cutover-drained`](../../cli/repos.md#gitlab-role-cutover) remains an explicit fail-closed retry.
+- `FULLSEND_DISPATCH_SECRET` — Shared HMAC secret for signing dispatch variables and poll-state documents. Auto-provisioned by `repos install` (on both fresh installs and re-run/convergence of already-enrolled repos) as a masked, protected CI/CD variable.
 - `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
-- `FULLSEND_LABEL_STATE` — JSON object tracking label sync state
-- `FULLSEND_DISPATCHED_KEYS_FAST` — JSON map of recently dispatched event keys (slash-command schedule)
-- `FULLSEND_DISPATCHED_KEYS_FULL` — JSON map of recently dispatched event keys (event-discovery schedule)
-- `FULLSEND_FAILED_KEYS_FAST` — JSON map of event keys to failure counts (slash-command schedule)
-- `FULLSEND_FAILED_KEYS_FULL` — JSON map of event keys to failure counts (event-discovery schedule)
+- `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh and existing shared-token installs create the three built-in tokens; ordinary unflagged install then retires `FULLSEND_FORGE_TOKEN` once every registered role is ready. When the gate is `migrating` or `enforced`, GitLab CI poll/agent jobs (`select-gitlab-role-token.sh`) and `fullsend poll` / `fullsend run` authenticate with the matching role token rather than the shared PAT. Absence is not a health failure while the gate is `disabled` or during partial `migrating`; `repos status` reports which roles are ready. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
+- `FULLSEND_GITLAB_ROLE_MIGRATION`, `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked gate and administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content.
+- `FULLSEND_GITLAB_ROLE_ROTATION` — protected, unmasked per-role rotation state (lock, token IDs, expiry dates, phase; never secret values). Written when `repos install` rotates a role credential ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)).
+
+**Poll-state branches:** `repos install` (on both fresh installs and
+re-run/convergence of already-enrolled repos) creates
+`fullsend-poll-state-slash` and `fullsend-poll-state-events` (unprotected)
+with an initial HMAC-signed `state.json`. Legacy CI/CD-variable values
+are folded in when present (`*Fast` → slash, `*Full` + `LabelState` →
+events); otherwise each branch is an empty signed baseline. Existing
+branch documents are not overwritten. `repos uninstall` deletes both
+branches via `DeleteRef` (a missing branch is ignored).
+
+Each poll cycle performs a single save of that mode's `state.json`
+(dispatched keys, failed-key retry counts, watermark, and label state
+together). Every save force-re-roots the mode's branch on the
+repository's root commit (`force: true` + `start_sha`), so the branch
+stays at base + 1 commit and history never grows. The poller **fails closed** when
+`FULLSEND_DISPATCH_SECRET` is unset (refuse load/write) or when a
+present `state.json` has a missing/invalid HMAC (discard the branch and
+fail that cycle). A missing branch or file is **not** tampering: the
+poller starts from a fresh baseline (watermark defaults to ~1 hour ago)
+and the next save recreates the branch. Losing a state branch therefore
+causes a one-time re-scan and at-least-once re-dispatch of recent items,
+not a stall.
+
+**Retired poll-state CI/CD variables (#7343 phase 3b / #7380):** the
+following seven variables are no longer seeded at install. `repos
+converge` migrates any still-present values into the poll-state
+branches (`*Fast` → slash, `*Full` + `LabelState` → events) and then
+deletes the variables. The orphan detector treats them as known-retired,
+so already-installed repos do not emit spurious orphan-variable warnings
+during the transition. The two poll-state branches are managed git refs
+and are never reported as orphan files. The poller no longer reads or
+writes any of these variables via `GetCIVariable`/`UpdateCIVariable`.
+Poll state (watermarks, label sync state, dispatched/failed-key dedup)
+lives in a single HMAC-signed `state.json` document per poll mode on
+`fullsend-poll-state-slash` and `fullsend-poll-state-events`. The
+signature reuses `FULLSEND_DISPATCH_SECRET` with per-branch,
+per-project domain separation, so the poller can run at Developer
+access instead of Maintainer. See ADR 0067.
+- `FULLSEND_LAST_POLL_AT_FAST` — Legacy; superseded by `last_poll_at_fast` in `state.json` on `fullsend-poll-state-slash`
+- `FULLSEND_LAST_POLL_AT_FULL` — Legacy; superseded by `last_poll_at_full` in `state.json` on `fullsend-poll-state-events`
+- `FULLSEND_LABEL_STATE` — Legacy; superseded by `label_state` in `state.json` on `fullsend-poll-state-events`
+- `FULLSEND_DISPATCHED_KEYS_FAST` — Legacy; superseded by `dispatched_keys_fast` in `state.json` on `fullsend-poll-state-slash`
+- `FULLSEND_DISPATCHED_KEYS_FULL` — Legacy; superseded by `dispatched_keys_full` in `state.json` on `fullsend-poll-state-events`
+- `FULLSEND_FAILED_KEYS_FAST` — Legacy; superseded by `failed_keys_fast` in `state.json` on `fullsend-poll-state-slash`
+- `FULLSEND_FAILED_KEYS_FULL` — Legacy; superseded by `failed_keys_full` in `state.json` on `fullsend-poll-state-events`
 
 **Inference variables (required when inference is configured):**
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
+- `OPENAI_API_KEY` — optional static OpenAI API key when OpenAI WIF is unavailable (masked CI/CD variable; already on the runner path, no extra forwarding)
 
 ### Secrets Layer Behavior
 

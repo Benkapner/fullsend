@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -29,8 +31,9 @@ func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Manage agent registrations in config",
-		Long:  "Commands for adding, listing, updating, and removing agent registrations in fullsend config.",
+		Long:  "Commands for generating, adding, listing, updating, and removing agents in fullsend config.",
 	}
+	cmd.AddCommand(newAgentNewCmd())
 	cmd.AddCommand(newAgentAddCmd())
 	cmd.AddCommand(newAgentListCmd())
 	cmd.AddCommand(newAgentUpdateCmd())
@@ -97,12 +100,17 @@ func newAgentUpdateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "update <name> [sha]",
-		Short: "Update a URL agent to a new commit SHA",
-		Long: `Re-pin a URL-based agent to a new commit SHA and recompute the
-integrity hash. If no SHA is provided, the branch ref stored at adoption
-time is re-resolved; if no ref was stored, the default branch HEAD is used.
+		Short: "Update a URL agent or local harness base to a new commit SHA",
+		Long: `Re-pin a URL-based agent, or a local-path agent's base: URL, to a
+new commit SHA and recompute the integrity hash. If no SHA is provided,
+the branch ref stored at adoption time is re-resolved; if no ref was
+stored, the default branch HEAD is used. agent add never stores a ref
+for local-path sources, so update on a local harness base: URL without
+an explicit SHA always resolves the base repo's default branch.
 
-Only URL agents can be updated — local path agents have nothing to pin.`,
+URL agents are updated in config.yaml. Local-path agents with a base:
+URL are updated in the local harness YAML; config.yaml is left unchanged.
+Local-path agents without a base: URL have nothing to pin.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var sha string
@@ -145,30 +153,40 @@ func newAgentRemoveCmd() *cobra.Command {
 
 func newAgentSetCmd() *cobra.Command {
 	var fullsendDir, runtimeName, model, effort string
+	var subagentFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "set <name>",
-		Short: "Set an agent's runtime, model or effort in config (per-repo)",
-		Long: `Sets runtime, model and/or effort for one agent in .fullsend/config.yaml.
-The agent is a built-in one (triage, code, review, fix, retro, prioritize)
-or a custom agents: entry by name. For a built-in agent without an entry a
-name-only entry is added. Only the flags given change; pass an empty value
-(--model "") to clear a setting. Per-repo configs only.`,
+		Short: "Set an agent's runtime, model, effort or subagent models in config (per-repo)",
+		Long: `Sets runtime, model, effort and/or subagent models for one agent in
+.fullsend/config.yaml. The agent is a built-in one (triage, code, review,
+fix, retro, prioritize) or a custom agents: entry by name. For a built-in
+agent without an entry a name-only entry is added. Only the flags given
+change; pass an empty value (--model "") to clear a setting. Per-repo
+configs only.
+
+The --subagent flag maps a persona name to a model (repeatable):
+
+  fullsend agent set review --subagent correctness=opus --subagent default=haiku
+  fullsend agent set review --subagent style-conventions=  # clears (tombstones)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
 			return runAgentSet(fullsendDir, args[0], agentSetFlags{
 				runtime: runtimeName, model: model, effort: effort,
-				runtimeSet: cmd.Flags().Changed("runtime"),
-				modelSet:   cmd.Flags().Changed("model"),
-				effortSet:  cmd.Flags().Changed("effort"),
+				runtimeSet:   cmd.Flags().Changed("runtime"),
+				modelSet:     cmd.Flags().Changed("model"),
+				effortSet:    cmd.Flags().Changed("effort"),
+				subagentSet:  cmd.Flags().Changed("subagent"),
+				subagentArgs: subagentFlags,
 			}, printer)
 		},
 	}
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
-	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude or pi); \"\" clears it")
-	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi); \"\" clears it")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude, pi or codex); \"\" clears it")
+	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi and codex — codex takes OpenAI ids only); \"\" clears it")
 	cmd.Flags().StringVar(&effort, "effort", "", "effort level for this agent (low, medium, high, xhigh, max); \"\" clears it")
+	cmd.Flags().StringArrayVar(&subagentFlags, "subagent", nil, "persona=model mapping for sub-agents (repeatable; persona= clears)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
@@ -177,13 +195,16 @@ name-only entry is added. Only the flags given change; pass an empty value
 type agentSetFlags struct {
 	runtime, model, effort          string
 	runtimeSet, modelSet, effortSet bool
+	subagentSet                     bool
+	subagentArgs                    []string
 }
 
-// runAgentSet upserts runtime/model/effort for one agent on the overlay
-// config.yaml and validates the result the way `fullsend run` will.
+// runAgentSet upserts runtime/model/effort/subagents for one agent on
+// the overlay config.yaml and validates the result the way `fullsend
+// run` will.
 func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Printer) error {
-	if !f.runtimeSet && !f.modelSet && !f.effortSet {
-		return fmt.Errorf("nothing to set: pass at least one of --runtime, --model, --effort")
+	if !f.runtimeSet && !f.modelSet && !f.effortSet && !f.subagentSet {
+		return fmt.Errorf("nothing to set: pass at least one of --runtime, --model, --effort, --subagent")
 	}
 	absDir, err := filepath.Abs(fullsendDir)
 	if err != nil {
@@ -211,9 +232,61 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if f.effortSet {
 		effort = f.effort
 	}
+
+	// Seed from the overlay's own entry: writing the merged map back
+	// would freeze the parent layer's entries into this config.
+	localSubagents, _ := config.AgentSettingsFor(localAgentEntries(cfg), agentName)
+
+	var subagents map[string]*string
+	if localSubagents.Subagents != nil {
+		subagents = make(map[string]*string, len(localSubagents.Subagents))
+		for k, v := range localSubagents.Subagents {
+			// A nil value is a tombstone; carry it over rather than
+			// dereferencing it.
+			if v == nil {
+				subagents[k] = nil
+				continue
+			}
+			cp := *v
+			subagents[k] = &cp
+		}
+	}
+	if f.subagentSet {
+		if subagents == nil {
+			subagents = make(map[string]*string)
+		}
+		for _, arg := range f.subagentArgs {
+			k, v, found := strings.Cut(arg, "=")
+			if !found {
+				// Without the separator the intent is ambiguous: bare
+				// "correctness" would otherwise be indistinguishable from
+				// "correctness=" and silently tombstone the entry.
+				return fmt.Errorf("--subagent: %q must be key=value (use %q= to clear an inherited entry)", arg, arg)
+			}
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k == "" {
+				return fmt.Errorf("--subagent: empty key in %q", arg)
+			}
+			if !config.ValidSubagentKey(k) {
+				return fmt.Errorf("--subagent: invalid key %q: must be lowercase alphanumeric segments joined by hyphens (max 64 chars), or \"default\"", k)
+			}
+			if v == "" {
+				// Empty value = tombstone (nil pointer clears an inherited entry).
+				subagents[k] = nil
+			} else {
+				subagents[k] = &v
+			}
+		}
+		// Drop empty map so it does not serialize as `subagents: {}`.
+		if len(subagents) == 0 {
+			subagents = nil
+		}
+	}
+
 	// Only the overlay's own entries are written; an agent registered in
 	// config.base.yaml gets an overlay entry that merges onto it by name.
-	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort)
+	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort, subagents)
 	w.SetAgents(local)
 
 	if err := cfg.Validate(); err != nil {
@@ -226,8 +299,35 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if err := os.WriteFile(configPath, data, 0o644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort))
+	msg := fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort)
+	if s := formatSubagents(subagents); s != "" {
+		msg += " subagents: " + s
+	}
+	printer.StepDone(msg)
 	return nil
+}
+
+// formatSubagents renders the subagents map for the `agent set` confirmation
+// line, sorted so the output is stable. A tombstone prints as "<key>=cleared"
+// so a caller can see that the entry was un-set rather than left untouched.
+func formatSubagents(subagents map[string]*string) string {
+	if len(subagents) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(subagents))
+	for k := range subagents {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if v := subagents[k]; v == nil {
+			parts = append(parts, k+"=cleared")
+		} else {
+			parts = append(parts, k+"="+*v)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // localAgentEntries returns the entries the overlay itself declares (the
@@ -237,6 +337,21 @@ func localAgentEntries(cfg config.ConfigReader) []config.AgentEntry {
 		return local.LocalAgentEntries()
 	}
 	return cfg.AgentEntries()
+}
+
+// upsertAgentSource sets Source for name on a layer's local agent list:
+// on the entry with that name when present, else as a new override-only
+// entry. Mirrors config.UpsertAgentSettings, but for the update path's
+// Source field rather than runtime/model/effort/subagents.
+func upsertAgentSource(agents []config.AgentEntry, name, newSource string) []config.AgentEntry {
+	lower := strings.ToLower(name)
+	for i := range agents {
+		if strings.ToLower(agents[i].DerivedName()) == lower {
+			agents[i].Source = newSource
+			return agents
+		}
+	}
+	return append(agents, config.AgentEntry{Name: name, Source: newSource})
 }
 
 func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeClient forge.Client, printer *ui.Printer) error {
@@ -351,6 +466,9 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 			if a.Effort != "" {
 				settings = append(settings, "effort="+a.Effort)
 			}
+			if s := formatSubagents(a.Subagents); s != "" {
+				settings = append(settings, "subagents: "+s)
+			}
 			displaySource += "  [" + strings.Join(settings, " ") + "]"
 		}
 		printer.Raw(fmt.Sprintf("%-*s  %s\n", maxName, a.DerivedName(), displaySource))
@@ -377,49 +495,117 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	}
 
 	entry := agents[idx]
-	if !urlutil.IsURL(entry.Source) {
+	if urlutil.IsURL(entry.Source) {
+		newSource, newSHA, err := repinSourceURL(ctx, entry.Source, explicitSHA, entry.Ref, forgeClient, printer)
+		if err != nil {
+			return err
+		}
+
+		// Only this layer's own entries are written; an agent registered
+		// in config.base.yaml gets an overlay entry that merges onto it
+		// by name, instead of freezing the parent layer's entries into
+		// config.yaml (mirrors runAgentSet).
+		if w, ok := cfg.(config.PerRepoConfigWriter); ok {
+			local := upsertAgentSource(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, newSource)
+			w.SetAgents(local)
+		} else {
+			agents[idx].Source = newSource
+			cfg.SetAgents(agents)
+		}
+
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("config validation failed: %w", err)
+		}
+
+		data, err := cfg.Marshal()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(configPath, data, 0o644); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+
+		printer.StepDone(fmt.Sprintf("Updated agent %q to %s", agentName, newSHA[:12]))
+		return nil
+	}
+
+	// Local-path source: re-pin a base: URL in the harness YAML, if present.
+	if entry.Source == "" {
+		return fmt.Errorf("agent %q is a local path — nothing to update", agentName)
+	}
+	if err := validateLocalPath(absDir, entry.Source); err != nil {
+		return err
+	}
+	// Resolve symlinks and re-check containment: validateLocalPath only
+	// rejects absolute paths and ".." segments, so a symlink at the
+	// source path (or an intermediate directory) could otherwise point
+	// the write below outside the fullsend directory.
+	harnessPath, err := containedLocalPath(absDir, entry.Source)
+	if err != nil {
+		return err
+	}
+	h, err := harness.LoadRaw(harnessPath)
+	if err != nil {
+		return fmt.Errorf("loading local harness: %w", err)
+	}
+	if !urlutil.IsURL(h.Base) {
 		return fmt.Errorf("agent %q is a local path — nothing to update", agentName)
 	}
 
-	info, err := parseAgentSourceURL(entry.Source)
+	newBase, newSHA, err := repinSourceURL(ctx, h.Base, explicitSHA, entry.Ref, forgeClient, printer)
 	if err != nil {
-		return fmt.Errorf("parsing agent URL: %w", err)
+		return err
+	}
+	if err := rewriteHarnessBaseURL(harnessPath, h.Base, newBase); err != nil {
+		return err
 	}
 
-	cleanURL, _, _ := urlutil.ParseIntegrityHash(entry.Source)
+	printer.StepDone(fmt.Sprintf("Updated agent %q to %s", agentName, newSHA[:12]))
+	return nil
+}
+
+// repinSourceURL re-pins source to explicitSHA (or a resolved branch HEAD)
+// and returns the new URL with a recomputed integrity hash plus the SHA.
+func repinSourceURL(ctx context.Context, source, explicitSHA, storedRef string, forgeClient forge.Client, printer *ui.Printer) (string, string, error) {
+	info, err := parseAgentSourceURL(source)
+	if err != nil {
+		return "", "", fmt.Errorf("parsing agent URL: %w", err)
+	}
+
+	cleanURL, _, _ := urlutil.ParseIntegrityHash(source)
 	isGH := isGitHubURL(cleanURL)
 
 	var newSHA string
 	if explicitSHA != "" {
 		if !commitSHAPattern.MatchString(explicitSHA) {
-			return fmt.Errorf("invalid commit SHA %q: must be a 40-character lowercase hex string", explicitSHA)
+			return "", "", fmt.Errorf("invalid commit SHA %q: must be a 40-character lowercase hex string", explicitSHA)
 		}
 		newSHA = explicitSHA
 	} else {
 		if !isGH {
-			return fmt.Errorf("non-GitHub URL agents require an explicit SHA to update")
+			return "", "", fmt.Errorf("non-GitHub URL agents require an explicit SHA to update")
 		}
 		if forgeClient == nil {
-			return fmt.Errorf("URL agents require a forge client for branch resolution")
+			return "", "", fmt.Errorf("URL agents require a forge client for branch resolution")
 		}
 		// Use the stored ref from adoption when available; fall back to
 		// the repo's default branch for backward compatibility with
 		// entries that predate the Ref field.
-		branch := entry.Ref
+		branch := storedRef
 		if branch == "" {
 			repo, err := forgeClient.GetRepo(ctx, info.Owner, info.Repo)
 			if err != nil {
-				return fmt.Errorf("looking up repo %s/%s: %w", info.Owner, info.Repo, err)
+				return "", "", fmt.Errorf("looking up repo %s/%s: %w", info.Owner, info.Repo, err)
 			}
 			branch = repo.DefaultBranch
 		}
 		printer.StepStart(fmt.Sprintf("Resolving %s/%s@%s", info.Owner, info.Repo, branch))
 		newSHA, err = forgeClient.GetBranchRef(ctx, info.Owner, info.Repo, branch)
 		if err != nil {
-			return fmt.Errorf("resolving branch ref: %w", err)
+			return "", "", fmt.Errorf("resolving branch ref: %w", err)
 		}
 		if !commitSHAPattern.MatchString(newSHA) {
-			return fmt.Errorf("resolved ref is not a valid commit SHA: %q", newSHA)
+			return "", "", fmt.Errorf("resolved ref is not a valid commit SHA: %q", newSHA)
 		}
 		printer.StepDone("Resolved to " + newSHA[:12])
 	}
@@ -430,7 +616,7 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	} else {
 		oldSHA := findSHAInURL(cleanURL)
 		if oldSHA == "" {
-			return fmt.Errorf("could not find a commit SHA in the existing URL")
+			return "", "", fmt.Errorf("could not find a commit SHA in the existing URL")
 		}
 		newURL = strings.Replace(cleanURL, oldSHA, newSHA, 1)
 	}
@@ -439,27 +625,63 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	content, err := fetch.FetchURL(ctx, newURL, fetch.DefaultPolicy)
 	if err != nil {
 		printer.StepFail("Failed to fetch content")
-		return fmt.Errorf("fetching content: %w", err)
+		return "", "", fmt.Errorf("fetching content: %w", err)
 	}
 	hash := fetch.ComputeSHA256(content)
 	printer.StepDone("Computed integrity hash")
 
-	agents[idx].Source = newURL + "#sha256=" + hash
-	cfg.SetAgents(agents)
+	return newURL + "#sha256=" + hash, newSHA, nil
+}
 
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("config validation failed: %w", err)
+// rewriteHarnessBaseURL replaces the first occurrence of oldURL with newURL
+// in the harness file, preserving comments and unrelated fields.
+func rewriteHarnessBaseURL(path, oldURL, newURL string) error {
+	if oldURL == "" {
+		return fmt.Errorf("empty base URL")
 	}
-
-	data, err := cfg.Marshal()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading harness file: %w", err)
 	}
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+	if !bytes.Contains(data, []byte(oldURL)) {
+		return fmt.Errorf("base URL not found in %s", path)
+	}
+	updated := bytes.Replace(data, []byte(oldURL), []byte(newURL), 1)
+
+	// The replace above is a first-match, file-wide byte substitution, so
+	// oldURL appearing earlier in the file (e.g. in a comment) could mean
+	// the wrong occurrence was rewritten. Verify the parsed base: field
+	// actually changed to newURL against a temp file *before* touching the
+	// real harness file, so a failed verification never leaves path
+	// mutated with a wrong-occurrence replacement.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".rewrite-harness-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for verification: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(updated); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing temp file for verification: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file for verification: %w", err)
 	}
 
-	printer.StepDone(fmt.Sprintf("Updated agent %q to %s", agentName, newSHA[:12]))
+	h, err := harness.LoadRaw(tmpPath)
+	if err != nil {
+		return fmt.Errorf("verifying rewritten harness file: %w", err)
+	}
+	if h.Base != newURL {
+		return fmt.Errorf("base URL in %s was not updated to the new value; a matching URL may have been replaced elsewhere in the file", path)
+	}
+
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return fmt.Errorf("setting permissions on harness file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("writing harness file: %w", err)
+	}
 	return nil
 }
 
