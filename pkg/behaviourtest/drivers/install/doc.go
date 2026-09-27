@@ -44,4 +44,14 @@
 // Any fix for dispatch-side permission propagation delays on freshly
 // recreated repos must operate on the dispatch side (e.g., retry within
 // the dispatch workflow itself) rather than from the suite side.
+//
+// # Test actor access
+//
+// Human-like test actors (fstest-write, fstest-triage) inherit write/triage
+// access from GitHub organization-level all-repository roles, not from
+// per-repo collaborator grants. Direct grants are deleted with the repo
+// and re-adding them creates pending invitations (#7777). The ensurer
+// verifies org membership and the matching all-repository role once per
+// org; it must not call AddCollaborator. fstest-outsider must remain
+// outside the organization.
 package install

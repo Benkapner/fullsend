@@ -75,12 +75,14 @@ type repoEnsurer struct {
 	runCLI    CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
 	settle    SettleFunc    // injectable; defaults to awaitWorkflowReady
 	setupOpts common.GitHubSetupOpts
-	// actorGrants are re-applied to every recreated repo.
-	actorGrants []actorGrant
+	// actorGrants are verified once per org (membership + all-repository roles).
+	actorGrants   []actorGrant
+	outsiderLogin string
 
-	mu       sync.Mutex
-	ensured  map[string]struct{} // keyed by org/repo; only successful results cached
-	inflight singleflight.Group
+	mu           sync.Mutex
+	ensured      map[string]struct{} // keyed by org/repo; only successful results cached
+	verifiedOrgs map[string]struct{} // keyed by org; org-level actor access already checked
+	inflight     singleflight.Group
 }
 
 // newRepoEnsurer returns an ensurer backed by the given forge client
@@ -109,16 +111,18 @@ func newRepoEnsurerWithOpts(
 	logf func(string, ...any),
 ) ensurer {
 	return &repoEnsurer{
-		e2eCfg:      e2eCfg,
-		client:      client,
-		token:       token,
-		binary:      binary,
-		logf:        logf,
-		runCLI:      e2etest.TryRunCLI,
-		settle:      awaitWorkflowReady,
-		setupOpts:   opts,
-		actorGrants: actorGrantsFromEnv(context.Background(), logf),
-		ensured:     make(map[string]struct{}),
+		e2eCfg:        e2eCfg,
+		client:        client,
+		token:         token,
+		binary:        binary,
+		logf:          logf,
+		runCLI:        e2etest.TryRunCLI,
+		settle:        awaitWorkflowReady,
+		setupOpts:     opts,
+		actorGrants:   actorGrantsFromEnv(context.Background(), logf),
+		outsiderLogin: outsiderLoginFromEnv(context.Background(), logf),
+		ensured:       make(map[string]struct{}),
+		verifiedOrgs:  make(map[string]struct{}),
 	}
 }
 
@@ -199,9 +203,10 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 		return err
 	}
 
-	// Grant before install so the grants have the install and settle time
-	// to reach the dispatch side (see doc.go).
-	if err := e.grantActors(ctx, org, repoName); err != nil {
+	// Verify org-level actor access before install. Direct collaborator
+	// grants are not used: they vanish when resetRepo deletes the repo
+	// and re-adding them creates pending invitations (#7777).
+	if err := e.verifyActors(ctx, org); err != nil {
 		return err
 	}
 

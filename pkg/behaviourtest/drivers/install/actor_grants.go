@@ -4,31 +4,31 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// actorGrant is a direct collaborator grant for a human-like test actor.
+// actorGrant is the org-level access a human-like test actor must hold.
+// permission is the all-repository organization role ("write" or "triage").
 type actorGrant struct {
 	login      string
 	permission string
 }
 
-// actorGrantEnv maps each actor PAT to the permission its account holds on
-// pool repos (docs/guides/dev/e2e-testing.md, "Test actor permissions").
-// The outsider is deliberately absent: it must stay a non-collaborator.
+// actorGrantEnv maps each actor PAT to the all-repository organization
+// role its account must hold (docs/guides/dev/e2e-testing.md,
+// "Test actor permissions"). The outsider is deliberately absent: it
+// must stay outside the organization.
 var actorGrantEnv = []struct{ patEnv, permission string }{
-	{"TEST_ACTOR_WRITE_PAT", "push"},
+	{"TEST_ACTOR_WRITE_PAT", "write"},
 	{"TEST_ACTOR_TRIAGE_PAT", "triage"},
 }
 
-// grantMaxAttempts and grantRetryDelay bound the retries while a freshly
-// created repo is not yet visible to the collaborator API (it answers 404).
-const grantMaxAttempts = 6
+const outsiderPATEnv = "TEST_ACTOR_OUTSIDER_PAT"
 
-var grantRetryDelay = time.Second
+const setupOrgHint = "run hack/setup-new-e2e-org.sh to grant organization membership and the all-repository role"
 
 // actorGrantsFromEnv resolves the login behind each actor PAT that is set.
 // An actor whose login cannot be resolved is logged and skipped.
@@ -41,7 +41,7 @@ func actorGrantsFromEnv(ctx context.Context, logf func(string, ...any)) []actorG
 		}
 		login, err := e2etest.NewLiveClient(pat).GetAuthenticatedUser(ctx)
 		if err != nil {
-			logf("[ensure] skipping %s grant: resolving login: %v", a.patEnv, err)
+			logf("[ensure] skipping %s access check: resolving login: %v", a.patEnv, err)
 			continue
 		}
 		grants = append(grants, actorGrant{login: login, permission: a.permission})
@@ -49,39 +49,126 @@ func actorGrantsFromEnv(ctx context.Context, logf func(string, ...any)) []actorG
 	return grants
 }
 
-// grantActors re-applies the actor grants. resetRepo deletes the repo,
-// and direct collaborator grants are deleted with it.
-func (e *repoEnsurer) grantActors(ctx context.Context, org, repoName string) error {
-	if len(e.actorGrants) == 0 {
+// outsiderLoginFromEnv resolves the outsider actor login when its PAT is set.
+func outsiderLoginFromEnv(ctx context.Context, logf func(string, ...any)) string {
+	pat := os.Getenv(outsiderPATEnv)
+	if pat == "" {
+		return ""
+	}
+	login, err := e2etest.NewLiveClient(pat).GetAuthenticatedUser(ctx)
+	if err != nil {
+		logf("[ensure] skipping outsider access check: resolving login: %v", err)
+		return ""
+	}
+	return login
+}
+
+// verifyActors checks that test actors inherit access from organization
+// membership and all-repository roles. Direct collaborator grants are
+// not applied: resetRepo deletes the repo, which would drop those
+// grants and re-adding them creates pending invitations (#7777).
+//
+// The check is cached per org for the ensurer's lifetime so delete+
+// recreate cycles do not repeat the org-level lookup.
+func (e *repoEnsurer) verifyActors(ctx context.Context, org string) error {
+	if len(e.actorGrants) == 0 && e.outsiderLogin == "" {
 		return nil
 	}
+
+	e.mu.Lock()
+	if _, ok := e.verifiedOrgs[org]; ok {
+		e.mu.Unlock()
+		return nil
+	}
+	e.mu.Unlock()
+
 	gh, ok := e.client.(forge.GitHubExtensions)
 	if !ok {
-		return fmt.Errorf("granting test actors on %s/%s: forge client has no collaborator API", org, repoName)
+		return fmt.Errorf("verifying test actors on %s: forge client has no organization membership API", org)
 	}
+
 	for _, g := range e.actorGrants {
-		if err := e.addCollaboratorWithRetry(ctx, gh, org, repoName, g); err != nil {
-			return fmt.Errorf("granting %s %s on %s/%s: %w", g.login, g.permission, org, repoName, err)
+		if err := e.verifyActorOrgAccess(ctx, gh, org, g); err != nil {
+			return err
 		}
-		e.logf("[ensure] granted %s %s on %s/%s", g.login, g.permission, org, repoName)
 	}
+	if e.outsiderLogin != "" {
+		if err := e.verifyOutsider(ctx, gh, org); err != nil {
+			return err
+		}
+	}
+
+	e.mu.Lock()
+	if e.verifiedOrgs == nil {
+		e.verifiedOrgs = make(map[string]struct{})
+	}
+	e.verifiedOrgs[org] = struct{}{}
+	e.mu.Unlock()
+	e.logf("[ensure] verified org-level actor access on %s", org)
 	return nil
 }
 
-func (e *repoEnsurer) addCollaboratorWithRetry(ctx context.Context, gh forge.GitHubExtensions, org, repoName string, g actorGrant) error {
-	delay := grantRetryDelay
-	for attempt := 1; ; attempt++ {
-		err := gh.AddCollaborator(ctx, org, repoName, g.login, g.permission)
-		if err == nil || !forge.IsNotFound(err) || attempt == grantMaxAttempts {
-			return err
+func (e *repoEnsurer) verifyActorOrgAccess(ctx context.Context, gh forge.GitHubExtensions, org string, g actorGrant) error {
+	membership, err := gh.GetOrgMembership(ctx, org, g.login)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return fmt.Errorf("%s is not a member of %s; org-level %s access is required (%s)",
+				g.login, org, g.permission, setupOrgHint)
 		}
-		e.logf("[ensure] %s/%s not visible to the collaborator API yet, attempt %d/%d — backing off %v",
-			org, repoName, attempt, grantMaxAttempts, delay)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-		delay *= 2
+		return fmt.Errorf("checking membership of %s in %s: %w", g.login, org, err)
 	}
+	if membership.State != "active" {
+		return fmt.Errorf("%s is not an active member of %s (state=%s); org-level %s access is required (%s)",
+			g.login, org, membership.State, g.permission, setupOrgHint)
+	}
+
+	roles, err := gh.ListUserOrganizationRoles(ctx, org, g.login)
+	if err != nil {
+		return fmt.Errorf("checking organization roles for %s in %s: %w (%s)",
+			g.login, org, err, setupOrgHint)
+	}
+	if !hasAllRepoRole(roles, g.permission) {
+		return fmt.Errorf("%s is a member of %s but is missing the all-repository %s role (%s)",
+			g.login, org, g.permission, setupOrgHint)
+	}
+	e.logf("[ensure] %s has all-repository %s on %s", g.login, g.permission, org)
+	return nil
+}
+
+func (e *repoEnsurer) verifyOutsider(ctx context.Context, gh forge.GitHubExtensions, org string) error {
+	membership, err := gh.GetOrgMembership(ctx, org, e.outsiderLogin)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			e.logf("[ensure] %s has no org membership on %s", e.outsiderLogin, org)
+			return nil
+		}
+		return fmt.Errorf("checking outsider membership of %s in %s: %w", e.outsiderLogin, org, err)
+	}
+	return fmt.Errorf("%s has org membership in %s (state=%s); outsider must remain outside the organization",
+		e.outsiderLogin, org, membership.State)
+}
+
+func hasAllRepoRole(roles []forge.OrganizationRole, permission string) bool {
+	for _, r := range roles {
+		if matchesAllRepoRole(r.Name, permission) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAllRepoRole(roleName, permission string) bool {
+	n := normalizeRoleName(roleName)
+	want := normalizeRoleName(permission)
+	if want == "push" {
+		want = "write"
+	}
+	return n == "all_repo_"+want || n == "all_repository_"+want
+}
+
+func normalizeRoleName(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "-", "_")
+	return s
 }
