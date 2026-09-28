@@ -59,6 +59,8 @@ region there remains an alternative.
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
 | `FULLSEND_DISPATCH_SECRET` | CI/CD secret | HMAC secret for dispatch variables and poll-state documents; auto-provisioned by `repos install` | (generated) |
+| `FULLSEND_TRIGGER_TOKEN` | CI/CD secret | GitLab pipeline trigger token for the webhook fast-path dispatcher. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |
+| `FULLSEND_WEBHOOK_SECRET` | CI/CD secret | GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |
 | `FULLSEND_GITLAB_ROLE_MIGRATION` | CI/CD variable (protected, unmasked) | Role-identity gate. Operator-settable values are `enforced` and `rollback`. Ordinary unflagged `repos install` writes the internal `migrating` intermediate while provisioning, then `enforced` once roles are ready. Leftover `disabled` remains parseable until converge. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md) | `enforced` |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | CI/CD variable (protected, unmasked) | Administrator role registry (JSON references and policy, not secret values); empty means built-in roles only. Written by `repos install --gitlab-role-registry`. | `{"roles":[]}` |
 | `FULLSEND_GITLAB_ROLE_ROTATION` | CI/CD variable (protected, unmasked) | Per-role rotation state (lock, token IDs, expiry dates, phase). Never stores token values. Written by `repos install` during rotation. | `{"roles":{}}` |

@@ -689,6 +689,9 @@ Confirm:
   instead; no project access token is created.
 * **CI/CD variables** — `FULLSEND_DISPATCH_SECRET`, `FULLSEND_GCP_PROJECT_ID`,
   and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
+  When the webhook fast-path is enabled, `FULLSEND_TRIGGER_TOKEN` and
+  `FULLSEND_WEBHOOK_SECRET` are also stored as masked, protected variables
+  and must never appear in logs.
   `FULLSEND_FORGE_TOKEN` is expected too in `disabled`, `rollback`, or a
   `migrating` install still waiting on role credentials — but not once the
   repo cuts over to `enforced` mode, where the unflagged install deletes it
