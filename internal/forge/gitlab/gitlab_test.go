@@ -456,6 +456,17 @@ func TestSetPipelineVariablesMinimumOverrideRole(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestSetPipelineVariablesMinimumOverrideRole_InvalidRole(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected request for an invalid role; validation must reject before issuing it")
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo", "admin")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrInvalidPipelineVarOverrideRole)
+}
+
 func TestSetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {

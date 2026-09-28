@@ -224,7 +224,12 @@ func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo strin
 }
 
 // GetPipelineVariablesMinimumOverrideRole reads the GitLab project
-// setting that gates who may pass user-defined pipeline variables.
+// setting that gates who may pass user-defined pipeline variables. If
+// GitLab's response omits ci_pipeline_variables_minimum_override_role
+// (e.g. an older GitLab instance or an edition that doesn't expose the
+// field), this returns ("", nil); callers cannot distinguish that from an
+// explicitly empty role, since GitLab never populates the field with an
+// empty string.
 func (c *LiveClient) GetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo string) (string, error) {
 	proj := projectPath(owner, repo)
 	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s", proj))
@@ -242,8 +247,13 @@ func (c *LiveClient) GetPipelineVariablesMinimumOverrideRole(ctx context.Context
 }
 
 // SetPipelineVariablesMinimumOverrideRole updates the GitLab project
-// setting that gates who may pass user-defined pipeline variables.
+// setting that gates who may pass user-defined pipeline variables. role
+// must be one of the documented forge.PipelineVarOverride* constants;
+// anything else is rejected before issuing the request.
 func (c *LiveClient) SetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo, role string) error {
+	if err := forge.ValidatePipelineVarOverrideRole(role); err != nil {
+		return err
+	}
 	body := map[string]string{"ci_pipeline_variables_minimum_override_role": role}
 	resp, err := c.put(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)), body)
 	if err != nil {

@@ -2103,6 +2103,26 @@ func TestFakeClient_PipelineVariablesMinimumOverrideRole(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "forbidden")
 	})
+
+	t.Run("rejects an unknown role and does not store it", func(t *testing.T) {
+		fc := NewFakeClient()
+		err := fc.SetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo", "admin")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPipelineVarOverrideRole)
+
+		got, err := fc.GetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("PipelineVarOverrideRoles is initialised by NewFakeClient", func(t *testing.T) {
+		fc := NewFakeClient()
+		// Mirrors the direct-assignment seeding convention used by sibling
+		// maps (e.g. ProtectedBranches) elsewhere in this file; would panic
+		// on a nil map.
+		fc.PipelineVarOverrideRoles["org/repo"] = PipelineVarOverrideOwner
+		assert.Equal(t, PipelineVarOverrideOwner, fc.PipelineVarOverrideRoles["org/repo"])
+	})
 }
 
 func TestFakeClient_GetOrgPlan(t *testing.T) {

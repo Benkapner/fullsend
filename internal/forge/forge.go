@@ -148,6 +148,26 @@ const (
 	PipelineVarOverrideOwner        = "owner"
 )
 
+// ErrInvalidPipelineVarOverrideRole indicates that a caller supplied a
+// value for ci_pipeline_variables_minimum_override_role that is not one of
+// the four documented roles.
+var ErrInvalidPipelineVarOverrideRole = errors.New("invalid pipeline variable override role")
+
+// ValidatePipelineVarOverrideRole reports an error if role is not one of
+// the documented ci_pipeline_variables_minimum_override_role values
+// (PipelineVarOverrideNoOneAllowed, PipelineVarOverrideDeveloper,
+// PipelineVarOverrideMaintainer, PipelineVarOverrideOwner). Shared by the
+// GitLab LiveClient and FakeClient so both reject typos and unknown values
+// the same way before persisting or sending them.
+func ValidatePipelineVarOverrideRole(role string) error {
+	switch role {
+	case PipelineVarOverrideNoOneAllowed, PipelineVarOverrideDeveloper, PipelineVarOverrideMaintainer, PipelineVarOverrideOwner:
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidPipelineVarOverrideRole, role)
+	}
+}
+
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 
@@ -966,11 +986,17 @@ type Client interface {
 	// setting that gates who may pass user-defined variables when creating
 	// or triggering a pipeline (ci_pipeline_variables_minimum_override_role).
 	// Valid values are no_one_allowed, developer, maintainer, and owner.
-	// Returns ErrNotFound if the project does not exist. GitHub returns
-	// ErrNotSupported.
+	// Returns ("", nil) if the field is absent from GitLab's response
+	// (e.g. an older GitLab instance or an edition that doesn't expose the
+	// setting) — callers cannot distinguish that case from a project whose
+	// role was explicitly read as empty, since GitLab never returns an
+	// empty string for a populated field. Returns ErrNotFound if the
+	// project does not exist. GitHub returns ErrNotSupported.
 	GetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo string) (string, error)
 	// SetPipelineVariablesMinimumOverrideRole updates that setting via
-	// PUT /projects/:id. role must be one of the documented GitLab values.
+	// PUT /projects/:id. role must be one of the documented GitLab values
+	// (see ValidatePipelineVarOverrideRole); implementations reject any
+	// other value, including empty string, without making a request.
 	// Returns ErrNotFound if the project does not exist. GitHub returns
 	// ErrNotSupported.
 	SetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo, role string) error

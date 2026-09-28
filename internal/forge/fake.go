@@ -14,23 +14,24 @@ var _ GitHubExtensions = (*FakeClient)(nil)
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		FileContents:          make(map[string][]byte),
-		WorkflowRuns:          make(map[string]*WorkflowRun),
-		Secrets:               make(map[string]bool),
-		VariablesExist:        make(map[string]bool),
-		VariableValues:        make(map[string]string),
-		Errors:                make(map[string]error),
-		DirContents:           make(map[string][]DirectoryEntry),
-		FileContentsRef:       make(map[string][]byte),
-		BranchRefs:            make(map[string]string),
-		ExistingBranches:      make(map[string]bool),
-		Refs:                  make(map[string]string),
-		ProtectedBranches:     make(map[string]bool),
-		ProtectedBranchRules:  make(map[string]*ProtectedBranchRule),
-		PipelineSchedules:     make(map[string][]PipelineSchedule),
-		ForceReachableCommits: make(map[string]int),
-		PipelineTriggerTokens: make(map[string][]PipelineTriggerToken),
-		ProjectHooks:          make(map[string][]ProjectHook),
+		FileContents:             make(map[string][]byte),
+		WorkflowRuns:             make(map[string]*WorkflowRun),
+		Secrets:                  make(map[string]bool),
+		VariablesExist:           make(map[string]bool),
+		VariableValues:           make(map[string]string),
+		Errors:                   make(map[string]error),
+		DirContents:              make(map[string][]DirectoryEntry),
+		FileContentsRef:          make(map[string][]byte),
+		BranchRefs:               make(map[string]string),
+		ExistingBranches:         make(map[string]bool),
+		Refs:                     make(map[string]string),
+		ProtectedBranches:        make(map[string]bool),
+		ProtectedBranchRules:     make(map[string]*ProtectedBranchRule),
+		PipelineSchedules:        make(map[string][]PipelineSchedule),
+		ForceReachableCommits:    make(map[string]int),
+		PipelineTriggerTokens:    make(map[string][]PipelineTriggerToken),
+		ProjectHooks:             make(map[string][]ProjectHook),
+		PipelineVarOverrideRoles: make(map[string]string),
 	}
 }
 
@@ -2509,6 +2510,9 @@ func (f *FakeClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, 
 
 	if e := f.err("SetPipelineVariablesMinimumOverrideRole"); e != nil {
 		return e
+	}
+	if err := ValidatePipelineVarOverrideRole(role); err != nil {
+		return err
 	}
 	if f.PipelineVarOverrideRoles == nil {
 		f.PipelineVarOverrideRoles = make(map[string]string)
