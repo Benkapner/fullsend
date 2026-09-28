@@ -43,7 +43,7 @@ Introduce a top-level `preflight_check` field on the harness that runs once, bef
 
 1. **Top-level field, not per-script siblings.** A single top-level field covers all scripts without a breaking refactor of the flat `pre_script`/`post_script` strings.
 
-2. **Literal-command semantics.** Consistent with ADR 0116, the top-level field is a literal `sh -c` command (not a script path), subject to the same `Harness.Lint()` path-pattern guard.
+2. **Literal-command semantics.** Consistent with ADR 0116, the top-level field is a literal `sh -c` command (not a script path), subject to the same `Harness.Lint()` path-pattern guard. Its implementation must also enforce ADR 0116's restricted credential environment and diagnostic-redaction release gates.
 
 3. **Execution order and migration.** The top-level check runs before `pre_script` ([ADR 0072](0072-pre-script-output-protocol.md)) and before sandbox creation. A nonzero exit or timeout reports the failed preflight check and stops the run before `pre_script`, sandbox creation, or any nested check. This eager gate also checks post-script dependencies on runs that `pre_script` would otherwise skip; authors must account for that trade-off. Implementation tests must verify ordering, failure, and skip paths with sentinel actions. Deprecate `validation_loop.preflight_check` in favor of the top-level field once that replacement is implemented. During migration, existing nested checks continue to run after the top-level check (if present), so harnesses are not broken before they can move their probe. Emit a deprecation warning only once the replacement is usable; removal requires a separately decided compatibility/version gate ([ADR 0115](0115-harness-schema-versioning-and-field-types.md)).
 
