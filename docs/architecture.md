@@ -194,17 +194,21 @@ repo baseline and overrides)
   path, fetched resource, or scalar value — published in the
   [Harness Field Reference](contributing/harness-fields.md). The field and its
   type-flagging in `Harness.Lint()` are planned, not yet implemented (Lint
-  diagnostics non-fatal, with fail-fast as a tracked follow-up)
-  ([ADR 0115](ADRs/0115-harness-schema-versioning-and-field-types.md)).
+  diagnostics non-fatal, with fail-fast as a tracked follow-up). Incompatible
+  field-type changes require a version bump; compatible additions do not
+  require one ([ADR 0115](ADRs/0115-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
-  via `sh -c` with no working directory and is not resource-resolved;
+  via `sh -c` without setting a working directory and is not resource-resolved;
   `Harness.Lint()` will flag path-like values (planned, not yet implemented;
   non-fatal when it lands)
   ([ADR 0116](ADRs/0116-preflight-check-literal-command.md)).
 - Preflight coverage for all scripts: a top-level `preflight_check` field is a
   single host-dependency gate for `pre_script`, `post_script`, and
   `validation_loop`, running before `pre_script` and before sandbox creation.
-  The field is planned but not yet implemented
+  The field is planned but not yet implemented. Once it is usable, the nested
+  `validation_loop.preflight_check` is deprecated, but existing nested checks
+  continue running during migration. A separately named resource-delivered
+  preflight script for complex probes remains future work
   ([ADR 0117](ADRs/0117-extend-preflight-coverage-to-pre-and-post-scripts.md)).
 
 **Open questions:**

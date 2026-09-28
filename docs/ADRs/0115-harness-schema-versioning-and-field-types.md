@@ -55,6 +55,6 @@ Versioning declares the field-type contract; it does not validate values. Lint a
 
 - Authors get a documented field-type contract; the "path vs command" ambiguity is resolved at the schema level. Machine-checking arrives with the `Harness.Lint()` type-flagging rule, which is not yet implemented.
 - Backward compatible: harnesses without `schema_version` are treated as version 1.
-- A `schema_version` bump is the signal for a breaking field-type change and must update `harness-fields.md` in the same change.
+- A `schema_version` bump is required for an incompatible field-type change and must update `harness-fields.md` in the same change. Backward-compatible field additions do not require a bump; this ADR does not set the versioning policy for other kinds of breaking schema change.
 - fullsend stays the sole owner of harness interpretation; agents authors consume the published contract rather than reverse-engineering Go code.
-- Follow-ups out of scope here: per-version JSON Schema, machine-checked schema validation in agents CI, and making `Harness.Lint()` SeverityError diagnostics fail-fast in `fullsend lock`/`run`.
+- Follow-ups out of scope here: a policy for other breaking schema changes, per-version JSON Schema, machine-checked schema validation in agents CI, and making `Harness.Lint()` SeverityError diagnostics fail-fast in `fullsend lock`/`run`.

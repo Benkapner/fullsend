@@ -35,7 +35,7 @@ Extending preflight to `pre_script` and `post_script` closes that gap, and this 
 
 - **Per-script sibling fields (`pre_script.preflight_check`, etc.).** Rejected: `pre_script` and `post_script` are flat strings, not structs, so siblings would force a breaking refactor of those fields into objects.
 
-- **Resource-resolved script field.** Rejected here: consistent with ADR 0116, a script variant is future work and follows `pre_script` delivery semantics under [ADR 0038](0038-universal-harness-access.md).
+- **Resource-resolved script field.** Deferred: a single `sh -c` command can combine dependency probes, but more involved checks may need a separately named `preflight_script`. Such a field would have to be delivered like `pre_script` under [ADR 0038](0038-universal-harness-access.md), with an explicit host execution and working-directory contract; it must not reinterpret the existing literal-command field ([ADR 0116](0116-preflight-check-literal-command.md)).
 
 ## Decision
 
@@ -45,14 +45,14 @@ Introduce a top-level `preflight_check` field on the harness that runs once, bef
 
 2. **Literal-command semantics.** Consistent with ADR 0116, the top-level field is a literal `sh -c` command (not a script path), subject to the same `Harness.Lint()` path-pattern guard.
 
-3. **Execution order and precedence.** The top-level check runs before `pre_script` ([ADR 0072](0072-pre-script-output-protocol.md)) and before sandbox creation; `validation_loop.preflight_check` continues to run after it, unchanged.
+3. **Execution order and migration.** The top-level check runs before `pre_script` ([ADR 0072](0072-pre-script-output-protocol.md)) and before sandbox creation. Deprecate `validation_loop.preflight_check` in favor of the top-level field once that replacement is implemented. During migration, existing nested checks continue to run after the top-level check (if present), so harnesses are not broken before they can move their probe. Emit a deprecation warning only once the replacement is usable; removal requires a separately decided compatibility/version gate ([ADR 0115](0115-harness-schema-versioning-and-field-types.md)).
 
 4. **Composition.** The field follows the scalar merge rule from [ADR 0045](0045-forge-portable-harness-schema.md): a child harness overrides the inherited value.
 
 ## Consequences
 
 - One host-dependency gate covers all scripts; failures are caught before sandbox creation rather than after the agent completes.
-- Backward compatible: harnesses without a top-level field behave exactly as today.
+- Backward compatible: harnesses without a top-level field behave exactly as today, including execution of the nested check during migration.
 - This decision supersedes the design in PR #6009; the PR's disposition is left to normal triage.
 - This decision resolves the design question in #5568 (top-level field vs. per-script siblings); implementation is tracked separately.
-- Follow-ups out of scope here: a resource-resolved script variant (see ADR 0116), and the rollout/version gate for consumers on pinned fullsend versions.
+- Follow-ups out of scope here: a separately named, resource-delivered `preflight_script` for more complex probes (see ADR 0116), a deprecation-warning/removal timeline, and the rollout/version gate for consumers on pinned fullsend versions.

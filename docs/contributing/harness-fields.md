@@ -83,9 +83,11 @@ identifier (matching `^[a-zA-Z0-9_-]+$`, looked up under `providers/`) or a
 fetched resource (a local path or a `#sha256=` URL resolved through the
 resource-fetch pipeline).
 
-`schema_version` (absent = `1`) declares this contract; a version bump is the
-signal for a breaking field-type change and must update this table in the same
-change.
+`schema_version` (absent = `1`) declares this contract; an incompatible
+field-type change requires a version bump and an update to this table in the
+same change. Backward-compatible field additions do not require a bump;
+[ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md) leaves
+other breaking schema changes for a separate versioning policy.
 
 ## Merge and inheritance rules
 
