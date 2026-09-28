@@ -108,8 +108,7 @@ A custom role cannot:
 Harness `role:` and custom-agent names are validated with
 `Registry.ValidateAgent`. An unregistered name returns
 `ErrUnregistered`. `fullsend poll` / `fullsend run` call that check at
-dispatch time when the gate is `migrating` or `enforced` (role-credential
-modes); this contract defines the check.
+dispatch time in every gate mode; this contract defines the check.
 
 ## Credential references
 
@@ -368,22 +367,29 @@ report:
 - Per-role state: `configured` or `unconfigured` (presence only),
   including custom roles and reuse targets
 - `Partial`: some but not all registered role secrets exist
-- `Ready`:
+- `Ready`: install/converge-state readiness, **not** a runtime-readiness
+  signal — `Resolve`/`Select`/`SelectAgent` always require the
+  registered per-role secret in every mode and never fall back to the
+  shared token:
   - `disabled` / `rollback`: shared token present
   - `migrating` / `enforced`: every registered role's credential is present
 - `Missing`: registered roles whose secrets are absent
 - `Diagnostics`: human-readable lines with **names only**
 
-Classification of a missing role secret:
+Classification of a missing role secret for converge-readiness
+purposes only — `fullsend poll`/`fullsend run` still fail closed on a
+missing role secret in every mode, including `disabled`/`rollback`:
 
-- `disabled` / `rollback`: not required (not drift)
+- `disabled` / `rollback`: not required for converge readiness (not drift)
 - `migrating` / `enforced`: missing/required (drift / fail closed)
 
 A role secret that is present while the gate is `disabled` or
-`rollback` is reported as "configured but unused". That is not an
-error; leftover secrets after rollback are expected until uninstall
-removes them. `repos install --rotate-gitlab-roles` refreshes those
-leftover secrets without changing the gate; it does not remove them.
+`rollback` is reported as "configured but unused" for converge
+readiness; runtime (`fullsend poll`/`run`) already requires that same
+secret. That is not an error; leftover secrets after rollback are
+expected until uninstall removes them. `repos install
+--rotate-gitlab-roles` refreshes those leftover secrets without
+changing the gate; it does not remove them.
 `repos uninstall` deletes the gate, registry, rotation document,
 built-in and custom role secrets, leftover `FULLSEND_FORGE_TOKEN`, and
 matching `fullsend-bot` / `fullsend-poller` / `fullsend-analyst` /
@@ -546,9 +552,10 @@ distributed. The preserved token is revoked only after the normal
 
 **No silent shared-token fallback.** Rotation never writes
 `FULLSEND_FORGE_TOKEN` and never selects the shared credential because
-a role rotation failed. The shared token remains available only through
-leftover `disabled` or explicit `rollback`. Runtime 401/403 of a selected
-role credential is still `ErrAuthFailed`.
+a role rotation failed. Leftover `disabled` and explicit `rollback` are
+install/uninstall state only — runtime credential selection never
+selects or falls back to the shared token in any gate mode. Runtime
+401/403 of a selected role credential is still `ErrAuthFailed`.
 
 **Administrator-provided replacement does not auto-revoke leftovers.**
 `--gitlab-role-token` (free-tier enrollment or a custom `own`

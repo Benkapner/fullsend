@@ -47,8 +47,8 @@ The `gh pr view --json author` CLI command uses a different schema than raw Grap
 
 ## GitLab responsibility identities
 
-GitLab does not use GitHub Apps. Today's runtime is a single project
-access token (`fullsend-bot` / `FULLSEND_FORGE_TOKEN`). The registered-
+GitLab does not use GitHub Apps. Runtime authentication uses registered
+role credentials, not a single shared project access token. The registered-
 role contract — built-in Poller, Analyst, and Coder plus optional
 administrator-registered custom roles — is defined in
 [gitlab-role-credentials.md](gitlab-role-credentials.md).

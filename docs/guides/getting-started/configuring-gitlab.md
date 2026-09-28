@@ -714,10 +714,12 @@ each schedule to at most 24 pipeline triggers per day. Visit **Build →
 Pipelines** to watch the poll and
 agent jobs. On a role-aware install, the Poller identity handles polling and
 the Analyst identity (normally `fullsend-analyst`) should post the triage
-comment. On a GitLab.com Free install using only `--gitlab-bot-token`, the
-dedicated PAT owner's username posts it instead. The `fullsend-bot` identity
-is expected only on the shared-token path or when role provisioning was not
-completed. If `repos install` couldn't create the in-CI schedules,
+comment. Runtime credential selection requires the registered role
+credential in every gate mode, so a GitLab.com Free install using only
+`--gitlab-bot-token` without provisioned role secrets fails closed instead
+of posting — enroll role credentials via `--gitlab-role-token` (or complete
+role provisioning) so `fullsend-analyst` can authenticate. If
+`repos install` couldn't create the in-CI schedules,
 or if their cadence is too slow for the instance, run `fullsend poll` on your
 external scheduler instead — see [Off-system polling](#off-system-polling)
 — and check its output for the same comment.
@@ -727,7 +729,7 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Topic | GitHub | GitLab |
 |---|---|---|
 | Install command | `fullsend github setup` | `fullsend repos install --forge gitlab` |
-| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); `fullsend-bot` or a dedicated PAT username on Free/shared-token path |
+| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`), required in every gate mode; Free tier must enroll these via `--gitlab-role-token` since runtime authentication never falls back to the shared PAT or `fullsend-bot` |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
 | Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--inference-project` |

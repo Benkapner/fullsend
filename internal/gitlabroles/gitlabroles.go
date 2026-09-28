@@ -466,20 +466,20 @@ func diagnoseMessages(mode Mode, rep Report, configured, total int) []string {
 		}
 		switch {
 		case rr.State == RoleStateConfigured && mode.UsesSharedOnly():
-			msgs = append(msgs, fmt.Sprintf("%s: configured but unused (%s)", label, rr.SecretName))
+			msgs = append(msgs, fmt.Sprintf("%s: configured but unused for converge readiness — fullsend poll/run still require this secret at runtime (%s)", label, rr.SecretName))
 		case rr.State == RoleStateConfigured:
 			msgs = append(msgs, fmt.Sprintf("%s: configured (%s)", label, rr.SecretName))
 		case mode.RequiresRoleCredentials():
 			msgs = append(msgs, fmt.Sprintf("%s: missing (required) (%s)", label, rr.SecretName))
 		default:
-			msgs = append(msgs, fmt.Sprintf("%s: unconfigured (not required) (%s)", label, rr.SecretName))
+			msgs = append(msgs, fmt.Sprintf("%s: unconfigured (not required for converge readiness; required by fullsend poll/run at runtime) (%s)", label, rr.SecretName))
 		}
 	}
 	switch {
 	case mode.UsesSharedOnly() && !rep.SharedPresent:
 		msgs = append(msgs, "legacy path not ready: shared credential missing")
 	case mode.UsesSharedOnly():
-		msgs = append(msgs, "legacy shared-token path ready")
+		msgs = append(msgs, "legacy shared-token path ready (install/converge state only — fullsend poll/run still require the registered role secret, not the shared token)")
 	case configured == total && total > 0:
 		msgs = append(msgs, "all role credentials configured")
 	case rep.Partial:
