@@ -68,26 +68,53 @@ per-overlay:
 ## Semantic types (ADR 0115)
 
 Each harness field has a semantic type that governs how fullsend interprets
-its value ([ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md)):
+its value ([ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md)).
+The following groups cover the top-level fields and their nested values;
+`forge.<platform>` and `overlays[]` inherit the types of their shared
+`ForgeConfig` fields. A map or list container is structural; its keys and
+elements use the types listed below. Ordinary strings, numbers, booleans,
+and map values not explicitly identified as paths, commands, or resource
+references are scalar values, not shell commands.
 
 | Semantic type | Meaning | Fields |
 |---|---|---|
-| inline command | Executed via `sh -c` on the host; not a path, not resource-resolved | `validation_loop.preflight_check`, top-level `preflight_check` (planned) |
-| local file path | Resolved relative to the harness directory; the file runs or is read locally | `pre_script`, `post_script`, `validation_loop.script`, `validation_loop.schema`, `agent_input`, `api_servers[].script`, `host_files[].src`, `doc` |
-| fetched resource | A local path or a pinned URL resolved through the resource-fetch pipeline | `agent`, `base`, `policy`, `skills[]`, `plugins[]`, `openshell.profiles[]` |
-| scalar value | Neither a command nor a path; used verbatim as configuration | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `runner_env`, `env.runner`, `env.sandbox`, `privilege_levels`, `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches`, `schema_version` |
-| structural | Defines composition/conditional structure rather than a single value | `forge`, `overlays`, `trigger` |
+| inline command | Executed via `sh -c` on the host, not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` (planned) |
+| runtime local path | Path to a file or directory in the local configuration, not a command | `pre_script`, `post_script`, `validation_loop.script`, `validation_loop.schema`, `agent_input` (directory), `host_files[].src` (host path, optional `${VAR}` expansion), `api_servers[].script` (path resolved, server startup planned) |
+| resource reference | Local path or pinned URL resolved/fetched as applicable | `agent`, `base`, `policy`, `skills[].source`, `plugins[].path`, `openshell.profiles[]`; `providers[]` has additional identifier semantics below |
+| skill override | Key is a path within the skill; value is a local file, pinned URL, or `null` to remove the file | `skills[].overrides[<path>]` |
+| source metadata path | Describes a path in the source repository; not runtime-resolved or delivered | `doc` |
+| destination path | Names a location inside the sandbox, not a host file to resolve | `host_files[].dest` |
+| structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
+| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version` (planned); `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
 
-`providers[]` is a union, not a single type: an entry is either a bare
-identifier (matching `^[a-zA-Z0-9_-]+$`, looked up under `providers/`) or a
-fetched resource (a local path or a `#sha256=` URL resolved through the
-resource-fetch pipeline).
+For local harnesses, relative runtime paths resolve from the `.fullsend`
+configuration root (the parent of `harness/`), **not** from the YAML file's
+directory. The same rule applies to local resource references; URLs use the
+allowlisted, pinned resource-fetch pipeline instead. For URL `base:` layers,
+relative `pre_script`, `post_script`, `validation_loop.script`/`schema`,
+`agent`, `policy`, and skill resources are fetched from the base repository
+and rewritten to cache paths. `agent_input` inherited from a URL base is
+**cleared**, because it is a directory and is not fetched. `doc` is source
+metadata, not a runtime dependency; `api_servers[].script` is resolved but
+server startup is planned. See [ADR 0038](../ADRs/0038-universal-harness-access.md)
+for remote delivery and the [current-field reference](../reference/harness-reference.md)
+for implementation status.
+
+`providers[]` is a union: each entry is either a bare identifier (matching
+`^[a-zA-Z0-9_-]+$`, looked up under `providers/`) or a fetched resource (a
+local path or a `#sha256=` URL). A `skills[]` entry can be a source string or
+a single-key map of that source to file overrides; a `plugins[]` entry can be
+a path string or a `{path, env, pi}` map. Scalar security leaf values retain
+their own validation and defaults; this type table does not override them.
 
 `schema_version` (absent = `1`) declares this contract; an incompatible
 field-type change requires a version bump and an update to this table in the
 same change. Backward-compatible field additions do not require a bump;
 [ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md) leaves
-other breaking schema changes for a separate versioning policy.
+other breaking schema changes for a separate versioning policy. Version-aware
+loaders reject malformed or unsupported versions in each raw composition layer
+before merging; older pinned consumers must be upgraded before harness content
+using a new version is published to them.
 
 ## Merge and inheritance rules
 

@@ -191,12 +191,14 @@ repo baseline and overrides)
 - Harness schema versioning and field types: a `schema_version` field (absent
   = version `1`) is planned to make the harness a versioned contract, and every
   field is classified by semantic type — inline command (`sh -c`), local file
-  path, fetched resource, or scalar value — published in the
+  path, resource reference, scalar value, or structural container — published in the
   [Harness Field Reference](contributing/harness-fields.md). The field and its
   type-flagging in `Harness.Lint()` are planned, not yet implemented (Lint
   diagnostics non-fatal, with fail-fast as a tracked follow-up). Incompatible
   field-type changes require a version bump; compatible additions do not
-  require one ([ADR 0115](ADRs/0115-harness-schema-versioning-and-field-types.md)).
+  require one. Version-aware loaders reject unsupported versions before
+  composition; older pinned consumers must be upgraded before receiving
+  newer-version harnesses ([ADR 0115](ADRs/0115-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` without setting a working directory and is not resource-resolved;
   `Harness.Lint()` will flag path-like values (planned, not yet implemented;
