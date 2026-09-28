@@ -869,6 +869,13 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"ForceCommitFileToBranch", func(fc *FakeClient) error {
 			return fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
 		}},
+		{"GetPipelineVariablesMinimumOverrideRole", func(fc *FakeClient) error {
+			_, err := fc.GetPipelineVariablesMinimumOverrideRole(ctx, "o", "r")
+			return err
+		}},
+		{"SetPipelineVariablesMinimumOverrideRole", func(fc *FakeClient) error {
+			return fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner)
+		}},
 		{"CreateOrUpdateOrgVariable", func(fc *FakeClient) error {
 			return fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", nil)
 		}},
@@ -1032,6 +1039,8 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.ListProjectHooks(ctx, "o", "r")
 			_, _ = fc.UpdateProjectHook(ctx, "o", "r", 1, ProjectHook{})
 			_ = fc.DeleteProjectHook(ctx, "o", "r", 1)
+			_ = fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner)
+			_, _ = fc.GetPipelineVariablesMinimumOverrideRole(ctx, "o", "r")
 		}(i)
 	}
 
@@ -2054,6 +2063,65 @@ func TestFakeClient_UpdateRepoVisibility(t *testing.T) {
 		err := fc.UpdateRepoVisibility(ctx, "org", "repo", true)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "forbidden")
+	})
+}
+
+func TestFakeClient_PipelineVariablesMinimumOverrideRole(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("round-trips a set value through a subsequent get", func(t *testing.T) {
+		fc := NewFakeClient()
+		err := fc.SetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo", PipelineVarOverrideOwner)
+		require.NoError(t, err)
+
+		got, err := fc.GetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, PipelineVarOverrideOwner, got)
+	})
+
+	t.Run("get on unset project returns empty string", func(t *testing.T) {
+		fc := NewFakeClient()
+		got, err := fc.GetPipelineVariablesMinimumOverrideRole(ctx, "org", "missing")
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("returns injected get error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{"GetPipelineVariablesMinimumOverrideRole": errors.New("forbidden")},
+		}
+		_, err := fc.GetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "forbidden")
+	})
+
+	t.Run("returns injected set error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{"SetPipelineVariablesMinimumOverrideRole": errors.New("forbidden")},
+		}
+		err := fc.SetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo", PipelineVarOverrideOwner)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "forbidden")
+	})
+
+	t.Run("rejects an unknown role and does not store it", func(t *testing.T) {
+		fc := NewFakeClient()
+		err := fc.SetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo", "admin")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPipelineVarOverrideRole)
+
+		got, err := fc.GetPipelineVariablesMinimumOverrideRole(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("PipelineVarOverrideRoles is initialised by NewFakeClient", func(t *testing.T) {
+		fc := NewFakeClient()
+		// Mirrors the direct-assignment seeding convention used by sibling
+		// maps (e.g. ProtectedBranches) elsewhere in this file; would panic
+		// on a nil map.
+		fc.PipelineVarOverrideRoles["org/repo"] = PipelineVarOverrideOwner
+		assert.Equal(t, PipelineVarOverrideOwner, fc.PipelineVarOverrideRoles["org/repo"])
 	})
 }
 
