@@ -232,7 +232,7 @@ The only provider is `owners_file`:
 Default: absent (collaborator API only). The field is not inherited from
 `config.base.yaml`: each repo opts in in its own `config.yaml`. Unknown or
 duplicate providers fail config validation. See
-[Agent dispatch authorization](../guides/user/customizing-agents.md#agent-dispatch-authorization)
+[OWNERS file authorization](../guides/user/owners-file-authorization.md)
 for a setup walkthrough.
 
 ### `status_notifications`

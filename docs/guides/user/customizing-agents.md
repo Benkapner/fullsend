@@ -29,7 +29,6 @@ Common configuration goals:
 | Teach agents your conventions | Use [AGENTS.md](customizing-with-agents-md.md) (no harness change needed) |
 | Give an agent domain knowledge | Use [skills](customizing-with-skills.md) (no harness change needed) |
 | Limit sandbox token privilege | Set `privilege_levels.runtime: read` so write tokens stay on pre/post scripts |
-| Authorize users via OWNERS file | Add `owners_file` to `authorization` in `config.yaml` |
 
 ## Configuration with `base:` composition
 
@@ -567,71 +566,13 @@ See the
 [Authorization Contract](../../normative/authorization/v1/README.md) for the
 full role hierarchy, exception rules, and implementation notes.
 
-### Extending authorization with OWNERS files
-
-If your project uses Prow-style `OWNERS` files, you can use them as an
-additional authorization source so that listed approvers and reviewers can
-trigger agents without needing direct collaborator roles on the forge.
-
-#### Prerequisites
-
-- Fullsend is installed and configured for the repository.
-- An `OWNERS` file exists at the repository root.
-
-#### Setup
-
-1. Add the `owners_file` provider to `.fullsend/config.yaml`:
-
-   ```yaml
-   authorization:
-     - provider: owners_file
-   ```
-
-2. Ensure the `OWNERS` file has `approvers` and/or `reviewers` lists:
-
-   ```yaml
-   approvers:
-     - alice
-     - bob
-   reviewers:
-     - carol
-   ```
-
-   `approvers` receive `write`-equivalent access — all slash commands and
-   custom agents registered under `agents:`. `reviewers` receive
-   `triage`-equivalent access — `/fs-triage` and `/fs-review` only (custom
-   agents still require `write`).
-
-3. _(Optional)_ Define aliases in an `OWNERS_ALIASES` file at the repository
-   root:
-
-   ```yaml
-   aliases:
-     backend-team:
-       - alice
-       - bob
-   ```
-
-   Then reference the alias key in `OWNERS`:
-
-   ```yaml
-   approvers:
-     - backend-team
-   ```
-
-OWNERS can only **raise** a user's effective role, never lower it. Users not
-found in OWNERS fall through to the forge's permission API. The OWNERS file
-is read from a trusted ref so that PR authors cannot add themselves:
-`pull_request_target` and `pull_request_review` events use the PR's
-**base-branch SHA**; all other events — including slash commands posted on a
-PR (`issue_comment`) — use the **default branch**.
-
-For edge cases (parse failures, alias restrictions, character validation),
-see the
-[`authorization` config reference](../../reference/config-reference.md#authorization).
+To extend trigger access beyond forge collaborators using Prow-style
+OWNERS files, see the
+[OWNERS file authorization guide](owners-file-authorization.md).
 
 ## See also
 
+- [OWNERS file authorization](owners-file-authorization.md) — using Prow-style OWNERS files to authorize agent dispatch
 - [Customizing Agents](customizing-overview.md) — overview of all customization approaches
 - [Harness Field Reference](../../reference/harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
 - [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents from scratch
