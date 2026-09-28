@@ -549,10 +549,10 @@ Modified packages (minimized via forge.Client abstraction):
 > `repos install` provisions built-in and custom role credentials on
 > fresh and existing shared-token installs and, when every registered
 > role is ready, cuts over to `enforced` mode and retires
-> `FULLSEND_FORGE_TOKEN` automatically. When the role-identity gate is
-> `migrating` or `enforced`, GitLab CI poll/agent jobs and `fullsend poll`
-> / `fullsend run` select the registered role credential and fail closed
-> if it is missing; leftover `disabled` and explicit `rollback` keep
+> `FULLSEND_FORGE_TOKEN` automatically. GitLab CI poll/agent jobs and
+> `fullsend poll` / `fullsend run` select the registered role credential
+> in every gate mode and fail closed if it is missing; leftover
+> `disabled` and explicit `rollback` no longer authenticate with
 > `FULLSEND_FORGE_TOKEN`. Role registration is not accepted from
 > repository or merge-request content.
 

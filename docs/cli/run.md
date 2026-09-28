@@ -298,10 +298,7 @@ troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-work
 
 ## GitLab role identity
 
-On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential and exports `GITLAB_TOKEN` from that CI/CD variable:
-
-- Gate leftover unset/`disabled` or explicit `rollback`: shared `FULLSEND_FORGE_TOKEN` (leftover shared-token runtime, or emergency recovery — ordinary unflagged `repos install` converges existing shared-token installs to `enforced` once roles are ready). If `FULLSEND_FORGE_TOKEN` is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged). `--gitlab-role-migration` no longer accepts `disabled`.
-- `migrating`/`enforced`: Poller/Analyst/Coder (or a registered custom role) via `gitlabroles.SelectAgent`. A missing role secret fails closed; there is no shared-token fallback. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request. `migrating` is an internal install intermediate, not an operator-settable flag.
+On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential via `gitlabroles.SelectAgent` and exports `GITLAB_TOKEN` from that CI/CD variable. Poller/Analyst/Coder (or a registered custom role) is required in every gate mode, including leftover unset/`disabled` and explicit `rollback`. A missing role secret fails closed; there is no shared-token fallback and no fallback to a directly-set `GITLAB_TOKEN`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
 
 See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 

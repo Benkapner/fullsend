@@ -38,7 +38,7 @@ func TestJobForAgentFallsBackToHarnessRole(t *testing.T) {
 	assert.Equal(t, "e2e", unmapped.Name)
 }
 
-func TestSelectDisabledUsesSharedToken(t *testing.T) {
+func TestSelectDisabledUsesRoleToken(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
 		forge.SecretForgeToken:        "glpat-SHARED-secret",
@@ -47,27 +47,34 @@ func TestSelectDisabledUsesSharedToken(t *testing.T) {
 	sel, err := Select(PollerJob(), testGetenv(env))
 	require.NoError(t, err)
 	assert.Equal(t, ModeDisabled, sel.Mode)
-	assert.Equal(t, forge.SecretForgeToken, sel.Source.SecretName)
-	assert.True(t, sel.Source.Shared)
+	assert.Equal(t, forge.SecretGitLabPollerToken, sel.Source.SecretName)
+	assert.False(t, sel.Source.Shared)
 	assert.Equal(t, RolePoller, sel.Source.Role)
-	assert.Equal(t, "shared", sel.IdentitySource())
+	assert.Equal(t, "role", sel.IdentitySource())
 
 	token, err := sel.Token(testGetenv(env))
 	require.NoError(t, err)
-	assert.Equal(t, "glpat-SHARED-secret", token)
+	assert.Equal(t, "glpat-POLLER-secret", token)
 	for _, line := range sel.Diagnostics() {
 		assert.NotContains(t, line, "glpat-")
 		assert.NotContains(t, line, "SHARED-secret")
+		assert.NotContains(t, line, "POLLER-secret")
 	}
 }
 
-func TestSelectDisabledAllowsUnmappedAgent(t *testing.T) {
+func TestSelectDisabledRejectsUnmappedAgent(t *testing.T) {
 	t.Parallel()
-	env := map[string]string{forge.SecretForgeToken: "shared"}
-	sel, err := SelectAgent("e2e", "", testGetenv(env))
-	require.NoError(t, err)
-	assert.True(t, sel.Source.Shared)
-	assert.Equal(t, forge.SecretForgeToken, sel.Source.SecretName)
+	env := map[string]string{
+		forge.SecretForgeToken:         "shared",
+		forge.SecretGitLabPollerToken:  "p",
+		forge.SecretGitLabAnalystToken: "a",
+		forge.SecretGitLabCoderToken:   "c",
+	}
+	_, err := SelectAgent("e2e", "", testGetenv(env))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnregistered)
+	assert.NotContains(t, err.Error(), "shared")
+	assert.NotContains(t, err.Error(), "glpat-")
 }
 
 func TestSelectBuiltinMappings(t *testing.T) {
@@ -172,7 +179,7 @@ func TestSelectCustomReuseRole(t *testing.T) {
 	assert.Contains(t, strings.Join(sel.Diagnostics(), "\n"), "reuses credential of role coder")
 }
 
-func TestSelectUnregisteredFailsClosedInRoleAwareModes(t *testing.T) {
+func TestSelectUnregisteredFailsClosedInEveryMode(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
 		forge.SecretForgeToken:         "shared",
@@ -180,15 +187,38 @@ func TestSelectUnregisteredFailsClosedInRoleAwareModes(t *testing.T) {
 		forge.SecretGitLabAnalystToken: "a",
 		forge.SecretGitLabCoderToken:   "c",
 	}
-	for _, mode := range []string{"migrating", "enforced"} {
+	for _, mode := range []string{"", "disabled", "migrating", "rollback", "enforced"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			e := copyEnv(env)
-			e[forge.VarGitLabRoleMigration] = mode
+			if mode != "" {
+				e[forge.VarGitLabRoleMigration] = mode
+			}
 			_, err := SelectAgent("e2e", "", testGetenv(e))
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrUnregistered)
 			assert.NotContains(t, err.Error(), "shared")
+			assert.NotContains(t, err.Error(), "glpat-")
+		})
+	}
+}
+
+func TestSelectLeftoverModesMissingRoleDoNotFallback(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"", "disabled", "rollback"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			env := map[string]string{
+				forge.SecretForgeToken: "glpat-SHARED-secret",
+			}
+			if mode != "" {
+				env[forge.VarGitLabRoleMigration] = mode
+			}
+			_, err := Select(AgentJob("review"), testGetenv(env))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrUnconfigured)
+			assert.NotErrorIs(t, err, ErrSharedUnconfigured)
+			assert.Contains(t, err.Error(), forge.SecretGitLabAnalystToken)
 			assert.NotContains(t, err.Error(), "glpat-")
 		})
 	}
@@ -299,20 +329,21 @@ func TestAuthFailedNeverIncludesSecretValue(t *testing.T) {
 func TestSelectNilGetenvUsesProcessEnv(t *testing.T) {
 	t.Setenv(forge.VarGitLabRoleMigration, "")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
-	t.Setenv(forge.SecretForgeToken, "from-process")
-	t.Setenv(forge.SecretGitLabPollerToken, "")
-	t.Setenv(forge.SecretGitLabAnalystToken, "")
-	t.Setenv(forge.SecretGitLabCoderToken, "")
+	t.Setenv(forge.SecretForgeToken, "from-process-shared")
+	t.Setenv(forge.SecretGitLabPollerToken, "from-process-poller")
+	t.Setenv(forge.SecretGitLabAnalystToken, "from-process-analyst")
+	t.Setenv(forge.SecretGitLabCoderToken, "from-process-coder")
 	sel, err := Select(PollerJob(), nil)
 	require.NoError(t, err)
-	assert.Equal(t, forge.SecretForgeToken, sel.Source.SecretName)
+	assert.Equal(t, forge.SecretGitLabPollerToken, sel.Source.SecretName)
 	token, err := sel.Token(nil)
 	require.NoError(t, err)
-	assert.Equal(t, "from-process", token)
+	assert.Equal(t, "from-process-poller", token)
 
 	sel, err = SelectAgent("review", "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, RoleAnalyst, sel.Source.Role)
+	assert.Equal(t, forge.SecretGitLabAnalystToken, sel.Source.SecretName)
 }
 
 func TestSelectAgentErrorPaths(t *testing.T) {

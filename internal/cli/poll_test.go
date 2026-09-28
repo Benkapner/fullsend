@@ -249,14 +249,14 @@ func TestPollCmd_GitLabMissingToken(t *testing.T) {
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), forge.SecretForgeToken) {
-		t.Fatalf("expected %s error, got: %v", forge.SecretForgeToken, err)
+	if err == nil || !strings.Contains(err.Error(), forge.SecretGitLabPollerToken) {
+		t.Fatalf("expected %s error, got: %v", forge.SecretGitLabPollerToken, err)
 	}
 }
 
 func TestPollCmd_GitLabMissingProject(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv(forge.SecretForgeToken, "tok")
+	t.Setenv(forge.SecretGitLabPollerToken, "tok")
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
@@ -267,7 +267,7 @@ func TestPollCmd_GitLabMissingProject(t *testing.T) {
 
 func TestPollCmd_GitLabInvalidMode(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv(forge.SecretForgeToken, "tok")
+	t.Setenv(forge.SecretGitLabPollerToken, "tok")
 	t.Setenv("CI_PROJECT_PATH", "group/project")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")
 	cmd := newPollCmd()
@@ -280,7 +280,7 @@ func TestPollCmd_GitLabInvalidMode(t *testing.T) {
 
 func TestPollCmd_GitLabModeFromEnv(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv(forge.SecretForgeToken, "tok")
+	t.Setenv(forge.SecretGitLabPollerToken, "tok")
 	t.Setenv("CI_PROJECT_PATH", "group/project")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")
 	t.Setenv(forge.VarPollMode, "invalid")

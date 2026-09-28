@@ -107,41 +107,59 @@ func TestModeFromNilGetenvUsesEnv(t *testing.T) {
 	assert.True(t, present[forge.SecretForgeToken])
 }
 
-func TestResolveDisabledMatchesExistingInstall(t *testing.T) {
+func TestResolveDisabledRequiresRoleCredentials(t *testing.T) {
 	t.Parallel()
-	present := map[string]bool{forge.SecretForgeToken: true}
-	jobs := []Job{
-		PollerJob(),
-		AgentJob("review"),
-		AgentJob("code"),
-		AgentJob("fix"),
-		AgentJob("triage"),
-		AgentJob("custom-agent"),
-		{Kind: KindAgent, Name: ""},
-		{},
+	present := map[string]bool{
+		forge.SecretForgeToken:         true,
+		forge.SecretGitLabPollerToken:  true,
+		forge.SecretGitLabAnalystToken: true,
+		forge.SecretGitLabCoderToken:   true,
 	}
-	for _, job := range jobs {
-		t.Run(string(job.Kind)+"_"+job.Name, func(t *testing.T) {
+	jobs := []struct {
+		job    Job
+		secret string
+		role   Role
+	}{
+		{job: PollerJob(), secret: forge.SecretGitLabPollerToken, role: RolePoller},
+		{job: AgentJob("review"), secret: forge.SecretGitLabAnalystToken, role: RoleAnalyst},
+		{job: AgentJob("code"), secret: forge.SecretGitLabCoderToken, role: RoleCoder},
+		{job: AgentJob("fix"), secret: forge.SecretGitLabCoderToken, role: RoleCoder},
+		{job: AgentJob("triage"), secret: forge.SecretGitLabAnalystToken, role: RoleAnalyst},
+	}
+	for _, tc := range jobs {
+		t.Run(string(tc.job.Kind)+"_"+tc.job.Name, func(t *testing.T) {
 			t.Parallel()
-			src, err := Resolve(Request{Mode: ModeDisabled, Job: job, Present: present})
+			src, err := Resolve(Request{Mode: ModeDisabled, Job: tc.job, Present: present})
 			require.NoError(t, err)
-			assert.Equal(t, forge.SecretForgeToken, src.SecretName)
-			assert.True(t, src.Shared)
-			assert.Contains(t, src.Reason, "disabled")
+			assert.Equal(t, tc.secret, src.SecretName)
+			assert.Equal(t, tc.role, src.Role)
+			assert.False(t, src.Shared)
 		})
 	}
 }
 
-func TestResolveDisabledMissingShared(t *testing.T) {
+func TestResolveDisabledMissingRoleDoesNotUseShared(t *testing.T) {
 	t.Parallel()
-	_, err := Resolve(Request{Mode: ModeDisabled, Job: PollerJob(), Present: nil})
+	_, err := Resolve(Request{Mode: ModeDisabled, Job: PollerJob(), Present: map[string]bool{forge.SecretForgeToken: true}})
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrSharedUnconfigured)
-	assert.Contains(t, err.Error(), forge.SecretForgeToken)
+	assert.ErrorIs(t, err, ErrUnconfigured)
+	assert.NotErrorIs(t, err, ErrSharedUnconfigured)
+	assert.Contains(t, err.Error(), forge.SecretGitLabPollerToken)
 	assert.NotContains(t, err.Error(), "glpat-")
 }
 
-func TestResolveRollbackIgnoresRoleSecrets(t *testing.T) {
+func TestResolveDisabledUnmappedFailsClosed(t *testing.T) {
+	t.Parallel()
+	_, err := Resolve(Request{Mode: ModeDisabled, Job: AgentJob("custom-agent"), Present: map[string]bool{forge.SecretForgeToken: true}})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnregistered)
+
+	_, err = Resolve(Request{Mode: ModeDisabled, Job: AgentJob(""), Present: map[string]bool{forge.SecretForgeToken: true}})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnknownJob)
+}
+
+func TestResolveRollbackUsesRoleSecrets(t *testing.T) {
 	t.Parallel()
 	present := map[string]bool{
 		forge.SecretForgeToken:         true,
@@ -151,11 +169,10 @@ func TestResolveRollbackIgnoresRoleSecrets(t *testing.T) {
 	}
 	src, err := Resolve(Request{Mode: ModeRollback, Job: AgentJob("code"), Present: present})
 	require.NoError(t, err)
-	assert.Equal(t, forge.SecretForgeToken, src.SecretName)
-	assert.True(t, src.Shared)
+	assert.Equal(t, forge.SecretGitLabCoderToken, src.SecretName)
+	assert.False(t, src.Shared)
 	assert.Equal(t, RoleCoder, src.Role)
 	assert.Equal(t, RoleKindBuiltin, src.Kind)
-	assert.Contains(t, src.Reason, "rollback")
 }
 
 func TestResolveMigrating(t *testing.T) {
@@ -429,12 +446,12 @@ func TestContractDistinguishableOutcomes(t *testing.T) {
 		CustomSecretName(Role("scanner")): true,
 	}
 
-	t.Run("disabled uses shared token", func(t *testing.T) {
+	t.Run("disabled still selects registered role secret", func(t *testing.T) {
 		t.Parallel()
 		src, err := Resolve(Request{Mode: ModeDisabled, Job: AgentJob("scanner"), Registry: reg, Present: present})
 		require.NoError(t, err)
-		assert.Equal(t, forge.SecretForgeToken, src.SecretName)
-		assert.True(t, src.Shared)
+		assert.Equal(t, CustomSecretName(Role("scanner")), src.SecretName)
+		assert.False(t, src.Shared)
 	})
 
 	t.Run("builtin and custom share resolve path", func(t *testing.T) {
