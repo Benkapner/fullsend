@@ -784,6 +784,25 @@ func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 				"os.close(fd)",
 			want: "forced-stderr",
 		},
+		{
+			// Unlike the previous case, this one stages unflushed bytes in
+			// the wrapper's buffer before the fd is torn down, so there is
+			// something for interpreter shutdown to fail on flushing. That
+			// is what actually exercises the pyenv 120 regression: without
+			// block()'s close()/`sys.stderr = None` guard, CPython's
+			// finalization flush of this wrapper raises against the closed
+			// fd and overrides exit 2 with 120. block() never writes
+			// through sys.stderr itself, so the "pending" bytes only get
+			// there because this test put them there directly.
+			name: "live TextIOWrapper with unflushed bytes over a closed fd",
+			setup: "import io\n" +
+				"fd = os.open(os.devnull, os.O_WRONLY)\n" +
+				"sys.stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(fd, \"w\")), " +
+				"line_buffering=False, write_through=False)\n" +
+				"sys.stderr.write('pending')\n" +
+				"os.close(fd)",
+			want: "forced-stderr",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
