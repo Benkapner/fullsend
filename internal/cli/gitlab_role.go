@@ -68,9 +68,6 @@ func applyGitLabRoleSelection(sel gitlabroles.Selection, token string, setenv fu
 	setenv(envGitLabRole, string(sel.Source.Role))
 	setenv(envGitLabRoleSecret, sel.Source.SecretName)
 	setenv(envGitLabRoleSource, sel.IdentitySource())
-	if sel.Mode.UsesSharedOnly() {
-		return
-	}
 	clearSiblingGitLabRoleSecrets(sel, setenv)
 	if sel.Registration.Has(gitlabroles.CapWriteRepository) {
 		setenv("PUSH_TOKEN", token)
@@ -133,9 +130,7 @@ func wrapGitLabAuthFailure(sel gitlabroles.Selection, err error) error {
 
 // checkGitLabApprovalCapability rejects GitLab APPROVE reviews when the
 // identity that will actually authenticate the approve call does not
-// declare approve_merge_request. Disabled and rollback keep the
-// shared-token path so existing installations are unchanged. getenv nil
-// means os.Getenv.
+// declare approve_merge_request. getenv nil means os.Getenv.
 //
 // token is the credential post-review will use to authenticate the
 // approve call (resolvePostReviewClient prefers --token, then
@@ -161,9 +156,6 @@ func checkGitLabApprovalCapability(forgeName, action, token string, getenv func(
 	mode, err := gitlabroles.ModeFrom(getenv)
 	if err != nil {
 		return err
-	}
-	if mode.UsesSharedOnly() {
-		return nil
 	}
 	agentName := strings.TrimSpace(getenv(envGitLabRole))
 	if agentName == "" {

@@ -27,6 +27,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -6918,8 +6919,7 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 
 // TestRunAgent_GitLabSkipsMint verifies that mintAgentToken is not called
 // when --forge=gitlab. Minting is GitHub-only; on GitLab the registered
-// role credential (shared token while the migration gate is disabled)
-// serves as the push/API token. #6865 #7499.
+// role credential serves as the push/API token. #6865 #7499.
 func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
@@ -6953,6 +6953,9 @@ func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 	t.Setenv(forge.SecretForgeToken, "glpat-test-shared")
+	t.Setenv(forge.SecretGitLabPollerToken, "glpat-test-poller")
+	t.Setenv(forge.SecretGitLabAnalystToken, "glpat-test-analyst")
+	t.Setenv(forge.SecretGitLabCoderToken, "glpat-test-coder")
 	t.Setenv(forge.VarGitLabRoleMigration, "")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
 
@@ -6970,15 +6973,10 @@ func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 	assert.NotContains(t, buf.String(), "glpat-")
 }
 
-// TestRunAgent_GitLabMissingSharedFallsBackWhenDisabled verifies the
-// backward-compatibility fix from the review on PR #7510: before this PR,
-// `fullsend run --forge gitlab` was a no-op when migration is
-// disabled/rollback, leaving a directly-set GITLAB_TOKEN untouched. This
-// PR made GitLab credential routing unconditional, which broke that case
-// by hard-failing when FULLSEND_FORGE_TOKEN is absent even though
-// GITLAB_TOKEN is already set (the documented local-run workflow). The
-// fallback must restore the no-op so this keeps working.
-func TestRunAgent_GitLabMissingSharedFallsBackWhenDisabled(t *testing.T) {
+// TestRunAgent_GitLabMissingRoleFailsClosed verifies leftover disabled
+// gates no longer fall back to a directly-set GITLAB_TOKEN. Runtime
+// authentication requires the registered role secret.
+func TestRunAgent_GitLabMissingRoleFailsClosed(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -7012,12 +7010,11 @@ func TestRunAgent_GitLabMissingSharedFallsBackWhenDisabled(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "gitlab", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
-	// Expect error from openshell (later in the run), not from GitLab
-	// credential resolution.
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
-	assert.Contains(t, buf.String(), "FULLSEND_FORGE_TOKEN is not set")
-	assert.Equal(t, "glpat-preset-by-user", os.Getenv("GITLAB_TOKEN"), "a directly-set GITLAB_TOKEN must survive the fallback")
+	assert.ErrorIs(t, err, gitlabroles.ErrUnconfigured)
+	assert.Contains(t, err.Error(), forge.SecretGitLabCoderToken)
+	assert.NotContains(t, buf.String(), "FULLSEND_FORGE_TOKEN is not set")
+	assert.NotContains(t, err.Error(), "openshell")
 }
 
 // TestRunAgent_SetsEnvFromFlags verifies that run.go exports TARGET_REPO_DIR,

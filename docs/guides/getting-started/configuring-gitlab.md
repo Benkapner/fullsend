@@ -171,10 +171,13 @@ fullsend repos install <group/project> \
 
 `FULLSEND_GITLAB_BOT_TOKEN` is the equivalent environment variable.
 
-> **Warning:** This PAT is stored as `FULLSEND_FORGE_TOKEN` and used by
-> autonomous agents processing untrusted issue and merge request
-> comments. Use a token from a dedicated bot account scoped to the
-> target project or group — not your personal account or an admin
+> **Warning:** This PAT is stored as `FULLSEND_FORGE_TOKEN` for
+> install/converge state only. Autonomous agents processing untrusted
+> issue and merge request comments authenticate at runtime using the
+> per-role tokens enrolled via `--gitlab-role-token` (e.g.
+> `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`), not
+> this shared PAT. Use a token from a dedicated bot account scoped to
+> the target project or group — not your personal account or an admin
 > PAT — since a PAT typically carries its owner's access across every
 > project and group they can reach.
 
@@ -240,7 +243,7 @@ into re-enabling a disabled schedule, restoring in-CI dispatch and the
 double-dispatch risk this section describes.
 
 ```bash
-export FULLSEND_FORGE_TOKEN="<bot-pat>"   # not GITLAB_TOKEN
+export FULLSEND_GITLAB_POLLER_TOKEN="<poller-bot-pat>"   # not GITLAB_TOKEN or FULLSEND_FORGE_TOKEN
 export FULLSEND_DISPATCH_SECRET="<dispatch-secret>"  # from the protected CI/CD variable
 export CI_DEFAULT_BRANCH="main"           # or set CI_COMMIT_REF_NAME
 
@@ -258,9 +261,11 @@ every five minutes and `--mode events` at minutes `2,17,32,47` of each hour.
 Do not omit `--mode`: an unmodeled invocation uses the legacy combined path
 and can share neither the slash-mode state nor the event-mode cadence safely.
 
-`--forge gitlab` and `--fullsend-dir` are required flags. `FULLSEND_FORGE_TOKEN`
-(the same bot PAT from [Free-tier bot token](#free-tier-bot-token) above,
-**not** the `GITLAB_TOKEN` named in [Prerequisites](#prerequisites)) and
+`--forge gitlab` and `--fullsend-dir` are required flags. `fullsend poll`
+resolves its credential via the registered Poller role in every gate mode
+(there is no shared-token fallback), so `FULLSEND_GITLAB_POLLER_TOKEN`
+(**not** `FULLSEND_FORGE_TOKEN` and **not** the `GITLAB_TOKEN` named in
+[Prerequisites](#prerequisites)) and
 `FULLSEND_DISPATCH_SECRET` (the protected secret provisioned by install) must
 be set in the environment. `--mode` must be `slash` or `events` for an
 external replacement of the corresponding schedule. `--project` falls back
@@ -715,10 +720,12 @@ each schedule to at most 24 pipeline triggers per day. Visit **Build →
 Pipelines** to watch the poll and
 agent jobs. On a role-aware install, the Poller identity handles polling and
 the Analyst identity (normally `fullsend-analyst`) should post the triage
-comment. On a GitLab.com Free install using only `--gitlab-bot-token`, the
-dedicated PAT owner's username posts it instead. The `fullsend-bot` identity
-is expected only on the shared-token path or when role provisioning was not
-completed. If `repos install` couldn't create the in-CI schedules,
+comment. Runtime credential selection requires the registered role
+credential in every gate mode, so a GitLab.com Free install using only
+`--gitlab-bot-token` without provisioned role secrets fails closed instead
+of posting — enroll role credentials via `--gitlab-role-token` (or complete
+role provisioning) so `fullsend-analyst` can authenticate. If
+`repos install` couldn't create the in-CI schedules,
 or if their cadence is too slow for the instance, run `fullsend poll` on your
 external scheduler instead — see [Off-system polling](#off-system-polling)
 — and check its output for the same comment.
@@ -728,7 +735,7 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Topic | GitHub | GitLab |
 |---|---|---|
 | Install command | `fullsend github setup` | `fullsend repos install --forge gitlab` |
-| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); `fullsend-bot` or a dedicated PAT username on Free/shared-token path |
+| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`), required in every gate mode; Free tier must enroll these via `--gitlab-role-token` since runtime authentication never falls back to the shared PAT or `fullsend-bot` |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
 | Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--inference-project` |

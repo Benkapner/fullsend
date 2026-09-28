@@ -331,6 +331,13 @@ Credentials:
 > and fails closed if that secret is missing; this ADR's single-bot
 > identity remains the leftover/`rollback` path while the gate is unset,
 > leftover `disabled`, or explicit `rollback`.
+>
+> **Update (#7782):** The leftover/`rollback` single-bot-identity path
+> described above no longer applies to runtime credential selection.
+> Runtime job routing now requires the registered role credential in
+> every gate mode, including leftover unset/`disabled` and explicit
+> `rollback` — there is no shared-token fallback left. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 
 ### Credential model
 

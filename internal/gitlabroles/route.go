@@ -34,11 +34,9 @@ type Selection struct {
 }
 
 // Select loads ModeFrom, LoadRegistry, and PresenceFrom via getenv
-// (nil means os.Getenv), then resolves job. In migrating and enforced
-// modes an unmapped agent name is rejected with ValidateAgent before
-// Resolve so unregistered custom agents fail closed rather than
-// guessing an identity. Disabled and rollback skip that pre-check so
-// existing unmapped jobs keep using the shared token.
+// (nil means os.Getenv), then resolves job. An unmapped agent name is
+// always rejected with ValidateAgent before Resolve so unregistered
+// custom agents fail closed rather than guessing an identity.
 func Select(job Job, getenv func(string) string) (Selection, error) {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -91,17 +89,15 @@ func JobForAgent(reg Registry, agentName, harnessRole string) Job {
 }
 
 func selectResolved(mode Mode, job Job, reg Registry, getenv func(string) string) (Selection, error) {
-	if !mode.UsesSharedOnly() {
-		switch job.Kind {
-		case KindPoller:
-			// Always registered as RolePoller.
-		case KindAgent:
-			if err := reg.ValidateAgent(job.Name); err != nil {
-				return Selection{}, &Error{Mode: mode, Err: err}
-			}
-		default:
-			return Selection{}, &Error{Mode: mode, Err: ErrUnknownJob}
+	switch job.Kind {
+	case KindPoller:
+		// Always registered as RolePoller.
+	case KindAgent:
+		if err := reg.ValidateAgent(job.Name); err != nil {
+			return Selection{}, &Error{Mode: mode, Err: err}
 		}
+	default:
+		return Selection{}, &Error{Mode: mode, Err: ErrUnknownJob}
 	}
 	present := PresenceFrom(getenv, reg)
 	src, err := Resolve(Request{

@@ -111,8 +111,8 @@ const (
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
 
 	// VarGitLabRoleMigration is the GitLab role-identity gate. Absent or
-	// empty means disabled: leftover shared-token jobs use only
-	// FULLSEND_FORGE_TOKEN until ordinary repos install converges them.
+	// empty means disabled leftover shared-token install state. Runtime
+	// jobs require a registered role credential regardless of gate mode.
 	// Operator-settable values are enforced and rollback. Leftover
 	// disabled and migrating values remain parseable. See
 	// internal/gitlabroles.
