@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -543,6 +544,27 @@ func TestCodexReadHarnessSecurityEnv(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "expected 2 values")
 	})
+}
+
+// TestCodexReadHarnessSecurityEnvCmd runs the read command through a real sh:
+// the fake openshell above answers it without evaluating it, which is how
+// single-quoted references re-asserted the literal "${KEY:-}" text.
+func TestCodexReadHarnessSecurityEnvCmd(t *testing.T) {
+	for name, tc := range map[string]struct{ env, want string }{
+		"both set":     {"export FULLSEND_CANARY_TOKEN='canary-abc'\nexport FULLSEND_TOOL_ALLOWLIST='Bash,Read'\n", "canary-abc|fullsend-env-sep|Bash,Read"},
+		"canary unset": {"export FULLSEND_TOOL_ALLOWLIST='Bash,Read'\n", "|fullsend-env-sep|Bash,Read"},
+		"none set":     {"", "|fullsend-env-sep|"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			envFile := filepath.Join(t.TempDir(), ".env")
+			require.NoError(t, os.WriteFile(envFile, []byte(tc.env), 0o600))
+			cmd := exec.Command("/bin/sh", "-c", codexReadHarnessSecurityEnvCmd(envFile))
+			cmd.Env = []string{"PATH=/usr/bin:/bin"}
+			out, err := cmd.Output()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(out))
+		})
+	}
 }
 
 // TestCodexBootstrap_PinsTheHarnessHookEnv is the end-to-end half: what the

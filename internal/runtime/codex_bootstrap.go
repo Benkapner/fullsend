@@ -415,20 +415,26 @@ var codexHarnessSecurityEnvKeys = []string{"FULLSEND_CANARY_TOKEN", "FULLSEND_TO
 // token or allowlist cannot contain it.
 const codexEnvReadSeparator = "|fullsend-env-sep|"
 
+// codexReadHarnessSecurityEnvCmd sources envFile and prints the
+// codexHarnessSecurityEnvKeys values joined by codexEnvReadSeparator. The
+// references are double-quoted, not shellQuote'd: single quotes would print
+// the literal "${KEY:-}" text instead of expanding it.
+func codexReadHarnessSecurityEnvCmd(envFile string) string {
+	var refs []string
+	for _, key := range codexHarnessSecurityEnvKeys {
+		refs = append(refs, fmt.Sprintf("${%s:-}", key))
+	}
+	return fmt.Sprintf(`. %s 2>/dev/null; printf '%%s' "%s"`,
+		shellQuote(envFile), strings.Join(refs, codexEnvReadSeparator))
+}
+
 // codexReadHarnessSecurityEnv reads the harness-supplied hook variables from
 // the workspace .env, which at Bootstrap time is still exactly what the runner
 // wrote — no agent iteration has run. Values that are unset or empty are
 // skipped: there is nothing to re-assert, and an agent that *sets* one later
 // can only cause spurious blocks, not slip past a check.
 func codexReadHarnessSecurityEnv(sandboxName string) ([]codexEnvPair, error) {
-	var refs []string
-	for _, key := range codexHarnessSecurityEnvKeys {
-		refs = append(refs, fmt.Sprintf("${%s:-}", key))
-	}
-	cmd := fmt.Sprintf(". %s 2>/dev/null; printf '%%s' %s",
-		shellQuote(sandbox.SandboxWorkspace+"/.env"),
-		shellQuote(strings.Join(refs, codexEnvReadSeparator)))
-
+	cmd := codexReadHarnessSecurityEnvCmd(sandbox.SandboxWorkspace + "/.env")
 	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("reading the harness hook environment: %w", err)
