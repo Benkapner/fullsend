@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,17 +118,17 @@ func TestSelectGitLabRoleToken_EnforcedMissingRoleSecretFails(t *testing.T) {
 	assert.NotContains(t, stderr, "FULLSEND_FORGE_TOKEN is not set")
 }
 
-func TestSelectGitLabRoleToken_MigratingFallsBackToShared(t *testing.T) {
+func TestSelectGitLabRoleToken_MigratingMissingRoleSecretFailsClosed(t *testing.T) {
 	script := selectGitLabRoleTokenScript(t)
-	out, stderr, err := sourceRoleTokenScript(t, script, []string{
+	_, stderr, err := sourceRoleTokenScript(t, script, []string{
 		"FULLSEND_JOB_KIND=agent",
 		"STAGE=code",
 		"FULLSEND_GITLAB_ROLE_MIGRATION=migrating",
 		"FULLSEND_FORGE_TOKEN=shared-pat",
 	})
-	require.NoError(t, err, "stderr: %s", stderr)
-	assert.Contains(t, out, "TOKEN_NAME=FULLSEND_FORGE_TOKEN")
-	assert.Contains(t, out, "TOKEN=shared-pat")
+	require.Error(t, err)
+	assert.Contains(t, stderr, "FULLSEND_GITLAB_CODER_TOKEN is not set")
+	assert.NotContains(t, stderr, "FULLSEND_FORGE_TOKEN is not set")
 }
 
 func TestSelectGitLabRoleToken_DisabledMissingSharedFails(t *testing.T) {
@@ -204,40 +205,55 @@ func TestSelectGitLabRoleToken_MatchesGoRegistryResolution(t *testing.T) {
 	// from the Go implementation it mirrors.
 	script := selectGitLabRoleTokenScript(t)
 	cases := []struct {
-		name     string
-		poller   bool
-		stage    string
-		registry string
-		secrets  map[string]string
+		name      string
+		poller    bool
+		stage     string
+		mode      string
+		registry  string
+		secrets   map[string]string
+		expectErr bool
 	}{
 		{
 			name:    "builtin poller",
 			poller:  true,
+			mode:    "enforced",
 			secrets: map[string]string{"FULLSEND_GITLAB_POLLER_TOKEN": "poller-pat"},
 		},
 		{
 			name:    "builtin coder via alias",
 			stage:   "fix",
+			mode:    "enforced",
 			secrets: map[string]string{"FULLSEND_GITLAB_CODER_TOKEN": "coder-pat"},
 		},
 		{
 			name:     "custom own role",
 			stage:    "scanner",
+			mode:     "enforced",
 			registry: `{"roles":[{"name":"scanner","agents":["scanner"]}]}`,
 			secrets:  map[string]string{"FULLSEND_GITLAB_ROLE_SCANNER_TOKEN": "scanner-pat"},
 		},
 		{
 			name:     "custom role reuses builtin",
 			stage:    "scanner",
+			mode:     "enforced",
 			registry: `{"roles":[{"name":"scanner","agents":["scanner"],"credential":"reuse","reuse":"coder"}]}`,
 			secrets:  map[string]string{"FULLSEND_GITLAB_CODER_TOKEN": "coder-pat"},
+		},
+		{
+			// Regression for the fail-open drift: migrating must reject a
+			// missing role secret exactly like enforced, in both the Go
+			// resolver and this bash/python reimplementation.
+			name:      "migrating missing role secret fails closed",
+			stage:     "fix",
+			mode:      "migrating",
+			expectErr: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := map[string]string{
-				"FULLSEND_GITLAB_ROLE_MIGRATION": "enforced",
+				"FULLSEND_GITLAB_ROLE_MIGRATION": tc.mode,
 			}
 			for k, v := range tc.secrets {
 				env[k] = v
@@ -259,9 +275,8 @@ func TestSelectGitLabRoleToken_MatchesGoRegistryResolution(t *testing.T) {
 				}
 				sel, selErr = gitlabroles.SelectAgent(tc.stage, "", getenv)
 			}
-			require.NoError(t, selErr)
 
-			scriptEnv = append(scriptEnv, "FULLSEND_GITLAB_ROLE_MIGRATION=enforced")
+			scriptEnv = append(scriptEnv, "FULLSEND_GITLAB_ROLE_MIGRATION="+tc.mode)
 			for k, v := range tc.secrets {
 				scriptEnv = append(scriptEnv, k+"="+v)
 			}
@@ -270,6 +285,15 @@ func TestSelectGitLabRoleToken_MatchesGoRegistryResolution(t *testing.T) {
 			}
 
 			out, stderr, err := sourceRoleTokenScript(t, script, scriptEnv)
+
+			if tc.expectErr {
+				require.Error(t, selErr)
+				assert.True(t, errors.Is(selErr, gitlabroles.ErrUnconfigured))
+				require.Error(t, err)
+				assert.NotContains(t, stderr, "FULLSEND_FORGE_TOKEN is not set")
+				return
+			}
+			require.NoError(t, selErr)
 			require.NoError(t, err, "stderr: %s", stderr)
 			assert.Contains(t, out, "TOKEN_NAME="+sel.Source.SecretName)
 		})
