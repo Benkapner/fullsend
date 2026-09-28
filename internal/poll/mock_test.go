@@ -51,10 +51,14 @@ type mockClient struct {
 
 	// files is per-branch file content: branch → path → bytes.
 	// ForceCommitFileToBranch replaces the branch tree with a single file.
-	files          map[string]map[string][]byte
-	fileContentErr error
-	branchRefErr   error
-	forceCommitErr error
+	files map[string]map[string][]byte
+	// fileContentRefs records every ref GetFileContentAtRef was queried
+	// with, in order, so tests can assert persistWithCAS pins its content
+	// read to the exact SHA a prior GetBranchRef call returned.
+	fileContentRefs []string
+	fileContentErr  error
+	branchRefErr    error
+	forceCommitErr  error
 	// forceCommitErrSeq is an error queue for CommitFileToBranch / ForceCommitFileToBranch.
 	// Each call shifts the first element; when empty, falls through to forceCommitErr.
 	forceCommitErrSeq []error
@@ -122,6 +126,24 @@ func newMockClient() *mockClient {
 
 func mockBranchSHA(branch string, gen int) string {
 	return fmt.Sprintf("sha-%s-%d", branch, gen)
+}
+
+// mockResolveRef maps a mockBranchSHA-formatted ref back to the branch it
+// names, so GetFileContentAtRef can serve a persistWithCAS-style read
+// pinned to the SHA a prior GetBranchRef call returned. The mock does not
+// keep per-commit historical snapshots; it resolves a SHA ref to that
+// branch's current content, which is sufficient for these tests since
+// nothing else writes to a branch between a GetBranchRef/
+// GetFileContentAtRef pair in a single persistWithCAS attempt. A ref that
+// isn't a recognized mockBranchSHA (e.g. a literal branch name) is
+// returned unchanged.
+func mockResolveRef(ref string) string {
+	for _, b := range []string{PollStateBranchSlash, PollStateBranchEvents} {
+		if strings.HasPrefix(ref, "sha-"+b+"-") {
+			return b
+		}
+	}
+	return ref
 }
 
 var _ GitLabClient = (*mockClient)(nil)
@@ -256,18 +278,23 @@ func (m *mockClient) getSlashState() (persistedPollState, bool) {
 func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, ref string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.fileContentRefs = append(m.fileContentRefs, ref)
 	if m.fileContentErr != nil {
 		return nil, m.fileContentErr
 	}
+	// persistWithCAS pins its read to the SHA a prior GetBranchRef call
+	// returned rather than a branch name; resolve it back to the branch
+	// so the lookups below (keyed by branch name) still find it.
+	branch := mockResolveRef(ref)
 	// Seeded-valid documents (setPollState/setSlashState) are signed
 	// here, using the owner/repo the caller queries with, rather than
 	// at seed time: the real HMAC domain is bound to the project path,
-	// which varies across tests. A real prior write (files[ref]) always
+	// which varies across tests. A real prior write (files[branch]) always
 	// takes precedence over a stale seed.
 	if path == PollStateFileName {
-		if files, ok := m.files[ref]; !ok || files[path] == nil {
-			if s, ok := m.pendingSign[ref]; ok {
-				domain := hmacDomainFor(ref, owner+"/"+repo)
+		if files, ok := m.files[branch]; !ok || files[path] == nil {
+			if s, ok := m.pendingSign[branch]; ok {
+				domain := hmacDomainFor(branch, owner+"/"+repo)
 				sig, err := computeStateHMAC(testDispatchSecret, domain, s)
 				if err != nil {
 					return nil, err
@@ -277,7 +304,7 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 			}
 		}
 	}
-	files, ok := m.files[ref]
+	files, ok := m.files[branch]
 	if !ok {
 		return nil, forge.ErrNotFound
 	}

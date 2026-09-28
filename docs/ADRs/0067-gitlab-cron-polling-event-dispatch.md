@@ -356,14 +356,19 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > commit. Two files on one branch would lose the sibling file on every
 > force-re-root.
 >
-> **Force-re-root pruning.** Install-time seeding still uses
+> **Force-re-root pruning.** Every save is a single
 > `ForceCommitFileToBranch` (`POST /projects/:id/repository/commits`
-> with `force: true` and `start_sha` = the repository's root commit)
-> so a missing branch is created at root + 1 commit. Runtime persist
-> is conflict-detecting ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)): the write is parented at the loaded
-> tip without `force`, and a 409 retries a merge of this writer's deltas
-> rather than last-writer-wins overwrite. The commit message is suffixed
-> `[skip ci]`.
+> with `force: true` and `start_sha` = the repository's root commit).
+> The branch is always root + 1 commit; prior state commits become
+> unreachable. The commit message is suffixed `[skip ci]`. Force +
+> start point also creates the branch on first write.
+>
+> **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):** Install-time seeding still force-re-roots as
+> described above. Runtime persist is now conflict-detecting instead:
+> the write is parented at the loaded tip without `force`, and a 409
+> retries a merge of this writer's deltas rather than last-writer-wins
+> overwrite. See ADR 0125 for the current runtime persist design and
+> the residual risk this introduces for unbounded state-branch history.
 >
 > **HMAC.** Each document is HMAC-SHA256-signed with
 > `FULLSEND_DISPATCH_SECRET` (already provisioned for dispatch
@@ -665,7 +670,8 @@ injection > insider > drift > supply chain):
 > |---|---|
 > | Developer forges poll state | HMAC-SHA256 (`FULLSEND_DISPATCH_SECRET`) with per-branch and per-project domain separation. Secret unset → refuse load/write. Bad/absent signature → discard the branch and fail that cycle. |
 > | Missing poll-state branch | Not tampering: fresh baseline (watermark ~1h ago); next save recreates the branch. One-time re-scan / at-least-once re-dispatch, not a stall. |
-> | Unbounded history on state branches | Install-time seed force-re-roots on the repository's root commit (`force: true` + `start_sha`). Runtime persist is CAS ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)) and no longer force-re-roots every save. **Accepted residual risk:** since runtime saves no longer prune history, old HMAC-signed `state.json` commits stay reachable, and the HMAC has no freshness binding (no nonce/generation/commit-SHA in the signed payload). A Developer with push access to the unprotected poll-state branch can recommit, or reset the branch tip to, an older still-validly-signed document without knowing `FULLSEND_DISPATCH_SECRET`; `loadPollState` accepts it, causing watermark rollback and dispatched-key resurrection bounded only by how far branch history extends. Mitigating this requires either a freshness-binding mechanism (e.g., a monotonic generation/sequence number the poller rejects on regression) or scheduled compaction/GC of the poll-state branches; neither is implemented. Tracked as a known gap rather than a blocking one because the attack requires Developer-level push access, which is already the trust boundary the HMAC mitigates for forgery (as opposed to replay). |
+> | Unbounded history on state branches | Force-re-root every save on the repository's root commit (`force: true` + `start_sha`); branch stays at base + 1 commit. |
+> | ↳ **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md))** | Install-time seed still force-re-roots as above. Runtime persist is now CAS and no longer force-re-roots every save, so old HMAC-signed `state.json` commits stay reachable. See ADR 0125 for the current mitigation status and the accepted residual risk this introduces (old-signed-document replay by a Developer with push access). |
 > | Concurrent poller + webhook writers | Conflict-detecting persist ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)): 409 / non-fast-forward reloads and unions dispatched keys; exhaustion fails closed. |
 > | `CI_DEBUG_TRACE` / protected-branch exposure of the bot PAT | Unchanged: `FULLSEND_FORGE_TOKEN` and `FULLSEND_DISPATCH_SECRET` remain protected CI/CD variables. |
 

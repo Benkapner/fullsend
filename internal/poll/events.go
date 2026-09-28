@@ -48,7 +48,12 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 			if prev, ok := previousLabels[issue.IID]; ok {
 				updatedLabelState[issue.IID] = prev
 			} else {
-				delete(updatedLabelState, issue.IID)
+				// Tombstone (present, empty), not delete: see the
+				// mergeLabelState comment in state.go. This writer could
+				// not confirm labels for this issue (notes fetch
+				// failed), so it must not leave a stale entry from the
+				// reloaded document in place at persist time.
+				updatedLabelState[issue.IID] = []string{}
 			}
 			if minSkippedAt.IsZero() || issue.UpdatedAt.Before(minSkippedAt) {
 				minSkippedAt = issue.UpdatedAt

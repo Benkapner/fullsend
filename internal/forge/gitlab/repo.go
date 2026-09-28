@@ -1021,6 +1021,27 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 	}
 
 	if len(actions) == 0 {
+		// A no-op diff normally means "nothing to do." But when this is a
+		// CAS write (opts.startSHA set, opts.force unset), never POSTing
+		// means GitLab's server-side fast-forward check — which only runs
+		// on an actual commit POST — never fires for this attempt. If
+		// opts.startSHA is stale (branch advanced past it) but the merged
+		// payload happens to byte-for-byte match what's already at the
+		// live tip, this would otherwise report a false CAS success.
+		// Re-check the live branch tip explicitly so a stale start_sha
+		// still surfaces as ErrNonFastForward.
+		if opts.startSHA != "" && !opts.force {
+			tip, err := c.GetBranchRef(ctx, owner, repo, branch)
+			if err != nil {
+				if forge.IsNotFound(err) {
+					return false, fmt.Errorf("%w: branch %s no longer exists", forge.ErrNonFastForward, branch)
+				}
+				return false, fmt.Errorf("get branch ref: %w", err)
+			}
+			if tip != opts.startSHA {
+				return false, fmt.Errorf("%w: branch %s advanced past start_sha %s", forge.ErrNonFastForward, branch, opts.startSHA)
+			}
+		}
 		return false, nil
 	}
 

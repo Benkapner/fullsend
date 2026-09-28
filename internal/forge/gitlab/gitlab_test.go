@@ -2004,6 +2004,77 @@ func TestCommitFileToBranch_PinsStartSHAWithoutForce(t *testing.T) {
 	assert.Equal(t, "persist poll state [skip ci]", commitPayload["commit_message"])
 }
 
+// TestCommitFileToBranch_NoOpDiffStaleStartSHAIsNonFastForward covers the
+// CAS write path's no-op-diff gap: when the merged payload happens to
+// byte-for-byte match what's already stored at opts.startSHA's tree,
+// commitFilesImpl computes zero actions and, before this fix, returned
+// success without ever POSTing — so GitLab's server-side fast-forward
+// check (which only runs on an actual commit POST) never fired, and a
+// stale start_sha (the branch has since advanced) would be silently
+// reported as CAS success. CommitFileToBranch must now re-check the live
+// branch tip in that case and surface forge.ErrNonFastForward when it no
+// longer matches start_sha.
+func TestCommitFileToBranch_NoOpDiffStaleStartSHAIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	content := []byte(`{"n":1}`)
+	fileSHA := blobSHA(content)
+
+	// Tree at the (stale) start_sha already matches the payload, so the
+	// diff yields zero actions.
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "stale-sha", r.URL.Query().Get("ref"))
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": fileSHA, "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	// The branch has since advanced past stale-sha.
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "new-tip-sha"},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("commits endpoint should not be called for a zero-action diff")
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", content, "stale-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward for a stale start_sha on a no-op diff, got: %v", err)
+}
+
+// TestCommitFileToBranch_NoOpDiffFreshStartSHASucceeds is the mirror image
+// of TestCommitFileToBranch_NoOpDiffStaleStartSHAIsNonFastForward: when the
+// live branch tip still matches start_sha, a zero-action diff is a
+// legitimate no-op and must succeed without POSTing a commit.
+func TestCommitFileToBranch_NoOpDiffFreshStartSHASucceeds(t *testing.T) {
+	client, mux := setupTest(t)
+
+	content := []byte(`{"n":1}`)
+	fileSHA := blobSHA(content)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": fileSHA, "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches/state-branch", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"id": "fresh-sha"},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("commits endpoint should not be called for a zero-action diff")
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", content, "fresh-sha")
+	require.NoError(t, err)
+}
+
 func TestCommitFileToBranch_NonFastForward(t *testing.T) {
 	client, mux := setupTest(t)
 
