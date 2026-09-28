@@ -93,11 +93,14 @@ directory. The same rule applies to local resource references except a local
 `base:`, which resolves relative to the child harness YAML's directory. URLs use
 the allowlisted, pinned resource-fetch pipeline instead. For URL `base:` layers,
 relative `pre_script`, `post_script`, `validation_loop.script`/`schema`,
-`agent`, `policy`, and skill resources are fetched from the base repository
-and rewritten to cache paths. `agent_input` inherited from a URL base is
-**cleared**, because it is a directory and is not fetched. `doc` is source
-metadata, not a runtime dependency; `api_servers[].script` is resolved but
-server startup is planned. See [ADR 0038](../ADRs/0038-universal-harness-access.md)
+`host_files[].src` (except `${VAR}` sources), `agent`, `policy`, skills
+(including overrides), `plugins[].path`, `openshell.profiles[]`, and path-form
+`providers[]` are fetched from the base repository and rewritten to cache
+paths. An inherited URL-base `agent_input` is **cleared**, because it is a
+directory and is not fetched. `doc` is source metadata, not a runtime dependency;
+`api_servers[].script` resolves as a local
+path, not a URL-base fetch, and server startup is planned. See
+[ADR 0038](../ADRs/0038-universal-harness-access.md)
 for remote delivery and the [current-field reference](../reference/harness-reference.md)
 for implementation status.
 
