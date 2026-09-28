@@ -348,8 +348,8 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `write`, `admin`) using source-native role resolution, with no cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
   resolution: adapters classify actors from source-native metadata, recognized bots receive a
-  canonical `actor.bot_role` such as `review`, and bot actors have
-  `actor.role: null`; unknown or unresolved bots fail closed. CEL may further
+  canonical `actor.bot_role` such as `review`, and bot actors retain
+  `actor.role: none`; unknown or unresolved bots fail closed. CEL may further
   restrict recognized bot roles but cannot authorize an unknown bot
   ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)).
   ([Authorization Contract v1](normative/authorization/v1/);

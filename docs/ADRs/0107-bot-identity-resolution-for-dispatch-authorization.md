@@ -20,8 +20,8 @@ Date: 2026-09-27
 Accepted
 
 Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
-and supersedes its generic bot-specific authorization exceptions once the
-provider migration described here is complete.
+and defines the bot behavior to be added to the existing v1 contracts. It does
+not require a future normalized-event or authorization version.
 
 ## Context
 
@@ -40,6 +40,10 @@ the same contract from their replacement identity provider.
 The historical drift and remaining contract gap are tracked in issue
 [#7764](https://github.com/fullsend-ai/fullsend/issues/7764), which motivates
 this decision.
+
+This is an ADR-only change. It specifies the target contract and does not yet
+modify the normalized-event structs, forge adapters, resolver, or dispatch
+authorization implementation.
 
 ## Decision
 
@@ -68,14 +72,15 @@ strings are not bot-identity signals. The normalized actor MUST carry the
 result in `actor.kind`.
 
 The returned bot role is the canonical registered role name, such as `review`.
-It is carried in a separate field, so it does not share a namespace with forge
-permission roles and does not require a special suffix. For a recognized bot,
-`actor.kind` is `bot`, `actor.bot_role` contains the canonical role name, and
-`actor.role` MUST be `null`. For an unrecognized bot, `actor.kind` is `bot`,
-both role fields are `null`, and authorization fails. For a human,
-`actor.kind` is `human`, `actor.bot_role` is `null`, and `actor.role` contains
-the resolved forge permission role. A bot role identifies the registered agent
-identity; it is not a claim that the bot's content is trustworthy.
+It is carried in a separate optional field, so it does not share a namespace
+with forge permission roles and does not require a special suffix. For every
+bot, `actor.kind` is `bot` and the existing compatibility field
+`actor.role` remains `none`. When recognized, `actor.bot_role` contains the
+canonical role name; when it is absent, the bot is not authorized by the new
+bot gate. For a human, `actor.kind` is `human`, `actor.bot_role` is absent or
+`null`, and `actor.role` contains the resolved forge permission role. A bot
+role identifies the registered agent identity; it is not a claim that the
+bot's content is trustworthy.
 
 Authorization then follows these rules:
 
@@ -90,9 +95,12 @@ Authorization then follows these rules:
    authorization evidence.
 3. Human actors continue to use ADR 0054's current permission thresholds and
    configured permission providers, including `OWNERS` where enabled.
-4. The normalized event and audit record retain the resolution result and
-   resolved bot role when present. Unknown and failed resolutions remain
-   distinguishable for diagnostics, but neither may trigger an agent.
+4. The normalized event retains `actor.kind`, `actor.role: "none"`, and the
+   optional resolved bot role. The resolver and audit record retain whether
+   resolution was successful, unrecognized, or failed. Following the
+   fail-closed actor-verification rule in [PR 7080](https://github.com/fullsend-ai/fullsend/pull/7080),
+   an unavailable or unverifiable actor-resolution result is authorization
+   unusable; neither failed nor unrecognized resolution may trigger an agent.
 
 Adapters MUST resolve the actor that actually caused the transition. For an
 edited comment or other mutable content, authorization uses the editor rather
@@ -118,10 +126,12 @@ portable to non-mint deployments.
   than a naming convention or a broad event-specific exception.
 - CEL gains a separate canonical bot-role value that can distinguish `review`
   from other recognized agent roles without becoming the authorization boundary.
+- Existing v1 consumers continue to receive the bot-compatible `role: "none"`
+  value; `bot_role` is additive and may be absent when no role is resolved.
 - Mint and non-mint deployments must maintain an exact bot-identity registry and
   fail closed when it is unavailable or incomplete.
-- Existing `[bot]` regex carve-outs and generic label/review exceptions require
-  migration to the resolver; until then they remain compatibility behavior and
-  must not be mistaken for the target contract.
+- Existing `[bot]` regex carve-outs and generic label/review exceptions remain
+  compatibility behavior until the resolver is implemented; they must not be
+  mistaken for the target contract.
 - Human authorization, least-privilege thresholds, and zero-trust treatment of
   bot-produced content remain unchanged.

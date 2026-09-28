@@ -15,7 +15,7 @@
   "actor": {
     "id": "fullsend-ai-triage[bot]",
     "kind": "bot",
-    "role": null,
+    "role": "none",
     "bot_role": "triage",
     "is_entity_author": false
   },

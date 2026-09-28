@@ -102,8 +102,9 @@ end-user webhook events.
 Adapters set `actor.id` to the configured service identity (e.g. the GitHub App
 bot or workflow `GITHUB_ACTOR`) and classify it as `actor.kind: bot` using the
 provider's authoritative actor metadata. Under [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md),
-the provider resolves `actor.bot_role` and `actor.role` is `null`; authorization
-comes from the recognized bot identity rather than the forge permission role.
+the provider may resolve `actor.bot_role`; `actor.role` remains `none` for v1
+compatibility. Authorization comes from the recognized bot identity rather than
+the forge permission role.
 `fullsend dispatch` applies the same identity lookup as webhook paths.
 
 ### Transition sub-objects
@@ -164,9 +165,9 @@ and the GitHub collaborator permission API:
 
 Adapters populate `role` from the GitHub collaborator permission API for human
 actors. For **GitHub App bots**, adapters MUST use the provider's authoritative
-bot classification and the provider-backed `bot_role` lookup; `role` and `bot_role` are mutually
-exclusive as specified by ADR 0107. A bot's forge installation permission is
-not copied into `actor.role`.
+bot classification and the provider-backed optional `bot_role` lookup. The
+compatibility value `role: none` is retained for bots; a bot's forge
+installation permission is not copied into `actor.role`.
 
 ### Fork security (`state.change_proposal.is_fork`)
 

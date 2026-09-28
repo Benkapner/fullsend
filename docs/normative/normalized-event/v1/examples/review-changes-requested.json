@@ -15,7 +15,7 @@
   "actor": {
     "id": "fullsend-ai-review[bot]",
     "kind": "bot",
-    "role": null,
+    "role": "none",
     "bot_role": "review",
     "is_entity_author": false
   },
