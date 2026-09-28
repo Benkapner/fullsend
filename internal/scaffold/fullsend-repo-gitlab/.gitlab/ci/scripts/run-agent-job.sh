@@ -505,10 +505,33 @@ if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ] || [ "${STAGE}" = "review" 
   GIT_BOT_EMAIL="${_BOT_USERNAME:-fullsend-${STAGE}}@noreply.${CI_SERVER_HOST:-gitlab.com}"
   export GIT_BOT_EMAIL
 
-  # MR identity — used by forge.gitlab env config and by the
-  # fix post-script for pushing and commenting. REPO_FULL_NAME
-  # is set by run.go from --status-repo (#6865).
-  MR_IID="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+  # MR identity — used by forge.gitlab env config, by the fix
+  # post-script for pushing and commenting, and (for the fix stage)
+  # to key the merge-request API call in checkout-mr-source.sh that
+  # selects which MR's source gets fetched into --target-repo.
+  # STATUS_IID is part of the HMAC-signed dispatch message (see
+  # HMAC_MESSAGE above); CI_MERGE_REQUEST_IID is not, and an
+  # ordinary project/group CI/CD variable can define it. Prefer the
+  # signed value and fail closed if a non-empty CI_MERGE_REQUEST_IID
+  # disagrees with a non-zero STATUS_IID, rather than letting an
+  # unverified CI variable pick which merge request's source is
+  # checked out — mirroring the fail-closed cross-checks already
+  # applied to CI_MERGE_REQUEST_SOURCE_* in checkout-mr-source.sh.
+  case "${CI_MERGE_REQUEST_IID:-}" in
+    ''|*[!0-9]*) _FS_CI_MR_IID="" ;;
+    *) _FS_CI_MR_IID="${CI_MERGE_REQUEST_IID}" ;;
+  esac
+  if [ -n "${STATUS_IID:-}" ] && [ "${STATUS_IID}" != "0" ]; then
+    if [ -n "${_FS_CI_MR_IID}" ] && [ "${_FS_CI_MR_IID}" != "${STATUS_IID}" ]; then
+      echo "ERROR: CI_MERGE_REQUEST_IID '${_FS_CI_MR_IID}' does not match the signed dispatch STATUS_IID '${STATUS_IID}' — refusing to trust an unverified CI variable to select the merge request" >&2
+      unset _FS_CI_MR_IID
+      exit 1
+    fi
+    MR_IID="${STATUS_IID}"
+  else
+    MR_IID="${_FS_CI_MR_IID:-0}"
+  fi
+  unset _FS_CI_MR_IID
   export MR_NUMBER="${MR_IID}"
   if [ "${MR_IID}" != "0" ]; then
     export GITLAB_MR_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${MR_IID}"
@@ -740,9 +763,21 @@ if [ "${STAGE}" = "fix" ]; then
   echo "Fix iteration: ${FIX_ITERATION} (${FIX_COMMITS} previous fix commits)"
   export FIX_ITERATION
 
-  # Pre-agent HEAD — record before the agent modifies the tree.
-  # The post-script uses this to detect whether the agent committed.
-  PRE_AGENT_HEAD=$(git rev-parse HEAD)
+  # Check out the MR source revision into a subdirectory before the
+  # sandbox is created. Dispatch pipelines run from the default branch;
+  # TARGET_BRANCH is the MR *base* and is not the reviewed head. The
+  # subdirectory keeps trusted .fullsend/ config on the default-branch
+  # working tree (read above via DEFAULT_BRANCH_SHA) while --target-repo
+  # hands the sandbox the exact source SHA. Fetching without checking
+  # out the working tree is not enough.
+  FIX_TARGET_REPO=""
+  . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/checkout-mr-source.sh"
+
+  # Pre-agent HEAD — record the MR source SHA before the agent
+  # modifies the tree. The post-script uses this to detect whether
+  # the agent committed, then pushes that commit back to the MR
+  # source branch (and still rejects unsafe target branches).
+  PRE_AGENT_HEAD=$(git -C "${FIX_TARGET_REPO}" rev-parse HEAD)
   export PRE_AGENT_HEAD
 fi
 
@@ -765,11 +800,23 @@ fi
 # ephemeral tmp path). BREAKING CHANGE vs older scaffolds: default
 # --output-dir now lives inside the project dir (artifact retention
 # + top-level output/ sandbox exclude). Re-sync adopts the new layout.
+#
+# Fix stage: --target-repo is the MR source checkout. Other stages
+# keep the dispatch-ref working tree. --fullsend-dir stays the
+# default-branch .fullsend/ so untrusted MR config is not used.
+_FS_TARGET_REPO="."
+if [ "${STAGE}" = "fix" ]; then
+  if [ -z "${FIX_TARGET_REPO:-}" ] || [ ! -d "${FIX_TARGET_REPO}/.git" ]; then
+    echo "ERROR: MR source checkout is missing — refusing to run the fix agent against the dispatch ref" >&2
+    exit 1
+  fi
+  _FS_TARGET_REPO="${FIX_TARGET_REPO}"
+fi
 mkdir -p "${CI_PROJECT_DIR}/output"
 set +e
 fullsend run "${STAGE}" \
   --fullsend-dir .fullsend \
-  --target-repo . \
+  --target-repo "${_FS_TARGET_REPO}" \
   --output-dir "${CI_PROJECT_DIR}/output" \
   --forge gitlab \
   --run-url "${CI_PIPELINE_URL}" \

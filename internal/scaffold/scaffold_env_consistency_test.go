@@ -179,6 +179,7 @@ func TestGitLabCIScaffoldEnvVarsAreCanonical(t *testing.T) {
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/install-fullsend-cli.sh")
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/run-poll-job.sh")
 	assert.Contains(t, scanned, ".gitlab/ci/scripts/run-agent-job.sh")
+	assert.Contains(t, scanned, ".gitlab/ci/scripts/checkout-mr-source.sh")
 	if len(failures) > 0 {
 		t.Errorf("scaffold FULLSEND_* names absent from forge.Secret*/Var* constants and the script-local allowlist:\n  %s",
 			strings.Join(failures, "\n  "))

@@ -181,6 +181,11 @@ fullsend
 │   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
 │   ├── --offline                            #   Reject network fetches (local manifest only)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
+├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
+│   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)
+│   ├── --mr-iid <int>                       #   Merge request IID (required)
+│   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
+│   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
 └── reconcile-status                         # Finalize orphaned status comments
     ├── --repo <owner/repo>                  #   Repository in owner/repo format (required for GitHub/GitLab)
     ├── --number <int>                       #   Issue/PR number (required for GitHub/GitLab; derived from entity.key for Jira)

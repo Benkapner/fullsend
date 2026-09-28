@@ -75,6 +75,7 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/scripts/install-fullsend-cli.sh",
 	".gitlab/ci/scripts/run-poll-job.sh",
 	".gitlab/ci/scripts/run-agent-job.sh",
+	".gitlab/ci/scripts/checkout-mr-source.sh",
 	".fullsend/config.yaml",
 }
 
@@ -95,6 +96,8 @@ const gitlabPollJobScriptPath = ".gitlab/ci/scripts/run-poll-job.sh"
 
 const gitlabAgentJobScriptPath = ".gitlab/ci/scripts/run-agent-job.sh"
 
+const gitlabCheckoutMRSourceScriptPath = ".gitlab/ci/scripts/checkout-mr-source.sh"
+
 // gitlabAuxiliaryScriptPaths returns the CI helper scripts sourced by the
 // generated poll and agent jobs. Probe and converge treat each as its own
 // scaffold component so a missing script is detected and repaired.
@@ -105,6 +108,7 @@ func gitlabAuxiliaryScriptPaths() []string {
 		gitlabInstallCLIScriptPath,
 		gitlabPollJobScriptPath,
 		gitlabAgentJobScriptPath,
+		gitlabCheckoutMRSourceScriptPath,
 	}
 }
 
