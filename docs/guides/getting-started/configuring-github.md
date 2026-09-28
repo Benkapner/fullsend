@@ -10,7 +10,8 @@ See [Configuring GitLab](configuring-gitlab.md) for that flow.
 
 ## Prerequisites
 
-* You have your WIF provider URL from [Getting Inference](getting-inference.md).
+* For Vertex inference, you have your WIF provider URL from [Getting Inference](getting-inference.md).
+  For OpenAI inference, follow [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
 
@@ -58,7 +59,7 @@ and provide them permissions to the repository you want to install Fullsend to.
 
 ## Configuring GitHub
 
-Run the command:
+For Vertex inference, run:
 
 ```bash
 fullsend github setup <org>/<repo> \
@@ -69,6 +70,8 @@ fullsend github setup <org>/<repo> \
 Where `<org>/<repo>` refers to the GitHub organization and repository you want to enable inference
 for, `<gcp-project>` is your GCP project name, and `<wif-provider-url>` is the WIF Provider URL
 created at [Getting Inference](getting-inference.md).
+
+For OpenAI inference, follow [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 The command creates files, secrets and variables in your repository.
 

@@ -2236,7 +2236,7 @@ func TestRunGitHubSetupPerRepo_OpenAIProvider_FromExistingConfig(t *testing.T) {
 func TestGitHubSetupCmd_VertexDefaultStillRequiresGCP(t *testing.T) {
 	// The default provider is unchanged: with no provider flag and no
 	// GCP values, setup still demands --inference-project, and the
-	// message now points at the openai alternative.
+	// message identifies the route that requires the missing setting.
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})
 
@@ -2248,7 +2248,7 @@ func TestGitHubSetupCmd_VertexDefaultStillRequiresGCP(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--inference-project is required")
-	assert.Contains(t, err.Error(), "--inference-provider openai")
+	assert.Contains(t, err.Error(), "provider vertex")
 }
 
 func TestValidateCLISetupValues_AcceptsOpenAIProvider(t *testing.T) {

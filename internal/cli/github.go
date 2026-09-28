@@ -187,10 +187,10 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint URL (resolved to hosted public mint if unset)")
 	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
-	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "", "inference provider: vertex (resolved if unset) or openai; openai makes --inference-project and --inference-wif-provider optional and needs an OpenAI route (the --openai-* trio or the FULLSEND_OPENAI_API_KEY secret)")
-	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
+	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "", "inference provider: vertex (resolved if unset) or openai")
+	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for Vertex inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (resolved to global if unset)")
-	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name")
+	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name for Vertex inference")
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
@@ -773,7 +773,7 @@ func resolveInferenceReuse(ctx context.Context, client forge.Client, owner, repo
 			return false, false, fmt.Errorf("checking existing secret FULLSEND_GCP_PROJECT_ID: %w (pass --inference-project to skip this check)", err)
 		}
 		if !exists {
-			return false, false, fmt.Errorf("--inference-project is required for per-repo setup (no existing secret found); a repository that runs inference on GPT can pass --inference-provider openai instead")
+			return false, false, fmt.Errorf("--inference-project is required for provider vertex (no existing secret found)")
 		}
 		reuseProject = true
 	}
@@ -784,7 +784,7 @@ func resolveInferenceReuse(ctx context.Context, client forge.Client, owner, repo
 			return false, false, fmt.Errorf("checking existing secret FULLSEND_GCP_WIF_PROVIDER: %w (pass --inference-wif-provider to skip this check)", err)
 		}
 		if !exists {
-			return false, false, fmt.Errorf("--inference-wif-provider is required for per-repo setup (no existing secret found); a repository that runs inference on GPT can pass --inference-provider openai instead")
+			return false, false, fmt.Errorf("--inference-wif-provider is required for provider vertex (no existing secret found)")
 		}
 		reuseWIF = true
 	}

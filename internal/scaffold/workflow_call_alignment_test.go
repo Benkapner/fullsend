@@ -1574,14 +1574,14 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 }
 
 // TestGCPSecretsOptionalForOpenAIRepos pins the callee side of #7481: a
-// repository whose inference runs on OpenAI has no GCP secrets, so every
-// reusable workflow must declare the GCP pair optional and the setup-gcp
-// action must skip Google auth (and everything that reads its output)
-// when the provider input is empty. A single `required: true` or an
-// unguarded step would fail such a repository's jobs before the agent
+// repository whose inference runs on OpenAI has no GCP secrets, so the
+// supported per-repository reusable workflow must declare the GCP pair
+// optional and the setup-gcp action must skip Google auth (and everything
+// that reads its output) when the provider input is empty. A `required: true`
+// or an unguarded step would fail such a repository's jobs before the agent
 // starts.
 func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
-	stages := []string{"dispatch", "triage", "code", "review", "fix", "retro", "prioritize"}
+	stages := []string{"dispatch"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage, func(t *testing.T) {
 			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))

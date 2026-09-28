@@ -344,9 +344,9 @@ Secrets and variables are deployed at different scopes depending on the installa
 #### GitHub
 
 **Target repo secrets:**
-- `FULLSEND_GCP_PROJECT_ID` — not written when `inference.provider` is `openai`
-- `FULLSEND_GCP_WIF_PROVIDER` — not written when `inference.provider` is `openai`
-- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`; required for a repository whose `inference.provider` is `openai` unless it commits the `inference.openai` block)
+- `FULLSEND_GCP_PROJECT_ID` — written when `inference.provider` is `vertex`
+- `FULLSEND_GCP_WIF_PROVIDER` — written when `inference.provider` is `vertex`
+- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`)
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
@@ -410,11 +410,12 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_FAILED_KEYS_FAST` — Legacy; superseded by `failed_keys_fast` in `state.json` on `fullsend-poll-state-slash`
 - `FULLSEND_FAILED_KEYS_FULL` — Legacy; superseded by `failed_keys_full` in `state.json` on `fullsend-poll-state-events`
 
-**Inference variables (required when inference is configured):**
-- `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
-- `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
+**Vertex inference variables:**
+- `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (required for the `vertex` route; stored as a CI/CD secret, protected + masked)
+- `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (required for the `vertex` route; stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
-- `OPENAI_API_KEY` — optional static OpenAI API key when OpenAI WIF is unavailable (masked CI/CD variable; already on the runner path, no extra forwarding)
+
+For OpenAI inference variables, see [OpenAI Workload Identity](openai-workload-identity.md).
 
 ### Secrets Layer Behavior
 

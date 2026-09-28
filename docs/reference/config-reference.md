@@ -76,9 +76,9 @@ mint_url: https://mint.fullsend.sh   # Token mint URL for credential issuance
 # ── Inference ────────────────────────────────────────────────
 inference:
   provider: vertex                   # Install-time inference route: vertex (default) or openai
-  project: my-gcp-project           # GCP project ID; required for vertex, optional for openai
+  project: my-gcp-project           # GCP project ID; required for vertex
   region: global                     # GCP region for inference requests
-  wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov  # Required for vertex, optional for openai
+  wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov  # Required for vertex
   openai:                            # OpenAI Workload Identity Federation (ADR 0092)
     audience: ""                     # OpenAI WIF audience
     identity_provider_id: ""         # OpenAI WIF identity provider ID
@@ -264,12 +264,10 @@ independently through the layered config system (an overlay can override
 - **`provider`** — Install-time inference route: `vertex` or `openai`.
   Default: `vertex`. The selected model still determines the runtime provider.
 - **`project`** — GCP project ID for inference requests. Required for the
-  `vertex` route; optional for `openai` when an OpenAI credential route is
-  configured. No default.
+  `vertex` route. No default.
 - **`region`** — GCP region for inference. Default: `global`.
 - **`wif_provider`** — Full GCP Workload Identity Federation provider resource
-  name. Required for the `vertex` route; optional for `openai` when an OpenAI
-  credential route is configured. No default.
+  name. Required for the `vertex` route. No default.
 - **`openai`** — OpenAI Workload Identity Federation identifiers
   ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). The
   `FULLSEND_OPENAI_*` runner variables, when set, replace the resolved block

@@ -3,7 +3,7 @@ description: Authenticate to Google Cloud via Workload Identity Federation, mask
 
 inputs:
   gcp_wif_provider:
-    description: 'Workload Identity Federation provider resource name. Empty skips every step: a repository whose inference runs on OpenAI (inference.provider openai, #7481) has no GCP secrets.'
+    description: 'Workload Identity Federation provider resource name for Vertex inference. Empty skips GCP authentication.'
     required: false
   gcp_project_id:
     description: 'GCP project ID — passed to google-github-actions/auth so the runner env has GOOGLE_CLOUD_PROJECT'
@@ -16,14 +16,11 @@ inputs:
 runs:
   using: composite
   steps:
-    # Both inputs empty is the openai route (every step below is skipped).
-    # Exactly one populated is a misconfigured Vertex repository: fail here,
-    # where the message names the secret, instead of at the first model call.
     - name: Check GCP inputs
       if: (inputs.gcp_wif_provider == '' && inputs.gcp_project_id != '') || (inputs.gcp_wif_provider != '' && inputs.gcp_project_id == '')
       shell: bash
       run: |
-        echo "::error::FULLSEND_GCP_WIF_PROVIDER and FULLSEND_GCP_PROJECT_ID must be set together (both for Vertex AI inference, neither for a repository whose inference.provider is openai)"
+        echo "::error::FULLSEND_GCP_WIF_PROVIDER and FULLSEND_GCP_PROJECT_ID must be set together for Vertex AI inference."
         exit 1
 
     - name: Pre-mask GCP credential file path

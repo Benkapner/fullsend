@@ -15,7 +15,7 @@ Most users should use the **managed** model — the [Getting Started guides](../
 
 ## Using platform-provided infrastructure
 
-When a platform operator has already deployed the mint and shared `fullsend-ai-*` apps, installation follows the standard [Getting Started](../getting-started/) flow — you only need a GCP project for inference. Before running the installer, confirm with your platform operator that:
+When a platform operator has already deployed the mint and shared `fullsend-ai-*` apps, installation follows the standard [Getting Started](../getting-started/) flow. Vertex inference requires a GCP project. For OpenAI inference, see [OpenAI Workload Identity](openai-workload-identity.md). Before running the installer, confirm with your platform operator that:
 
 - Your organization is registered in the mint's `ALLOWED_ORGS`
 - The shared GitHub Apps are installed on your repository (or org)
@@ -23,7 +23,7 @@ When a platform operator has already deployed the mint and shared `fullsend-ai-*
 
 Then follow [Getting Inference](../getting-started/getting-inference.md) and [Configuring GitHub](../getting-started/configuring-github.md), passing the platform operator's mint URL via `--mint-url`.
 
-If the platform operator also provides a pre-existing WIF provider, skip `inference provision` and pass `--inference-wif-provider` directly to `github setup`.
+For Vertex inference, if the platform operator provides a pre-existing WIF provider, skip `inference provision` and pass `--inference-wif-provider` directly to `github setup`.
 
 If the platform operator distributes a vendor preset (a curated `config.base.yaml`), you can install it via `--config`. Persistent setup flags may still be passed; they override matching preset values in the overlay without changing the committed preset:
 

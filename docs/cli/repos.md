@@ -89,7 +89,7 @@ required in this case. This enables a greenfield setup without running
 
 Runs in two phases:
 
-1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`, `--runtime`) are written to the manifest entry.
+1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--inference-provider`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`, `--runtime`) are written to the manifest entry.
 2. **Converge** — all manifest repos are converged through a unified probe → diff → apply pipeline. Repos whose shim workflow is not yet on the default branch are freshly installed (scaffold files, variables, secrets, and a declared configuration preset as `.fullsend/config.base.yaml`) onto the initialization branch (`fullsend/scaffold-install`). That includes a re-run while the initialization PR/MR is still open: variables and secrets may already exist from the first run, but the installer still updates the same initialization PR rather than opening a competing upgrade PR. Repos whose workflow is already on the default branch are checked for drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — repaired automatically, except a disabled GitLab schedule, which is reported as drift and reactivated only with `--reactivate-schedules`), scaffold content drift (repaired automatically, including structural rewrites of GitLab dispatch templates at an unchanged ref), declared configuration-preset drift against `.fullsend/config.base.yaml` (replaced wholesale; `.fullsend/config.yaml` is preserved), and scaffold ref drift (upgraded automatically).
 
 ```bash
@@ -111,8 +111,8 @@ When repos are specified as positional arguments, only those repos are processed
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install. On a fresh install of a repo with a declared configuration preset, the preset's own roles take effect instead of this default unless `--roles` is explicitly passed on the command line. |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
-| `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret) |
-| `--inference-wif-provider` | | Full WIF provider resource name (`projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}`); uses this provider for all repos instead of deriving per-repo providers. Project number is embedded in the path, so no auto-derivation is needed. |
+| `--inference-project` | | GCP project ID for Vertex inference (written as `FULLSEND_GCP_PROJECT_ID` secret); required for provider `vertex` |
+| `--inference-wif-provider` | | Full WIF provider resource name for Vertex inference (`projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}`); required for provider `vertex` and used for all repos instead of deriving per-repo providers. Project number is embedded in the path, so no auto-derivation is needed. |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; inferred from existing platform sections when unambiguous. |
 | `--force` | `false` | Allow scaffold ref downgrades |
 | `--reactivate-schedules` | `false` | Reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted) |
@@ -121,7 +121,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |
 | `--runtime` | | Agent runtime (`claude`, `pi`, `codex`) recorded for repos this command adds; existing entries keep their `runtime` / `defaults.runtime` |
-| `--inference-provider` | | Inference provider (`vertex`, `openai`) recorded for repos this command adds; existing entries keep their `inference_provider` / `defaults.inference_provider`. `openai` repos need no `--inference-project` but must have `FULLSEND_OPENAI_API_KEY` set first (or a complete committed `inference.openai` block) |
+| `--inference-provider` | | Inference provider (`vertex`, `openai`) recorded for repos this command adds; existing entries keep their `inference_provider` / `defaults.inference_provider`. See [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md) for OpenAI configuration. |
 | `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content into each repo for offline CI. Can also be set via `defaults.vendor` or per-repo `vendor` in the manifest. By default, the binary is auto-resolved from `--fullsend-ref`; use `--fullsend-binary` or `--fullsend-source` to provide it explicitly. |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving (requires `--vendor`) |
 | `--fullsend-source` | | Path to a fullsend source checkout for content and cross-compile instead of auto-detecting or fetching from GitHub (requires `--vendor`) |
@@ -349,7 +349,7 @@ fullsend repos set-default github.mint_url ""   # removes the key
 |-----|------|-------------|
 | `defaults.allowed_remote_resources` | comma-separated URLs | URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition) |
 | `defaults.runtime` | `claude`, `pi` or `codex` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
-| `defaults.inference_provider` | `vertex` or `openai` | Inference provider written as each repo's `inference.provider` at install; a per-entry `inference_provider` overrides it (`none` stops the chain). `openai` repos need no `--inference-project` and are complete when `FULLSEND_OPENAI_API_KEY` exists (or the committed `inference.openai` block is complete) |
+| `defaults.inference_provider` | `vertex` or `openai` | Inference provider written as each repo's `inference.provider` at install; a per-entry `inference_provider` overrides it (`none` stops the chain) |
 | `defaults.vendor` | `true` or `false` | Vendor fullsend binary and content into each repo for offline CI; per-entry `vendor` overrides it. Currently GitHub-only; GitLab CI templates do not yet reference the vendored binary. |
 | `defaults.config_base.source` | local path or HTTPS URL | Configuration preset written as `.fullsend/config.base.yaml`; a per-entry `config_base.source` overrides it (`none` disables inheritance). A local path is resolved relative to `repos.yaml`'s directory and must not escape it; manifests loaded from an HTTPS URL must use an HTTPS preset URL. Fetch/validation semantics otherwise match `github setup --config`. |
 | `defaults.config_base.sha256` | 64-character SHA-256 hex | Optional digest that validates the fetched preset; a per-entry `config_base.sha256` overrides it (`none` skips validation). Same semantics as `github setup --config-hash`. |

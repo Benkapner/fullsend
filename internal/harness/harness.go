@@ -81,11 +81,10 @@ func ChmodPluginDir(dir string) error {
 // Use this for env files that contain variable references which must be resolved
 // on the host (because the sandbox does not have those variables set).
 type HostFile struct {
-	Src               string `yaml:"src"`                           // host path (may use ${VAR} expansion)
-	Dest              string `yaml:"dest"`                          // destination path inside the sandbox
-	Expand            bool   `yaml:"expand,omitempty"`              // expand ${VAR} in file content before copying
-	Optional          bool   `yaml:"optional,omitempty"`            // skip if src path is missing or expands to empty
-	OptionalForOpenAI bool   `yaml:"optional_for_openai,omitempty"` // skip an empty src only on an OpenAI run
+	Src      string `yaml:"src"`                // host path (may use ${VAR} expansion)
+	Dest     string `yaml:"dest"`               // destination path inside the sandbox
+	Expand   bool   `yaml:"expand,omitempty"`   // expand ${VAR} in file content before copying
+	Optional bool   `yaml:"optional,omitempty"` // skip if src path is missing or expands to empty
 }
 
 // ProviderDef is a declarative definition of an OpenShell provider. Files in
@@ -756,9 +755,7 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 		}
 	}
 	for i, hf := range h.HostFiles {
-		// Defer route-conditional files to bootstrapEnv, which knows the
-		// resolved runtime and model. Vertex runs still fail there.
-		if hf.Optional || hf.OptionalForOpenAI {
+		if hf.Optional {
 			continue
 		}
 		if err := checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {

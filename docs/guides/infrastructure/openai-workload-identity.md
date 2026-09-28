@@ -297,7 +297,7 @@ injects CI variables into the job environment, so no extra forwarding is require
 
 ## D. A repository with no GCP project at all
 
-On any of the routes above, a repository that runs every agent on GPT does not need a GCP project or
+On any of the routes above, a repository that uses OpenAI inference for every agent does not need a GCP project or
 a Vertex WIF provider. Declare it with `inference.provider: openai` and the GCP settings become
 optional everywhere fullsend checks them:
 
@@ -325,13 +325,6 @@ fullsend github setup <your-github-org>/<repo> --inference-provider openai
   models too.
 
 What does not change: `vertex` remains the default, so existing repositories are untouched.
-
-**Known gap, harness side.** The default fleet harnesses copy `${GOOGLE_APPLICATION_CREDENTIALS}`
-into the sandbox as a required host file, and that variable is unset when the Google Cloud step is
-skipped, so the run stops at sandbox creation with `host_files: src ... expanded to empty string`.
-Until [fullsend-ai/agents#1383](https://github.com/fullsend-ai/agents/issues/1383) marks that entry
-optional, an `openai`-only repository needs a harness whose `host_files` do not reference the GCP
-credentials file.
 
 ## 4. Tell fullsend the three identifiers
 

@@ -43,13 +43,10 @@ on:
         required: false
         default: "ubuntu-24.04"
     secrets:
-      # Both GCP secrets are optional: a repository whose inference runs on
-      # OpenAI (inference.provider openai, #7481) has neither, and the
-      # setup-gcp action skips Google auth when the provider is empty.
       FULLSEND_GCP_WIF_PROVIDER:
-        required: false
+        required: true
       FULLSEND_GCP_PROJECT_ID:
-        required: false
+        required: true
       FULLSEND_OPENAI_API_KEY:
         required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
