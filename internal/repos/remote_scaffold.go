@@ -24,6 +24,7 @@ var scaffoldGitLabPaths = []struct {
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/install-fullsend-cli.sh", ".gitlab/ci/scripts/install-fullsend-cli.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-poll-job.sh", ".gitlab/ci/scripts/run-poll-job.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-agent-job.sh", ".gitlab/ci/scripts/run-agent-job.sh"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/checkout-mr-source.sh", ".gitlab/ci/scripts/checkout-mr-source.sh"},
 }
 
 // FetchRemoteScaffold fetches scaffold templates from fullsend-ai/fullsend

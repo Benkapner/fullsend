@@ -1368,6 +1368,7 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
 		".gitlab/ci/scripts/run-agent-job.sh",
+		".gitlab/ci/scripts/checkout-mr-source.sh",
 		".fullsend/config.yaml",
 	} {
 		if !paths[expected] {
