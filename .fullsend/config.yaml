@@ -40,8 +40,13 @@ agents:
         risk-assessment: google-vertex/gemini-3.8-flash
         security: xai/grok-4.6
         style-conventions: google-vertex/gemini-3.8-flash
+    # Temporarily disable automatic PR-close retro and /fs-retro while
+    # duplicate findings are reduced (fullsend-ai/agents#198, #7805).
+    # The retro role stays installed so the GitHub App is not removed;
+    # restore by deleting enabled: false.
     - name: retro
       model: sonnet
+      enabled: false
     - name: triage
       model: sonnet
 allowed_remote_resources:
