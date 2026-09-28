@@ -90,8 +90,11 @@ references are scalar values, not shell commands.
 For local harnesses, relative runtime paths resolve from the `.fullsend`
 configuration root (the parent of `harness/`), **not** from the YAML file's
 directory. The same rule applies to local resource references except a local
-`base:`, which resolves relative to the child harness YAML's directory. URLs use
-the allowlisted, pinned resource-fetch pipeline instead. For URL `base:` layers,
+`base:`, which resolves relative to the child harness YAML's directory. Direct
+resource URLs use the allowlisted, hash-verified fetch pipeline; a URL `base:`
+hash verifies the harness YAML, not the relative files fetched alongside it.
+Use an immutable commit ref for a URL base whose relative resources will run on
+the host. For URL `base:` layers,
 relative `pre_script`, `post_script`, `validation_loop.script`/`schema`,
 `host_files[].src` (except `${VAR}` sources), `agent`, `policy`, skills
 (including overrides), `plugins[].path`, `openshell.profiles[]`, and path-form
