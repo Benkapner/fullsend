@@ -195,6 +195,7 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github
@@ -222,6 +223,7 @@ PRIOR_REVIEW_PROVENANCE=
 fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-review.env \
   --forge github
@@ -252,6 +254,7 @@ GIT_BOT_EMAIL={bot-or-your-email}
 fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-code.env \
   --forge github
@@ -269,6 +272,7 @@ this page runs on either by adding one flag to the same command:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github \
@@ -344,6 +348,7 @@ Example:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github \
@@ -385,6 +390,7 @@ podman run --rm -it --network=host \
   run triage \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
+    --forge github \
     --env-file fullsend-gcp.env \
     --env-file fullsend-triage.env \
     --forge github
@@ -496,6 +502,7 @@ values are resolved to an absolute path so post-script env vars such as
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github \
@@ -553,6 +560,7 @@ or gateway routing issues).
    fullsend run <agent> \
      --fullsend-dir /tmp/fullsend-agents/ \
      --target-repo /tmp/target-repo/ \
+     --forge github \
      --env-file fullsend-gcp.env \
      --env-file fullsend-<agent>.env \
      --forge github \
