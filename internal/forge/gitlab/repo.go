@@ -808,22 +808,35 @@ type commitOptions struct {
 // CommitFileToBranch commits a single file to branch without force-re-root.
 // expectedSHA is the branch tip observed at load time and is sent as
 // start_sha so a concurrent writer surfaces forge.ErrNonFastForward instead
-// of last-writer-wins. An empty expectedSHA creates the branch via
-// ForceCommitFileToBranch (first write). The commit message is suffixed
-// with [skip ci] when not already present.
+// of last-writer-wins. An empty expectedSHA means no branch was observed at
+// load time (first write, or the branch was missing): the commit is still
+// parented at the repository root via start_sha, but force is left unset so
+// GitLab creates the branch rather than force-resetting it. If a concurrent
+// writer created the branch first, GitLab reports it as already-exists,
+// which is mapped to forge.ErrNonFastForward below so persistWithCAS reloads
+// the new tip and retries instead of overwriting it. The commit message is
+// suffixed with [skip ci] when not already present.
 func (c *LiveClient) CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error {
 	if branch == "" || path == "" {
 		return fmt.Errorf("commit file: branch and path are required")
 	}
-	if expectedSHA == "" {
-		return c.ForceCommitFileToBranch(ctx, owner, repo, branch, path, message, content)
+	startSHA := expectedSHA
+	if startSHA == "" {
+		root, err := c.resolveRootCommitSHA(ctx, owner, repo)
+		if err != nil {
+			return fmt.Errorf("resolve create base: %w", err)
+		}
+		startSHA = root
 	}
 	_, err := c.commitFilesImpl(ctx, owner, repo, branch, withSkipCI(message), []forge.TreeFile{
 		{Path: path, Content: content, Mode: "100644"},
-	}, commitOptions{startSHA: expectedSHA})
+	}, commitOptions{startSHA: startSHA})
 	if err != nil {
-		// A same-named branch created between load and commit surfaces as
-		// already-exists; treat it as a CAS conflict so persistWithCAS retries.
+		// A same-named branch created between load and commit (including a
+		// concurrent first writer racing branch creation from an empty
+		// expectedSHA) surfaces as already-exists; treat it as a CAS
+		// conflict so persistWithCAS reloads the new tip, unions dispatched
+		// keys, and retries.
 		if forge.IsAlreadyExists(err) {
 			return fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
 		}

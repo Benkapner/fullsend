@@ -1099,6 +1099,94 @@ func TestPersistCycleState_CASRetryMergesConcurrentKeys(t *testing.T) {
 	}
 }
 
+// TestPersistCycleState_CASRetryMergesFailedKeys mirrors
+// TestPersistCycleState_CASRetryMergesConcurrentKeys for the failed-keys
+// field: a concurrent writer's retry count, recorded on the branch during
+// this writer's CAS retry window, must survive instead of being replaced
+// by this writer's own (disjoint) failed-key snapshot.
+func TestPersistCycleState_CASRetryMergesFailedKeys(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		FailedKeysFull: map[string]int{"writer-a-key": 1},
+	})
+	mc.conflictOnce = &persistedPollState{
+		FailedKeysFull: map[string]int{"writer-b-key": 2},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, map[string]int{"writer-a-key": 1}, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.FailedKeysFull["writer-a-key"] != 1 {
+		t.Errorf("writer-a-key missing after CAS retry: %v", got.FailedKeysFull)
+	}
+	if got.FailedKeysFull["writer-b-key"] != 2 {
+		t.Errorf("writer-b-key missing after CAS retry: %v", got.FailedKeysFull)
+	}
+}
+
+// TestPersistCycleState_CASRetryMergesLabelState mirrors the dispatched-key
+// CAS retry coverage for LabelState: a concurrent writer's label update for
+// an issue this writer never looked at must survive a CAS retry rather than
+// being dropped by a wholesale replace.
+func TestPersistCycleState_CASRetryMergesLabelState(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		LabelState: LabelState{1: {"ready-to-code"}},
+	})
+	mc.conflictOnce = &persistedPollState{
+		LabelState: LabelState{2: {"ready-for-review"}},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, nil, LabelState{1: {"ready-to-code"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if labels := got.LabelState[1]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("this writer's own label state missing after CAS retry: %v", got.LabelState)
+	}
+	if labels := got.LabelState[2]; len(labels) != 1 || labels[0] != "ready-for-review" {
+		t.Errorf("concurrent writer's label state missing after CAS retry: %v", got.LabelState)
+	}
+}
+
+// TestPersistCycleState_CASRetryKeepsLaterWatermark ensures a CAS retry
+// cannot roll the watermark backward: if the document reloaded after a
+// conflict already carries a later watermark than this writer's own value,
+// the later one must be kept.
+func TestPersistCycleState_CASRetryKeepsLaterWatermark(t *testing.T) {
+	mc := newMockClient()
+	wmOld := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	wmConcurrent := wmOld.Add(time.Hour)
+	mc.setPollState(persistedPollState{
+		LastPollAtFull: wmOld.Format(time.RFC3339),
+	})
+	mc.conflictOnce = &persistedPollState{
+		LastPollAtFull: wmConcurrent.Format(time.RFC3339),
+	}
+	p := newTestPoller(mc, Options{})
+	wmThisWriter := wmOld.Add(30 * time.Minute)
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, &wmThisWriter, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.LastPollAtFull != wmConcurrent.Format(time.RFC3339) {
+		t.Errorf("watermark = %q, want concurrent writer's later value %q", got.LastPollAtFull, wmConcurrent.Format(time.RFC3339))
+	}
+}
+
 func TestPersistCycleState_CASExhaustionFailsClosed(t *testing.T) {
 	mc := newMockClient()
 	mc.setPollState(persistedPollState{
@@ -1247,6 +1335,81 @@ func TestUnionDispatchedKeys_SlashMode(t *testing.T) {
 	}
 	if state.DispatchedKeysFull["full"] != 99 {
 		t.Errorf("full keys clobbered: %v", state.DispatchedKeysFull)
+	}
+}
+
+func TestUnionFailedKeys_MaxCountWins(t *testing.T) {
+	state := persistedPollState{
+		FailedKeysFull: map[string]int{"a": 1, "b": 2},
+	}
+	unionFailedKeys(&state, false, map[string]int{"b": 1, "c": 3})
+	if state.FailedKeysFull["a"] != 1 {
+		t.Errorf("a = %d, want 1", state.FailedKeysFull["a"])
+	}
+	if state.FailedKeysFull["b"] != 2 {
+		t.Errorf("b = %d, want 2 (loaded count is higher)", state.FailedKeysFull["b"])
+	}
+	if state.FailedKeysFull["c"] != 3 {
+		t.Errorf("c = %d, want 3", state.FailedKeysFull["c"])
+	}
+}
+
+func TestUnionFailedKeys_PrunesOverBudget(t *testing.T) {
+	state := persistedPollState{
+		FailedKeysFull: map[string]int{"stale": 1},
+	}
+	unionFailedKeys(&state, false, map[string]int{"over": maxEventRetries + 1, "zero": 0})
+	if _, exists := state.FailedKeysFull["over"]; exists {
+		t.Error("over-budget key should be pruned")
+	}
+	if _, exists := state.FailedKeysFull["zero"]; exists {
+		t.Error("zero-count key should be pruned")
+	}
+	if state.FailedKeysFull["stale"] != 1 {
+		t.Errorf("stale = %d, want 1", state.FailedKeysFull["stale"])
+	}
+}
+
+func TestUnionFailedKeys_SlashMode(t *testing.T) {
+	state := persistedPollState{
+		FailedKeysFast: map[string]int{"keep": 1},
+		FailedKeysFull: map[string]int{"full": 9},
+	}
+	unionFailedKeys(&state, true, map[string]int{"slash": 2})
+	if state.FailedKeysFast["keep"] != 1 || state.FailedKeysFast["slash"] != 2 {
+		t.Errorf("fast keys = %v", state.FailedKeysFast)
+	}
+	if state.FailedKeysFull["full"] != 9 {
+		t.Errorf("full keys clobbered: %v", state.FailedKeysFull)
+	}
+}
+
+func TestMergeLabelState_UnionsDisjointIssues(t *testing.T) {
+	existing := LabelState{1: {"ready-to-code"}}
+	incoming := LabelState{2: {"ready-for-review"}}
+	merged := mergeLabelState(existing, incoming)
+	if labels := merged[1]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("merged[1] = %v", labels)
+	}
+	if labels := merged[2]; len(labels) != 1 || labels[0] != "ready-for-review" {
+		t.Errorf("merged[2] = %v", labels)
+	}
+}
+
+func TestMergeLabelState_IncomingWinsOnOverlap(t *testing.T) {
+	existing := LabelState{1: {"stale-label"}}
+	incoming := LabelState{1: {"fresh-label"}}
+	merged := mergeLabelState(existing, incoming)
+	if labels := merged[1]; len(labels) != 1 || labels[0] != "fresh-label" {
+		t.Errorf("merged[1] = %v, want incoming to win", labels)
+	}
+}
+
+func TestMergeLabelState_NilExisting(t *testing.T) {
+	incoming := LabelState{1: {"ready-to-code"}}
+	merged := mergeLabelState(nil, incoming)
+	if labels := merged[1]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("merged[1] = %v", labels)
 	}
 }
 

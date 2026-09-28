@@ -1896,7 +1896,7 @@ func TestForceCommitFileToBranch_EmptyCommitID(t *testing.T) {
 	assert.ErrorIs(t, err, forge.ErrNotFound)
 }
 
-func TestCommitFileToBranch_EmptyExpectedSHAForceCreates(t *testing.T) {
+func TestCommitFileToBranch_EmptyExpectedSHAUsesRootNoForce(t *testing.T) {
 	client, mux := setupTest(t)
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
@@ -1904,6 +1904,12 @@ func TestCommitFileToBranch_EmptyExpectedSHAForceCreates(t *testing.T) {
 			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
 			"default_branch": "main", "visibility": "public",
 		})
+	})
+
+	var treeRef string
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		treeRef = r.URL.Query().Get("ref")
+		json.NewEncoder(w).Encode([]map[string]any{})
 	})
 
 	var commitPayload map[string]any
@@ -1923,9 +1929,49 @@ func TestCommitFileToBranch_EmptyExpectedSHAForceCreates(t *testing.T) {
 
 	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "")
 	require.NoError(t, err)
-	assert.Equal(t, true, commitPayload["force"])
+	assert.Equal(t, "root-sha", treeRef, "actions must be diffed against the root tree, not the target branch")
+	_, hasForce := commitPayload["force"]
+	assert.False(t, hasForce, "an empty-expectedSHA create must not force-re-root, so a concurrent first writer surfaces a conflict instead of being overwritten")
 	assert.Equal(t, "root-sha", commitPayload["start_sha"])
 	assert.Equal(t, "persist poll state [skip ci]", commitPayload["commit_message"])
+}
+
+// TestCommitFileToBranch_EmptyExpectedSHAConcurrentFirstWriterIsNonFastForward
+// covers the missing-branch race: two writers both observe the branch as
+// absent (expectedSHA == "") and race to create it. GitLab reports the
+// loser's create as already-exists; that must surface as
+// forge.ErrNonFastForward so persistWithCAS reloads the winner's document,
+// unions this writer's dispatched keys, and retries — instead of the loser
+// force-overwriting the winner's HMAC-signed state.
+func TestCommitFileToBranch_EmptyExpectedSHAConcurrentFirstWriterIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "root-sha"}})
+		case http.MethodPost:
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "A branch named 'state-branch' already exists",
+			})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
 }
 
 func TestCommitFileToBranch_PinsStartSHAWithoutForce(t *testing.T) {

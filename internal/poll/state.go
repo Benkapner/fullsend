@@ -218,18 +218,42 @@ func (p *Poller) commitPollState(ctx context.Context, owner, repo string, state 
 	return p.client.CommitFileToBranch(ctx, owner, repo, branch, PollStateFileName, "fullsend: persist poll state", data, expectedSHA)
 }
 
-func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDeltas) persistedPollState {
+// applyPersistDeltas applies this writer's deltas onto state, which was
+// just (re)loaded fresh in persistWithCAS's loop. retry is true once a
+// prior attempt in that loop has already seen an ErrNonFastForward for
+// this cycle — i.e., a concurrent writer's commit landed between this
+// writer's original snapshot and now.
+//
+// On the uncontended first attempt, failed keys and label state are
+// authoritative full snapshots computed by this writer (they encode
+// deletions — a resolved event, a closed issue — that must take effect),
+// so they replace the stored value, matching single-writer semantics.
+// On a detected conflict, the freshly reloaded document may carry a
+// concurrent writer's own updates to those same fields; replacing it
+// wholesale would silently drop them, so failed keys and labels are
+// merged instead (dispatched keys already merge on every attempt via
+// unionDispatchedKeys, and the watermark always keeps the later of the
+// two values regardless of retry state).
+func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDeltas, retry bool) persistedPollState {
 	if deltas.dispatched != nil {
 		unionDispatchedKeys(&state, p.slashCommandsOnly, deltas.dispatched, deltas.pruneCut)
 	}
 	if deltas.failed != nil {
-		p.applyFailedKeys(&state, deltas.failed)
+		if retry {
+			unionFailedKeys(&state, p.slashCommandsOnly, deltas.failed)
+		} else {
+			p.applyFailedKeys(&state, deltas.failed)
+		}
 	}
 	if deltas.watermark != nil {
 		p.applyWatermark(&state, *deltas.watermark)
 	}
 	if deltas.labels != nil {
-		state.LabelState = deltas.labels
+		if retry {
+			state.LabelState = mergeLabelState(state.LabelState, deltas.labels)
+		} else {
+			state.LabelState = deltas.labels
+		}
 	}
 	return state
 }
@@ -303,7 +327,7 @@ func (p *Poller) persistWithCAS(ctx context.Context, owner, repo string, deltas 
 		if err != nil {
 			return err
 		}
-		state = p.applyPersistDeltas(state, deltas)
+		state = p.applyPersistDeltas(state, deltas, attempt > 1)
 		err = p.commitPollState(ctx, owner, repo, state, expectedSHA)
 		if err == nil {
 			return nil
@@ -372,7 +396,72 @@ func (p *Poller) applyFailedKeys(state *persistedPollState, keys map[string]int)
 	}
 }
 
+// unionFailedKeys merges this writer's failed-key retry counts into the
+// loaded document (max count per key survives a CAS retry) then prunes via
+// pruneFailedKeys, mirroring unionDispatchedKeys. Used only on a CAS retry
+// (see applyPersistDeltas) so a concurrent writer's retry counts recorded
+// during the conflict window are not silently dropped by a whole-map
+// replace; the uncontended first attempt still replaces (applyFailedKeys)
+// since this writer's own map is the authoritative record of which keys
+// resolved this cycle.
+func unionFailedKeys(state *persistedPollState, slash bool, keys map[string]int) {
+	existing := state.FailedKeysFull
+	if slash {
+		existing = state.FailedKeysFast
+	}
+	merged := make(map[string]int, len(existing)+len(keys))
+	for k, c := range existing {
+		merged[k] = c
+	}
+	for k, c := range keys {
+		if prev, ok := merged[k]; !ok || c > prev {
+			merged[k] = c
+		}
+	}
+	pruned := pruneFailedKeys(merged)
+	if slash {
+		state.FailedKeysFast = pruned
+	} else {
+		state.FailedKeysFull = pruned
+	}
+}
+
+// mergeLabelState overlays this writer's computed label-state snapshot
+// (incoming) onto the freshly reloaded document (existing) so entries for
+// issues this writer did not itself observe — most likely a concurrent
+// writer's update recorded during a CAS retry window — survive instead of
+// being dropped by a wholesale replace. incoming wins per issue IID since
+// it reflects this writer's most current view (including deletions it
+// computed, e.g. a closed issue or a label removal) for the issues it did
+// observe.
+func mergeLabelState(existing, incoming LabelState) LabelState {
+	if len(existing) == 0 {
+		return incoming
+	}
+	merged := make(LabelState, len(existing)+len(incoming))
+	for iid, labels := range existing {
+		merged[iid] = labels
+	}
+	for iid, labels := range incoming {
+		merged[iid] = labels
+	}
+	return merged
+}
+
+// applyWatermark advances the stored watermark to the later of the newly
+// observed timestamp and whatever is already on the (freshly loaded)
+// document, so a CAS retry cannot roll the watermark backward if a
+// concurrent writer already advanced it further.
 func (p *Poller) applyWatermark(state *persistedPollState, t time.Time) {
+	current := state.LastPollAtFull
+	if p.slashCommandsOnly {
+		current = state.LastPollAtFast
+	}
+	if current != "" {
+		if parsed, err := time.Parse(time.RFC3339, current); err == nil && parsed.After(t) {
+			t = parsed
+		}
+	}
 	formatted := t.Format(time.RFC3339)
 	if p.slashCommandsOnly {
 		state.LastPollAtFast = formatted

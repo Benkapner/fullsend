@@ -665,7 +665,7 @@ injection > insider > drift > supply chain):
 > |---|---|
 > | Developer forges poll state | HMAC-SHA256 (`FULLSEND_DISPATCH_SECRET`) with per-branch and per-project domain separation. Secret unset → refuse load/write. Bad/absent signature → discard the branch and fail that cycle. |
 > | Missing poll-state branch | Not tampering: fresh baseline (watermark ~1h ago); next save recreates the branch. One-time re-scan / at-least-once re-dispatch, not a stall. |
-> | Unbounded history on state branches | Install-time seed force-re-roots on the repository's root commit (`force: true` + `start_sha`). Runtime persist is CAS ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)) and no longer force-re-roots every save. |
+> | Unbounded history on state branches | Install-time seed force-re-roots on the repository's root commit (`force: true` + `start_sha`). Runtime persist is CAS ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)) and no longer force-re-roots every save. **Accepted residual risk:** since runtime saves no longer prune history, old HMAC-signed `state.json` commits stay reachable, and the HMAC has no freshness binding (no nonce/generation/commit-SHA in the signed payload). A Developer with push access to the unprotected poll-state branch can recommit, or reset the branch tip to, an older still-validly-signed document without knowing `FULLSEND_DISPATCH_SECRET`; `loadPollState` accepts it, causing watermark rollback and dispatched-key resurrection bounded only by how far branch history extends. Mitigating this requires either a freshness-binding mechanism (e.g., a monotonic generation/sequence number the poller rejects on regression) or scheduled compaction/GC of the poll-state branches; neither is implemented. Tracked as a known gap rather than a blocking one because the attack requires Developer-level push access, which is already the trust boundary the HMAC mitigates for forgery (as opposed to replay). |
 > | Concurrent poller + webhook writers | Conflict-detecting persist ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)): 409 / non-fast-forward reloads and unions dispatched keys; exhaustion fails closed. |
 > | `CI_DEBUG_TRACE` / protected-branch exposure of the bot PAT | Unchanged: `FULLSEND_FORGE_TOKEN` and `FULLSEND_DISPATCH_SECRET` remain protected CI/CD variables. |
 
@@ -768,7 +768,10 @@ methods rather than adding forge-conditional logic.
    > refuses load/write; a missing or invalid signature discards the
    > branch and fails that cycle. A missing branch or file is not
    > tampering — the poller starts from a fresh baseline and the next
-   > save recreates the branch.
+   > save recreates the branch. The signature does not bind freshness, so
+   > a Developer *with* push access can still replay an old, validly-signed
+   > document rather than forge a new one — see the "Unbounded history on
+   > state branches" row above for that accepted residual risk.
 4. **Schedule modification.** A Maintainer could retarget the schedule to a
    non-protected branch. Mitigated by protected variable status (bot PAT
    not exposed on non-protected branches).

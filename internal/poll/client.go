@@ -44,7 +44,10 @@ type GitLabClient interface {
 	// CommitFileToBranch commits a single file to branch without force.
 	// expectedSHA is the branch tip observed at load time and is sent as
 	// start_sha so a concurrent writer surfaces forge.ErrNonFastForward.
-	// An empty expectedSHA creates the branch via ForceCommitFileToBranch.
+	// An empty expectedSHA (no branch observed at load time) still commits
+	// with start_sha pinned to the repository root, but leaves force unset
+	// so a concurrent first writer racing branch creation surfaces the same
+	// forge.ErrNonFastForward instead of being silently overwritten.
 	// The commit message is suffixed with [skip ci] when not already present.
 	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error
 	// ForceCommitFileToBranch force-updates branch to a single-file
