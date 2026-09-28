@@ -171,10 +171,13 @@ fullsend repos install <group/project> \
 
 `FULLSEND_GITLAB_BOT_TOKEN` is the equivalent environment variable.
 
-> **Warning:** This PAT is stored as `FULLSEND_FORGE_TOKEN` and used by
-> autonomous agents processing untrusted issue and merge request
-> comments. Use a token from a dedicated bot account scoped to the
-> target project or group — not your personal account or an admin
+> **Warning:** This PAT is stored as `FULLSEND_FORGE_TOKEN` for
+> install/converge state only. Autonomous agents processing untrusted
+> issue and merge request comments authenticate at runtime using the
+> per-role tokens enrolled via `--gitlab-role-token` (e.g.
+> `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`), not
+> this shared PAT. Use a token from a dedicated bot account scoped to
+> the target project or group — not your personal account or an admin
 > PAT — since a PAT typically carries its owner's access across every
 > project and group they can reach.
 

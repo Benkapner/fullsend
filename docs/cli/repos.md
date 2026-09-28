@@ -239,8 +239,9 @@ mapping was incomplete. Missing role secrets are drift in `migrating` and
 Leaving a role-required gate (`migrating` or `enforced`) requires the
 explicit `--gitlab-role-migration=rollback` plus
 `--gitlab-role-rollback-confirmed` acknowledgement because it reopens the
-shared-credential path. That emergency recovery path is separate from
-ordinary unflagged converge.
+shared-credential path for install/converge-state purposes only; it does
+not restore shared-token runtime authentication. That emergency recovery
+path is separate from ordinary unflagged converge.
 
 ## `repos status`
 

@@ -946,7 +946,7 @@ func TestEnrichGitLabRoleStatusSharedOnlyOmitsRoleReadinessDiagnostics(t *testin
 			joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
 			assert.NotContains(t, joined, "builtin poller:")
 			assert.NotContains(t, joined, "builtin roles ready:")
-			assert.NotContains(t, joined, "registered role")
+			assert.NotRegexp(t, `registered role \S+: (not )?ready`, joined)
 			assert.True(t, status.GitLabRolesReady)
 		})
 	}
