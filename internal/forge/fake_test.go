@@ -1763,13 +1763,17 @@ func TestFakeClient_ProjectHookRoundTrip(t *testing.T) {
 
 	updated, err := fc.UpdateProjectHook(ctx, "org", "repo", created.ID, ProjectHook{
 		URL:          hook.URL,
+		Token:        "rotated-secret",
 		IssuesEvents: false,
 		NoteEvents:   true,
 	})
 	require.NoError(t, err)
 	assert.False(t, updated.IssuesEvents)
 	assert.True(t, updated.NoteEvents)
-	assert.Empty(t, updated.Token)
+	assert.Empty(t, updated.Token, "GitLab never returns the webhook secret")
+	require.Len(t, fc.UpdatedProjectHooks, 1)
+	assert.Equal(t, "rotated-secret", fc.UpdatedProjectHooks[0].Token,
+		"the recorded update call must retain the token so tests can verify rotation")
 
 	err = fc.DeleteProjectHook(ctx, "org", "repo", created.ID)
 	require.NoError(t, err)

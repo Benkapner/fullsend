@@ -935,8 +935,11 @@ type Client interface {
 	// ListProjectHooks lists project webhooks. The secret token is
 	// never returned.
 	ListProjectHooks(ctx context.Context, owner, repo string) ([]ProjectHook, error)
-	// UpdateProjectHook updates an existing project webhook.
-	// Returns ErrNotFound if the hook does not exist.
+	// UpdateProjectHook replaces an existing project webhook's full
+	// configuration. It is not a partial update: every event-flag field
+	// on hook is sent as given, including zero values, so any flag the
+	// caller omits is cleared. Returns ErrNotFound if the hook does not
+	// exist.
 	UpdateProjectHook(ctx context.Context, owner, repo string, hookID int64, hook ProjectHook) (*ProjectHook, error)
 	// DeleteProjectHook deletes a project webhook by ID.
 	// Returns ErrNotFound if the hook does not exist.
@@ -1017,7 +1020,10 @@ type ProjectHook struct {
 	WikiPageEvents           bool
 	DeploymentEvents         bool
 	ReleasesEvents           bool
-	EnableSSLVerification    bool
+	// EnableSSLVerification reflects GitLab's reported state on read.
+	// On write, the GitLab client always enforces true regardless of
+	// this field's value: Fullsend never disables TLS verification.
+	EnableSSLVerification bool
 }
 
 // OrgMembership is a user's membership in a GitHub organization.

@@ -74,6 +74,24 @@ func TestListPipelineTriggerTokens(t *testing.T) {
 	assert.Equal(t, "other", tokens[1].Description)
 }
 
+func TestListPipelineTriggerTokens_StripsTokenFromPayload(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		// A real GitLab list response should omit "token", but assert we
+		// still strip it if a payload ever includes it.
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": 1, "description": "fullsend-dispatcher", "token": "glptt-should-not-leak"},
+		})
+	})
+
+	tokens, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	require.Len(t, tokens, 1)
+	assert.Empty(t, tokens[0].Token, "list must strip the token even if the payload includes one")
+}
+
 func TestListPipelineTriggerTokens_Paginates(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -215,6 +233,27 @@ func TestCreateProjectHook_Forbidden(t *testing.T) {
 	assert.ErrorIs(t, err, forge.ErrForbidden)
 }
 
+func TestCreateProjectHook_AlwaysEnablesSSLVerification(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["enable_ssl_verification"],
+			"Fullsend must never send enable_ssl_verification=false, even when the caller leaves it unset")
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1, "url": body["url"]})
+	})
+
+	// EnableSSLVerification left at its Go zero value (false), simulating a
+	// caller that forgot to set it.
+	_, err := client.CreateProjectHook(ctx, "myorg", "myrepo", forge.ProjectHook{
+		URL:                   "https://example.test",
+		EnableSSLVerification: false,
+	})
+	require.NoError(t, err)
+}
+
 func TestListProjectHooks(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -304,6 +343,36 @@ func TestUpdateProjectHook(t *testing.T) {
 	assert.Equal(t, int64(42), hook.ID)
 	assert.True(t, hook.NoteEvents)
 	assert.Empty(t, hook.Token)
+}
+
+func TestUpdateProjectHook_IsFullReplace(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks/42", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		// NoteEvents is the only flag set on the call below; every other
+		// event flag must still be serialized (as false), confirming
+		// UpdateProjectHook replaces the whole hook rather than patching it.
+		assert.Equal(t, true, body["note_events"])
+		assert.Equal(t, false, body["issues_events"])
+		assert.Equal(t, false, body["merge_requests_events"])
+		assert.Equal(t, false, body["push_events"])
+		assert.Equal(t, true, body["enable_ssl_verification"])
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id":          42,
+			"url":         body["url"],
+			"note_events": true,
+		})
+	})
+
+	hook, err := client.UpdateProjectHook(ctx, "myorg", "myrepo", 42, forge.ProjectHook{
+		URL:        "https://example.test/updated",
+		NoteEvents: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, hook.NoteEvents)
 }
 
 func TestUpdateProjectHook_NotFound(t *testing.T) {

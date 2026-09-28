@@ -2627,11 +2627,12 @@ func (f *FakeClient) UpdateProjectHook(_ context.Context, owner, repo string, ho
 		}
 		updated := hook
 		updated.ID = hookID
-		updated.Token = ""
-		hooks[i] = updated
-		f.ProjectHooks[key] = hooks
 		f.UpdatedProjectHooks = append(f.UpdatedProjectHooks, updated)
-		return &updated, nil
+		stored := updated
+		stored.Token = "" // GitLab never returns the webhook secret.
+		hooks[i] = stored
+		f.ProjectHooks[key] = hooks
+		return &stored, nil
 	}
 	return nil, fmt.Errorf("%w: project hook %d", ErrNotFound, hookID)
 }

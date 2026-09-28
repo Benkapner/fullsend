@@ -60,7 +60,9 @@ func (c *LiveClient) ListPipelineTriggerTokens(ctx context.Context, owner, repo 
 			return nil, fmt.Errorf("decode pipeline trigger tokens page %d: %w", page, err)
 		}
 		for _, t := range tokens {
-			result = append(result, t.toForge())
+			tok := t.toForge()
+			tok.Token = "" // Token is populated only on creation; never on list.
+			result = append(result, tok)
 		}
 		if len(tokens) < perPage {
 			return result, nil
@@ -141,7 +143,12 @@ func hookToGitLabBody(h forge.ProjectHook) map[string]any {
 		"wiki_page_events":           h.WikiPageEvents,
 		"deployment_events":          h.DeploymentEvents,
 		"releases_events":            h.ReleasesEvents,
-		"enable_ssl_verification":    h.EnableSSLVerification,
+		// Always enforced true: Fullsend never disables TLS verification
+		// (see docs/guides/getting-started/operations.md). GitLab defaults
+		// this to true when omitted, but omission depends on the caller
+		// remembering to leave it unset, so we assert the value explicitly
+		// instead of trusting the zero value of h.EnableSSLVerification.
+		"enable_ssl_verification": true,
 	}
 	if h.Name != "" {
 		body["name"] = h.Name
@@ -198,7 +205,10 @@ func (c *LiveClient) ListProjectHooks(ctx context.Context, owner, repo string) (
 }
 
 // UpdateProjectHook updates a project webhook via PUT /projects/:id/hooks/:hook_id.
-// Returns forge.ErrNotFound (wrapped) if the hook does not exist.
+// This is a full replace: hookToGitLabBody serializes every field on hook,
+// including zero-value event flags, so any flag the caller omits from hook
+// is cleared on GitLab rather than left unchanged. Returns forge.ErrNotFound
+// (wrapped) if the hook does not exist.
 func (c *LiveClient) UpdateProjectHook(ctx context.Context, owner, repo string, hookID int64, hook forge.ProjectHook) (*forge.ProjectHook, error) {
 	path := fmt.Sprintf("/projects/%s/hooks/%d", projectPath(owner, repo), hookID)
 	resp, err := c.put(ctx, path, hookToGitLabBody(hook))
