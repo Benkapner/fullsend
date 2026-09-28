@@ -821,7 +821,7 @@ fullsend run "${STAGE}" \
   --forge gitlab \
   --run-url "${CI_PIPELINE_URL}" \
   --status-repo "${CI_PROJECT_PATH}" \
-  --status-number "${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+  --status-number "${MR_NUMBER:-${STATUS_IID:-${CI_MERGE_REQUEST_IID:-0}}}"
 RUN_STATUS=$?
 set -e
 
