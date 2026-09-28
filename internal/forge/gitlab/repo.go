@@ -223,6 +223,36 @@ func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo strin
 	return err
 }
 
+// GetPipelineVariablesMinimumOverrideRole reads the GitLab project
+// setting that gates who may pass user-defined pipeline variables.
+func (c *LiveClient) GetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo string) (string, error) {
+	proj := projectPath(owner, repo)
+	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s", proj))
+	if err != nil {
+		return "", fmt.Errorf("get pipeline variables minimum override role for %s/%s: %w", owner, repo, err)
+	}
+
+	var p struct {
+		Role string `json:"ci_pipeline_variables_minimum_override_role"`
+	}
+	if err := decodeJSON(resp, &p); err != nil {
+		return "", fmt.Errorf("decode pipeline variables minimum override role: %w", err)
+	}
+	return p.Role, nil
+}
+
+// SetPipelineVariablesMinimumOverrideRole updates the GitLab project
+// setting that gates who may pass user-defined pipeline variables.
+func (c *LiveClient) SetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo, role string) error {
+	body := map[string]string{"ci_pipeline_variables_minimum_override_role": role}
+	resp, err := c.put(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)), body)
+	if err != nil {
+		return fmt.Errorf("set pipeline variables minimum override role for %s/%s: %w", owner, repo, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)))
 }

@@ -372,6 +372,128 @@ func TestGetRepo_NotFound(t *testing.T) {
 	assert.True(t, forge.IsNotFound(err))
 }
 
+func TestGetPipelineVariablesMinimumOverrideRole(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42,
+			"ci_pipeline_variables_minimum_override_role": "developer",
+		})
+	})
+
+	role, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "mygroup", "myrepo")
+	require.NoError(t, err)
+	assert.Equal(t, forge.PipelineVarOverrideDeveloper, role)
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"404 Project Not Found"}`)
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "gone")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_Forbidden(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message":"403 Forbidden"}`)
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_ServerError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"500 Internal Server Error"}`)
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
+}
+
+func TestGetPipelineVariablesMinimumOverrideRole_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.GetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode pipeline variables minimum override role")
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, forge.PipelineVarOverrideOwner, body["ci_pipeline_variables_minimum_override_role"])
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42,
+			"ci_pipeline_variables_minimum_override_role": forge.PipelineVarOverrideOwner,
+		})
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(ctx, "mygroup", "myrepo", forge.PipelineVarOverrideOwner)
+	require.NoError(t, err)
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"404 Project Not Found"}`)
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "gone", forge.PipelineVarOverrideOwner)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole_Forbidden(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message":"403 Forbidden"}`)
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo", forge.PipelineVarOverrideOwner)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+}
+
+func TestSetPipelineVariablesMinimumOverrideRole_ServerError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"500 Internal Server Error"}`)
+	})
+
+	err := client.SetPipelineVariablesMinimumOverrideRole(context.Background(), "owner", "repo", forge.PipelineVarOverrideOwner)
+	require.Error(t, err)
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
+}
+
 func TestListOrgRepos(t *testing.T) {
 	client, mux := setupTest(t)
 

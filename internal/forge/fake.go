@@ -240,6 +240,11 @@ type FakeClient struct {
 	// ProjectHooks stores project webhooks keyed by "owner/repo".
 	ProjectHooks map[string][]ProjectHook
 
+	// PipelineVarOverrideRoles stores the GitLab
+	// ci_pipeline_variables_minimum_override_role setting per project.
+	// Key: "owner/repo". Missing keys round-trip as empty string.
+	PipelineVarOverrideRoles map[string]string
+
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
 
@@ -2485,6 +2490,30 @@ func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, n
 		f.VariablesExist = make(map[string]bool)
 	}
 	f.VariablesExist[owner+"/"+repo+"/"+name] = true
+	return nil
+}
+
+func (f *FakeClient) GetPipelineVariablesMinimumOverrideRole(_ context.Context, owner, repo string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetPipelineVariablesMinimumOverrideRole"); e != nil {
+		return "", e
+	}
+	return f.PipelineVarOverrideRoles[owner+"/"+repo], nil
+}
+
+func (f *FakeClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, owner, repo, role string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("SetPipelineVariablesMinimumOverrideRole"); e != nil {
+		return e
+	}
+	if f.PipelineVarOverrideRoles == nil {
+		f.PipelineVarOverrideRoles = make(map[string]string)
+	}
+	f.PipelineVarOverrideRoles[owner+"/"+repo] = role
 	return nil
 }
 

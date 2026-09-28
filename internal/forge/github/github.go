@@ -4117,6 +4117,16 @@ func (c *LiveClient) DeleteProjectHook(_ context.Context, _, _ string, _ int64) 
 	return forge.ErrNotSupported
 }
 
+// GetPipelineVariablesMinimumOverrideRole is not supported on GitHub.
+func (c *LiveClient) GetPipelineVariablesMinimumOverrideRole(_ context.Context, _, _ string) (string, error) {
+	return "", forge.ErrNotSupported
+}
+
+// SetPipelineVariablesMinimumOverrideRole is not supported on GitHub.
+func (c *LiveClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, _, _, _ string) error {
+	return forge.ErrNotSupported
+}
+
 // ForceCommitFileToBranch is not supported on GitHub.
 func (c *LiveClient) ForceCommitFileToBranch(_ context.Context, _, _, _, _, _ string, _ []byte) error {
 	return forge.ErrNotSupported

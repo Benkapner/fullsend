@@ -131,6 +131,23 @@ const (
 	VarGitLabRoleRotation = "FULLSEND_GITLAB_ROLE_ROTATION"
 )
 
+// GitLab CI pipeline-variable minimum-override roles.
+//
+// These are the documented values of GitLab's
+// ci_pipeline_variables_minimum_override_role project setting
+// (GitLab >= 17.1). The setting is a minimum-role gate: only identities
+// at that role or above may pass user-defined variables on pipeline
+// create/trigger. GitHub has no equivalent; its client returns
+// ErrNotSupported.
+const (
+	// PipelineVarOverrideNoOneAllowed rejects every user-defined pipeline
+	// variable, including those sent by an Owner PAT via CreatePipeline.
+	PipelineVarOverrideNoOneAllowed = "no_one_allowed"
+	PipelineVarOverrideDeveloper    = "developer"
+	PipelineVarOverrideMaintainer   = "maintainer"
+	PipelineVarOverrideOwner        = "owner"
+)
+
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 
@@ -944,6 +961,19 @@ type Client interface {
 	// DeleteProjectHook deletes a project webhook by ID.
 	// Returns ErrNotFound if the hook does not exist.
 	DeleteProjectHook(ctx context.Context, owner, repo string, hookID int64) error
+
+	// GetPipelineVariablesMinimumOverrideRole returns the GitLab project
+	// setting that gates who may pass user-defined variables when creating
+	// or triggering a pipeline (ci_pipeline_variables_minimum_override_role).
+	// Valid values are no_one_allowed, developer, maintainer, and owner.
+	// Returns ErrNotFound if the project does not exist. GitHub returns
+	// ErrNotSupported.
+	GetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo string) (string, error)
+	// SetPipelineVariablesMinimumOverrideRole updates that setting via
+	// PUT /projects/:id. role must be one of the documented GitLab values.
+	// Returns ErrNotFound if the project does not exist. GitHub returns
+	// ErrNotSupported.
+	SetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo, role string) error
 
 	// Commit comparison
 	// CompareCommits compares two commits and returns their relationship
