@@ -195,6 +195,7 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github
@@ -222,6 +223,7 @@ PRIOR_REVIEW_PROVENANCE=
 fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-review.env \
   --forge github
@@ -252,6 +254,7 @@ GIT_BOT_EMAIL={bot-or-your-email}
 fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-code.env \
   --forge github
@@ -269,6 +272,7 @@ this page runs on either by adding one flag to the same command:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github \
@@ -344,6 +348,7 @@ Example:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github \
@@ -352,7 +357,7 @@ fullsend run triage \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
 
-For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. While the migration gate is unset, `disabled`, or `rollback`, `FULLSEND_FORGE_TOKEN` is preferred and exported to `GITLAB_TOKEN`; if it is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged). Once the gate is `migrating`, the matching per-role secret (Poller/Analyst/Coder, or a registered custom role) is used when configured; an unconfigured role still falls back to `FULLSEND_FORGE_TOKEN` (this shared-token fallback only ceases once the gate is `enforced`, where the per-role secret is strictly required). In both `migrating` and `enforced` mode, though, the unmanaged fallback to a directly-set `GITLAB_TOKEN` (used above when `FULLSEND_FORGE_TOKEN` itself is absent) no longer applies. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. While the role-identity gate is leftover unset/`disabled` or explicit `rollback`, `FULLSEND_FORGE_TOKEN` is preferred and exported to `GITLAB_TOKEN`; if it is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged). Once the gate is `migrating` or `enforced`, the matching per-role secret (Poller/Analyst/Coder, or a registered custom role) is strictly required; a missing role secret fails closed and does not fall back to `FULLSEND_FORGE_TOKEN`. In both `migrating` and `enforced` mode, the unmanaged fallback to a directly-set `GITLAB_TOKEN` (used above when `FULLSEND_FORGE_TOKEN` itself is absent) no longer applies. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
@@ -385,6 +390,7 @@ podman run --rm -it --network=host \
   run triage \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
+    --forge github \
     --env-file fullsend-gcp.env \
     --env-file fullsend-triage.env \
     --forge github
@@ -496,6 +502,7 @@ values are resolved to an absolute path so post-script env vars such as
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --forge github \
@@ -553,6 +560,7 @@ or gateway routing issues).
    fullsend run <agent> \
      --fullsend-dir /tmp/fullsend-agents/ \
      --target-repo /tmp/target-repo/ \
+     --forge github \
      --env-file fullsend-gcp.env \
      --env-file fullsend-<agent>.env \
      --forge github \

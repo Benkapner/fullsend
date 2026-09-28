@@ -405,3 +405,160 @@ func TestSecretConstants_AreMaskedNames(t *testing.T) {
 	assert.True(t, strings.HasPrefix(forge.SecretTriggerToken, "FULLSEND_"))
 	assert.True(t, strings.HasPrefix(forge.SecretWebhookSecret, "FULLSEND_"))
 }
+
+func TestCreatePipelineTriggerToken_ServerError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]any{"message": "boom"})
+	})
+
+	_, err := client.CreatePipelineTriggerToken(ctx, "myorg", "myrepo", "fullsend-dispatcher")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create pipeline trigger token")
+}
+
+func TestCreatePipelineTriggerToken_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.CreatePipelineTriggerToken(ctx, "myorg", "myrepo", "fullsend-dispatcher")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode pipeline trigger token")
+}
+
+func TestListPipelineTriggerTokens_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode pipeline trigger tokens")
+}
+
+func TestListPipelineTriggerTokens_PaginationOverflow(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		tokens := make([]map[string]any, 100)
+		for i := range tokens {
+			tokens[i] = map[string]any{"id": i + 1, "description": "token"}
+		}
+		writeJSON(t, w, http.StatusOK, tokens)
+	})
+
+	_, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+}
+
+func TestCreateProjectHook_ServerError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]any{"message": "boom"})
+	})
+
+	_, err := client.CreateProjectHook(ctx, "myorg", "myrepo", forge.ProjectHook{URL: "https://example.test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create project hook")
+}
+
+func TestCreateProjectHook_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.CreateProjectHook(ctx, "myorg", "myrepo", forge.ProjectHook{URL: "https://example.test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode project hook")
+}
+
+func TestListProjectHooks_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.ListProjectHooks(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode project hooks")
+}
+
+func TestListProjectHooks_PaginationOverflow(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks", func(w http.ResponseWriter, r *http.Request) {
+		hooks := make([]map[string]any, 100)
+		for i := range hooks {
+			hooks[i] = map[string]any{"id": i + 1, "url": "https://example.test"}
+		}
+		writeJSON(t, w, http.StatusOK, hooks)
+	})
+
+	_, err := client.ListProjectHooks(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+}
+
+func TestUpdateProjectHook_Forbidden(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks/42", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]any{"message": "403 Forbidden"})
+	})
+
+	_, err := client.UpdateProjectHook(ctx, "myorg", "myrepo", 42, forge.ProjectHook{URL: "https://example.test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update project hook")
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+}
+
+func TestUpdateProjectHook_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks/42", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.UpdateProjectHook(ctx, "myorg", "myrepo", 42, forge.ProjectHook{URL: "https://example.test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode project hook")
+}
+
+func TestDeleteProjectHook_ServerError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/hooks/42", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]any{"message": "boom"})
+	})
+
+	err := client.DeleteProjectHook(ctx, "myorg", "myrepo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete project hook")
+}

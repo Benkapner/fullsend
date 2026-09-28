@@ -63,9 +63,10 @@ fi
 # credential before it's authenticated. Poller's own responsibility
 # already covers pipeline dispatch/resource-group management, and
 # the script's existing gate-mode fallback (shared token in
-# disabled/rollback, poller secret or shared in migrating, poller
-# secret only in enforced) applies unchanged. The real per-STAGE
-# role token is re-selected further down, once verification passes.
+# disabled/rollback, poller secret only in migrating/enforced —
+# no shared-token fallback in migrating) applies unchanged. The
+# real per-STAGE role token is re-selected further down, once
+# verification passes.
 # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
 FULLSEND_JOB_KIND=poller
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"

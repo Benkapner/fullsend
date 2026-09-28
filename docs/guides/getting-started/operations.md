@@ -61,13 +61,13 @@ region there remains an alternative.
 | `FULLSEND_DISPATCH_SECRET` | CI/CD secret | HMAC secret for dispatch variables and poll-state documents; auto-provisioned by `repos install` | (generated) |
 | `FULLSEND_TRIGGER_TOKEN` | CI/CD secret | GitLab pipeline trigger token for the webhook fast-path dispatcher. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |
 | `FULLSEND_WEBHOOK_SECRET` | CI/CD secret | GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |
-| `FULLSEND_GITLAB_ROLE_MIGRATION` | CI/CD variable (protected, unmasked) | Role-credential migration gate (`disabled`, `migrating`, `rollback`, `enforced`). Ordinary unflagged `repos install` writes `migrating` while provisioning, then `enforced` once roles are ready. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md) | `enforced` |
+| `FULLSEND_GITLAB_ROLE_MIGRATION` | CI/CD variable (protected, unmasked) | Role-identity gate. Operator-settable values are `enforced` and `rollback`. Ordinary unflagged `repos install` writes the internal `migrating` intermediate while provisioning, then `enforced` once roles are ready. Leftover `disabled` remains parseable until converge. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md) | `enforced` |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | CI/CD variable (protected, unmasked) | Administrator role registry (JSON references and policy, not secret values); empty means built-in roles only. Written by `repos install --gitlab-role-registry`. | `{"roles":[]}` |
 | `FULLSEND_GITLAB_ROLE_ROTATION` | CI/CD variable (protected, unmasked) | Per-role rotation state (lock, token IDs, expiry dates, phase). Never stores token values. Written by `repos install` during rotation. | `{"roles":{}}` |
-| `FULLSEND_GITLAB_POLLER_TOKEN` / `FULLSEND_GITLAB_ANALYST_TOKEN` / `FULLSEND_GITLAB_CODER_TOKEN` | CI/CD secret | Built-in role PATs provisioned by `repos install`. Absence is not a health failure while the gate is `disabled` or during partial `migrating`. | (masked) |
+| `FULLSEND_GITLAB_POLLER_TOKEN` / `FULLSEND_GITLAB_ANALYST_TOKEN` / `FULLSEND_GITLAB_CODER_TOKEN` | CI/CD secret | Built-in role PATs provisioned by `repos install`. Absence is not a health failure while the gate is leftover `disabled` or `rollback`; missing role secrets are drift in `migrating` and `enforced`. | (masked) |
 | `OPENAI_API_KEY` | CI/CD variable (masked) | Opt-in static OpenAI API key when OpenAI WIF is unavailable; unused when the WIF trio is set | `sk-...` |
 
-Ordinary unflagged `repos install` cuts over GitLab role credentials when they are ready and deletes `FULLSEND_FORGE_TOKEN`. Drain in-flight shared-token jobs before that converge. [`--gitlab-role-cutover --gitlab-role-cutover-drained`](../../cli/repos.md#gitlab-role-cutover) is an explicit fail-closed retry. Missing role credentials are reported as drift when the gate is `enforced`. Emergency rollback uses `--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed`.
+Ordinary unflagged `repos install` cuts over GitLab role credentials when they are ready and deletes `FULLSEND_FORGE_TOKEN`. Drain in-flight shared-token jobs before that converge. [`--gitlab-role-cutover --gitlab-role-cutover-drained`](../../cli/repos.md#gitlab-role-cutover) is an explicit fail-closed retry. Missing role credentials are reported as drift when the gate is `migrating` or `enforced`. Emergency rollback uses `--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed`.
 
 ## Syncing workflow templates
 
@@ -233,7 +233,7 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 
 | Variable | Description |
 |----------|-------------|
-| `FULLSEND_FORGE_TOKEN` | **Required for the generated scaffold in `disabled`/`rollback` mode; deleted once a repo cuts over to `enforced` mode.** Protected project or group access token; `repos install` provisions it automatically. The agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`, resolved by `.gitlab/ci/scripts/select-gitlab-role-token.sh` from the registered role credential when `FULLSEND_GITLAB_ROLE_MIGRATION` is `migrating` or `enforced`, falling back to (or, in `disabled`/`rollback` mode, exclusively using) this shared token. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md). |
+| `FULLSEND_FORGE_TOKEN` | **Required for the generated scaffold in `disabled`/`rollback` mode; deleted once a repo cuts over to `enforced` mode.** Protected project or group access token; `repos install` provisions it automatically. The agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`, resolved by `.gitlab/ci/scripts/select-gitlab-role-token.sh`. In `migrating`/`enforced` mode it resolves the role token from the registered role credential and fails closed if that secret is missing; in `disabled`/`rollback` mode it exclusively uses this shared token, with no role-credential fallback. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md). |
 | `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. |
 | `CI_COMMIT_SHA` | Commit SHA shown in the status comment. |
 | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
@@ -247,11 +247,11 @@ For a generated scaffold, `repos install` provisions the protected
 `FULLSEND_FORGE_TOKEN` variable (requested as masked when GitLab accepts the
 value); the agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`,
 resolved by `select-gitlab-role-token.sh` from the registered role
-credential in `migrating`/`enforced` mode, falling back to (or, in
-`disabled`/`rollback` mode, exclusively using) the shared
-`FULLSEND_FORGE_TOKEN` for status notifications. If wiring fullsend into
-GitLab CI manually, provision `FULLSEND_FORGE_TOKEN` as a masked and
-protected variable instead. See
+credential in `migrating`/`enforced` mode, failing closed if that secret is
+missing. In `disabled`/`rollback` mode it exclusively uses the shared
+`FULLSEND_FORGE_TOKEN` for status notifications, with no role-credential
+fallback. If wiring fullsend into GitLab CI manually, provision
+`FULLSEND_FORGE_TOKEN` as a masked and protected variable instead. See
 [Configuring GitLab](configuring-gitlab.md#verifying-the-installation).
 
 ## Private CA (self-hosted GitLab)
