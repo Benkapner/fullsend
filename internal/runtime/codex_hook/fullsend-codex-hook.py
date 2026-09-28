@@ -396,7 +396,7 @@ def block(reason: str) -> None:
     with contextlib.suppress(BaseException):
         data = truncated.encode("utf-8", "replace")
         while data:
-            data = data[os.write(2, data):]
+            data = data[os.write(2, data) :]
     with contextlib.suppress(BaseException):
         sys.stderr.close()
     sys.stderr = None
