@@ -746,14 +746,14 @@ sys.exit(1)`)
 //
 // "sys.stderr is None" and "TextIOWrapper around a closed fd" both leave the
 // real fd 2 itself untouched — only the Python-level stream object is
-// broken — so block()'s raw os.write(2, ...) fallback recovers the reason
-// and this asserts it actually lands on the real fd, not just that the
-// process exits 2. "fd 2 closed after interpreter start" tears down the real
-// fd itself: no process-local write, buffered or raw, can put bytes on the
-// other end of a closed fd, so that case is asserted to still exit 2 (a
-// block attempt beats a crash) but to NOT carry the reason — codex sees this
-// one as `Failed`, not a block, and no in-process fix changes that (see
-// block()'s docstring).
+// broken, and block() never writes through it — so block()'s raw
+// os.write(2, ...) recovers the reason and this asserts it actually lands on
+// the real fd, exactly once, not just that the process exits 2. "fd 2 closed
+// after interpreter start" tears down the real fd itself: no process-local
+// write can put bytes on the other end of a closed fd, so that case is
+// asserted to still exit 2 (a block attempt beats a crash) but to NOT carry
+// the reason — codex sees this one as `Failed`, not a block, and no
+// in-process fix changes that (see block()'s docstring).
 func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -794,14 +794,18 @@ func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 				"spec.loader.exec_module(m)\n" +
 				tc.setup + "\n" +
 				"m.block('forced-stderr')\n"
-			out, err := exec.Command(h.python, "-c", src).CombinedOutput()
-			require.Error(t, err, "output: %s", out)
-			assert.Equal(t, 2, exitCodeOf(t, err), "output: %s", out)
+			cmd := exec.Command(h.python, "-c", src)
+			var stdout, stderr strings.Builder
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			runErr := cmd.Run()
+			require.Error(t, runErr, "stdout: %s stderr: %s", stdout.String(), stderr.String())
+			assert.Equal(t, 2, exitCodeOf(t, runErr), "stdout: %s stderr: %s", stdout.String(), stderr.String())
 			if tc.want != "" {
-				assert.Contains(t, string(out), tc.want, "codex only treats exit 2 as a block when stderr is non-empty")
+				assert.Equal(t, tc.want, stderr.String(), "codex only treats exit 2 as a block when stderr is non-empty, and a duplicate write must not pass")
 			}
 			if tc.wantAbsent != "" {
-				assert.NotContains(t, string(out), tc.wantAbsent, "a genuinely closed fd 2 cannot carry the reason from this process")
+				assert.NotContains(t, stderr.String(), tc.wantAbsent, "a genuinely closed fd 2 cannot carry the reason from this process")
 			}
 		})
 	}
