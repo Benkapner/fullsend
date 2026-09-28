@@ -188,7 +188,11 @@ func TestSelectUnregisteredFailsClosedInEveryMode(t *testing.T) {
 		forge.SecretGitLabCoderToken:   "c",
 	}
 	for _, mode := range []string{"", "disabled", "migrating", "rollback", "enforced"} {
-		t.Run(mode, func(t *testing.T) {
+		subtestName := mode
+		if subtestName == "" {
+			subtestName = "unset"
+		}
+		t.Run(subtestName, func(t *testing.T) {
 			t.Parallel()
 			e := copyEnv(env)
 			if mode != "" {
@@ -206,7 +210,11 @@ func TestSelectUnregisteredFailsClosedInEveryMode(t *testing.T) {
 func TestSelectLeftoverModesMissingRoleDoNotFallback(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"", "disabled", "rollback"} {
-		t.Run(mode, func(t *testing.T) {
+		subtestName := mode
+		if subtestName == "" {
+			subtestName = "unset"
+		}
+		t.Run(subtestName, func(t *testing.T) {
 			t.Parallel()
 			env := map[string]string{
 				forge.SecretForgeToken: "glpat-SHARED-secret",

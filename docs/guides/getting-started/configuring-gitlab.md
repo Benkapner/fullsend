@@ -240,7 +240,7 @@ into re-enabling a disabled schedule, restoring in-CI dispatch and the
 double-dispatch risk this section describes.
 
 ```bash
-export FULLSEND_FORGE_TOKEN="<bot-pat>"   # not GITLAB_TOKEN
+export FULLSEND_GITLAB_POLLER_TOKEN="<poller-bot-pat>"   # not GITLAB_TOKEN or FULLSEND_FORGE_TOKEN
 export FULLSEND_DISPATCH_SECRET="<dispatch-secret>"  # from the protected CI/CD variable
 export CI_DEFAULT_BRANCH="main"           # or set CI_COMMIT_REF_NAME
 
@@ -258,9 +258,11 @@ every five minutes and `--mode events` at minutes `2,17,32,47` of each hour.
 Do not omit `--mode`: an unmodeled invocation uses the legacy combined path
 and can share neither the slash-mode state nor the event-mode cadence safely.
 
-`--forge gitlab` and `--fullsend-dir` are required flags. `FULLSEND_FORGE_TOKEN`
-(the same bot PAT from [Free-tier bot token](#free-tier-bot-token) above,
-**not** the `GITLAB_TOKEN` named in [Prerequisites](#prerequisites)) and
+`--forge gitlab` and `--fullsend-dir` are required flags. `fullsend poll`
+resolves its credential via the registered Poller role in every gate mode
+(there is no shared-token fallback), so `FULLSEND_GITLAB_POLLER_TOKEN`
+(**not** `FULLSEND_FORGE_TOKEN` and **not** the `GITLAB_TOKEN` named in
+[Prerequisites](#prerequisites)) and
 `FULLSEND_DISPATCH_SECRET` (the protected secret provisioned by install) must
 be set in the environment. `--mode` must be `slash` or `events` for an
 external replacement of the corresponding schedule. `--project` falls back

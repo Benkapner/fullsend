@@ -137,19 +137,13 @@ case "${PIPELINE_SOURCE}" in
     ;;
 esac
 
-# Gate mode — determines whether the STAGE-derived re-select below
-# would actually hand out a more-privileged credential than the
-# poller bootstrap token used above. In disabled/rollback every
-# role resolves to the same shared FULLSEND_FORGE_TOKEN
-# (select-gitlab-role-token.sh), so re-selecting by an unverified
-# STAGE grants no extra privilege there. In migrating/enforced,
-# analyst/coder tokens are meaningfully more privileged, so STAGE
-# must be verified before the re-select is allowed to use it.
-GITLAB_ROLE_MODE=$(printf '%s' "${FULLSEND_GITLAB_ROLE_MIGRATION:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-case "${GITLAB_ROLE_MODE}" in
-  migrating|enforced) ROLE_AWARE=true ;;
-  *) ROLE_AWARE=false ;;
-esac
+# Gate mode — every mode is role-aware now: select-gitlab-role-token.sh
+# no longer has a shared-token path for disabled/rollback (it always
+# resolves the registered per-role secret, matching gitlabroles.Resolve
+# on the Go side — see internal/gitlabroles/gitlabroles.go). There is
+# no mode left where the STAGE-derived re-select below is safe to trust
+# without verification, so STAGE must always be cryptographically
+# verified before it is allowed to select a role-specific credential.
 
 # HMAC dispatch signature verification (#5572 mitigation #2) —
 # verifies the dispatch variables were signed by the poller using
@@ -161,17 +155,17 @@ esac
 # Only applies to API-triggered pipelines; parent_pipeline (MR
 # dispatch) variables are set by the trusted parent job and have no
 # HMAC to check — DISPATCH_VERIFIED stays false for that path, so
-# the job fails closed below in migrating/enforced mode (see that
-# gate further down) instead of continuing.
+# the job fails closed below in every gate mode (see that gate
+# further down) instead of continuing.
 #
 # IMPORTANT: FULLSEND_DISPATCH_SECRET MUST be configured as a
 # protected, masked CI/CD variable. Pipeline variables can be
 # overridden by API-triggered pipelines — a protected variable
 # prevents override by non-Maintainer callers, and masking
 # prevents exposure in job logs. `repos install` auto-provisions
-# this secret, so in migrating/enforced mode its absence now fails
-# closed instead of silently skipping verification — an unsigned
-# dispatch must never be trusted with a role-specific credential.
+# this secret, so its absence now fails closed in every gate mode
+# instead of silently skipping verification — an unsigned dispatch
+# must never be trusted with a role-specific credential.
 DISPATCH_VERIFIED=false
 if [ "${PIPELINE_SOURCE}" = "api" ]; then
   if [ -n "${FULLSEND_DISPATCH_SECRET:-}" ]; then
@@ -186,19 +180,16 @@ if [ "${PIPELINE_SOURCE}" = "api" ]; then
       echo "ERROR: HMAC verification failed — dispatch variables may be forged (fail-closed)" >&2
       exit 1
     fi
-  elif [ "${ROLE_AWARE}" = "true" ]; then
-    echo "ERROR: FULLSEND_DISPATCH_SECRET is not configured — required in migrating/enforced mode to authenticate STAGE before a role-specific credential can be selected (fail-closed)" >&2
-    exit 1
   else
-    echo "WARNING: FULLSEND_DISPATCH_SECRET not configured — dispatch variables unsigned (tolerated in disabled/rollback mode, where every role shares one token so an unverified STAGE grants no extra privilege)"
+    echo "ERROR: FULLSEND_DISPATCH_SECRET is not configured — required in every gate mode to authenticate STAGE before a role-specific credential can be selected (fail-closed)" >&2
+    exit 1
   fi
 fi
 
 # Fail closed for the rest of the job when STAGE has not actually
-# been authenticated and the gate mode makes the distinction matter
-# (migrating/enforced). Do not treat a skipped or impossible check
-# as a pass: a parent_pipeline dispatch (not HMAC-signed) or a
-# missing dispatch secret (already fail-closed above) both leave
+# been authenticated. Do not treat a skipped or impossible check as
+# a pass: a parent_pipeline dispatch (not HMAC-signed) or a missing
+# dispatch secret (already fail-closed above) both leave
 # DISPATCH_VERIFIED false.
 #
 # An earlier revision of this template continued the job on the
@@ -216,8 +207,8 @@ fi
 # STAGE-derived analyst/coder token anyway. Exiting here, before any
 # of that later code runs, is the only way to keep an unverified
 # STAGE from ever reaching a role-specific credential.
-if [ "${ROLE_AWARE}" = "true" ] && [ "${DISPATCH_VERIFIED}" != "true" ]; then
-  echo "ERROR: STAGE could not be cryptographically verified — refusing to continue in role-aware mode rather than risk a role-specific credential being used downstream" >&2
+if [ "${DISPATCH_VERIFIED}" != "true" ]; then
+  echo "ERROR: STAGE could not be cryptographically verified — refusing to continue rather than risk a role-specific credential being used downstream" >&2
   exit 1
 fi
 
@@ -225,10 +216,11 @@ fi
 # replacing the poller bootstrap identity used for the
 # pre-verification calls above. Reachable only when STAGE has
 # actually been authenticated (DISPATCH_VERIFIED, set only by a
-# successful HMAC check above) or when the gate mode makes the
-# distinction moot (disabled/rollback) — the fail-closed exit above
-# already handles every other case.
-if [ "${DISPATCH_VERIFIED}" = "true" ] || [ "${ROLE_AWARE}" = "false" ]; then
+# successful HMAC check above) — the fail-closed exit above already
+# handles every other case, so this condition is always true here;
+# it is kept explicit as a second, independent guard against a
+# role-specific credential ever being selected on an unverified STAGE.
+if [ "${DISPATCH_VERIFIED}" = "true" ]; then
   # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
   FULLSEND_JOB_KIND=agent
   FULLSEND_JOB_AGENT="${STAGE:-}"

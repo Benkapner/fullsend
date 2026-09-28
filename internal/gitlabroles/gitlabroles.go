@@ -228,6 +228,21 @@ type RoleReport struct {
 
 // Report is the observable migration/role status. Diagnostics never
 // include secret values.
+//
+// Ready is install/converge-state readiness, not a runtime-readiness
+// signal: for leftover ModeDisabled / ModeRollback it is
+// SharedPresent (the legacy shared-token install path is complete),
+// while runtime credential selection (Resolve / Select / SelectAgent)
+// always requires the registered per-role secret in every mode,
+// including those two, and never falls back to FULLSEND_FORGE_TOKEN.
+// A leftover disabled/rollback install can therefore report Ready
+// while `fullsend poll` / `fullsend run` still fail closed with
+// ErrUnconfigured because the role secret has not been provisioned
+// yet — see TestDiagnoseReadyDivergesFromResolveOnLeftoverModes. #7782
+// made runtime job routing role-credential-only in every mode but
+// intentionally left status/converge (this function) unchanged; do
+// not read Ready as a promise that runtime authentication will
+// succeed.
 type Report struct {
 	Mode          Mode
 	SharedPresent bool
@@ -383,6 +398,11 @@ func Resolve(req Request) (Source, error) {
 // configuration, and readiness. Missing role secrets are not drift
 // when the mode does not require them. Custom roles in the registry
 // are included; an empty registry reports built-ins only.
+//
+// See Report.Ready: this is install/converge-state readiness, not a
+// runtime-readiness signal. Resolve / Select / SelectAgent always
+// require the registered role secret, in every mode, regardless of
+// what Diagnose reports here.
 func Diagnose(mode Mode, present map[string]bool, reg Registry) Report {
 	reg = reg.effective()
 	rep := Report{

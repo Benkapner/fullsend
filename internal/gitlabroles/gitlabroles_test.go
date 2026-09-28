@@ -377,6 +377,44 @@ func TestDiagnoseMissingSharedDisabled(t *testing.T) {
 	assert.Contains(t, strings.Join(rep.Diagnostics, "\n"), "legacy path not ready")
 }
 
+// TestDiagnoseReadyDivergesFromResolveOnLeftoverModes documents a known,
+// intentional gap flagged in review on #7811: Diagnose.Ready is
+// install/converge-state readiness (see Report.Ready), while runtime
+// credential selection (Resolve/Select) always requires the registered
+// role secret in every mode, including leftover disabled and explicit
+// rollback, with no shared-token fallback (#7782). An install that only
+// has the legacy FULLSEND_FORGE_TOKEN provisioned — not yet migrated to
+// per-role secrets — reports Ready via Diagnose (a truthful statement
+// about install/converge state) while `fullsend poll`/`fullsend run`
+// fail closed with ErrUnconfigured on that same install. Do not "fix"
+// this by making the two agree without also updating repos
+// status/converge (#7501/#7524), which intentionally still branch on
+// the legacy shared-token path and are out of scope for #7782.
+func TestDiagnoseReadyDivergesFromResolveOnLeftoverModes(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []Mode{ModeDisabled, ModeRollback} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
+			present := map[string]bool{forge.SecretForgeToken: true}
+
+			rep := Diagnose(mode, present, Registry{})
+			assert.True(t, rep.Ready,
+				"Diagnose reports install/converge-state readiness from the shared token alone")
+
+			getenv := func(k string) string {
+				if k == forge.SecretForgeToken {
+					return "glpat-shared-secret"
+				}
+				return ""
+			}
+			_, err := Select(PollerJob(), getenv)
+			require.Error(t, err,
+				"Resolve/Select must still fail closed on the same install: no role secret, no shared-token fallback")
+			assert.ErrorIs(t, err, ErrUnconfigured)
+		})
+	}
+}
+
 func TestErrorNilAndUnwrap(t *testing.T) {
 	t.Parallel()
 	var e *Error

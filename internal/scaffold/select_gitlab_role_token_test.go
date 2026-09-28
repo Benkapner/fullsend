@@ -38,18 +38,26 @@ func sourceRoleTokenScript(t *testing.T, script string, env []string) (stdout st
 	return string(out), stderrBuf.String(), runErr
 }
 
-func TestSelectGitLabRoleToken_DisabledUsesShared(t *testing.T) {
+func TestSelectGitLabRoleToken_DisabledUsesRoleToken(t *testing.T) {
+	// Leftover disabled mode no longer falls back to the shared
+	// FULLSEND_FORGE_TOKEN — every mode requires the registered
+	// per-role secret, matching gitlabroles.Resolve on the Go side.
 	script := selectGitLabRoleTokenScript(t)
 	out, stderr, err := sourceRoleTokenScript(t, script, []string{
 		"FULLSEND_JOB_KIND=poller",
 		"FULLSEND_FORGE_TOKEN=shared-pat",
+		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
 	})
 	require.NoError(t, err, "stderr: %s", stderr)
-	assert.Contains(t, out, "TOKEN_NAME=FULLSEND_FORGE_TOKEN")
-	assert.Contains(t, out, "TOKEN=shared-pat")
+	assert.Contains(t, out, "TOKEN_NAME=FULLSEND_GITLAB_POLLER_TOKEN")
+	assert.Contains(t, out, "TOKEN=poller-pat")
+	assert.NotContains(t, out, "TOKEN=shared-pat")
 }
 
-func TestSelectGitLabRoleToken_RollbackUsesShared(t *testing.T) {
+func TestSelectGitLabRoleToken_RollbackUsesRoleToken(t *testing.T) {
+	// Explicit rollback no longer falls back to the shared
+	// FULLSEND_FORGE_TOKEN either — same fail-closed requirement as
+	// migrating/enforced.
 	script := selectGitLabRoleTokenScript(t)
 	out, stderr, err := sourceRoleTokenScript(t, script, []string{
 		"FULLSEND_JOB_KIND=agent",
@@ -59,8 +67,9 @@ func TestSelectGitLabRoleToken_RollbackUsesShared(t *testing.T) {
 		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
 	})
 	require.NoError(t, err, "stderr: %s", stderr)
-	assert.Contains(t, out, "TOKEN_NAME=FULLSEND_FORGE_TOKEN")
-	assert.Contains(t, out, "TOKEN=shared-pat")
+	assert.Contains(t, out, "TOKEN_NAME=FULLSEND_GITLAB_ANALYST_TOKEN")
+	assert.Contains(t, out, "TOKEN=analyst-pat")
+	assert.NotContains(t, out, "TOKEN=shared-pat")
 }
 
 func TestSelectGitLabRoleToken_EnforcedPoller(t *testing.T) {
@@ -131,13 +140,16 @@ func TestSelectGitLabRoleToken_MigratingMissingRoleSecretFailsClosed(t *testing.
 	assert.NotContains(t, stderr, "FULLSEND_FORGE_TOKEN is not set")
 }
 
-func TestSelectGitLabRoleToken_DisabledMissingSharedFails(t *testing.T) {
+func TestSelectGitLabRoleToken_DisabledMissingRoleFailsClosed(t *testing.T) {
+	// No shared-token fallback left in disabled mode: a missing role
+	// secret fails closed on the role secret name, not FULLSEND_FORGE_TOKEN.
 	script := selectGitLabRoleTokenScript(t)
 	_, stderr, err := sourceRoleTokenScript(t, script, []string{
 		"FULLSEND_JOB_KIND=poller",
 	})
 	require.Error(t, err)
-	assert.Contains(t, stderr, "FULLSEND_FORGE_TOKEN is not set")
+	assert.Contains(t, stderr, "FULLSEND_GITLAB_POLLER_TOKEN is not set")
+	assert.NotContains(t, stderr, "FULLSEND_FORGE_TOKEN is not set")
 }
 
 func TestSelectGitLabRoleToken_UnregisteredAgentFailsClosed(t *testing.T) {
@@ -247,6 +259,23 @@ func TestSelectGitLabRoleToken_MatchesGoRegistryResolution(t *testing.T) {
 			stage:     "fix",
 			mode:      "migrating",
 			expectErr: true,
+		},
+		{
+			// Regression for the Critical fail-open finding on #7811:
+			// leftover disabled must resolve the registered role secret,
+			// not the shared FULLSEND_FORGE_TOKEN, in both the Go
+			// resolver and this bash/python reimplementation.
+			name:    "disabled uses role token",
+			poller:  true,
+			mode:    "disabled",
+			secrets: map[string]string{"FULLSEND_GITLAB_POLLER_TOKEN": "poller-secret-value"},
+		},
+		{
+			// Same regression, explicit rollback.
+			name:    "rollback uses role token",
+			stage:   "review",
+			mode:    "rollback",
+			secrets: map[string]string{"FULLSEND_GITLAB_ANALYST_TOKEN": "analyst-secret-value"},
 		},
 	}
 

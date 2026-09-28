@@ -231,7 +231,7 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 
 | Variable | Description |
 |----------|-------------|
-| `FULLSEND_FORGE_TOKEN` | **Required for the generated scaffold in `disabled`/`rollback` mode; deleted once a repo cuts over to `enforced` mode.** Protected project or group access token; `repos install` provisions it automatically. The agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`, resolved by `.gitlab/ci/scripts/select-gitlab-role-token.sh`. In `migrating`/`enforced` mode it resolves the role token from the registered role credential and fails closed if that secret is missing; in `disabled`/`rollback` mode it exclusively uses this shared token, with no role-credential fallback. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md). |
+| `FULLSEND_FORGE_TOKEN` | **Not used by runtime credential selection in any gate mode, including leftover `disabled` and explicit `rollback`; deleted once a repo cuts over to `enforced` mode.** May still exist as install/uninstall state until then. Protected project or group access token; `repos install` provisions it automatically while it is still needed. The agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`, resolved by `.gitlab/ci/scripts/select-gitlab-role-token.sh`, which always resolves the registered role credential (Poller/Analyst/Coder, or a registered custom role) and fails closed if that secret is missing — there is no shared-token fallback in any gate mode. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md). |
 | `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. |
 | `CI_COMMIT_SHA` | Commit SHA shown in the status comment. |
 | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
@@ -242,14 +242,15 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 | `CI_SERVER_TLS_CA_FILE` | GitLab Runner predefined path to a job-local PEM CA bundle when `tls-ca-file` is set. Consumed by poll/agent jobs and the GitLab Go client. See [Private CA](#private-ca-self-hosted-gitlab). |
 
 For a generated scaffold, `repos install` provisions the protected
-`FULLSEND_FORGE_TOKEN` variable (requested as masked when GitLab accepts the
-value); the agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`,
-resolved by `select-gitlab-role-token.sh` from the registered role
-credential in `migrating`/`enforced` mode, failing closed if that secret is
-missing. In `disabled`/`rollback` mode it exclusively uses the shared
-`FULLSEND_FORGE_TOKEN` for status notifications, with no role-credential
-fallback. If wiring fullsend into GitLab CI manually, provision
-`FULLSEND_FORGE_TOKEN` as a masked and protected variable instead. See
+role-credential secrets (`FULLSEND_GITLAB_POLLER_TOKEN`,
+`FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, or a
+registered custom role's secret); the agent job exports `GITLAB_TOKEN`
+from `FULLSEND_JOB_TOKEN`, resolved by `select-gitlab-role-token.sh` from
+the registered role credential in every gate mode, including leftover
+`disabled` and explicit `rollback` — failing closed if that secret is
+missing. There is no shared-token fallback for status notifications in
+any gate mode. If wiring fullsend into GitLab CI manually, provision the
+matching role-credential secret instead. See
 [Configuring GitLab](configuring-gitlab.md#verifying-the-installation).
 
 ## Private CA (self-hosted GitLab)

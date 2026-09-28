@@ -282,15 +282,19 @@ pipeline-source/bot-identity check and HMAC verification pass. The
 template only re-resolves the credential for the job's actual stage —
 analyst stages use `FULLSEND_GITLAB_ANALYST_TOKEN`, coder stages use
 `FULLSEND_GITLAB_CODER_TOKEN` — once `DISPATCH_VERIFIED` is true: the
-`api`-sourced dispatch passed HMAC verification, or the gate mode is
-`disabled`/`rollback` (every role already shares one token, so an
-unverified STAGE grants no extra privilege there). In `migrating` or
-`enforced` mode, a missing `FULLSEND_DISPATCH_SECRET` now fails the job
-closed instead of silently skipping HMAC verification, and a
+`api`-sourced dispatch passed HMAC verification. This is required in
+every gate mode, including leftover `disabled` and explicit `rollback`:
+`select-gitlab-role-token.sh` has no shared-token path left in any
+mode (it mirrors `gitlabroles.Resolve` on the Go side), so a sibling
+analyst/coder secret is a real higher-privilege credential in
+`disabled`/`rollback` too, and an unverified STAGE must not be
+allowed to select it there either. A missing `FULLSEND_DISPATCH_SECRET`
+now fails the job closed in every gate mode instead of silently
+skipping HMAC verification, and a
 `parent_pipeline`-sourced dispatch (legacy child-pipeline installs;
 current installs only ever dispatch via `api`) has no HMAC to check, so
-`DISPATCH_VERIFIED` stays false. In `migrating`/`enforced` mode the job
-now fails closed at that point (`exit 1`) rather than continuing on the
+`DISPATCH_VERIFIED` stays false. The job
+now fails closed at that point (`exit 1`) in every gate mode, rather than continuing on the
 lower-privileged Poller credential. An earlier revision of this template
 continued the job on the Poller credential instead, but that was not
 sufficient: `fullsend run` resolves its own GitLab credential internally
@@ -319,9 +323,8 @@ running the fix stage. It cannot reuse the fix stage's own
 `FULLSEND_JOB_TOKEN` (Coder) or the discarded Poller `BOT_USER_ID` for
 that author match — neither identity is the note's author once
 analyst/coder resolve to distinct tokens. This lookup only runs once
-STAGE has already been authenticated (or the gate mode makes the
-distinction moot), since the job would otherwise already have exited
-above, so `run-agent-job.sh` temporarily re-sources
+STAGE has already been authenticated, in every gate mode, since the job
+would otherwise already have exited above, so `run-agent-job.sh` temporarily re-sources
 `select-gitlab-role-token.sh` with `FULLSEND_JOB_AGENT=review` to resolve
 the Analyst identity for that one lookup, then restores
 `FULLSEND_JOB_TOKEN` to the Coder credential before `GITLAB_TOKEN`,

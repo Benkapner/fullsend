@@ -354,22 +354,23 @@ func TestGitLabAgentTemplateStageReselectRequiresVerifiedDispatch(t *testing.T) 
 	assert.Greater(t, stageReselectIdx, reselectGateIdx,
 		"STAGE-derived reselect must come after the DISPATCH_VERIFIED gate")
 
-	// A missing FULLSEND_DISPATCH_SECRET in migrating/enforced mode must
-	// fail closed, not silently skip verification (the pre-fix behavior).
-	assert.Contains(t, s, "ROLE_AWARE")
-	assert.Contains(t, s, "FULLSEND_GITLAB_ROLE_MIGRATION")
+	// A missing FULLSEND_DISPATCH_SECRET must fail closed in every gate
+	// mode, not silently skip verification (the pre-fix behavior).
 	assert.Contains(t, s, "FULLSEND_DISPATCH_SECRET is not configured")
 	assert.NotContains(t, s, "verification is skipped (backward compat during migration)")
+	assert.NotContains(t, s, "ROLE_AWARE",
+		"credential selection is role-aware in every gate mode now; there is no mode-dependent flag left")
 
-	// An unverified STAGE in role-aware mode must abort the job outright
-	// (fail closed) rather than merely continuing on the poller bootstrap
-	// token — the CLI's own role selection (gitlabroles.SelectAgent) reads
-	// STAGE straight from the process environment and does not consult the
-	// shell-local DISPATCH_VERIFIED flag, so continuing on the poller
-	// credential at the shell level does not stop a later STAGE-derived
-	// re-select from happening anyway.
-	abortConditionIdx := strings.Index(s, `if [ "${ROLE_AWARE}" = "true" ] && [ "${DISPATCH_VERIFIED}" != "true" ]`)
-	require.NotEqual(t, -1, abortConditionIdx, "fail-closed abort must check both ROLE_AWARE and DISPATCH_VERIFIED")
+	// An unverified STAGE must abort the job outright (fail closed) in
+	// every gate mode, rather than merely continuing on the poller
+	// bootstrap token — the CLI's own role selection
+	// (gitlabroles.SelectAgent) reads STAGE straight from the process
+	// environment and does not consult the shell-local DISPATCH_VERIFIED
+	// flag, so continuing on the poller credential at the shell level
+	// does not stop a later STAGE-derived re-select from happening
+	// anyway.
+	abortConditionIdx := strings.Index(s, `if [ "${DISPATCH_VERIFIED}" != "true" ]`)
+	require.NotEqual(t, -1, abortConditionIdx, "fail-closed abort must check DISPATCH_VERIFIED unconditionally")
 	assert.Greater(t, abortConditionIdx, verifiedIdx,
 		"fail-closed abort must be checked after DISPATCH_VERIFIED has been computed")
 
@@ -666,9 +667,12 @@ func TestGitLabPollBlanksSiblingRoleSecrets(t *testing.T) {
 	assert.Less(t, selectIdx, unsetIdx, "sibling secrets must be blanked after role selection")
 	assert.Less(t, unsetIdx, pollIdx, "sibling secrets must be blanked before running fullsend poll")
 
-	// Only unset for migrating/enforced; disabled/rollback share one token
-	// across every role so there is nothing to blank.
-	assert.Contains(t, s, "migrating|enforced")
+	// Unconditional in every gate mode now: select-gitlab-role-token.sh
+	// no longer has a disabled/rollback shared-token path where every
+	// role resolves to the same value, so a sibling secret is a real
+	// higher-privileged credential in every mode.
+	assert.NotContains(t, s, "migrating|enforced",
+		"sibling-secret blanking must not be gated on gate mode")
 	// Covers the builtin roles, any custom registered role, and the
 	// shared fallback token — but never the credential this job selected.
 	assert.Contains(t, s, "FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)")

@@ -33,6 +33,7 @@ func TestRunPollJobScript_RejectsInvalidPollMode(t *testing.T) {
 		"HOME=" + t.TempDir(),
 		"CI_PROJECT_DIR=" + root,
 		"FULLSEND_FORGE_TOKEN=shared-pat",
+		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
 		"FULLSEND_POLL_MODE=bogus",
 		"CI_API_V4_URL=https://gitlab.example/api/v4",
 		"CI_PROJECT_ID=1",
