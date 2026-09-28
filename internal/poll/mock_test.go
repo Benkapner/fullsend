@@ -53,10 +53,22 @@ type mockClient struct {
 	// ForceCommitFileToBranch replaces the branch tree with a single file.
 	files          map[string]map[string][]byte
 	fileContentErr error
+	branchRefErr   error
 	forceCommitErr error
-	deleteRefErr   error
-	deletedRefs    []string
-	forceCommits   int
+	// forceCommitErrSeq is an error queue for CommitFileToBranch / ForceCommitFileToBranch.
+	// Each call shifts the first element; when empty, falls through to forceCommitErr.
+	forceCommitErrSeq []error
+	deleteRefErr      error
+	deletedRefs       []string
+	forceCommits      int
+	// branchGen is the CAS generation for each branch. GetBranchRef returns
+	// a SHA derived from it; CommitFileToBranch 409s when expectedSHA is
+	// stale relative to the current generation.
+	branchGen map[string]int
+	// conflictOnce, when set, simulates a concurrent writer: the document
+	// is installed as the new branch tip and the commit returns
+	// ErrNonFastForward once, then the field is cleared.
+	conflictOnce *persistedPollState
 
 	// pendingSign holds branch → unsigned poll state seeded via
 	// setPollState/setSlashState. It is signed lazily by
@@ -104,7 +116,12 @@ func newMockClient() *mockClient {
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
 		projectPaths:   make(map[int]string),
+		branchGen:      make(map[string]int),
 	}
+}
+
+func mockBranchSHA(branch string, gen int) string {
+	return fmt.Sprintf("sha-%s-%d", branch, gen)
 }
 
 var _ GitLabClient = (*mockClient)(nil)
@@ -151,13 +168,7 @@ const testDispatchSecret = "test-secret"
 func (m *mockClient) putBranchFile(branch, path string, data []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.files == nil {
-		m.files = make(map[string]map[string][]byte)
-	}
-	// Force-re-root: the branch tree is this one file.
-	copied := make([]byte, len(data))
-	copy(copied, data)
-	m.files[branch] = map[string][]byte{path: copied}
+	m.putBranchFileLocked(branch, path, data)
 }
 
 // setBranchState seeds a validly-signed document for branch, deferring
@@ -279,19 +290,99 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	return cp, nil
 }
 
-func (m *mockClient) ForceCommitFileToBranch(_ context.Context, _, _, branch, path, _ string, content []byte) error {
+func (m *mockClient) GetBranchRef(_ context.Context, _, _, branch string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.forceCommitErr != nil {
-		return m.forceCommitErr
+	if m.branchRefErr != nil {
+		return "", m.branchRefErr
 	}
+	_, hasFile := m.files[branch]
+	_, hasPending := m.pendingSign[branch]
+	if !hasFile && !hasPending {
+		return "", forge.ErrNotFound
+	}
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	return mockBranchSHA(branch, m.branchGen[branch]), nil
+}
+
+func (m *mockClient) consumeForceCommitErr() error {
+	if len(m.forceCommitErrSeq) > 0 {
+		e := m.forceCommitErrSeq[0]
+		m.forceCommitErrSeq = m.forceCommitErrSeq[1:]
+		return e
+	}
+	return m.forceCommitErr
+}
+
+func (m *mockClient) CommitFileToBranch(_ context.Context, owner, repo, branch, path, _ string, content []byte, expectedSHA string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.consumeForceCommitErr(); err != nil {
+		return err
+	}
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	if m.conflictOnce != nil {
+		s := *m.conflictOnce
+		m.conflictOnce = nil
+		domain := hmacDomainFor(branch, owner+"/"+repo)
+		sig, err := computeStateHMAC(testDispatchSecret, domain, s)
+		if err != nil {
+			return err
+		}
+		s.HMAC = sig
+		data, err := json.Marshal(s)
+		if err != nil {
+			return err
+		}
+		m.putBranchFileLocked(branch, path, data)
+		m.branchGen[branch]++
+		return fmt.Errorf("%w: concurrent update of %s", forge.ErrNonFastForward, branch)
+	}
+	_, hasFile := m.files[branch]
+	_, hasPending := m.pendingSign[branch]
+	if expectedSHA == "" {
+		if hasFile || hasPending {
+			return fmt.Errorf("%w: branch %s already exists", forge.ErrNonFastForward, branch)
+		}
+	} else {
+		current := mockBranchSHA(branch, m.branchGen[branch])
+		if !hasFile && !hasPending {
+			return forge.ErrNotFound
+		}
+		if current != expectedSHA {
+			return fmt.Errorf("%w: concurrent update of %s", forge.ErrNonFastForward, branch)
+		}
+	}
+	m.putBranchFileLocked(branch, path, content)
+	m.branchGen[branch]++
+	m.forceCommits++
+	return nil
+}
+
+func (m *mockClient) putBranchFileLocked(branch, path string, data []byte) {
 	if m.files == nil {
 		m.files = make(map[string]map[string][]byte)
 	}
-	copied := make([]byte, len(content))
-	copy(copied, content)
-	// Force-re-root: replace the branch tree with this one file.
+	copied := make([]byte, len(data))
+	copy(copied, data)
 	m.files[branch] = map[string][]byte{path: copied}
+}
+
+func (m *mockClient) ForceCommitFileToBranch(_ context.Context, _, _, branch, path, _ string, content []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.consumeForceCommitErr(); err != nil {
+		return err
+	}
+	m.putBranchFileLocked(branch, path, content)
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	m.branchGen[branch]++
 	m.forceCommits++
 	return nil
 }
@@ -314,6 +405,7 @@ func (m *mockClient) DeleteRef(_ context.Context, _, _, refPath string) error {
 	}
 	delete(m.files, branch)
 	delete(m.pendingSign, branch)
+	delete(m.branchGen, branch)
 	return nil
 }
 

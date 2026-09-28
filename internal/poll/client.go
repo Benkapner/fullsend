@@ -37,9 +37,20 @@ type GitLabClient interface {
 	// tag, or SHA). Returns forge.ErrNotFound if the file or ref does
 	// not exist. Used to load the HMAC-signed poll-state document.
 	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns forge.ErrNotFound if the branch does not exist. Used to
+	// pin the CAS parent SHA at poll-state load time.
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error)
+	// CommitFileToBranch commits a single file to branch without force.
+	// expectedSHA is the branch tip observed at load time and is sent as
+	// start_sha so a concurrent writer surfaces forge.ErrNonFastForward.
+	// An empty expectedSHA creates the branch via ForceCommitFileToBranch.
+	// The commit message is suffixed with [skip ci] when not already present.
+	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error
 	// ForceCommitFileToBranch force-updates branch to a single-file
 	// commit re-rooted on a fixed base SHA. The branch is created if
 	// it does not exist. History is pruned to base + 1 commit.
+	// Used for install-time seeding; runtime persist uses CommitFileToBranch.
 	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	// DeleteRef deletes a git ref (e.g., "heads/fullsend-poll-state-slash").
 	// Returns forge.ErrNotFound if the ref does not exist. Used to

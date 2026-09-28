@@ -1042,6 +1042,214 @@ func TestPersistCycleState_FailsClosedWhenSecretEmpty(t *testing.T) {
 	}
 }
 
+func TestPersistCycleState_UnionsConcurrentWriterDedupKeys(t *testing.T) {
+	mc := newMockClient()
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	ts := wm.Unix() + 10
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts, "writer-b": ts},
+	})
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		map[string]int64{"shared": ts, "writer-a": ts}, &wm, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.DispatchedKeysFull["writer-a"] != ts {
+		t.Errorf("writer-a missing: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["writer-b"] != ts {
+		t.Errorf("writer-b missing: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["shared"] != ts {
+		t.Errorf("shared missing: %v", got.DispatchedKeysFull)
+	}
+}
+
+func TestPersistCycleState_CASRetryMergesConcurrentKeys(t *testing.T) {
+	mc := newMockClient()
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	ts := wm.Unix() + 10
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts},
+	})
+	mc.conflictOnce = &persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts, "writer-b": ts},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		map[string]int64{"shared": ts, "writer-a": ts}, &wm, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.DispatchedKeysFull["writer-a"] != ts {
+		t.Errorf("writer-a missing after CAS retry: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["writer-b"] != ts {
+		t.Errorf("writer-b missing after CAS retry: %v", got.DispatchedKeysFull)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("successful commits = %d, want 1 (retry after one conflict)", mc.forceCommits)
+	}
+}
+
+func TestPersistCycleState_CASExhaustionFailsClosed(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"keep": 1},
+	})
+	for range maxPollStateCASAttempts {
+		mc.forceCommitErrSeq = append(mc.forceCommitErrSeq, fmt.Errorf("%w: conflict", forge.ErrNonFastForward))
+	}
+	p := newTestPoller(mc, Options{})
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		map[string]int64{"writer-a": wm.Unix() + 1}, &wm, nil, nil)
+	if err == nil {
+		t.Fatal("expected CAS exhaustion error, got nil")
+	}
+	if !errors.Is(err, errPollStateCASExhausted) {
+		t.Errorf("error = %v, want errPollStateCASExhausted", err)
+	}
+	if !forge.IsNonFastForward(err) {
+		t.Errorf("error = %v, want to wrap ErrNonFastForward", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected original poll state to remain")
+	}
+	if _, exists := got.DispatchedKeysFull["writer-a"]; exists {
+		t.Error("fail-closed persist must not land this writer's keys")
+	}
+	if got.DispatchedKeysFull["keep"] != 1 {
+		t.Errorf("original keys clobbered: %v", got.DispatchedKeysFull)
+	}
+	if mc.forceCommits != 0 {
+		t.Errorf("force commits = %d, want 0 on exhaustion", mc.forceCommits)
+	}
+}
+
+func TestPersistCycleState_ConcurrentWritersConvergeDedupKeys(t *testing.T) {
+	mc := newMockClient()
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	ts := wm.Unix() + 10
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts},
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		p := newTestPoller(mc, Options{})
+		if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+			map[string]int64{"shared": ts, "writer-a": ts}, &wm, nil, nil); err != nil {
+			t.Errorf("writer-a: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		p := newTestPoller(mc, Options{})
+		if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+			map[string]int64{"shared": ts, "writer-b": ts}, &wm, nil, nil); err != nil {
+			t.Errorf("writer-b: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state after concurrent writes")
+	}
+	if got.DispatchedKeysFull["writer-a"] != ts {
+		t.Errorf("writer-a missing: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["writer-b"] != ts {
+		t.Errorf("writer-b missing: %v", got.DispatchedKeysFull)
+	}
+	if got.HMAC == "" {
+		t.Error("converged document must still be signed")
+	}
+}
+
+func TestPersistCycleState_NonConflictErrorDoesNotRetry(t *testing.T) {
+	mc := newMockClient()
+	mc.forceCommitErr = fmt.Errorf("upload boom")
+	p := newTestPoller(mc, Options{})
+	wm := time.Now()
+	err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, &wm, nil, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if errors.Is(err, errPollStateCASExhausted) {
+		t.Errorf("non-conflict error should not be reported as CAS exhaustion: %v", err)
+	}
+}
+
+func TestPersistCycleState_GetBranchRefError(t *testing.T) {
+	mc := newMockClient()
+	mc.branchRefErr = fmt.Errorf("ref lookup failed")
+	p := newTestPoller(mc, Options{})
+	wm := time.Now()
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, &wm, nil, nil); err == nil {
+		t.Fatal("expected error, got nil")
+	} else if err.Error() != "ref lookup failed" {
+		t.Errorf("error = %v, want ref lookup failed", err)
+	}
+	if mc.forceCommits != 0 {
+		t.Errorf("force commits = %d, want 0", mc.forceCommits)
+	}
+}
+
+func TestPersistCycleState_CanceledContext(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	wm := time.Now()
+	err := p.persistCycleState(ctx, "testgroup", "testrepo", nil, &wm, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestUnionDispatchedKeys_MaxTimestampWins(t *testing.T) {
+	state := persistedPollState{
+		DispatchedKeysFull: map[string]int64{"a": 10, "b": 20},
+	}
+	wm := time.Unix(5, 0)
+	unionDispatchedKeys(&state, false, map[string]int64{"b": 15, "c": 30}, wm)
+	if state.DispatchedKeysFull["a"] != 10 {
+		t.Errorf("a = %d, want 10", state.DispatchedKeysFull["a"])
+	}
+	if state.DispatchedKeysFull["b"] != 20 {
+		t.Errorf("b = %d, want 20 (loaded timestamp is newer)", state.DispatchedKeysFull["b"])
+	}
+	if state.DispatchedKeysFull["c"] != 30 {
+		t.Errorf("c = %d, want 30", state.DispatchedKeysFull["c"])
+	}
+}
+
+func TestUnionDispatchedKeys_SlashMode(t *testing.T) {
+	state := persistedPollState{
+		DispatchedKeysFast: map[string]int64{"keep": 10},
+		DispatchedKeysFull: map[string]int64{"full": 99},
+	}
+	unionDispatchedKeys(&state, true, map[string]int64{"slash": 20}, time.Unix(5, 0))
+	if state.DispatchedKeysFast["keep"] != 10 || state.DispatchedKeysFast["slash"] != 20 {
+		t.Errorf("fast keys = %v", state.DispatchedKeysFast)
+	}
+	if state.DispatchedKeysFull["full"] != 99 {
+		t.Errorf("full keys clobbered: %v", state.DispatchedKeysFull)
+	}
+}
+
 // --- detectNewLabels tests ---
 
 func TestDetectNewLabels_NewLabelsDetected(t *testing.T) {

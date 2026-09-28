@@ -1896,6 +1896,137 @@ func TestForceCommitFileToBranch_EmptyCommitID(t *testing.T) {
 	assert.ErrorIs(t, err, forge.ErrNotFound)
 }
 
+func TestCommitFileToBranch_EmptyExpectedSHAForceCreates(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	var commitPayload map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "root-sha"}})
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(body, &commitPayload))
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": "new-commit"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":1}`), "")
+	require.NoError(t, err)
+	assert.Equal(t, true, commitPayload["force"])
+	assert.Equal(t, "root-sha", commitPayload["start_sha"])
+	assert.Equal(t, "persist poll state [skip ci]", commitPayload["commit_message"])
+}
+
+func TestCommitFileToBranch_PinsStartSHAWithoutForce(t *testing.T) {
+	client, mux := setupTest(t)
+
+	var treeRef string
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		treeRef = r.URL.Query().Get("ref")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "oldblob", "path": "state.json", "type": "blob", "mode": "100644"},
+		})
+	})
+
+	var commitPayload map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		body, _ := io.ReadAll(r.Body)
+		require.NoError(t, json.Unmarshal(body, &commitPayload))
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"id": "new-commit"})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist poll state", []byte(`{"n":2}`), "loaded-sha")
+	require.NoError(t, err)
+	assert.Equal(t, "loaded-sha", treeRef, "actions must apply to the CAS parent tree")
+	assert.Equal(t, "state-branch", commitPayload["branch"])
+	assert.Equal(t, "loaded-sha", commitPayload["start_sha"])
+	_, hasForce := commitPayload["force"]
+	assert.False(t, hasForce, "CAS persist must not set force")
+	assert.Equal(t, "persist poll state [skip ci]", commitPayload["commit_message"])
+}
+
+func TestCommitFileToBranch_NonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Could not update refs/heads/state-branch. Please refresh and try again.",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "stale-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
+func TestCommitFileToBranch_AlreadyExistsIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "A branch named 'state-branch' already exists",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
+func TestCommitFileToBranch_CommitError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"message": "start_sha is invalid"})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "commit state.json to state-branch")
+	assert.False(t, forge.IsNonFastForward(err))
+}
+
+func TestCommitFileToBranch_RequiredArgs(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	err := client.CommitFileToBranch(ctx, "owner", "repo", "", "f", "m", []byte("x"), "sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch and path are required")
+
+	err = client.CommitFileToBranch(ctx, "owner", "repo", "b", "", "m", []byte("x"), "sha")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch and path are required")
+}
+
 func TestUpdateIssueComment_FoundInClosedIssues(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

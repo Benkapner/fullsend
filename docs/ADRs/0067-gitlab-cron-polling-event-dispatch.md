@@ -356,12 +356,14 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > commit. Two files on one branch would lose the sibling file on every
 > force-re-root.
 >
-> **Force-re-root pruning.** Every save is a single
+> **Force-re-root pruning.** Install-time seeding still uses
 > `ForceCommitFileToBranch` (`POST /projects/:id/repository/commits`
-> with `force: true` and `start_sha` = the repository's root commit).
-> The branch is always root + 1 commit; prior state commits become
-> unreachable. The commit message is suffixed `[skip ci]`. Force +
-> start point also creates the branch on first write.
+> with `force: true` and `start_sha` = the repository's root commit)
+> so a missing branch is created at root + 1 commit. Runtime persist
+> is conflict-detecting ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)): the write is parented at the loaded
+> tip without `force`, and a 409 retries a merge of this writer's deltas
+> rather than last-writer-wins overwrite. The commit message is suffixed
+> `[skip ci]`.
 >
 > **HMAC.** Each document is HMAC-SHA256-signed with
 > `FULLSEND_DISPATCH_SECRET` (already provisioned for dispatch
@@ -663,7 +665,8 @@ injection > insider > drift > supply chain):
 > |---|---|
 > | Developer forges poll state | HMAC-SHA256 (`FULLSEND_DISPATCH_SECRET`) with per-branch and per-project domain separation. Secret unset → refuse load/write. Bad/absent signature → discard the branch and fail that cycle. |
 > | Missing poll-state branch | Not tampering: fresh baseline (watermark ~1h ago); next save recreates the branch. One-time re-scan / at-least-once re-dispatch, not a stall. |
-> | Unbounded history on state branches | Force-re-root every save on the repository's root commit (`force: true` + `start_sha`); branch stays at base + 1 commit. |
+> | Unbounded history on state branches | Install-time seed force-re-roots on the repository's root commit (`force: true` + `start_sha`). Runtime persist is CAS ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)) and no longer force-re-roots every save. |
+> | Concurrent poller + webhook writers | Conflict-detecting persist ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)): 409 / non-fast-forward reloads and unions dispatched keys; exhaustion fails closed. |
 > | `CI_DEBUG_TRACE` / protected-branch exposure of the bot PAT | Unchanged: `FULLSEND_FORGE_TOKEN` and `FULLSEND_DISPATCH_SECRET` remain protected CI/CD variables. |
 
 ### Forge abstraction
@@ -684,6 +687,11 @@ injection > insider > drift > supply chain):
   > `UpdateCIVariable`. `UpdateCIVariable` has no production callers;
   > it remains on `forge.Client` only for non-credential CI/CD-variable
   > operations, should any be added.
+  >
+  > **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):** Runtime persist is compare-and-swap
+  > (`CommitFileToBranch` parented at the loaded tip). `ForceCommitFileToBranch`
+  > remains the install-time seed primitive. Concurrent poller and webhook
+  > writers retry-merge dispatched keys on 409 and fail closed on exhaustion.
 
 A new `ErrNotSupported` sentinel (complementing the existing forge
 sentinel errors) allows forge
