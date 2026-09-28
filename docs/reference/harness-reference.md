@@ -245,7 +245,7 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
 
-**`validation_loop.preflight_check` is a command, not a script resource** — The runner executes it verbatim with `sh -c` on the host; it does not fetch or stage a file named by the command.
+**`validation_loop.preflight_check` is a command, not a script resource** — The runner expands `${VAR}` references from its permitted host environment, then passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. Do not interpolate untrusted values, even within shell quotes.
 
 ## See also
 

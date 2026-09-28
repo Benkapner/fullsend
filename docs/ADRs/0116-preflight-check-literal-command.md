@@ -43,9 +43,9 @@ This ADR makes the semantics explicit and machine-checked.
 
 ## Decision
 
-1. **`preflight_check` is a literal command.** It is executed via `sh -c` without setting a working directory, is not a script path, and is not resource-resolved.
+1. **`preflight_check` is a literal command, not a resource path.** It is executed via `sh -c` without setting a working directory and is not resource-resolved. The existing nested check expands `${VAR}` references from the permitted host environment before shell parsing; the top-level check should retain these semantics when implemented. Authors must not interpolate untrusted values, even inside shell quotes.
 
-2. **Advise on bare path-like values at load.** Extend `Harness.Lint()` (per [ADR 0115](0115-harness-schema-versioning-and-field-types.md)) to flag `preflight_check` values matching `^[./]?[\w./-]+\.(sh|py|rb|js)$` at SeverityError. This is a non-fatal authoring diagnostic, not a load or execution prohibition. The regex is not a security or sanitization control: it misses a `.bash` extension, `sh scripts/foo.sh`, and script names with trailing arguments, and does **not** constrain shell metacharacters in a value executed verbatim via `sh -c`.
+2. **Advise on bare path-like values at load.** Extend `Harness.Lint()` (per [ADR 0115](0115-harness-schema-versioning-and-field-types.md)) to flag `preflight_check` values matching `^[./]?[\w./-]+\.(sh|py|rb|js)$` at SeverityError. This is a non-fatal authoring diagnostic, not a load or execution prohibition. The regex is not a security or sanitization control: it misses a `.bash` extension, `sh scripts/foo.sh`, and script names with trailing arguments, and does **not** constrain shell metacharacters in a value passed to `sh -c` after expansion.
 
 3. **Resource-resolved preflight is future work.** A script-based variant (e.g. `preflight_script`) is explicitly out of scope; if pursued, it must follow `pre_script` delivery semantics under [ADR 0038](0038-universal-harness-access.md).
 

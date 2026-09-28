@@ -89,8 +89,9 @@ references are scalar values, not shell commands.
 
 For local harnesses, relative runtime paths resolve from the `.fullsend`
 configuration root (the parent of `harness/`), **not** from the YAML file's
-directory. The same rule applies to local resource references; URLs use the
-allowlisted, pinned resource-fetch pipeline instead. For URL `base:` layers,
+directory. The same rule applies to local resource references except a local
+`base:`, which resolves relative to the child harness YAML's directory. URLs use
+the allowlisted, pinned resource-fetch pipeline instead. For URL `base:` layers,
 relative `pre_script`, `post_script`, `validation_loop.script`/`schema`,
 `agent`, `policy`, and skill resources are fetched from the base repository
 and rewritten to cache paths. `agent_input` inherited from a URL base is
@@ -107,14 +108,15 @@ a single-key map of that source to file overrides; a `plugins[]` entry can be
 a path string or a `{path, env, pi}` map. Scalar security leaf values retain
 their own validation and defaults; this type table does not override them.
 
-`schema_version` (absent = `1`) declares this contract; an incompatible
-field-type change requires a version bump and an update to this table in the
-same change. Backward-compatible field additions do not require a bump;
-[ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md) leaves
-other breaking schema changes for a separate versioning policy. Version-aware
-loaders reject malformed or unsupported versions in each raw composition layer
-before merging; older pinned consumers must be upgraded before harness content
-using a new version is published to them.
+The planned `schema_version` field (absent = `1` once implemented) will declare
+this contract; an incompatible field-type change will require a version bump
+and an update to this table in the same change. Backward-compatible field
+additions do not require a bump; [ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md)
+leaves other breaking schema changes for a separate versioning policy. Once
+version-aware loaders are implemented, they will reject malformed or
+unsupported versions in each raw composition layer before merging; older
+pinned consumers must be upgraded before harness content using a new version
+is published to them.
 
 ## Merge and inheritance rules
 

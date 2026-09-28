@@ -47,7 +47,7 @@ Introduce a top-level `preflight_check` field on the harness that runs once, bef
 
 3. **Execution order and migration.** The top-level check runs before `pre_script` ([ADR 0072](0072-pre-script-output-protocol.md)) and before sandbox creation. A nonzero exit or timeout reports the failed preflight check and stops the run before `pre_script`, sandbox creation, or any nested check. Implementation tests must verify that ordering and the failure path with sentinel actions. Deprecate `validation_loop.preflight_check` in favor of the top-level field once that replacement is implemented. During migration, existing nested checks continue to run after the top-level check (if present), so harnesses are not broken before they can move their probe. Emit a deprecation warning only once the replacement is usable; removal requires a separately decided compatibility/version gate ([ADR 0115](0115-harness-schema-versioning-and-field-types.md)).
 
-4. **Composition.** The field follows the scalar merge rule from [ADR 0045](0045-forge-portable-harness-schema.md): a child harness overrides the inherited value.
+4. **Composition.** The field follows the scalar merge rule from [ADR 0045](0045-forge-portable-harness-schema.md): a child harness overrides the inherited value. An overriding child check must include the dependencies of any inherited `pre_script`, `post_script`, and validation script still present in the composed harness; it does not append to the base check. Implementation tests must cover a child override with an inherited script dependency.
 
 ## Consequences
 

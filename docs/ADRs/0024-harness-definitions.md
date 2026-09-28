@@ -777,8 +777,8 @@ intentionally deferred to keep scope manageable:
   renamed or restructured). The team agreed this is important but not
   blocking — failed validation can surface schema drift without a version
   field. Decided in [ADR 0115](0115-harness-schema-versioning-and-field-types.md):
-  a `schema_version` field (absent = `1`) with field-level semantic types,
-  enforced by `Harness.Lint()`.
+  a planned `schema_version` field (absent = `1`) with field-level semantic
+  types. Type-violation checks in `Harness.Lint()` are not yet implemented.
 - **Protected vs. freely overridable fields
   ([#236](https://github.com/fullsend-ai/fullsend/issues/236)).** At each
   inheritance layer (fullsend defaults → org `.fullsend` → per-repo), which
