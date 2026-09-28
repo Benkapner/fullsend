@@ -685,8 +685,9 @@ type Client interface {
 	// each call leaves the branch at base + 1 commit. The commit message
 	// is suffixed with [skip ci] if not already present.
 	//
-	// This is used for GitLab poller state persistence on Developer-writable
-	// unprotected branches. GitHub returns ErrNotSupported.
+	// This is used for GitLab poll-state branch seeding on Developer-writable
+	// unprotected branches. Runtime persist uses a conflict-detecting commit
+	// (poll.GitLabClient.CommitFileToBranch). GitHub returns ErrNotSupported.
 	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 
 	// Ref operations

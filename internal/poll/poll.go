@@ -199,7 +199,13 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 
 		if anyDispatched {
-			delete(failedKeys, eventKey)
+			// Tombstone (present, 0), not delete: unionFailedKeys treats
+			// a 0-count entry as this writer's explicit deletion, which
+			// survives the CAS merge even if the freshly reloaded
+			// document still carries a stale pre-cycle count for this
+			// key. A plain delete here would let that merge resurrect
+			// it (see unionFailedKeys in state.go).
+			failedKeys[eventKey] = 0
 		}
 
 		if anyDispatched && event.NoteID != 0 && strings.HasPrefix(strings.TrimSpace(event.NoteBody), "/fs-") {

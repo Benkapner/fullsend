@@ -845,6 +845,46 @@ type commitOptions struct {
 	startSHA string
 }
 
+// CommitFileToBranch commits a single file to branch without force-re-root.
+// expectedSHA is the branch tip observed at load time and is sent as
+// start_sha so a concurrent writer surfaces forge.ErrNonFastForward instead
+// of last-writer-wins. An empty expectedSHA means no branch was observed at
+// load time (first write, or the branch was missing): the commit is still
+// parented at the repository root via start_sha, but force is left unset so
+// GitLab creates the branch rather than force-resetting it. If a concurrent
+// writer created the branch first, GitLab reports it as already-exists,
+// which is mapped to forge.ErrNonFastForward below so persistWithCAS reloads
+// the new tip and retries instead of overwriting it. The commit message is
+// suffixed with [skip ci] when not already present.
+func (c *LiveClient) CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error {
+	if branch == "" || path == "" {
+		return fmt.Errorf("commit file: branch and path are required")
+	}
+	startSHA := expectedSHA
+	if startSHA == "" {
+		root, err := c.resolveRootCommitSHA(ctx, owner, repo)
+		if err != nil {
+			return fmt.Errorf("resolve create base: %w", err)
+		}
+		startSHA = root
+	}
+	_, err := c.commitFilesImpl(ctx, owner, repo, branch, withSkipCI(message), []forge.TreeFile{
+		{Path: path, Content: content, Mode: "100644"},
+	}, commitOptions{startSHA: startSHA})
+	if err != nil {
+		// A same-named branch created between load and commit (including a
+		// concurrent first writer racing branch creation from an empty
+		// expectedSHA) surfaces as already-exists; treat it as a CAS
+		// conflict so persistWithCAS reloads the new tip, unions dispatched
+		// keys, and retries.
+		if forge.IsAlreadyExists(err) {
+			return fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
+		}
+		return fmt.Errorf("commit %s to %s: %w", path, branch, err)
+	}
+	return nil
+}
+
 // ForceCommitFileToBranch force-updates branch to a single-file commit
 // re-rooted on the repository's root commit. The branch is created if it
 // does not exist. Each call leaves the branch at base+1 commit (prior
@@ -947,6 +987,8 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 // When opts.force is set with opts.startSHA, the commit is re-rooted on
 // that SHA and the target branch is force-updated (created if absent).
 // Actions are applied to the start SHA's tree, not the target branch.
+// When opts.startSHA is set without force, the commit is parented at that
+// SHA (optimistic concurrency): a concurrent tip update surfaces 409.
 func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile, opts commitOptions) (bool, error) {
 	var existing map[string]treeEntry
 	if opts.force && opts.startSHA != "" {
@@ -958,8 +1000,12 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 		// from start_sha.
 		existing = map[string]treeEntry{}
 	} else {
+		treeRef := branch
+		if opts.startSHA != "" {
+			treeRef = opts.startSHA
+		}
 		var err error
-		existing, err = c.getTreeMap(ctx, owner, repo, branch)
+		existing, err = c.getTreeMap(ctx, owner, repo, treeRef)
 		if err != nil {
 			return false, fmt.Errorf("get tree: %w", err)
 		}
@@ -1015,6 +1061,27 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 	}
 
 	if len(actions) == 0 {
+		// A no-op diff normally means "nothing to do." But when this is a
+		// CAS write (opts.startSHA set, opts.force unset), never POSTing
+		// means GitLab's server-side fast-forward check — which only runs
+		// on an actual commit POST — never fires for this attempt. If
+		// opts.startSHA is stale (branch advanced past it) but the merged
+		// payload happens to byte-for-byte match what's already at the
+		// live tip, this would otherwise report a false CAS success.
+		// Re-check the live branch tip explicitly so a stale start_sha
+		// still surfaces as ErrNonFastForward.
+		if opts.startSHA != "" && !opts.force {
+			tip, err := c.GetBranchRef(ctx, owner, repo, branch)
+			if err != nil {
+				if forge.IsNotFound(err) {
+					return false, fmt.Errorf("%w: branch %s no longer exists", forge.ErrNonFastForward, branch)
+				}
+				return false, fmt.Errorf("get branch ref: %w", err)
+			}
+			if tip != opts.startSHA {
+				return false, fmt.Errorf("%w: branch %s advanced past start_sha %s", forge.ErrNonFastForward, branch, opts.startSHA)
+			}
+		}
 		return false, nil
 	}
 

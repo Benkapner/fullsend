@@ -276,6 +276,36 @@ This matches [ADR 0098](0098-entity-first-harness-evaluation.md) /
 the webhook is a low-latency **candidate**; each run reconciles current
 entity state; the poller is the scheduled backstop.
 
+> **Update (#7768):** The concurrency-safe persist above landed as a
+> compare-and-swap (CAS) write: `CommitFileToBranch` parents the commit at
+> the branch tip observed by a fresh `GetBranchRef`, and a 409 /
+> non-fast-forward reloads the document, re-applies this writer's
+> deltas (unioned with whatever the reload picked up), and retries up to
+> a bounded attempt count, failing closed on exhaustion rather than
+> overwriting a concurrent writer's keys. Install-time seeding is
+> unchanged and still force-re-roots via `ForceCommitFileToBranch`.
+>
+> **Accepted residual risk.** Runtime persist no longer force-re-roots on
+> every save (see [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md)'s
+> threat-model table), so historical HMAC-signed `state.json` commits now
+> remain reachable via branch history instead of being pruned each cycle.
+> `computeStateHMAC` signs only the per-branch/per-project domain prefix
+> plus the canonical JSON document — it has no nonce, generation counter,
+> or commit-SHA binding a signature to a point in time — so a Developer
+> with push access to the unprotected poll-state branch can recommit, or
+> reset the branch tip to, an older still-validly-signed document without
+> knowing `FULLSEND_DISPATCH_SECRET`; the poller's load path accepts it.
+> Effect: watermark rollback and resurrection of already-pruned dispatched
+> keys, bounded only by how far branch history now extends, which can
+> cause duplicate dispatch. This is accepted as a known gap rather than a
+> blocking one: it requires Developer-level push access, which is already
+> the trust boundary the HMAC mitigates for forgery (as opposed to
+> replay of a document that was validly signed at an earlier time).
+> Closing it requires either binding freshness into the signed document
+> (e.g. a monotonic generation/sequence number the loader rejects on
+> regression) or scheduled compaction/GC of the poll-state branches;
+> neither is implemented yet.
+
 ### CI scaffold changes
 
 A `trigger`-sourced pipeline does not run under the current GitLab CI

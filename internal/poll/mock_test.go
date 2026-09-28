@@ -51,12 +51,28 @@ type mockClient struct {
 
 	// files is per-branch file content: branch → path → bytes.
 	// ForceCommitFileToBranch replaces the branch tree with a single file.
-	files          map[string]map[string][]byte
-	fileContentErr error
-	forceCommitErr error
-	deleteRefErr   error
-	deletedRefs    []string
-	forceCommits   int
+	files map[string]map[string][]byte
+	// fileContentRefs records every ref GetFileContentAtRef was queried
+	// with, in order, so tests can assert persistWithCAS pins its content
+	// read to the exact SHA a prior GetBranchRef call returned.
+	fileContentRefs []string
+	fileContentErr  error
+	branchRefErr    error
+	forceCommitErr  error
+	// forceCommitErrSeq is an error queue for CommitFileToBranch / ForceCommitFileToBranch.
+	// Each call shifts the first element; when empty, falls through to forceCommitErr.
+	forceCommitErrSeq []error
+	deleteRefErr      error
+	deletedRefs       []string
+	forceCommits      int
+	// branchGen is the CAS generation for each branch. GetBranchRef returns
+	// a SHA derived from it; CommitFileToBranch 409s when expectedSHA is
+	// stale relative to the current generation.
+	branchGen map[string]int
+	// conflictOnce, when set, simulates a concurrent writer: the document
+	// is installed as the new branch tip and the commit returns
+	// ErrNonFastForward once, then the field is cleared.
+	conflictOnce *persistedPollState
 
 	// pendingSign holds branch → unsigned poll state seeded via
 	// setPollState/setSlashState. It is signed lazily by
@@ -104,7 +120,30 @@ func newMockClient() *mockClient {
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
 		projectPaths:   make(map[int]string),
+		branchGen:      make(map[string]int),
 	}
+}
+
+func mockBranchSHA(branch string, gen int) string {
+	return fmt.Sprintf("sha-%s-%d", branch, gen)
+}
+
+// mockResolveRef maps a mockBranchSHA-formatted ref back to the branch it
+// names, so GetFileContentAtRef can serve a persistWithCAS-style read
+// pinned to the SHA a prior GetBranchRef call returned. The mock does not
+// keep per-commit historical snapshots; it resolves a SHA ref to that
+// branch's current content, which is sufficient for these tests since
+// nothing else writes to a branch between a GetBranchRef/
+// GetFileContentAtRef pair in a single persistWithCAS attempt. A ref that
+// isn't a recognized mockBranchSHA (e.g. a literal branch name) is
+// returned unchanged.
+func mockResolveRef(ref string) string {
+	for _, b := range []string{PollStateBranchSlash, PollStateBranchEvents} {
+		if strings.HasPrefix(ref, "sha-"+b+"-") {
+			return b
+		}
+	}
+	return ref
 }
 
 var _ GitLabClient = (*mockClient)(nil)
@@ -151,13 +190,7 @@ const testDispatchSecret = "test-secret"
 func (m *mockClient) putBranchFile(branch, path string, data []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.files == nil {
-		m.files = make(map[string]map[string][]byte)
-	}
-	// Force-re-root: the branch tree is this one file.
-	copied := make([]byte, len(data))
-	copy(copied, data)
-	m.files[branch] = map[string][]byte{path: copied}
+	m.putBranchFileLocked(branch, path, data)
 }
 
 // setBranchState seeds a validly-signed document for branch, deferring
@@ -245,18 +278,23 @@ func (m *mockClient) getSlashState() (persistedPollState, bool) {
 func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, ref string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.fileContentRefs = append(m.fileContentRefs, ref)
 	if m.fileContentErr != nil {
 		return nil, m.fileContentErr
 	}
+	// persistWithCAS pins its read to the SHA a prior GetBranchRef call
+	// returned rather than a branch name; resolve it back to the branch
+	// so the lookups below (keyed by branch name) still find it.
+	branch := mockResolveRef(ref)
 	// Seeded-valid documents (setPollState/setSlashState) are signed
 	// here, using the owner/repo the caller queries with, rather than
 	// at seed time: the real HMAC domain is bound to the project path,
-	// which varies across tests. A real prior write (files[ref]) always
+	// which varies across tests. A real prior write (files[branch]) always
 	// takes precedence over a stale seed.
 	if path == PollStateFileName {
-		if files, ok := m.files[ref]; !ok || files[path] == nil {
-			if s, ok := m.pendingSign[ref]; ok {
-				domain := hmacDomainFor(ref, owner+"/"+repo)
+		if files, ok := m.files[branch]; !ok || files[path] == nil {
+			if s, ok := m.pendingSign[branch]; ok {
+				domain := hmacDomainFor(branch, owner+"/"+repo)
 				sig, err := computeStateHMAC(testDispatchSecret, domain, s)
 				if err != nil {
 					return nil, err
@@ -266,7 +304,7 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 			}
 		}
 	}
-	files, ok := m.files[ref]
+	files, ok := m.files[branch]
 	if !ok {
 		return nil, forge.ErrNotFound
 	}
@@ -279,19 +317,99 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	return cp, nil
 }
 
-func (m *mockClient) ForceCommitFileToBranch(_ context.Context, _, _, branch, path, _ string, content []byte) error {
+func (m *mockClient) GetBranchRef(_ context.Context, _, _, branch string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.forceCommitErr != nil {
-		return m.forceCommitErr
+	if m.branchRefErr != nil {
+		return "", m.branchRefErr
 	}
+	_, hasFile := m.files[branch]
+	_, hasPending := m.pendingSign[branch]
+	if !hasFile && !hasPending {
+		return "", forge.ErrNotFound
+	}
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	return mockBranchSHA(branch, m.branchGen[branch]), nil
+}
+
+func (m *mockClient) consumeForceCommitErr() error {
+	if len(m.forceCommitErrSeq) > 0 {
+		e := m.forceCommitErrSeq[0]
+		m.forceCommitErrSeq = m.forceCommitErrSeq[1:]
+		return e
+	}
+	return m.forceCommitErr
+}
+
+func (m *mockClient) CommitFileToBranch(_ context.Context, owner, repo, branch, path, _ string, content []byte, expectedSHA string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.consumeForceCommitErr(); err != nil {
+		return err
+	}
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	if m.conflictOnce != nil {
+		s := *m.conflictOnce
+		m.conflictOnce = nil
+		domain := hmacDomainFor(branch, owner+"/"+repo)
+		sig, err := computeStateHMAC(testDispatchSecret, domain, s)
+		if err != nil {
+			return err
+		}
+		s.HMAC = sig
+		data, err := json.Marshal(s)
+		if err != nil {
+			return err
+		}
+		m.putBranchFileLocked(branch, path, data)
+		m.branchGen[branch]++
+		return fmt.Errorf("%w: concurrent update of %s", forge.ErrNonFastForward, branch)
+	}
+	_, hasFile := m.files[branch]
+	_, hasPending := m.pendingSign[branch]
+	if expectedSHA == "" {
+		if hasFile || hasPending {
+			return fmt.Errorf("%w: branch %s already exists", forge.ErrNonFastForward, branch)
+		}
+	} else {
+		current := mockBranchSHA(branch, m.branchGen[branch])
+		if !hasFile && !hasPending {
+			return forge.ErrNotFound
+		}
+		if current != expectedSHA {
+			return fmt.Errorf("%w: concurrent update of %s", forge.ErrNonFastForward, branch)
+		}
+	}
+	m.putBranchFileLocked(branch, path, content)
+	m.branchGen[branch]++
+	m.forceCommits++
+	return nil
+}
+
+func (m *mockClient) putBranchFileLocked(branch, path string, data []byte) {
 	if m.files == nil {
 		m.files = make(map[string]map[string][]byte)
 	}
-	copied := make([]byte, len(content))
-	copy(copied, content)
-	// Force-re-root: replace the branch tree with this one file.
+	copied := make([]byte, len(data))
+	copy(copied, data)
 	m.files[branch] = map[string][]byte{path: copied}
+}
+
+func (m *mockClient) ForceCommitFileToBranch(_ context.Context, _, _, branch, path, _ string, content []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.consumeForceCommitErr(); err != nil {
+		return err
+	}
+	m.putBranchFileLocked(branch, path, content)
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	m.branchGen[branch]++
 	m.forceCommits++
 	return nil
 }
@@ -314,6 +432,7 @@ func (m *mockClient) DeleteRef(_ context.Context, _, _, refPath string) error {
 	}
 	delete(m.files, branch)
 	delete(m.pendingSign, branch)
+	delete(m.branchGen, branch)
 	return nil
 }
 

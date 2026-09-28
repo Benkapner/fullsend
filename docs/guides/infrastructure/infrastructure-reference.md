@@ -378,9 +378,15 @@ branches via `DeleteRef` (a missing branch is ignored).
 
 Each poll cycle performs a single save of that mode's `state.json`
 (dispatched keys, failed-key retry counts, watermark, and label state
-together). Every save force-re-roots the mode's branch on the
-repository's root commit (`force: true` + `start_sha`), so the branch
-stays at base + 1 commit and history never grows. The poller **fails closed** when
+together). Runtime persist is conflict-detecting (compare-and-swap):
+the write is parented at the branch tip observed at load (`start_sha`),
+and a 409 / non-fast-forward triggers reload → re-apply this writer's
+dedup/watermark deltas → recommit. Retries are bounded; exhaustion fails
+closed rather than last-writer-wins overwrite, so a concurrent webhook
+dispatcher and the cron poller cannot drop each other's dispatched keys.
+Install-time seeding still force-re-roots (`force: true` + `start_sha` =
+repository root) so a missing branch is created at base + 1 commit. The
+poller **fails closed** when
 `FULLSEND_DISPATCH_SECRET` is unset (refuse load/write) or when a
 present `state.json` has a missing/invalid HMAC (discard the branch and
 fail that cycle). A missing branch or file is **not** tampering: the
