@@ -254,35 +254,41 @@ Valid keys:
 	return cmd
 }
 
+// reposStatusConfig holds flags and test overrides for repos status.
+type reposStatusConfig struct {
+	manifest    string
+	jsonOutput  bool
+	repoFilter  []string
+	concurrency int
+
+	// Test overrides
+	testClient forge.Client
+}
+
 func newReposStatusCmd() *cobra.Command {
-	var (
-		manifest    string
-		jsonOutput  bool
-		repoFilter  []string
-		concurrency int
-	)
+	opts := &reposStatusConfig{}
 
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Compare manifest against actual repo state",
-		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml.",
+		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml and managed configuration drift against .fullsend/config.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runReposStatus(cmd, manifest, jsonOutput, repoFilter, concurrency)
+			return runReposStatus(cmd, opts)
 		},
 	}
 
-	cmd.Flags().StringVarP(&manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON output instead of table")
-	cmd.Flags().StringArrayVar(&repoFilter, "repo", nil, "filter to specific repos (repeatable)")
-	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "max parallel API calls")
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
+	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit JSON output instead of table")
+	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "filter to specific repos (repeatable)")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 8, "max parallel API calls")
 
 	return cmd
 }
 
-func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, repoFilter []string, concurrency int) error {
+func runReposStatus(cmd *cobra.Command, opts *reposStatusConfig) error {
 	ctx := cmd.Context()
 
-	m, err := repos.LoadManifest(ctx, manifestPath)
+	m, err := repos.LoadManifest(ctx, opts.manifest)
 	if err != nil {
 		return err
 	}
@@ -290,15 +296,20 @@ func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, re
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	clients := newForgeClientFactory(getGitLabToken(cmd), m)
+	var clients repos.ForgeClientFactory
+	if opts.testClient != nil {
+		clients = newSingleClientFactory(opts.testClient)
+	} else {
+		clients = newForgeClientFactory(getGitLabToken(cmd), m)
+	}
 
-	result, err := repos.Status(ctx, m, clients, concurrency, repoFilter)
+	result, err := repos.Status(ctx, m, clients, opts.concurrency, opts.repoFilter)
 	if err != nil {
 		return err
 	}
 	annotateGitLabRoleLifecycle(ctx, clients, result)
 
-	return renderStatusResult(cmd, result, jsonOutput)
+	return renderStatusResult(cmd, result, opts.jsonOutput)
 }
 
 func renderStatusResult(cmd *cobra.Command, result *repos.StatusResult, jsonOutput bool) error {
@@ -511,8 +522,9 @@ re-runs while an initialization PR/MR is still open. For repos whose workflow
 is already on the default branch, reconciles variable drift, disabled GitLab
 pipeline schedules (reported as drift; reactivated only when
 --reactivate-schedules is passed), declared configuration-preset drift
-against .fullsend/config.base.yaml, and upgrades scaffold refs to match
-the manifest.
+against .fullsend/config.base.yaml, managed .fullsend/config.yaml drift
+for opted-in repositories, and upgrades scaffold refs to match the
+manifest.
 
 When repos are specified as positional arguments, only those repos are
 processed. Glob patterns (e.g. "acme/*") are matched against manifest
@@ -555,12 +567,12 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.inferenceProvider, "inference-provider", "", "inference provider written to the per-repo config for repos added by this command (vertex, openai); repos already in the manifest keep their entry/defaults.inference_provider")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
-	cmd.Flags().StringVar(&opts.gitlabRoleMigration, "gitlab-role-migration", "", "GitLab role-credential gate: migrating, enforced, rollback, or disabled (default: provision role credentials and cut over to enforced; passing enforced explicitly assumes in-flight shared-token jobs are drained, the same as ordinary install, and does not require --gitlab-role-cutover-drained; rollback and disabled are emergency recovery only)")
+	cmd.Flags().StringVar(&opts.gitlabRoleMigration, "gitlab-role-migration", "", "GitLab role-credential gate: enforced or rollback (default: provision role credentials and cut over to enforced; passing enforced explicitly assumes in-flight shared-token jobs are drained, the same as ordinary install, and does not require --gitlab-role-cutover-drained; rollback is emergency recovery only and requires --gitlab-role-rollback-confirmed when leaving a role-required gate, migrating or enforced)")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.gitlabRoleCutover, "gitlab-role-cutover", false, "explicitly verify GitLab roles, enable enforced mode, and retire the shared credential (ordinary install already does this when roles are ready)")
 	cmd.Flags().BoolVar(&opts.gitlabRoleCutoverDrained, "gitlab-role-cutover-drained", false, "confirm in-flight shared-token jobs are drained; required with --gitlab-role-cutover")
-	cmd.Flags().BoolVar(&opts.gitlabRoleRollbackConfirmed, "gitlab-role-rollback-confirmed", false, "confirm reopening the shared GitLab credential path after enforced cutover")
+	cmd.Flags().BoolVar(&opts.gitlabRoleRollbackConfirmed, "gitlab-role-rollback-confirmed", false, "confirm reopening the shared GitLab credential path when changing a role-required gate (migrating or enforced) to rollback")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
@@ -739,6 +751,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if opts.inferenceProvider != "" && !slices.Contains(config.ValidProviders(), opts.inferenceProvider) {
 				return fmt.Errorf("--inference-provider: invalid provider %q: must be one of %s", opts.inferenceProvider, strings.Join(config.ValidProviders(), ", "))
+			}
+			if len(opts.allowedRemoteResources) > 0 {
+				if err := repos.ValidateAllowedRemoteResourcesFormat("--allowed-remote-resources", opts.allowedRemoteResources); err != nil {
+					return err
+				}
 			}
 
 			entries := make([]repos.RepoEntry, len(notInManifest))
@@ -1189,7 +1206,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			if !opts.dryRun && (opts.gitlabRoleModeFlag == gitlabroles.ModeRollback || opts.gitlabRoleModeFlag == gitlabroles.ModeDisabled) {
+			if !opts.dryRun && opts.gitlabRoleModeFlag == gitlabroles.ModeRollback {
 				secretExists, secretErr := fc.Client.RepoSecretExists(ctx, item.r.Owner, item.r.Repo, forge.SecretForgeToken)
 				if secretErr != nil {
 					printer.StepWarn(fmt.Sprintf("[%s/%s] Could not check shared GitLab credential recovery state: %v", item.r.Owner, item.r.Repo, secretErr))

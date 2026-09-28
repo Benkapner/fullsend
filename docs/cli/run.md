@@ -27,7 +27,7 @@ fullsend run <agent-name> [flags]
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
-| `--forge` | Forge platform to use (e.g. `"github"`, `"gitlab"`); auto-detected from CI env vars when omitted |
+| `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
@@ -300,8 +300,8 @@ troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-work
 
 On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential and exports `GITLAB_TOKEN` from that CI/CD variable:
 
-- Gate unset/`disabled`/`rollback`: shared `FULLSEND_FORGE_TOKEN` (legacy shared-token runtime, or explicit rollback/disabled recovery — ordinary unflagged `repos install` now converges existing shared-token installs to `migrating` and then `enforced` once roles are ready, so it no longer keeps them on this gate by default). If `FULLSEND_FORGE_TOKEN` is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged).
-- `migrating`/`enforced`: Poller/Analyst/Coder (or a registered custom role) via `gitlabroles.SelectAgent`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
+- Gate leftover unset/`disabled` or explicit `rollback`: shared `FULLSEND_FORGE_TOKEN` (leftover shared-token runtime, or emergency recovery — ordinary unflagged `repos install` converges existing shared-token installs to `enforced` once roles are ready). If `FULLSEND_FORGE_TOKEN` is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged). `--gitlab-role-migration` no longer accepts `disabled`.
+- `migrating`/`enforced`: Poller/Analyst/Coder (or a registered custom role) via `gitlabroles.SelectAgent`. A missing role secret fails closed; there is no shared-token fallback. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request. `migrating` is an internal install intermediate, not an operator-settable flag.
 
 See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 

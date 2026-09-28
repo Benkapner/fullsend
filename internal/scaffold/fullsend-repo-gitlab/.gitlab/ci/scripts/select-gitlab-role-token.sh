@@ -17,8 +17,7 @@
 #
 # Gate FULLSEND_GITLAB_ROLE_MIGRATION (case-insensitive):
 #   unset/disabled/rollback — shared FULLSEND_FORGE_TOKEN only
-#   migrating               — role secret when present, else shared token
-#   enforced                — role secret only; shared token is never used
+#   migrating/enforced      — role secret only; shared token is never used
 #
 # Custom roles come from FULLSEND_GITLAB_ROLE_REGISTRY (install-state JSON).
 # Repository files cannot create or elevate a role. Unknown gate values and
@@ -215,16 +214,11 @@ print(role + "\t" + secret)
     if test -n "${_fs_role_value}"; then
       _fs_token="${_fs_role_value}"
       _fs_name="${_fs_secret}"
-    else
-      if test "${_fs_mode}" = "migrating"; then
-        _fs_token="${FULLSEND_FORGE_TOKEN:-}"
-        _fs_name="FULLSEND_FORGE_TOKEN"
-      fi
     fi
   fi
 
   if test -z "${_fs_token}"; then
-    if test "${_fs_mode}" = "enforced"; then
+    if test "${_fs_mode}" = "enforced" || test "${_fs_mode}" = "migrating"; then
       echo "ERROR: ${_fs_secret} is not set — ensure the protected CI/CD variable is configured" >&2
     else
       echo "ERROR: FULLSEND_FORGE_TOKEN is not set — ensure the protected CI/CD variable is configured" >&2
