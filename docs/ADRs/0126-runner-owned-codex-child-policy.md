@@ -55,10 +55,10 @@ the spawn arguments: context inheritance, model, effort and resume.
 Codex children run under a policy the runner provisions and enforces.
 
 - An agent delegates only when its tools include `Agent` (an absent `tools:` includes
-  it, as on Claude Code and pi) and its merged `agents[]` entry names a model under at
-  least one `subagents` key. Bootstrap then registers its skill personas plus a generic
-  `default` and an instruction-only `explore` role. Other agents run with Codex's
-  multi-agent tools off.
+  it, as on Claude Code and pi), its merged `agents[]` entry names a model under at
+  least one `subagents` key, and harness security is enabled. Bootstrap then registers
+  its skill personas plus a generic `default` and an instruction-only `explore` role.
+  Other agents run with Codex's multi-agent tools off.
 - Child models resolve as in ADR 0104 without the frontmatter step:
   `subagents.<persona>`, then `subagents.default`, then the parent's live model, with
   no Codex-specific default model or environment override. Bootstrap generates each
@@ -66,10 +66,10 @@ Codex children run under a policy the runner provisions and enforces.
   carries no model, so its child inherits the parent's. Only OpenAI model IDs are
   accepted, and an explicit model that cannot be served fails rather than falling
   back. Persona `model:` and `tools:` frontmatter is reported, not applied.
-- A mandatory PreToolUse hook, installed even when optional security hooks are off,
-  admits only a V1 spawn of a registered role with `fork_context: false` and no model
-  or effort override. It rejects resume and any spawn from a child. Native
-  configuration limits depth to one and open children to four.
+- A mandatory PreToolUse hook, installed whenever harness security is enabled, even with
+  every individual sandbox hook disabled, admits only a V1 spawn of a registered role with
+  `fork_context: false` and no model or effort override. It rejects resume and any spawn
+  from a child. Native configuration limits depth to one and open children to four.
 - Before admitting a spawn, the hook checks `hooks.json` and the role files against
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
   hook script before invoking it.
