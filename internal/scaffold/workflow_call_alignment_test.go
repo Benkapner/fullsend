@@ -1574,14 +1574,13 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 }
 
 // TestGCPSecretsOptionalForOpenAIRepos pins the callee side of #7481: a
-// repository whose inference runs on OpenAI has no GCP secrets, so the
+// repository whose selected agent runs on OpenAI has no GCP secrets, so the
 // supported per-repository reusable workflow must declare the GCP pair
-// optional and the setup-gcp action must skip Google auth (and everything
-// that reads its output) when the provider input is empty. A `required: true`
-// or an unguarded step would fail such a repository's jobs before the agent
-// starts.
+// optional. The Fullsend action resolves the selected agent's provider before
+// deciding whether to authenticate to GCP; credential absence is never the
+// route signal.
 func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
-	stages := []string{"dispatch"}
+	stages := []string{"code", "fix", "review", "triage", "retro", "prioritize", "dispatch"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage, func(t *testing.T) {
 			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))
@@ -1597,8 +1596,8 @@ func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
 		})
 	}
 
-	t.Run("setup-gcp action", func(t *testing.T) {
-		path := filepath.Join("..", "..", ".github", "actions", "setup-gcp", "action.yml")
+	t.Run("fullsend action", func(t *testing.T) {
+		path := filepath.Join("..", "..", "action.yml")
 		content, err := os.ReadFile(path)
 		require.NoError(t, err)
 		var action struct {
@@ -1614,16 +1613,26 @@ func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
 		}
 		require.NoError(t, yaml.Unmarshal(content, &action))
 		assert.False(t, action.Inputs["gcp_wif_provider"].Required, "gcp_wif_provider must be optional (#7481)")
-		require.Greater(t, len(action.Runs.Steps), 1)
-		// The first step is the fail-fast for exactly one GCP input set;
-		// it must run when the pair is inconsistent and only then.
-		assert.Equal(t, "Check GCP inputs", action.Runs.Steps[0].Name)
-		assert.Equal(t,
-			"(inputs.gcp_wif_provider == '' && inputs.gcp_project_id != '') || (inputs.gcp_wif_provider != '' && inputs.gcp_project_id == '')",
-			action.Runs.Steps[0].If)
-		for _, step := range action.Runs.Steps[1:] {
-			assert.Equal(t, "inputs.gcp_wif_provider != ''", step.If,
-				"step %q must be skipped when no GCP provider is configured", step.Name)
+		assert.False(t, action.Inputs["gcp_project_id"].Required, "gcp_project_id must be optional (#7481)")
+
+		steps := make(map[string]string, len(action.Runs.Steps))
+		order := make(map[string]int, len(action.Runs.Steps))
+		for i, step := range action.Runs.Steps {
+			steps[step.Name] = step.If
+			order[step.Name] = i
+		}
+		require.Contains(t, steps, "Resolve inference provider")
+		require.Contains(t, steps, "Check Vertex credentials")
+		assert.Less(t, order["Resolve inference provider"], order["Check Vertex credentials"])
+		assert.Equal(t, "steps.inference.outputs.provider == 'vertex'", steps["Check Vertex credentials"])
+		for _, name := range []string{
+			"Pre-mask GCP credential file path",
+			"Authenticate to Google Cloud (WIF)",
+			"Mask GCP credential file paths",
+			"Prepare sandbox credentials",
+		} {
+			assert.Equal(t, "steps.inference.outputs.provider == 'vertex'", steps[name],
+				"step %q must be selected by the resolved agent provider", name)
 		}
 	})
 }

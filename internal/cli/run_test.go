@@ -72,6 +72,14 @@ func TestRunCommand_HasNoPostScriptFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
+func TestRunCommand_HasResolveInferenceProviderFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("resolve-inference-provider")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+	assert.True(t, flag.Hidden)
+}
+
 func TestRunCommand_HasOutputDirFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("output-dir")

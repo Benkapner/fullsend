@@ -1,8 +1,8 @@
 name: Fullsend
 description: >-
-  Install fullsend-cli, create ${GITHUB_WORKSPACE}/output, invoke fullsend run with
-  --output-dir pointing at that directory, then upload it with actions/upload-artifact. Does not
-  read agent configuration from the repository; configure the job environment or CLI as needed.
+  Install fullsend-cli, resolve the selected agent's inference provider, authenticate to GCP only
+  for Vertex, create ${GITHUB_WORKSPACE}/output, invoke fullsend run with --output-dir pointing at
+  that directory, then upload it with actions/upload-artifact.
 
 branding:
   icon: zap
@@ -52,6 +52,14 @@ inputs:
       PR head commit SHA, passed explicitly by per-repo (workflow_call)
       callers where GITHUB_EVENT_PATH lacks the dispatched event_payload
       wrapper. Takes precedence over GITHUB_EVENT_PATH extraction.
+    default: ""
+  gcp_wif_provider:
+    description: Workload Identity Federation provider resource name, used only when the selected agent resolves to Vertex inference.
+    required: false
+    default: ""
+  gcp_project_id:
+    description: GCP project ID, used only when the selected agent resolves to Vertex inference.
+    required: false
     default: ""
 
 outputs:
@@ -362,6 +370,67 @@ runs:
     - name: Print fullsend version
       shell: bash
       run: fullsend --version
+
+    - name: Resolve inference provider
+      id: inference
+      if: inputs.agent != '__install_only__'
+      shell: bash
+      env:
+        AGENT: ${{ inputs.agent }}
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
+        TARGET_REPO="${TARGET_REPO:-${GITHUB_WORKSPACE}/target-repo}"
+        fullsend run "${AGENT}" \
+          --fullsend-dir "${FULLSEND_DIR}" \
+          --target-repo "${TARGET_REPO}" \
+          --resolve-inference-provider
+
+    - name: Check Vertex credentials
+      if: steps.inference.outputs.provider == 'vertex'
+      shell: bash
+      env:
+        GCP_WIF_PROVIDER: ${{ inputs.gcp_wif_provider }}
+        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${GCP_WIF_PROVIDER}" || -z "${GCP_PROJECT_ID}" ]]; then
+          echo "::error::Vertex inference requires FULLSEND_GCP_WIF_PROVIDER and FULLSEND_GCP_PROJECT_ID."
+          exit 1
+        fi
+
+    - name: Pre-mask GCP credential file path
+      if: steps.inference.outputs.provider == 'vertex'
+      shell: bash
+      run: echo "::add-mask::${GITHUB_WORKSPACE}/gha-creds-"
+
+    - name: Authenticate to Google Cloud (WIF)
+      if: steps.inference.outputs.provider == 'vertex'
+      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+      with:
+        workload_identity_provider: ${{ inputs.gcp_wif_provider }}
+        project_id: ${{ inputs.gcp_project_id }}
+
+    - name: Mask GCP credential file paths
+      if: steps.inference.outputs.provider == 'vertex'
+      shell: bash
+      run: |
+        for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
+          val="${!var:-}"
+          if [[ -n "${val}" ]]; then
+            echo "::add-mask::${val}"
+          fi
+        done
+
+    - name: Prepare sandbox credentials
+      if: steps.inference.outputs.provider == 'vertex'
+      shell: bash
+      env:
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+      run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/prepare-sandbox-credentials.sh"
 
     - name: Install Podman
       shell: bash

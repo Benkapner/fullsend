@@ -122,6 +122,53 @@ func TestRunAgent_VertexMissingGCPCredentialsFailsBeforePreScript(t *testing.T) 
 	assert.NoFileExists(t, marker)
 }
 
+func TestRunAgent_ResolveInferenceProviderExitsBeforePreScript(t *testing.T) {
+	tests := []struct {
+		name     string
+		runtime  string
+		provider string
+	}{
+		{name: "OpenAI", runtime: "codex", provider: "openai"},
+		{name: "Vertex", runtime: "claude", provider: "vertex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", "true")
+			output := filepath.Join(t.TempDir(), "github-output")
+			t.Setenv("GITHUB_OUTPUT", output)
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(fmt.Sprintf(`version: "1"
+agents:
+  - name: code
+    source: harness/code.yaml
+    runtime: %s
+`, tt.runtime)), 0o644))
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{resolveInferenceProvider: true})
+			require.NoError(t, err)
+			assert.NoFileExists(t, marker)
+			data, readErr := os.ReadFile(output)
+			require.NoError(t, readErr)
+			assert.Contains(t, string(data), "provider="+tt.provider+"\n")
+		})
+	}
+}
+
+func TestRunAgent_ResolveInferenceProviderOutputFailureIsHardError(t *testing.T) {
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_OUTPUT", t.TempDir())
+	dir := newSkipHarnessDir(t, "true\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{resolveInferenceProvider: true})
+	require.ErrorContains(t, err, "writing inference provider output")
+}
+
 func TestValidateOptionalGCPCredentials_RouteSpecific(t *testing.T) {
 	h := &harness.Harness{HostFiles: []harness.HostFile{{
 		Src:      "${GOOGLE_APPLICATION_CREDENTIALS}",

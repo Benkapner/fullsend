@@ -709,13 +709,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Setup agent environment
         env:
           AGENT_PREFIX: TRIAGE_
@@ -751,6 +744,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: triage
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -822,13 +817,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Resolve bot identity
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -892,6 +880,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: code
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -975,13 +965,6 @@ jobs:
           FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Setup agent environment
         env:
           AGENT_PREFIX: REVIEW_
@@ -1022,6 +1005,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: review
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1252,13 +1237,6 @@ jobs:
           fi
           echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Setup agent environment
         env:
           AGENT_PREFIX: FIX_
@@ -1304,6 +1282,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: fix
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1373,13 +1353,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Setup agent environment
         env:
           AGENT_PREFIX: RETRO_
@@ -1416,6 +1389,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: retro
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1468,13 +1443,6 @@ jobs:
           install_mode: ${{ inputs.install_mode }}
           source_repo: ${{ github.repository }}
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Setup agent environment
         env:
           AGENT_PREFIX: PRIORITIZE_
@@ -1514,6 +1482,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: prioritize
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1782,13 +1752,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Resolve bot identity
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -1885,6 +1848,8 @@ jobs:
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

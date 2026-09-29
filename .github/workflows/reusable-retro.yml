@@ -43,9 +43,9 @@ on:
         default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
-        required: true
+        required: false
       FULLSEND_GCP_PROJECT_ID:
-        required: true
+        required: false
       FULLSEND_OPENAI_API_KEY:
         required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
@@ -142,13 +142,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Setup GCP and prepare credentials
-        uses: ./.defaults/.github/actions/setup-gcp
-        with:
-          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-
       - name: Setup agent environment
         env:
           AGENT_PREFIX: RETRO_
@@ -185,6 +178,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: retro
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
