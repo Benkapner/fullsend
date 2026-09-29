@@ -187,10 +187,10 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint URL (resolved to hosted public mint if unset)")
 	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
-	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "", "inference provider: vertex (resolved if unset) or openai")
-	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for Vertex inference")
+	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "", "inference provider (resolved to vertex if unset)")
+	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (resolved to global if unset)")
-	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name for Vertex inference")
+	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name")
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
@@ -355,9 +355,6 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	if err != nil {
 		return err
 	}
-	if err := checkOpenAIRoute(ctx, client, owner, repo, cfg, effective); err != nil {
-		return err
-	}
 	if reuseProject {
 		printer.StepInfo("Reusing existing FULLSEND_GCP_PROJECT_ID from " + cfg.target)
 	}
@@ -428,15 +425,12 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		repoVars["FULLSEND_REVIEW_CLIENT_ID"] = reviewClientID
 	}
 
-	// The GCP pair is written only when a value exists: under
-	// inference.provider "openai" with no GCP values (#7481) neither is
-	// part of the install, and an empty secret would read as configured.
 	repoSecrets := make(map[string]string)
-	if v := effectiveInferenceProject(cfg, effective); !reuseProject && v != "" {
-		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = v
+	if !reuseProject {
+		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = effectiveInferenceProject(cfg, effective)
 	}
-	if v := effectiveInferenceWIF(cfg, effective); !reuseWIF && v != "" {
-		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = v
+	if !reuseWIF {
+		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = effectiveInferenceWIF(cfg, effective)
 	}
 
 	// Resolve Signed-off-by trailer when --signoff is set.
@@ -754,87 +748,31 @@ func composeSetupLayers(overlayYAML []byte, overlay config.PerRepoConfigWriter, 
 // provider inference values, whether setup should reuse the existing
 // repo secret because neither the CLI flag nor the composed effective
 // config supplied a value. It errors if a value is missing and no
-// existing secret is found, since one or the other is required — unless
-// the repository runs inference on OpenAI (#7481): with
-// inference.provider "openai" and neither GCP value supplied, the GCP
-// secrets are simply not part of the install. Supplying one GCP value
-// under "openai" keeps the partial-pair error: a repository that opts
-// into Vertex as well must configure it completely.
+// existing secret is found, since one or the other is required.
 func resolveInferenceReuse(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig, effective config.PerRepoConfigReader) (reuseProject, reuseWIF bool, err error) {
-	project := effectiveInferenceProject(cfg, effective)
-	wif := effectiveInferenceWIF(cfg, effective)
-	if effectiveInferenceProvider(cfg, effective) == config.InferenceProviderOpenAI && project == "" && wif == "" {
-		return false, false, nil
-	}
-	if project == "" {
+	if effectiveInferenceProject(cfg, effective) == "" {
 		var exists bool
 		exists, err = client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")
 		if err != nil {
 			return false, false, fmt.Errorf("checking existing secret FULLSEND_GCP_PROJECT_ID: %w (pass --inference-project to skip this check)", err)
 		}
 		if !exists {
-			return false, false, fmt.Errorf("--inference-project is required for provider vertex (no existing secret found)")
+			return false, false, fmt.Errorf("--inference-project is required for per-repo setup (no existing secret found)")
 		}
 		reuseProject = true
 	}
-	if wif == "" {
+	if effectiveInferenceWIF(cfg, effective) == "" {
 		var exists bool
 		exists, err = client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_WIF_PROVIDER")
 		if err != nil {
 			return false, false, fmt.Errorf("checking existing secret FULLSEND_GCP_WIF_PROVIDER: %w (pass --inference-wif-provider to skip this check)", err)
 		}
 		if !exists {
-			return false, false, fmt.Errorf("--inference-wif-provider is required for provider vertex (no existing secret found)")
+			return false, false, fmt.Errorf("--inference-wif-provider is required for per-repo setup (no existing secret found)")
 		}
 		reuseWIF = true
 	}
 	return reuseProject, reuseWIF, nil
-}
-
-// effectiveInferenceProvider returns the inference provider to install
-// for: the explicit --inference-provider flag if set, otherwise the
-// composed effective config (which resolves to the code default,
-// "vertex", when no layer sets it).
-func effectiveInferenceProvider(cfg githubSetupConfig, effective config.PerRepoConfigReader) string {
-	if cfg.inferenceProvider != "" {
-		return cfg.inferenceProvider
-	}
-	if effective != nil {
-		return effective.ConfigInferenceProvider()
-	}
-	return ""
-}
-
-// checkOpenAIRoute enforces, for inference.provider "openai", that the
-// repository has a way to reach GPT: the OpenAI WIF trio in the composed
-// config, or the FULLSEND_OPENAI_API_KEY repository secret (ADR 0092).
-// Without either, every GPT run would fail at the first model call, so
-// setup refuses the same way it refuses a Vertex install with no GCP
-// project. It is a no-op for every other provider.
-func checkOpenAIRoute(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig, effective config.PerRepoConfigReader) error {
-	if effectiveInferenceProvider(cfg, effective) != config.InferenceProviderOpenAI {
-		return nil
-	}
-	if effective != nil {
-		ids := effective.ConfigInferenceOpenAI().Trimmed()
-		if missing := ids.Missing(); !ids.IsZero() && len(missing) > 0 {
-			// The runner refuses a partial trio outright rather than
-			// falling back to the static key, so the secret cannot make
-			// this configuration a route.
-			return fmt.Errorf("inference.openai in the composed config is partially configured (missing %s): complete the trio or remove the block; the %s secret is not used while a partial block exists", strings.Join(missing, ", "), forge.SecretOpenAIAPIKey)
-		}
-		if !ids.IsZero() {
-			return nil
-		}
-	}
-	exists, err := client.RepoSecretExists(ctx, owner, repo, forge.SecretOpenAIAPIKey)
-	if err != nil {
-		return fmt.Errorf("checking existing secret %s: %w", forge.SecretOpenAIAPIKey, err)
-	}
-	if !exists {
-		return fmt.Errorf("--inference-provider openai needs an OpenAI route: pass --openai-audience, --openai-identity-provider-id and --openai-service-account-id (OpenAI Workload Identity Federation), or set the %s repository secret first (fullsend github set %s/%s %s <key>)", forge.SecretOpenAIAPIKey, owner, repo, forge.SecretOpenAIAPIKey)
-	}
-	return nil
 }
 
 // effectiveInferenceProject returns the GCP inference project to use:

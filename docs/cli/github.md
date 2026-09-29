@@ -57,9 +57,9 @@ than being regenerated.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mint-url` | | HTTPS endpoint of the token mint service |
-| `--inference-provider` | | Inference provider: `vertex` (resolved if unset) or `openai` |
-| `--inference-project` | | GCP project ID for Agent Platform (required for provider `vertex`) |
-| `--inference-wif-provider` | | Full WIF provider resource name (required for provider `vertex`) |
+| `--inference-provider` | | Inference provider; resolved to `vertex` if unset |
+| `--inference-project` | | GCP project ID for Agent Platform |
+| `--inference-wif-provider` | | Full WIF provider resource name |
 | `--openai-audience` | | OpenAI Workload Identity audience for GPT on pi or codex; with the two flags below, written to `inference.openai` in `config.yaml` (all three or none) |
 | `--openai-identity-provider-id` | | OpenAI Workload Identity provider ID |
 | `--openai-service-account-id` | | OpenAI service account ID the provider maps this repository to |

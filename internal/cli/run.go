@@ -91,6 +91,10 @@ const (
 	// to avoid exceeding command-line or context limits. 10 KiB is enough for
 	// lint/type-check diagnostics without overwhelming the model's context.
 	maxFeedbackBytes = 10 * 1024
+
+	// Run-scoped inference providers resolved from the selected agent.
+	runProviderVertex = "vertex"
+	runProviderOpenAI = "openai"
 )
 
 // preflightCheckTimeout bounds the execution time for a validation_loop
@@ -1123,11 +1127,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	agentDefModel := agentruntime.AgentDefinitionModel(h.Agent)
 	needsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
+	provider := runProviderVertex
+	if needsOpenAIProvider {
+		provider = runProviderOpenAI
+	}
 	if oFlags.resolveInferenceProvider {
-		provider := config.DefaultPerRepoInferenceProvider
-		if needsOpenAIProvider {
-			provider = config.InferenceProviderOpenAI
-		}
 		if ghOutput := os.Getenv("GITHUB_OUTPUT"); ghOutput != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
 			if err := writeGitHubOutput(ghOutput, "provider", provider); err != nil {
 				return fmt.Errorf("writing inference provider output: %w", err)
@@ -1136,9 +1140,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.KeyValue("Inference provider", provider)
 		return nil
 	}
-	if err := validateOptionalGCPCredentials(h, needsOpenAIProvider); err != nil {
-		printer.StepFail("Inference credential validation failed")
-		return err
+	if provider == runProviderVertex {
+		if err := validateVertexGCPCredentials(h); err != nil {
+			printer.StepFail("Inference credential validation failed")
+			return err
+		}
 	}
 
 	// provider/id is pi's model form; Claude Code takes an alias or an
@@ -4097,13 +4103,9 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
-// validateOptionalGCPCredentials keeps the generic optional host-file mount
-// usable by OpenAI runs while failing a Vertex run before its pre-script can
-// cause side effects.
-func validateOptionalGCPCredentials(h *harness.Harness, needsOpenAIProvider bool) error {
-	if needsOpenAIProvider {
-		return nil
-	}
+// validateVertexGCPCredentials fails a Vertex run before its pre-script can
+// cause side effects when its optional GCP host-file mount has no source.
+func validateVertexGCPCredentials(h *harness.Harness) error {
 	for i, hf := range h.HostFiles {
 		if !hf.Optional || hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" {
 			continue

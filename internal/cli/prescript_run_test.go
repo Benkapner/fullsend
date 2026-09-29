@@ -169,33 +169,28 @@ func TestRunAgent_ResolveInferenceProviderOutputFailureIsHardError(t *testing.T)
 	require.ErrorContains(t, err, "writing inference provider output")
 }
 
-func TestValidateOptionalGCPCredentials_RouteSpecific(t *testing.T) {
+func TestValidateVertexGCPCredentials(t *testing.T) {
 	h := &harness.Harness{HostFiles: []harness.HostFile{{
 		Src:      "${GOOGLE_APPLICATION_CREDENTIALS}",
 		Dest:     "/tmp/.gcp-credentials.json",
 		Optional: true,
 	}}}
 
-	t.Run("OpenAI permits missing GCP credentials", func(t *testing.T) {
-		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
-		require.NoError(t, validateOptionalGCPCredentials(h, true))
-	})
-
 	t.Run("Vertex accepts an existing GCP credential file", func(t *testing.T) {
 		credentials := filepath.Join(t.TempDir(), "credentials.json")
 		require.NoError(t, os.WriteFile(credentials, []byte("{}"), 0o600))
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
-		require.NoError(t, validateOptionalGCPCredentials(h, false))
+		require.NoError(t, validateVertexGCPCredentials(h))
 	})
 
 	t.Run("Vertex rejects a missing GCP credential file", func(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing.json"))
-		require.ErrorContains(t, validateOptionalGCPCredentials(h, false), "existing file")
+		require.ErrorContains(t, validateVertexGCPCredentials(h), "existing file")
 	})
 
 	t.Run("Vertex rejects a directory", func(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir())
-		require.ErrorContains(t, validateOptionalGCPCredentials(h, false), "regular file")
+		require.ErrorContains(t, validateVertexGCPCredentials(h), "regular file")
 	})
 }
 

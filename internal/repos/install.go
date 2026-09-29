@@ -74,16 +74,6 @@ type InstallConfig struct {
 	// Empty keeps the code default; ignored when PerRepoConfig is set.
 	Runtime string
 
-	// InferenceProvider, when set, is written as `inference.provider` of
-	// the generated config (repos.yaml `inference_provider`, #7481).
-	// Empty keeps the code default (vertex); ignored when PerRepoConfig
-	// is set.
-	InferenceProvider string
-
-	// InferenceOpenAI preserves a committed OpenAI WIF trio when a repair
-	// regenerates config.yaml. These identifiers are not secrets.
-	InferenceOpenAI config.OpenAIWIFConfig
-
 	// VendorBinary renders scaffold workflows to reference the vendored
 	// binary path instead of fetching from upstream on each CI run.
 	VendorBinary bool
@@ -394,7 +384,6 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		UpstreamRef:       ref,
 		UpstreamTag:       ref,
 		Runtime:           resolved.Runtime,
-		InferenceProvider: resolved.InferenceProvider,
 		VendorBinary:      resolved.Vendor,
 		InferenceRegion:   dcfg.InferenceRegion,
 		ReviewAppClientID: dcfg.ReviewAppClientID,
@@ -488,23 +477,11 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 				if cfg.Runtime != "" {
 					overlay.SetRuntime(cfg.Runtime)
 				}
-				if cfg.InferenceProvider != "" {
-					overlay.SetInferenceProvider(cfg.InferenceProvider)
-				}
-				if !cfg.InferenceOpenAI.IsZero() {
-					overlay.SetInferenceOpenAI(cfg.InferenceOpenAI)
-				}
 				perRepoCfg = overlay
 			default:
 				generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
 				if cfg.Runtime != "" {
 					generated.SetRuntime(cfg.Runtime)
-				}
-				if cfg.InferenceProvider != "" {
-					generated.SetInferenceProvider(cfg.InferenceProvider)
-				}
-				if !cfg.InferenceOpenAI.IsZero() {
-					generated.SetInferenceOpenAI(cfg.InferenceOpenAI)
 				}
 				perRepoCfg = generated
 			}
@@ -654,10 +631,8 @@ func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]st
 var requiredVariables = []string{forge.VarMintURL}
 
 // requiredSecrets lists the per-repo secrets that must exist for a
-// complete installation on the vertex route. Shared by install,
-// uninstall, and orphan detection; probe and converge go through
-// requiredSecretsForRoute, which substitutes an OpenAI credential on the
-// openai route (#7481).
+// complete installation. Shared by install, checkInstallComponents,
+// and uninstall.
 var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
 
 // gitlabRetiredLegacyVars is the set of GitLab poller CI/CD variables

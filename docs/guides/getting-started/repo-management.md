@@ -25,14 +25,13 @@ The remaining prerequisites are forge-specific:
 
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **Vertex inference prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md). For OpenAI inference, see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 **GitLab:**
 
 GitLab does not use `gh`, `fullsend inference provision`, or mint
 enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
-for the GitLab token, Vertex inference project, and runner requirements. For
-OpenAI inference, see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+for the GitLab token, GCP inference project, and runner requirements.
 
 ## Getting started
 
@@ -324,12 +323,11 @@ Install runs in two phases:
    automatically; ref updates are committed as PRs (or direct pushes with
    `--direct`).
 
-> **GitHub Vertex prerequisite:** GCP WIF provisioning
+> **GitHub prerequisite:** GCP WIF provisioning
 > (`fullsend inference provision`) must be completed before running install.
 > For self-managed mints, also run `fullsend mint enroll`. The hosted
 > community mint needs no enrollment. For GitLab prerequisites and inference
-> setup, see [Configuring GitLab](configuring-gitlab.md#prerequisites). For
-> OpenAI inference, see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+> setup, see [Configuring GitLab](configuring-gitlab.md#prerequisites).
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
@@ -588,9 +586,9 @@ the command.
 
 ### Partial secret state
 
-When only one of the two inference secrets of the Vertex route
-(`FULLSEND_GCP_PROJECT_ID` or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo
-but not both, `repos install` reports an error:
+When only one of the two required inference secrets (`FULLSEND_GCP_PROJECT_ID`
+or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo but not both, `repos
+install` reports an error:
 
 ```
 partial secret state: FULLSEND_GCP_PROJECT_ID exists but FULLSEND_GCP_WIF_PROVIDER is missing
@@ -602,13 +600,6 @@ secrets were manually modified. To resolve, either:
 - Delete the existing secret and re-run `repos install` to re-provision
   both secrets together.
 - Manually create the missing secret with the correct value.
-
-### Inference providers
-
-The Vertex route requires both inference secrets above. Set another route with
-`inference_provider` in `repos.yaml` or `repos install --inference-provider`
-when adding a repository. See [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)
-for OpenAI configuration.
 
 ## Migrating from per-org mode to manifest management
 

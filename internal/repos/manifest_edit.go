@@ -330,7 +330,6 @@ func writeManifest(path string, m *Manifest) error {
 var ValidDefaultKeys = []string{
 	"defaults.allowed_remote_resources",
 	"defaults.runtime",
-	"defaults.inference_provider",
 	"defaults.vendor",
 	"defaults.config_base.source",
 	"defaults.config_base.sha256",
@@ -390,8 +389,6 @@ func SetDefault(manifestPath, key, value string) error {
 	switch key {
 	case "defaults.runtime":
 		m.Defaults.Runtime = value
-	case "defaults.inference_provider":
-		m.Defaults.InferenceProvider = value
 	case "defaults.config_base.source":
 		m.Defaults.ConfigBase.Source = value
 	case "defaults.config_base.sha256":
@@ -512,10 +509,6 @@ func validateDefaultValue(key, value string) error {
 		}
 	case "defaults.runtime":
 		if err := validateRuntimeValue(key, value); err != nil {
-			return err
-		}
-	case "defaults.inference_provider":
-		if err := validateInferenceProviderValue(key, value); err != nil {
 			return err
 		}
 	case "defaults.config_base.source":

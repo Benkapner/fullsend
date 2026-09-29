@@ -33,8 +33,8 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 |-----|-------------|-------------|---------------|
 | `FULLSEND_GCP_REGION` | Repo variable | GCP region for Agent Platform inference | `global` |
 | `FULLSEND_REVIEW_CLIENT_ID` | Repo variable | OAuth client ID of the review agent's GitHub App (best-effort, auto-set by installer) | `Iv23li1nIorNLIQy6NWK` |
-| `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled (required when `inference.provider` is `vertex`) | `my-gcp-project` |
-| `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication (required when `inference.provider` is `vertex`) | `projects/123456789/locations/global/...` |
+| `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
+| `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key when OpenAI WIF is unavailable (exported as `OPENAI_API_KEY`; unused when the WIF trio is set) | `sk-...` |
 
 ### GitLab
@@ -56,8 +56,8 @@ region there remains an alternative.
 |-----|-------------|-------------|---------------|
 | `FULLSEND_FORGE_TOKEN` | CI/CD secret | Shared bot project access token; auto-provisioned by `repos install` | (masked) |
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
-| `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference (required when `inference_provider` is `vertex`) | `my-gcp-project` |
-| `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference (required when `inference_provider` is `vertex`) | `projects/123456789/locations/global/...` |
+| `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
+| `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
 | `FULLSEND_DISPATCH_SECRET` | CI/CD secret | HMAC secret for dispatch variables and poll-state documents; auto-provisioned by `repos install` | (generated) |
 | `FULLSEND_GITLAB_ROLE_MIGRATION` | CI/CD variable (protected, unmasked) | Role-identity gate. Operator-settable values are `enforced` and `rollback`. Ordinary unflagged `repos install` writes the internal `migrating` intermediate while provisioning, then `enforced` once roles are ready. Leftover `disabled` remains parseable until converge. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md) | `enforced` |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | CI/CD variable (protected, unmasked) | Administrator role registry (JSON references and policy, not secret values); empty means built-in roles only. Written by `repos install --gitlab-role-registry`. | `{"roles":[]}` |

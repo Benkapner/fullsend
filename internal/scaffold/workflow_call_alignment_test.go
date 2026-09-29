@@ -1573,13 +1573,10 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 	}
 }
 
-// TestGCPSecretsOptionalForOpenAIRepos pins the callee side of #7481: a
-// repository whose selected agent runs on OpenAI has no GCP secrets, so the
-// supported per-repository reusable workflow must declare the GCP pair
-// optional. The Fullsend action resolves the selected agent's provider before
-// deciding whether to authenticate to GCP; credential absence is never the
-// route signal.
-func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
+// TestGCPSetupRunsOnlyForVertexAgent pins the per-agent route: dispatch passes
+// optional GCP inputs to the action, and every GCP step runs only when the
+// selected agent resolves to Vertex.
+func TestGCPSetupRunsOnlyForVertexAgent(t *testing.T) {
 	stages := []string{"dispatch"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage, func(t *testing.T) {
@@ -1591,7 +1588,7 @@ func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
 			for _, name := range []string{"FULLSEND_GCP_WIF_PROVIDER", "FULLSEND_GCP_PROJECT_ID"} {
 				decl, ok := wf.On.WorkflowCall.Secrets[name]
 				require.True(t, ok, "%s must still declare secret %s", path, name)
-				assert.False(t, decl.Required, "%s: secret %s must be optional (#7481)", path, name)
+				assert.False(t, decl.Required, "%s: secret %s must be optional", path, name)
 			}
 		})
 	}
@@ -1612,8 +1609,8 @@ func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
 			} `yaml:"runs"`
 		}
 		require.NoError(t, yaml.Unmarshal(content, &action))
-		assert.False(t, action.Inputs["gcp_wif_provider"].Required, "gcp_wif_provider must be optional (#7481)")
-		assert.False(t, action.Inputs["gcp_project_id"].Required, "gcp_project_id must be optional (#7481)")
+		assert.False(t, action.Inputs["gcp_wif_provider"].Required, "gcp_wif_provider must be optional")
+		assert.False(t, action.Inputs["gcp_project_id"].Required, "gcp_project_id must be optional")
 
 		steps := make(map[string]string, len(action.Runs.Steps))
 		order := make(map[string]int, len(action.Runs.Steps))

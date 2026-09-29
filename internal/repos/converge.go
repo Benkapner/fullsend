@@ -228,29 +228,12 @@ func validateConcurrency(n int) error {
 // convergence actions are determined. Package-level so it can be
 // shared across convergeRepo and convergeScaffoldFiles.
 type convergeDiscovery struct {
-	repo       ResolvedRepo
-	resolved   ResolvedConfig
-	components []ComponentStatus
-	// route is the repository's inference route: from its committed
-	// config when one exists, otherwise the manifest's resolved provider
-	// (#7481).
-	route         InferenceRoute
+	repo          ResolvedRepo
+	resolved      ResolvedConfig
+	components    []ComponentStatus
 	preset        []byte
 	managedConfig []byte
 	err           error
-}
-
-// installInferenceProvider returns the inference.provider to write into
-// a (re)generated config.yaml: the manifest's resolved value, except that
-// a committed openai route is preserved when a repair regenerates the
-// file for a repository whose manifest entry predates inference_provider
-// — otherwise the repair would silently revert it to vertex. A vertex
-// route adds nothing, so vertex repositories keep their exact output.
-func installInferenceProvider(d convergeDiscovery) string {
-	if d.route.FromConfig && d.route.OpenAI() {
-		return config.InferenceProviderOpenAI
-	}
-	return d.resolved.InferenceProvider
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -493,16 +476,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
 				return
 			}
-			route, routeErr := ProbeInferenceRoute(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge)
-			if routeErr != nil {
-				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: routeErr}
-				return
-			}
-			if !route.FromConfig && resolved.InferenceProvider != "" {
-				route.Provider = resolved.InferenceProvider
-			}
-			probed, probeErr := ProbeComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars,
-				WithInferenceRoute(route))
+			probed, probeErr := ProbeComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars)
 			if probeErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: probeErr}
 				return
@@ -512,7 +486,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				repo:       rr,
 				resolved:   resolved,
 				components: probed,
-				route:      route,
 			}
 		}(i, r)
 	}
@@ -560,30 +533,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				continue
 			}
 			d.preset = data
-			if d.route.OpenAI() && !d.route.FromConfig && d.resolved.Forge == ForgeGitHub {
-				presetConfig, parseErr := config.ParsePerRepoConfigWriter(data)
-				if parseErr != nil {
-					result.Results[i] = ConvergeResult{
-						Owner: d.repo.Owner,
-						Repo:  d.repo.Repo,
-						Error: fmt.Errorf("parsing config preset: %w", parseErr),
-					}
-					continue
-				}
-				ids := presetConfig.ConfigInferenceOpenAI().Trimmed()
-				if missing := ids.Missing(); !ids.IsZero() && len(missing) > 0 {
-					result.Results[i] = ConvergeResult{
-						Owner: d.repo.Owner,
-						Repo:  d.repo.Repo,
-						Error: fmt.Errorf("inference.openai in the config preset is partially configured: missing %s", strings.Join(missing, ", ")),
-					}
-					continue
-				}
-				if !ids.IsZero() {
-					d.route.OpenAIWIF = true
-					d.route.OpenAIWIFConfig = ids
-				}
-			}
 			if shouldWarnRemotePreset(d.resolved.Config, d.resolved.ConfigHash, warnedRemote) {
 				progress(d.repo.Owner+"/"+d.repo.Repo, "preset",
 					"Remote preset fetched without config_base.sha256; content integrity is not verified")
@@ -605,23 +554,10 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			d.managedConfig = body
 		}
 
-		// The selected route is authoritative: openai repositories require
-		// an OpenAI credential and never provision GCP inference credentials.
-		skipGCP := d.route.OpenAI()
-		if d.route.OpenAI() && !d.route.OpenAIWIF && !hasComponent(d.components, "secret:"+openAIRouteSecret(d.resolved.Forge)) {
-			repoFullName := d.repo.Owner + "/" + d.repo.Repo
-			result.Results[i] = ConvergeResult{
-				Owner: d.repo.Owner,
-				Repo:  d.repo.Repo,
-				Error: fmt.Errorf("inference provider openai needs an OpenAI route for %s: set the %s secret (or inference.openai in the committed config) before installing", repoFullName, openAIRouteSecret(d.resolved.Forge)),
-			}
-			continue
-		}
-
 		// Compute WIF for repos that need secrets written.
 		hasSecrets := secretsPresent(d.components)
 		var wif string
-		if !hasSecrets && !skipGCP {
+		if !hasSecrets {
 			switch {
 			case cfg.WIFProvider != "":
 				// Explicit WIF provider — use it verbatim for all repos.
@@ -878,10 +814,6 @@ func convergeRepo(ctx context.Context,
 			// fleet-wide default roles shadowing them.
 			installRoles = nil
 		}
-		inferenceProject, inferenceRegion := cfg.InferenceProject, cfg.InferenceRegion
-		if d.route.OpenAI() {
-			inferenceProject, inferenceRegion = "", ""
-		}
 
 		installCfg := InstallConfig{
 			Owner:                         rr.Owner,
@@ -889,10 +821,8 @@ func convergeRepo(ctx context.Context,
 			Forge:                         resolved.Forge,
 			Roles:                         installRoles,
 			MintURL:                       resolved.MintURL,
-			InferenceProject:              inferenceProject,
-			InferenceRegion:               inferenceRegion,
-			InferenceProvider:             installInferenceProvider(d),
-			InferenceOpenAI:               d.route.OpenAIWIFConfig,
+			InferenceProject:              cfg.InferenceProject,
+			InferenceRegion:               cfg.InferenceRegion,
 			UpstreamRef:                   ref,
 			UpstreamTag:                   tag,
 			WIFProvider:                   wifProvider,
@@ -2050,10 +1980,6 @@ func convergeScaffoldFiles(ctx context.Context,
 		ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 		Runtime:           resolved.Runtime,
 		VendorBinary:      repairVendor,
-		// A repair that regenerates config.yaml must not drop a
-		// committed openai route (#7481).
-		InferenceProvider: installInferenceProvider(d),
-		InferenceOpenAI:   d.route.OpenAIWIFConfig,
 	}
 
 	// When vendored, the running binary's embedded templates match the

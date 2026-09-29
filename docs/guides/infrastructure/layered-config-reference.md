@@ -213,17 +213,14 @@ unset (`""`) falls through to parent, then to code default
 (`provider`, `project`, `region`, `wif_provider`, and the three under
 `openai`) resolves independently through scalar override semantics:
 
-- **`inference.provider`**: Inference provider identifier, `"vertex"` or
-  `"openai"`. Unset (`""`) falls through to parent, then to code default
-  `"vertex"`. The runner still selects the provider per model. See
-  [OpenAI Workload Identity](openai-workload-identity.md) for OpenAI configuration.
-- **`inference.project`**: GCP project ID for Vertex inference. Required for
-  the `"vertex"` route. Unset (`""`) falls through to parent (no code default).
+- **`inference.provider`**: Inference provider identifier (e.g. `"vertex"`).
+  Unset (`""`) falls through to parent, then to code default `"vertex"`.
+- **`inference.project`**: GCP project ID for inference. Unset (`""`) falls
+  through to parent (no code default — must be provided by the installer).
 - **`inference.region`**: GCP region for inference. Unset (`""`) falls
   through to parent, then to code default `"global"`.
-- **`inference.wif_provider`**: Full WIF provider resource name for Vertex
-  inference. Required for the `"vertex"` route. Unset (`""`) falls through
-  to parent (no code default).
+- **`inference.wif_provider`**: Full WIF provider resource name. Unset (`""`)
+  falls through to parent (no code default — must be provided by the installer).
 - **`inference.openai.{audience,identity_provider_id,service_account_id}`**:
   the OpenAI Workload Identity identifiers for GPT on pi or codex (ADR 0092), written
   by `fullsend github setup --openai-*`. Each resolves independently through
