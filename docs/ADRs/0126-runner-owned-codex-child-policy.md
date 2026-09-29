@@ -54,9 +54,11 @@ the spawn arguments: context inheritance, model, effort and resume.
 
 Codex children run under a policy the runner provisions and enforces.
 
-- Only an agent whose tools include `Agent` delegates, as on Claude Code and pi.
-  Bootstrap registers its skill personas plus a generic `default` and an
-  instruction-only `explore` role. Other agents run with Codex's multi-agent tools off.
+- An agent delegates only when its tools include `Agent` (an absent `tools:` includes
+  it, as on Claude Code and pi) and its merged `agents[]` entry names a model under at
+  least one `subagents` key. Bootstrap then registers its skill personas plus a generic
+  `default` and an instruction-only `explore` role. Other agents run with Codex's
+  multi-agent tools off.
 - Child models resolve as in ADR 0104 without the frontmatter step:
   `subagents.<persona>`, then `subagents.default`, then the parent's live model, with
   no Codex-specific default model or environment override. Bootstrap generates each
@@ -77,13 +79,15 @@ Codex children run under a policy the runner provisions and enforces.
 
 ## Consequences
 
-- Review and retro can delegate on Codex once the paired instructions ship; a parent
-  model whose catalog entry selects collaboration V2 cannot delegate under this policy.
+- Review and retro can delegate on Codex once the paired instructions ship and their
+  entries name a `subagents` model; a parent model whose catalog entry selects
+  collaboration V2 cannot delegate under this policy.
 - Departures from ADR 0104 on Codex: persona `model:` is not applied, persona `tools:`
   are instructions only (every child has the parent's shell and `apply_patch`), and an
-  unregistered role is always rejected because `default` and `explore` are always
-  registered.
-- `code` and `fix` declare no `tools:`, so they also get roles, as on pi.
+  unregistered role is always rejected, because a delegating agent always has `default`
+  and `explore` registered.
+- An agent whose entry names no `subagents` model stays single-context on Codex, unlike
+  on Claude Code and pi.
 - The spawn-time check has ADR 0100's residuals: a change that lands between the check
   and the child's load goes undetected within the iteration, and a handler Codex cannot
   complete, such as one that times out or whose interpreter fails to start, is recorded
