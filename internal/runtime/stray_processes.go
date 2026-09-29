@@ -34,10 +34,11 @@ const killStrayProcessesTimeout = 15 * time.Second
 // where such a survivor keeps files open, burns CPU/memory and writes into
 // the workspace the next iteration reads.
 //
-// Process-view assumptions, verified live on OpenShell 0.1.1 with podman:
-// `sandbox exec` runs `sh -c <command>` as the sandbox user, each exec in
-// its own process group, parented to the workload's PID 1
-// (`openshell-sandbox --bootstrap ...`), which also runs as the sandbox user
+// Process-view assumptions, verified live on OpenShell 0.1.1 and 0.1.2 with
+// podman: `sandbox exec` runs `sh -c <command>` as the sandbox user, each
+// exec in its own process group, parented to the workload's PID 1
+// (`openshell-sandbox`; its arguments differ between releases, and nothing
+// here matches on them), which also runs as the sandbox user
 // and so appears in `ps -u`. PID 1 is an ancestor of this shell, which is
 // what the ancestry walk below spares; the supervisor runs in a separate
 // container and is not visible here.

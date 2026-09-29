@@ -58,7 +58,7 @@ if [ -f "${_openshell_version_sh}" ]; then
   source "${_openshell_version_sh}"
 fi
 # Fallback only when the pin file is absent; keep in step with openshell-version.sh.
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.1}"
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.2}"
 
 # Source the executor's gateway helpers (wait_for_openshell_gateway,
 # user_systemctl) so configure_per_job_gateway can wait for the seed start

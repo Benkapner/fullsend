@@ -131,7 +131,7 @@ if [ -f "${_openshell_version_sh}" ]; then
   source "${_openshell_version_sh}"
 fi
 # Fallback only when the pin file is absent; keep in step with openshell-version.sh.
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.1}"
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.2}"
 PREFIX="fullsend-gitlab-runner"
 
 # Validate GCP_USE_IAP early — it controls flag construction below, so an
