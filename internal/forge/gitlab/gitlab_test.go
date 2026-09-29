@@ -2107,6 +2107,43 @@ func TestCommitFileToBranch_EmptyExpectedSHAConcurrentFirstWriterIsNonFastForwar
 	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
 }
 
+// TestCommitFileToBranch_EmptyExpectedSHAConcurrentFirstWriterBadRequestIsNonFastForward
+// is the production GitLab shape of the missing-branch race: the commits API
+// returns 400 (not 409) with "A branch called '...' already exists" when
+// start_sha is the repository root and another writer created the branch
+// first. persistWithCAS retries only on ErrNonFastForward, so this 400 must
+// be mapped the same way as the 409 already-exists case above.
+func TestCommitFileToBranch_EmptyExpectedSHAConcurrentFirstWriterBadRequestIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "root-sha"}})
+		case http.MethodPost:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
+			})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
 func TestCommitFileToBranch_PinsStartSHAWithoutForce(t *testing.T) {
 	client, mux := setupTest(t)
 
@@ -2238,6 +2275,25 @@ func TestCommitFileToBranch_AlreadyExistsIsNonFastForward(t *testing.T) {
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]string{
 			"message": "A branch named 'state-branch' already exists",
+		})
+	})
+
+	err := client.CommitFileToBranch(context.Background(), "owner", "repo", "state-branch", "state.json", "persist", []byte(`{"n":1}`), "loaded-sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err), "expected ErrNonFastForward, got: %v", err)
+}
+
+func TestCommitFileToBranch_BadRequestAlreadyExistsIsNonFastForward(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "A branch called 'state-branch' already exists. Switch to that branch in order to make changes",
 		})
 	})
 
