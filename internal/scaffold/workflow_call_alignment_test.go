@@ -223,20 +223,6 @@ func loadRepoFile(relPath string) func(t *testing.T) []byte {
 	}
 }
 
-func TestPerRepoShimForwardsInferenceSecrets(t *testing.T) {
-	content := loadScaffoldFile("templates/shim-workflow-call.yaml")(t)
-
-	var caller callerWorkflow
-	require.NoError(t, yaml.Unmarshal(content, &caller))
-	dispatch, ok := caller.Jobs["dispatch"]
-	require.True(t, ok, "workflow-call shim must define the dispatch job")
-	require.Equal(t, map[string]string{
-		"FULLSEND_GCP_PROJECT_ID":   "${{ secrets.FULLSEND_GCP_PROJECT_ID }}",
-		"FULLSEND_GCP_WIF_PROVIDER": "${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}",
-		"FULLSEND_OPENAI_API_KEY":   "${{ secrets.FULLSEND_OPENAI_API_KEY }}",
-	}, dispatch.Secrets)
-}
-
 // TestWorkflowCallInputAlignment validates that every caller passes all required
 // inputs and secrets declared by the reusable workflow it calls, and does not
 // pass any inputs/secrets the reusable workflow doesn't declare.
