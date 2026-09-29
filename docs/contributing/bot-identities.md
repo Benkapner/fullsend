@@ -58,9 +58,11 @@ shared-token installs and, when every registered role is ready, retires
 GitLab CI poll/agent jobs and `fullsend poll` / `fullsend run` always
 select the registered role credential and fail closed if that
 secret is missing (see [gitlab-role-credentials.md](gitlab-role-credentials.md)).
-The shared `fullsend-bot` identity no longer authenticates at runtime once
-its credential is retired. Role registration is
-install-state only; repository and merge-request content cannot create or
-elevate a GitLab role.
+The shared `fullsend-bot` identity never authenticates at runtime, not only
+once its credential is retired — runtime credential selection unconditionally
+requires the registered role credential and fails closed otherwise. A
+leftover `FULLSEND_FORGE_TOKEN` is install/uninstall state only. Role
+registration is install-state only; repository and merge-request content
+cannot create or elevate a GitLab role.
 Role credentials are provisioned and the legacy shared credential is retired
 automatically once all registered roles are ready.

@@ -70,7 +70,6 @@ type GitLabRoleCutoverResult struct {
 	Readiness     gitlabroles.BuiltinReadiness
 	Registered    gitlabroles.RegisteredReadiness
 	Lifecycle     gitlabroles.Report
-	Enforced      bool
 	SharedRetired bool
 	DryRun        bool
 	Diagnostics   []string
@@ -127,9 +126,8 @@ func CutoverGitLabRoleCredentials(ctx context.Context, cfg GitLabRoleCutoverConf
 		return result, fmt.Errorf("%w: %s", ErrGitLabRoleCutoverNotReady, cutoverMissingRoles(result))
 	}
 	if cfg.DryRun {
-		result.Enforced = true
 		result.SharedRetired = secretPresent(present, forge.SecretForgeToken)
-		result.Diagnostics = append(result.Diagnostics, "dry-run: would enable enforced mode and retire FULLSEND_FORGE_TOKEN")
+		result.Diagnostics = append(result.Diagnostics, "dry-run: would retire FULLSEND_FORGE_TOKEN")
 		return result, nil
 	}
 
@@ -165,8 +163,6 @@ func CutoverGitLabRoleCredentials(ctx context.Context, cfg GitLabRoleCutoverConf
 	if !latestBuiltin.Ready || !latestRegistered.Ready {
 		return result, fmt.Errorf("%w: state changed during revalidation; rerun verification", ErrGitLabRoleCutoverNotReady)
 	}
-
-	result.Enforced = true
 
 	if err := cfg.Client.DeleteRepoSecret(ctx, cfg.Owner, cfg.Repo, forge.SecretForgeToken); err != nil && !forge.IsNotFound(err) {
 		return result, fmt.Errorf("retiring shared GitLab credential: %w", err)

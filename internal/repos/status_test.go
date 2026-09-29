@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -204,6 +205,54 @@ func TestProbeRepoState_GitLab_LegacyDispatchMarker(t *testing.T) {
 	}
 	if state.FullsendRef != "v2.4.0" {
 		t.Errorf("FullsendRef = %q, want v2.4.0 from leftover dispatch stub", state.FullsendRef)
+	}
+}
+
+// failForgeTokenSecretExistsClient fails RepoSecretExists only for the
+// GitLab shared/role secrets that ProbeRepoState itself checks, leaving the
+// generic required-secret checks inside ProbeComponents (GCP project ID and
+// WIF provider) unaffected. This isolates ProbeRepoState's own error path
+// from the shared RepoSecretExists method used by both.
+type failForgeTokenSecretExistsClient struct {
+	*forge.FakeClient
+}
+
+func (c *failForgeTokenSecretExistsClient) RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error) {
+	switch name {
+	case forge.SecretForgeToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+		return false, fmt.Errorf("denied")
+	}
+	return c.FakeClient.RepoSecretExists(ctx, owner, repo, name)
+}
+
+func TestProbeRepoState_GitLab_RepoSecretExistsError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	client := &failForgeTokenSecretExistsClient{FakeClient: fc}
+
+	_, err := ProbeRepoState(context.Background(), client, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err == nil {
+		t.Fatal("expected error when checking secret existence fails")
+	}
+	if !strings.Contains(err.Error(), "checking secret") {
+		t.Errorf("error = %q, want it to mention checking secret", err.Error())
+	}
+}
+
+func TestProbeRepoState_GitLab_InstalledViaRoleSecretAndWorkflow(t *testing.T) {
+	// A role-only install has no shared FULLSEND_FORGE_TOKEN and no pipeline
+	// schedule, but the workflow carrier plus any built-in role secret is
+	// sufficient install evidence.
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.Secrets["acme/api/"+forge.SecretGitLabPollerToken] = true
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true (workflow carrier plus a role secret)")
 	}
 }
 

@@ -840,6 +840,14 @@ func TestLoadGitLabRoleStateErrors(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), forge.VarGitLabRoleRegistry)
 	})
+
+	t.Run("secret presence read error", func(t *testing.T) {
+		fc := provisionClient(t)
+		fc.Errors["RepoSecretExists"] = fmt.Errorf("denied")
+		_, _, _, err := LoadGitLabRoleState(ctx, fc, "group", "project")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "checking secret")
+	})
 }
 
 func TestAppendGitLabRoleStatus_InvalidInputs(t *testing.T) {

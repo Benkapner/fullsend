@@ -150,8 +150,9 @@ var gitLabRoleUninstallVars = []string{
 
 // ProvisionGitLabRoleCredentials creates or enrolls credentials for
 // every registered role (built-in and custom), stores them as
-// protected masked CI/CD variables, writes the registry and migration
-// gate, and reports which roles are ready.
+// protected masked CI/CD variables, writes the registry, and reports
+// which roles are ready. It never reads or writes the retired
+// migration gate.
 //
 // It never revokes or overwrites FULLSEND_FORGE_TOKEN. Existing role
 // secrets are left in place (reinstall / retry). A failed role does

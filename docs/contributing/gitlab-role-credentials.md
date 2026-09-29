@@ -203,7 +203,7 @@ Unmapped jobs (for example `e2e` or an unregistered custom agent) fail
 closed (`ErrUnregistered`) rather than guessing an identity.
 `ValidateAgent` itself takes no mode and always rejects an unmapped
 name; `Select` / `SelectAgent` call it as a pre-check ahead of
-`Resolve` in every mode.
+`Resolve`.
 
 ## Role-identity state
 
@@ -327,7 +327,7 @@ These are different errors. Do not collapse them.
 
 A registered role whose secret is absent is `ErrUnconfigured` even when
 `FULLSEND_FORGE_TOKEN` is present. `ErrUnregistered` and `ErrAuthFailed`
-never fall back to the shared token in any mode.
+never fall back to the shared token.
 
 ## No silent fallback on authentication failure
 
@@ -336,7 +336,7 @@ fails. It does **not** retry as another identity, including the shared
 bot.
 
 `Resolve` enforces this when `FailedSecret` is set: it returns
-`ErrAuthFailed` in every mode and returns a zero `Source`. Callers that
+`ErrAuthFailed` and returns a zero `Source`. Callers that
 observe an auth failure must either pass that secret name back into
 `Resolve` or stop; they must not call `Resolve` again with a different
 job or a cleared `FailedSecret` in order to pick a substitute.
