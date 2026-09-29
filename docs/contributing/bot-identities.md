@@ -53,14 +53,14 @@ role contract — built-in Poller, Analyst, and Coder plus optional
 administrator-registered custom roles — is defined in
 [gitlab-role-credentials.md](gitlab-role-credentials.md).
 `repos install` provisions those credentials on fresh and existing
-shared-token installs and, when every registered role is ready, enables
-`enforced` mode and retires `FULLSEND_FORGE_TOKEN`.
-GitLab CI poll/agent jobs and `fullsend poll` / `fullsend run` select
-the registered role credential in every gate mode and fail closed if that
+shared-token installs and, when every registered role is ready, retires
+`FULLSEND_FORGE_TOKEN`.
+GitLab CI poll/agent jobs and `fullsend poll` / `fullsend run` always
+select the registered role credential and fail closed if that
 secret is missing (see [gitlab-role-credentials.md](gitlab-role-credentials.md)).
-Leftover `disabled` and explicit `rollback` no longer authenticate as the
-shared `fullsend-bot` identity at runtime. Role registration is
+The shared `fullsend-bot` identity no longer authenticates at runtime once
+its credential is retired. Role registration is
 install-state only; repository and merge-request content cannot create or
 elevate a GitLab role.
-The explicit [`--gitlab-role-cutover --gitlab-role-cutover-drained`](../cli/repos.md#gitlab-role-cutover)
-operation remains a fail-closed retry of that same cutover.
+Role credentials are provisioned and the legacy shared credential is retired
+automatically once all registered roles are ready.
