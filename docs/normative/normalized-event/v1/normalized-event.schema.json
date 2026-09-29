@@ -325,7 +325,7 @@
         },
         "role_verified": {
           "type": "boolean",
-          "description": "Optional verification bit for actor.role; true only when role is a trusted forge permission, and false for bot actors whose role remains the compatibility value none."
+          "description": "Optional verification bit: for humans, true means role is a trusted forge permission; for bots, true means bot_role was successfully resolved."
         },
         "is_entity_author": {
           "type": "boolean",
@@ -340,8 +340,7 @@
           },
           "then": {
             "properties": {
-              "role": { "const": "none" },
-              "role_verified": { "const": false }
+              "role": { "const": "none" }
             }
           }
         },
@@ -355,6 +354,32 @@
               "role": { "type": "string" },
               "bot_role": { "const": null }
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "bot" },
+              "role_verified": { "const": true }
+            },
+            "required": ["kind", "role_verified"]
+          },
+          "then": {
+            "required": ["bot_role"],
+            "properties": { "bot_role": { "type": "string" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "bot" },
+              "bot_role": { "type": "string" }
+            },
+            "required": ["kind", "bot_role"]
+          },
+          "then": {
+            "required": ["role_verified"],
+            "properties": { "role_verified": { "const": true } }
           }
         }
       ]

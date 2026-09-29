@@ -96,10 +96,10 @@ Authorization then follows these rules:
 3. Human actors continue to use ADR 0054's current permission thresholds and
    configured permission providers, including `OWNERS` where enabled.
 4. The normalized event retains `actor.kind`, `actor.role: "none"`, an
-   optional `actor.role_verified` flag, and the optional resolved bot role. The
-   flag is true only when `actor.role` is a verified forge permission; it is
-   false for bots because `role: "none"` is a compatibility value, while
-   `bot_role` carries the separately verified bot identity. The resolver and
+   optional `actor.role_verified` flag, and the optional resolved bot role. For
+   bots, the flag is true exactly when `bot_role` was successfully resolved;
+   it is false when the bot is unknown or resolution failed. For humans, it is
+   true only when `actor.role` is a verified forge permission. The resolver and
    audit record retain whether bot-role resolution was successful,
    unrecognized, or failed. An unavailable or unverifiable actor-resolution
    result is authorization unusable; neither failed nor unrecognized

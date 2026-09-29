@@ -94,10 +94,10 @@ The adapter/provider MUST classify the verified actor using authoritative
 source-system metadata before authorization. This may include a provider actor
 name when that forge gives it bot-specific semantics, such as GitHub's `[bot]`
 logins; labels, review types, and arbitrary event-content strings are not bot
-identity signals. For `actor.kind: bot`, `actor.role` MUST be `none`,
-`actor.role_verified` MUST be false when present, and the optional
-`actor.bot_role` is either the exact provider-resolved Fullsend bot role or is
-absent/null when the bot is not recognized. For `actor.kind: human`,
+identity signals. For `actor.kind: bot`, `actor.role` MUST be `none`, and
+`actor.role_verified` is true exactly when the provider successfully resolves
+`actor.bot_role`; it is false when `bot_role` is absent/null. For
+`actor.kind: human`,
 `actor.bot_role` MUST be absent or `null`, and `actor.role` contains the forge
 permission role when `actor.role_verified` is true. Only a non-null,
 provider-resolved `actor.bot_role` can pass the bot dispatch gate; CEL may
@@ -144,7 +144,7 @@ describe behavior currently implemented by `fullsend dispatch` or
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | `actor.role` is empty or missing for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role` is not `none` for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
-| `actor.role_verified` is true for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.role_verified` is true but `actor.bot_role` is absent for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.bot_role` is non-null for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
