@@ -17,6 +17,7 @@
     "kind": "bot",
     "role": "none",
     "bot_role": "review",
+    "role_verified": false,
     "is_entity_author": false
   },
   "state": {

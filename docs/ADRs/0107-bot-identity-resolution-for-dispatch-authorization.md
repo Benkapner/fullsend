@@ -95,12 +95,15 @@ Authorization then follows these rules:
    authorization evidence.
 3. Human actors continue to use ADR 0054's current permission thresholds and
    configured permission providers, including `OWNERS` where enabled.
-4. The normalized event retains `actor.kind`, `actor.role: "none"`, and the
-   optional resolved bot role. The resolver and audit record retain whether
-   resolution was successful, unrecognized, or failed. Following the
-   fail-closed actor-verification rule in [PR 7080](https://github.com/fullsend-ai/fullsend/pull/7080),
-   an unavailable or unverifiable actor-resolution result is authorization
-   unusable; neither failed nor unrecognized resolution may trigger an agent.
+4. The normalized event retains `actor.kind`, `actor.role: "none"`, an
+   optional `actor.role_verified` flag, and the optional resolved bot role. The
+   flag is true only when `actor.role` is a verified forge permission; it is
+   false for bots because `role: "none"` is a compatibility value, while
+   `bot_role` carries the separately verified bot identity. The resolver and
+   audit record retain whether bot-role resolution was successful,
+   unrecognized, or failed. An unavailable or unverifiable actor-resolution
+   result is authorization unusable; neither failed nor unrecognized
+   resolution may trigger an agent.
 
 Adapters MUST resolve the actor that actually caused the transition. For an
 edited comment or other mutable content, authorization uses the editor rather
@@ -127,7 +130,8 @@ portable to non-mint deployments.
 - CEL gains a separate canonical bot-role value that can distinguish `review`
   from other recognized agent roles without becoming the authorization boundary.
 - Existing v1 consumers continue to receive the bot-compatible `role: "none"`
-  value; `bot_role` is additive and may be absent when no role is resolved.
+  value; `role_verified` and `bot_role` are additive and may be absent when no
+  role is resolved.
 - Mint and non-mint deployments must maintain an exact bot-identity registry and
   fail closed when it is unavailable or incomplete.
 - Existing `[bot]` regex carve-outs and generic label/review exceptions remain

@@ -169,6 +169,12 @@ bot classification and the provider-backed optional `bot_role` lookup. The
 compatibility value `role: none` is retained for bots; a bot's forge
 installation permission is not copied into `actor.role`.
 
+`actor.role_verified` is an optional additive field. When present, it is true
+only when `actor.role` is a trusted forge permission; it is false for bots and
+for any actor whose `role` is only a fail-closed compatibility value. A
+recognized bot is therefore represented as `kind: bot`, `role: none`,
+`role_verified: false`, and a provider-resolved `bot_role`.
+
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based

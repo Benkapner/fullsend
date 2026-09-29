@@ -17,6 +17,7 @@
     "kind": "bot",
     "role": "none",
     "bot_role": "triage",
+    "role_verified": false,
     "is_entity_author": false
   },
   "state": {

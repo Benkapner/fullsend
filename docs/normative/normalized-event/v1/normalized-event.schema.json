@@ -323,6 +323,10 @@
           "minLength": 1,
           "description": "Optional provider-resolved canonical Fullsend bot role; absent or null for humans and unrecognized bots."
         },
+        "role_verified": {
+          "type": "boolean",
+          "description": "Optional verification bit for actor.role; true only when role is a trusted forge permission, and false for bot actors whose role remains the compatibility value none."
+        },
         "is_entity_author": {
           "type": "boolean",
           "description": "True when actor.id is the author of the work item, change proposal, or conversation."
@@ -335,7 +339,10 @@
             "required": ["kind"]
           },
           "then": {
-            "properties": { "role": { "const": "none" } }
+            "properties": {
+              "role": { "const": "none" },
+              "role_verified": { "const": false }
+            }
           }
         },
         {

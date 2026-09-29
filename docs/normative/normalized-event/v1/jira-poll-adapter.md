@@ -68,6 +68,7 @@ the first line after the command (same rules as
 | `actor.kind` | `bot` when Jira account type is `app`, display name matches automation pattern, or the actor is the authenticated poller account (from `/myself`); else `human` |
 | `actor.bot_role` | Provider lookup of the verified bot identity; the canonical Fullsend role when recognized, otherwise `null` |
 | `actor.role` | `none` for bots; for humans, derived from the actor's Jira project role: `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
+| `actor.role_verified` | `false` for bots; `true` for humans whose Jira project role was resolved, otherwise `false` |
 | `actor.is_entity_author` | `true` when actor is the issue reporter |
 
 Authorization is enforced by `fullsend dispatch` per
