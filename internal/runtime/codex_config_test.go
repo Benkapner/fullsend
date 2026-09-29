@@ -123,6 +123,9 @@ func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
 		"[skills.bundled]",
 		// The curated plugin marketplace is fetched from GitHub at startup.
 		"[features]\nplugins = false",
+		// codex turns its multi-agent tools on by default; no sub-agent
+		// roster is wired on codex.
+		"[agents]\nenabled = false",
 		`wire_api = "responses"`,
 		`base_url = "` + codexBaseURL + `"`,
 		`refresh_interval_ms = 30000`,

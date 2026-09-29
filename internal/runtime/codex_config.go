@@ -109,6 +109,12 @@ const codexAuthTimeoutMS = 5000
 // on roles whose GitHub profile allows git fetches, it would pull content
 // fullsend does not control into the sandbox.
 //
+// `[agents] enabled = false` removes codex's multi-agent tools (spawn_agent,
+// wait_agent, ...), which are on by default. fullsend wires no sub-agent
+// roster on codex, and a child's token usage is not in the parent's
+// turn.completed. `[features] multi_agent = false` is not enough: the model's
+// catalog entry overrides it (verified on 0.157.0 and 0.158.0).
+//
 // `web_search` must be stated: codex's default is "cached", not off.
 // `history.persistence` governs `history.jsonl` (the prompt history) only —
 // session rollouts under sessions/, which are the transcripts, are unaffected.
@@ -137,6 +143,9 @@ enabled = false
 
 [features]
 plugins = false
+
+[agents]
+enabled = false
 
 [projects.{{ .ProjectKey }}]
 trust_level = "untrusted"
