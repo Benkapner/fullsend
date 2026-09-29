@@ -417,7 +417,10 @@ const codexEnvReadSeparator = "|fullsend-env-sep|"
 
 // codexReadHarnessSecurityEnvCmd sources envFile silently, so nothing a
 // sourced file prints lands in front of the first value, and prints the
-// codexHarnessSecurityEnvKeys values joined by codexEnvReadSeparator. The
+// codexHarnessSecurityEnvKeys values joined by codexEnvReadSeparator. A failed
+// source prints nothing and exits non-zero, so a broken .env fails Bootstrap
+// instead of pinning the values as unset. Its stderr stays discarded because
+// the shell echoes the offending .env line, which can carry a token. The
 // references are double-quoted, not shellQuote'd: single quotes would print
 // the literal "${KEY:-}" text instead of expanding it.
 func codexReadHarnessSecurityEnvCmd(envFile string) string {
@@ -425,7 +428,7 @@ func codexReadHarnessSecurityEnvCmd(envFile string) string {
 	for _, key := range codexHarnessSecurityEnvKeys {
 		refs = append(refs, fmt.Sprintf("${%s:-}", key))
 	}
-	return fmt.Sprintf(`. %s >/dev/null 2>&1; printf '%%s' "%s"`,
+	return fmt.Sprintf(`. %s >/dev/null 2>&1 && printf '%%s' "%s"`,
 		shellQuote(envFile), strings.Join(refs, codexEnvReadSeparator))
 }
 
