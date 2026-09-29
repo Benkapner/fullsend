@@ -62,13 +62,13 @@ per-overlay:
 | `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
 | `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage is forge-agnostic (ADR-0073). **Top level only** — not a `ForgeConfig` field |
-| `schema_version`   | Schema contract version, forge-agnostic (ADR-0115); absent = version `1`. **Planned, not yet implemented** |
-| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0116, ADR-0117). **Planned, not yet implemented** |
+| `schema_version`   | Schema contract version, forge-agnostic (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
+| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** |
 
-## Semantic types (ADR 0115)
+## Semantic types (ADR 0127)
 
 Each harness field has a semantic type that governs how fullsend interprets
-its value ([ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md)).
+its value ([ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)).
 The following groups cover the top-level fields and their nested values;
 `forge.<platform>` and `overlays[]` inherit the types of their shared
 `ForgeConfig` fields. A map or list container is structural; its keys and
@@ -117,7 +117,7 @@ their own validation and defaults; this type table does not override them.
 The planned `schema_version` field (absent = `1` once implemented) will declare
 this contract; an incompatible field-type change will require a version bump
 and an update to this table in the same change. Backward-compatible field
-additions do not require a bump; [ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md)
+additions do not require a bump; [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)
 leaves other breaking schema changes for a separate versioning policy. Once
 version-aware loaders are implemented, they will reject malformed or
 unsupported versions in each raw composition layer before merging; older
@@ -236,7 +236,7 @@ Overlay `when` expressions are evaluated with:
   harness schema — original architectural decision (Superseded by ADR-0088)
 - [ADR-0088](../ADRs/0088-cel-guarded-overlays.md): CEL-guarded overlays —
   current overlay mechanism
-- [ADR-0115](../ADRs/0115-harness-schema-versioning-and-field-types.md): Harness
+- [ADR-0127](../ADRs/0127-harness-schema-versioning-and-field-types.md): Harness
   schema versioning and field semantic types
 - [Harness Composition](harness-composition.md): Merge function checklist
   (step 6 references this document)

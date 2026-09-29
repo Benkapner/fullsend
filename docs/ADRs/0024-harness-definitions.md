@@ -776,7 +776,7 @@ intentionally deferred to keep scope manageable:
   files may need a `version` field for schema evolution (e.g. when fields are
   renamed or restructured). The team agreed this is important but not
   blocking — failed validation can surface schema drift without a version
-  field. Decided in [ADR 0115](0115-harness-schema-versioning-and-field-types.md):
+  field. Decided in [ADR 0127](0127-harness-schema-versioning-and-field-types.md):
   a planned `schema_version` field (absent = `1`) with field-level semantic
   types. Type-violation checks in `Harness.Lint()` are not yet implemented.
 - **Protected vs. freely overridable fields

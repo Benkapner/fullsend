@@ -385,7 +385,7 @@ Implementation was phased: Phase 1 (MVP), Phase 2 (transitive dependency resolut
 
 ### 2026-09-28: Clarify URL-base input and preflight semantics
 
-When inherited from a URL-referenced `base:`, relative script paths are fetched and rewritten as described in [ADR 0045](0045-forge-portable-harness-schema.md), but `agent_input` is a directory and is **cleared**, not fetched; a child needing it must supply a local directory. The `preflight_check` value is a literal host `sh -c` command, not an executable resource path, and is never resource-resolved ([ADR 0116](0116-preflight-check-literal-command.md)). The current URL-base delivery rules, including other field types, are maintained in the [harness field reference](../contributing/harness-fields.md#semantic-types-adr-0115).
+When inherited from a URL-referenced `base:`, relative script paths are fetched and rewritten as described in [ADR 0045](0045-forge-portable-harness-schema.md), but `agent_input` is a directory and is **cleared**, not fetched; a child needing it must supply a local directory. The `preflight_check` value is a literal host `sh -c` command, not an executable resource path, and is never resource-resolved ([ADR 0128](0128-preflight-check-literal-command.md)). The current URL-base delivery rules, including other field types, are maintained in the [harness field reference](../contributing/harness-fields.md#semantic-types-adr-0127).
 
 ### 2026-06-30: Git sparse checkout replaces forge APIs for skill directory fetching (#2735)
 

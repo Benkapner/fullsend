@@ -1,5 +1,5 @@
 ---
-title: "115. Harness schema versioning and field types"
+title: "127. Harness schema versioning and field types"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -10,7 +10,7 @@ topics:
   - validation
 ---
 
-# 115. Harness schema versioning and field types
+# 127. Harness schema versioning and field types
 
 Date: 2026-09-24
 
