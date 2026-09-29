@@ -1354,6 +1354,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// below has to see it too — reading it here keeps it to one read for
 	// every provider entry.
 	agentDefModel := agentruntime.AgentDefinitionModel(h.Agent)
+	needsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
 	// skippedProviders are harness-declared providers the selected runtime
 	// does not need (an openai entry on a Vertex run, see
 	// runtime.NeedsOpenAIProvider): nothing is created for them and their
@@ -1458,7 +1459,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// the Vertex provider without making every run resolve an
 			// OpenAI credential (#6920); the profile is not imported and
 			// the instance is not created or attached.
-			if !agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases) {
+			if !needsOpenAIProvider {
 				skippedProviders[pd.Name] = struct{}{}
 				// Counts as handled, so the "declared but no definition
 				// found" warning below does not also fire for it.
@@ -1614,6 +1615,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// request a skip via the pre-script output protocol
 	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
 	// ends here — before sandbox creation.
+	if err := validateOptionalGCPCredentials(h, needsOpenAIProvider); err != nil {
+		printer.StepFail("Inference credential validation failed")
+		return err
+	}
 	var preResult prescript.Result
 	if h.PreScript != "" {
 		// maybeRemintAgentTokenForStage (and preRestore below) may
@@ -4077,6 +4082,32 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 		SpanKind:        spanKind,
 		PropagatedFlags: propagatedFlags,
 	}
+}
+
+// validateOptionalGCPCredentials keeps the generic optional host-file mount
+// usable by OpenAI runs while failing a Vertex run before its pre-script can
+// cause side effects.
+func validateOptionalGCPCredentials(h *harness.Harness, needsOpenAIProvider bool) error {
+	if needsOpenAIProvider {
+		return nil
+	}
+	for i, hf := range h.HostFiles {
+		if !hf.Optional || hf.Src != "${GOOGLE_APPLICATION_CREDENTIALS}" {
+			continue
+		}
+		path := safeExpandEnv(hf.Src)
+		if path == "" {
+			return fmt.Errorf("host_files[%d]: Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file", i)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("host_files[%d]: Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file: %w", i, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("host_files[%d]: Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to a regular file", i)
+		}
+	}
+	return nil
 }
 
 // runPreScript executes the harness pre-script with the pre-script output

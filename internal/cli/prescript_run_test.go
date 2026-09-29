@@ -101,6 +101,57 @@ func TestRunAgent_PreScriptSkip_ReturnsBeforeSandboxCreation(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// A Vertex run must reject the optional GCP mount before the pre-script can
+// mutate repository state. The marker proves the script never ran.
+func TestRunAgent_VertexMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+func TestValidateOptionalGCPCredentials_RouteSpecific(t *testing.T) {
+	h := &harness.Harness{HostFiles: []harness.HostFile{{
+		Src:      "${GOOGLE_APPLICATION_CREDENTIALS}",
+		Dest:     "/tmp/.gcp-credentials.json",
+		Optional: true,
+	}}}
+
+	t.Run("OpenAI permits missing GCP credentials", func(t *testing.T) {
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+		require.NoError(t, validateOptionalGCPCredentials(h, true))
+	})
+
+	t.Run("Vertex accepts an existing GCP credential file", func(t *testing.T) {
+		credentials := filepath.Join(t.TempDir(), "credentials.json")
+		require.NoError(t, os.WriteFile(credentials, []byte("{}"), 0o600))
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
+		require.NoError(t, validateOptionalGCPCredentials(h, false))
+	})
+
+	t.Run("Vertex rejects a missing GCP credential file", func(t *testing.T) {
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing.json"))
+		require.ErrorContains(t, validateOptionalGCPCredentials(h, false), "existing file")
+	})
+
+	t.Run("Vertex rejects a directory", func(t *testing.T) {
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir())
+		require.ErrorContains(t, validateOptionalGCPCredentials(h, false), "regular file")
+	})
+}
+
 // Without a skip, the run must still reach sandbox creation — a guard
 // against the skip path swallowing every run — and skipped=false must be
 // relayed so an absent key means only "this CLI predates the protocol".
