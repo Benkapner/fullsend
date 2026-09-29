@@ -41,9 +41,11 @@ The historical drift and remaining contract gap are tracked in issue
 [#7764](https://github.com/fullsend-ai/fullsend/issues/7764), which motivates
 this decision.
 
-This is an ADR-only change. It specifies the target contract and does not yet
-modify the normalized-event structs, forge adapters, resolver, or dispatch
-authorization implementation.
+This decision does not yet modify the Go runtime implementation (normalized-
+event structs, forge adapters, resolver, or dispatch authorization). The
+accompanying normative specification documents are updated in this PR to
+describe the target contract; those updates do not imply that the behavior is
+already deployed.
 
 ## Options
 
@@ -96,17 +98,18 @@ bot's content is trustworthy.
 
 Authorization then follows these rules:
 
-1. A recognized bot satisfies the identity prerequisite for bot-originated
-   dispatch. This does not grant forge permission, mutation authority, or a
-   hardcoded destination stage. The selected harness and its generic
-   transition/target policy determine routing; CEL and other routing layers
-   MAY narrow this by requiring a particular `actor.bot_role`, transition,
-   label, review state, fork state, or other policy condition, but MUST NOT
-   broaden authorization to an unrecognized bot. This same contract supports
-   BYOA identities without a bot-name-to-stage allowlist.
+1. A recognized bot satisfies only the bot-identity prerequisite for
+   bot-originated dispatch. It does not by itself authorize an event, stage,
+   forge mutation, or destination. The selected harness's generic
+   transition/target policy and any applicable observation-versus-mutation
+   checks remain mandatory before dispatch. CEL and other routing layers MAY
+   narrow this by requiring a particular `actor.bot_role`, transition, label,
+   review state, fork state, or other policy condition, but MUST NOT broaden
+   authorization to an unrecognized bot. This same contract supports BYOA
+   identities without a bot-name-to-stage allowlist.
 2. A bot with no recognized role, or a bot whose lookup fails, is denied before
-   CEL evaluation. Bot classification without a recognized role, a label
-   transition, or a bot-authored review is not by itself sufficient
+   CEL evaluation. Neither bot classification without a recognized role, nor
+   a label transition, nor a bot-authored review is by itself sufficient
    authorization evidence.
 3. Human actors continue to use ADR 0054's current permission thresholds and
    configured permission providers, including `OWNERS` where enabled.

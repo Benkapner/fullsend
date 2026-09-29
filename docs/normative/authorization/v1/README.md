@@ -158,7 +158,7 @@ migration is complete.
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | `actor.role` is empty or missing for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role_verified` is false for a human | Denied regardless of `actor.role` |
-| `actor.role` is not `none` for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| Legacy bot event has an `actor.role` other than `none` | Valid in the v1 compatibility schema; authorization follows current compatibility behavior during migration and is not an ADR 0107 bot-role authorization result |
 | `actor.role_verified` is false but `actor.bot_role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.bot_role` is non-null for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
@@ -197,11 +197,16 @@ its installation token.
 
 ### Bot-submitted reviews (GitHub)
 
-After the resolver is implemented, a GitHub review event is authorized only
-when the provider classifies the actor as a bot and resolves its exact
-registered `actor.bot_role`; `actor.role` remains `none`. The downstream
-harness CEL trigger may further constrain
-which bot role and review state are accepted.
+**Current compatibility behavior:** Until the resolver is implemented,
+`fullsend dispatch` continues to authorize a GitHub `review_submitted` event
+from a bot without requiring a collaborator permission or `actor.bot_role`.
+This existing exception is not evidence that the bot identity was resolved.
+
+**ADR 0107 target behavior:** After the resolver is implemented, a GitHub
+review event is authorized only when the provider classifies the actor as a
+bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
+`none`. The downstream harness CEL trigger may further constrain which bot
+role and review state are accepted.
 
 ### Lifecycle close (pull\_request\_target.closed)
 

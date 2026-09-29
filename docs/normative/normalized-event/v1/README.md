@@ -111,6 +111,9 @@ the provider may resolve `actor.bot_role`; `actor.role` remains `none` for v1
 compatibility. Authorization comes from the recognized bot identity rather than
 the forge permission role.
 `fullsend dispatch` applies the same identity lookup as webhook paths.
+If that lookup returns no recognized role or fails/unverifiable, authorization
+is denied. These lookup and denial rules are ADR 0107 target behavior and are
+not yet enforced by the production runtime.
 
 ### Transition sub-objects
 
