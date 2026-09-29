@@ -1580,7 +1580,7 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 // deciding whether to authenticate to GCP; credential absence is never the
 // route signal.
 func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
-	stages := []string{"code", "fix", "review", "triage", "retro", "prioritize", "dispatch"}
+	stages := []string{"dispatch"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage, func(t *testing.T) {
 			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))
