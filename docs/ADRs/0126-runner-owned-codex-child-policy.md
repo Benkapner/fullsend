@@ -69,6 +69,9 @@ Codex children run under a policy the runner provisions and enforces.
 - Before admitting a spawn, the hook checks `hooks.json` and the role files against
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
   hook script before invoking it.
+- The hook fails closed: a policy violation, a digest mismatch, a missing file,
+  unreadable input or any error in the hook denies the spawn with exit 2 and a reason,
+  the only exit Codex treats as a block. Bootstrap fails if it cannot install the hook.
 
 ## Consequences
 
@@ -79,8 +82,9 @@ Codex children run under a policy the runner provisions and enforces.
   unregistered role is always rejected because `default` and `explore` are always
   registered.
 - `code` and `fix` declare no `tools:`, so they also get roles, as on pi.
-- The spawn-time check has ADR 0100's residual: a change that lands between the check
-  and the child's load goes undetected within the iteration.
+- The spawn-time check has ADR 0100's residuals: a change that lands between the check
+  and the child's load goes undetected within the iteration, and a handler Codex cannot
+  complete, such as one that times out, is recorded as failed and does not block.
 - Token totals include children, attributed per native thread; Codex still reports no
   dollar cost.
 - Role loading, hook reload and collaboration tool names are revalidated on each Codex
