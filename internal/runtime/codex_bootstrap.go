@@ -330,9 +330,11 @@ const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"truncates exec output (head and tail, dropping the middle). For each file, run `wc -l`, " +
 	"then `sed -n '<start>,<end>p'` in contiguous ranges of at most 200 lines, one range per " +
 	"tool call, including a short final chunk so the last line is covered — do not round the " +
-	"line count down to a multiple of 200. Never combine files or ranges in one exec. Inspect " +
-	"the returned output for a truncation warning before advancing; reread any truncated " +
-	"range with a smaller window.\n"
+	"line count down to a multiple of 200 (a 425-line file is three ranges: `1,200p`, " +
+	"`201,400p`, `401,425p`). Never combine files or ranges in one exec. Inspect the returned " +
+	"output for a truncation warning before advancing; if a range is truncated, split it into " +
+	"smaller contiguous windows that together still cover its start through end — never skip " +
+	"the back half — and read those windows before moving on to the next range.\n"
 
 // codexUnsupportedTools returns the Claude tool names from an agent
 // definition that have no codex tool. Unlike pi, nothing is dropped from an
