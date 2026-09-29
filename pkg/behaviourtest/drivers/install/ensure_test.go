@@ -138,10 +138,16 @@ type stubClient struct {
 
 	getRepoErr       error
 	createRepoErr    error
+	createRepoErrSeq []error // per-call CreateRepo errors; nil entry = success
 	createRepoCalled atomic.Int32
 
 	deleteRepoErr    error
 	deleteRepoCalled atomic.Int32
+
+	// staleGetAfterDelete keeps GetRepo succeeding after DeleteRepo,
+	// simulating GitHub serving a cached repo object whose deletion
+	// has not yet propagated (#7839).
+	staleGetAfterDelete bool
 
 	// forkExists controls whether GetRepo returns success for fork
 	// repos (names ending in "-fork"). When false (default), fork
@@ -179,8 +185,13 @@ func (s *stubClient) GetRepo(_ context.Context, _, repo string) (*forge.Reposito
 }
 
 func (s *stubClient) CreateRepo(_ context.Context, _, _, _ string, _ bool) (*forge.Repository, error) {
-	s.createRepoCalled.Add(1)
-	if s.createRepoErr != nil {
+	n := s.createRepoCalled.Add(1)
+	if seq := s.createRepoErrSeq; seq != nil {
+		idx := int(n - 1)
+		if idx < len(seq) && seq[idx] != nil {
+			return nil, seq[idx]
+		}
+	} else if s.createRepoErr != nil {
 		return nil, s.createRepoErr
 	}
 	// Simulate eventual consistency: the repo is available after create,
@@ -202,9 +213,11 @@ func (s *stubClient) DeleteRepo(_ context.Context, _, repo string) error {
 	if s.deleteRepoErr != nil {
 		return s.deleteRepoErr
 	}
-	// Simulate eventual consistency: the repo is gone after delete,
-	// so subsequent GetRepo calls should return ErrNotFound.
-	s.getRepoErr = forge.ErrNotFound
+	if !s.staleGetAfterDelete {
+		// Simulate eventual consistency: the repo is gone after delete,
+		// so subsequent GetRepo calls should return ErrNotFound.
+		s.getRepoErr = forge.ErrNotFound
+	}
 	return nil
 }
 
@@ -1179,15 +1192,6 @@ func TestEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
 		"concurrent callers should only create the repo once")
 }
 
-func TestEnsureRepoExists_AlreadyExists(t *testing.T) {
-	sc := &stubClient{}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(0), sc.createRepoCalled.Load())
-}
-
 func TestEnsureRepoExists_CreatesWithAutoInit(t *testing.T) {
 	sc := &stubClient{getRepoErr: forge.ErrNotFound}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
@@ -1197,20 +1201,44 @@ func TestEnsureRepoExists_CreatesWithAutoInit(t *testing.T) {
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
 }
 
-func TestEnsureRepoExists_NonNotFoundError(t *testing.T) {
-	sc := &stubClient{getRepoErr: assert.AnError}
+func TestEnsureRepoExists_StaleGetRepoStillCreates(t *testing.T) {
+	// GetRepo succeeding after delete is not proof the name is ready
+	// (#7839). Create anyway so a stale cached object cannot skip
+	// recreation and leave a later setup call to 404.
+	sc := &stubClient{}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.createRepoCalled.Load(), "must CreateRepo even when GetRepo succeeds")
+}
+
+func TestEnsureRepoExists_RetriesAlreadyExistsThenSucceeds(t *testing.T) {
+	speedUpResetRetries(t)
+	sc := &stubClient{
+		createRepoErrSeq: []error{forge.ErrAlreadyExists, forge.ErrAlreadyExists, nil},
+	}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), sc.createRepoCalled.Load())
+}
+
+func TestEnsureRepoExists_AlreadyExistsExhausted_Errors(t *testing.T) {
+	speedUpResetRetries(t)
+	sc := &stubClient{createRepoErr: forge.ErrAlreadyExists}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
 
 	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking repo")
+	assert.Contains(t, err.Error(), "name still taken")
+	assert.Equal(t, int32(resetMaxAttempts), sc.createRepoCalled.Load(),
+		"retry loop must terminate after resetMaxAttempts")
 }
 
 func TestEnsureRepoExists_CreateRepoError(t *testing.T) {
-	sc := &stubClient{
-		getRepoErr:    forge.ErrNotFound,
-		createRepoErr: fmt.Errorf("permission denied"),
-	}
+	sc := &stubClient{createRepoErr: fmt.Errorf("permission denied")}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
 
 	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
@@ -1218,6 +1246,20 @@ func TestEnsureRepoExists_CreateRepoError(t *testing.T) {
 	assert.Contains(t, err.Error(), "creating repo")
 	assert.Contains(t, err.Error(), "permission denied")
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
+}
+
+func TestEnsureRepoExists_ContextCancellation(t *testing.T) {
+	speedUpResetRetries(t)
+	sc := &stubClient{createRepoErr: forge.ErrAlreadyExists}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := e.ensureRepoExists(ctx, "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+	assert.Equal(t, int32(0), sc.createRepoCalled.Load())
 }
 
 func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
@@ -1607,6 +1649,58 @@ func TestEnsurer_DeleteThenEnsure_Recreates(t *testing.T) {
 		"re-ensure after delete must recreate rather than hit the lease cache")
 }
 
+func TestEnsurer_StaleDeleteStillRecreates(t *testing.T) {
+	// DeleteRepo succeeds but GetRepo keeps returning the old object.
+	// Allocation must still CreateRepo rather than declare the stale
+	// object ready and let a later github setup 404 (#7839).
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{
+		installed:           true,
+		staleGetAfterDelete: true,
+	}
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-07")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+	assert.Equal(t, int32(1), sc.createRepoCalled.Load(),
+		"stale GetRepo after delete must not skip CreateRepo")
+}
+
+func TestEnsurer_DeleteNeverPropagates_Errors(t *testing.T) {
+	// Deletion is accepted but the name never becomes free. The retry
+	// loop must terminate with an error instead of hanging or treating
+	// the leftover repo as allocation-ready.
+	speedUpResetRetries(t)
+	sc := &stubClient{
+		staleGetAfterDelete: true,
+		createRepoErr:       forge.ErrAlreadyExists,
+	}
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-12")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name still taken")
+	assert.Equal(t, int32(resetMaxAttempts), sc.createRepoCalled.Load())
+}
+
 // --- resetRepo unit tests ---
 
 func TestResetRepo_DeletesExistingRepo(t *testing.T) {
@@ -1775,7 +1869,7 @@ func TestAwaitDeletion_ProceedsAfterMaxAttempts(t *testing.T) {
 	e := &repoEnsurer{client: client, logf: t.Logf}
 
 	err := e.awaitDeletion(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err, "should not error when max attempts exhausted")
+	require.NoError(t, err, "timeout hands off to ensureRepoExists create-with-retry")
 	assert.Equal(t, resetMaxAttempts, client.getRepoCalls)
 }
 
