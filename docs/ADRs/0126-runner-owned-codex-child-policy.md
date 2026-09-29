@@ -92,7 +92,6 @@ Codex children run under a policy the runner provisions and enforces.
   and the child's load goes undetected within the iteration, and a handler Codex cannot
   complete, such as one that times out or whose interpreter fails to start, is recorded
   as failed and does not block.
-- Token totals include children, attributed per native thread; Codex still reports no
-  dollar cost.
+- Token totals include children; Codex still reports no dollar cost.
 - Role loading, child model inheritance, hook reload and collaboration tool names are
   revalidated on each Codex CLI bump.
