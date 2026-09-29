@@ -62,26 +62,16 @@ func TestModePredicates(t *testing.T) {
 	assert.True(t, ModeMigrating.RequiresRoleCredentials())
 	assert.False(t, ModeDisabled.RequiresRoleCredentials())
 	assert.False(t, ModeRollback.RequiresRoleCredentials())
-
-	assert.True(t, ModeEnforced.OperatorSettable())
-	assert.True(t, ModeRollback.OperatorSettable())
-	assert.False(t, ModeDisabled.OperatorSettable())
-	assert.False(t, ModeMigrating.OperatorSettable())
 }
 
-func TestModeFromAndPresenceFrom(t *testing.T) {
+func TestPresenceFrom(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:  "migrating",
 		forge.SecretForgeToken:        "shared",
 		forge.SecretGitLabPollerToken: "poller",
 		forge.SecretGitLabCoderToken:  "  ",
 	}
 	getenv := func(k string) string { return env[k] }
-
-	mode, err := ModeFrom(getenv)
-	require.NoError(t, err)
-	assert.Equal(t, ModeMigrating, mode)
 
 	present := PresenceFrom(getenv, Registry{})
 	assert.True(t, present[forge.SecretForgeToken])
@@ -90,19 +80,8 @@ func TestModeFromAndPresenceFrom(t *testing.T) {
 	assert.False(t, present[forge.SecretGitLabCoderToken], "whitespace-only is absent")
 }
 
-func TestModeFromInvalid(t *testing.T) {
-	t.Parallel()
-	_, err := ModeFrom(func(string) string { return "nope" })
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidMode)
-}
-
-func TestModeFromNilGetenvUsesEnv(t *testing.T) {
-	t.Setenv(forge.VarGitLabRoleMigration, "rollback")
+func TestPresenceFromNilGetenvUsesEnv(t *testing.T) {
 	t.Setenv(forge.SecretForgeToken, "x")
-	mode, err := ModeFrom(nil)
-	require.NoError(t, err)
-	assert.Equal(t, ModeRollback, mode)
 	present := PresenceFrom(nil, Registry{})
 	assert.True(t, present[forge.SecretForgeToken])
 }
@@ -279,11 +258,22 @@ func TestResolveAuthFailureNeverFallsBack(t *testing.T) {
 	}
 }
 
-func TestResolveInvalidMode(t *testing.T) {
+func TestResolveInvalidModeStillRequiresRoleSecret(t *testing.T) {
 	t.Parallel()
 	_, err := Resolve(Request{Mode: Mode("weird"), Job: PollerJob(), Present: map[string]bool{forge.SecretForgeToken: true}})
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidMode)
+	assert.ErrorIs(t, err, ErrUnconfigured)
+	assert.NotErrorIs(t, err, ErrInvalidMode)
+	assert.Contains(t, err.Error(), forge.SecretGitLabPollerToken)
+
+	src, err := Resolve(Request{
+		Mode:    Mode("weird"),
+		Job:     PollerJob(),
+		Present: map[string]bool{forge.SecretGitLabPollerToken: true},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, forge.SecretGitLabPollerToken, src.SecretName)
+	assert.False(t, src.Shared)
 }
 
 func TestResolveUnknownKind(t *testing.T) {
@@ -302,7 +292,7 @@ func TestDiagnoseExistingInstall(t *testing.T) {
 	rep := Diagnose(ModeDisabled, map[string]bool{forge.SecretForgeToken: true}, Registry{})
 	assert.Equal(t, ModeDisabled, rep.Mode)
 	assert.True(t, rep.SharedPresent)
-	assert.True(t, rep.Ready, "existing install with shared token is ready")
+	assert.False(t, rep.Ready, "a leftover shared token alone is not readiness; role secrets are still missing")
 	assert.False(t, rep.Partial)
 	assert.Equal(t, []Role{RolePoller, RoleAnalyst, RoleCoder}, rep.Missing)
 	require.Len(t, rep.Roles, 3)
@@ -311,8 +301,8 @@ func TestDiagnoseExistingInstall(t *testing.T) {
 		assert.Equal(t, RoleKindBuiltin, rr.Kind)
 	}
 	joined := strings.Join(rep.Diagnostics, "\n")
-	assert.Contains(t, joined, "legacy shared-token path ready")
-	assert.Contains(t, joined, "not required")
+	assert.Contains(t, joined, "missing (required)")
+	assert.Contains(t, joined, "no role credentials configured")
 	for _, d := range rep.Diagnostics {
 		assert.NotRegexp(t, `glpat-|sk-|ghp_`, d)
 	}
@@ -359,7 +349,7 @@ func TestDiagnoseAllRolesReady(t *testing.T) {
 	disabled := Diagnose(ModeDisabled, present, Registry{})
 	assert.True(t, disabled.Ready)
 	joined := strings.Join(disabled.Diagnostics, "\n")
-	assert.Contains(t, joined, "configured but unused")
+	assert.Contains(t, joined, "all role credentials configured")
 }
 
 func TestDiagnoseInvalidMode(t *testing.T) {
@@ -374,23 +364,19 @@ func TestDiagnoseMissingSharedDisabled(t *testing.T) {
 	t.Parallel()
 	rep := Diagnose(ModeDisabled, nil, Registry{})
 	assert.False(t, rep.Ready)
-	assert.Contains(t, strings.Join(rep.Diagnostics, "\n"), "legacy path not ready")
+	assert.Contains(t, strings.Join(rep.Diagnostics, "\n"), "no role credentials configured")
 }
 
-// TestDiagnoseReadyDivergesFromResolveOnLeftoverModes documents a known,
-// intentional gap flagged in review on #7811: Diagnose.Ready is
-// install/converge-state readiness (see Report.Ready), while runtime
-// credential selection (Resolve/Select) always requires the registered
-// role secret in every mode, including leftover disabled and explicit
-// rollback, with no shared-token fallback (#7782). An install that only
-// has the legacy FULLSEND_FORGE_TOKEN provisioned — not yet migrated to
-// per-role secrets — reports Ready via Diagnose (a truthful statement
-// about install/converge state) while `fullsend poll`/`fullsend run`
-// fail closed with ErrUnconfigured on that same install. Do not "fix"
-// this by making the two agree without also updating repos
-// status/converge (#7501/#7524), which intentionally still branch on
-// the legacy shared-token path and are out of scope for #7782.
-func TestDiagnoseReadyDivergesFromResolveOnLeftoverModes(t *testing.T) {
+// TestDiagnoseReadyAgreesWithResolveOnLeftoverModes confirms Diagnose.Ready
+// (see Report.Ready) agrees with runtime credential selection
+// (Resolve/Select) on leftover disabled and explicit rollback installs:
+// both require the registered per-role secret and neither accepts a
+// lingering FULLSEND_FORGE_TOKEN as sufficient. This previously diverged
+// (flagged in review on #7811 and #7818) — Diagnose reported Ready from
+// the shared token alone while Select still failed closed. That gap is
+// fixed: Diagnose.Ready is now false whenever a role secret is missing,
+// regardless of mode.
+func TestDiagnoseReadyAgreesWithResolveOnLeftoverModes(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []Mode{ModeDisabled, ModeRollback} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -398,8 +384,8 @@ func TestDiagnoseReadyDivergesFromResolveOnLeftoverModes(t *testing.T) {
 			present := map[string]bool{forge.SecretForgeToken: true}
 
 			rep := Diagnose(mode, present, Registry{})
-			assert.True(t, rep.Ready,
-				"Diagnose reports install/converge-state readiness from the shared token alone")
+			assert.False(t, rep.Ready,
+				"a lingering shared token alone is not readiness; role secrets are still missing")
 
 			getenv := func(k string) string {
 				if k == forge.SecretForgeToken {
