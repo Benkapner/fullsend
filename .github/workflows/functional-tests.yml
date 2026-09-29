@@ -180,16 +180,19 @@ jobs:
       - name: Start Podman API service
         if: steps.changes.outputs.relevant != 'false'
         run: |
+          # Socket-activated under the user's systemd, as in action.yml. The
+          # OpenShell gateway is a systemd user service that pins the podman
+          # driver and needs this socket to answer when it starts. With a
+          # `podman system service &` started from a step instead, it failed
+          # with "no responsive Podman API socket found".
+          systemctl --user start podman.socket
           SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-          if [ ! -S "${SOCKET_PATH}" ]; then
-            mkdir -p "$(dirname "${SOCKET_PATH}")"
-            podman system service --time=0 "unix://${SOCKET_PATH}" &
-            for _i in $(seq 1 30); do
-              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
-              sleep 1
-            done
-            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
-          fi
+          for _i in $(seq 1 30); do
+            podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 \
+            || { echo "::error::Podman socket not ready at ${SOCKET_PATH}"; exit 1; }
 
       # After Podman: the gateway pins compute_driver = "podman" and does not
       # start without the Podman API socket.
