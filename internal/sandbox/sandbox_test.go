@@ -2129,6 +2129,14 @@ func TestIsTransientProviderErr(t *testing.T) {
 	assert.True(t, isTransientProviderErr(errors.New("provider was modified concurrently")))
 	assert.False(t, isTransientProviderErr(fmt.Errorf("status: PermissionDenied")))
 	assert.False(t, isTransientProviderErr(fmt.Errorf("provider was modified by an operator")))
+
+	// OpenShell 0.1.x wording for a profile a concurrent run is reimporting,
+	// as seen in functional-tests with four parallel eval cases.
+	notFound := `provider create "github-ro" failed: exit status 1 (output: Error:   × provider profile 'fullsend-github-ro' not found; import a matching profile`
+	assert.True(t, isTransientProviderErr(errors.New(notFound)))
+	notFoundWrapped := "Error:   × provider profile 'fullsend-vertex-ai' not\n  │ found; import a matching profile"
+	assert.True(t, isTransientProviderErr(errors.New(notFoundWrapped)), "must match across the CLI's line wrap")
+	assert.False(t, isTransientProviderErr(errors.New("provider 'github-ro' not found")), "a missing provider is not a missing profile")
 }
 
 // TestEnsureProvider_NoRetryOnOtherErrors verifies that non-transient
