@@ -21,7 +21,6 @@
     "id": "alice",
     "kind": "human",
     "role": "write",
-    "bot_role": null,
     "is_entity_author": false
   },
   "state": {

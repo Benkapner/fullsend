@@ -12,7 +12,6 @@
     "id": "maintainer",
     "kind": "human",
     "role": "maintain",
-    "bot_role": null,
     "is_entity_author": false
   },
   "state": {

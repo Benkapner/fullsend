@@ -18,7 +18,6 @@
     "id": "557058:abc123def456",
     "kind": "human",
     "role": "write",
-    "bot_role": null,
     "is_entity_author": false
   },
   "state": {
