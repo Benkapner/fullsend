@@ -4,6 +4,11 @@ Fullsend can use Prow-style `OWNERS` files to authorize users to run
 agents without needing direct collaborator roles on the forge. You can
 introduce these files whether your project already uses Prow or not.
 
+> **GitHub only.** The `owners_file` provider is read on the GitHub
+> webhook dispatch path (slash commands, label triggers, and event
+> triggers). The Go poll path used for GitLab and Jira does not read
+> OWNERS — authorization on those platforms uses native forge roles only.
+
 For background on the default forge-permission model (write vs. triage
 thresholds, dispatch-path differences), see
 [Agent dispatch authorization](customizing-agents.md#agent-dispatch-authorization).
@@ -28,14 +33,12 @@ thresholds, dispatch-path differences), see
      - carol
    ```
 
-   `approvers` receive `write`-equivalent access — all slash commands and
-   custom agents registered under `agents:`. `reviewers` receive
-   `triage`-equivalent access — on GitHub webhook dispatch, this allows
-   `/fs-triage` and `/fs-review` (custom agents still require `write`).
-   On the Go poll path (GitLab/Jira), triage-equivalent access does not
-   yet grant observation commands — see
-   [dispatch authorization](customizing-agents.md#agent-dispatch-authorization)
-   for details.
+   `approvers` receive `write`-equivalent access — all agent slash
+   commands and custom agents registered under `agents:`.
+   **Exception:** `/fs-fix-stop` always checks the forge's collaborator
+   API (or PR authorship) and does not read OWNERS. `reviewers` receive
+   `triage`-equivalent access — `/fs-triage` and `/fs-review` only
+   (custom agents still require `write`).
 
 3. _(Optional)_ Define aliases in an `OWNERS_ALIASES` file at the repository
    root:
