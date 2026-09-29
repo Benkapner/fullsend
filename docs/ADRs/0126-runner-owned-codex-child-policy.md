@@ -58,7 +58,9 @@ Codex children run under a policy the runner provisions and enforces.
   Bootstrap registers its skill personas plus a generic `default` and an
   instruction-only `explore` role. Other agents run with Codex's multi-agent tools off.
 - Child models resolve as in ADR 0104 without the frontmatter step:
-  `subagents.<persona>`, then `subagents.default`, then the parent's live model. Only
+  `subagents.<persona>`, then `subagents.default`, then the parent's live model.
+  Bootstrap generates each role file and writes a configured model into it; a role
+  with nothing configured carries no model, so its child inherits the parent's. Only
   OpenAI model IDs are accepted, and an explicit model that cannot be served fails
   rather than falling back. Persona `model:` and `tools:` frontmatter is reported, not
   applied.
@@ -88,5 +90,5 @@ Codex children run under a policy the runner provisions and enforces.
   as failed and does not block.
 - Token totals include children, attributed per native thread; Codex still reports no
   dollar cost.
-- Role loading, hook reload and collaboration tool names are revalidated on each Codex
-  CLI bump.
+- Role loading, child model inheritance, hook reload and collaboration tool names are
+  revalidated on each Codex CLI bump.
