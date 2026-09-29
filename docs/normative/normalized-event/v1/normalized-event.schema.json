@@ -316,7 +316,7 @@
             "none",
             "external"
           ],
-          "description": "Effective repository permission level (ADR 0054) for human actors; `none` is retained for bot actors for v1 compatibility."
+          "description": "Effective repository permission level (ADR 0054); ADR 0107 target producers use `none` for bots, while legacy bot permission values remain valid in v1."
         },
         "bot_role": {
           "type": ["string", "null"],
@@ -333,17 +333,6 @@
         }
       },
       "allOf": [
-        {
-          "if": {
-            "properties": { "kind": { "const": "bot" } },
-            "required": ["kind"]
-          },
-          "then": {
-            "properties": {
-              "role": { "const": "none" }
-            }
-          }
-        },
         {
           "if": {
             "properties": { "kind": { "const": "human" } },

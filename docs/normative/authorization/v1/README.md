@@ -6,9 +6,14 @@ This document is the single living contract for authorization policy.
 The historical decision and rationale are recorded in
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
-`actor.role`, `actor.kind`, and `actor.bot_role` fields consumed by this
+`actor.role`, `actor.kind`, `actor.role_verified`, and `actor.bot_role` fields consumed by this
 contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
+
+> **ADR 0107 target contract — not yet implemented:** The bot identity fields,
+> resolver outcomes, and bot-specific fail-closed rows below describe the
+> behavior to be implemented by the adapters and dispatch path. Until that
+> migration lands, existing compatibility behavior remains authoritative.
 
 ## Role ordering
 
@@ -103,6 +108,11 @@ permission role when `actor.role_verified` is true. Only a non-null,
 provider-resolved `actor.bot_role` can pass the bot dispatch gate; CEL may
 further restrict it but cannot create or broaden it.
 
+For humans, `role_verified: false` denies the event regardless of the role
+string. A missing `role_verified` on a trusted pre-migration event is treated
+as legacy input and retains the current human authorization behavior; new
+adapters MUST emit the field, and their false value MUST fail closed.
+
 ## Default thresholds
 
 | Category | Minimum role | Rationale |
@@ -135,6 +145,10 @@ The entity-discovery rows below specify the future ADR 0098 path and do not
 describe behavior currently implemented by `fullsend dispatch` or
 `fullsend poll`.
 
+The bot-specific rows in the following table are ADR 0107 target behavior;
+legacy events remain subject to the compatibility rules until implementation
+migration is complete.
+
 | Condition | Outcome |
 |-----------|---------|
 | Collaborator API returns an unrecognized `role_name` | Mapped to `none`; denied |
@@ -143,6 +157,7 @@ describe behavior currently implemented by `fullsend dispatch` or
 | Bot-role lookup fails or is unverifiable | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent/null; denied, with the failure retained in resolver/audit diagnostics |
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | `actor.role` is empty or missing for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.role_verified` is false for a human | Denied regardless of `actor.role` |
 | `actor.role` is not `none` for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role_verified` is false but `actor.bot_role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.bot_role` is non-null for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
@@ -177,6 +192,9 @@ completes) rely on this path because the collaborator API often returns
 404 for `[bot]` accounts even when the GitHub App has write access via
 its installation token.
 
+> **Current compatibility behavior:** Until ADR 0107 is implemented, this
+> exception remains in force and is not replaced by the bot-role gate.
+
 ### Bot-submitted reviews (GitHub)
 
 After the resolver is implemented, a GitHub review event is authorized only
@@ -202,6 +220,10 @@ Adapters set `actor.kind` to `bot`, resolve the configured identity through the
 provider, set `actor.bot_role` when recognized, and leave `actor.role` as
 `none`. The standard identity authorization gate applies; an unrecognized or
 unresolved service identity is denied.
+
+> **Target contract, not yet implemented:** Existing schedule/manual
+> compatibility handling remains authoritative until provider-backed bot-role
+> resolution is wired into the adapters and dispatch path.
 
 ### Fullsend-originated entity discovery
 

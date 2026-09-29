@@ -23,6 +23,11 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   decision is recorded in
   [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 
+> **ADR 0107 target contract — not yet implemented:** The bot-specific actor
+> fields and lookup semantics described below are normative design, but current
+> adapters and Go event types have not yet been migrated to emit or enforce
+> them. Existing compatibility behavior remains authoritative until migration.
+
 ## Scope (v1)
 
 v1 adapters and examples target **GitHub** webhooks, **GitLab** cron-poll
@@ -175,6 +180,9 @@ when the bot-role lookup completed, whether it found a role or not. A
 recognized bot has `role_verified: true` and a provider-resolved `bot_role`; an
 unknown bot has `role_verified: true` and an absent/null `bot_role`; failed
 resolution has `role_verified: false` and no `bot_role`.
+
+This is the ADR 0107 target representation; it is not yet emitted by the
+production adapters or available as a runtime CEL field.
 
 ### Fork security (`state.change_proposal.is_fork`)
 

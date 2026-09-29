@@ -45,6 +45,18 @@ This is an ADR-only change. It specifies the target contract and does not yet
 modify the normalized-event structs, forge adapters, resolver, or dispatch
 authorization implementation.
 
+## Options
+
+Inferring the Fullsend role from a username suffix or forge `actor.kind` is
+rejected because it cannot distinguish a registered Fullsend role from an
+unrelated or spoofed automation identity. Source-native bot classification is
+still allowed where the forge defines an authoritative signal, such as GitHub's
+`[bot]` login convention. Repeating App-to-role mapping in every forge adapter
+is also rejected because it creates inconsistent trust decisions and cannot
+share the mint's authoritative installation knowledge. A provider-backed lookup
+centralizes identity resolution while keeping the authorization contract
+portable to non-mint deployments.
+
 ## Decision
 
 Fullsend introduces a provider-backed bot-role resolution step before event
@@ -84,11 +96,14 @@ bot's content is trustworthy.
 
 Authorization then follows these rules:
 
-1. A recognized bot is authorized at the platform dispatch gate for events it
-   emits. Harness CEL and other routing layers MAY narrow this by requiring a
-   particular `actor.bot_role`, transition, label, review state, fork state, or
-   other policy condition; they MUST NOT broaden authorization to an
-   unrecognized bot.
+1. A recognized bot satisfies the identity prerequisite for bot-originated
+   dispatch. This does not grant forge permission, mutation authority, or a
+   hardcoded destination stage. The selected harness and its generic
+   transition/target policy determine routing; CEL and other routing layers
+   MAY narrow this by requiring a particular `actor.bot_role`, transition,
+   label, review state, fork state, or other policy condition, but MUST NOT
+   broaden authorization to an unrecognized bot. This same contract supports
+   BYOA identities without a bot-name-to-stage allowlist.
 2. A bot with no recognized role, or a bot whose lookup fails, is denied before
    CEL evaluation. Bot classification without a recognized role, a label
    transition, or a bot-authored review is not by itself sufficient
@@ -111,18 +126,6 @@ edited comment or other mutable content, authorization uses the editor rather
 than the original author. All event content remains untrusted after bot
 authorization; identity authorization does not authorize instructions in the
 event.
-
-## Options
-
-Inferring the Fullsend role from a username suffix or forge `actor.kind` is
-rejected because it cannot distinguish a registered Fullsend role from an
-unrelated or spoofed automation identity. Source-native bot classification is
-still allowed where the forge defines an authoritative signal, such as GitHub's
-`[bot]` login convention. Repeating App-to-role mapping in every forge adapter
-is also rejected because it creates inconsistent trust decisions and cannot
-share the mint's authoritative installation knowledge. A provider-backed lookup
-centralizes identity resolution while keeping the authorization contract
-portable to non-mint deployments.
 
 ## Consequences
 
