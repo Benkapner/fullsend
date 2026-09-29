@@ -283,7 +283,7 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		route = *po.route
 	} else {
 		var err error
-		route, err = ProbeInferenceRoute(ctx, client, owner, repo)
+		route, err = ProbeInferenceRoute(ctx, client, owner, repo, forgeName)
 		if err != nil {
 			return nil, err
 		}

@@ -5796,6 +5796,84 @@ func TestConverge_OpenAIRoute_MissingRouteFails(t *testing.T) {
 	}
 }
 
+func TestConverge_OpenAIRoute_UsesPresetWIFOnFreshInstall(t *testing.T) {
+	presetYAML := "version: \"1\"\n" +
+		"inference:\n  openai:\n    audience: aud\n    identity_provider_id: idp\n    service_account_id: sa\n"
+	presetPath := writePresetFile(t, presetYAML)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.InferenceProvider = "openai"
+	m.Defaults.ConfigBase.Source = presetPath
+	sc := &spyScaffoldCommit{}
+	cfg := ConvergeConfig{Manifest: m, MaxConcurrency: 4, Roles: []string{"triage"}, Direct: true}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if failed := result.Failed(); len(failed) != 0 {
+		t.Fatalf("unexpected failure: %v", failed[0].Error)
+	}
+
+	var overlay, base []byte
+	for _, f := range sc.files {
+		switch f.Path {
+		case ".fullsend/config.yaml":
+			overlay = f.Content
+		case ".fullsend/config.base.yaml":
+			base = f.Content
+		}
+	}
+	effective, err := config.ParsePerRepoConfigWriterLayered(overlay, base)
+	if err != nil {
+		t.Fatalf("parsing installed configuration: %v", err)
+	}
+	want := config.OpenAIWIFConfig{Audience: "aud", IdentityProviderID: "idp", ServiceAccountID: "sa"}
+	if got := effective.ConfigInferenceOpenAI(); got != want {
+		t.Fatalf("effective OpenAI WIF = %+v, want %+v", got, want)
+	}
+}
+
+func TestConverge_OpenAIRoute_GitLabRequiresAPIKeyDespiteWIF(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte(
+		"version: \"1\"\ninference:\n  provider: openai\n  openai:\n    audience: aud\n    identity_provider_id: idp\n    service_account_id: sa\n")
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+
+	cfg := gitlabConvergeCfg("acme/api")
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	failed := result.Failed()
+	if len(failed) != 1 || !strings.Contains(failed[0].Error.Error(), gitlabOpenAIKeyVar) {
+		t.Fatalf("expected missing GitLab OpenAI API key failure, got %v", failed)
+	}
+	if sc.called {
+		t.Error("nothing may be committed when the GitLab OpenAI API key is missing")
+	}
+}
+
+func TestConverge_OpenAIRoute_GitLabIgnoresPartialWIFWithAPIKey(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte(
+		"version: \"1\"\ninference:\n  provider: openai\n  openai:\n    audience: aud\n")
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.Secrets["acme/api/"+gitlabOpenAIKeyVar] = true
+
+	cfg := gitlabConvergeCfg("acme/api")
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if failed := result.Failed(); len(failed) != 0 {
+		t.Fatalf("GitLab must ignore GitHub WIF fields when its API key exists: %v", failed[0].Error)
+	}
+}
+
 func TestConverge_OpenAIRoute_FromCommittedConfig(t *testing.T) {
 	// An existing repo whose committed config says openai (installed by
 	// github setup, say) needs no manifest field and no GCP flags when
@@ -5823,9 +5901,9 @@ func TestConverge_OpenAIRoute_FromCommittedConfig(t *testing.T) {
 	}
 }
 
-func TestConverge_OpenAIRoute_GCPFlagsStillApplyWhenGiven(t *testing.T) {
-	// Operators that pass the GCP flags for the whole batch keep both
-	// routes on an openai repo: the flags are honoured as before.
+func TestConverge_OpenAIRoute_IgnoresGCPFlags(t *testing.T) {
+	// The selected provider is authoritative: batch-level GCP flags may
+	// serve vertex repositories, but never provision GCP on an openai repo.
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
 	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
@@ -5842,12 +5920,32 @@ func TestConverge_OpenAIRoute_GCPFlagsStillApplyWhenGiven(t *testing.T) {
 	for _, f := range result.Failed() {
 		t.Errorf("unexpected failure: %s/%s: %v", f.Owner, f.Repo, f.Error)
 	}
-	wrote := map[string]bool{}
 	for _, s := range fc.CreatedSecrets {
-		wrote[s.Name] = true
+		if s.Name == forge.SecretGCPProjectID || s.Name == forge.SecretGCPWIFProvider {
+			t.Errorf("GCP secret %s must not be written for an openai repo", s.Name)
+		}
 	}
-	if !wrote[forge.SecretGCPProjectID] || !wrote[forge.SecretGCPWIFProvider] {
-		t.Errorf("expected the GCP pair to be written when the flags are given, wrote %v", wrote)
+}
+
+func TestConverge_OpenAIRoute_GCPFlagsDoNotReplaceOpenAICredential(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.InferenceProvider = "openai"
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	failed := result.Failed()
+	if len(failed) != 1 || !strings.Contains(failed[0].Error.Error(), forge.SecretOpenAIAPIKey) {
+		t.Fatalf("expected missing OpenAI credential failure, got %v", failed)
+	}
+	if sc.called {
+		t.Error("nothing may be committed when the OpenAI credential is missing")
 	}
 }
 

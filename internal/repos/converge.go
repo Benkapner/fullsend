@@ -493,7 +493,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
 				return
 			}
-			route, routeErr := ProbeInferenceRoute(ctx, fc.Client, rr.Owner, rr.Repo)
+			route, routeErr := ProbeInferenceRoute(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge)
 			if routeErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: routeErr}
 				return
@@ -560,6 +560,30 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				continue
 			}
 			d.preset = data
+			if d.route.OpenAI() && !d.route.FromConfig && d.resolved.Forge == ForgeGitHub {
+				presetConfig, parseErr := config.ParsePerRepoConfigWriter(data)
+				if parseErr != nil {
+					result.Results[i] = ConvergeResult{
+						Owner: d.repo.Owner,
+						Repo:  d.repo.Repo,
+						Error: fmt.Errorf("parsing config preset: %w", parseErr),
+					}
+					continue
+				}
+				ids := presetConfig.ConfigInferenceOpenAI().Trimmed()
+				if missing := ids.Missing(); !ids.IsZero() && len(missing) > 0 {
+					result.Results[i] = ConvergeResult{
+						Owner: d.repo.Owner,
+						Repo:  d.repo.Repo,
+						Error: fmt.Errorf("inference.openai in the config preset is partially configured: missing %s", strings.Join(missing, ", ")),
+					}
+					continue
+				}
+				if !ids.IsZero() {
+					d.route.OpenAIWIF = true
+					d.route.OpenAIWIFConfig = ids
+				}
+			}
 			if shouldWarnRemotePreset(d.resolved.Config, d.resolved.ConfigHash, warnedRemote) {
 				progress(d.repo.Owner+"/"+d.repo.Repo, "preset",
 					"Remote preset fetched without config_base.sha256; content integrity is not verified")
@@ -581,12 +605,10 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			d.managedConfig = body
 		}
 
-		// An openai-route repo with no GCP flags gets no GCP secrets at
-		// all (#7481): skip WIF derivation and the project requirement,
-		// but insist on an OpenAI route, the way github setup does — a
-		// missing route would only surface at the first GPT run.
-		openAIOnly := d.route.OpenAI() && cfg.InferenceProject == "" && cfg.WIFProvider == ""
-		if openAIOnly && !d.route.OpenAIWIF && !hasComponent(d.components, "secret:"+openAIRouteSecret(d.resolved.Forge)) {
+		// The selected route is authoritative: openai repositories require
+		// an OpenAI credential and never provision GCP inference credentials.
+		skipGCP := d.route.OpenAI()
+		if d.route.OpenAI() && !d.route.OpenAIWIF && !hasComponent(d.components, "secret:"+openAIRouteSecret(d.resolved.Forge)) {
 			repoFullName := d.repo.Owner + "/" + d.repo.Repo
 			result.Results[i] = ConvergeResult{
 				Owner: d.repo.Owner,
@@ -599,7 +621,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// Compute WIF for repos that need secrets written.
 		hasSecrets := secretsPresent(d.components)
 		var wif string
-		if !hasSecrets && !openAIOnly {
+		if !hasSecrets && !skipGCP {
 			switch {
 			case cfg.WIFProvider != "":
 				// Explicit WIF provider — use it verbatim for all repos.
@@ -856,6 +878,10 @@ func convergeRepo(ctx context.Context,
 			// fleet-wide default roles shadowing them.
 			installRoles = nil
 		}
+		inferenceProject, inferenceRegion := cfg.InferenceProject, cfg.InferenceRegion
+		if d.route.OpenAI() {
+			inferenceProject, inferenceRegion = "", ""
+		}
 
 		installCfg := InstallConfig{
 			Owner:                         rr.Owner,
@@ -863,8 +889,8 @@ func convergeRepo(ctx context.Context,
 			Forge:                         resolved.Forge,
 			Roles:                         installRoles,
 			MintURL:                       resolved.MintURL,
-			InferenceProject:              cfg.InferenceProject,
-			InferenceRegion:               cfg.InferenceRegion,
+			InferenceProject:              inferenceProject,
+			InferenceRegion:               inferenceRegion,
 			InferenceProvider:             installInferenceProvider(d),
 			InferenceOpenAI:               d.route.OpenAIWIFConfig,
 			UpstreamRef:                   ref,

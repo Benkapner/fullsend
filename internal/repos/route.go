@@ -46,7 +46,7 @@ func (r InferenceRoute) OpenAI() bool {
 // layers from the default branch and returns the inference route they
 // declare. A missing layer is not an error; an unparsable one is,
 // because install and status must not guess at what such a repo needs.
-func ProbeInferenceRoute(ctx context.Context, client forge.Client, owner, repo string) (InferenceRoute, error) {
+func ProbeInferenceRoute(ctx context.Context, client forge.Client, owner, repo, forgeName string) (InferenceRoute, error) {
 	var overlay, base []byte
 	haveOverlay, haveBase := false, false
 	if data, err := client.GetFileContent(ctx, owner, repo, ".fullsend/config.yaml"); err == nil {
@@ -72,6 +72,9 @@ func ProbeInferenceRoute(ctx context.Context, client forge.Client, owner, repo s
 		route.Provider = p
 	}
 	ids := parsed.ConfigInferenceOpenAI().Trimmed()
+	if forgeName == ForgeGitLab {
+		return route, nil
+	}
 	if missing := ids.Missing(); !ids.IsZero() && len(missing) > 0 {
 		// The runner treats a partial trio as an error, never as a
 		// fallback to the static key (resolveOpenAICredential), so an

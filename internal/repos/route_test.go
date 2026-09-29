@@ -17,7 +17,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 
 	t.Run("no config layer: vertex, not from config", func(t *testing.T) {
 		fc := forge.NewFakeClient()
-		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.NoError(t, err)
 		assert.Equal(t, InferenceRoute{Provider: "vertex"}, route)
 		assert.False(t, route.OpenAI())
@@ -26,7 +26,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 	t.Run("overlay declares openai", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\ninference:\n  provider: openai\n")
-		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.NoError(t, err)
 		assert.Equal(t, InferenceRoute{Provider: "openai", FromConfig: true}, route)
 		assert.True(t, route.OpenAI())
@@ -36,7 +36,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\ninference:\n  provider: openai\n")
 		fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\n")
-		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.NoError(t, err)
 		assert.Equal(t, "openai", route.Provider)
 		assert.True(t, route.FromConfig)
@@ -45,7 +45,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 	t.Run("config without provider: vertex from config", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
-		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.NoError(t, err)
 		assert.Equal(t, InferenceRoute{Provider: "vertex", FromConfig: true}, route)
 	})
@@ -54,7 +54,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte(
 			"version: \"1\"\ninference:\n  provider: openai\n  openai:\n    audience: aud\n    identity_provider_id: idp\n    service_account_id: sa\n")
-		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.NoError(t, err)
 		assert.True(t, route.OpenAIWIF)
 	})
@@ -66,7 +66,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 		fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte(
 			"version: \"1\"\ninference:\n  provider: openai\n  openai:\n    audience: aud\n")
 		fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
-		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "partially configured")
 		assert.Contains(t, err.Error(), "identity_provider_id")
@@ -76,7 +76,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte(
 			"version: \"1\"\ninference:\n  openai:\n    audience: aud\n")
-		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		route, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.NoError(t, err)
 		assert.Equal(t, "vertex", route.Provider)
 		assert.False(t, route.OpenAIWIF)
@@ -85,7 +85,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 	t.Run("unparsable config is an error", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\ninference: [\n")
-		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "per-repo config of acme/api")
 	})
@@ -93,7 +93,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 	t.Run("API error is surfaced, not treated as absent", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.GetFileContentErrors = map[string]error{"acme/api/.fullsend/config.yaml": fmt.Errorf("HTTP 500")}
-		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "reading .fullsend/config.yaml")
 	})
@@ -101,7 +101,7 @@ func TestProbeInferenceRoute(t *testing.T) {
 	t.Run("base-layer API error is surfaced too", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.GetFileContentErrors = map[string]error{"acme/api/.fullsend/config.base.yaml": fmt.Errorf("HTTP 500")}
-		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api")
+		_, err := ProbeInferenceRoute(ctx, fc, "acme", "api", ForgeGitHub)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "reading .fullsend/config.base.yaml")
 	})

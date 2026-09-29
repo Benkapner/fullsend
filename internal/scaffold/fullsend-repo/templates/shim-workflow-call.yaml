@@ -3,8 +3,8 @@
 # lint-workflow-size: max-lines=280
 # fullsend shim workflow (workflow_call mode)
 # Routes events to agent workflows in .fullsend via workflow_call.
-# No secrets are needed in the enrolled repo — agents fetch scoped tokens
-# from the centralized token mint using GitHub OIDC.
+# Forge tokens come from the centralized token mint using GitHub OIDC.
+# Inference credentials are forwarded explicitly to the reusable workflow.
 #
 # Security: pull_request_target runs the BASE branch version of this workflow,
 # preventing PRs from modifying it to exfiltrate credentials.
@@ -58,6 +58,10 @@ jobs:
     uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
     with:
       event_action: ${{ github.event.action }}
+    secrets:
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
 
   stop-fix:
     # Job-level if: is intentionally coarse — it only screens for the
