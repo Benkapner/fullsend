@@ -408,7 +408,7 @@ resolves to its registered credential.
 `RegisteredReadiness.Ready` separately covers every registered role. Overall
 repos status combines both results. Diagnostics carry role names and secret
 *names* only, and status appends these lines after the Diagnose report without
-changing the gate.
+retiring the shared token.
 
 ## Verification and retirement
 
