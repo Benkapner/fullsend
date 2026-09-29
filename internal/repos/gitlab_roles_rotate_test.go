@@ -321,28 +321,6 @@ func TestRotateGitLabRoleCredentials_GraceCleanupRevokesOutgoing(t *testing.T) {
 	assert.Equal(t, []int{1}, tokens.revoked)
 }
 
-func TestRotateGitLabRoleCredentials_DisabledSkipsWithoutForce(t *testing.T) {
-	t.Skip("legacy migration-gate behavior removed")
-	t.Parallel()
-	fc := seededRoleClient(t, gitlabroles.RolePoller)
-	tokens := &fakeTokens{}
-	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
-
-	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-		Owner:    "group",
-		Repo:     "project",
-		Client:   fc,
-		Tokens:   tokens,
-		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeDisabled,
-		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
-	})
-	require.NoError(t, err)
-	assert.Empty(t, result.Rotated)
-	assert.Empty(t, tokens.created)
-	assert.Contains(t, strings.Join(result.Diagnostics, "\n"), "skip rotation")
-}
-
 func TestRotateGitLabRoleCredentials_DryRunDoesNotWrite(t *testing.T) {
 	t.Parallel()
 	fc := seededRoleClient(t, gitlabroles.RolePoller)
@@ -833,17 +811,10 @@ func TestSecretLeakRotateAndWriteState(t *testing.T) {
 	assert.Contains(t, raw, `"roles"`)
 }
 
-func TestRotateGitLabRoleCredentials_NilClientAndInvalidMode(t *testing.T) {
-	t.Skip("legacy migration-gate behavior removed")
+func TestRotateGitLabRoleCredentials_NilClient(t *testing.T) {
 	t.Parallel()
 	_, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{})
 	require.Error(t, err)
-	_, err = RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-		Client: provisionClient(t),
-		Mode:   gitlabroles.Mode("nope"),
-	})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, gitlabroles.ErrInvalidMode)
 }
 
 func TestRotateGitLabRoleCredentials_DoesNotTouchSharedToken(t *testing.T) {
@@ -934,25 +905,6 @@ func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
 	EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{}, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), status)
 	assert.True(t, status.GitLabRolesReady)
 	assert.NotContains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), "secret present but no matching project access token")
-}
-
-func TestEnrichGitLabRoleStatusSharedOnlyOmitsRoleReadinessDiagnostics(t *testing.T) {
-	t.Skip("legacy migration-gate behavior removed")
-	t.Parallel()
-	for _, mode := range []gitlabroles.Mode{gitlabroles.ModeDisabled, gitlabroles.ModeRollback} {
-		t.Run(string(mode), func(t *testing.T) {
-			fc := provisionClient(t)
-			fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = string(mode)
-			fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
-			status := &RepoStatus{}
-			EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", nil, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), status)
-			joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
-			assert.NotContains(t, joined, "builtin poller:")
-			assert.NotContains(t, joined, "builtin roles ready:")
-			assert.NotRegexp(t, `registered role \S+: (not )?ready`, joined)
-			assert.True(t, status.GitLabRolesReady)
-		})
-	}
 }
 
 func TestEnrichGitLabRoleStatusIncludesRegisteredReadiness(t *testing.T) {

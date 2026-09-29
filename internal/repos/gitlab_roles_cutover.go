@@ -14,9 +14,9 @@ import (
 )
 
 // ErrGitLabRoleCutoverNotReady indicates a required role credential is
-// missing or not yet ready when cutover is attempted. Ordinary unflagged
-// install treats this as deferred: leave migrating, do not reopen the
-// shared-token fallback.
+// missing or not yet ready when cutover is attempted. Ordinary install
+// treats this as deferred: leave the existing state in place and do not
+// reopen the shared-token fallback.
 var ErrGitLabRoleCutoverNotReady = errors.New("GitLab role cutover is not ready")
 
 // ErrGitLabRoleCutoverStateChanged indicates the role registry, credential
@@ -49,9 +49,11 @@ func LockGitLabRoleOperation(owner, repo string) func() {
 	return lock.Unlock
 }
 
-// GitLabRoleCutoverConfig controls verification-and-cutover. Ordinary
-// unflagged `repos install` calls this after provisioning when roles are
-// ready. Explicit `--gitlab-role-cutover` still requires DrainConfirmed.
+// GitLabRoleCutoverConfig controls verification-and-cutover. `repos
+// install` calls this after provisioning when roles are ready.
+// DrainConfirmed guards the irreversible retirement of FULLSEND_FORGE_TOKEN
+// and is always passed as true by that caller; there is no longer an
+// operator-facing flag that sets it.
 type GitLabRoleCutoverConfig struct {
 	Owner          string
 	Repo           string
@@ -70,7 +72,6 @@ type GitLabRoleCutoverResult struct {
 	Lifecycle     gitlabroles.Report
 	Enforced      bool
 	SharedRetired bool
-	RolledBack    bool
 	DryRun        bool
 	Diagnostics   []string
 }
@@ -182,7 +183,7 @@ func CutoverGitLabRoleCredentials(ctx context.Context, cfg GitLabRoleCutoverConf
 	if revoked == 0 {
 		result.Diagnostics = append(result.Diagnostics, "shared CI credential retired; no fullsend-bot project access token was listed, so any manually supplied personal or group PAT must be revoked manually")
 	} else {
-		result.Diagnostics = append(result.Diagnostics, "shared credential retired; enforced mode is active")
+		result.Diagnostics = append(result.Diagnostics, "shared credential retired; role credentials are the only supported runtime path")
 	}
 	if leak := secretLeakCutover(result); leak != "" {
 		return GitLabRoleCutoverResult{}, fmt.Errorf("internal error: cutover result leaked a secret value (%s)", leak)

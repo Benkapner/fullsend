@@ -15,11 +15,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// setupGitLabBotToken, ensureGitLabSharedCredentialAllowed, and
-// gitLabBuiltinRoleCredentialsPresent were removed: registered role
-// credentials are now the only supported runtime path (#7782 PR2), so
-// `repos install` never provisions the shared fullsend-bot PAT (fresh or
-// existing install) and there is no migration gate left to consult.
+// setupGitLabBotToken and ensureGitLabSharedCredentialAllowed were
+// removed: registered role credentials are now the only supported
+// runtime path (#7782 PR2), so `repos install` never provisions the
+// shared fullsend-bot PAT (fresh or existing install) and there is no
+// migration gate left to consult.
 
 // provisionGitLabPollState ensures FULLSEND_DISPATCH_SECRET exists so
 // poll-state HMAC signing is on by default, then creates both poll-state
@@ -328,15 +328,7 @@ func parseGitLabRoleTokens(flags []string) (map[gitlabroles.Role]string, error) 
 }
 
 func maybeProvisionGitLabRoles(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
-	needed, _, err := gitLabRoleWorkNeeded(ctx, client, opts, owner, repo)
-	if err != nil || !needed {
-		return err
-	}
 	return setupGitLabRoleCredentials(ctx, opts, client, printer, owner, repo)
-}
-
-func gitLabRoleWorkNeeded(context.Context, forge.Client, *reposInstallConfig, string, string) (bool, gitlabroles.Mode, error) {
-	return true, gitlabroles.ModeEnforced, nil
 }
 
 func setupGitLabRoleCredentials(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
@@ -381,13 +373,18 @@ func setupGitLabRoleCredentials(ctx context.Context, opts *reposInstallConfig, c
 	return nil
 }
 
-// gitLabBuiltinRoleCredentialsPresent reports whether at least one built-in
-// role secret has been provisioned. It is a cheap, token-inventory-free
-// proxy for "role provisioning has started" used by
-// maybeRetireGitLabSharedCredential when the project-token inventory is
-// unavailable and CutoverGitLabRoleCredentials's full readiness check
-// cannot run.
-func gitLabBuiltinRoleCredentialsPresent(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
+// gitLabAllBuiltinRoleCredentialsPresent reports whether all three built-in
+// role secrets (poller, analyst, coder) have been provisioned. It is a
+// cheap, token-inventory-free proxy for "role provisioning has completed"
+// used by maybeRetireGitLabSharedCredential when the project-token
+// inventory is unavailable and CutoverGitLabRoleCredentials's full
+// readiness check cannot run.
+//
+// All three secrets are required here, not just one: on this code path the
+// legacy FULLSEND_FORGE_TOKEN secret is deleted without the token inventory
+// to confirm the matching fullsend-bot PAT is actually gone, so partial
+// role provisioning must not be treated as sufficient grounds to retire it.
+func gitLabAllBuiltinRoleCredentialsPresent(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
 	for _, name := range []string{
 		forge.SecretGitLabPollerToken,
 		forge.SecretGitLabAnalystToken,
@@ -397,11 +394,11 @@ func gitLabBuiltinRoleCredentialsPresent(ctx context.Context, client forge.Clien
 		if err != nil {
 			return false, fmt.Errorf("checking GitLab role credential %s: %w", name, err)
 		}
-		if present {
-			return true, nil
+		if !present {
+			return false, nil
 		}
 	}
-	return false, nil
+	return true, nil
 }
 
 // anyActiveSharedToken reports whether the shared fullsend-bot project
@@ -444,12 +441,12 @@ func maybeRetireGitLabSharedCredential(ctx context.Context, opts *reposInstallCo
 			// for a leftover token: a previous run already finished this.
 			return nil
 		}
-		rolesPresent, presentErr := gitLabBuiltinRoleCredentialsPresent(ctx, client, owner, repo)
+		rolesPresent, presentErr := gitLabAllBuiltinRoleCredentialsPresent(ctx, client, owner, repo)
 		if presentErr != nil {
 			return fmt.Errorf("checking GitLab role credential presence: %w", presentErr)
 		}
 		if !rolesPresent {
-			printer.StepInfo(fmt.Sprintf("[%s/%s] Legacy GitLab shared credential retirement deferred: role credentials not yet present", owner, repo))
+			printer.StepInfo(fmt.Sprintf("[%s/%s] Legacy GitLab shared credential retirement deferred: not all built-in role credentials are present yet", owner, repo))
 			return nil
 		}
 		if opts.dryRun {
@@ -589,13 +586,6 @@ func printGitLabRoleProvision(printer *ui.Printer, repoFullName string, result r
 	}
 	for _, f := range result.Failed {
 		printer.StepWarn(fmt.Sprintf("[%s] %s role credential pending (%s): %s", repoFullName, f.Role, f.Secret, f.Reason))
-	}
-	if result.GateWritten {
-		if result.DryRun {
-			printer.StepDone(fmt.Sprintf("[%s] Would set GitLab role migration gate=%s (shared credential preserved)", repoFullName, result.Mode))
-		} else {
-			printer.StepDone(fmt.Sprintf("[%s] GitLab role migration gate=%s (shared credential preserved)", repoFullName, result.Mode))
-		}
 	}
 	for _, d := range result.Diagnostics {
 		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))

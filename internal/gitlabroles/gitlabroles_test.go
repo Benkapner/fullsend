@@ -62,26 +62,16 @@ func TestModePredicates(t *testing.T) {
 	assert.True(t, ModeMigrating.RequiresRoleCredentials())
 	assert.False(t, ModeDisabled.RequiresRoleCredentials())
 	assert.False(t, ModeRollback.RequiresRoleCredentials())
-
-	assert.True(t, ModeEnforced.OperatorSettable())
-	assert.True(t, ModeRollback.OperatorSettable())
-	assert.False(t, ModeDisabled.OperatorSettable())
-	assert.False(t, ModeMigrating.OperatorSettable())
 }
 
-func TestModeFromAndPresenceFrom(t *testing.T) {
+func TestPresenceFrom(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:  "migrating",
 		forge.SecretForgeToken:        "shared",
 		forge.SecretGitLabPollerToken: "poller",
 		forge.SecretGitLabCoderToken:  "  ",
 	}
 	getenv := func(k string) string { return env[k] }
-
-	mode, err := ModeFrom(getenv)
-	require.NoError(t, err)
-	assert.Equal(t, ModeMigrating, mode)
 
 	present := PresenceFrom(getenv, Registry{})
 	assert.True(t, present[forge.SecretForgeToken])
@@ -90,19 +80,8 @@ func TestModeFromAndPresenceFrom(t *testing.T) {
 	assert.False(t, present[forge.SecretGitLabCoderToken], "whitespace-only is absent")
 }
 
-func TestModeFromInvalid(t *testing.T) {
-	t.Parallel()
-	_, err := ModeFrom(func(string) string { return "nope" })
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidMode)
-}
-
-func TestModeFromNilGetenvUsesEnv(t *testing.T) {
-	t.Setenv(forge.VarGitLabRoleMigration, "rollback")
+func TestPresenceFromNilGetenvUsesEnv(t *testing.T) {
 	t.Setenv(forge.SecretForgeToken, "x")
-	mode, err := ModeFrom(nil)
-	require.NoError(t, err)
-	assert.Equal(t, ModeRollback, mode)
 	present := PresenceFrom(nil, Registry{})
 	assert.True(t, present[forge.SecretForgeToken])
 }

@@ -173,18 +173,19 @@ by role provisioning before the legacy secret is retired.
 
 | Role | PAT name | Access | Scopes |
 | --- | --- | --- | --- |
-| Shared (today) | `fullsend-bot` | Developer (30) | `api` |
+| Shared (legacy, pre-migration only) | `fullsend-bot` | Developer (30) | `api` |
 | Poller | `fullsend-poller` | Developer (30) | `api` |
 | Analyst | `fullsend-analyst` | Developer (30) | `api` |
 | Coder | `fullsend-coder` | Developer (30) | `api` |
 | Custom `own` | `fullsend-role-<name>` | Developer (30) | `api` |
 | Custom `reuse` | (none; uses the target role's PAT) | — | — |
 
-`repos install` creates these tokens on a fresh GitLab install and on an
-existing shared-token install. Ordinary install then retires the shared
-`fullsend-bot` token when every registered role is ready. Access level and
-scopes match the current shared bot; do not claim finer GitLab permissions
-than the implementation uses.
+`repos install` provisions the role tokens directly on a fresh GitLab
+install; it never creates `fullsend-bot`. On an existing pre-migration
+install that still has the shared `fullsend-bot` token, ordinary install
+provisions the role tokens and then retires `fullsend-bot` once every
+registered role is ready. Access level and scopes match the legacy shared
+bot; do not claim finer GitLab permissions than the implementation uses.
 
 ## Job → role mapping
 
@@ -322,7 +323,6 @@ These are different errors. Do not collapse them.
 | Shared secret absent (leftover Token() of a constructed shared Source) | `ErrSharedUnconfigured` | Legacy sentinel; Resolve never returns it |
 | Runtime 401/403 (or equivalent) from a selected credential | `ErrAuthFailed` | Credential is present but unusable |
 | Job kind is empty or unrecognized | `ErrUnknownJob` | No identity to select |
-| Gate value is not a known mode | `ErrInvalidMode` | Fail closed |
 | Registry JSON is malformed or untrusted | `ErrInvalidRegistry` | Fail closed; do not load custom roles |
 
 A registered role whose secret is absent is `ErrUnconfigured` even when
@@ -523,7 +523,7 @@ Leave these to the follow-up issues.
 
 | Issue | Work |
 | --- | --- |
-| [#7498](https://github.com/fullsend-ai/fullsend/issues/7498) | **Implemented.** `repos install` creates/enrolls built-in and custom PATs, stores them as protected masked CI variables, writes the registry, sets the gate, reports partial provisioning, preserves the shared token, and handles reinstall/drift/uninstall without deleting credentials still in use |
+| [#7498](https://github.com/fullsend-ai/fullsend/issues/7498) | **Implemented.** `repos install` creates/enrolls built-in and custom PATs, stores them as protected masked CI variables, writes the registry, reports partial provisioning, preserves the shared token, and handles reinstall/drift/uninstall without deleting credentials still in use |
 | [#7499](https://github.com/fullsend-ai/fullsend/issues/7499) | **Implemented.** `fullsend poll`, `fullsend run`, and `fullsend post-review` select the registered role credential, enforce `ValidateAgent` / `Registration.Has` in role-aware modes, and fail closed on authentication failure without switching identities |
 | [#7500](https://github.com/fullsend-ai/fullsend/issues/7500) | **Implemented.** Role-aware rotation, recovery, in-flight overlap, and expiry/revocation diagnostics. See [Rotation and recovery](#rotation-and-recovery) and follow the [credential-routing security checklist](#credential-routing-security-checklist) |
 | [#7501](https://github.com/fullsend-ai/fullsend/issues/7501) | **Implemented.** Built-in and registered-role readiness is surfaced on `repos status`, and ready installs retire the legacy shared-token secret. Live GitLab ACL/operation probes and deployment branch-rule verification remain deployment prerequisites. |
@@ -635,7 +635,7 @@ These two are described independently in four documents:
 - [`docs/guides/user/running-agents-locally.md`](../guides/user/running-agents-locally.md)
 - [`docs/problems/security-threat-model.md`](../problems/security-threat-model.md)
 
-- [ ] Any change that touches fallback or role-identity gate behavior
+- [ ] Any change that touches credential selection or fallback behavior
       re-reads all four documents and updates them with the same
       terms. Do not edit only the file under your cursor.
 

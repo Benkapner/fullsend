@@ -320,22 +320,6 @@ func (m Mode) RequiresRoleCredentials() bool {
 	return m == ModeEnforced || m == ModeMigrating
 }
 
-// OperatorSettable reports whether operators may pass this mode via
-// --gitlab-role-migration. Leftover disabled/migrating values remain
-// parseable for installed repositories but are not operator-settable.
-func (m Mode) OperatorSettable() bool {
-	return m == ModeEnforced || m == ModeRollback
-}
-
-// ModeFrom reads the migration gate via getenv. A nil getenv uses
-// os.Getenv.
-func ModeFrom(getenv func(string) string) (Mode, error) {
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	return ParseMode(getenv(forge.VarGitLabRoleMigration))
-}
-
 // PresenceFrom snapshots whether the shared token and each registered
 // role secret are non-empty. A nil getenv uses os.Getenv. A zero
 // registry means built-in roles only. Values are not retained.

@@ -670,11 +670,14 @@ Confirm:
   from `gitlab.agent_runner_tags`, both need their own registered runner
   (see [Assigning runners](#assigning-runners)).
 * **Access tokens** — On Premium/Ultimate or self-managed instances where
-  project access tokens are available, Settings → Access Tokens shows
-  `fullsend-bot`, `fullsend-poller`, `fullsend-analyst`, and
-  `fullsend-coder` (plus any `fullsend-role-*` tokens). On GitLab.com Free
-  with `--gitlab-role-token`, expect the dedicated PAT owner's username
-  instead; no project access token is created.
+  project access tokens are available, a fresh install shows
+  `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder` (plus any
+  `fullsend-role-*` tokens) under Settings → Access Tokens. `fullsend-bot`
+  is a legacy, pre-migration artifact — it appears only on an install that
+  predates per-role credentials, and is retired once role tokens are
+  ready. On GitLab.com Free with `--gitlab-role-token`, expect the
+  dedicated PAT owner's username instead; no project access token is
+  created.
 * **CI/CD variables** — `FULLSEND_DISPATCH_SECRET`, `FULLSEND_GCP_PROJECT_ID`,
   and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
   When the webhook fast-path is enabled, `FULLSEND_TRIGGER_TOKEN` and

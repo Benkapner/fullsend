@@ -57,19 +57,9 @@ type RoleProvisionConfig struct {
 	// RegistryProvided is true when the operator explicitly supplied
 	// --gitlab-role-registry this run, as opposed to Registry being
 	// populated from a previously stored registry variable. Used only
-	// to decide whether to surface a diagnostic when the gate is
-	// rollback/disabled and the supplied registry is not persisted.
+	// to decide whether to surface a diagnostic when the supplied
+	// registry is not persisted.
 	RegistryProvided bool
-	// DesiredMode is written to FULLSEND_GITLAB_ROLE_MIGRATION.
-	// Empty means ModeMigrating (internal install intermediate).
-	// ModeDisabled and ModeRollback write the gate without creating or
-	// revoking tokens. Operators cannot set ModeDisabled or ModeMigrating
-	// via --gitlab-role-migration; leftover values remain writable here so
-	// install can converge them.
-	DesiredMode gitlabroles.Mode
-	// RollbackConfirmed authorizes replacing a role-required gate
-	// (migrating or enforced) with a shared-token-only mode.
-	RollbackConfirmed bool
 	// ProvidedTokens maps a role name to an administrator-supplied
 	// PAT (free-tier enrollment or a custom own credential). Values
 	// must never be logged.
@@ -97,7 +87,6 @@ type RoleProvisionResult struct {
 	Reused          []gitlabroles.Role
 	Failed          []RoleProvisionFailure
 	SharedPreserved bool
-	GateWritten     bool
 	RegistryWritten bool
 	DryRun          bool
 	Diagnostics     []string

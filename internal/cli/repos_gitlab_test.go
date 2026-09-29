@@ -41,11 +41,11 @@ func (cliCutoverTokens) RevokeProjectAccessToken(context.Context, string, string
 	return nil
 }
 
-// setupGitLabBotToken, ensureGitLabSharedCredentialAllowed, and
-// gitLabBuiltinRoleCredentialsPresent were removed: the shared GitLab bot
-// PAT is never provisioned by `repos install` (fresh or existing) now that
-// role credentials are the only supported runtime path (#7782 PR2). Their
-// tests are removed along with them rather than left skipped.
+// setupGitLabBotToken and ensureGitLabSharedCredentialAllowed were removed:
+// the shared GitLab bot PAT is never provisioned by `repos install` (fresh
+// or existing) now that role credentials are the only supported runtime
+// path (#7782 PR2). Their tests are removed along with them rather than
+// left skipped.
 
 func TestSetupGitLabPipelineSchedules(t *testing.T) {
 	ctx := context.Background()
@@ -461,7 +461,6 @@ func TestPrintGitLabRoleProvisionCoversBranches(t *testing.T) {
 		Skipped:     []gitlabroles.Role{gitlabroles.RoleCoder},
 		Reused:      []gitlabroles.Role{gitlabroles.Role("deployer")},
 		Failed:      []repos.RoleProvisionFailure{{Role: gitlabroles.Role("scanner"), Secret: "FULLSEND_GITLAB_ROLE_SCANNER_TOKEN", Reason: "pending"}},
-		GateWritten: true,
 		Mode:        gitlabroles.ModeMigrating,
 		Diagnostics: []string{"mode=migrating"},
 	})
@@ -471,7 +470,7 @@ func TestPrintGitLabRoleProvisionCoversBranches(t *testing.T) {
 	assert.Contains(t, out, "coder role credential already present")
 	assert.Contains(t, out, "deployer reuses")
 	assert.Contains(t, out, "scanner role credential pending")
-	assert.Contains(t, out, "gate=migrating")
+	assert.Contains(t, out, "mode=migrating")
 	assert.NotContains(t, out, "glpat-")
 }
 
@@ -1107,4 +1106,110 @@ func TestMaybeRetireGitLabSharedCredential_RetryAfterRevokeFailureStillRevokes(t
 	err = maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
 	require.NoError(t, err)
 	assert.Contains(t, tokens.revoked, 4, "retry must still revoke the leftover shared PAT")
+}
+
+// failListGitLabTokens is a minimal repos.ProjectAccessTokenClient whose
+// ListProjectAccessTokens call always fails, simulating GitLab Free's 403 on
+// the project-access-tokens API (or any other inventory failure).
+type failListGitLabTokens struct{}
+
+func (failListGitLabTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (failListGitLabTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+	return nil, fmt.Errorf("project access tokens API unavailable")
+}
+
+func (failListGitLabTokens) RevokeProjectAccessToken(context.Context, string, string, int) error {
+	return fmt.Errorf("not implemented")
+}
+
+// TestMaybeRetireGitLabSharedCredential_InventoryUnavailableRequiresAllRoles
+// is a regression test for the review finding that the inventory-unavailable
+// branch of maybeRetireGitLabSharedCredential retired FULLSEND_FORGE_TOKEN
+// once ANY ONE built-in role secret was present. A list error is not proof
+// the legacy fullsend-bot PAT is gone, so this path must require all three
+// built-in role secrets (poller, analyst, coder) before deleting the shared
+// secret.
+func TestMaybeRetireGitLabSharedCredential_InventoryUnavailableRequiresAllRoles(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("list error, all three roles present: deletes and succeeds", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+		for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+			fake.Secrets["group/project/"+name] = true
+		}
+		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}}
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
+		require.NoError(t, err)
+		assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "shared secret should be deleted once all three role secrets are present")
+		assert.Contains(t, buf.String(), "retired without a project-token inventory")
+	})
+
+	t.Run("list error, only one role present: does not delete", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+		fake.Secrets["group/project/"+forge.SecretGitLabPollerToken] = true
+		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}}
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
+		require.NoError(t, err, "deferring is not itself an error")
+		assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "shared secret must not be deleted when a list error prevents confirming the legacy PAT is gone and not all roles are present")
+		assert.Contains(t, buf.String(), "retirement deferred")
+	})
+
+	t.Run("list error after secret already deleted: no-op", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		// No FULLSEND_FORGE_TOKEN and no role secrets either. If role
+		// presence were (incorrectly) checked before the `!exists`
+		// early-return, this would report a deferral instead of doing
+		// nothing.
+		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}}
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
+		require.NoError(t, err)
+		assert.Empty(t, buf.String(), "nothing to retire and no inventory available should be a silent no-op")
+	})
+
+	t.Run("tokens is nil: same all-or-nothing check applies", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+		fake.Secrets["group/project/"+forge.SecretGitLabPollerToken] = true
+		fake.Secrets["group/project/"+forge.SecretGitLabAnalystToken] = true
+		// No testGitLabTokenInventory, and fake is not a *gitlab.LiveClient,
+		// so gitLabTokenInventory resolves to nil.
+		opts := &reposInstallConfig{}
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
+		require.NoError(t, err)
+		assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "must not delete with only 2/3 roles present even when tokens is nil")
+		assert.Contains(t, buf.String(), "retirement deferred")
+	})
+
+	t.Run("dry-run: reports without deleting", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+		for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+			fake.Secrets["group/project/"+name] = true
+		}
+		opts := &reposInstallConfig{testGitLabTokenInventory: failListGitLabTokens{}, dryRun: true}
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		err := maybeRetireGitLabSharedCredential(ctx, opts, fake, printer, "group", "project")
+		require.NoError(t, err)
+		assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "dry-run must not delete")
+		assert.Contains(t, buf.String(), "Would retire legacy GitLab shared credential")
+	})
 }

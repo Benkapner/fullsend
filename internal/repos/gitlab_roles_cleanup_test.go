@@ -319,7 +319,6 @@ func TestIsGitLabIdentityUninstallVar(t *testing.T) {
 }
 
 func TestGitLabRoleLifecycle_UninstallThenReinstallDoesNotKeepLegacyState(t *testing.T) {
-	t.Skip("legacy migration-gate behavior removed")
 	t.Parallel()
 	ctx := context.Background()
 	fc := provisionClient(t)
@@ -330,26 +329,27 @@ func TestGitLabRoleLifecycle_UninstallThenReinstallDoesNotKeepLegacyState(t *tes
 		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens, DrainConfirmed: true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, string(gitlabroles.ModeEnforced), fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 
 	_, err = CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
 	})
 	require.NoError(t, err)
+	// LoadGitLabRoleState ignores the retired migration gate entirely and
+	// always reports ModeEnforced, regardless of uninstall history.
 	mode, _, present, err := LoadGitLabRoleState(ctx, fc, "group", "project")
 	require.NoError(t, err)
-	assert.Equal(t, gitlabroles.ModeDisabled, mode)
+	assert.Equal(t, gitlabroles.ModeEnforced, mode)
 	assert.False(t, present[forge.SecretForgeToken])
 	assert.False(t, present[forge.SecretGitLabPollerToken])
 
 	fresh := &fakeTokens{}
 	provisioned, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: fresh,
-		Registry: gitlabroles.BuiltinRegistry(), DesiredMode: gitlabroles.ModeMigrating,
+		Registry: gitlabroles.BuiltinRegistry(),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, gitlabroles.ModeMigrating, provisioned.Mode)
+	assert.Equal(t, gitlabroles.ModeEnforced, provisioned.Mode)
 	assert.True(t, provisioned.SharedPreserved)
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "reinstall must not recreate the retired shared credential")
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
@@ -368,7 +368,7 @@ func TestGitLabRoleLifecycle_EnforcedDriftDoesNotRecreateSharedToken(t *testing.
 	tokens := &fakeTokens{}
 	result, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), DesiredMode: gitlabroles.ModeEnforced,
+		Registry: gitlabroles.BuiltinRegistry(),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, gitlabroles.ModeEnforced, result.Mode)

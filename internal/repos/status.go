@@ -384,8 +384,6 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 		switch {
 		case errors.Is(err, gitlabroles.ErrInvalidRegistry):
 			status.GitLabRoleDiagnostics = []string{"invalid GitLab role registry"}
-		case errors.Is(err, gitlabroles.ErrInvalidMode):
-			status.GitLabRoleDiagnostics = []string{"invalid GitLab role migration mode"}
 		default:
 			status.GitLabRoleDiagnostics = []string{"could not read GitLab role credential state"}
 		}
