@@ -105,12 +105,12 @@ curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSI
 openshell sandbox list   # "No sandboxes found." means the new gateway is up
 ```
 
-The paths are the XDG defaults the Linux packages use. A Homebrew install (what the installer uses
-on Apple Silicon macOS) keeps its gateway state and default config under
-`$(brew --prefix)/var/openshell` instead: in step 2 run `brew services stop openshell`, in step 3 set
-`state="$(brew --prefix)/var/openshell"` and move `$state/gateway.toml` aside as well, and afterwards
-start it with `brew services start openshell`. fullsend recreates its providers and profiles on the
-next run.
+The paths are the XDG defaults, which a Homebrew install (what the installer uses on Apple Silicon
+macOS) also uses for the gateway state. With Homebrew, stop the gateway in step 2 with
+`brew services stop openshell` instead, and start it with `brew services start openshell` after
+installing. The rest is unchanged: `$cfg/gateway.toml` takes precedence over Homebrew's
+`$(brew --prefix)/var/openshell/gateway.toml`, and the installer manages Homebrew's TLS under that
+directory. fullsend recreates its providers and profiles on the next run.
 
 ## Get Google Cloud Platform credentials
 
