@@ -78,12 +78,39 @@ health_check_interval_secs = 10
 Restart the gateway after editing it (`brew services restart openshell` on macOS). `openshell sandbox
 list` answering `No sandboxes found.` means the CLI reaches it.
 
-**Upgrading from OpenShell 0.0.x.** 0.1 cannot read 0.0.x gateway state or a schema v1 config.
-Delete your sandboxes first (`openshell sandbox delete --all`), move `~/.config/openshell/gateway.toml`,
-the gateway state directory (`~/.local/state/openshell/gateway`) and, on Linux packages, its TLS
-directory (`~/.local/state/openshell/tls`) aside, then run the installer
-with `OPENSHELL_ACK_BREAKING_UPGRADE=1` and write the config above. fullsend recreates its providers and
-profiles on the next run.
+**Upgrading from OpenShell 0.0.x.** 0.1 cannot read 0.0.x gateway state or a schema v1 config, and
+its installer refuses to replace 0.0.x unless `OPENSHELL_ACK_BREAKING_UPGRADE=1` is set. Clean up
+while the 0.0.x CLI is still installed, and write the new config before installing: the installer
+starts the gateway straight away.
+
+```bash
+# 1. With the 0.0.x CLI: delete your sandboxes (they do not carry over)
+openshell sandbox delete --all
+
+# 2. Stop the 0.0.x gateway
+systemctl --user stop openshell-gateway
+
+# 3. Move the old config and gateway state aside
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/openshell"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/openshell"
+ts="$(date +%s)"
+if [ -f "$cfg/gateway.toml" ]; then mv "$cfg/gateway.toml" "$cfg/gateway.toml.pre-0.1"; fi
+for d in gateway tls; do
+  if [ -d "$state/$d" ]; then mv "$state/$d" "$state/$d.pre-0.1.$ts"; fi
+done
+
+# 4. Write the schema v2 config shown above to "$cfg/gateway.toml", then install
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh \
+  | OPENSHELL_ACK_BREAKING_UPGRADE=1 OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
+openshell sandbox list   # "No sandboxes found." means the new gateway is up
+```
+
+The paths are the XDG defaults the Linux packages use. A Homebrew install (what the installer uses
+on Apple Silicon macOS) keeps its gateway state and default config under
+`$(brew --prefix)/var/openshell` instead: in step 2 run `brew services stop openshell`, in step 3 set
+`state="$(brew --prefix)/var/openshell"` and move `$state/gateway.toml` aside as well, and afterwards
+start it with `brew services start openshell`. fullsend recreates its providers and profiles on the
+next run.
 
 ## Get Google Cloud Platform credentials
 
