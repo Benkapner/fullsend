@@ -325,7 +325,7 @@
         },
         "role_verified": {
           "type": "boolean",
-          "description": "Optional verification bit: for humans, true means role is a trusted forge permission; for bots, true means bot_role was successfully resolved."
+          "description": "Optional lookup-verification bit: for humans, true means role is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result."
         },
         "is_entity_author": {
           "type": "boolean",
@@ -360,13 +360,12 @@
           "if": {
             "properties": {
               "kind": { "const": "bot" },
-              "role_verified": { "const": true }
+              "role_verified": { "const": false }
             },
             "required": ["kind", "role_verified"]
           },
           "then": {
-            "required": ["bot_role"],
-            "properties": { "bot_role": { "type": "string" } }
+            "properties": { "bot_role": { "const": null } }
           }
         },
         {

@@ -171,10 +171,10 @@ installation permission is not copied into `actor.role`.
 
 `actor.role_verified` is an optional additive field. For humans, it is true
 only when `actor.role` is a trusted forge permission. For bots, it is true
-exactly when `bot_role` was successfully resolved. A recognized bot is
-therefore represented as `kind: bot`, `role: none`, `role_verified: true`, and
-a provider-resolved `bot_role`; unknown or failed resolution has
-`role_verified: false` and no `bot_role`.
+when the bot-role lookup completed, whether it found a role or not. A
+recognized bot has `role_verified: true` and a provider-resolved `bot_role`; an
+unknown bot has `role_verified: true` and an absent/null `bot_role`; failed
+resolution has `role_verified: false` and no `bot_role`.
 
 ### Fork security (`state.change_proposal.is_fork`)
 

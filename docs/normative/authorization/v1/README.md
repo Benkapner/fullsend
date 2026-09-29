@@ -95,9 +95,9 @@ source-system metadata before authorization. This may include a provider actor
 name when that forge gives it bot-specific semantics, such as GitHub's `[bot]`
 logins; labels, review types, and arbitrary event-content strings are not bot
 identity signals. For `actor.kind: bot`, `actor.role` MUST be `none`, and
-`actor.role_verified` is true exactly when the provider successfully resolves
-`actor.bot_role`; it is false when `bot_role` is absent/null. For
-`actor.kind: human`,
+`actor.role_verified` is true exactly when the provider completes the bot-role
+lookup, including a successful no-match result; it is false when resolution
+fails. For `actor.kind: human`,
 `actor.bot_role` MUST be absent or `null`, and `actor.role` contains the forge
 permission role when `actor.role_verified` is true. Only a non-null,
 provider-resolved `actor.bot_role` can pass the bot dispatch gate; CEL may
@@ -139,12 +139,12 @@ describe behavior currently implemented by `fullsend dispatch` or
 |-----------|---------|
 | Collaborator API returns an unrecognized `role_name` | Mapped to `none`; denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
-| Bot-role lookup returns no registered identity | `actor.role` remains `none`; `actor.bot_role` is absent/null; denied |
-| Bot-role lookup fails or is unverifiable | Same wire representation as an unrecognized bot; denied, with the failure retained in resolver/audit diagnostics |
+| Bot-role lookup returns no registered identity | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent/null; denied |
+| Bot-role lookup fails or is unverifiable | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent/null; denied, with the failure retained in resolver/audit diagnostics |
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | `actor.role` is empty or missing for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.role` is not `none` for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
-| `actor.role_verified` is true but `actor.bot_role` is absent for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.role_verified` is false but `actor.bot_role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | `actor.bot_role` is non-null for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |

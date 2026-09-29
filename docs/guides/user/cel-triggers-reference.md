@@ -58,7 +58,7 @@ The `event` variable has the following top-level fields:
 | `event.actor.kind` | string | `"human"` or `"bot"` |
 | `event.actor.role` | string | Human repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external`; always `none` for bots |
 | `event.actor.bot_role` | string or null, optional | Provider-resolved canonical bot role such as `review`; absent/null for humans and unrecognized bots |
-| `event.actor.role_verified` | boolean, optional | For humans, true means `actor.role` is a trusted forge permission; for bots, true means `bot_role` was successfully resolved |
+| `event.actor.role_verified` | boolean, optional | For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
 | `event.state.labels` | list | Label names on the entity at event time |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |

@@ -97,13 +97,14 @@ Authorization then follows these rules:
    configured permission providers, including `OWNERS` where enabled.
 4. The normalized event retains `actor.kind`, `actor.role: "none"`, an
    optional `actor.role_verified` flag, and the optional resolved bot role. For
-   bots, the flag is true exactly when `bot_role` was successfully resolved;
-   it is false when the bot is unknown or resolution failed. For humans, it is
-   true only when `actor.role` is a verified forge permission. The resolver and
-   audit record retain whether bot-role resolution was successful,
-   unrecognized, or failed. An unavailable or unverifiable actor-resolution
-   result is authorization unusable; neither failed nor unrecognized
-   resolution may trigger an agent.
+   bots, the flag is true when the provider completed the bot-role lookup,
+   whether or not it found a registered role; it is false when resolution
+   failed. For humans, it is true only when `actor.role` is a verified forge
+   permission. The resolver and audit record retain whether bot-role
+   resolution was successful and recognized, successful but unrecognized, or
+   failed. An unavailable or unverifiable actor-resolution result is
+   authorization unusable; neither failed nor unrecognized resolution may
+   trigger an agent.
 
 Adapters MUST resolve the actor that actually caused the transition. For an
 edited comment or other mutable content, authorization uses the editor rather
