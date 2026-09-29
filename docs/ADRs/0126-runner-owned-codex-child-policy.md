@@ -45,8 +45,8 @@ the spawn arguments: context inheritance, model, effort and resume.
 3. **Native children under a runner-owned role and dispatch policy** (chosen).
 4. **Option 3 plus write protection of the runtime's files.** Closes the
    time-of-check window noted below. Each way to do it adds a platform requirement:
-   Landlock needs kernel 6.2+ and a Python outside the sandbox's writable paths, and
-   stops new top-level `$HOME` entries; a read-only OpenShell path is fixed at sandbox
+   Landlock needs kernel 6.2+ and stops new top-level `$HOME` entries; a read-only
+   OpenShell path is fixed at sandbox
    creation, before the per-run files exist; roles baked into the image tie them to
    image releases. A separate decision if the residual below is not acceptable.
 
