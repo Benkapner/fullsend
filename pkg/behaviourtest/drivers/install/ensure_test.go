@@ -444,16 +444,398 @@ func TestEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-gcp")
 	require.NoError(t, err)
 
-	// Expect: inference provision, inference status, github setup (3 calls).
-	require.Len(t, cliCalls, 3, "expected 3 CLI calls (provision, status, setup)")
+	// A healthy provider skips provision: inference status, github setup.
+	require.Len(t, cliCalls, 2, "expected 2 CLI calls (status, setup)")
 	assert.Equal(t, "inference", cliCalls[0][0])
-	assert.Equal(t, "provision", cliCalls[0][1])
-	assert.Equal(t, "inference", cliCalls[1][0])
-	assert.Equal(t, "status", cliCalls[1][1])
-	assert.Equal(t, "github", cliCalls[2][0])
-	assert.Equal(t, "setup", cliCalls[2][1])
-	assert.Contains(t, cliCalls[2], "--inference-project")
-	assert.Contains(t, cliCalls[2], "--inference-wif-provider")
+	assert.Equal(t, "status", cliCalls[0][1])
+	assert.Equal(t, "github", cliCalls[1][0])
+	assert.Equal(t, "setup", cliCalls[1][1])
+	assert.Contains(t, cliCalls[1], "--inference-project")
+	assert.Contains(t, cliCalls[1], "--inference-wif-provider")
+}
+
+const (
+	testWIFProvider      = "projects/p/locations/l/providers/wif"
+	healthyStatusJSON    = `{"status":"healthy","FULLSEND_GCP_WIF_PROVIDER":"` + testWIFProvider + `"}`
+	notProvisionedStatus = `{"status":"not_provisioned"}`
+)
+
+func isInferenceCall(args []string, sub string) bool {
+	return len(args) >= 2 && args[0] == "inference" && args[1] == sub
+}
+
+func TestEnsurer_WIFProvider_NotHealthy_ProvisionsOnce(t *testing.T) {
+	speedUpValidateRetries(t)
+	sc := &stubClient{installed: true}
+	var cliCalls [][]string
+	statusCalls := 0
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test", GCPProjectID: "test-project"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			if isInferenceCall(args, "status") {
+				statusCalls++
+				if statusCalls == 1 {
+					return notProvisionedStatus, nil
+				}
+				return healthyStatusJSON, nil
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-cold"))
+
+	require.Len(t, cliCalls, 4, "expected status, provision, status, setup")
+	assert.True(t, isInferenceCall(cliCalls[0], "status"))
+	assert.True(t, isInferenceCall(cliCalls[1], "provision"))
+	assert.True(t, isInferenceCall(cliCalls[2], "status"))
+	assert.Equal(t, []string{"github", "setup"}, cliCalls[3][:2])
+	assert.Contains(t, cliCalls[3], testWIFProvider)
+}
+
+// TestEnsurer_WIFProvider_SurvivesDeleteRepo covers the pool lifecycle
+// after #7398: every lease ends in DeleteRepo, and the next lease of the
+// same name must reuse the provider without any inference CLI call.
+func TestEnsurer_WIFProvider_SurvivesDeleteRepo(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: true}
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test", GCPProjectID: "test-project"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			if isInferenceCall(args, "status") {
+				return healthyStatusJSON, nil
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	ctx := context.Background()
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	require.Len(t, cliCalls, 2, "first ensure: status, setup")
+
+	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
+	cliCalls = nil
+	createsBefore := sc.createRepoCalled.Load()
+
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	assert.Greater(t, sc.createRepoCalled.Load(), createsBefore, "the repo is still recreated")
+	require.Len(t, cliCalls, 1, "second ensure: setup only, provider reused from cache")
+	assert.Equal(t, []string{"github", "setup"}, cliCalls[0][:2])
+	assert.Contains(t, cliCalls[0], testWIFProvider)
+
+	// A different name is not served from another name's cache entry.
+	cliCalls = nil
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-02"))
+	require.Len(t, cliCalls, 2, "new name: status, setup")
+	assert.True(t, isInferenceCall(cliCalls[0], "status"))
+}
+
+func TestEnsurer_WIFProvider_ProvisionErrorNotCached(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: true}
+	var provisions atomic.Int32
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test", GCPProjectID: "test-project"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			switch {
+			case isInferenceCall(args, "status"):
+				if provisions.Load() < 2 {
+					return notProvisionedStatus, nil
+				}
+				return healthyStatusJSON, nil
+			case isInferenceCall(args, "provision"):
+				if provisions.Add(1) == 1 {
+					return "", fmt.Errorf("rate limited (HTTP 429)")
+				}
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	ctx := context.Background()
+	err := e.EnsureRepo(ctx, "org", "test-repo-01")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limited (HTTP 429)")
+
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	assert.Equal(t, int32(2), provisions.Load(), "a failed resolve must not be cached")
+}
+
+// The WIF gate tests below use the process-wide provisionGate. Do not
+// mark them t.Parallel(): a test holding the gate would block the others.
+
+func TestEnsurer_WIFProvider_CancelledContextWinsOverFreeGate(t *testing.T) {
+	var calls atomic.Int32
+	e := &repoEnsurer{
+		runCLI: func(_, _ string, _ ...string) (string, error) {
+			calls.Add(1)
+			return notProvisionedStatus, nil
+		},
+		logf: t.Logf,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 20; i++ {
+		_, err := e.resolveWIFProvider(ctx, "org/test-repo-01", "test-project")
+		require.ErrorIs(t, err, context.Canceled)
+		// The context can also be cancelled during the status read, so the
+		// provision path checks it again before contending for the gate.
+		_, err = e.provisionWIFProvider(ctx, "org/test-repo-01", "test-project")
+		require.ErrorIs(t, err, context.Canceled)
+	}
+	assert.Zero(t, calls.Load(), "a cancelled context must not run any inference CLI call")
+	assert.Zero(t, len(provisionGate), "gate must be free")
+}
+
+func TestEnsurer_WIFProvider_GateReleasedOnPanic(t *testing.T) {
+	e := &repoEnsurer{
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isInferenceCall(args, "provision") {
+				panic("provision panicked")
+			}
+			return notProvisionedStatus, nil
+		},
+		logf: t.Logf,
+	}
+
+	assert.PanicsWithValue(t, "provision panicked", func() {
+		_, _ = e.resolveWIFProvider(context.Background(), "org/test-repo-01", "test-project")
+	})
+	assert.Zero(t, len(provisionGate), "a panicking provision must release the gate")
+}
+
+func TestEnsurer_WIFProvider_CacheRecheckedUnderGate(t *testing.T) {
+	e := &repoEnsurer{
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			t.Fatalf("no CLI call expected, got %v", args)
+			return "", nil
+		},
+		logf:         t.Logf,
+		wifProviders: map[string]string{"org/test-repo-01": testWIFProvider},
+	}
+
+	got, err := e.provisionWIFProvider(context.Background(), "org/test-repo-01", "test-project")
+	require.NoError(t, err)
+	assert.Equal(t, testWIFProvider, got)
+	assert.Zero(t, len(provisionGate), "the cache-hit return must release the gate")
+}
+
+// TestEnsurer_WIFProvider_SameNameWaiterReusesProvision resolves one name
+// from two goroutines without singleflight: the second caller waits on the
+// gate behind the first provision and must reuse its cached result.
+func TestEnsurer_WIFProvider_SameNameWaiterReusesProvision(t *testing.T) {
+	var provisions atomic.Int32
+	statusStarted := make(chan struct{}, 2)
+	releaseStatus := make(chan struct{})
+	e := &repoEnsurer{
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			switch {
+			case isInferenceCall(args, "status"):
+				if provisions.Load() > 0 {
+					return healthyStatusJSON, nil
+				}
+				statusStarted <- struct{}{}
+				<-releaseStatus
+				return notProvisionedStatus, nil
+			case isInferenceCall(args, "provision"):
+				provisions.Add(1)
+				// Hold the gate long enough for the other caller to queue on it.
+				time.Sleep(30 * time.Millisecond)
+			}
+			return "", nil
+		},
+		logf: t.Logf,
+	}
+
+	results := make([]string, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = e.resolveWIFProvider(context.Background(), "org/test-repo-01", "test-project")
+		}(i)
+	}
+	// Both callers miss the cache and see "not provisioned" before either
+	// provisions, so both reach the gate.
+	<-statusStarted
+	<-statusStarted
+	close(releaseStatus)
+	wg.Wait()
+
+	for i := range errs {
+		require.NoError(t, errs[i])
+		assert.Equal(t, testWIFProvider, results[i])
+	}
+	assert.Equal(t, int32(1), provisions.Load(), "the waiter must reuse the first provision")
+	assert.Zero(t, len(provisionGate), "both callers must release the gate")
+}
+
+func TestEnsurer_WIFProvider_WaitForGateHonoursContext(t *testing.T) {
+	provisionGate <- struct{}{} // another provision holds the gate
+	t.Cleanup(func() { <-provisionGate })
+
+	var provisions atomic.Int32
+	statusDone := make(chan struct{})
+	e := &repoEnsurer{
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isInferenceCall(args, "provision") {
+				provisions.Add(1)
+			} else {
+				close(statusDone)
+			}
+			return notProvisionedStatus, nil
+		},
+		logf: t.Logf,
+	}
+
+	// The context is live when the caller reaches the gate, so it blocks
+	// on the held gate and must return once the context is cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := e.resolveWIFProvider(ctx, "org/test-repo-01", "test-project")
+		errCh <- err
+	}()
+	<-statusDone
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Contains(t, err.Error(), "waiting to provision inference for org/test-repo-01")
+	case <-time.After(5 * time.Second):
+		t.Fatal("caller blocked on the gate did not return after cancellation")
+	}
+	assert.Zero(t, provisions.Load())
+}
+
+// lockedRepoClient is a stubClient whose repo existence is tracked per
+// name under a mutex, so ensures of different repos can run concurrently
+// under -race (stubClient shares one getRepoErr across all repos).
+type lockedRepoClient struct {
+	stubClient
+	mu    sync.Mutex
+	repos map[string]bool
+}
+
+func (c *lockedRepoClient) GetRepo(_ context.Context, org, repo string) (*forge.Repository, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.repos[org+"/"+repo] {
+		return nil, forge.ErrNotFound
+	}
+	return &forge.Repository{}, nil
+}
+
+func (c *lockedRepoClient) CreateRepo(_ context.Context, org, repo, _ string, _ bool) (*forge.Repository, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.repos[org+"/"+repo] = true
+	return &forge.Repository{}, nil
+}
+
+func (c *lockedRepoClient) DeleteRepo(_ context.Context, org, repo string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.repos, org+"/"+repo)
+	return nil
+}
+
+// TestEnsurer_WIFProvider_ConcurrentColdProvisionsSerialised ensures a
+// cold pool concurrently: every slot must provision, but never more
+// than one at a time.
+func TestEnsurer_WIFProvider_ConcurrentColdProvisionsSerialised(t *testing.T) {
+	speedUpValidateRetries(t)
+	sc := &lockedRepoClient{stubClient: stubClient{installed: true}, repos: map[string]bool{}}
+
+	var inflight, maxInflight, provisions atomic.Int32
+	var statusMu sync.Mutex
+	provisioned := map[string]bool{}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test", GCPProjectID: "test-project"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			switch {
+			case isInferenceCall(args, "status"):
+				statusMu.Lock()
+				defer statusMu.Unlock()
+				if provisioned[args[2]] {
+					return healthyStatusJSON, nil
+				}
+				return notProvisionedStatus, nil
+			case isInferenceCall(args, "provision"):
+				provisions.Add(1)
+				n := inflight.Add(1)
+				for {
+					m := maxInflight.Load()
+					if n <= m || maxInflight.CompareAndSwap(m, n) {
+						break
+					}
+				}
+				time.Sleep(30 * time.Millisecond)
+				inflight.Add(-1)
+				statusMu.Lock()
+				provisioned[args[2]] = true
+				statusMu.Unlock()
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	const slots = 6
+	ctx := context.Background()
+	errs := make([]error, slots)
+	var wg sync.WaitGroup
+	wg.Add(slots)
+	for i := 0; i < slots; i++ {
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = e.EnsureRepo(ctx, "org", fmt.Sprintf("test-repo-%02d", i+1))
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "slot %d", i+1)
+	}
+	assert.Equal(t, int32(slots), provisions.Load(), "every cold slot provisions once")
+	assert.Equal(t, int32(1), maxInflight.Load(), "at most one provision in flight")
 }
 
 func TestEnsurer_InstallCLIError_Propagated(t *testing.T) {
