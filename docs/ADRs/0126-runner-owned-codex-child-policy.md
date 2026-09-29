@@ -73,8 +73,9 @@ Codex children run under a policy the runner provisions and enforces.
   digests the runner recorded at Bootstrap, as the ADR 0100 adapter does for each
   hook script before invoking it.
 - The hook fails closed: a policy violation, a digest mismatch, a missing file,
-  unreadable input or any error in the hook denies the spawn with exit 2 and a reason,
-  the only exit Codex treats as a block. Bootstrap fails if it cannot install the hook.
+  unreadable input or any error in the hook denies the spawn by exiting 2 with a reason
+  on stderr. Codex lets the call proceed after exit 2 without a reason or any other
+  non-zero exit. Bootstrap fails if it cannot install the hook.
 
 ## Consequences
 
