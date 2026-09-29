@@ -58,13 +58,13 @@ Codex children run under a policy the runner provisions and enforces.
   on Claude Code and pi) and harness security is enabled. Bootstrap then registers its
   skill personas plus a generic `default` and an instruction-only `explore` role. Other
   agents run with Codex's multi-agent tools off.
-- Child models resolve as in ADR 0104 without the frontmatter step:
-  `subagents.<persona>`, then `subagents.default`, then the parent's live model, with
-  no Codex-specific default model or environment override. Bootstrap generates each
-  role file and writes a configured model into it; a role with nothing configured
-  carries no model, so its child inherits the parent's. Only OpenAI model IDs are
-  accepted, and an explicit model that cannot be served fails rather than falling
-  back. Persona `model:` and `tools:` frontmatter is reported, not applied.
+- Child models resolve in the order decided on #6970: `subagents.<persona>`, then
+  `FULLSEND_CODEX_SUBAGENT_MODEL`, then `subagents.default`, then `gpt-5.6-luna`.
+  Bootstrap generates each role file. A persona with its own entry carries that model
+  in its role file; every other child runs the run-level default, which Bootstrap sets
+  as `agents.default_subagent_model`. Only OpenAI model IDs are accepted, and an
+  explicit model that cannot be served fails rather than falling back. Persona `model:`
+  and `tools:` frontmatter is reported, not applied.
 - A mandatory PreToolUse hook, installed whenever harness security is enabled, even with
   every individual sandbox hook disabled, admits only a V1 spawn of a registered role with
   `fork_context: false` and no model or effort override. It rejects resume and any spawn
@@ -80,15 +80,16 @@ Codex children run under a policy the runner provisions and enforces.
 
 - Review and retro can delegate on Codex once the paired instructions ship; a parent
   model whose catalog entry selects collaboration V2 cannot delegate under this policy.
-- Departures from ADR 0104 on Codex: persona `model:` is not applied, persona `tools:`
-  are instructions only (every child has the parent's shell and `apply_patch`), and an
-  unregistered role is always rejected, because a delegating agent always has `default`
-  and `explore` registered.
+- Departures from ADR 0104 on Codex: persona `model:` is not applied, the chain adds
+  `FULLSEND_CODEX_SUBAGENT_MODEL` and ends at `gpt-5.6-luna` instead of the parent's
+  live model, persona `tools:` are instructions only (every child has the parent's
+  shell and `apply_patch`), and an unregistered role is always rejected, because a
+  delegating agent always has `default` and `explore` registered.
 - `code` and `fix` declare no `tools:`, so they also get roles, as on pi.
 - The spawn-time check has ADR 0100's residuals: a change that lands between the check
   and the child's load goes undetected within the iteration, and a handler Codex cannot
   complete, such as one that times out or whose interpreter fails to start, is recorded
   as failed and does not block.
 - Token totals include children; Codex still reports no dollar cost.
-- Role loading, child model inheritance, hook reload and collaboration tool names are
+- Role loading, child model binding, hook reload and collaboration tool names are
   revalidated on each Codex CLI bump.
