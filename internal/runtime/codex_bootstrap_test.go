@@ -516,24 +516,18 @@ func TestCodexReadHarnessSecurityEnv(t *testing.T) {
 		}, got)
 	})
 
-	// Nothing to re-assert when the harness set neither, and an agent that
-	// *sets* one later can only cause spurious blocks, not slip past a check.
-	t.Run("skips unset values", func(t *testing.T) {
-		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
-		t.Setenv("FULLSEND_TEST_ENV_READ", codexEnvReadSeparator)
-
-		got, err := codexReadHarnessSecurityEnv("sb")
-		require.NoError(t, err)
-		assert.Empty(t, got)
-	})
-
-	t.Run("keeps one when only one is set", func(t *testing.T) {
+	// Pinned as empty, so an agent that sets the allowlist in .env later
+	// cannot widen the fail-closed empty set the harness left.
+	t.Run("pins an unset value as empty", func(t *testing.T) {
 		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
 		t.Setenv("FULLSEND_TEST_ENV_READ", "canary-abc"+codexEnvReadSeparator)
 
 		got, err := codexReadHarnessSecurityEnv("sb")
 		require.NoError(t, err)
-		assert.Equal(t, []codexEnvPair{{"FULLSEND_CANARY_TOKEN", "canary-abc"}}, got)
+		assert.Equal(t, []codexEnvPair{
+			{"FULLSEND_CANARY_TOKEN", "canary-abc"},
+			{"FULLSEND_TOOL_ALLOWLIST", ""},
+		}, got)
 	})
 
 	t.Run("refuses a malformed answer", func(t *testing.T) {
@@ -554,6 +548,7 @@ func TestCodexReadHarnessSecurityEnvCmd(t *testing.T) {
 		"both set":     {"export FULLSEND_CANARY_TOKEN='canary-abc'\nexport FULLSEND_TOOL_ALLOWLIST='Bash,Read'\n", "canary-abc|fullsend-env-sep|Bash,Read"},
 		"canary unset": {"export FULLSEND_TOOL_ALLOWLIST='Bash,Read'\n", "|fullsend-env-sep|Bash,Read"},
 		"none set":     {"", "|fullsend-env-sep|"},
+		"chatty .env":  {"echo hello\nexport FULLSEND_CANARY_TOKEN='canary-abc'\n", "canary-abc|fullsend-env-sep|"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			envFile := filepath.Join(t.TempDir(), ".env")
