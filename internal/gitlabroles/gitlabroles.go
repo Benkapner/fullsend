@@ -237,18 +237,13 @@ type RoleReport struct {
 // Report is the observable migration/role status. Diagnostics never
 // include secret values.
 //
-// Ready is install/converge-state readiness, not a runtime-readiness
-// signal: for leftover ModeDisabled / ModeRollback it is
-// SharedPresent (the legacy shared-token install path is complete),
-// while runtime credential selection (Resolve / Select / SelectAgent)
-// always requires the registered per-role secret and never reads the
-// migration gate or falls back to FULLSEND_FORGE_TOKEN.
-// A leftover disabled/rollback install can therefore report Ready
-// while `fullsend poll` / `fullsend run` still fail closed with
-// ErrUnconfigured because the role secret has not been provisioned
-// yet — see TestDiagnoseReadyDivergesFromResolveOnLeftoverModes. #7782
-// made runtime job routing role-credential-only and independent of
-// Mode; status/converge (this function) still branches on the gate.
+// Ready is true only when every registered role credential is present,
+// in every mode, including leftover ModeDisabled / ModeRollback: it no
+// longer treats a lingering FULLSEND_FORGE_TOKEN as sufficient. This
+// matches runtime credential selection (Resolve / Select /
+// SelectAgent), which always requires the registered per-role secret
+// and never reads the migration gate or falls back to
+// FULLSEND_FORGE_TOKEN — see TestDiagnoseReadyAgreesWithResolveOnLeftoverModes.
 type Report struct {
 	Mode          Mode
 	SharedPresent bool
@@ -307,15 +302,21 @@ func (m Mode) Valid() bool {
 }
 
 // UsesSharedOnly reports leftover install/status modes that historically
-// used FULLSEND_FORGE_TOKEN. Runtime credential selection ignores this
-// predicate; Resolve always requires the registered role secret.
+// used FULLSEND_FORGE_TOKEN. Neither Diagnose nor runtime credential
+// selection branches on this predicate any longer; Resolve always
+// requires the registered role secret, and Diagnose.Ready always
+// requires every registered role. Retained for backward compatibility
+// with callers that still expect the old Mode-typed result shape.
 func (m Mode) UsesSharedOnly() bool {
 	return m == ModeDisabled || m == ModeRollback
 }
 
-// RequiresRoleCredentials reports whether Diagnose treats a missing role
-// credential as required. Runtime Resolve always requires the registered
-// role secret regardless of this predicate.
+// RequiresRoleCredentials reports whether repos status treats a missing
+// role credential as required for additional builtin/registered
+// readiness checks (see gitLabRoleReadinessRequired). Diagnose no
+// longer branches on this predicate — its Ready field requires every
+// registered role secret in every mode. Runtime Resolve always requires
+// the registered role secret regardless of this predicate.
 func (m Mode) RequiresRoleCredentials() bool {
 	return m == ModeEnforced || m == ModeMigrating
 }
@@ -382,14 +383,14 @@ func Resolve(req Request) (Source, error) {
 }
 
 // Diagnose reports migration mode, per-role presence, partial
-// configuration, and readiness. Missing role secrets are not drift
-// when the mode does not require them. Custom roles in the registry
-// are included; an empty registry reports built-ins only.
+// configuration, and readiness. Readiness requires every registered
+// role secret to be present, in every mode. Custom roles in the
+// registry are included; an empty registry reports built-ins only.
 //
-// See Report.Ready: this is install/converge-state readiness, not a
-// runtime-readiness signal. Resolve / Select / SelectAgent always
-// require the registered role secret, in every mode, regardless of
-// what Diagnose reports here.
+// See Report.Ready: this agrees with runtime credential selection
+// (Resolve / Select / SelectAgent), which always requires the
+// registered role secret, in every mode, regardless of what Diagnose
+// reports here.
 func Diagnose(mode Mode, present map[string]bool, reg Registry) Report {
 	reg = reg.effective()
 	rep := Report{
@@ -424,12 +425,7 @@ func Diagnose(mode Mode, present map[string]bool, reg Registry) Report {
 	}
 	total := len(roles)
 	rep.Partial = configured > 0 && configured < total
-	switch {
-	case mode.UsesSharedOnly():
-		rep.Ready = rep.SharedPresent
-	default:
-		rep.Ready = total > 0 && configured == total
-	}
+	rep.Ready = total > 0 && configured == total
 	rep.Diagnostics = diagnoseMessages(mode, rep, configured, total)
 	return rep
 }
@@ -451,22 +447,14 @@ func diagnoseMessages(mode Mode, rep Report, configured, total int) []string {
 		if rr.ReuseOf != "" {
 			label += " reuse=" + string(rr.ReuseOf)
 		}
-		switch {
-		case rr.State == RoleStateConfigured && mode.UsesSharedOnly():
-			msgs = append(msgs, fmt.Sprintf("%s: configured but unused for converge readiness — fullsend poll/run still require this secret at runtime (%s)", label, rr.SecretName))
-		case rr.State == RoleStateConfigured:
+		switch rr.State {
+		case RoleStateConfigured:
 			msgs = append(msgs, fmt.Sprintf("%s: configured (%s)", label, rr.SecretName))
-		case mode.RequiresRoleCredentials():
-			msgs = append(msgs, fmt.Sprintf("%s: missing (required) (%s)", label, rr.SecretName))
 		default:
-			msgs = append(msgs, fmt.Sprintf("%s: unconfigured (not required for converge readiness; required by fullsend poll/run at runtime) (%s)", label, rr.SecretName))
+			msgs = append(msgs, fmt.Sprintf("%s: missing (required) (%s)", label, rr.SecretName))
 		}
 	}
 	switch {
-	case mode.UsesSharedOnly() && !rep.SharedPresent:
-		msgs = append(msgs, "legacy path not ready: shared credential missing")
-	case mode.UsesSharedOnly():
-		msgs = append(msgs, "legacy shared-token path ready (install/converge state only — fullsend poll/run still require the registered role secret, not the shared token)")
 	case configured == total && total > 0:
 		msgs = append(msgs, "all role credentials configured")
 	case rep.Partial:
