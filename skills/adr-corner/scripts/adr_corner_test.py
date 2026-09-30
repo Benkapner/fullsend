@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from adr_corner import (  # noqa: E402
     adr_summary,
     discussion_points,
+    escape_markdown_cell,
+    fetch_paginated_nodes,
     friendly_datetime,
     graphql_var_flags,
     infer_adr_authors,
@@ -128,6 +130,30 @@ class TestDiscussion(unittest.TestCase):
         self.assertEqual(len(points), 1)
         self.assertIn("Why should this be global?", points[0])
 
+    def test_contention_is_prioritized_over_newer_routine_comments(self):
+        comments = [
+            {
+                "author": {"login": f"alice-{index}"},
+                "body": f"Routine update {index}",
+                "createdAt": f"2026-01-0{index + 1}T00:00:00Z",
+            }
+            for index in range(4)
+        ]
+        comments.append(
+            {
+                "author": {"login": "reviewer"},
+                "body": "Why should this remain a separate decision?",
+                "createdAt": "2026-01-01T00:00:00Z",
+            }
+        )
+        pr = {
+            "comments": {"nodes": comments},
+            "reviews": {"nodes": []},
+            "reviewThreads": {"nodes": []},
+        }
+        points = discussion_points(pr)
+        self.assertIn("Why should this remain", points[0])
+
     def test_ignores_command_only_comments(self):
         pr = {
             "comments": {
@@ -153,6 +179,45 @@ class TestDates(unittest.TestCase):
 class TestGraphqlFlags(unittest.TestCase):
     def test_integer_uses_typed_gh_flag(self):
         self.assertEqual(graphql_var_flags({"number": 12, "cursor": None}), ["-F", "number=12"])
+
+
+class TestPagination(unittest.TestCase):
+    @patch("adr_corner.gh_graphql")
+    def test_fetch_paginated_nodes_follows_cursors(self, graphql):
+        graphql.side_effect = [
+            {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                            "nodes": [{"body": "first"}],
+                        }
+                    }
+                }
+            },
+            {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"body": "second"}],
+                        }
+                    }
+                }
+            },
+        ]
+        nodes = fetch_paginated_nodes(
+            "query",
+            {"owner": "fullsend-ai", "name": "fullsend", "number": 1},
+            ("repository", "pullRequest", "reviews"),
+        )
+        self.assertEqual([node["body"] for node in nodes], ["first", "second"])
+        self.assertEqual(graphql.call_args_list[1].args[1]["cursor"], "cursor-1")
+
+
+class TestMarkdown(unittest.TestCase):
+    def test_escapes_backslashes_before_pipes(self):
+        self.assertEqual(escape_markdown_cell(r"left \| right"), r"left \\\| right")
 
 
 class TestOrdering(unittest.TestCase):

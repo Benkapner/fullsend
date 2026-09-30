@@ -63,14 +63,6 @@ query($owner: String!, $name: String!, $number: Int!) {
       body
       author { login __typename }
       assignees(first: 20) { nodes { login } }
-      commits(last: 30) {
-        nodes {
-          commit {
-            author { name user { login __typename } }
-            committer { name user { login __typename } }
-          }
-        }
-      }
       closingIssuesReferences(first: 20) {
         nodes {
           number
@@ -86,14 +78,43 @@ query($owner: String!, $name: String!, $number: Int!) {
 }
 """
 
-PR_DISCUSSION_QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
+PR_COMMITS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      comments(last: 50) {
+      commits(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          commit {
+            author { name user { login __typename } }
+            committer { name user { login __typename } }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+PR_COMMENTS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes { author { login __typename } body createdAt updatedAt }
       }
-      reviews(last: 50) {
+    }
+  }
+}
+"""
+
+PR_REVIEWS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           author { login __typename }
           body
@@ -102,13 +123,31 @@ query($owner: String!, $name: String!, $number: Int!) {
           submittedAt
         }
       }
-      reviewThreads(first: 50) {
-        nodes {
-          isResolved
-          comments(last: 20) {
-            nodes { author { login __typename } body createdAt }
-          }
-        }
+    }
+  }
+}
+"""
+
+PR_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isResolved }
+      }
+    }
+  }
+}
+"""
+
+THREAD_COMMENTS_QUERY = """
+query($threadId: ID!, $cursor: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { author { login __typename } body createdAt }
       }
     }
   }
@@ -316,10 +355,11 @@ def discussion_points(pr: dict[str, Any], limit: int = 4) -> list[str]:
         for record in human
         if DISCUSSION_HINT_RE.search(record["body"]) or record.get("state") == "CHANGES_REQUESTED"
     ]
-    selected = hinted + [record for record in human if record not in hinted]
+    ordinary = [record for record in human if record not in hinted]
+    selected = list(reversed(hinted)) + list(reversed(ordinary))
     result: list[str] = []
     seen: set[str] = set()
-    for record in reversed(selected):
+    for record in selected:
         excerpt = truncate(record["body"], 220)
         key = excerpt.casefold()
         if key in seen:
@@ -439,18 +479,78 @@ def fetch_pr_details(owner: str, name: str, number: int, *, quiet: bool = False)
         {"owner": owner, "name": name, "number": number},
         quiet=quiet,
     )
-    return data["repository"]["pullRequest"]
+    details = data["repository"]["pullRequest"]
+    details["commits"] = {"nodes": fetch_pr_commits(owner, name, number, quiet=quiet)}
+    return details
+
+
+def fetch_paginated_nodes(
+    query: str,
+    variables: dict[str, Any],
+    connection_path: tuple[str, ...],
+    *,
+    quiet: bool = False,
+) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        data = gh_graphql(query, {**variables, "cursor": cursor}, quiet=quiet)
+        connection: Any = data
+        for key in connection_path:
+            connection = connection[key]
+        nodes.extend(connection["nodes"])
+        if not connection["pageInfo"]["hasNextPage"]:
+            return nodes
+        cursor = connection["pageInfo"]["endCursor"]
+
+
+def fetch_pr_commits(
+    owner: str, name: str, number: int, *, quiet: bool = False
+) -> list[dict[str, Any]]:
+    return fetch_paginated_nodes(
+        PR_COMMITS_QUERY,
+        {"owner": owner, "name": name, "number": number},
+        ("repository", "pullRequest", "commits"),
+        quiet=quiet,
+    )
 
 
 def fetch_pr_discussion(
     owner: str, name: str, number: int, *, quiet: bool = False
 ) -> dict[str, Any]:
-    data = gh_graphql(
-        PR_DISCUSSION_QUERY,
-        {"owner": owner, "name": name, "number": number},
+    variables = {"owner": owner, "name": name, "number": number}
+    comments = fetch_paginated_nodes(
+        PR_COMMENTS_QUERY,
+        variables,
+        ("repository", "pullRequest", "comments"),
         quiet=quiet,
     )
-    return data["repository"]["pullRequest"]
+    reviews = fetch_paginated_nodes(
+        PR_REVIEWS_QUERY,
+        variables,
+        ("repository", "pullRequest", "reviews"),
+        quiet=quiet,
+    )
+    threads = fetch_paginated_nodes(
+        PR_THREADS_QUERY,
+        variables,
+        ("repository", "pullRequest", "reviewThreads"),
+        quiet=quiet,
+    )
+    for thread in threads:
+        thread["comments"] = {
+            "nodes": fetch_paginated_nodes(
+                THREAD_COMMENTS_QUERY,
+                {"threadId": thread["id"]},
+                ("node", "comments"),
+                quiet=quiet,
+            )
+        }
+    return {
+        "comments": {"nodes": comments},
+        "reviews": {"nodes": reviews},
+        "reviewThreads": {"nodes": threads},
+    }
 
 
 def fetch_all_files(
@@ -541,13 +641,18 @@ def format_markdown(rows: list[dict[str, Any]], repo: str) -> str:
             row["created"],
             row["updated"],
         ]
-        lines.append("| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |")
+        lines.append("| " + " | ".join(escape_markdown_cell(cell) for cell in cells) + " |")
     lines.append("")
     lines.append(
         f"_Generated {friendly_datetime(datetime.now(UTC).isoformat())} · {repo} · "
         f"{len(rows)} open ADR row(s)_"
     )
     return "\n".join(lines)
+
+
+def escape_markdown_cell(value: str) -> str:
+    """Escape Markdown table syntax without allowing backslashes to escape pipes."""
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
