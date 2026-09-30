@@ -862,6 +862,158 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 	}
 }
 
+func TestDispatchEffectivePermissionRuntime(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
+
+	type routeDoc struct {
+		Jobs struct {
+			Route struct {
+				Steps []struct {
+					Name string `yaml:"name"`
+					Run  string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"route"`
+			Dispatch struct {
+				Steps []struct {
+					Name string `yaml:"name"`
+					Run  string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"dispatch"`
+		} `yaml:"jobs"`
+	}
+
+	workflows := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+
+	tests := []struct {
+		name       string
+		command    string
+		isPR       string
+		payload    string
+		wantStage  string
+		wantOutput string
+	}{
+		{
+			name:      "reported custom maintain role can review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"permission":"write","role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}`,
+			wantStage: "review",
+		},
+		{
+			name:      "custom triage role can review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"permission":"read","role_name":"Custom Triage","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":true,"pull":true}}}`,
+			wantStage: "review",
+		},
+		{
+			name:      "custom triage role cannot code",
+			command:   "/fs-code",
+			isPR:      "false",
+			payload:   `{"permission":"read","role_name":"Custom Triage","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":true,"pull":true}}}`,
+			wantStage: "",
+		},
+		{
+			name:      "legacy write fallback can code",
+			command:   "/fs-code",
+			isPR:      "false",
+			payload:   `{"permission":"write","role_name":"Custom Write"}`,
+			wantStage: "code",
+		},
+		{
+			name:      "legacy read fallback cannot review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"permission":"read","role_name":"Custom Triage"}`,
+			wantStage: "",
+		},
+		{
+			name:       "conflicting signals fail closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":"read","role_name":"Custom","user":{"permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
+	}
+
+	for _, workflow := range workflows {
+		t.Run(workflow.name, func(t *testing.T) {
+			var doc routeDoc
+			require.NoError(t, yaml.Unmarshal(workflow.content(t), &doc))
+			var script string
+			steps := append(doc.Jobs.Route.Steps, doc.Jobs.Dispatch.Steps...)
+			for _, step := range steps {
+				if step.Name == "Determine stage" {
+					script = step.Run
+					break
+				}
+			}
+			require.NotEmpty(t, script)
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					dir := t.TempDir()
+					outputPath := filepath.Join(dir, "github-output")
+					stub := "#!/usr/bin/env bash\n" +
+						"if [[ \"$1\" == \"api\" ]]; then echo \"$GH_STUB_PAYLOAD\"; exit 0; fi\n" +
+						"exit 0\n"
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
+					scriptPath := filepath.Join(dir, "route.sh")
+					require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
+
+					cmd := exec.Command("bash", scriptPath)
+					cmd.Dir = dir
+					cmd.Env = append(os.Environ(),
+						"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+						"GH_STUB_PAYLOAD="+tt.payload,
+						"GITHUB_OUTPUT="+outputPath,
+						"GITHUB_REPOSITORY=o/r",
+						"EVENT_NAME=issue_comment",
+						"EVENT_ACTION=created",
+						"COMMENT_BODY="+tt.command,
+						"COMMENT_USER_TYPE=User",
+						"COMMENT_USER_LOGIN=alice",
+						"ISSUE_HAS_PR="+tt.isPR,
+						"ISSUE_IS_PR="+tt.isPR,
+						"ISSUE_LABELS=",
+						"PR_LABELS=",
+						"ISSUE_USER_LOGIN=alice",
+						"EVENT_SENDER_LOGIN=alice",
+						"REVIEW_STATE=",
+						"REVIEW_USER_LOGIN=",
+						"TRIGGERING_LABEL=",
+						"PR_HEAD_REPO=o/r",
+						"PR_BASE_REPO=o/r",
+						"PR_USER_LOGIN=alice",
+						"ORG_NAME=o",
+						"GH_TOKEN=stub",
+					)
+					out, err := cmd.CombinedOutput()
+					require.NoError(t, err, "%s", out)
+					output, readErr := os.ReadFile(outputPath)
+					require.NoError(t, readErr)
+					assert.Contains(t, string(output), "stage="+tt.wantStage+"\n")
+					if tt.wantOutput != "" {
+						assert.Contains(t, string(out), tt.wantOutput)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestOwnersCheckoutRefPin validates that every checkout step whose
 // sparse-checkout includes OWNERS files pins to base branch SHA for
 // pull_request_review events. Without this, a PR author can add

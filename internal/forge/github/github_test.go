@@ -170,6 +170,24 @@ func TestDeleteRef(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, forge.IsNotFound(err))
 	})
+
+	t.Run("malformed permission flags", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{
+				"permission": "write",
+				"role_name":  "Custom",
+				"user": map[string]any{
+					"permissions": map[string]any{"admin": "yes"},
+				},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode collaborator permission")
+	})
 }
 
 func TestDeleteBranch(t *testing.T) {
@@ -4220,14 +4238,25 @@ func TestGetCollaboratorPermission(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "/repos/o/r/collaborators/alice/permission", r.URL.Path)
-			json.NewEncoder(w).Encode(map[string]string{"role_name": "write"})
+			json.NewEncoder(w).Encode(map[string]any{
+				"permission": "write",
+				"role_name":  "ODH Repo Maintainer",
+				"user": map[string]any{
+					"permissions": map[string]bool{
+						"admin": false, "maintain": true, "push": true, "triage": true, "pull": true,
+					},
+				},
+			})
 		}))
 		defer srv.Close()
 
 		client := newTestClient(t, srv)
-		role, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		permission, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
 		require.NoError(t, err)
-		assert.Equal(t, "write", role)
+		assert.Equal(t, "ODH Repo Maintainer", permission.RoleName)
+		assert.Equal(t, "write", permission.Permission)
+		require.NotNil(t, permission.User.Permissions)
+		assert.True(t, *permission.User.Permissions.Maintain)
 	})
 
 	t.Run("not found", func(t *testing.T) {
