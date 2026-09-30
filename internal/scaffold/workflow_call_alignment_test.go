@@ -1066,11 +1066,17 @@ func TestGitHubPermissionResolverParity(t *testing.T) {
 	var fixtures []permissionParityFixture
 	require.NoError(t, json.Unmarshal(fixtureData, &fixtures))
 
-	workflow := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 	resolverPattern := regexp.MustCompile(`(?s)_resolve_github_permission\(\) \{ jq -er '\n(.*?)\n\s*'; \}`)
-	match := resolverPattern.FindStringSubmatch(workflow)
-	require.Len(t, match, 2, "extract the jq resolver from the real dispatch workflow")
-	jqResolver := match[1]
+	jqResolvers := make(map[string]string)
+	for name, path := range map[string]string{
+		"reusable dispatch": ".github/workflows/reusable-dispatch.yml",
+		"scaffold dispatch": "internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml",
+	} {
+		workflow := string(loadRepoFile(path)(t))
+		match := resolverPattern.FindStringSubmatch(workflow)
+		require.Len(t, match, 2, "extract the jq resolver from %s", path)
+		jqResolvers[name] = match[1]
+	}
 
 	jsResolver, err := filepath.Abs(filepath.Join("..", "..", ".github", "scripts", "github-permission.cjs"))
 	require.NoError(t, err)
@@ -1096,23 +1102,31 @@ try {
 			nodeCmd := exec.Command("node", "-e", nodeProgram, jsResolver, string(fixture.Payload))
 			nodeOutput, nodeErr := nodeCmd.CombinedOutput()
 
-			jqCmd := exec.Command("jq", "-er", jqResolver)
-			jqCmd.Stdin = strings.NewReader(string(fixture.Payload))
-			jqOutput, jqErr := jqCmd.CombinedOutput()
+			jqOutputs := make(map[string][]byte, len(jqResolvers))
+			jqErrors := make(map[string]error, len(jqResolvers))
+			for name, resolver := range jqResolvers {
+				jqCmd := exec.Command("jq", "-er", resolver)
+				jqCmd.Stdin = strings.NewReader(string(fixture.Payload))
+				jqOutputs[name], jqErrors[name] = jqCmd.CombinedOutput()
+			}
 
 			if fixture.WantError {
 				require.Error(t, goErr, "Go resolver must reject fixture")
 				require.Error(t, nodeErr, "JS resolver must reject fixture; output: %s", nodeOutput)
-				require.Error(t, jqErr, "jq resolver must reject fixture; output: %s", jqOutput)
+				for name, jqErr := range jqErrors {
+					require.Error(t, jqErr, "%s jq resolver must reject fixture; output: %s", name, jqOutputs[name])
+				}
 				return
 			}
 
 			require.NoError(t, goErr)
 			require.NoError(t, nodeErr, "%s", nodeOutput)
-			require.NoError(t, jqErr, "%s", jqOutput)
 			assert.Equal(t, fixture.Want, goRole)
 			assert.Equal(t, fixture.Want, strings.TrimSpace(string(nodeOutput)))
-			assert.Equal(t, fixture.Want, strings.TrimSpace(string(jqOutput)))
+			for name, jqErr := range jqErrors {
+				require.NoError(t, jqErr, "%s: %s", name, jqOutputs[name])
+				assert.Equal(t, fixture.Want, strings.TrimSpace(string(jqOutputs[name])), name)
+			}
 		})
 	}
 }
