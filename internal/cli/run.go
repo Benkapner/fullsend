@@ -40,6 +40,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	vertexinference "github.com/fullsend-ai/fullsend/internal/inference/vertex"
+	"github.com/fullsend-ai/fullsend/internal/inference/vertexauth"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -504,8 +506,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi and codex — codex takes OpenAI ids only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
-	cmd.Flags().BoolVar(&oFlags.resolveInferenceProvider, "resolve-inference-provider", false, "resolve this agent's inference provider and exit")
-	_ = cmd.Flags().MarkHidden("resolve-inference-provider")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
@@ -918,9 +918,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
 	var minted bool
 	var mintCleanup func()
-	if oFlags.resolveInferenceProvider {
-		mintCleanup = func() {}
-	} else if forgePlatform == "gitlab" {
+	if forgePlatform == "gitlab" {
 		mintCleanup = func() {}
 		if roleErr := applyGitLabAgentCredentials(agentName, h.Role, os.Getenv, setFlagEnv, printer); roleErr != nil {
 			// Pre-PR, `fullsend run --forge gitlab` was a no-op here and left
@@ -1131,16 +1129,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if needsOpenAIProvider {
 		provider = runProviderOpenAI
 	}
-	if oFlags.resolveInferenceProvider {
-		if ghOutput := os.Getenv("GITHUB_OUTPUT"); ghOutput != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-			if err := writeGitHubOutput(ghOutput, "provider", provider); err != nil {
-				return fmt.Errorf("writing inference provider output: %w", err)
+	if provider == runProviderVertex {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			vertexEnv, cleanup, err := vertexauth.PrepareGitHubWIF(ctx, vertexauth.Config{
+				ProjectID:                os.Getenv(vertexinference.SecretProjectID),
+				WorkloadIdentityProvider: os.Getenv(vertexinference.SecretWIFProvider),
+				OIDCRequestURL:           os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL"),
+				OIDCRequestToken:         os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
+				TempDir:                  os.Getenv("RUNNER_TEMP"),
+			})
+			if err != nil {
+				printer.StepFail("Vertex credential setup failed")
+				return err
+			}
+			defer cleanup()
+			for key, value := range vertexEnv {
+				setFlagEnv(key, value)
 			}
 		}
-		printer.KeyValue("Inference provider", provider)
-		return nil
-	}
-	if provider == runProviderVertex {
 		if err := validateVertexGCPCredentials(h); err != nil {
 			printer.StepFail("Inference credential validation failed")
 			return err
@@ -2901,6 +2907,11 @@ var oidcDenyKeys = map[string]bool{
 	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
 	"FULLSEND_GCP_OIDC_URL":          true,
 	"FULLSEND_GCP_OIDC_AUTH_FILE":    true,
+	// Vertex routing inputs are runner-only. They select and configure the
+	// trusted credential setup above and must not reach harness expansion,
+	// scripts, providers, or the sandbox.
+	"FULLSEND_GCP_PROJECT_ID":   true,
+	"FULLSEND_GCP_WIF_PROVIDER": true,
 	// OpenAI WIF configuration (#6689): non-secret but runner-controlled and
 	// useless inside the sandbox. Stripped like GCP OIDC vars.
 	"FULLSEND_OPENAI_AUDIENCE":             true,

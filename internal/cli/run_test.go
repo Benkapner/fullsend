@@ -72,12 +72,10 @@ func TestRunCommand_HasNoPostScriptFlag(t *testing.T) {
 	assert.Equal(t, "false", flag.DefValue)
 }
 
-func TestRunCommand_HasResolveInferenceProviderFlag(t *testing.T) {
+func TestRunCommand_HasNoResolveInferenceProviderFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("resolve-inference-provider")
-	require.NotNil(t, flag)
-	assert.Equal(t, "false", flag.DefValue)
-	assert.True(t, flag.Hidden)
+	assert.Nil(t, flag)
 }
 
 func TestRunCommand_HasOutputDirFlag(t *testing.T) {
@@ -2248,6 +2246,8 @@ func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
+		"FULLSEND_GCP_PROJECT_ID",
+		"FULLSEND_GCP_WIF_PROVIDER",
 	} {
 		assert.True(t, reservedSandboxKeys[key], "reservedSandboxKeys must include %s", key)
 	}
@@ -2369,6 +2369,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
+		"FULLSEND_GCP_PROJECT_ID",
+		"FULLSEND_GCP_WIF_PROVIDER",
 		// OpenAI WIF configuration (#6689)
 		"FULLSEND_OPENAI_AUDIENCE",
 		"FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",

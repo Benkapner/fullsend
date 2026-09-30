@@ -1573,10 +1573,10 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 	}
 }
 
-// TestGCPSetupRunsOnlyForVertexAgent pins the per-agent route: dispatch passes
-// optional GCP inputs to the action, and every GCP step runs only when the
-// selected agent resolves to Vertex.
-func TestGCPSetupRunsOnlyForVertexAgent(t *testing.T) {
+// TestGCPSetupOccursInsideSingleRun pins the per-agent route: dispatch passes
+// optional GCP inputs to the action, which invokes fullsend run once and lets
+// that process prepare credentials only when it resolves Vertex.
+func TestGCPSetupOccursInsideSingleRun(t *testing.T) {
 	stages := []string{"dispatch"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage, func(t *testing.T) {
@@ -1603,8 +1603,10 @@ func TestGCPSetupRunsOnlyForVertexAgent(t *testing.T) {
 			} `yaml:"inputs"`
 			Runs struct {
 				Steps []struct {
-					Name string `yaml:"name"`
-					If   string `yaml:"if"`
+					Name string            `yaml:"name"`
+					If   string            `yaml:"if"`
+					Env  map[string]string `yaml:"env"`
+					Run  string            `yaml:"run"`
 				} `yaml:"steps"`
 			} `yaml:"runs"`
 		}
@@ -1612,24 +1614,56 @@ func TestGCPSetupRunsOnlyForVertexAgent(t *testing.T) {
 		assert.False(t, action.Inputs["gcp_wif_provider"].Required, "gcp_wif_provider must be optional")
 		assert.False(t, action.Inputs["gcp_project_id"].Required, "gcp_project_id must be optional")
 
-		steps := make(map[string]string, len(action.Runs.Steps))
-		order := make(map[string]int, len(action.Runs.Steps))
-		for i, step := range action.Runs.Steps {
-			steps[step.Name] = step.If
-			order[step.Name] = i
+		steps := make(map[string]struct {
+			If  string
+			Env map[string]string
+		}, len(action.Runs.Steps))
+		runInvocations := 0
+		for _, step := range action.Runs.Steps {
+			steps[step.Name] = struct {
+				If  string
+				Env map[string]string
+			}{If: step.If, Env: step.Env}
+			runInvocations += strings.Count(step.Run, "fullsend run ")
 		}
-		require.Contains(t, steps, "Resolve inference provider")
-		require.Contains(t, steps, "Check Vertex credentials")
-		assert.Less(t, order["Resolve inference provider"], order["Check Vertex credentials"])
-		assert.Equal(t, "steps.inference.outputs.provider == 'vertex'", steps["Check Vertex credentials"])
 		for _, name := range []string{
+			"Resolve inference provider",
+			"Check Vertex credentials",
 			"Pre-mask GCP credential file path",
 			"Authenticate to Google Cloud (WIF)",
 			"Mask GCP credential file paths",
 			"Prepare sandbox credentials",
 		} {
-			assert.Equal(t, "steps.inference.outputs.provider == 'vertex'", steps[name],
-				"step %q must be selected by the resolved agent provider", name)
+			assert.NotContains(t, steps, name)
 		}
+		require.Contains(t, steps, "Run fullsend")
+		assert.Equal(t, "${{ inputs.gcp_wif_provider }}", steps["Run fullsend"].Env["FULLSEND_GCP_WIF_PROVIDER"])
+		assert.Equal(t, "${{ inputs.gcp_project_id }}", steps["Run fullsend"].Env["FULLSEND_GCP_PROJECT_ID"])
+		assert.Equal(t, 1, runInvocations)
+	})
+
+	t.Run("functional tests", func(t *testing.T) {
+		path := filepath.Join("..", "..", ".github", "workflows", "functional-tests.yml")
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var workflow struct {
+			Jobs map[string]struct {
+				Steps []struct {
+					Name string            `yaml:"name"`
+					Env  map[string]string `yaml:"env"`
+				} `yaml:"steps"`
+			} `yaml:"jobs"`
+		}
+		require.NoError(t, yaml.Unmarshal(content, &workflow))
+		var runEnv map[string]string
+		for _, step := range workflow.Jobs["functional-tests"].Steps {
+			if step.Name == "Run functional tests" {
+				runEnv = step.Env
+				break
+			}
+		}
+		require.NotNil(t, runEnv, "Run functional tests step not found")
+		assert.Equal(t, "${{ secrets.E2E_GCP_WIF_PROVIDER }}", runEnv["FULLSEND_GCP_WIF_PROVIDER"])
+		assert.Equal(t, "${{ secrets.E2E_GCP_PROJECT_ID }}", runEnv["FULLSEND_GCP_PROJECT_ID"])
 	})
 }

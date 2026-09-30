@@ -122,51 +122,40 @@ func TestRunAgent_VertexMissingGCPCredentialsFailsBeforePreScript(t *testing.T) 
 	assert.NoFileExists(t, marker)
 }
 
-func TestRunAgent_ResolveInferenceProviderExitsBeforePreScript(t *testing.T) {
-	tests := []struct {
-		name     string
-		runtime  string
-		provider string
-	}{
-		{name: "OpenAI", runtime: "codex", provider: "openai"},
-		{name: "Vertex", runtime: "claude", provider: "vertex"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("GITHUB_ACTIONS", "true")
-			output := filepath.Join(t.TempDir(), "github-output")
-			t.Setenv("GITHUB_OUTPUT", output)
-			marker := filepath.Join(t.TempDir(), "pre-script-ran")
-			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(fmt.Sprintf(`version: "1"
-agents:
-  - name: code
-    source: harness/code.yaml
-    runtime: %s
-`, tt.runtime)), 0o644))
-
-			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
-				statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{resolveInferenceProvider: true})
-			require.NoError(t, err)
-			assert.NoFileExists(t, marker)
-			data, readErr := os.ReadFile(output)
-			require.NoError(t, readErr)
-			assert.Contains(t, string(data), "provider="+tt.provider+"\n")
-		})
-	}
-}
-
-func TestRunAgent_ResolveInferenceProviderOutputFailureIsHardError(t *testing.T) {
+func TestRunAgent_OpenAISkipsVertexCredentialSetup(t *testing.T) {
+	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "codex")
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv("GITHUB_OUTPUT", t.TempDir())
-	dir := newSkipHarnessDir(t, "true\n")
+	t.Setenv("FULLSEND_GCP_PROJECT_ID", "")
+	t.Setenv("FULLSEND_GCP_WIF_PROVIDER", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
-		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{resolveInferenceProvider: true})
-	require.ErrorContains(t, err, "writing inference provider output")
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "creating sandbox")
+	assert.FileExists(t, marker)
+}
+
+func TestRunAgent_VertexMissingGCPInputsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "claude")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("FULLSEND_GCP_PROJECT_ID", "")
+	t.Setenv("FULLSEND_GCP_WIF_PROVIDER", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "FULLSEND_GCP_PROJECT_ID")
+	assert.NoFileExists(t, marker)
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {
@@ -200,6 +189,7 @@ func TestValidateVertexGCPCredentials(t *testing.T) {
 // The two assertions share one run.
 func TestRunAgent_PreScriptNoSkip_ProceedsToSandboxAndRelaysFalse(t *testing.T) {
 	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
 	out := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_OUTPUT", out)
@@ -224,6 +214,7 @@ func TestRunAgent_PreScriptNoSkip_ProceedsToSandboxAndRelaysFalse(t *testing.T) 
 // three-state contract would not hold.
 func TestRunAgent_NoPreScript_StillRelaysSkippedFalse(t *testing.T) {
 	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
 	out := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_OUTPUT", out)
@@ -247,6 +238,7 @@ func TestRunAgent_NoPreScript_StillRelaysSkippedFalse(t *testing.T) {
 // creation, so it does not pay the create-retry backoff.
 func TestRunAgent_PreScriptSkip_RelaysSkippedTrue(t *testing.T) {
 	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
 	out := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_OUTPUT", out)
@@ -269,6 +261,7 @@ func TestRunAgent_PreScriptSkip_RelaysSkippedTrue(t *testing.T) {
 // exiting 0 with a decision the workflow gate never sees.
 func TestRunAgent_PreScriptRelayFailureIsHardError(t *testing.T) {
 	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
 	t.Setenv("GITHUB_ACTIONS", "true")
 	// A directory can be opened but not written to.
 	t.Setenv("GITHUB_OUTPUT", t.TempDir())
@@ -433,6 +426,7 @@ func TestRunPreScript_Exit78_StdoutReasonSanitized(t *testing.T) {
 // workflow-level gating works correctly.
 func TestRunAgent_PreScriptExit78_RelaysSkippedTrue(t *testing.T) {
 	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
 	out := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_OUTPUT", out)
