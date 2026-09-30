@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,4 +212,32 @@ func TestThenHarnessWorkflowCompletes_TimeoutWithoutRun(t *testing.T) {
 	entries, err := os.ReadDir(artifactDir)
 	require.NoError(t, err)
 	assert.Empty(t, entries)
+}
+
+// TestSaveWorkflowRunLogs_RedactsAndRestrictsMode checks that saved logs
+// are redacted and written 0o600: they are external content uploaded as
+// a CI artifact.
+func TestSaveWorkflowRunLogs_RedactsAndRestrictsMode(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	token := "ghp_" + strings.Repeat("A", 36)
+	w := &world.World{
+		Org:      "org",
+		RepoName: "repo",
+		CI:       &fakeDebugCI{logs: "step output\nGH_TOKEN=" + token + "\ndone"},
+		Logf:     func(string, ...any) {},
+	}
+
+	saveWorkflowRunLogs(context.Background(), w, "pi-smoke", &forge.WorkflowRun{ID: 5})
+
+	logPath := filepath.Join(artifactDir, "debug-pi-smoke-run-5", "workflow-logs.txt")
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), token, "a token in the logs must be redacted")
+	assert.Contains(t, string(data), "step output")
+
+	info, err := os.Stat(logPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
